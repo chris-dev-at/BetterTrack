@@ -1,2 +1,2 @@
-# PortfolioMan
-PortfolioMan stock and portfolio tracking app
+# BetterTrack
+BetterTrack stock and portfolio tracking app
