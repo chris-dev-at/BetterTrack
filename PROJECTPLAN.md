@@ -621,6 +621,8 @@ The intentional parking lot — scoped out of v1, designed-for in v1. Roughly or
 
 **Clients**
 - **PWA** first (installable, offline shell, web-push) — then a native/React-Native app speaking the identical API + socket (the entire point of API-first); read-only kiosk/TV dashboard mode.
+- Share link that is either a freezeshot shown of the users portfolio (customizeable which assets get shared) or a live update.
+- Add friends within the app to see their portfolio or other things they share
 
 **Accounts & security**
 - Self-service password reset by email; 2FA (TOTP) / passkeys; full account data export (GDPR-style); session manager UI ("log out that device").
