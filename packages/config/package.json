@@ -1,0 +1,17 @@
+{
+  "name": "@bettertrack/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tsconfig.base.json": "./tsconfig.base.json",
+    "./eslint": "./eslint.config.js",
+    "./prettier": "./prettier.config.js"
+  },
+  "dependencies": {
+    "@eslint/js": "^9.19.0",
+    "eslint-config-prettier": "^9.1.0",
+    "globals": "^15.14.0",
+    "typescript-eslint": "^8.21.0"
+  }
+}

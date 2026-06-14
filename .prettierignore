@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+pnpm-lock.yaml
+
+# pre-existing planning docs — owned/edited by hand, kept out of formatting
+PROJECTPLAN.md
+MODELUSE.md
+CLAUDE.md
+STARTAUTOMATE.md
+.claude
