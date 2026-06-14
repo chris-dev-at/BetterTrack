@@ -1,21 +1,12 @@
 export default function App() {
   return (
-    <main
-      style={{
-        minHeight: '100vh',
-        display: 'grid',
-        placeItems: 'center',
-        fontFamily: 'system-ui, sans-serif',
-        background: '#0b0e14',
-        color: '#e6e6e6',
-      }}
-    >
-      <section style={{ textAlign: 'center', maxWidth: '36rem', padding: '2rem' }}>
-        <h1 style={{ margin: 0, fontSize: '2.5rem' }}>BetterTrack</h1>
-        <p style={{ opacity: 0.8 }}>
+    <main className="grid min-h-screen place-items-center bg-[#0b0e14] text-neutral-200">
+      <section className="max-w-xl px-8 text-center">
+        <h1 className="text-4xl font-semibold tracking-tight">BetterTrack</h1>
+        <p className="mt-3 text-neutral-400">
           Self-hosted stock watching, Conglomerates &amp; portfolio tracking.
         </p>
-        <p style={{ opacity: 0.55, fontSize: '0.9rem' }}>
+        <p className="mt-2 text-sm text-neutral-500">
           Foundation bootstrap — application features arrive in later phases.
         </p>
       </section>

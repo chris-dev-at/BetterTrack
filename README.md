@@ -15,7 +15,7 @@ specification. This README covers local setup only.
 
 ```
 apps/
-  web/        # React 19 + Vite SPA (display layer)
+  web/        # React 19 + Vite + Tailwind 4 SPA (display layer)
   api/        # Express 5 service (business layer) — GET /api/v1/health
 packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)

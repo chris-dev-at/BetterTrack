@@ -29,6 +29,16 @@ export default tseslint.config(
     rules: {
       // TypeScript's own checker handles undefined symbols.
       'no-undef': 'off',
+      // Allow intentionally-unused args/vars when prefixed with `_`
+      // (e.g. Express `(err, _req, res, _next)` error handlers).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
     },
   },
   prettier,
