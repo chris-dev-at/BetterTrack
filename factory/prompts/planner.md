@@ -9,6 +9,6 @@ Do, in order:
 4. Create up to $PLANNER_BATCH new issues — only work that is actionable RIGHT NOW (its dependencies already merged). Each issue:
    - Title: "[P<phase>] <verb> <thing>" — one coherent work package a single agent run can finish.
    - Body: ## Context (PROJECTPLAN § references) · ## Scope (exact files/dirs) · ## Acceptance criteria (testable checkboxes — these are what the reviewer grades against) · ## Out of scope.
-   - Labels: autopilot + exactly one tier label per MODELUSE.md (tier:fable for apps/api/src/domain/\*\* and the provider/caching/currency core; tier:opus for auth/admin/schema/jobs/realtime/Builder/sharing; tier:sonnet for CRUD/UI/config/docs; unsure → higher tier).
+   - Labels: autopilot + exactly one tier label per MODELUSE.md (tier:fable for domain core code and the provider/caching/currency core; tier:opus for auth/admin/schema/jobs/realtime/Builder/sharing; tier:sonnet for CRUD/UI/config/docs; unsure → higher tier).
 5. If ALL of P0–P6 is complete: follow AFTER_V1 — "propose": draft the next 5 issues from PROJECTPLAN §14 in its leverage order, label them awaiting-owner (NOT autopilot), and say so in a comment on the newest one; "auto": label them autopilot directly; "stop": create nothing.
 6. Never create issues outside PROJECTPLAN v1 + §14. Never re-open or duplicate existing ones.
