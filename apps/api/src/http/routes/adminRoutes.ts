@@ -17,7 +17,7 @@ import {
 
 import type { AdminActor } from '../../services/admin/adminService';
 import type { AppContext } from '../context';
-import { enforcePasswordChange, requireAdmin } from '../middleware/session';
+import { requireAdmin } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import { toAdminInvite, toAdminUser, toAuditEntry } from '../serializers';
@@ -26,14 +26,14 @@ const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.i
 
 /**
  * Admin endpoints under /api/v1/admin (PROJECTPLAN.md §6.12, §8). The router is
- * gated by `requireAdmin` (404 to everyone else) then `enforcePasswordChange`.
+ * gated by `requireAdmin` (404 to everyone else); the forced-password-change
+ * guard is applied globally on /api/v1 (see app.ts).
  */
 export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(limiters.admin);
   router.use(requireAdmin);
-  router.use(enforcePasswordChange);
 
   router.get('/users', validateQuery(adminUserListQuerySchema), async (req, res) => {
     const { search } = (req.valid?.query ?? {}) as { search?: string };

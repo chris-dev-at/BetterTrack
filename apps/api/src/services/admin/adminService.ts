@@ -1,3 +1,5 @@
+import type { Redis } from 'ioredis';
+
 import type {
   CreateInviteRequest,
   CreateUserRequest,
@@ -10,6 +12,7 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { generateTempPassword } from '../password/tempPassword';
@@ -17,6 +20,7 @@ import type { SessionService } from '../sessions/sessionService';
 
 export interface AdminServiceDeps {
   config: AppConfig;
+  redis: Redis;
   userRepo: UserRepository;
   inviteRepo: InviteRepository;
   sessions: SessionService;
@@ -32,7 +36,7 @@ export interface AdminActor {
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function createAdminService(deps: AdminServiceDeps) {
-  const { config, userRepo, inviteRepo, sessions, audit, passwordHasher } = deps;
+  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
     const user = await userRepo.findById(id);
@@ -106,6 +110,9 @@ export function createAdminService(deps: AdminServiceDeps) {
           });
         } else {
           await userRepo.setStatus(target.id, 'active');
+          // Re-enabling must let the user back in immediately — drop any
+          // failed-login / lockout state accrued before they were disabled.
+          await clearLoginThrottle(redis, target.id);
           await audit.record({
             actorId: actor.id,
             action: AuditAction.UserEnabled,
@@ -146,6 +153,8 @@ export function createAdminService(deps: AdminServiceDeps) {
       const passwordHash = await passwordHasher.hash(tempPassword);
       await userRepo.updatePassword(target.id, passwordHash, true);
       await sessions.destroyAllForUser(target.id);
+      // Clear lockout so the user can sign in with the new temp password now.
+      await clearLoginThrottle(redis, target.id);
       await audit.record({
         actorId: actor.id,
         action: AuditAction.UserPasswordReset,

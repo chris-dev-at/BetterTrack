@@ -51,6 +51,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
   const admin = createAdminService({
     config,
+    redis,
     userRepo,
     inviteRepo,
     sessions,
