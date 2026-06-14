@@ -1,0 +1,27 @@
+{
+  "name": "bettertrack",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:infra": "docker compose -f infra/docker-compose.dev.yml up -d",
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "pnpm -r test",
+    "build": "pnpm -r build",
+    "clean": "pnpm -r exec rm -rf dist coverage .tsbuildinfo"
+  },
+  "devDependencies": {
+    "@bettertrack/config": "workspace:*",
+    "eslint": "^9.19.0",
+    "prettier": "^3.4.2",
+    "typescript": "~5.7.3"
+  }
+}
