@@ -11,7 +11,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { clearSessionCookie, setSessionCookie } from '../cookies';
-import { enforcePasswordChange, requireAuth } from '../middleware/session';
+import { requireAuth } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
@@ -39,7 +39,9 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     res.json({ ok: true });
   });
 
-  router.get('/me', requireAuth, enforcePasswordChange, (req, res) => {
+  // The global enforcePasswordChange guard (mounted on /api/v1) blocks
+  // mustChangePassword users here before this handler runs.
+  router.get('/me', requireAuth, (req, res) => {
     res.json(toMeResponse(req.authUser!));
   });
 

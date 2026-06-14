@@ -105,3 +105,78 @@ describe('POST /api/v1/auth/logout', () => {
     expect(me.status).toBe(401);
   });
 });
+
+// Pulls the raw `bt_sid=...` cookie pair out of a Set-Cookie header so an old
+// session id can be replayed after rotation. A single response can carry two
+// (loadSession's rolling refresh, then the handler's rotated id) — the last one
+// written wins, matching what the browser would store.
+function sessionCookie(res: request.Response): string {
+  const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
+  const headers = (setCookie ?? []).filter((c) => c.startsWith('bt_sid='));
+  const header = headers.at(-1);
+  if (!header) throw new Error('no session cookie set');
+  return header.split(';')[0] ?? header;
+}
+
+describe('session rotation on login (PROJECTPLAN.md §6.1, §10)', () => {
+  it('destroys the pre-login session id when logging in again', async () => {
+    const admin = await harness.seedAdmin();
+    const agent = request.agent(harness.app);
+
+    const first = await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: admin.email, password: admin.password });
+    const oldCookie = sessionCookie(first);
+
+    // The old id still resolves before re-login.
+    expect(
+      (await request(harness.app).get('/api/v1/auth/me').set('Cookie', oldCookie)).status,
+    ).toBe(200);
+
+    // Logging in again (carrying the old cookie) rotates to a fresh id.
+    const second = await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: admin.email, password: admin.password });
+    const newCookie = sessionCookie(second);
+    expect(newCookie).not.toBe(oldCookie);
+
+    // The rotated-out id is dead; the new one works.
+    expect(
+      (await request(harness.app).get('/api/v1/auth/me').set('Cookie', oldCookie)).status,
+    ).toBe(401);
+    expect(
+      (await request(harness.app).get('/api/v1/auth/me').set('Cookie', newCookie)).status,
+    ).toBe(200);
+  });
+});
+
+describe('password change invalidates all sessions (PROJECTPLAN.md §6.1, §10)', () => {
+  it('kills a second concurrent session and keeps the changing one alive', async () => {
+    const admin = await harness.seedAdmin();
+
+    const agentA = request.agent(harness.app);
+    const agentB = request.agent(harness.app);
+    for (const agent of [agentA, agentB]) {
+      const res = await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: admin.email, password: admin.password });
+      expect(res.status).toBe(200);
+    }
+    // Both sessions are live to start.
+    expect((await agentA.get('/api/v1/auth/me')).status).toBe(200);
+    expect((await agentB.get('/api/v1/auth/me')).status).toBe(200);
+
+    const changed = await agentA
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: admin.password, newPassword: 'admin-rotated-secret-2' });
+    expect(changed.status).toBe(200);
+
+    // The other device is logged out instantly; the changing device continues.
+    expect((await agentB.get('/api/v1/auth/me')).status).toBe(401);
+    expect((await agentA.get('/api/v1/auth/me')).status).toBe(200);
+  });
+});

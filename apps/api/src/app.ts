@@ -6,7 +6,7 @@ import { createErrorHandler } from './http/errorHandler';
 import { healthRouter } from './http/healthRouter';
 import { requireCsrfHeader } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
-import { loadSession } from './http/middleware/session';
+import { enforcePasswordChange, loadSession } from './http/middleware/session';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAuthRouter } from './http/routes/authRoutes';
 import type { AppContext } from './http/context';
@@ -30,10 +30,13 @@ export function createApp(ctx: AppContext) {
 
   const limiters = createRateLimiters(ctx);
 
-  // Order: resolve session → general rate limit (keyed by user) → CSRF guard.
+  // Order: resolve session → general rate limit (keyed by user) → CSRF guard →
+  // forced-password-change guard. The last is global with an explicit
+  // allowlist, so any future /api/v1 router is covered without opting in.
   app.use('/api/v1', loadSession(ctx));
   app.use('/api/v1', limiters.general);
   app.use('/api/v1', requireCsrfHeader);
+  app.use('/api/v1', enforcePasswordChange);
 
   app.use('/api/v1', healthRouter);
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));

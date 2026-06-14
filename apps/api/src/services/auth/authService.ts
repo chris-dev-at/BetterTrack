@@ -14,6 +14,7 @@ import { hashToken } from '../crypto/tokens';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import type { SessionService } from '../sessions/sessionService';
+import { clearLoginThrottle, failCountKey, failHourKey, lockKey } from './loginThrottle';
 
 export interface AuthServiceDeps {
   config: AppConfig;
@@ -54,10 +55,6 @@ export interface AuthService {
 const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
 
-const failCountKey = (userId: string) => `login_fail:${userId}`;
-const failHourKey = (userId: string) => `login_fail_hour:${userId}`;
-const lockKey = (userId: string) => `login_lock:${userId}`;
-
 export function createAuthService(deps: AuthServiceDeps): AuthService {
   const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher } = deps;
   const limits = config.rateLimits;
@@ -83,8 +80,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     }
   }
 
-  const clearFailures = (userId: string) =>
-    redis.del(failCountKey(userId), failHourKey(userId), lockKey(userId));
+  const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
 
   return {
     async login({ identifier, password, ip, currentSessionId }) {
@@ -109,6 +105,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const hourlyFailures = Number(await redis.get(failHourKey(user.id))) || 0;
       if (hourlyFailures >= limits.accountFailuresPerHour) {
+        await audit.record({
+          action: AuditAction.LoginFail,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+          meta: { reason: 'throttled' },
+        });
         throw invalidCredentials();
       }
 
