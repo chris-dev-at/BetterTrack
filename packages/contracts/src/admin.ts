@@ -61,6 +61,7 @@ export type DeleteUserRequest = z.infer<typeof deleteUserRequestSchema>;
 
 export const INVITE_STATUSES = ['pending', 'used', 'revoked', 'expired'] as const;
 export const inviteStatusSchema = z.enum(INVITE_STATUSES);
+export type InviteStatus = z.infer<typeof inviteStatusSchema>;
 
 export const adminInviteSchema = z.object({
   id: z.string().uuid(),
