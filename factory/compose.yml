@@ -1,3 +1,4 @@
+name: bettertrack-factory
 services:
   factory:
     build: .
@@ -5,5 +6,7 @@ services:
     restart: unless-stopped
     volumes:
       - factory-work:/work/state
+      # Live-editable prompts: tune these on the host and restart, no rebuild.
+      - ./prompts:/work/state/prompts:ro
 volumes:
   factory-work:
