@@ -1,19 +1,19 @@
 # FableBackExecute.md — Undo the Fable-outage fallback
 
-**Audience: a future Claude Code session. DO NOT execute any of this unless the owner explicitly says** e.g. *"Fable is back — execute FableBackExecute.md"*. Until then this file is inert documentation.
+**Audience: a future Claude Code session. DO NOT execute any of this unless the owner explicitly says** e.g. _"Fable is back — execute FableBackExecute.md"_. Until then this file is inert documentation.
 
 ## What this reverses
 
 On **2026-06-15**, while Claude Fable 5 was unavailable (a "Mythos"/access gate, not a transient error), the build factory was adjusted so that **T1 (`tier:fable`) work builds on Opus at max reasoning** instead of stalling. Those adjustments were:
 
-| # | File | Change to undo |
-|---|------|----------------|
-| 1 | `factory/run.sh` | Fable→Opus routing: `FABLE_UP`/`fable_up()`, `model_for()`, `issue_tier()`, the rewritten `tier_model()`, the per-loop `FABLE_UP=""` reset, and the pick-block fallback notify |
-| 2 | `CLAUDE.md` | Routing **rule 7** (model-unavailability fallback) |
-| 3 | `PROJECTPLAN.md` §16 | The `2026-06-15` Decision Log row |
-| 4 | `factory/prompts/writer.md` | The **"Model note"** paragraph authorizing the Opus fallback |
+| #   | File                        | Change to undo                                                                                                                                                                 |
+| --- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | `factory/run.sh`            | Fable→Opus routing: `FABLE_UP`/`fable_up()`, `model_for()`, `issue_tier()`, the rewritten `tier_model()`, the per-loop `FABLE_UP=""` reset, and the pick-block fallback notify |
+| 2   | `CLAUDE.md`                 | Routing **rule 7** (model-unavailability fallback)                                                                                                                             |
+| 3   | `PROJECTPLAN.md` §16        | The `2026-06-15` Decision Log row                                                                                                                                              |
+| 4   | `factory/prompts/writer.md` | The **"Model note"** paragraph authorizing the Opus fallback                                                                                                                   |
 
-> **Note — the factory already self-heals.** The routing in `run.sh` is dynamic: it probes Fable each cycle and, the moment Fable answers, `tier:fable` work runs on Fable again automatically — **no change is required for correct behaviour.** This runbook exists to remove the temporary *scaffolding and policy* so the repo reads as if the outage never happened, and to flag any T1 work that got built on Opus meanwhile.
+> **Note — the factory already self-heals.** The routing in `run.sh` is dynamic: it probes Fable each cycle and, the moment Fable answers, `tier:fable` work runs on Fable again automatically — **no change is required for correct behaviour.** This runbook exists to remove the temporary _scaffolding and policy_ so the repo reads as if the outage never happened, and to flag any T1 work that got built on Opus meanwhile.
 
 ## Preconditions
 
@@ -63,7 +63,7 @@ Sanity check: `bash -n factory/run.sh`, and confirm `grep -nE 'FABLE_UP|model_fo
 
 ## Step 2 — `CLAUDE.md`: remove rule 7
 
-Delete the bullet beginning **`7. **Model-unavailability fallback`** (the whole rule-7 paragraph). Rules 1–6 are unchanged.
+Delete the bullet beginning **`7. **Model-unavailability fallback`\*\* (the whole rule-7 paragraph). Rules 1–6 are unchanged.
 
 ## Step 3 — `PROJECTPLAN.md` §16: remove the outage entry
 
