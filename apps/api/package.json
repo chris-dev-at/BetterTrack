@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "worker": "tsx src/scripts/worker.ts",
+    "worker:dev": "tsx watch src/scripts/worker.ts",
     "start": "node dist/server.js",
+    "start:worker": "node dist/scripts/worker.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsup",
@@ -16,6 +19,7 @@
   "dependencies": {
     "@bettertrack/contracts": "workspace:*",
     "@node-rs/argon2": "^2.0.2",
+    "bullmq": "^5.78.1",
     "cookie-parser": "^1.4.7",
     "drizzle-orm": "^0.38.3",
     "express": "^5.1.0",
