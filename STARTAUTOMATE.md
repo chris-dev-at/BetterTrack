@@ -4,6 +4,25 @@
 
 Do not execute this runbook unless the owner explicitly asked to start automating.
 
+> **Status (2026-06-15): the factory is already materialized and hardened in `factory/`.**
+> Launch/relaunch it with one command — `./factory/autorun.sh` — which tears down any
+> duplicate instances, builds, and starts a single container (compose project
+> `bettertrack-factory`, restart policy `unless-stopped`). The **live files in `factory/`
+> are the source of truth**; the code blocks in §4 below are the original reference and
+> have since been hardened. Key hardening over the original:
+> - **Token/limit waiting** uses a structured probe (`claude -p --output-format json`,
+>   `is_error`) plus a cheap capacity probe, so exhausted tokens make it *wait and
+>   auto-resume* instead of burning issues to `needs-human` (the original text-grep missed
+>   the limit and failed every issue in seconds).
+> - **Model availability**: `tier:fable` issues are *skipped* (not failed) while
+>   `claude-fable-5` is unavailable, and resume automatically when it returns.
+> - **Volume ownership**: the image owns `/work/state` as the `factory` user so a fresh
+>   named volume is writable.
+> - **Prompts** are bind-mounted from `factory/prompts/` (tune + restart, no rebuild).
+> Ops: `./factory/autorun.sh --logs` (watch) · `--stop` / re-run to resume · `--fresh`
+> (wipe state) · `--smoke` (one issue, foreground). Hard stop:
+> `sudo docker compose -p bettertrack-factory exec factory touch /work/state/STOP`.
+
 ---
 
 ## 0. Non-negotiables

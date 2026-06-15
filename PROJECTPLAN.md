@@ -652,3 +652,4 @@ The intentional parking lot — scoped out of v1, designed-for in v1. Roughly or
 | 2026-06-12 | Market data: Yahoo Finance behind the provider abstraction | Free, EU coverage, proven in the conglomerate.py prototype; swappable by design |
 | 2026-06-13 | Strict 3-layer split: static SPA · API/business core · data; push via WebSocket; API-first for a future mobile app | Owner requirement ("display/business/data, app runs on the user's PC, SignalR-style communication") |
 | 2026-06-13 | Renamed PortfolioMan → **BetterTrack** | Owner decision |
+| 2026-06-15 | While Claude Fable 5 is unavailable, the build factory builds T1 (`tier:fable`) work on **Opus at max reasoning**, reverting to Fable automatically when it returns | Owner authorization — Fable access is gated ("Mythos"); the P1 provider/caching/currency keystone must not block the whole pipeline. Routing rule 3 is relaxed for the duration of the outage only (CLAUDE.md rule 7) |

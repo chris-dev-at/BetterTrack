@@ -6,8 +6,13 @@ RUN apt-get update && apt-get install -y git curl jq \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/* \
  && corepack enable && npm install -g @anthropic-ai/claude-code
-RUN useradd -m factory
+# Own /work (incl. the /work/state volume mountpoint) as the unprivileged user, so
+# a fresh named volume mounted at /work/state inherits factory ownership and is writable.
+RUN useradd -m factory && mkdir -p /work/state && chown -R factory:factory /work
 USER factory
 WORKDIR /work
 COPY --chown=factory run.sh /work/run.sh
+# Bake prompts into the image as a fallback; compose bind-mounts factory/prompts
+# over /work/state/prompts so they can be tuned without rebuilding.
+COPY --chown=factory prompts /work/prompts
 ENTRYPOINT ["bash", "/work/run.sh"]
