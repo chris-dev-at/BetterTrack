@@ -14,6 +14,7 @@ import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import { buildContext, type AppContext } from '../http/context';
 import { createLogger } from '../logger';
+import type { MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
 /**
@@ -46,16 +47,23 @@ export interface TestHarness {
   seedAdmin(input?: Partial<Omit<SeededAdmin, 'id'>>): Promise<SeededAdmin>;
 }
 
-export async function createTestApp(): Promise<TestHarness> {
+export interface CreateTestAppOptions {
+  /** Extra/override env, e.g. SMTP_* to exercise the enabled email channel. */
+  env?: Partial<NodeJS.ProcessEnv>;
+  /** Fake mail transport injected in place of a real SMTP connection. */
+  emailTransport?: MailTransport | null;
+}
+
+export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
   const client = new PGlite();
   const rawDb = drizzle(client, { schema });
   await migrate(rawDb, { migrationsFolder });
   const db = rawDb as unknown as Database;
 
   const redis = new RedisMock() as unknown as Redis;
-  const config = loadConfig(TEST_ENV);
+  const config = loadConfig({ ...TEST_ENV, ...options.env });
   const logger = createLogger(config);
-  const ctx = buildContext({ config, db, redis, logger });
+  const ctx = buildContext({ config, db, redis, logger, emailTransport: options.emailTransport });
   const app = createApp(ctx);
 
   const userRepo = createUserRepository(db);

@@ -11,6 +11,7 @@ import type { UserRow } from '../../data/schema';
 import { badRequest, conflict, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
+import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import type { SessionService } from '../sessions/sessionService';
@@ -24,6 +25,7 @@ export interface AuthServiceDeps {
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
+  email: EmailService;
 }
 
 export interface LoginInput {
@@ -56,7 +58,7 @@ const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
 
 export function createAuthService(deps: AuthServiceDeps): AuthService {
-  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher } = deps;
+  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher, email } = deps;
   const limits = config.rateLimits;
 
   // Computed once, lazily — verified against on unknown-user logins so response
@@ -265,6 +267,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         targetType: 'invite',
         targetId: invite.id,
         ip,
+      });
+
+      // Best-effort welcome mail, after the account is fully provisioned.
+      await email.sendWelcome({
+        to: user.email,
+        username: user.username,
+        audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
       const sessionId = await sessions.create(user.id);

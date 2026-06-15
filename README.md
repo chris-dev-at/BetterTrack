@@ -65,6 +65,27 @@ pnpm --filter @bettertrack/api dev
 pnpm --filter @bettertrack/web dev
 ```
 
+## Email (SMTP)
+
+Account emails — invites, temporary passwords, and the welcome message — go out
+over SMTP via Nodemailer (PROJECTPLAN.md §6.11). The channel is **optional**:
+with no SMTP config the app boots and every account flow still works, because
+the admin gets a copyable temp password / invite URL straight from the API
+response. Configure these in `apps/api/.env` to turn it on:
+
+| Variable    | Example                             | Notes                                          |
+| ----------- | ----------------------------------- | ---------------------------------------------- |
+| `SMTP_HOST` | `smtp.mailgun.org`                  | required to enable the channel                 |
+| `SMTP_PORT` | `587`                               | `465` ⇒ implicit TLS, anything else ⇒ STARTTLS |
+| `SMTP_USER` | `postmaster@mg.example.at`          | optional (omit for unauthenticated relays)     |
+| `SMTP_PASS` | —                                   | optional; never logged or returned by the API  |
+| `SMTP_FROM` | `BetterTrack <no-reply@example.at>` | required to enable the channel                 |
+
+The channel is enabled only when both `SMTP_HOST` and `SMTP_FROM` are set. Send
+failures never roll back account creation/reset/invite state — they are logged
+and written to the audit log as `email.send_failed` with a coarse error code,
+no secrets.
+
 ## Quality gates
 
 These are exactly what CI runs (`.github/workflows/ci.yml`):
