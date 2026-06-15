@@ -2,7 +2,7 @@ name: bettertrack
 
 # Production Docker Compose topology — PROJECTPLAN.md §4.6.
 # All images are built from the repo root (context: ..).
-# Copy infra/.env.example → infra/.env and fill in values before running.
+# Copy infra/.env.production.example → infra/.env and fill in values before running.
 #
 # First-run flow:
 #   docker compose build
@@ -79,7 +79,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: '${POSTGRES_USER:-bt}'
-      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}'
+      POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
       POSTGRES_DB: '${POSTGRES_DB:-bettertrack}'
     volumes:
       - pgdata:/var/lib/postgresql/data
