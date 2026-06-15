@@ -38,6 +38,47 @@ interface RequestOptions {
   body?: unknown;
   query?: Record<string, string | number | undefined>;
   signal?: AbortSignal;
+  /**
+   * Skip the global auth-response policy (below) for this call. The auth
+   * endpoints themselves opt out: a `401` on `/auth/login` or
+   * `/auth/change-password` (wrong password) is an in-form error the caller
+   * shows — it must never trigger a session-expiry redirect or eject a user
+   * from the forced-change screen.
+   */
+  suppressAuthRedirect?: boolean;
+}
+
+/**
+ * The single place for app-wide auth/redirect policy (PROJECTPLAN.md §7.1, §7.4).
+ * A mounted auth layer registers handlers; the request chokepoint invokes them
+ * when a response demands a session transition:
+ *   - `401` → session is gone → bounce to login (preserving intended path).
+ *   - `403 PASSWORD_CHANGE_REQUIRED` → trap into the forced-change screen (§6.1).
+ * Only one policy is active at a time. The admin world registers none, so its
+ * own 401/404 handling (its AuthContext) is unaffected.
+ */
+export interface AuthResponsePolicy {
+  onUnauthorized?: () => void;
+  onPasswordChangeRequired?: () => void;
+}
+
+let activePolicy: AuthResponsePolicy | null = null;
+
+/** Install the active policy; returns a disposer that clears it (only if still current). */
+export function setAuthResponsePolicy(policy: AuthResponsePolicy): () => void {
+  activePolicy = policy;
+  return () => {
+    if (activePolicy === policy) activePolicy = null;
+  };
+}
+
+function notifyAuthPolicy(error: ApiError): void {
+  if (!activePolicy) return;
+  if (error.status === 401) {
+    activePolicy.onUnauthorized?.();
+  } else if (error.status === 403 && error.code === 'PASSWORD_CHANGE_REQUIRED') {
+    activePolicy.onPasswordChangeRequired?.();
+  }
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -81,11 +122,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   if (!response.ok) {
     const parsed = apiErrorSchema.safeParse(payload);
-    if (parsed.success) {
-      const { code, message, details } = parsed.data.error;
-      throw new ApiError(response.status, code, message, details);
-    }
-    throw new ApiError(response.status, 'UNKNOWN', 'Request failed.');
+    const error = parsed.success
+      ? new ApiError(
+          response.status,
+          parsed.data.error.code,
+          parsed.data.error.message,
+          parsed.data.error.details,
+        )
+      : new ApiError(response.status, 'UNKNOWN', 'Request failed.');
+    if (!options.suppressAuthRedirect) notifyAuthPolicy(error);
+    throw error;
   }
 
   return payload as T;
