@@ -14,6 +14,7 @@ import { badRequest, conflict, notFound } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
+import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { generateTempPassword } from '../password/tempPassword';
 import type { SessionService } from '../sessions/sessionService';
@@ -26,6 +27,7 @@ export interface AdminServiceDeps {
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
+  email: EmailService;
 }
 
 export interface AdminActor {
@@ -36,7 +38,7 @@ export interface AdminActor {
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function createAdminService(deps: AdminServiceDeps) {
-  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher } = deps;
+  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher, email } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
     const user = await userRepo.findById(id);
@@ -85,6 +87,15 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetId: user.id,
         ip: actor.ip,
         meta: { via: 'admin', role: input.role },
+      });
+
+      // Best-effort, post-commit: a mail failure must not undo the new account.
+      await email.sendTempPassword({
+        to: user.email,
+        username: user.username,
+        tempPassword,
+        reason: 'created',
+        audit: { actorId: actor.id, targetType: 'user', targetId: user.id, ip: actor.ip },
       });
 
       return { user, tempPassword };
@@ -163,6 +174,16 @@ export function createAdminService(deps: AdminServiceDeps) {
         ip: actor.ip,
       });
       const user = await loadUser(id);
+
+      // Best-effort, post-commit: the admin already holds the temp password.
+      await email.sendTempPassword({
+        to: user.email,
+        username: user.username,
+        tempPassword,
+        reason: 'reset',
+        audit: { actorId: actor.id, targetType: 'user', targetId: user.id, ip: actor.ip },
+      });
+
       return { user, tempPassword };
     },
 
@@ -205,7 +226,16 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetId: invite.id,
         ip: actor.ip,
       });
-      return { invite, inviteUrl: `${config.appOrigin}/invite/${token}` };
+
+      const inviteUrl = `${config.appOrigin}/invite/${token}`;
+      // Best-effort, post-commit: the admin can still copy the URL on failure.
+      await email.sendInvite({
+        to: invite.email,
+        inviteUrl,
+        audit: { actorId: actor.id, targetType: 'invite', targetId: invite.id, ip: actor.ip },
+      });
+
+      return { invite, inviteUrl };
     },
 
     listInvites: () => inviteRepo.listAll(),

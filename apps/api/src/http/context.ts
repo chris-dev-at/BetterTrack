@@ -9,6 +9,8 @@ import type { Logger } from '../logger';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
+import { createEmailService } from '../services/email/emailService';
+import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import { createSessionService } from '../services/sessions/sessionService';
 
@@ -26,6 +28,8 @@ export interface BuildContextDeps {
   db: Database;
   redis: Redis;
   logger: Logger;
+  /** Test seam: inject a fake transport instead of a real SMTP connection. */
+  emailTransport?: MailTransport | null;
 }
 
 /** Composition root: repositories → services → context. */
@@ -40,6 +44,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const audit = createAuditService(auditRepo);
   const passwordHasher = createPasswordHasher();
 
+  // Only open a real SMTP connection when the channel is configured (§11).
+  const transport =
+    deps.emailTransport !== undefined
+      ? deps.emailTransport
+      : config.email.enabled
+        ? createSmtpTransport(config.email)
+        : null;
+  const email = createEmailService({ config, logger, audit, transport });
+
   const auth = createAuthService({
     config,
     redis,
@@ -48,6 +61,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     sessions,
     audit,
     passwordHasher,
+    email,
   });
   const admin = createAdminService({
     config,
@@ -57,6 +71,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     sessions,
     audit,
     passwordHasher,
+    email,
   });
 
   return { config, redis, logger, auth, admin };
