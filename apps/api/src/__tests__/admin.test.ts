@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
 
+import { failHourKey } from '../services/auth/loginThrottle';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -24,6 +25,15 @@ async function loginAgent(app: Application, identifier: string, password: string
   return agent;
 }
 
+async function failLogin(app: Application, identifier: string, times: number) {
+  for (let i = 0; i < times; i += 1) {
+    await request(app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier, password: 'definitely-the-wrong-password' });
+  }
+}
+
 describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
   it('returns 404 for normal users and anonymous requests — no route disclosure', async () => {
     const admin = await harness.seedAdmin();
@@ -36,6 +46,13 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
     expect(created.status).toBe(201);
 
     const userAgent = await loginAgent(harness.app, 'normal@test.dev', created.body.tempPassword);
+    // Clear the forced-change flag first; otherwise the global guard 403s
+    // before requireAdmin's 404 disguise (covered separately below).
+    await userAgent
+      .post('/api/v1/auth/change-password')
+      .set(...XRW)
+      .send({ currentPassword: created.body.tempPassword, newPassword: 'normal-strong-pass-7' });
+
     const asUser = await userAgent.get('/api/v1/admin/users');
     expect(asUser.status).toBe(404);
 
@@ -184,5 +201,164 @@ describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
     expect(stats.status).toBe(200);
     const parsed = adminStatsSchema.parse(stats.body);
     expect(parsed.userCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('forced-password-change guard is global (PROJECTPLAN.md §6.1)', () => {
+  it('403s a mustChange user on every protected route, including admin routes', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    // Make the new account an admin so requireAdmin would otherwise let it in —
+    // proving the password-change guard fires first.
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'pending@test.dev', username: 'pending_admin', role: 'admin' });
+    const { tempPassword } = createUserResponseSchema.parse(created.body);
+
+    const userAgent = await loginAgent(harness.app, 'pending@test.dev', tempPassword);
+
+    for (const path of ['/api/v1/auth/me', '/api/v1/admin/users', '/api/v1/admin/stats']) {
+      const res = await userAgent.get(path);
+      expect(res.status).toBe(403);
+      expect(res.body.error.code).toBe('PASSWORD_CHANGE_REQUIRED');
+    }
+
+    // change-password and logout stay reachable.
+    const logout = await userAgent.post('/api/v1/auth/logout').set(...XRW);
+    expect(logout.status).toBe(200);
+  });
+});
+
+describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', () => {
+  it('password reset clears lockout so the new temp password works immediately', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'locked@test.dev', username: 'locked_user' });
+    const userId = created.body.user.id as string;
+
+    // 10 consecutive bad passwords → account locked.
+    await failLogin(harness.app, 'locked@test.dev', 10);
+    const whileLocked = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: 'locked@test.dev', password: created.body.tempPassword });
+    expect(whileLocked.status).toBe(401);
+
+    const reset = await adminAgent.post(`/api/v1/admin/users/${userId}/reset-password`).set(...XRW);
+    expect(reset.status).toBe(200);
+
+    const afterReset = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: 'locked@test.dev', password: reset.body.tempPassword });
+    expect(afterReset.status).toBe(200);
+  });
+
+  it('re-enabling a disabled user clears lockout state', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'reenable@test.dev', username: 'reenable_user' });
+    const userId = created.body.user.id as string;
+    const tempPassword = created.body.tempPassword as string;
+
+    await failLogin(harness.app, 'reenable@test.dev', 10);
+
+    await adminAgent
+      .patch(`/api/v1/admin/users/${userId}`)
+      .set(...XRW)
+      .send({ status: 'disabled' });
+    const reenabled = await adminAgent
+      .patch(`/api/v1/admin/users/${userId}`)
+      .set(...XRW)
+      .send({ status: 'active' });
+    expect(reenabled.status).toBe(200);
+
+    // Lockout was cleared by the re-enable, so the temp password works now.
+    const login = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: 'reenable@test.dev', password: tempPassword });
+    expect(login.status).toBe(200);
+  });
+});
+
+describe('throttled login failures are audited (PROJECTPLAN.md §10)', () => {
+  it('records a login.fail with reason throttled', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'throttled@test.dev', username: 'throttled_user' });
+    const userId = created.body.user.id as string;
+
+    // Drive the per-account hourly throttle directly (the consecutive-failure
+    // lockout would otherwise mask it within a single hour).
+    await harness.ctx.redis.set(failHourKey(userId), '10');
+
+    const res = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: 'throttled@test.dev', password: created.body.tempPassword });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('INVALID_CREDENTIALS');
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const throttled = (
+      audit.body.entries as Array<{ action: string; meta: { reason?: string } | null }>
+    ).filter((e) => e.action === 'login.fail' && e.meta?.reason === 'throttled');
+    expect(throttled.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () => {
+  it('blocks an admin from disabling, demoting, or deleting their own account', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+
+    const disableSelf = await adminAgent
+      .patch(`/api/v1/admin/users/${admin.id}`)
+      .set(...XRW)
+      .send({ status: 'disabled' });
+    expect(disableSelf.status).toBe(400);
+    expect(disableSelf.body.error.code).toBe('SELF_ACTION');
+
+    const demoteSelf = await adminAgent
+      .patch(`/api/v1/admin/users/${admin.id}`)
+      .set(...XRW)
+      .send({ role: 'user' });
+    expect(demoteSelf.status).toBe(400);
+    expect(demoteSelf.body.error.code).toBe('SELF_ACTION');
+
+    const deleteSelf = await adminAgent
+      .delete(`/api/v1/admin/users/${admin.id}`)
+      .set(...XRW)
+      .send({ confirmUsername: admin.username });
+    expect(deleteSelf.status).toBe(400);
+    expect(deleteSelf.body.error.code).toBe('SELF_ACTION');
+  });
+
+  it('allows demoting a second admin once more than one exists', async () => {
+    const admin = await harness.seedAdmin();
+    const second = await harness.seedAdmin({
+      email: 'second-admin@test.dev',
+      username: 'second_admin',
+      password: 'second-admin-strong-1',
+    });
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+
+    const demote = await adminAgent
+      .patch(`/api/v1/admin/users/${second.id}`)
+      .set(...XRW)
+      .send({ role: 'user' });
+    expect(demote.status).toBe(200);
+    expect(demote.body.role).toBe('user');
   });
 });

@@ -5,7 +5,7 @@ ETF-style weighted baskets), and tracking a real **Portfolio** — including
 investments that exist nowhere else (your car, house, an unlisted stock).
 
 See [`PROJECTPLAN.md`](./PROJECTPLAN.md) for the full product and architecture
-specification. This README covers local setup only.
+specification. This README covers local dev setup and production deploy.
 
 > **Status:** P0 foundation bootstrap. The monorepo, shared contracts, a health
 > endpoint, and the web placeholder shell are in place. Product features (auth,
@@ -21,8 +21,11 @@ packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)
   config/     # Shared tsconfig, ESLint, Prettier
 infra/
-  docker-compose.dev.yml   # Postgres 17 + Redis 7 for local dev
-  .env.example
+  docker-compose.yml         # Production: web + api + db + redis (§4.6)
+  docker-compose.dev.yml     # Dev: Postgres 17 + Redis 7 only
+  nginx.conf                 # nginx: SPA serve + /api proxy
+  .env.example               # Dev env template
+  .env.production.example    # Production env template
 ```
 
 ## Prerequisites
@@ -64,6 +67,93 @@ Run an app individually with pnpm filters:
 pnpm --filter @bettertrack/api dev
 pnpm --filter @bettertrack/web dev
 ```
+
+## Email (SMTP)
+
+Account emails — invites, temporary passwords, and the welcome message — go out
+over SMTP via Nodemailer (PROJECTPLAN.md §6.11). The channel is **optional**:
+with no SMTP config the app boots and every account flow still works, because
+the admin gets a copyable temp password / invite URL straight from the API
+response. Configure these in `apps/api/.env` to turn it on:
+
+| Variable    | Example                             | Notes                                          |
+| ----------- | ----------------------------------- | ---------------------------------------------- |
+| `SMTP_HOST` | `smtp.mailgun.org`                  | required to enable the channel                 |
+| `SMTP_PORT` | `587`                               | `465` ⇒ implicit TLS, anything else ⇒ STARTTLS |
+| `SMTP_USER` | `postmaster@mg.example.at`          | optional (omit for unauthenticated relays)     |
+| `SMTP_PASS` | —                                   | optional; never logged or returned by the API  |
+| `SMTP_FROM` | `BetterTrack <no-reply@example.at>` | required to enable the channel                 |
+
+The channel is enabled only when both `SMTP_HOST` and `SMTP_FROM` are set. Send
+failures never roll back account creation/reset/invite state — they are logged
+and written to the audit log as `email.send_failed` with a coarse error code,
+no secrets.
+
+## Production deploy
+
+The production topology runs five containers (nginx, api, worker placeholder, Postgres 17, Redis 7)
+via `infra/docker-compose.yml` — see PROJECTPLAN.md §4.6 for the full spec.
+
+### Prerequisites
+
+- Docker with Compose v2 (`docker compose version`)
+- A reverse proxy (Caddy, Traefik, Cloudflare Tunnel) terminating TLS in front of the compose stack.
+  Production cookies are `Secure`, so the app **requires an HTTPS origin** — do not expose port 80 to end users directly.
+
+### First-time setup
+
+```bash
+# 1. Copy and fill in the production env file
+cp infra/.env.production.example infra/.env
+$EDITOR infra/.env          # set POSTGRES_PASSWORD, SESSION_SECRET, APP_ORIGIN
+
+# 2. Build all images
+docker compose -f infra/docker-compose.yml build
+
+# 3. Run database migrations
+docker compose -f infra/docker-compose.yml run --rm api node dist/scripts/migrate.js
+
+# 4. Seed the first admin account (first-boot only; safe to re-run — no-op if admin exists)
+docker compose -f infra/docker-compose.yml run --rm api node dist/scripts/seed.js
+
+# 5. Start all services in the background
+docker compose -f infra/docker-compose.yml up -d
+```
+
+### Day-to-day commands
+
+```bash
+# From the infra/ directory (omit -f flag):
+cd infra
+
+docker compose up -d          # start all services
+docker compose down           # stop (data volumes preserved)
+docker compose logs -f api    # follow API logs
+docker compose ps             # check service health
+
+# Deploy an update:
+docker compose build          # rebuild images from updated source
+docker compose run --rm api node dist/scripts/migrate.js   # apply new migrations
+docker compose up -d          # rolling restart
+```
+
+### Environment variables
+
+| Variable               | Required | Notes                                                                     |
+| ---------------------- | -------- | ------------------------------------------------------------------------- |
+| `DATABASE_URL`         | yes      | Must use `db` hostname (e.g. `postgres://bt:pw@db:5432/bettertrack`)      |
+| `POSTGRES_PASSWORD`    | yes      | Password for the `db` service and `DATABASE_URL`                          |
+| `REDIS_URL`            | yes      | `redis://redis:6379`                                                      |
+| `SESSION_SECRET`       | yes      | 64 random hex bytes (`openssl rand -hex 64`); comma-separate for rotation |
+| `APP_ORIGIN`           | yes      | Public HTTPS origin (`https://track.example.at`)                          |
+| `WEB_PORT`             | no       | Host port nginx binds to (default `80`)                                   |
+| `SMTP_HOST/FROM`       | no       | Both required to enable email; app runs without them                      |
+| `ADMIN_EMAIL/PASSWORD` | no       | Used once by the seed command; no-op thereafter                           |
+
+### Worker (BullMQ)
+
+The worker service is commented out in `infra/docker-compose.yml` — it will be uncommented in Phase 1
+when `apps/api/src/worker.ts` is implemented. The compose comment block shows the exact config.
 
 ## Quality gates
 

@@ -42,9 +42,32 @@ export const requireAuth: RequestHandler = (req, _res, next) => {
   next();
 };
 
-/** Forced password change (§6.1): block everything but change-password/logout. */
+/**
+ * Endpoints reachable while `mustChangePassword` is true (paths relative to the
+ * `/api/v1` mount). The change-password flow and logout must work; login and
+ * the invite validate/accept endpoints are public and never carry a
+ * forced-change session, but are listed so the guard is mounted globally with
+ * an explicit allowlist rather than each router opting in.
+ */
+const PASSWORD_CHANGE_EXEMPT: ReadonlySet<string> = new Set([
+  '/auth/login',
+  '/auth/logout',
+  '/auth/change-password',
+  '/auth/accept-invite',
+]);
+
+const isPasswordChangeExempt = (path: string): boolean =>
+  PASSWORD_CHANGE_EXEMPT.has(path) || path.startsWith('/auth/invite/');
+
+/**
+ * Forced password change (§6.1): a user with `mustChangePassword=true` gets
+ * `403 PASSWORD_CHANGE_REQUIRED` on every `/api/v1` route except the exempt
+ * auth endpoints above. Mounted once, globally — so future routers cannot
+ * accidentally skip the guard. `req.path` here is mount-relative (Express
+ * strips the `/api/v1` prefix), e.g. `/auth/me`, `/admin/users`.
+ */
 export const enforcePasswordChange: RequestHandler = (req, _res, next) => {
-  if (req.authUser?.mustChangePassword) {
+  if (req.authUser?.mustChangePassword && !isPasswordChangeExempt(req.path)) {
     next(forbidden('Password change required.', 'PASSWORD_CHANGE_REQUIRED'));
     return;
   }

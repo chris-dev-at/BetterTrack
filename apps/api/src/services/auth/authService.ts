@@ -11,9 +11,11 @@ import type { UserRow } from '../../data/schema';
 import { badRequest, conflict, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
+import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import type { SessionService } from '../sessions/sessionService';
+import { clearLoginThrottle, failCountKey, failHourKey, lockKey } from './loginThrottle';
 
 export interface AuthServiceDeps {
   config: AppConfig;
@@ -23,6 +25,7 @@ export interface AuthServiceDeps {
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
+  email: EmailService;
 }
 
 export interface LoginInput {
@@ -54,12 +57,8 @@ export interface AuthService {
 const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
 
-const failCountKey = (userId: string) => `login_fail:${userId}`;
-const failHourKey = (userId: string) => `login_fail_hour:${userId}`;
-const lockKey = (userId: string) => `login_lock:${userId}`;
-
 export function createAuthService(deps: AuthServiceDeps): AuthService {
-  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher } = deps;
+  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher, email } = deps;
   const limits = config.rateLimits;
 
   // Computed once, lazily — verified against on unknown-user logins so response
@@ -83,8 +82,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     }
   }
 
-  const clearFailures = (userId: string) =>
-    redis.del(failCountKey(userId), failHourKey(userId), lockKey(userId));
+  const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
 
   return {
     async login({ identifier, password, ip, currentSessionId }) {
@@ -109,6 +107,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const hourlyFailures = Number(await redis.get(failHourKey(user.id))) || 0;
       if (hourlyFailures >= limits.accountFailuresPerHour) {
+        await audit.record({
+          action: AuditAction.LoginFail,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+          meta: { reason: 'throttled' },
+        });
         throw invalidCredentials();
       }
 
@@ -262,6 +267,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         targetType: 'invite',
         targetId: invite.id,
         ip,
+      });
+
+      // Best-effort welcome mail, after the account is fully provisioned.
+      await email.sendWelcome({
+        to: user.email,
+        username: user.username,
+        audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
       const sessionId = await sessions.create(user.id);
