@@ -105,14 +105,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       email: e.ADMIN_EMAIL,
       password: e.ADMIN_PASSWORD,
     },
+    // Relaxed per the owner-authorized 2026-06-16 deviation from §6.1/§10
+    // (PROJECTPLAN.md §16 Decision Log): the original numbers tripped 429s
+    // during normal logged-in use (rapid tab switching / multi-tab TanStack
+    // refetches). These stay the single source of truth — the middleware and
+    // auth service read them from here; never inline the magic numbers.
     rateLimits: {
       enabled: !isTest,
-      loginPerMinutePerIp: 5,
-      generalPer15MinPerUser: 600,
-      adminPer15Min: 120,
-      accountFailuresPerHour: 10,
-      lockoutThreshold: 10,
-      lockoutSeconds: 15 * 60,
+      // §16 (2026-06-16): 5 → 25/min/IP. Still blunts single-IP credential
+      // stuffing but tolerates shared-NAT and quick legitimate retries.
+      loginPerMinutePerIp: 25,
+      // §16 (2026-06-16): 600 → 4500/15min/user (~300 req/min sustained), so
+      // rapid multi-tab navigation never trips the general limiter — the
+      // primary fix for the "request spam" complaint.
+      generalPer15MinPerUser: 4500,
+      // §16 (2026-06-16): 120 → 600/15min, so the admin UI's polling and
+      // navigation aren't throttled.
+      adminPer15Min: 600,
+      // §16 (2026-06-16): 10 → 20 failures/hour/account — more forgiving but
+      // still a real per-account brute-force guard.
+      accountFailuresPerHour: 20,
+      // §16 (2026-06-16): 10 → 20 consecutive failures before lockout, and
+      // lockout shortened 15 min → 5 min. Lenient but protection intact.
+      lockoutThreshold: 20,
+      lockoutSeconds: 5 * 60,
     },
   };
 }
