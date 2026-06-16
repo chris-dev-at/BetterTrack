@@ -5,6 +5,7 @@ import type { Database } from '../data/db';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import type { Logger } from '../logger';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createAuditService } from '../services/audit/auditService';
@@ -13,6 +14,10 @@ import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import { createSessionService } from '../services/sessions/sessionService';
+import {
+  createWorkboardService,
+  type WorkboardService,
+} from '../services/workboard/workboardService';
 
 /** What the HTTP layer needs from the wired application. */
 export interface AppContext {
@@ -21,6 +26,7 @@ export interface AppContext {
   logger: Logger;
   auth: AuthService;
   admin: AdminService;
+  workboard: WorkboardService;
 }
 
 export interface BuildContextDeps {
@@ -74,5 +80,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
   });
 
-  return { config, redis, logger, auth, admin };
+  const workboardRepo = createWorkboardRepository(db);
+  const workboard = createWorkboardService({ repo: workboardRepo });
+
+  return { config, redis, logger, auth, admin, workboard };
 }
