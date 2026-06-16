@@ -40,11 +40,19 @@ export interface SeededAdmin {
   password: string;
 }
 
+export interface SeededUser {
+  id: string;
+  email: string;
+  username: string;
+  password: string;
+}
+
 export interface TestHarness {
   app: ReturnType<typeof createApp>;
   ctx: AppContext;
   db: Database;
   seedAdmin(input?: Partial<Omit<SeededAdmin, 'id'>>): Promise<SeededAdmin>;
+  seedUser(input?: Partial<Omit<SeededUser, 'id'>>): Promise<SeededUser>;
 }
 
 export interface CreateTestAppOptions {
@@ -85,5 +93,21 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     return { id: user.id, email: user.email, username: user.username, password };
   }
 
-  return { app, ctx, db, seedAdmin };
+  async function seedUser(input: Partial<Omit<SeededUser, 'id'>> = {}): Promise<SeededUser> {
+    const email = input.email ?? 'user@bettertrack.test';
+    const username = input.username ?? 'testuser';
+    const password = input.password ?? 'user-strong-password-1';
+    const passwordHash = await hasher.hash(password);
+    const user = await userRepo.create({
+      email,
+      username,
+      passwordHash,
+      role: 'user',
+      status: 'active',
+      mustChangePassword: false,
+    });
+    return { id: user.id, email: user.email, username: user.username, password };
+  }
+
+  return { app, ctx, db, seedAdmin, seedUser };
 }

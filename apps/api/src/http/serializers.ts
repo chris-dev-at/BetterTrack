@@ -1,5 +1,12 @@
-import type { AdminInvite, AdminUser, AuditLogEntry, MeResponse } from '@bettertrack/contracts';
+import type {
+  AdminInvite,
+  AdminUser,
+  AuditLogEntry,
+  MeResponse,
+  WorkboardItem,
+} from '@bettertrack/contracts';
 
+import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
 import type { AuditLogRow, InviteRow, UserRow } from '../data/schema';
 import type { AuthUser } from './types';
 
@@ -70,6 +77,22 @@ export function toAdminInvite(row: InviteRow): AdminInvite {
     expiresAt: toIsoRequired(row.expiresAt),
     usedAt: toIso(row.usedAt),
     revokedAt: toIso(row.revokedAt),
+  };
+}
+
+export function toWorkboardItem(item: WorkboardItemWithAsset): WorkboardItem {
+  return {
+    id: item.id,
+    assetId: item.assetId,
+    sortOrder: item.sortOrder,
+    note: item.note ?? null,
+    asset: {
+      symbol: item.asset.symbol,
+      name: item.asset.name,
+      exchange: item.asset.exchange ?? null,
+      currency: item.asset.currency,
+      type: item.asset.type,
+    },
   };
 }
 
