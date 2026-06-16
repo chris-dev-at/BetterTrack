@@ -102,6 +102,30 @@ export function Splash({ label = 'Loading…' }: { label?: string }) {
   );
 }
 
+/**
+ * Non-blocking overlay toast. Rendered at a fixed position so it never
+ * shifts layout. Provide an `onDismiss` handler to let the user close it.
+ */
+export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss: () => void }) {
+  return (
+    <div
+      role="alert"
+      aria-live="polite"
+      className="fixed right-4 top-4 z-50 flex max-w-sm items-start gap-3 rounded-md border border-amber-700 bg-amber-950/95 px-4 py-3 text-sm text-amber-200 shadow-lg"
+    >
+      <span className="flex-1">{children}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="shrink-0 text-amber-400 hover:text-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 /** Centered card scaffold shared by the public auth screens. */
 export function AuthCard({ subtitle, children }: { subtitle: string; children: ReactNode }) {
   return (

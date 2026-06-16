@@ -51,10 +51,16 @@ export function LoginPage() {
       // regardless of this navigation; for a normal account we land on `from`.
       navigate(from, { replace: true });
     } catch (err) {
-      // Never distinguish "no such user" from "wrong password" (§6.1).
-      if (err instanceof ApiError && err.status >= 500) {
+      if (err instanceof ApiError && err.status === 429) {
+        // Rate-limited: show a dedicated message distinct from bad-credentials (§6.1).
+        const wait = err.retryAfterSeconds
+          ? ` Please wait ${err.retryAfterSeconds} second${err.retryAfterSeconds === 1 ? '' : 's'} and try again.`
+          : ' Please wait a moment and try again.';
+        setError(`Too many login attempts.${wait}`);
+      } else if (err instanceof ApiError && err.status >= 500) {
         setError('Something went wrong. Please try again.');
       } else {
+        // Never distinguish "no such user" from "wrong password" (§6.1).
         setError('Incorrect email/username or password.');
       }
     } finally {

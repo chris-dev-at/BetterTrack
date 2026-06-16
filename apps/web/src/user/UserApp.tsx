@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
 import { AppLayout } from './components/AppLayout';
-import { Splash } from './components/ui';
+import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { InvitePage } from './pages/InvitePage';
 import { LoginPage } from './pages/LoginPage';
@@ -51,9 +51,17 @@ function UserShell() {
   );
 }
 
+/** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
+function RateLimitToastPortal() {
+  const { rateLimitBanner, clearRateLimitBanner } = useAuth();
+  if (!rateLimitBanner) return null;
+  return <Toast onDismiss={clearRateLimitBanner}>{rateLimitBanner}</Toast>;
+}
+
 export function UserApp() {
   return (
     <AuthProvider>
+      <RateLimitToastPortal />
       <UserShell />
     </AuthProvider>
   );

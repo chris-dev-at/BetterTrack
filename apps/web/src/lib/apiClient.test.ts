@@ -2,22 +2,29 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { ApiError, apiRequest, setAuthResponsePolicy } from './apiClient';
 
-function jsonResponse(status: number, payload: unknown): Response {
+function jsonResponse(
+  status: number,
+  payload: unknown,
+  headers: Record<string, string> = {},
+): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(payload),
+    headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
   } as unknown as Response;
 }
 
 const onUnauthorized = vi.fn();
 const onPasswordChangeRequired = vi.fn();
+const onRateLimited = vi.fn();
 let dispose: () => void;
 
 beforeEach(() => {
   onUnauthorized.mockReset();
   onPasswordChangeRequired.mockReset();
-  dispose = setAuthResponsePolicy({ onUnauthorized, onPasswordChangeRequired });
+  onRateLimited.mockReset();
+  dispose = setAuthResponsePolicy({ onUnauthorized, onPasswordChangeRequired, onRateLimited });
 });
 
 afterEach(() => {
@@ -88,4 +95,56 @@ test('a successful response triggers neither handler', async () => {
   await expect(apiRequest('/dashboard')).resolves.toEqual({ ok: true });
   expect(onUnauthorized).not.toHaveBeenCalled();
   expect(onPasswordChangeRequired).not.toHaveBeenCalled();
+});
+
+test('a 429 invokes onRateLimited with undefined when no Retry-After header', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(429, { error: { code: 'RATE_LIMITED', message: 'Too many requests.' } }),
+      ),
+  );
+
+  await expect(apiRequest('/search')).rejects.toBeInstanceOf(ApiError);
+  expect(onRateLimited).toHaveBeenCalledWith(undefined);
+  expect(onUnauthorized).not.toHaveBeenCalled();
+  expect(onPasswordChangeRequired).not.toHaveBeenCalled();
+});
+
+test('a 429 passes parsed Retry-After seconds to onRateLimited', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(
+          429,
+          { error: { code: 'RATE_LIMITED', message: 'Too many requests.' } },
+          { 'retry-after': '30' },
+        ),
+      ),
+  );
+
+  const err = await apiRequest('/search').catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect((err as ApiError).retryAfterSeconds).toBe(30);
+  expect(onRateLimited).toHaveBeenCalledWith(30);
+});
+
+test('a 429 with suppressAuthRedirect does not invoke onRateLimited', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(429, { error: { code: 'RATE_LIMITED', message: 'Too many requests.' } }),
+      ),
+  );
+
+  await expect(apiRequest('/auth/login', { suppressAuthRedirect: true })).rejects.toBeInstanceOf(
+    ApiError,
+  );
+  expect(onRateLimited).not.toHaveBeenCalled();
 });
