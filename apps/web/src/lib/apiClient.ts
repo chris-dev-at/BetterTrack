@@ -22,6 +22,8 @@ export class ApiError extends Error {
     public readonly code: string,
     message: string,
     public readonly details?: unknown,
+    /** Seconds until the rate limit resets, parsed from Retry-After (429 only). */
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -49,17 +51,19 @@ interface RequestOptions {
 }
 
 /**
- * The single place for app-wide auth/redirect policy (PROJECTPLAN.md §7.1, §7.4).
+ * The single place for app-wide auth/redirect/toast policy (PROJECTPLAN.md §7.1, §7.4).
  * A mounted auth layer registers handlers; the request chokepoint invokes them
- * when a response demands a session transition:
+ * when a response demands a session transition or a user-visible notification:
  *   - `401` → session is gone → bounce to login (preserving intended path).
  *   - `403 PASSWORD_CHANGE_REQUIRED` → trap into the forced-change screen (§6.1).
+ *   - `429 RATE_LIMITED` → surface a non-blocking toast so the user knows to slow down.
  * Only one policy is active at a time. The admin world registers none, so its
  * own 401/404 handling (its AuthContext) is unaffected.
  */
 export interface AuthResponsePolicy {
   onUnauthorized?: () => void;
   onPasswordChangeRequired?: () => void;
+  onRateLimited?: (retryAfterSeconds?: number) => void;
 }
 
 let activePolicy: AuthResponsePolicy | null = null;
@@ -78,7 +82,15 @@ function notifyAuthPolicy(error: ApiError): void {
     activePolicy.onUnauthorized?.();
   } else if (error.status === 403 && error.code === 'PASSWORD_CHANGE_REQUIRED') {
     activePolicy.onPasswordChangeRequired?.();
+  } else if (error.status === 429) {
+    activePolicy.onRateLimited?.(error.retryAfterSeconds);
   }
+}
+
+function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = parseInt(header, 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 }
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -121,6 +133,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const payload: unknown = await response.json().catch(() => undefined);
 
   if (!response.ok) {
+    const retryAfterSeconds = parseRetryAfter(
+      response.status === 429 ? response.headers.get('Retry-After') : null,
+    );
     const parsed = apiErrorSchema.safeParse(payload);
     const error = parsed.success
       ? new ApiError(
@@ -128,8 +143,9 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
           parsed.data.error.code,
           parsed.data.error.message,
           parsed.data.error.details,
+          retryAfterSeconds,
         )
-      : new ApiError(response.status, 'UNKNOWN', 'Request failed.');
+      : new ApiError(response.status, 'UNKNOWN', 'Request failed.', undefined, retryAfterSeconds);
     if (!options.suppressAuthRedirect) notifyAuthPolicy(error);
     throw error;
   }

@@ -39,6 +39,9 @@ interface AuthContextValue {
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
   changePassword: (body: ChangePasswordRequest) => Promise<void>;
   logout: () => Promise<void>;
+  /** Non-null while a 429 toast should be visible. Cleared on dismiss. */
+  rateLimitBanner: string | null;
+  clearRateLimitBanner: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -49,6 +52,7 @@ const isPasswordChangeRequired = (err: unknown): boolean =>
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<MeResponse | null>(null);
+  const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
 
   // Apply a resolved /auth/me-or-login user to local state, routing a
   // forced-change account into the trap rather than the app.
@@ -71,15 +75,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearSessionRef = useRef(clearSession);
   clearSessionRef.current = clearSession;
 
-  // Register the app-wide auth-response policy once, for as long as the user
-  // app is mounted (the admin world, mounted on a disjoint route, never sets
-  // one). A `401` from any application call drops the session so the guard
-  // bounces to `/login`; a `403 PASSWORD_CHANGE_REQUIRED` springs the trap.
+  // Register the app-wide auth/redirect/toast policy once, for as long as the
+  // user app is mounted (the admin world, mounted on a disjoint route, never
+  // sets one). A `401` from any application call drops the session so the
+  // guard bounces to `/login`; a `403 PASSWORD_CHANGE_REQUIRED` springs the
+  // trap; a `429` surfaces a dismissable banner (§7.4).
   // The auth endpoints themselves opt out of this (see userApi).
   useEffect(() => {
     return setAuthResponsePolicy({
       onUnauthorized: () => clearSessionRef.current(),
       onPasswordChangeRequired: () => setStatus('password-change-required'),
+      onRateLimited: (seconds?: number) => {
+        const wait =
+          seconds && seconds > 0
+            ? ` Please wait ${seconds} second${seconds === 1 ? '' : 's'} and try again.`
+            : ' Please slow down.';
+        setRateLimitBanner(`You're doing that too fast.${wait}`);
+      },
     });
   }, []);
 
@@ -139,9 +151,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clearSession]);
 
+  const clearRateLimitBanner = useCallback(() => setRateLimitBanner(null), []);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, login, acceptInvite, changePassword, logout }),
-    [status, user, login, acceptInvite, changePassword, logout],
+    () => ({
+      status,
+      user,
+      login,
+      acceptInvite,
+      changePassword,
+      logout,
+      rateLimitBanner,
+      clearRateLimitBanner,
+    }),
+    [
+      status,
+      user,
+      login,
+      acceptInvite,
+      changePassword,
+      logout,
+      rateLimitBanner,
+      clearRateLimitBanner,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

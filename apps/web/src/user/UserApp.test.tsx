@@ -85,6 +85,44 @@ test('bad credentials show a single generic, non-enumerating error', async () =>
   expect(screen.getByText('Sign in to your account')).toBeInTheDocument();
 });
 
+test('a 429 on login shows a dedicated rate-limit message, not the generic credentials error', async () => {
+  anonymous();
+  vi.mocked(api.login).mockRejectedValue(new ApiError(429, 'RATE_LIMITED', 'Too many requests.'));
+
+  const user = userEvent.setup();
+  renderAt('/login');
+
+  await screen.findByText('Sign in to your account');
+  await user.type(screen.getByLabelText('Email or username'), 'jane');
+  await user.type(screen.getByLabelText('Password'), 'wrong-password');
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(
+    await screen.findByText(/Too many login attempts\. Please wait a moment/i),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('Incorrect email/username or password.')).not.toBeInTheDocument();
+  // Still on login screen.
+  expect(screen.getByText('Sign in to your account')).toBeInTheDocument();
+});
+
+test('a 429 on login with retryAfterSeconds mentions the wait time', async () => {
+  anonymous();
+  vi.mocked(api.login).mockRejectedValue(
+    new ApiError(429, 'RATE_LIMITED', 'Too many requests.', undefined, 30),
+  );
+
+  const user = userEvent.setup();
+  renderAt('/login');
+
+  await screen.findByText('Sign in to your account');
+  await user.type(screen.getByLabelText('Email or username'), 'jane');
+  await user.type(screen.getByLabelText('Password'), 'wrong-password');
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(await screen.findByText(/30 seconds/i)).toBeInTheDocument();
+  expect(screen.queryByText('Incorrect email/username or password.')).not.toBeInTheDocument();
+});
+
 test('a must-change session is trapped, then released by a successful change', async () => {
   // A fresh load of a forced-change account: /auth/me responds 403.
   vi.mocked(api.getMe).mockRejectedValue(
