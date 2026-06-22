@@ -1,4 +1,4 @@
-import { cx } from '../../user/components/ui';
+import { cx } from '../../lib/cx';
 
 export interface SparklineProps {
   /** Short series of values (e.g. the workboard 1M closes, PROJECTPLAN.md §6.4). */

@@ -1,6 +1,6 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
-import { cx } from '../../user/components/ui';
+import { cx } from '../../lib/cx';
 import type { AllocationSegment } from './types';
 
 export interface AllocationDonutProps {
