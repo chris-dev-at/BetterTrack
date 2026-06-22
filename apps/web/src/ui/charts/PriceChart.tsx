@@ -9,7 +9,8 @@ import {
 } from 'lightweight-charts';
 import { useEffect, useRef, useState } from 'react';
 
-import { cx, Spinner } from '../../user/components/ui';
+import { Spinner } from '../../user/components/ui';
+import { cx } from '../../lib/cx';
 import {
   PRICE_RANGES,
   type BenchmarkSeries,
