@@ -5,12 +5,14 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 
-import { loadConfig } from '../config/env';
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error('DATABASE_URL is required');
+}
 
-const config = loadConfig();
 const migrationsFolder = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 
-const client = postgres(config.databaseUrl, { max: 1 });
+const client = postgres(databaseUrl, { max: 1 });
 const db = drizzle(client);
 
 await migrate(db, { migrationsFolder });

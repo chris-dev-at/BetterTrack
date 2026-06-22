@@ -43,3 +43,54 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  integration:
+    name: Integration tests (real Postgres + Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: bettertrack_test
+          POSTGRES_USER: bt
+          POSTGRES_PASSWORD: bt
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bt -d bettertrack_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://bt:bt@localhost:5432/bettertrack_test
+      TEST_REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Drizzle migrations against real Postgres
+        run: pnpm --filter @bettertrack/api db:migrate
+        env:
+          DATABASE_URL: postgres://bt:bt@localhost:5432/bettertrack_test
+
+      - name: Run integration test slice (real Postgres + Redis)
+        run: pnpm --filter @bettertrack/api test:integration
