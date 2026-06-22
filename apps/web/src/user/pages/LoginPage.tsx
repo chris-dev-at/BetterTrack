@@ -57,6 +57,10 @@ export function LoginPage() {
           ? ` Please wait ${err.retryAfterSeconds} second${err.retryAfterSeconds === 1 ? '' : 's'} and try again.`
           : ' Please wait a moment and try again.';
         setError(`Too many login attempts.${wait}`);
+      } else if (err instanceof ApiError && err.status === 403 && err.code === 'ACCOUNT_DISABLED') {
+        // Correct password but the account is suspended: a distinct message,
+        // separate from bad-credentials and the rate-limit notice (§6.1, §16).
+        setError('This account has been suspended. Please contact the administrator.');
       } else if (err instanceof ApiError && err.status >= 500) {
         setError('Something went wrong. Please try again.');
       } else {

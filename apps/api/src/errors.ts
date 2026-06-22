@@ -22,6 +22,16 @@ export const unauthorized = (message = 'Authentication required.', code = 'UNAUT
 
 export const forbidden = (message: string, code = 'FORBIDDEN') => new ApiError(403, code, message);
 
+/**
+ * A correctly-authenticated login against a non-active (disabled) account.
+ * Distinct from the generic `INVALID_CREDENTIALS` (401) and only ever thrown
+ * *after* the password is verified correct, so it leaks no user-existence
+ * signal to an attacker guessing passwords (PROJECTPLAN.md §6.1, §16).
+ */
+export const accountDisabled = (
+  message = 'This account has been suspended. Please contact the administrator.',
+) => new ApiError(403, 'ACCOUNT_DISABLED', message);
+
 export const notFound = (message = 'Not found.', code = 'NOT_FOUND') =>
   new ApiError(404, code, message);
 
