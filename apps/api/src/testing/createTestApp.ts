@@ -52,17 +52,18 @@ async function acquireRealDb(): Promise<Database> {
     await migratePostgres(pgDb!, { migrationsFolder });
     pgMigrated = true;
   }
-  // Truncate all application tables to give each test a clean slate.
-  // CASCADE handles FK ordering automatically.
-  await pgClient!.unsafe(`
-    TRUNCATE TABLE
-      users, invites, audit_log,
-      assets, workboard_items, alerts,
-      conglomerate_positions, conglomerates,
-      portfolios, transactions, notifications,
-      notification_settings, price_history, share_links
-    RESTART IDENTITY CASCADE
-  `);
+  // Derive the table list from the DB so new migrations are picked up automatically.
+  const tableRows = await pgClient!<{ table_name: string }[]>`
+    SELECT table_name FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_type = 'BASE TABLE'
+      AND table_name <> '__drizzle_migrations'
+    ORDER BY table_name
+  `;
+  if (tableRows.length > 0) {
+    const tableList = tableRows.map((r) => `"${r.table_name}"`).join(', ');
+    await pgClient!.unsafe(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`);
+  }
   return pgDb!;
 }
 
