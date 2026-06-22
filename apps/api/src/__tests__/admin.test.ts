@@ -133,13 +133,14 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     const me = await userAgent.get('/api/v1/auth/me');
     expect(me.status).toBe(401);
 
-    // Re-login is rejected with the generic error.
+    // Re-login with the correct password is rejected with the distinct
+    // account-disabled error (revealed only post-verification, §6.1/§16).
     const relogin = await request(harness.app)
       .post('/api/v1/auth/login')
       .set(...XRW)
       .send({ identifier: 'doomed@test.dev', password: tempPassword });
-    expect(relogin.status).toBe(401);
-    expect(relogin.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(relogin.status).toBe(403);
+    expect(relogin.body.error.code).toBe('ACCOUNT_DISABLED');
   });
 });
 

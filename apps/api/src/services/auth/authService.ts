@@ -8,7 +8,7 @@ import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
-import { badRequest, conflict, unauthorized } from '../../errors';
+import { accountDisabled, badRequest, conflict, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
@@ -131,6 +131,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       }
 
       if (user.status !== 'active') {
+        // The password is already verified correct at this point, so revealing
+        // the suspended status here leaks nothing to an attacker guessing
+        // passwords (wrong-password/unknown-user still return the generic
+        // INVALID_CREDENTIALS above). Owner-authorized 2026-06-16, §16.
         await audit.record({
           action: AuditAction.LoginFail,
           targetType: 'user',
@@ -138,7 +142,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           ip,
           meta: { reason: 'disabled' },
         });
-        throw invalidCredentials();
+        throw accountDisabled();
       }
 
       await clearFailures(user.id);

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { healthResponseSchema, meResponseSchema } from '@bettertrack/contracts';
 
+import { createUserRepository } from '../data/repositories/userRepository';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -67,6 +68,39 @@ describe('POST /api/v1/auth/login', () => {
     expect(unknownUser.body.error.code).toBe('INVALID_CREDENTIALS');
     // No enumeration: identical message regardless of which part was wrong.
     expect(badPassword.body.error.message).toBe(unknownUser.body.error.message);
+  });
+
+  it('reveals a disabled account only after the correct password (§6.1, §16)', async () => {
+    const user = await harness.seedUser();
+    await createUserRepository(harness.db).setStatus(user.id, 'disabled');
+
+    // Correct password + disabled account → distinct, non-generic 403.
+    const disabledCorrect = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(disabledCorrect.status).toBe(403);
+    expect(disabledCorrect.body.error.code).toBe('ACCOUNT_DISABLED');
+    expect(disabledCorrect.body.error.message).toMatch(/suspend/i);
+
+    // Wrong password on the same disabled account → still the generic 401,
+    // so the suspended status is not an enumeration oracle.
+    const disabledWrong = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: 'definitely-not-it' });
+    expect(disabledWrong.status).toBe(401);
+    expect(disabledWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('logs in an active account with the correct password', async () => {
+    const user = await harness.seedUser();
+    const res = await request(harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(res.status).toBe(200);
+    expect(meResponseSchema.parse(res.body).email).toBe(user.email);
   });
 
   it('requires the X-Requested-With CSRF header', async () => {
