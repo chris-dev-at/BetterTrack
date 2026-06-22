@@ -11,6 +11,7 @@
     "start:worker": "node dist/scripts/worker.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run --config vitest.config.integration.ts",
     "build": "tsup",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/scripts/migrate.ts",

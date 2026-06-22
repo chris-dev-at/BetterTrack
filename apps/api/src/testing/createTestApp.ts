@@ -2,10 +2,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PGlite } from '@electric-sql/pglite';
-import { drizzle } from 'drizzle-orm/pglite';
-import { migrate } from 'drizzle-orm/pglite/migrator';
-import type { Redis } from 'ioredis';
+import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
+import { migrate as migratePglite } from 'drizzle-orm/pglite/migrator';
+import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
+import { migrate as migratePostgres } from 'drizzle-orm/postgres-js/migrator';
+import { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
+import postgres from 'postgres';
 
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
@@ -18,20 +21,67 @@ import type { MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
 /**
- * In-process integration harness: real Postgres via PGlite (WASM) + in-memory
- * Redis via ioredis-mock. Runs the actual generated migrations, so tests
- * exercise the same SQL and the same app the server boots — no Docker required.
- * (Deviation from PROJECTPLAN.md §12's testcontainers, noted in the PR.)
+ * In-process integration harness. Default mode: PGlite (WASM) + ioredis-mock —
+ * fast, no Docker, runs migrations from the generated SQL files.
+ *
+ * Integration mode: when TEST_DATABASE_URL / TEST_REDIS_URL env vars are set,
+ * the harness switches to a real postgres:17 + redis:7 connection. The module-
+ * level singletons below ensure migrations run only once per worker process
+ * (each call to createTestApp truncates all tables for a clean test slate).
+ * Run with vitest.config.integration.ts which sets pool: forks + singleFork to
+ * keep those singletons alive across test files.
  */
 const migrationsFolder = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 
-const TEST_ENV = {
+// Env vars for integration mode. Both must point at the service containers.
+const realDbUrl = process.env.TEST_DATABASE_URL;
+const realRedisUrl = process.env.TEST_REDIS_URL;
+
+// ---- real-service singletons (module scope, shared across tests in one worker) ----
+let pgClient: ReturnType<typeof postgres> | undefined;
+let pgDb: Database | undefined;
+let pgMigrated = false;
+let realRedisClient: Redis | undefined;
+
+async function acquireRealDb(): Promise<Database> {
+  if (!pgClient) {
+    pgClient = postgres(realDbUrl!, { max: 1 });
+    pgDb = drizzlePostgres(pgClient, { schema });
+  }
+  if (!pgMigrated) {
+    await migratePostgres(pgDb!, { migrationsFolder });
+    pgMigrated = true;
+  }
+  // Truncate all application tables to give each test a clean slate.
+  // CASCADE handles FK ordering automatically.
+  await pgClient!.unsafe(`
+    TRUNCATE TABLE
+      users, invites, audit_log,
+      assets, workboard_items, alerts,
+      conglomerate_positions, conglomerates,
+      portfolios, transactions, notifications,
+      notification_settings, price_history, share_links
+    RESTART IDENTITY CASCADE
+  `);
+  return pgDb!;
+}
+
+async function acquireRealRedis(): Promise<Redis> {
+  if (!realRedisClient) {
+    realRedisClient = new Redis(realRedisUrl!, { maxRetriesPerRequest: null });
+  }
+  await realRedisClient.flushdb();
+  return realRedisClient;
+}
+
+// Base env used for loadConfig. URLs reflect whichever backend is active.
+const BASE_TEST_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: 'test',
-  DATABASE_URL: 'postgres://test',
-  REDIS_URL: 'redis://test',
+  DATABASE_URL: realDbUrl ?? 'postgres://test',
+  REDIS_URL: realRedisUrl ?? 'redis://test',
   SESSION_SECRET: 'test-session-secret-please-change-0123456789',
   APP_ORIGIN: 'http://localhost:5173',
-} satisfies NodeJS.ProcessEnv;
+};
 
 export interface SeededAdmin {
   id: string;
@@ -63,13 +113,25 @@ export interface CreateTestAppOptions {
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
-  const client = new PGlite();
-  const rawDb = drizzle(client, { schema });
-  await migrate(rawDb, { migrationsFolder });
-  const db = rawDb as unknown as Database;
+  let db: Database;
+  let redis: Redis;
 
-  const redis = new RedisMock() as unknown as Redis;
-  const config = loadConfig({ ...TEST_ENV, ...options.env });
+  if (realDbUrl) {
+    db = await acquireRealDb();
+  } else {
+    const client = new PGlite();
+    const rawDb = drizzlePglite(client, { schema });
+    await migratePglite(rawDb, { migrationsFolder });
+    db = rawDb as unknown as Database;
+  }
+
+  if (realRedisUrl) {
+    redis = await acquireRealRedis();
+  } else {
+    redis = new RedisMock() as unknown as Redis;
+  }
+
+  const config = loadConfig({ ...BASE_TEST_ENV, ...options.env });
   const logger = createLogger(config);
   const ctx = buildContext({ config, db, redis, logger, emailTransport: options.emailTransport });
   const app = createApp(ctx);

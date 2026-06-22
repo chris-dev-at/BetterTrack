@@ -163,11 +163,47 @@ These are exactly what CI runs (`.github/workflows/ci.yml`):
 pnpm typecheck            # tsc --noEmit across all packages
 pnpm lint                 # ESLint (flat config) across the repo
 pnpm format:check         # Prettier
-pnpm test                 # Vitest unit/wiring tests
+pnpm test                 # Vitest unit/wiring tests (PGlite + ioredis-mock, no Docker)
 pnpm build                # contracts (tsc) + api (tsup) + web (vite)
 ```
 
 `pnpm format` rewrites files in place.
+
+## Testing modes
+
+The API test suite has two modes, selected by environment variables:
+
+### Fast default — PGlite + ioredis-mock (no Docker)
+
+```bash
+pnpm test                              # from repo root
+pnpm --filter @bettertrack/api test    # api only
+```
+
+Each test gets a fresh in-process PGlite database and an ioredis-mock instance.
+No Docker, no network, runs in seconds. This is the local development default.
+
+### Integration — real postgres:17 + redis:7
+
+```bash
+# Requires a running Postgres 17 and Redis 7 (e.g. via pnpm dev:infra)
+TEST_DATABASE_URL=postgres://bt:bt@localhost:5432/bettertrack_test \
+TEST_REDIS_URL=redis://localhost:6379 \
+pnpm --filter @bettertrack/api test:integration
+```
+
+Runs a focused slice of the suite (auth, admin, workboard, password) against
+real service containers. Drizzle migrations are applied automatically on first
+run; each `beforeEach` truncates all tables for isolation. This mode runs in CI
+as the `integration` job in `.github/workflows/ci.yml`.
+
+| Variable            | Purpose                                                           |
+| ------------------- | ----------------------------------------------------------------- |
+| `TEST_DATABASE_URL` | PostgreSQL connection string; switches the harness to postgres-js |
+| `TEST_REDIS_URL`    | Redis URL; switches the harness to real ioredis                   |
+
+Both variables must be set together — the fast default is used for any variable
+that is absent.
 
 ## How the layers stay in sync
 
