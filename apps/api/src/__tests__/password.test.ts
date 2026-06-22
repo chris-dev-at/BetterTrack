@@ -32,6 +32,20 @@ describe('checkPasswordPolicy', () => {
     expect(checkPasswordPolicy('Password1').ok).toBe(false);
     expect(checkPasswordPolicy('qwertyuiop').ok).toBe(false);
   });
+
+  it('rejects entries from the full SecLists top-10k blocklist (issue #30)', () => {
+    // These are ≥ 10 chars (so they clear the length gate) and appear in the
+    // full top-10k list but not in the previous curated ~140-entry seed, so a
+    // rejection proves the blocklist itself — not the length rule — caught them.
+    expect(checkPasswordPolicy('experienced').ok).toBe(false);
+    expect(checkPasswordPolicy('enterprise').ok).toBe(false);
+    // …and case-insensitively, since the policy lowercases before lookup.
+    expect(checkPasswordPolicy('California').ok).toBe(false);
+  });
+
+  it('accepts a strong, uncommon passphrase', () => {
+    expect(checkPasswordPolicy('correct-horse-battery-staple-47').ok).toBe(true);
+  });
 });
 
 describe('generateTempPassword', () => {
