@@ -7,6 +7,8 @@ import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import type { Logger } from '../logger';
+import { createMarketData } from '../providers';
+import type { MarketDataService } from '../providers';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
@@ -27,6 +29,8 @@ export interface AppContext {
   auth: AuthService;
   admin: AdminService;
   workboard: WorkboardService;
+  /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
+  marketData: MarketDataService;
 }
 
 export interface BuildContextDeps {
@@ -83,5 +87,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const workboardRepo = createWorkboardRepository(db);
   const workboard = createWorkboardService({ repo: workboardRepo });
 
-  return { config, redis, logger, auth, admin, workboard };
+  // Registers the Yahoo + manual providers and wraps them in caching/resilience
+  // (§5.1–§5.2). `registry.for(asset)` lives inside; routes use the service.
+  const { service: marketData } = createMarketData({ db, redis });
+
+  return { config, redis, logger, auth, admin, workboard, marketData };
 }
