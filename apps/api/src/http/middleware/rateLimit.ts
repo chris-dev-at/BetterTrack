@@ -12,6 +12,7 @@ export interface RateLimiters {
   login: RateLimitRequestHandler;
   general: RateLimitRequestHandler;
   admin: RateLimitRequestHandler;
+  search: RateLimitRequestHandler;
 }
 
 /**
@@ -40,10 +41,12 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
       store: enabled ? new RedisStore({ sendCommand }) : undefined,
     });
 
-  const { loginPerMinutePerIp, generalPer15MinPerUser, adminPer15Min } = ctx.config.rateLimits;
+  const { loginPerMinutePerIp, generalPer15MinPerUser, adminPer15Min, searchPerMinutePerUser } =
+    ctx.config.rateLimits;
   return {
     login: make(60_000, loginPerMinutePerIp, keyByIp),
     general: make(15 * 60_000, generalPer15MinPerUser, keyByUserOrIp),
     admin: make(15 * 60_000, adminPer15Min, keyByUserOrIp),
+    search: make(60_000, searchPerMinutePerUser, keyByUserOrIp),
   };
 }

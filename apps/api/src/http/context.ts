@@ -2,14 +2,22 @@ import type { Redis } from 'ioredis';
 
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
+import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
+import {
+  createBackfillScheduler,
+  createQueueRegistry,
+  noopBackfillScheduler,
+  type BackfillScheduler,
+} from '../jobs';
 import type { Logger } from '../logger';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createEmailService } from '../services/email/emailService';
@@ -31,6 +39,8 @@ export interface AppContext {
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
   marketData: MarketDataService;
+  /** Search + asset detail/quote/history over the market-data layer (§6.2, §6.3). */
+  assets: AssetService;
 }
 
 export interface BuildContextDeps {
@@ -40,6 +50,10 @@ export interface BuildContextDeps {
   logger: Logger;
   /** Test seam: inject a fake transport instead of a real SMTP connection. */
   emailTransport?: MailTransport | null;
+  /** Test seam: inject a stubbed market-data service instead of the live providers. */
+  marketData?: MarketDataService;
+  /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
+  backfill?: BackfillScheduler;
 }
 
 /** Composition root: repositories → services → context. */
@@ -89,7 +103,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
   // (§5.1–§5.2). `registry.for(asset)` lives inside; routes use the service.
-  const { service: marketData } = createMarketData({ db, redis });
+  const marketData = deps.marketData ?? createMarketData({ db, redis }).service;
 
-  return { config, redis, logger, auth, admin, workboard, marketData };
+  // First-touch backfill enqueue (§6.2/§9). In tests no BullMQ worker runs, so
+  // default to a no-op; production enqueues onto the shared Redis-backed queue.
+  const backfill =
+    deps.backfill ??
+    (config.isTest ? noopBackfillScheduler : createBackfillScheduler(createQueueRegistry(redis)));
+
+  const assetRepo = createAssetRepository(db);
+  const assets = createAssetService({ marketData, assetRepo, backfill });
+
+  return { config, redis, logger, auth, admin, workboard, marketData, assets };
 }

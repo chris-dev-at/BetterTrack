@@ -16,7 +16,9 @@ import type { Database } from '../data/db';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import { buildContext, type AppContext } from '../http/context';
+import type { BackfillScheduler } from '../jobs';
 import { createLogger } from '../logger';
+import type { MarketDataService } from '../providers';
 import type { MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
@@ -111,6 +113,10 @@ export interface CreateTestAppOptions {
   env?: Partial<NodeJS.ProcessEnv>;
   /** Fake mail transport injected in place of a real SMTP connection. */
   emailTransport?: MailTransport | null;
+  /** Stubbed market-data service, in place of the live Yahoo/manual providers. */
+  marketData?: MarketDataService;
+  /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
+  backfill?: BackfillScheduler;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -134,7 +140,15 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
 
   const config = loadConfig({ ...BASE_TEST_ENV, ...options.env });
   const logger = createLogger(config);
-  const ctx = buildContext({ config, db, redis, logger, emailTransport: options.emailTransport });
+  const ctx = buildContext({
+    config,
+    db,
+    redis,
+    logger,
+    emailTransport: options.emailTransport,
+    marketData: options.marketData,
+    backfill: options.backfill,
+  });
   const app = createApp(ctx);
 
   const userRepo = createUserRepository(db);

@@ -57,6 +57,8 @@ export interface AppConfig {
     loginPerMinutePerIp: number;
     generalPer15MinPerUser: number;
     adminPer15Min: number;
+    /** Provider search is rate-limited tighter than the general API (§6.2, §10). */
+    searchPerMinutePerUser: number;
     /** Per-account failed-login controls (PROJECTPLAN.md §6.1). */
     accountFailuresPerHour: number;
     lockoutThreshold: number;
@@ -122,6 +124,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // §16 (2026-06-16): 120 → 600/15min, so the admin UI's polling and
       // navigation aren't throttled.
       adminPer15Min: 600,
+      // §6.2/§10: provider search is capped at 60/min/user (client debounces at
+      // 300 ms + min 2 chars, so legitimate typing stays well under this).
+      searchPerMinutePerUser: 60,
       // §16 (2026-06-16): 10 → 20 failures/hour/account — more forgiving but
       // still a real per-account brute-force guard.
       accountFailuresPerHour: 20,

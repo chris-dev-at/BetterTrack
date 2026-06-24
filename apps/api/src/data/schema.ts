@@ -114,7 +114,17 @@ export const assets = pgTable(
     currency: char('currency', { length: 3 }).notNull(),
     meta: jsonb('meta'),
   },
-  (t) => [uniqueIndex('assets_provider_owner_unique').on(t.providerId, t.providerRef, t.ownerId)],
+  (t) => [
+    uniqueIndex('assets_provider_owner_unique').on(t.providerId, t.providerRef, t.ownerId),
+    // §5.5 intends one global row per (provider, ref) for market assets, but a
+    // plain UNIQUE over (provider_id, provider_ref, owner_id) does NOT enforce
+    // it: Postgres treats NULLs as distinct, so NULL owner_id rows never collide.
+    // This partial unique index closes that gap, making the first-touch upsert
+    // (§6.2) genuinely idempotent — exactly one global asset, one backfill.
+    uniqueIndex('assets_global_provider_ref_unique')
+      .on(t.providerId, t.providerRef)
+      .where(sql`${t.ownerId} is null`),
+  ],
 );
 
 export const priceHistory = pgTable(
