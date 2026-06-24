@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "assets_global_provider_ref_unique" ON "assets" USING btree ("provider_id","provider_ref") WHERE "assets"."owner_id" is null;

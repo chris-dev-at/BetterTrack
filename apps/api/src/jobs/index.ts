@@ -16,6 +16,11 @@ export { DEFAULT_JOB_OPTIONS, BACKOFF_BASE_MS } from './options';
 export { createJobConnection, jobConnectionFactory, type JobConnectionFactory } from './connection';
 export { createQueueRegistry, type QueueRegistry } from './queues';
 export {
+  createBackfillScheduler,
+  noopBackfillScheduler,
+  type BackfillScheduler,
+} from './backfillScheduler';
+export {
   createDeadLetter,
   isPermanentFailure,
   DEAD_LETTER_KEY,

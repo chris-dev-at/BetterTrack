@@ -39,3 +39,13 @@ export const conflict = (message: string, code = 'CONFLICT') => new ApiError(409
 
 export const tooManyRequests = (message = 'Too many requests.', code = 'RATE_LIMITED') =>
   new ApiError(429, code, message);
+
+/**
+ * An upstream data provider failed and we have no cached value to serve in its
+ * place (PROJECTPLAN.md §5.1 stale-while-revalidate degrades to this only when
+ * there is no last-known-good copy at all).
+ */
+export const badGateway = (
+  message = 'Market data is temporarily unavailable.',
+  code = 'UPSTREAM_UNAVAILABLE',
+) => new ApiError(502, code, message);

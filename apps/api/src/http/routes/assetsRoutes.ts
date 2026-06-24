@@ -1,0 +1,43 @@
+import { Router } from 'express';
+
+import { assetIdParamSchema, historyQuerySchema, type HistoryQuery } from '@bettertrack/contracts';
+
+import { requireAuth } from '../middleware/session';
+import { validateParams, validateQuery } from '../middleware/validate';
+import type { AppContext } from '../context';
+
+/** Asset detail/quote/history endpoints (PROJECTPLAN.md §6.3, §8). */
+export function createAssetsRouter(ctx: AppContext): Router {
+  const router = Router();
+
+  router.use(requireAuth);
+
+  // GET /assets/:id — meta + latest quote.
+  router.get('/:id', validateParams(assetIdParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    const detail = await ctx.assets.getDetail(req.authUser!.id, id);
+    res.json(detail);
+  });
+
+  // GET /assets/:id/quote — latest quote with stale/asOf markers.
+  router.get('/:id/quote', validateParams(assetIdParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    const quote = await ctx.assets.getQuote(req.authUser!.id, id);
+    res.json(quote);
+  });
+
+  // GET /assets/:id/history?range= — series for a range; interval per §5.3.
+  router.get(
+    '/:id/history',
+    validateParams(assetIdParamSchema),
+    validateQuery(historyQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { range } = req.valid?.query as HistoryQuery;
+      const history = await ctx.assets.getHistory(req.authUser!.id, id, range);
+      res.json(history);
+    },
+  );
+
+  return router;
+}
