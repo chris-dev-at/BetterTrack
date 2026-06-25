@@ -6,8 +6,16 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../lib/userApi');
+vi.mock('../lib/workboardApi', () => ({
+  listWorkboard: vi.fn(),
+  addToWorkboard: vi.fn(),
+  removeFromWorkboard: vi.fn(),
+  reorderWorkboard: vi.fn(),
+}));
+
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
+import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 
 const member: MeResponse = {
@@ -38,6 +46,9 @@ const anonymous = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // WorkboardPage fetches the watchlist on mount; return an empty list so the
+  // page renders without errors in tests that exercise the workboard route.
+  vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
 
 test('an unauthenticated visit to a user route redirects to /login', async () => {
@@ -46,7 +57,9 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
   renderAt('/workboard');
 
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
-  expect(screen.queryByText('Watchlist, alerts and your conglomerates.')).not.toBeInTheDocument();
+  expect(
+    screen.queryByText('Your watched assets, alerts and conglomerates at a glance.'),
+  ).not.toBeInTheDocument();
 });
 
 test('after signing in, the user returns to the originally requested route', async () => {
@@ -62,7 +75,9 @@ test('after signing in, the user returns to the originally requested route', asy
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
   // Landed on the intended route, not the dashboard home.
-  expect(await screen.findByText('Watchlist, alerts and your conglomerates.')).toBeInTheDocument();
+  expect(
+    await screen.findByText('Your watched assets, alerts and conglomerates at a glance.'),
+  ).toBeInTheDocument();
   expect(api.login).toHaveBeenCalledWith({ identifier: 'jane', password: 'correct horse' });
 });
 

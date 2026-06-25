@@ -1,8 +1,8 @@
 /**
  * Placeholder bodies for the `user` routes (PROJECTPLAN.md §7.2). Real pages
  * replace these as each feature issue lands. Current placeholders:
- * Dashboard, Workboard, Conglomerates, Portfolio, Settings.
- * Search was replaced in issue #36; Asset detail in issue #37.
+ * Dashboard, Conglomerates, Portfolio, Settings.
+ * Search was replaced in issue #36; Asset detail in issue #37; Workboard in issue #38.
  */
 function Placeholder({ title, blurb }: { title: string; blurb: string }) {
   return (
@@ -18,10 +18,6 @@ function Placeholder({ title, blurb }: { title: string; blurb: string }) {
 
 export function DashboardPage() {
   return <Placeholder title="Dashboard" blurb="Your calm overview lands here." />;
-}
-
-export function WorkboardPage() {
-  return <Placeholder title="Workboard" blurb="Watchlist, alerts and your conglomerates." />;
 }
 
 export function ConglomeratesPage() {
