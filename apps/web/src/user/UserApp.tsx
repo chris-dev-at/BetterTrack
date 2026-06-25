@@ -14,8 +14,8 @@ import {
   DashboardPage,
   PortfolioPage,
   SettingsPage,
-  WorkboardPage,
 } from './pages/placeholders';
+import { WorkboardPage } from './pages/WorkboardPage';
 import { SearchPage } from './pages/SearchPage';
 
 const queryClient = new QueryClient();
