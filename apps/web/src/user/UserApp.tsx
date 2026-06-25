@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { AuthProvider, useAuth } from './AuthContext';
@@ -12,10 +13,12 @@ import {
   ConglomeratesPage,
   DashboardPage,
   PortfolioPage,
-  SearchPage,
   SettingsPage,
   WorkboardPage,
 } from './pages/placeholders';
+import { SearchPage } from './pages/SearchPage';
+
+const queryClient = new QueryClient();
 
 /**
  * The non-admin app (PROJECTPLAN.md §6.1, §7.1, §7.2). Two app-wide auth gates
@@ -60,9 +63,11 @@ function RateLimitToastPortal() {
 
 export function UserApp() {
   return (
-    <AuthProvider>
-      <RateLimitToastPortal />
-      <UserShell />
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <RateLimitToastPortal />
+        <UserShell />
+      </AuthProvider>
+    </QueryClientProvider>
   );
 }

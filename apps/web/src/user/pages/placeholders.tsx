@@ -1,10 +1,10 @@
 import { useParams } from 'react-router-dom';
 
 /**
- * Placeholder bodies for the `user` routes (PROJECTPLAN.md §7.2). This issue
- * builds the auth shell and guarded routing only; the real Dashboard, Search,
- * Asset detail, Workboard, Conglomerates, Portfolio and Settings pages arrive
- * in later phases. Each renders behind `RequireUser` + `AppLayout`.
+ * Placeholder bodies for the `user` routes (PROJECTPLAN.md §7.2). Real pages
+ * replace these as each feature issue lands. Current placeholders:
+ * Dashboard, Asset detail, Workboard, Conglomerates, Portfolio, Settings.
+ * Search was replaced in issue #36.
  */
 function Placeholder({ title, blurb }: { title: string; blurb: string }) {
   return (
@@ -20,10 +20,6 @@ function Placeholder({ title, blurb }: { title: string; blurb: string }) {
 
 export function DashboardPage() {
   return <Placeholder title="Dashboard" blurb="Your calm overview lands here." />;
-}
-
-export function SearchPage() {
-  return <Placeholder title="Search" blurb="Find stocks, ETFs and your custom assets." />;
 }
 
 export function AssetDetailPage() {
