@@ -36,9 +36,22 @@ export {
 } from './scheduler';
 export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
 export {
-  ALL_JOB_DEFINITIONS,
+  createJobDefinitions,
   heartbeatJob,
   HEARTBEAT_SCHEDULER_ID,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_ASSET_ID,
+  createPricesRefreshDailyJob,
+  createPricesBackfillJob,
+  createFxRefreshSpotJob,
+  PRICES_REFRESH_DAILY_SCHEDULER_ID,
+  PRICES_REFRESH_DAILY_CRON,
+  PRICES_REFRESH_DAILY_TZ,
+  FX_REFRESH_SPOT_SCHEDULER_ID,
+  FX_REFRESH_SPOT_CRON,
+  REFRESH_DAILY_RANGE,
+  BACKFILL_RANGE,
+  DAILY_INTERVAL,
+  BACKFILL_LIMITER,
+  type MarketDataJobDeps,
 } from './definitions';

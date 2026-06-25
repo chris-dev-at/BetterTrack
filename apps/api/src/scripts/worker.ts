@@ -10,10 +10,11 @@
  * code, and shuts everything down cleanly on SIGINT/SIGTERM.
  */
 import { loadConfig } from '../config/env';
+import { createDatabase } from '../data/db';
 import { createEventBus } from '../events';
 import {
-  ALL_JOB_DEFINITIONS,
   createDeadLetter,
+  createJobDefinitions,
   createJobWorkers,
   createQueueRegistry,
   jobConnectionFactory,
@@ -21,13 +22,15 @@ import {
   type JobContext,
 } from '../jobs';
 import { createLogger } from '../logger';
+import { createMarketData } from '../providers';
 
 const config = loadConfig();
 const logger = createLogger(config);
 const createConnection = jobConnectionFactory(config.redisUrl);
 
 // Dedicated connections per role: pub/sub subscriber must be its own; the
-// dead-letter list and queue registry get ordinary shared-style connections.
+// dead-letter list, queue registry and market-data cache get ordinary
+// (non-blocking) connections.
 const events = createEventBus({
   publisher: createConnection(),
   subscriber: createConnection(),
@@ -37,20 +40,24 @@ const deadLetterConnection = createConnection();
 const deadLetter = createDeadLetter(deadLetterConnection);
 const registry = createQueueRegistry(createConnection());
 
+// The market-data jobs read/write Postgres and reach providers through the same
+// caching/resilience service the API uses.
+const { db, client } = createDatabase(config.databaseUrl);
+const marketDataConnection = createConnection();
+const { service: marketData } = createMarketData({ db, redis: marketDataConnection });
+const definitions = createJobDefinitions({ db, marketData });
+
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
 
 const running = createJobWorkers({
   createConnection,
-  definitions: ALL_JOB_DEFINITIONS,
+  definitions,
   ctx,
   logger,
 });
 
-const scheduled = await registerSchedules(registry, ALL_JOB_DEFINITIONS);
-logger.info(
-  { queues: ALL_JOB_DEFINITIONS.map((d) => d.name), scheduled },
-  'BetterTrack worker started',
-);
+const scheduled = await registerSchedules(registry, definitions);
+logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
@@ -62,6 +69,8 @@ async function shutdown(signal: string): Promise<void> {
     await registry.close();
     await events.close();
     await deadLetterConnection.quit();
+    await marketDataConnection.quit();
+    await client.end();
   } catch (err) {
     logger.error({ err }, 'error during worker shutdown');
   } finally {
