@@ -20,6 +20,8 @@ import { createAdminService, type AdminService } from '../services/admin/adminSe
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
+import { createCurrencyService } from '../services/currency/currencyService';
+import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
@@ -111,8 +113,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     deps.backfill ??
     (config.isTest ? noopBackfillScheduler : createBackfillScheduler(createQueueRegistry(redis)));
 
+  // Single conversion keystone (§5.4): spot FX sourced from cached Yahoo quotes.
+  const currencySource = createMarketDataFxSource(marketData);
+  const currency = createCurrencyService({ source: currencySource });
+
   const assetRepo = createAssetRepository(db);
-  const assets = createAssetService({ marketData, assetRepo, backfill });
+  const assets = createAssetService({
+    marketData,
+    assetRepo,
+    backfill,
+    currencyService: currency,
+  });
 
   return { config, redis, logger, auth, admin, workboard, marketData, assets };
 }

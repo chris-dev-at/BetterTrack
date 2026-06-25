@@ -12,6 +12,7 @@ import type { AssetRow } from '../../data/schema';
 import { badGateway, notFound } from '../../errors';
 import type { BackfillScheduler } from '../../jobs';
 import { defaultIntervalForRange, type MarketDataService } from '../../providers';
+import type { CurrencyService } from '../currency/currencyService';
 
 /**
  * The market-data read API (PROJECTPLAN.md §6.2, §6.3, §8): search and the asset
@@ -38,6 +39,8 @@ export interface AssetServiceDeps {
   marketData: MarketDataService;
   assetRepo: AssetRepository;
   backfill: BackfillScheduler;
+  /** Single conversion keystone (§5.4) — all EUR conversion routes through here. */
+  currencyService: CurrencyService;
 }
 
 /** Epoch-ms (the cache's `asOf`) → ISO-8601 for the wire. */
@@ -56,7 +59,7 @@ const toSummary = (row: AssetRow): AssetSummary => ({
 });
 
 export function createAssetService(deps: AssetServiceDeps): AssetService {
-  const { marketData, assetRepo, backfill } = deps;
+  const { marketData, assetRepo, backfill, currencyService } = deps;
 
   async function requireAsset(userId: string, id: string): Promise<AssetRow> {
     const row = await assetRepo.findByIdForUser(id, userId);
@@ -122,11 +125,27 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
           providerId: row.providerId,
           providerRef: row.providerRef,
         });
+
+        // EUR conversion for foreign assets (§6.3, §5.4). All conversion routes
+        // through the currency keystone — no inline FX math here. Best-effort:
+        // null when the spot rate is unavailable, absent when already EUR.
+        let eurPriceEntry: { eurPrice: number | null } | undefined;
+        if (asset.currency !== 'EUR') {
+          try {
+            eurPriceEntry = {
+              eurPrice: await currencyService.toBase(cached.value.price, asset.currency),
+            };
+          } catch {
+            eurPriceEntry = { eurPrice: null };
+          }
+        }
+
         return {
           asset,
           quote: cached.value,
           stale: cached.stale,
           asOf: asOfIso(cached.asOf),
+          ...eurPriceEntry,
         };
       } catch {
         // Meta always resolves from the stored row; the quote is best-effort, so

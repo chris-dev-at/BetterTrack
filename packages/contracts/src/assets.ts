@@ -83,6 +83,11 @@ export type AssetSummary = z.infer<typeof assetSummarySchema>;
  * `GET /assets/:id` — meta + latest quote (§6.3). The meta always resolves from
  * the stored row; the quote is best-effort: `null` (with `stale: true`) when the
  * provider is down and nothing has ever been cached.
+ *
+ * `eurPrice`: the native price converted to EUR via the current spot FX rate.
+ * Present (as a number or null) only when the asset's currency is not EUR.
+ * `null` means the conversion was unavailable (provider degraded or FX pair
+ * unknown); absent means the native currency already is EUR.
  */
 export const assetDetailResponseSchema = z
   .object({
@@ -90,6 +95,7 @@ export const assetDetailResponseSchema = z
     quote: quoteSchema.nullable(),
     stale: z.boolean(),
     asOf: z.string().datetime().nullable(),
+    eurPrice: z.number().nullable().optional(),
   })
   .strict();
 export type AssetDetailResponse = z.infer<typeof assetDetailResponseSchema>;

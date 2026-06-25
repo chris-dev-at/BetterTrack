@@ -8,8 +8,8 @@ import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { InvitePage } from './pages/InvitePage';
 import { LoginPage } from './pages/LoginPage';
+import { AssetDetailPage } from './pages/AssetDetailPage';
 import {
-  AssetDetailPage,
   ConglomeratesPage,
   DashboardPage,
   PortfolioPage,

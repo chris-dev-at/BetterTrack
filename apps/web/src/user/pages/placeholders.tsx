@@ -1,10 +1,8 @@
-import { useParams } from 'react-router-dom';
-
 /**
  * Placeholder bodies for the `user` routes (PROJECTPLAN.md §7.2). Real pages
  * replace these as each feature issue lands. Current placeholders:
- * Dashboard, Asset detail, Workboard, Conglomerates, Portfolio, Settings.
- * Search was replaced in issue #36.
+ * Dashboard, Workboard, Conglomerates, Portfolio, Settings.
+ * Search was replaced in issue #36; Asset detail in issue #37.
  */
 function Placeholder({ title, blurb }: { title: string; blurb: string }) {
   return (
@@ -20,11 +18,6 @@ function Placeholder({ title, blurb }: { title: string; blurb: string }) {
 
 export function DashboardPage() {
   return <Placeholder title="Dashboard" blurb="Your calm overview lands here." />;
-}
-
-export function AssetDetailPage() {
-  const { id } = useParams();
-  return <Placeholder title="Asset detail" blurb={`Details for asset ${id ?? ''}.`} />;
 }
 
 export function WorkboardPage() {
