@@ -122,11 +122,30 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
           providerId: row.providerId,
           providerRef: row.providerRef,
         });
+
+        // EUR conversion for foreign assets (§6.3, §5.4). FX pairs are ordinary
+        // Yahoo symbols (EURUSD=X etc.) — no special-casing needed. Best-effort:
+        // null when the spot rate is unavailable, absent when already EUR.
+        let eurPriceEntry: { eurPrice: number | null } | undefined;
+        if (asset.currency !== 'EUR') {
+          try {
+            const fxCached = await marketData.getQuote({
+              providerId: 'yahoo',
+              providerRef: `EUR${asset.currency}=X`,
+            });
+            // EUR{CCY}=X.price = CCY per 1 EUR, so EUR amount = native / rate.
+            eurPriceEntry = { eurPrice: cached.value.price / fxCached.value.price };
+          } catch {
+            eurPriceEntry = { eurPrice: null };
+          }
+        }
+
         return {
           asset,
           quote: cached.value,
           stale: cached.stale,
           asOf: asOfIso(cached.asOf),
+          ...eurPriceEntry,
         };
       } catch {
         // Meta always resolves from the stored row; the quote is best-effort, so
