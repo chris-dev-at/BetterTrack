@@ -407,4 +407,65 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     expect(second.status).toBe(200);
     expect(second.body.points[0].valueEur).toBeCloseTo(400, 6); // 4 × 100
   });
+
+  it('degrades (no 500) for a non-EUR holding with no historical FX', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    // Historical FX for non-base currencies is not yet supported (§5.4); a USD
+    // holding with value points must not crash the series.
+    const asset = await seedAsset(harness, {
+      currency: 'USD',
+      providerRef: 'AAPL',
+      symbol: 'AAPL',
+      exchange: 'NASDAQ',
+    });
+    await harness.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-2), close: '100' },
+      { assetId: asset.id, date: dayOffset(-1), close: '110' },
+    ]);
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 2, price: 100, executedAt: tsOffset(-2) });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+    // The unconvertible USD holding is dropped from the series rather than 500ing.
+    expect(res.body.points).toHaveLength(0);
+  });
+
+  it('keeps EUR holdings in the series while dropping unconvertible non-EUR ones', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const eur = await seedAsset(harness, { currency: 'EUR' });
+    const usd = await seedAsset(harness, {
+      currency: 'USD',
+      providerRef: 'AAPL',
+      symbol: 'AAPL',
+      exchange: 'NASDAQ',
+    });
+    await harness.db.insert(schema.priceHistory).values([
+      { assetId: eur.id, date: dayOffset(-1), close: '100' },
+      { assetId: usd.id, date: dayOffset(-1), close: '999' },
+    ]);
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        transactions: [
+          { assetId: eur.id, side: 'buy', quantity: 2, price: 100, executedAt: tsOffset(-1) },
+          { assetId: usd.id, side: 'buy', quantity: 5, price: 999, executedAt: tsOffset(-1) },
+        ],
+      });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    expect(res.body.points.length).toBeGreaterThan(0);
+    // Only the EUR holding contributes (2 × 100) on every point; the USD leg
+    // (5 × 999) is degraded out rather than 500ing the request.
+    for (const point of res.body.points) {
+      expect(point.valueEur).toBeCloseTo(200, 6);
+    }
+  });
 });

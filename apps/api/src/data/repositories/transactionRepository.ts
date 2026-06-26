@@ -1,4 +1,4 @@
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, portfolios, transactions } from '../schema';
@@ -197,8 +197,13 @@ export function createTransactionRepository(db: Database) {
       return row ? toRecord(row as typeof transactions.$inferSelect) : null;
     },
 
-    /** Update a transaction's mutable fields. Caller has already authorised it. */
+    /**
+     * Update a transaction's mutable fields, scoped to the caller at the DB layer
+     * (defense-in-depth — the service authorises first, but the WHERE restricts
+     * the update to transactions in one of the caller's own portfolios).
+     */
     async update(
+      userId: string,
       id: string,
       patch: {
         side?: Side;
@@ -217,10 +222,14 @@ export function createTransactionRepository(db: Database) {
       if (patch.executedAt !== undefined) set.executedAt = patch.executedAt;
       if (patch.note !== undefined) set.note = patch.note;
 
+      const ownedPortfolios = db
+        .select({ id: portfolios.id })
+        .from(portfolios)
+        .where(eq(portfolios.userId, userId));
       const rows = await db
         .update(transactions)
         .set(set)
-        .where(eq(transactions.id, id))
+        .where(and(eq(transactions.id, id), inArray(transactions.portfolioId, ownedPortfolios)))
         .returning();
       const row = rows[0];
       return row ? toRecord(row) : null;

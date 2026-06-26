@@ -104,7 +104,7 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
         patch.category !== undefined
           ? { ...((existing.meta ?? {}) as object), category: patch.category }
           : undefined;
-      const updated = await repo.update(id, { name: patch.name, meta });
+      const updated = await repo.update(userId, id, { name: patch.name, meta });
       if (!updated) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
       return toDto(updated);
     },

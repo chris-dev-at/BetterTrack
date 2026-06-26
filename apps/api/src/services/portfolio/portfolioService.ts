@@ -222,7 +222,42 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
     const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
-    const priceRows = await portfolioRepo.pricesForAssets(assetIds);
+
+    // The value series converts each day's native sum to EUR via *historical* FX,
+    // which is not yet available for non-base currencies (§5.4 future work). Rather
+    // than 500 on a non-EUR holding (e.g. a USD custom asset or market stock), we
+    // degrade exactly like getPortfolio drops an unconvertible quote: probe each
+    // distinct non-base currency once and exclude assets we can't convert from the
+    // series. When historical FX lands this path starts including them automatically.
+    const today = todayIso();
+    const convertible = new Map<string, boolean>();
+    for (const asset of assetsById.values()) {
+      const ccy = asset.currency;
+      if (ccy === baseCurrency || convertible.has(ccy)) continue;
+      try {
+        await currencyService.toBase(1, ccy, { date: today });
+        convertible.set(ccy, true);
+      } catch {
+        convertible.set(ccy, false);
+      }
+    }
+    const isConvertible = (ccy: string): boolean =>
+      ccy === baseCurrency || convertible.get(ccy) === true;
+
+    const usableAssetIds = assetIds.filter((id) => {
+      const asset = assetsById.get(id);
+      return asset !== undefined && isConvertible(asset.currency);
+    });
+
+    // No EUR-convertible holding has any history to plot — degrade to an empty
+    // series instead of throwing mid-conversion.
+    if (usableAssetIds.length === 0) {
+      await redis.set(key, JSON.stringify([]), 'EX', HISTORY_TTL_SECONDS);
+      return [];
+    }
+
+    const usableIdSet = new Set(usableAssetIds);
+    const priceRows = await portfolioRepo.pricesForAssets(usableAssetIds);
     const pricesByAsset = new Map<string, PricePoint[]>();
     for (const row of priceRows) {
       const list = pricesByAsset.get(row.assetId);
@@ -231,16 +266,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       else pricesByAsset.set(row.assetId, [point]);
     }
 
-    const valueAssets: ValueOverTimeAsset[] = assetIds.map((assetId) => {
+    const valueAssets: ValueOverTimeAsset[] = usableAssetIds.map((assetId) => {
       const asset = assetsById.get(assetId);
       if (!asset) throw new Error(`Asset ${assetId} missing while building value series`);
       return { assetId, currency: asset.currency, prices: pricesByAsset.get(assetId) ?? [] };
     });
 
     const series = await valueOverTime({
-      transactions: txns.map(recordToDomain),
+      transactions: txns.filter((t) => usableIdSet.has(t.assetId)).map(recordToDomain),
       assets: valueAssets,
-      today: todayIso(),
+      today,
       converter: currencyService,
     });
 
@@ -334,7 +369,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const replayed = siblings.map((s) => (s.id === id ? merged : s)).map(recordToDomain);
       assertNoOversell(replayed);
 
-      const updated = await transactionRepo.update(id, {
+      const updated = await transactionRepo.update(userId, id, {
         side: patch.side,
         quantity: patch.quantity,
         price: patch.price,

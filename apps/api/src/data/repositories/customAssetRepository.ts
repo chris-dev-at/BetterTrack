@@ -78,16 +78,29 @@ export function createCustomAssetRepository(db: Database) {
       return rows[0] ?? null;
     },
 
-    /** Update mutable custom-asset fields. Currency is intentionally immutable. */
-    async update(id: string, patch: { name?: string; meta?: unknown }): Promise<AssetRow | null> {
+    /**
+     * Update mutable custom-asset fields, scoped to the owner at the DB layer
+     * (defense-in-depth — the service authorises first, but the WHERE never lets
+     * an update touch another user's row). Currency is intentionally immutable.
+     */
+    async update(
+      userId: string,
+      id: string,
+      patch: { name?: string; meta?: unknown },
+    ): Promise<AssetRow | null> {
+      const owned = and(
+        eq(assets.id, id),
+        eq(assets.ownerId, userId),
+        eq(assets.providerId, MANUAL_PROVIDER_ID),
+      );
       const set: Record<string, unknown> = {};
       if (patch.name !== undefined) set.name = patch.name;
       if (patch.meta !== undefined) set.meta = patch.meta;
       if (Object.keys(set).length === 0) {
-        const rows = await db.select().from(assets).where(eq(assets.id, id)).limit(1);
+        const rows = await db.select().from(assets).where(owned).limit(1);
         return rows[0] ?? null;
       }
-      const rows = await db.update(assets).set(set).where(eq(assets.id, id)).returning();
+      const rows = await db.update(assets).set(set).where(owned).returning();
       return rows[0] ?? null;
     },
 
