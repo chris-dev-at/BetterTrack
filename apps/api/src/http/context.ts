@@ -4,7 +4,10 @@ import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
+import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
+import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import {
@@ -21,10 +24,18 @@ import { createAssetService, type AssetService } from '../services/assets/assetS
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createCurrencyService } from '../services/currency/currencyService';
+import {
+  createCustomAssetService,
+  type CustomAssetService,
+} from '../services/customAssets/customAssetService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
+import {
+  createPortfolioService,
+  type PortfolioService,
+} from '../services/portfolio/portfolioService';
 import { createSessionService } from '../services/sessions/sessionService';
 import {
   createWorkboardService,
@@ -43,6 +54,10 @@ export interface AppContext {
   marketData: MarketDataService;
   /** Search + asset detail/quote/history over the market-data layer (§6.2, §6.3). */
   assets: AssetService;
+  /** Transactions, holdings/totals and the value-over-time series (§6.9). */
+  portfolio: PortfolioService;
+  /** Custom investments + their value-points editor (§6.9). */
+  customAssets: CustomAssetService;
 }
 
 export interface BuildContextDeps {
@@ -125,5 +140,31 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     currencyService: currency,
   });
 
-  return { config, redis, logger, auth, admin, workboard, marketData, assets };
+  // Portfolio + custom investments (§6.9). The custom-asset service records its
+  // optional initial purchase through the portfolio service and shares its
+  // value-series cache invalidation.
+  const portfolioRepo = createPortfolioRepository(db);
+  const transactionRepo = createTransactionRepository(db);
+  const portfolio = createPortfolioService({
+    portfolioRepo,
+    transactionRepo,
+    marketData,
+    currencyService: currency,
+    redis,
+  });
+  const customAssetRepo = createCustomAssetRepository(db);
+  const customAssets = createCustomAssetService({ repo: customAssetRepo, portfolio });
+
+  return {
+    config,
+    redis,
+    logger,
+    auth,
+    admin,
+    workboard,
+    marketData,
+    assets,
+    portfolio,
+    customAssets,
+  };
 }
