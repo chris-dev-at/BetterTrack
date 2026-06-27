@@ -1,0 +1,143 @@
+import {
+  createCustomAssetResponseSchema,
+  customAssetSchema,
+  portfolioHistoryResponseSchema,
+  portfolioResponseSchema,
+  transactionListResponseSchema,
+  transactionSchema,
+  valuePointsResponseSchema,
+  type CreateCustomAssetRequest,
+  type CreateCustomAssetResponse,
+  type CustomAsset,
+  type PortfolioHistoryRange,
+  type PortfolioHistoryResponse,
+  type PortfolioResponse,
+  type Transaction,
+  type TransactionInput,
+  type TransactionListResponse,
+  type UpdateCustomAssetRequest,
+  type UpdateTransactionRequest,
+  type ValuePoint,
+  type ValuePointsResponse,
+} from '@bettertrack/contracts';
+
+import { apiRequest } from './apiClient';
+
+/**
+ * Typed client for the portfolio + custom-asset surface (PROJECTPLAN.md §6.9, §8).
+ * Every response is parsed through its contract schema so the page works against
+ * validated shapes, never raw JSON. Money values arrive at full precision and are
+ * rounded only at display time (§5.4).
+ */
+
+// --- Holdings + totals -----------------------------------------------------
+
+/** `GET /portfolio` — holdings + totals header. */
+export async function getPortfolio(signal?: AbortSignal): Promise<PortfolioResponse> {
+  const data = await apiRequest<unknown>('/portfolio', { signal });
+  return portfolioResponseSchema.parse(data);
+}
+
+/** `GET /portfolio/history?range=` — EUR value-over-time series. */
+export async function getPortfolioHistory(
+  range: PortfolioHistoryRange,
+  signal?: AbortSignal,
+): Promise<PortfolioHistoryResponse> {
+  const data = await apiRequest<unknown>('/portfolio/history', { query: { range }, signal });
+  return portfolioHistoryResponseSchema.parse(data);
+}
+
+// --- Transactions ----------------------------------------------------------
+
+/** `GET /portfolio/transactions?cursor=` — newest-first ledger, keyset paginated. */
+export async function listTransactions(
+  params: { cursor?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<TransactionListResponse> {
+  const data = await apiRequest<unknown>('/portfolio/transactions', {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
+  });
+  return transactionListResponseSchema.parse(data);
+}
+
+/**
+ * `POST /portfolio/transactions` — single or bulk (the buy flow, §6.9). Always
+ * sent in the `{ transactions: [...] }` bulk form; a one-element batch is the
+ * single-add case. Each returned row is validated through `transactionSchema`.
+ */
+export async function createTransactions(inputs: TransactionInput[]): Promise<Transaction[]> {
+  const data = await apiRequest<{ transactions: unknown[] }>('/portfolio/transactions', {
+    method: 'POST',
+    body: { transactions: inputs },
+  });
+  return data.transactions.map((t) => transactionSchema.parse(t));
+}
+
+/** `PATCH /portfolio/transactions/:id` — edit a transaction; re-validates oversell. */
+export async function updateTransaction(
+  id: string,
+  patch: UpdateTransactionRequest,
+): Promise<Transaction> {
+  const data = await apiRequest<{ transaction: unknown }>(
+    `/portfolio/transactions/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: patch },
+  );
+  return transactionSchema.parse(data.transaction);
+}
+
+/** `DELETE /portfolio/transactions/:id` — remove a transaction; re-validates oversell. */
+export async function deleteTransaction(id: string): Promise<void> {
+  await apiRequest<unknown>(`/portfolio/transactions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// --- Custom assets ---------------------------------------------------------
+
+/** `POST /custom-assets` — create a custom investment, optional initial BUY (§6.9). */
+export async function createCustomAsset(
+  body: CreateCustomAssetRequest,
+): Promise<CreateCustomAssetResponse> {
+  const data = await apiRequest<unknown>('/custom-assets', { method: 'POST', body });
+  return createCustomAssetResponseSchema.parse(data);
+}
+
+/** `PATCH /custom-assets/:id` — edit name/category (currency is immutable). */
+export async function updateCustomAsset(
+  id: string,
+  patch: UpdateCustomAssetRequest,
+): Promise<CustomAsset> {
+  const data = await apiRequest<{ asset: unknown }>(`/custom-assets/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: patch,
+  });
+  return customAssetSchema.parse(data.asset);
+}
+
+/** `DELETE /custom-assets/:id` — remove a custom asset (cascades txns + value points). */
+export async function deleteCustomAsset(id: string): Promise<void> {
+  await apiRequest<unknown>(`/custom-assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// --- Value points ----------------------------------------------------------
+
+/** `GET /custom-assets/:id/value-points` — list, ascending by date (§6.9). */
+export async function getValuePoints(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ValuePointsResponse> {
+  const data = await apiRequest<unknown>(`/custom-assets/${encodeURIComponent(id)}/value-points`, {
+    signal,
+  });
+  return valuePointsResponseSchema.parse(data);
+}
+
+/** `PUT /custom-assets/:id/value-points` — full replace (add/edit/delete at once). */
+export async function putValuePoints(id: string, points: ValuePoint[]): Promise<ValuePoint[]> {
+  const data = await apiRequest<unknown>(`/custom-assets/${encodeURIComponent(id)}/value-points`, {
+    method: 'PUT',
+    body: { points },
+  });
+  return valuePointsResponseSchema.parse(data).points;
+}

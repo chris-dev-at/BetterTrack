@@ -27,6 +27,12 @@ const TYPE_BADGE: Record<string, string> = {
 export interface AssetSearchBoxProps {
   /** Called after any per-result action fires — lets a palette close itself. */
   onAction?: () => void;
+  /**
+   * Picker mode (PROJECTPLAN.md §7.3 — "used by … buy dialogs"). When provided,
+   * each result is a single button that returns the chosen asset instead of the
+   * default Workboard / Conglomerate / Portfolio navigation actions.
+   */
+  onSelect?: (item: SearchResultItem) => void;
   /** Auto-focus the input on mount (useful in the ⌘K palette). */
   autoFocus?: boolean;
   placeholder?: string;
@@ -39,6 +45,7 @@ export interface AssetSearchBoxProps {
  */
 export function AssetSearchBox({
   onAction,
+  onSelect,
   autoFocus = false,
   placeholder = 'Search stocks, ETFs, indices…',
 }: AssetSearchBoxProps) {
@@ -144,16 +151,20 @@ export function AssetSearchBox({
 
       {results.length > 0 ? (
         <ul className="flex flex-col gap-1" role="list" aria-label="Search results">
-          {results.map((item) => (
-            <ResultRow
-              key={item.id}
-              item={item}
-              wbStatus={wbState[item.id] ?? 'idle'}
-              onWorkboard={() => void handleAddToWorkboard(item)}
-              onConglomerate={() => handleConglomerate(item)}
-              onPortfolio={() => handlePortfolio(item)}
-            />
-          ))}
+          {results.map((item) =>
+            onSelect ? (
+              <SelectRow key={item.id} item={item} onSelect={() => onSelect(item)} />
+            ) : (
+              <ResultRow
+                key={item.id}
+                item={item}
+                wbStatus={wbState[item.id] ?? 'idle'}
+                onWorkboard={() => void handleAddToWorkboard(item)}
+                onConglomerate={() => handleConglomerate(item)}
+                onPortfolio={() => handlePortfolio(item)}
+              />
+            ),
+          )}
         </ul>
       ) : null}
     </div>
@@ -213,6 +224,43 @@ function ResultRow({ item, wbStatus, onWorkboard, onConglomerate, onPortfolio }:
           → Portfolio
         </ActionButton>
       </div>
+    </li>
+  );
+}
+
+/** A single-action result row for picker mode (`onSelect`). The whole row is the button. */
+function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () => void }) {
+  const badgeClass = TYPE_BADGE[item.type] ?? 'bg-neutral-800 text-neutral-400';
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-label={`Select ${item.symbol}`}
+        className={cx(
+          'flex w-full items-center gap-3 rounded-md bg-neutral-900 px-3 py-2.5 text-left',
+          'transition-colors hover:bg-neutral-800/80',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+        )}
+      >
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-sm font-semibold text-neutral-100">{item.symbol}</span>
+            <span className={cx('rounded px-1.5 py-0.5 text-xs font-medium', badgeClass)}>
+              {item.type}
+            </span>
+          </div>
+          <span className="truncate text-xs text-neutral-400">
+            {item.name}
+            {item.exchange ? <> · {item.exchange}</> : null}
+            {' · '}
+            <span className="text-neutral-500">{item.currency}</span>
+          </span>
+        </div>
+        <span aria-hidden="true" className="shrink-0 text-xs text-sky-400">
+          Select →
+        </span>
+      </button>
     </li>
   );
 }
