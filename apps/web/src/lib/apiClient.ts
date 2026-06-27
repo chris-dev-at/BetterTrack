@@ -9,7 +9,7 @@ const CSRF_VALUE = 'BetterTrack';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
  * Typed error mirroring the API's `{ error: { code, message, details? } }`

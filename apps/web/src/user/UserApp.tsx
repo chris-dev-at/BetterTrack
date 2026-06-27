@@ -9,12 +9,8 @@ import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { InvitePage } from './pages/InvitePage';
 import { LoginPage } from './pages/LoginPage';
 import { AssetDetailPage } from './pages/AssetDetailPage';
-import {
-  ConglomeratesPage,
-  DashboardPage,
-  PortfolioPage,
-  SettingsPage,
-} from './pages/placeholders';
+import { ConglomeratesPage, DashboardPage, SettingsPage } from './pages/placeholders';
+import { PortfolioPage } from './pages/PortfolioPage';
 import { WorkboardPage } from './pages/WorkboardPage';
 import { SearchPage } from './pages/SearchPage';
 

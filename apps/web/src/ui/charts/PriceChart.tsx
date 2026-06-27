@@ -28,6 +28,12 @@ export interface PriceChartProps {
   range?: PriceRange;
   /** Initial range when uncontrolled. Defaults to `1M`. */
   defaultRange?: PriceRange;
+  /**
+   * Range tokens to offer in the toggle. Defaults to the full {@link PRICE_RANGES}
+   * set; the Portfolio value-over-time chart restricts it to `1M/6M/1Y/Max`
+   * (PROJECTPLAN.md §6.9).
+   */
+  ranges?: readonly PriceRange[];
   /** Notified whenever the user picks a range (the parent refetches). */
   onRangeChange?: (range: PriceRange) => void;
   /** Optional overlay series, e.g. a benchmark index (PROJECTPLAN.md §6.6). */
@@ -63,6 +69,7 @@ export function PriceChart({
   mode = 'area',
   range,
   defaultRange = '1M',
+  ranges = PRICE_RANGES,
   onRangeChange,
   benchmark = null,
   loading = false,
@@ -167,7 +174,7 @@ export function PriceChart({
   return (
     <div className={cx('flex flex-col gap-3', className)}>
       <div className="flex items-center justify-between gap-3">
-        <RangeToggle active={activeRange} onSelect={selectRange} />
+        <RangeToggle active={activeRange} ranges={ranges} onSelect={selectRange} />
         {hasBenchmark ? (
           <span className="flex items-center gap-1.5 text-xs text-neutral-400">
             <span
@@ -207,9 +214,11 @@ export function PriceChart({
 
 function RangeToggle({
   active,
+  ranges,
   onSelect,
 }: {
   active: PriceRange;
+  ranges: readonly PriceRange[];
   onSelect: (range: PriceRange) => void;
 }) {
   return (
@@ -218,7 +227,7 @@ function RangeToggle({
       aria-label="Select chart range"
       className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
-      {PRICE_RANGES.map((token) => {
+      {ranges.map((token) => {
         const selected = token === active;
         return (
           <button
