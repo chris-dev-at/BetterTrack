@@ -74,7 +74,7 @@ export function createBacktestPreviewRouter(ctx: AppContext): Router {
 
   router.post('/preview', validateBody(backtestPreviewRequestSchema), async (req, res) => {
     const body = req.valid?.body as BacktestPreviewRequest;
-    res.json(await ctx.conglomerates.preview(body));
+    res.json(await ctx.conglomerates.preview(req.authUser!.id, body));
   });
 
   return router;

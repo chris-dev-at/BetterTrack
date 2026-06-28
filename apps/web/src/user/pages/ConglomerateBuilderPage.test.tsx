@@ -12,6 +12,7 @@ vi.mock('../../lib/conglomerateApi', () => ({
   getConglomerate: vi.fn(),
   previewBacktest: vi.fn(),
   saveConglomeratePositions: vi.fn(),
+  updateConglomerateMeta: vi.fn(),
 }));
 
 vi.mock('../components/AssetSearchBox', () => ({
@@ -45,6 +46,7 @@ import {
   createConglomerateDraft,
   previewBacktest,
   saveConglomeratePositions,
+  updateConglomerateMeta,
 } from '../../lib/conglomerateApi';
 import { ConglomeratesPage } from './ConglomerateBuilderPage';
 
@@ -103,6 +105,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(createConglomerateDraft).mockResolvedValue(EMPTY_DETAIL);
   vi.mocked(saveConglomeratePositions).mockResolvedValue(EMPTY_DETAIL);
+  vi.mocked(updateConglomerateMeta).mockResolvedValue(EMPTY_DETAIL);
   vi.mocked(activateConglomerate).mockResolvedValue({ ...EMPTY_DETAIL, status: 'active' });
   vi.mocked(previewBacktest).mockResolvedValue({
     range: '1Y',
@@ -195,7 +198,54 @@ describe('ConglomerateBuilderPage', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Activate' }));
-    expect(activateConglomerate).toHaveBeenCalledWith(EMPTY_DETAIL.id);
+    await waitFor(() => expect(activateConglomerate).toHaveBeenCalledWith(EMPTY_DETAIL.id));
+  });
+
+  it('autosaves name changes through the metadata endpoint', async () => {
+    const user = userEvent.setup();
+    renderBuilder();
+    await screen.findByText('Draft — saved');
+
+    const nameInput = screen.getByRole('textbox', { name: 'Conglomerate name' });
+    await user.clear(nameInput);
+    await user.type(nameInput, 'Core basket');
+
+    await waitFor(() =>
+      expect(updateConglomerateMeta).toHaveBeenLastCalledWith(EMPTY_DETAIL.id, {
+        name: 'Core basket',
+      }),
+    );
+  });
+
+  it('waits for the current positions save before activating', async () => {
+    const user = userEvent.setup();
+    let releaseSave: (() => void) | undefined;
+    let saveCalls = 0;
+    vi.mocked(saveConglomeratePositions).mockImplementation(() => {
+      saveCalls += 1;
+      if (saveCalls === 1) {
+        return new Promise((resolve) => {
+          releaseSave = () => resolve(EMPTY_DETAIL);
+        });
+      }
+      return Promise.resolve(EMPTY_DETAIL);
+    });
+
+    renderBuilder();
+    await screen.findByText('Draft — saved');
+    await user.click(screen.getByRole('button', { name: 'Add AAPL' }));
+    await user.clear(screen.getByRole('spinbutton', { name: 'AAPL weight input' }));
+    await user.type(screen.getByRole('spinbutton', { name: 'AAPL weight input' }), '100');
+
+    await waitFor(() => expect(saveConglomeratePositions).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: 'Activate' }));
+
+    expect(activateConglomerate).not.toHaveBeenCalled();
+    releaseSave?.();
+    await waitFor(() => expect(activateConglomerate).toHaveBeenCalledWith(EMPTY_DETAIL.id));
+    expect(saveConglomeratePositions).toHaveBeenLastCalledWith(EMPTY_DETAIL.id, [
+      { assetId: SEARCH_A.id, weightPct: 100 },
+    ]);
   });
 
   it('shows the locked >= 100 normalize error without changing weights', async () => {

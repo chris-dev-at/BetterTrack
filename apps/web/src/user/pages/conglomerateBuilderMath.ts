@@ -49,7 +49,11 @@ export function sumPillState(
     valid,
     total,
     remaining,
-    label: valid ? `${total.toFixed(1)}%` : `${total.toFixed(1)}% - ${remaining.toFixed(1)}% left`,
+    label: valid
+      ? `${total.toFixed(1)}%`
+      : total > 100
+        ? `${total.toFixed(1)}% - ${Math.abs(remaining).toFixed(1)}% over`
+        : `${total.toFixed(1)}% - ${remaining.toFixed(1)}% left`,
   };
 }
 

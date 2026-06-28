@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, conglomeratePositions, conglomerates, priceHistory } from '../schema';
@@ -110,10 +110,7 @@ export function createConglomerateRepository(db: Database) {
           })),
         );
       }
-      await db
-        .update(conglomerates)
-        .set({ status: 'draft', updatedAt: new Date() })
-        .where(eq(conglomerates.id, id));
+      await db.update(conglomerates).set({ updatedAt: new Date() }).where(eq(conglomerates.id, id));
 
       return loadDetail(ownerId, id);
     },
@@ -128,16 +125,18 @@ export function createConglomerateRepository(db: Database) {
       return loadDetail(ownerId, id);
     },
 
-    async assetsExist(assetIds: string[]): Promise<Set<string>> {
+    async visibleAssetsExist(ownerId: string, assetIds: string[]): Promise<Set<string>> {
       if (assetIds.length === 0) return new Set();
       const rows = await db
         .select({ id: assets.id })
         .from(assets)
-        .where(inArray(assets.id, assetIds));
+        .where(
+          and(inArray(assets.id, assetIds), or(isNull(assets.ownerId), eq(assets.ownerId, ownerId))),
+        );
       return new Set(rows.map((row) => row.id));
     },
 
-    async historyForAssets(assetIds: string[]): Promise<BacktestAssetHistoryRow[]> {
+    async historyForAssets(ownerId: string, assetIds: string[]): Promise<BacktestAssetHistoryRow[]> {
       if (assetIds.length === 0) return [];
       const rows = await db
         .select({
@@ -149,7 +148,9 @@ export function createConglomerateRepository(db: Database) {
         })
         .from(assets)
         .leftJoin(priceHistory, eq(priceHistory.assetId, assets.id))
-        .where(inArray(assets.id, assetIds))
+        .where(
+          and(inArray(assets.id, assetIds), or(isNull(assets.ownerId), eq(assets.ownerId, ownerId))),
+        )
         .orderBy(assets.id, priceHistory.date);
 
       const grouped = new Map<string, BacktestAssetHistoryRow>();

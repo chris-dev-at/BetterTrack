@@ -30,10 +30,13 @@ export interface ConglomerateService {
     positions: Array<{ assetId: string; weightPct: number }>,
   ): Promise<ConglomerateDetailRow>;
   activate(ownerId: string, id: string): Promise<ConglomerateDetailRow>;
-  preview(input: {
-    range: '1Y' | '3Y' | '5Y' | 'Max';
-    positions: Array<{ assetId: string; weightPct: number }>;
-  }): Promise<{
+  preview(
+    ownerId: string,
+    input: {
+      range: '1Y' | '3Y' | '5Y' | 'Max';
+      positions: Array<{ assetId: string; weightPct: number }>;
+    },
+  ): Promise<{
     range: '1Y' | '3Y' | '5Y' | 'Max';
     series: Array<{ date: string; value: number }>;
     stats: Awaited<ReturnType<typeof backtest>>['stats'] | null;
@@ -131,9 +134,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
 
     async replacePositions(ownerId, id, positions) {
       validatePositionSet(positions, 'draft');
-      const existingAssets = await repo.assetsExist([...new Set(positions.map((p) => p.assetId))]);
-      if (existingAssets.size !== new Set(positions.map((p) => p.assetId)).size) {
-        throw badRequest('One or more assets do not exist.', 'ASSET_NOT_FOUND');
+      const assetIds = [...new Set(positions.map((p) => p.assetId))];
+      const existingAssets = await repo.visibleAssetsExist(ownerId, assetIds);
+      if (existingAssets.size !== assetIds.length) {
+        throw badRequest('One or more assets are unavailable.', 'ASSET_NOT_FOUND');
       }
       const detail = await repo.replacePositions(ownerId, id, positions);
       if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
@@ -152,14 +156,18 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       return activated;
     },
 
-    async preview(input) {
+    async preview(ownerId, input) {
       validatePositionSet(input.positions, 'draft');
       const weighted = input.positions.filter((p) => p.weightPct > 0);
       if (weighted.length === 0) {
         return { range: input.range, series: [], stats: null, notice: null };
       }
 
-      const assets = await repo.historyForAssets(weighted.map((p) => p.assetId));
+      const assetIds = [...new Set(weighted.map((p) => p.assetId))];
+      const assets = await repo.historyForAssets(ownerId, assetIds);
+      if (assets.length !== assetIds.length) {
+        throw badRequest('One or more assets are unavailable.', 'ASSET_NOT_FOUND');
+      }
       const end =
         assets
           .flatMap((asset) => asset.prices.map((point) => point.date))

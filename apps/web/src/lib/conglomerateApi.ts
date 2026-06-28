@@ -4,6 +4,7 @@ import {
   type BacktestPreviewRange,
   type BacktestPreviewResponse,
   type ConglomerateDetail,
+  type UpdateConglomerateRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -31,6 +32,17 @@ export async function saveConglomeratePositions(
   const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}/positions`, {
     method: 'PUT',
     body: { positions },
+  });
+  return conglomerateDetailSchema.parse(data);
+}
+
+export async function updateConglomerateMeta(
+  id: string,
+  input: UpdateConglomerateRequest,
+): Promise<ConglomerateDetail> {
+  const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: input,
   });
   return conglomerateDetailSchema.parse(data);
 }

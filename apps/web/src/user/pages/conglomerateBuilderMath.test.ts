@@ -84,6 +84,7 @@ describe('conglomerate builder math', () => {
   it.each([
     { weights: [60, 40], label: '100.0%', valid: true },
     { weights: [60, 27.5], label: '87.5% - 12.5% left', valid: false },
+    { weights: [60, 50], label: '110.0% - 10.0% over', valid: false },
     { weights: [60, 40.005], label: '100.0%', valid: true },
   ])('builds sum pill state for $label', ({ weights, label, valid }) => {
     const state = sumPillState(weights.map((weight, index) => pos(String(index), weight)));

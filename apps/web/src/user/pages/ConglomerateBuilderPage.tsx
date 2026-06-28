@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom';
 
 import type { BacktestPreviewRange, ConglomerateDetail } from '@bettertrack/contracts';
@@ -9,6 +9,7 @@ import {
   getConglomerate,
   previewBacktest,
   saveConglomeratePositions,
+  updateConglomerateMeta,
 } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
 import { formatSignedPercent } from '../../lib/format';
@@ -44,6 +45,15 @@ function positionsFromDetail(detail: ConglomerateDetail): BuilderPosition[] {
 
 function defaultDraftName(): string {
   return `Draft ${new Date().toISOString().slice(0, 10)}`;
+}
+
+function savedPositionsKey(positions: readonly BuilderPosition[]): string {
+  return JSON.stringify(
+    positions.map((position) => ({
+      assetId: position.assetId,
+      weightPct: position.weightPct,
+    })),
+  );
 }
 
 export function ConglomeratesPage() {
@@ -94,6 +104,10 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
   }>({ loading: false, series: [], stats: null, notice: null });
   const hydratedRef = useRef(false);
   const createdRef = useRef(false);
+  const lastSavedTitleRef = useRef<string | null>(null);
+  const lastSavedPositionsKeyRef = useRef<string | null>(null);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveVersionRef = useRef(0);
 
   const editQuery = useQuery({
     queryKey: ['conglomerate', draftId],
@@ -106,29 +120,22 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
     onSuccess: (detail) => {
       setDraftId(detail.id);
       setTitle(detail.name);
-      setPositions(positionsFromDetail(detail));
+      const detailPositions = positionsFromDetail(detail);
+      setPositions(detailPositions);
+      lastSavedTitleRef.current = detail.name;
+      lastSavedPositionsKeyRef.current = savedPositionsKey(detailPositions);
       hydratedRef.current = true;
       setSaveState('saved');
     },
     onError: () => setSaveState('error'),
   });
 
-  const saveMutation = useMutation({
-    mutationFn: (nextPositions: BuilderPosition[]) =>
-      saveConglomeratePositions(
-        draftId!,
-        nextPositions.map((position) => ({
-          assetId: position.assetId,
-          weightPct: position.weightPct,
-        })),
-      ),
-    onMutate: () => setSaveState('saving'),
-    onSuccess: () => setSaveState('saved'),
-    onError: () => setSaveState('error'),
-  });
-
   const activateMutation = useMutation({
-    mutationFn: () => activateConglomerate(draftId!),
+    mutationFn: async () => {
+      if (!draftId) throw new Error('Draft is still being created.');
+      await persistCurrentDraft(draftId, title, positions);
+      return activateConglomerate(draftId);
+    },
     onSuccess: () => {
       setActivateError(null);
       setSaveState('saved');
@@ -137,6 +144,66 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
       setActivateError(error instanceof Error ? error.message : 'Activation failed.');
     },
   });
+
+  const enqueueSave = useCallback(async (operation: () => Promise<unknown>) => {
+    const version = ++saveVersionRef.current;
+    setSaveState('saving');
+    const run = saveQueueRef.current.catch(() => undefined).then(operation);
+    saveQueueRef.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    try {
+      await run;
+      if (version === saveVersionRef.current) setSaveState('saved');
+    } catch (error) {
+      if (version === saveVersionRef.current) setSaveState('error');
+      throw error;
+    }
+  }, []);
+
+  const persistPositions = useCallback(
+    (targetDraftId: string, nextPositions: BuilderPosition[]) =>
+      enqueueSave(async () => {
+        await saveConglomeratePositions(
+          targetDraftId,
+          nextPositions.map((position) => ({
+            assetId: position.assetId,
+            weightPct: position.weightPct,
+          })),
+        );
+        lastSavedPositionsKeyRef.current = savedPositionsKey(nextPositions);
+      }),
+    [enqueueSave],
+  );
+
+  const persistTitle = useCallback(
+    (targetDraftId: string, nextTitle: string) =>
+      enqueueSave(async () => {
+        const name = nextTitle.trim();
+        await updateConglomerateMeta(targetDraftId, { name });
+        lastSavedTitleRef.current = name;
+      }),
+    [enqueueSave],
+  );
+
+  async function persistCurrentDraft(
+    targetDraftId: string,
+    currentTitle: string,
+    currentPositions: BuilderPosition[],
+  ) {
+    const name = currentTitle.trim();
+    if (name.length === 0) {
+      throw new Error('Conglomerate name is required.');
+    }
+    if (lastSavedTitleRef.current !== name) {
+      await persistTitle(targetDraftId, name);
+    } else {
+      await saveQueueRef.current;
+    }
+    await persistPositions(targetDraftId, currentPositions);
+  }
 
   useEffect(() => {
     if (mode !== 'new' || createdRef.current) return;
@@ -148,15 +215,27 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
   useEffect(() => {
     if (mode !== 'edit' || !editQuery.data || hydratedRef.current) return;
     setTitle(editQuery.data.name);
-    setPositions(positionsFromDetail(editQuery.data));
+    const detailPositions = positionsFromDetail(editQuery.data);
+    setPositions(detailPositions);
+    lastSavedTitleRef.current = editQuery.data.name;
+    lastSavedPositionsKeyRef.current = savedPositionsKey(detailPositions);
     hydratedRef.current = true;
     setSaveState('saved');
   }, [editQuery.data, mode]);
 
   useEffect(() => {
     if (!draftId || !hydratedRef.current) return;
-    saveMutation.mutate(positions);
-  }, [draftId, positions]);
+    const key = savedPositionsKey(positions);
+    if (key === lastSavedPositionsKeyRef.current) return;
+    void persistPositions(draftId, positions).catch(() => undefined);
+  }, [draftId, persistPositions, positions]);
+
+  useEffect(() => {
+    if (!draftId || !hydratedRef.current) return;
+    const name = title.trim();
+    if (name.length === 0 || name === lastSavedTitleRef.current) return;
+    void persistTitle(draftId, name).catch(() => undefined);
+  }, [draftId, persistTitle, title]);
 
   useEffect(() => {
     if (!hydratedRef.current || positions.length === 0) {
