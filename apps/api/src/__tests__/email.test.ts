@@ -174,6 +174,82 @@ describe('email channel enabled (PROJECTPLAN.md §6.11)', () => {
   });
 });
 
+describe('admin test-email diagnostic (PROJECTPLAN.md §6.12)', () => {
+  it('GET /admin/email/status reflects whether SMTP is configured', async () => {
+    const off = await adminHarness({});
+    const offRes = await off.agent.get('/api/v1/admin/email/status');
+    expect(offRes.status).toBe(200);
+    expect(offRes.body).toEqual({ enabled: false });
+
+    const on = await adminHarness({ env: SMTP_ENV, emailTransport: recordingTransport() });
+    const onRes = await on.agent.get('/api/v1/admin/email/status');
+    expect(onRes.body).toEqual({ enabled: true });
+  });
+
+  it('sends a test email to the admin by default when the channel is enabled', async () => {
+    const transport = recordingTransport();
+    const { agent, admin } = await adminHarness({ env: SMTP_ENV, emailTransport: transport });
+
+    const res = await agent
+      .post('/api/v1/admin/test-email')
+      .set(...XRW)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('sent');
+    expect(res.body.to).toBe(admin.email);
+
+    expect(transport.sent).toHaveLength(1);
+    expect(transport.sent[0]!.to).toBe(admin.email);
+    expect(transport.sent[0]!.subject).toMatch(/test/i);
+  });
+
+  it('sends a test email to an explicit recipient', async () => {
+    const transport = recordingTransport();
+    const { agent } = await adminHarness({ env: SMTP_ENV, emailTransport: transport });
+
+    const res = await agent
+      .post('/api/v1/admin/test-email')
+      .set(...XRW)
+      .send({ to: 'pickme@test.dev' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('sent');
+    expect(res.body.to).toBe('pickme@test.dev');
+    expect(transport.sent[0]!.to).toBe('pickme@test.dev');
+  });
+
+  it('reports skipped and sends nothing when the channel is disabled', async () => {
+    const transport = recordingTransport();
+    const { agent } = await adminHarness({ emailTransport: transport });
+
+    const res = await agent
+      .post('/api/v1/admin/test-email')
+      .set(...XRW)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('skipped');
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it('reports failed without leaking SMTP credentials, and audits the attempt', async () => {
+    const transport = recordingTransport({ fail: true });
+    const { agent } = await adminHarness({ env: SMTP_ENV, emailTransport: transport });
+
+    const res = await agent
+      .post('/api/v1/admin/test-email')
+      .set(...XRW)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('failed');
+    expect(res.body.code).toBe('ECONNECTION');
+    // The response carries a coarse code only — never the SMTP password.
+    expect(JSON.stringify(res.body)).not.toContain('super-secret-smtp-pass');
+
+    const audit = await agent.get('/api/v1/admin/audit');
+    const actions = (audit.body.entries as Array<{ action: string }>).map((e) => e.action);
+    expect(actions).toContain('email.test_sent');
+  });
+});
+
 describe('email send failure is non-fatal and audited (PROJECTPLAN.md §6.11, §10)', () => {
   it('still creates the user, then logs an email.send_failed audit entry', async () => {
     const transport = recordingTransport({ fail: true });

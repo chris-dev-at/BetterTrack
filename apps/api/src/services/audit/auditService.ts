@@ -16,6 +16,7 @@ export const AuditAction = {
   InviteUsed: 'invite.used',
   InviteRevoked: 'invite.revoked',
   EmailSendFailed: 'email.send_failed',
+  EmailTestSent: 'email.test_sent',
 } as const;
 
 export interface AuditService {

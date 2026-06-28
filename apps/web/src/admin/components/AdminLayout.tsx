@@ -6,6 +6,7 @@ import { Button, Spinner, cx } from './ui';
 const NAV_ITEMS = [
   { to: '/admin/users', label: 'Users' },
   { to: '/admin/invites', label: 'Invites' },
+  { to: '/admin/email', label: 'Email' },
   { to: '/admin/audit', label: 'Audit log' },
 ];
 

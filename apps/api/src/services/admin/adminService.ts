@@ -14,7 +14,7 @@ import { badRequest, conflict, notFound } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
-import type { EmailService } from '../email/emailService';
+import type { EmailSendResult, EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { generateTempPassword } from '../password/tempPassword';
 import type { SessionService } from '../sessions/sessionService';
@@ -272,6 +272,40 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     listAudit: (params: { limit: number; cursor?: string }) => deps.audit.list(params),
+
+    /** Whether the email channel is configured + wired (PROJECTPLAN.md §6.11). */
+    emailStatus(): { enabled: boolean } {
+      return { enabled: email.enabled };
+    },
+
+    /**
+     * Admin diagnostic (PROJECTPLAN.md §6.12): send a test email to confirm SMTP
+     * works. Defaults to the admin's own address. The attempt is audited (status
+     * only — never credentials); a disabled channel returns `skipped`.
+     */
+    async sendTestEmail(
+      to: string | undefined,
+      actor: AdminActor,
+    ): Promise<EmailSendResult & { to: string }> {
+      const adminUser = await loadUser(actor.id);
+      const recipient = (to ?? adminUser.email).trim();
+      const result = await email.sendTest({
+        to: recipient,
+        audit: { actorId: actor.id, targetType: 'user', targetId: actor.id, ip: actor.ip },
+      });
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.EmailTestSent,
+        targetType: 'user',
+        targetId: actor.id,
+        ip: actor.ip,
+        meta:
+          result.status === 'failed'
+            ? { status: result.status, code: result.code }
+            : { status: result.status },
+      });
+      return { ...result, to: recipient };
+    },
   };
 }
 

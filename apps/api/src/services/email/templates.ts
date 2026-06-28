@@ -110,6 +110,33 @@ export function tempPasswordEmail(params: {
   };
 }
 
+/**
+ * Diagnostic email triggered from the admin console (PROJECTPLAN.md §6.12) to
+ * confirm SMTP is wired. Carries no account data — it just has to arrive.
+ */
+export function testEmail(params: { appUrl: string }): EmailContent {
+  const { appUrl } = params;
+  return {
+    subject: `${BRAND} SMTP test`,
+    html: layout(
+      'SMTP test successful',
+      [
+        '<p>This is a test email sent from your BetterTrack admin console. ',
+        'If it reached you, outbound email is configured correctly.</p>',
+        `<p style="padding:8px 0 0;">${button(appUrl, 'Open BetterTrack')}</p>`,
+      ].join(''),
+    ),
+    text: [
+      `${BRAND} SMTP test`,
+      '',
+      'This is a test email sent from your BetterTrack admin console.',
+      'If it reached you, outbound email is configured correctly.',
+      '',
+      `Open BetterTrack: ${appUrl}`,
+    ].join('\n'),
+  };
+}
+
 export function welcomeEmail(params: { username: string; appUrl: string }): EmailContent {
   const { username, appUrl } = params;
   return {

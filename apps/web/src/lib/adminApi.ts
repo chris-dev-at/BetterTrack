@@ -6,9 +6,11 @@ import {
   auditLogListResponseSchema,
   createInviteResponseSchema,
   createUserResponseSchema,
+  emailStatusResponseSchema,
   meResponseSchema,
   okResponseSchema,
   resetPasswordResponseSchema,
+  testEmailResponseSchema,
   type AdminInviteListResponse,
   type AdminStats,
   type AdminUser,
@@ -18,9 +20,12 @@ import {
   type CreateInviteResponse,
   type CreateUserRequest,
   type CreateUserResponse,
+  type EmailStatusResponse,
   type LoginRequest,
   type MeResponse,
   type ResetPasswordResponse,
+  type TestEmailRequest,
+  type TestEmailResponse,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -103,6 +108,18 @@ export async function revokeInvite(id: string): Promise<void> {
 export async function getStats(signal?: AbortSignal): Promise<AdminStats> {
   const data = await apiRequest<unknown>('/admin/stats', { signal });
   return adminStatsSchema.parse(data);
+}
+
+// --- Admin: email channel -------------------------------------------------
+
+export async function getEmailStatus(signal?: AbortSignal): Promise<EmailStatusResponse> {
+  const data = await apiRequest<unknown>('/admin/email/status', { signal });
+  return emailStatusResponseSchema.parse(data);
+}
+
+export async function sendTestEmail(body: TestEmailRequest): Promise<TestEmailResponse> {
+  const data = await apiRequest<unknown>('/admin/test-email', { method: 'POST', body });
+  return testEmailResponseSchema.parse(data);
 }
 
 export async function listAudit(
