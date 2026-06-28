@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
 import { useAuth } from '../AuthContext';
@@ -21,7 +21,11 @@ const NAV_ITEMS = [
 
 export function AppLayout() {
   const { user, logout } = useAuth();
+  const location = useLocation();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const isBuilderRoute =
+    location.pathname === '/conglomerates/new' ||
+    /^\/conglomerates\/[^/]+\/edit$/.test(location.pathname);
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
@@ -87,7 +91,7 @@ export function AppLayout() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-8">
+      <main className={cx('mx-auto px-4 py-8', isBuilderRoute ? 'max-w-none' : 'max-w-6xl')}>
         <Outlet />
       </main>
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />

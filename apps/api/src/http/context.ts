@@ -4,6 +4,7 @@ import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
@@ -24,6 +25,10 @@ import { createAssetService, type AssetService } from '../services/assets/assetS
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createCurrencyService } from '../services/currency/currencyService';
+import {
+  createConglomerateService,
+  type ConglomerateService,
+} from '../services/conglomerates/conglomerateService';
 import {
   createCustomAssetService,
   type CustomAssetService,
@@ -58,6 +63,8 @@ export interface AppContext {
   portfolio: PortfolioService;
   /** Custom investments + their value-points editor (§6.9). */
   customAssets: CustomAssetService;
+  /** Conglomerate Builder autosave, activation and preview (§6.5). */
+  conglomerates: ConglomerateService;
 }
 
 export interface BuildContextDeps {
@@ -154,6 +161,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({ repo: customAssetRepo, portfolio });
+  const conglomerateRepo = createConglomerateRepository(db);
+  const conglomerates = createConglomerateService({
+    repo: conglomerateRepo,
+    currencyService: currency,
+  });
 
   return {
     config,
@@ -166,5 +178,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     assets,
     portfolio,
     customAssets,
+    conglomerates,
   };
 }

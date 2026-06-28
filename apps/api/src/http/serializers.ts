@@ -2,10 +2,12 @@ import type {
   AdminInvite,
   AdminUser,
   AuditLogEntry,
+  ConglomerateDetail,
   MeResponse,
   WorkboardItem,
 } from '@bettertrack/contracts';
 
+import type { ConglomerateDetailRow } from '../data/repositories/conglomerateRepository';
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
 import type { AuditLogRow, InviteRow, UserRow } from '../data/schema';
 import type { AuthUser } from './types';
@@ -106,5 +108,32 @@ export function toAuditEntry(row: AuditLogRow): AuditLogEntry {
     ip: row.ip,
     meta: row.meta ?? null,
     createdAt: toIsoRequired(row.createdAt),
+  };
+}
+
+export function toConglomerateDetail(row: ConglomerateDetailRow): ConglomerateDetail {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? null,
+    status: row.status,
+    updatedAt: toIsoRequired(row.updatedAt),
+    positions: row.positions.map((position) => ({
+      id: position.id,
+      assetId: position.assetId,
+      weightPct: Number(position.weightPct),
+      sortOrder: position.sortOrder,
+      asset: {
+        id: position.asset.id,
+        providerId: position.asset.providerId,
+        providerRef: position.asset.providerRef,
+        symbol: position.asset.symbol,
+        name: position.asset.name,
+        exchange: position.asset.exchange ?? null,
+        currency: position.asset.currency,
+        type: position.asset.type,
+        isCustom: position.asset.ownerId !== null,
+      },
+    })),
   };
 }

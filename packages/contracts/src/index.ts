@@ -6,3 +6,4 @@ export * from './market';
 export * from './assets';
 export * from './workboard';
 export * from './portfolio';
+export * from './conglomerates';
