@@ -6,8 +6,16 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../lib/userApi');
+vi.mock('../lib/workboardApi', () => ({
+  listWorkboard: vi.fn(),
+  addToWorkboard: vi.fn(),
+  removeFromWorkboard: vi.fn(),
+  reorderWorkboard: vi.fn(),
+}));
+
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
+import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 
 const member: MeResponse = {
@@ -38,6 +46,9 @@ const anonymous = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // WorkboardPage fetches the watchlist on mount; return an empty list so the
+  // page renders without errors in tests that exercise the workboard route.
+  vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
 
 test('an unauthenticated visit to a user route redirects to /login', async () => {
@@ -46,7 +57,9 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
   renderAt('/workboard');
 
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
-  expect(screen.queryByText('Watchlist, alerts and your conglomerates.')).not.toBeInTheDocument();
+  expect(
+    screen.queryByText('Your watched assets, alerts and conglomerates at a glance.'),
+  ).not.toBeInTheDocument();
 });
 
 test('after signing in, the user returns to the originally requested route', async () => {
@@ -62,7 +75,9 @@ test('after signing in, the user returns to the originally requested route', asy
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
   // Landed on the intended route, not the dashboard home.
-  expect(await screen.findByText('Watchlist, alerts and your conglomerates.')).toBeInTheDocument();
+  expect(
+    await screen.findByText('Your watched assets, alerts and conglomerates at a glance.'),
+  ).toBeInTheDocument();
   expect(api.login).toHaveBeenCalledWith({ identifier: 'jane', password: 'correct horse' });
 });
 
@@ -83,6 +98,44 @@ test('bad credentials show a single generic, non-enumerating error', async () =>
   expect(await screen.findByText('Incorrect email/username or password.')).toBeInTheDocument();
   // Still on the login screen; no redirect, no app content.
   expect(screen.getByText('Sign in to your account')).toBeInTheDocument();
+});
+
+test('a 429 on login shows a dedicated rate-limit message, not the generic credentials error', async () => {
+  anonymous();
+  vi.mocked(api.login).mockRejectedValue(new ApiError(429, 'RATE_LIMITED', 'Too many requests.'));
+
+  const user = userEvent.setup();
+  renderAt('/login');
+
+  await screen.findByText('Sign in to your account');
+  await user.type(screen.getByLabelText('Email or username'), 'jane');
+  await user.type(screen.getByLabelText('Password'), 'wrong-password');
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(
+    await screen.findByText(/Too many login attempts\. Please wait a moment/i),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('Incorrect email/username or password.')).not.toBeInTheDocument();
+  // Still on login screen.
+  expect(screen.getByText('Sign in to your account')).toBeInTheDocument();
+});
+
+test('a 429 on login with retryAfterSeconds mentions the wait time', async () => {
+  anonymous();
+  vi.mocked(api.login).mockRejectedValue(
+    new ApiError(429, 'RATE_LIMITED', 'Too many requests.', undefined, 30),
+  );
+
+  const user = userEvent.setup();
+  renderAt('/login');
+
+  await screen.findByText('Sign in to your account');
+  await user.type(screen.getByLabelText('Email or username'), 'jane');
+  await user.type(screen.getByLabelText('Password'), 'wrong-password');
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(await screen.findByText(/30 seconds/i)).toBeInTheDocument();
+  expect(screen.queryByText('Incorrect email/username or password.')).not.toBeInTheDocument();
 });
 
 test('a must-change session is trapped, then released by a successful change', async () => {

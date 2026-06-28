@@ -133,13 +133,14 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
     const me = await userAgent.get('/api/v1/auth/me');
     expect(me.status).toBe(401);
 
-    // Re-login is rejected with the generic error.
+    // Re-login with the correct password is rejected with the distinct
+    // account-disabled error (revealed only post-verification, §6.1/§16).
     const relogin = await request(harness.app)
       .post('/api/v1/auth/login')
       .set(...XRW)
       .send({ identifier: 'doomed@test.dev', password: tempPassword });
-    expect(relogin.status).toBe(401);
-    expect(relogin.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(relogin.status).toBe(403);
+    expect(relogin.body.error.code).toBe('ACCOUNT_DISABLED');
   });
 });
 
@@ -240,8 +241,8 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
       .send({ email: 'locked@test.dev', username: 'locked_user' });
     const userId = created.body.user.id as string;
 
-    // 10 consecutive bad passwords → account locked.
-    await failLogin(harness.app, 'locked@test.dev', 10);
+    // `lockoutThreshold` consecutive bad passwords → account locked.
+    await failLogin(harness.app, 'locked@test.dev', harness.ctx.config.rateLimits.lockoutThreshold);
     const whileLocked = await request(harness.app)
       .post('/api/v1/auth/login')
       .set(...XRW)
@@ -268,7 +269,11 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
     const userId = created.body.user.id as string;
     const tempPassword = created.body.tempPassword as string;
 
-    await failLogin(harness.app, 'reenable@test.dev', 10);
+    await failLogin(
+      harness.app,
+      'reenable@test.dev',
+      harness.ctx.config.rateLimits.lockoutThreshold,
+    );
 
     await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
@@ -301,7 +306,10 @@ describe('throttled login failures are audited (PROJECTPLAN.md §10)', () => {
 
     // Drive the per-account hourly throttle directly (the consecutive-failure
     // lockout would otherwise mask it within a single hour).
-    await harness.ctx.redis.set(failHourKey(userId), '10');
+    await harness.ctx.redis.set(
+      failHourKey(userId),
+      String(harness.ctx.config.rateLimits.accountFailuresPerHour),
+    );
 
     const res = await request(harness.app)
       .post('/api/v1/auth/login')

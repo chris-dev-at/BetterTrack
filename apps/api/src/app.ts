@@ -8,7 +8,12 @@ import { requireCsrfHeader } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { enforcePasswordChange, loadSession } from './http/middleware/session';
 import { createAdminRouter } from './http/routes/adminRoutes';
+import { createAssetsRouter } from './http/routes/assetsRoutes';
 import { createAuthRouter } from './http/routes/authRoutes';
+import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
+import { createPortfolioRouter } from './http/routes/portfolioRoutes';
+import { createSearchRouter } from './http/routes/searchRoutes';
+import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
 
 // Side-effect import: augments Express's Request type (req.authUser, etc.).
@@ -41,6 +46,11 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', healthRouter);
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
   app.use('/api/v1/admin', createAdminRouter(ctx, limiters));
+  app.use('/api/v1/workboard', createWorkboardRouter(ctx));
+  app.use('/api/v1/search', createSearchRouter(ctx, limiters));
+  app.use('/api/v1/assets', createAssetsRouter(ctx));
+  app.use('/api/v1/portfolio', createPortfolioRouter(ctx));
+  app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
 
   app.use(createErrorHandler(ctx.logger));
   return app;

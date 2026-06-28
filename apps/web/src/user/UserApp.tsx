@@ -1,21 +1,20 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
 import { AppLayout } from './components/AppLayout';
-import { Splash } from './components/ui';
+import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { InvitePage } from './pages/InvitePage';
 import { LoginPage } from './pages/LoginPage';
-import {
-  AssetDetailPage,
-  ConglomeratesPage,
-  DashboardPage,
-  PortfolioPage,
-  SearchPage,
-  SettingsPage,
-  WorkboardPage,
-} from './pages/placeholders';
+import { AssetDetailPage } from './pages/AssetDetailPage';
+import { ConglomeratesPage, DashboardPage, SettingsPage } from './pages/placeholders';
+import { PortfolioPage } from './pages/PortfolioPage';
+import { WorkboardPage } from './pages/WorkboardPage';
+import { SearchPage } from './pages/SearchPage';
+
+const queryClient = new QueryClient();
 
 /**
  * The non-admin app (PROJECTPLAN.md §6.1, §7.1, §7.2). Two app-wide auth gates
@@ -51,10 +50,20 @@ function UserShell() {
   );
 }
 
+/** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
+function RateLimitToastPortal() {
+  const { rateLimitBanner, clearRateLimitBanner } = useAuth();
+  if (!rateLimitBanner) return null;
+  return <Toast onDismiss={clearRateLimitBanner}>{rateLimitBanner}</Toast>;
+}
+
 export function UserApp() {
   return (
-    <AuthProvider>
-      <UserShell />
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <RateLimitToastPortal />
+        <UserShell />
+      </AuthProvider>
+    </QueryClientProvider>
   );
 }

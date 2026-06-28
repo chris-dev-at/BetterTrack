@@ -2,17 +2,45 @@ import type { Redis } from 'ioredis';
 
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
+import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
+import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
+import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createWorkboardRepository } from '../data/repositories/workboardRepository';
+import {
+  createBackfillScheduler,
+  createQueueRegistry,
+  noopBackfillScheduler,
+  type BackfillScheduler,
+} from '../jobs';
 import type { Logger } from '../logger';
+import { createMarketData } from '../providers';
+import type { MarketDataService } from '../providers';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
+import { createCurrencyService } from '../services/currency/currencyService';
+import {
+  createCustomAssetService,
+  type CustomAssetService,
+} from '../services/customAssets/customAssetService';
+import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
+import {
+  createPortfolioService,
+  type PortfolioService,
+} from '../services/portfolio/portfolioService';
 import { createSessionService } from '../services/sessions/sessionService';
+import {
+  createWorkboardService,
+  type WorkboardService,
+} from '../services/workboard/workboardService';
 
 /** What the HTTP layer needs from the wired application. */
 export interface AppContext {
@@ -21,6 +49,15 @@ export interface AppContext {
   logger: Logger;
   auth: AuthService;
   admin: AdminService;
+  workboard: WorkboardService;
+  /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
+  marketData: MarketDataService;
+  /** Search + asset detail/quote/history over the market-data layer (§6.2, §6.3). */
+  assets: AssetService;
+  /** Transactions, holdings/totals and the value-over-time series (§6.9). */
+  portfolio: PortfolioService;
+  /** Custom investments + their value-points editor (§6.9). */
+  customAssets: CustomAssetService;
 }
 
 export interface BuildContextDeps {
@@ -30,6 +67,10 @@ export interface BuildContextDeps {
   logger: Logger;
   /** Test seam: inject a fake transport instead of a real SMTP connection. */
   emailTransport?: MailTransport | null;
+  /** Test seam: inject a stubbed market-data service instead of the live providers. */
+  marketData?: MarketDataService;
+  /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
+  backfill?: BackfillScheduler;
 }
 
 /** Composition root: repositories → services → context. */
@@ -74,5 +115,56 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
   });
 
-  return { config, redis, logger, auth, admin };
+  const workboardRepo = createWorkboardRepository(db);
+  const workboard = createWorkboardService({ repo: workboardRepo });
+
+  // Registers the Yahoo + manual providers and wraps them in caching/resilience
+  // (§5.1–§5.2). `registry.for(asset)` lives inside; routes use the service.
+  const marketData = deps.marketData ?? createMarketData({ db, redis }).service;
+
+  // First-touch backfill enqueue (§6.2/§9). In tests no BullMQ worker runs, so
+  // default to a no-op; production enqueues onto the shared Redis-backed queue.
+  const backfill =
+    deps.backfill ??
+    (config.isTest ? noopBackfillScheduler : createBackfillScheduler(createQueueRegistry(redis)));
+
+  // Single conversion keystone (§5.4): spot FX sourced from cached Yahoo quotes.
+  const currencySource = createMarketDataFxSource(marketData);
+  const currency = createCurrencyService({ source: currencySource });
+
+  const assetRepo = createAssetRepository(db);
+  const assets = createAssetService({
+    marketData,
+    assetRepo,
+    backfill,
+    currencyService: currency,
+  });
+
+  // Portfolio + custom investments (§6.9). The custom-asset service records its
+  // optional initial purchase through the portfolio service and shares its
+  // value-series cache invalidation.
+  const portfolioRepo = createPortfolioRepository(db);
+  const transactionRepo = createTransactionRepository(db);
+  const portfolio = createPortfolioService({
+    portfolioRepo,
+    transactionRepo,
+    marketData,
+    currencyService: currency,
+    redis,
+  });
+  const customAssetRepo = createCustomAssetRepository(db);
+  const customAssets = createCustomAssetService({ repo: customAssetRepo, portfolio });
+
+  return {
+    config,
+    redis,
+    logger,
+    auth,
+    admin,
+    workboard,
+    marketData,
+    assets,
+    portfolio,
+    customAssets,
+  };
 }
