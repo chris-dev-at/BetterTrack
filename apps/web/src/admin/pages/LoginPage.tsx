@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 
+import { Wordmark } from '../../components/Wordmark';
 import { ApiError } from '../../lib/apiClient';
 import { NotAdminError, PasswordChangeRequiredError, useAuth } from '../AuthContext';
 import { Alert, Button, Spinner, TextField } from '../components/ui';
@@ -52,8 +53,7 @@ export function LoginPage() {
     <div className="grid min-h-screen place-items-center bg-neutral-950 px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">BetterTrack</h1>
-          <p className="mt-1 text-sm text-neutral-500">Admin console</p>
+          <Wordmark edition="Admin Panel" className="text-2xl" />
         </div>
         <form
           onSubmit={onSubmit}
