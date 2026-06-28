@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import * as schema from '../data/schema';
+import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -170,6 +171,45 @@ describe('conglomerate asset visibility', () => {
         .from(schema.conglomeratePositions)
         .where(eq(schema.conglomeratePositions.conglomerateId, conglomerate.id));
       expect(storedPositions).toEqual([{ weightPct: expectedStoredWeight }]);
+    },
+  );
+
+  it.each([
+    {
+      name: 'duplicate replacement asset',
+      nextWeights: [60, 40],
+      expectedStoredWeight: '100.000',
+    },
+  ])(
+    'rolls back the full-position autosave when $name fails during insert',
+    async ({ nextWeights, expectedStoredWeight }) => {
+      const user = await harness.seedUser();
+      const asset = await seedAsset();
+      const conglomerate = await seedConglomerate(user.id, 'active');
+      await harness.db.insert(schema.conglomeratePositions).values({
+        conglomerateId: conglomerate.id,
+        assetId: asset.id,
+        weightPct: '100.000',
+        sortOrder: 0,
+      });
+
+      const repo = createConglomerateRepository(harness.db);
+      await expect(
+        repo.replacePositions(
+          user.id,
+          conglomerate.id,
+          nextWeights.map((weightPct) => ({ assetId: asset.id, weightPct })),
+        ),
+      ).rejects.toThrow();
+
+      const storedPositions = await harness.db
+        .select({
+          assetId: schema.conglomeratePositions.assetId,
+          weightPct: schema.conglomeratePositions.weightPct,
+        })
+        .from(schema.conglomeratePositions)
+        .where(eq(schema.conglomeratePositions.conglomerateId, conglomerate.id));
+      expect(storedPositions).toEqual([{ assetId: asset.id, weightPct: expectedStoredWeight }]);
     },
   );
 });

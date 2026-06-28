@@ -96,21 +96,32 @@ export function createConglomerateRepository(db: Database) {
       id: string,
       positions: Array<{ assetId: string; weightPct: number }>,
     ): Promise<ConglomerateDetailRow | null> {
-      const existing = await loadDetail(ownerId, id);
-      if (!existing) return null;
+      const replaced = await db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ id: conglomerates.id })
+          .from(conglomerates)
+          .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)))
+          .limit(1);
+        if (existing.length === 0) return false;
 
-      await db.delete(conglomeratePositions).where(eq(conglomeratePositions.conglomerateId, id));
-      if (positions.length > 0) {
-        await db.insert(conglomeratePositions).values(
-          positions.map((position, sortOrder) => ({
-            conglomerateId: id,
-            assetId: position.assetId,
-            weightPct: position.weightPct.toFixed(3),
-            sortOrder,
-          })),
-        );
-      }
-      await db.update(conglomerates).set({ updatedAt: new Date() }).where(eq(conglomerates.id, id));
+        await tx.delete(conglomeratePositions).where(eq(conglomeratePositions.conglomerateId, id));
+        if (positions.length > 0) {
+          await tx.insert(conglomeratePositions).values(
+            positions.map((position, sortOrder) => ({
+              conglomerateId: id,
+              assetId: position.assetId,
+              weightPct: position.weightPct.toFixed(3),
+              sortOrder,
+            })),
+          );
+        }
+        await tx
+          .update(conglomerates)
+          .set({ updatedAt: new Date() })
+          .where(eq(conglomerates.id, id));
+        return true;
+      });
+      if (!replaced) return null;
 
       return loadDetail(ownerId, id);
     },
@@ -131,12 +142,18 @@ export function createConglomerateRepository(db: Database) {
         .select({ id: assets.id })
         .from(assets)
         .where(
-          and(inArray(assets.id, assetIds), or(isNull(assets.ownerId), eq(assets.ownerId, ownerId))),
+          and(
+            inArray(assets.id, assetIds),
+            or(isNull(assets.ownerId), eq(assets.ownerId, ownerId)),
+          ),
         );
       return new Set(rows.map((row) => row.id));
     },
 
-    async historyForAssets(ownerId: string, assetIds: string[]): Promise<BacktestAssetHistoryRow[]> {
+    async historyForAssets(
+      ownerId: string,
+      assetIds: string[],
+    ): Promise<BacktestAssetHistoryRow[]> {
       if (assetIds.length === 0) return [];
       const rows = await db
         .select({
@@ -149,7 +166,10 @@ export function createConglomerateRepository(db: Database) {
         .from(assets)
         .leftJoin(priceHistory, eq(priceHistory.assetId, assets.id))
         .where(
-          and(inArray(assets.id, assetIds), or(isNull(assets.ownerId), eq(assets.ownerId, ownerId))),
+          and(
+            inArray(assets.id, assetIds),
+            or(isNull(assets.ownerId), eq(assets.ownerId, ownerId)),
+          ),
         )
         .orderBy(assets.id, priceHistory.date);
 
