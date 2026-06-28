@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
 import { AuditPage } from './pages/AuditPage';
+import { EmailPage } from './pages/EmailPage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
 import { UsersPage } from './pages/UsersPage';
@@ -21,6 +22,7 @@ export function AdminApp() {
           <Route index element={<Navigate to="users" replace />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="invites" element={<InvitesPage />} />
+          <Route path="email" element={<EmailPage />} />
           <Route path="audit" element={<AuditPage />} />
         </Route>
         {/* Unknown admin paths fall back to the users page (or login if anonymous). */}

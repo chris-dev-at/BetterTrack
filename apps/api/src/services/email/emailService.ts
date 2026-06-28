@@ -1,7 +1,13 @@
 import type { AppConfig } from '../../config/env';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { inviteEmail, tempPasswordEmail, welcomeEmail, type EmailContent } from './templates';
+import {
+  inviteEmail,
+  tempPasswordEmail,
+  testEmail,
+  welcomeEmail,
+  type EmailContent,
+} from './templates';
 import type { MailTransport } from './transport';
 
 /**
@@ -50,6 +56,8 @@ export interface EmailService {
     username: string;
     audit: EmailAuditTarget;
   }): Promise<EmailSendResult>;
+  /** Admin diagnostic (PROJECTPLAN.md §6.12): a throwaway "does SMTP work" mail. */
+  sendTest(params: { to: string; audit: EmailAuditTarget }): Promise<EmailSendResult>;
 }
 
 export interface EmailServiceDeps {
@@ -75,7 +83,7 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
   const enabled = Boolean(config.email.enabled && transport);
 
   async function deliver(
-    kind: 'invite' | 'temp_password' | 'welcome',
+    kind: 'invite' | 'temp_password' | 'welcome' | 'test',
     to: string,
     content: EmailContent,
     target: EmailAuditTarget,
@@ -127,5 +135,8 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
 
     sendWelcome: ({ to, username, audit: target }) =>
       deliver('welcome', to, welcomeEmail({ username, appUrl: config.appOrigin }), target),
+
+    sendTest: ({ to, audit: target }) =>
+      deliver('test', to, testEmail({ appUrl: config.appOrigin }), target),
   };
 }

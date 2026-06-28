@@ -120,3 +120,28 @@ export const adminStatsSchema = z.object({
   pendingInviteCount: z.number().int(),
 });
 export type AdminStats = z.infer<typeof adminStatsSchema>;
+
+// --- Email channel (test/diagnostic) — PROJECTPLAN.md §6.11, §6.12 -----------
+
+/** Whether outbound email is configured + wired (SMTP_HOST + SMTP_FROM set). */
+export const emailStatusResponseSchema = z.object({ enabled: z.boolean() });
+export type EmailStatusResponse = z.infer<typeof emailStatusResponseSchema>;
+
+/** Admin-only diagnostic: send a throwaway email to confirm SMTP works. */
+export const testEmailRequestSchema = z.object({ to: emailSchema.optional() }).strict();
+export type TestEmailRequest = z.infer<typeof testEmailRequestSchema>;
+
+export const EMAIL_SEND_STATUSES = ['sent', 'skipped', 'failed'] as const;
+export const emailSendStatusSchema = z.enum(EMAIL_SEND_STATUSES);
+export type EmailSendStatus = z.infer<typeof emailSendStatusSchema>;
+
+/**
+ * Mirrors the service's EmailSendResult plus the resolved recipient.
+ * `code` is a coarse, secret-free error tag — never the raw SMTP response.
+ */
+export const testEmailResponseSchema = z.object({
+  status: emailSendStatusSchema,
+  to: z.string(),
+  code: z.string().optional(),
+});
+export type TestEmailResponse = z.infer<typeof testEmailResponseSchema>;

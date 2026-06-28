@@ -7,11 +7,13 @@ import {
   createUserRequestSchema,
   deleteUserRequestSchema,
   idParamSchema,
+  testEmailRequestSchema,
   updateUserRequestSchema,
   type AuditQuery,
   type CreateInviteRequest,
   type CreateUserRequest,
   type DeleteUserRequest,
+  type TestEmailRequest,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -103,6 +105,16 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   router.get('/stats', async (_req, res) => {
     res.json(await ctx.admin.stats());
+  });
+
+  router.get('/email/status', async (_req, res) => {
+    res.json(ctx.admin.emailStatus());
+  });
+
+  router.post('/test-email', validateBody(testEmailRequestSchema), async (req, res) => {
+    const { to } = req.valid?.body as TestEmailRequest;
+    const result = await ctx.admin.sendTestEmail(to, actorOf(req));
+    res.json(result);
   });
 
   router.get('/audit', validateQuery(auditQuerySchema), async (req, res) => {
