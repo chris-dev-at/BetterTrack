@@ -1,5 +1,7 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
 
+import { Wordmark } from '../../components/Wordmark';
+
 /** Tiny class-name joiner — avoids a dependency for one helper (mirrors admin/ui). */
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -95,7 +97,7 @@ export function Splash({ label = 'Loading…' }: { label?: string }) {
   return (
     <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
       <div className="flex flex-col items-center gap-4 text-center">
-        <span className="text-2xl font-semibold tracking-tight text-neutral-100">BetterTrack</span>
+        <Wordmark edition="Webapp" className="text-2xl" />
         <Spinner label={label} />
       </div>
     </div>
@@ -108,7 +110,7 @@ export function AuthCard({ subtitle, children }: { subtitle: string; children: R
     <div className="grid min-h-screen place-items-center bg-[#0b0e14] px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">BetterTrack</h1>
+          <Wordmark edition="Webapp" className="text-2xl" />
           <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
         </div>
         {children}
