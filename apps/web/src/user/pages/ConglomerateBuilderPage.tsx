@@ -2,7 +2,11 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom';
 
-import type { BacktestPreviewRange, ConglomerateDetail } from '@bettertrack/contracts';
+import type {
+  BacktestPreviewRange,
+  ConglomerateDetail,
+  ConglomerateStatus,
+} from '@bettertrack/contracts';
 import {
   activateConglomerate,
   createConglomerateDraft,
@@ -17,6 +21,7 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts/types';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Alert, Button, Spinner } from '../components/ui';
+import { createDefaultDraftName } from './conglomerateBuilderDraftName';
 import {
   autoBalance,
   normalizeWeights,
@@ -41,10 +46,6 @@ function positionsFromDetail(detail: ConglomerateDetail): BuilderPosition[] {
     weightPct: position.weightPct,
     locked: false,
   }));
-}
-
-function defaultDraftName(): string {
-  return `Draft ${new Date().toISOString().slice(0, 10)}`;
 }
 
 function savedPositionsKey(positions: readonly BuilderPosition[]): string {
@@ -90,7 +91,8 @@ function ConglomeratesIndex() {
 export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
   const { id } = useParams();
   const [draftId, setDraftId] = useState<string | null>(mode === 'edit' ? (id ?? null) : null);
-  const [title, setTitle] = useState(defaultDraftName);
+  const [title, setTitle] = useState(createDefaultDraftName);
+  const [conglomerateStatus, setConglomerateStatus] = useState<ConglomerateStatus>('draft');
   const [positions, setPositions] = useState<BuilderPosition[]>([]);
   const [previewRange, setPreviewRange] = useState<BacktestPreviewRange>('1Y');
   const [normalizeError, setNormalizeError] = useState<string | null>(null);
@@ -120,6 +122,7 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
     onSuccess: (detail) => {
       setDraftId(detail.id);
       setTitle(detail.name);
+      setConglomerateStatus(detail.status);
       const detailPositions = positionsFromDetail(detail);
       setPositions(detailPositions);
       lastSavedTitleRef.current = detail.name;
@@ -136,8 +139,9 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
       await persistCurrentDraft(draftId, title, positions);
       return activateConglomerate(draftId);
     },
-    onSuccess: () => {
+    onSuccess: (detail) => {
       setActivateError(null);
+      setConglomerateStatus(detail.status);
       setSaveState('saved');
     },
     onError: (error) => {
@@ -166,13 +170,14 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
   const persistPositions = useCallback(
     (targetDraftId: string, nextPositions: BuilderPosition[]) =>
       enqueueSave(async () => {
-        await saveConglomeratePositions(
+        const detail = await saveConglomeratePositions(
           targetDraftId,
           nextPositions.map((position) => ({
             assetId: position.assetId,
             weightPct: position.weightPct,
           })),
         );
+        setConglomerateStatus(detail.status);
         lastSavedPositionsKeyRef.current = savedPositionsKey(nextPositions);
       }),
     [enqueueSave],
@@ -182,7 +187,8 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
     (targetDraftId: string, nextTitle: string) =>
       enqueueSave(async () => {
         const name = nextTitle.trim();
-        await updateConglomerateMeta(targetDraftId, { name });
+        const detail = await updateConglomerateMeta(targetDraftId, { name });
+        setConglomerateStatus(detail.status);
         lastSavedTitleRef.current = name;
       }),
     [enqueueSave],
@@ -215,6 +221,7 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
   useEffect(() => {
     if (mode !== 'edit' || !editQuery.data || hydratedRef.current) return;
     setTitle(editQuery.data.name);
+    setConglomerateStatus(editQuery.data.status);
     const detailPositions = positionsFromDetail(editQuery.data);
     setPositions(detailPositions);
     lastSavedTitleRef.current = editQuery.data.name;
@@ -344,7 +351,7 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <StatusPill state={saveState} />
+          <StatusPill state={saveState} status={conglomerateStatus} />
           <Button onClick={() => activateMutation.mutate()} disabled={!canActivate}>
             {activateMutation.isPending ? 'Activating...' : 'Activate'}
           </Button>
@@ -433,15 +440,22 @@ export function ConglomerateBuilderPage({ mode }: { mode: 'new' | 'edit' }) {
   );
 }
 
-function StatusPill({ state }: { state: 'idle' | 'saving' | 'saved' | 'error' }) {
+function StatusPill({
+  state,
+  status,
+}: {
+  state: 'idle' | 'saving' | 'saved' | 'error';
+  status: ConglomerateStatus;
+}) {
+  const statusLabel = status === 'active' ? 'Active' : 'Draft';
   const label =
     state === 'saving'
-      ? 'Draft - saving'
+      ? `${statusLabel} - saving`
       : state === 'error'
-        ? 'Draft - save failed'
+        ? `${statusLabel} - save failed`
         : state === 'saved'
-          ? 'Draft — saved'
-          : 'Draft';
+          ? `${statusLabel} — saved`
+          : statusLabel;
   return (
     <span
       className={cx(

@@ -44,6 +44,7 @@ vi.mock('../../ui/charts', () => ({
 import {
   activateConglomerate,
   createConglomerateDraft,
+  getConglomerate,
   previewBacktest,
   saveConglomeratePositions,
   updateConglomerateMeta,
@@ -83,16 +84,23 @@ const EMPTY_DETAIL: ConglomerateDetail = {
   positions: [],
 };
 
+const ACTIVE_DETAIL: ConglomerateDetail = {
+  ...EMPTY_DETAIL,
+  id: '20000000-0000-0000-0000-000000000002',
+  name: 'Active basket',
+  status: 'active',
+};
+
 function makeQueryClient() {
   return new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
 }
 
-function renderBuilder() {
+function renderBuilder(initialEntry = '/conglomerates/new') {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <MemoryRouter initialEntries={['/conglomerates/new']}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/conglomerates/*" element={<ConglomeratesPage />} />
         </Routes>
@@ -104,6 +112,7 @@ function renderBuilder() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(createConglomerateDraft).mockResolvedValue(EMPTY_DETAIL);
+  vi.mocked(getConglomerate).mockResolvedValue(EMPTY_DETAIL);
   vi.mocked(saveConglomeratePositions).mockResolvedValue(EMPTY_DETAIL);
   vi.mocked(updateConglomerateMeta).mockResolvedValue(EMPTY_DETAIL);
   vi.mocked(activateConglomerate).mockResolvedValue({ ...EMPTY_DETAIL, status: 'active' });
@@ -138,7 +147,7 @@ describe('ConglomerateBuilderPage', () => {
 
     await waitFor(() =>
       expect(createConglomerateDraft).toHaveBeenCalledWith(
-        expect.stringMatching(/^Draft \d{4}-\d{2}-\d{2}$/),
+        expect.stringMatching(/^Draft \d{4}-\d{2}-\d{2} [A-Z0-9]{1,8}$/),
       ),
     );
     await screen.findByText('Draft — saved');
@@ -215,6 +224,15 @@ describe('ConglomerateBuilderPage', () => {
         name: 'Core basket',
       }),
     );
+  });
+
+  it('shows active save status when editing an active conglomerate', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(ACTIVE_DETAIL);
+
+    renderBuilder(`/conglomerates/${ACTIVE_DETAIL.id}/edit`);
+
+    await screen.findByDisplayValue('Active basket');
+    expect(screen.getByText('Active — saved')).toBeInTheDocument();
   });
 
   it('waits for the current positions save before activating', async () => {
