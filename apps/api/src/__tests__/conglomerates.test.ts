@@ -119,24 +119,57 @@ describe('conglomerate asset visibility', () => {
     },
   );
 
-  it('preserves active status when autosaving positions on an active conglomerate', async () => {
-    const user = await harness.seedUser();
-    const agent = await loginAgent(harness.app, user);
-    const asset = await seedAsset();
-    const conglomerate = await seedConglomerate(user.id, 'active');
+  it.each([
+    {
+      name: 'valid 100% replacement',
+      weightPct: 100,
+      expectedStatus: 200,
+      expectedStoredWeight: '100.000',
+    },
+    {
+      name: 'invalid 75% replacement',
+      weightPct: 75,
+      expectedStatus: 400,
+      expectedErrorCode: 'INVALID_WEIGHT_SUM',
+      expectedStoredWeight: '100.000',
+    },
+  ] as const)(
+    'enforces active invariants while autosaving $name',
+    async ({ weightPct, expectedStatus, expectedErrorCode, expectedStoredWeight }) => {
+      const user = await harness.seedUser();
+      const agent = await loginAgent(harness.app, user);
+      const asset = await seedAsset();
+      const conglomerate = await seedConglomerate(user.id, 'active');
+      await harness.db.insert(schema.conglomeratePositions).values({
+        conglomerateId: conglomerate.id,
+        assetId: asset.id,
+        weightPct: '100.000',
+        sortOrder: 0,
+      });
 
-    const res = await agent
-      .put(`/api/v1/conglomerates/${conglomerate.id}/positions`)
-      .set(...XRW)
-      .send({ positions: [{ assetId: asset.id, weightPct: 75 }] });
+      const res = await agent
+        .put(`/api/v1/conglomerates/${conglomerate.id}/positions`)
+        .set(...XRW)
+        .send({ positions: [{ assetId: asset.id, weightPct }] });
 
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('active');
+      expect(res.status).toBe(expectedStatus);
+      if (expectedErrorCode) {
+        expect(res.body.error.code).toBe(expectedErrorCode);
+      } else {
+        expect(res.body.status).toBe('active');
+      }
 
-    const [stored] = await harness.db
-      .select({ status: schema.conglomerates.status })
-      .from(schema.conglomerates)
-      .where(eq(schema.conglomerates.id, conglomerate.id));
-    expect(stored?.status).toBe('active');
-  });
+      const [stored] = await harness.db
+        .select({ status: schema.conglomerates.status })
+        .from(schema.conglomerates)
+        .where(eq(schema.conglomerates.id, conglomerate.id));
+      expect(stored?.status).toBe('active');
+
+      const storedPositions = await harness.db
+        .select({ weightPct: schema.conglomeratePositions.weightPct })
+        .from(schema.conglomeratePositions)
+        .where(eq(schema.conglomeratePositions.conglomerateId, conglomerate.id));
+      expect(storedPositions).toEqual([{ weightPct: expectedStoredWeight }]);
+    },
+  );
 });

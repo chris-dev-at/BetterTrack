@@ -133,7 +133,9 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async replacePositions(ownerId, id, positions) {
-      validatePositionSet(positions, 'draft');
+      const existing = await repo.load(ownerId, id);
+      if (!existing) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+      validatePositionSet(positions, existing.status === 'active' ? 'active' : 'draft');
       const assetIds = [...new Set(positions.map((p) => p.assetId))];
       const existingAssets = await repo.visibleAssetsExist(ownerId, assetIds);
       if (existingAssets.size !== assetIds.length) {
