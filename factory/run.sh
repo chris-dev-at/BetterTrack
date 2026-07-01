@@ -2,7 +2,7 @@
 set -uo pipefail
 STATE=/work/state; REPO_DIR=$STATE/repo; LOG=$STATE/factory.log
 PROMPTS=$STATE/prompts
-MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-4-6
+MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-5
 LIMIT_SLEEP=${LIMIT_SLEEP:-1800}
 
 log(){ printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$LOG"; }
@@ -70,23 +70,8 @@ cc(){ local model=$1; shift; local prompt="$*"
   done
 }
 
-# Is Fable usable this cycle? Probed once per loop and cached in $FABLE_UP.
-FABLE_UP=""
-fable_up(){
-  [ -n "$FABLE_UP" ] || { if model_ok "$MF"; then FABLE_UP=yes; else FABLE_UP=no; fi; }
-  [ "$FABLE_UP" = yes ]
-}
-
-# Map a tier label → model. While Fable is unavailable, tier:fable work runs on
-# Opus instead of stalling (owner-authorized fallback, 2026-06-15) — it reverts to
-# Fable automatically once Fable is back. The issue's tier label is never changed.
-model_for(){ case "$1" in
-  tier:fable)  if fable_up; then echo "$MF"; else echo "$MO"; fi;;
-  tier:sonnet) echo "$MS";;
-  *)           echo "$MO";; esac; }
-
-issue_tier(){ gh issue view "$1" --json labels -q '.labels[].name' | grep '^tier:' | head -1 || true; }
-tier_model(){ model_for "$(issue_tier "$1")"; }
+tier_model(){ case "$(gh issue view "$1" --json labels -q '.labels[].name' | grep '^tier:' || true)" in
+  tier:fable) echo "$MF";; tier:sonnet) echo "$MS";; *) echo "$MO";; esac; }
 
 mark_human(){ gh issue edit "$1" --add-label needs-human --remove-label autopilot,in-progress >/dev/null 2>&1 || true
   notify "issue #$1 → needs-human ($2)"; }
@@ -112,7 +97,6 @@ wait_for_capacity "startup"
 
 while true; do
   [ -f "$STATE/STOP" ] && { notify "STOP file present — exiting"; exit 0; }
-  FABLE_UP=""   # re-probe Fable availability fresh each cycle
   git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main
 
   # stuck guard
@@ -132,11 +116,8 @@ while true; do
   # pick the oldest actionable issue
   n=$(gh issue list --label autopilot --state open --json number -q 'sort_by(.number)|.[0].number')
   [ -z "$n" ] && { sleep 60; continue; }
-  tier=$(issue_tier "$n"); m=$(model_for "$tier")
-  [ "$tier" = "tier:fable" ] && [ "$m" = "$MO" ] && \
-    notify "Fable unavailable — building tier:fable #$n on Opus"
   gh issue edit "$n" --add-label in-progress >/dev/null 2>&1 || true
-  log "=== issue #$n (tier ${tier:-none}, model $m) ==="
+  log "=== issue #$n ==="
 
   # WRITER — cc() already waits out token limits, so a failure here is genuine.
   # Give it a couple of attempts for transient (non-capacity) hiccups.
