@@ -2,7 +2,7 @@
 set -uo pipefail
 STATE=/work/state; REPO_DIR=$STATE/repo; LOG=$STATE/factory.log
 PROMPTS=$STATE/prompts
-MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-4-6
+MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-5
 LIMIT_SLEEP=${LIMIT_SLEEP:-1800}
 
 log(){ printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$LOG"; }

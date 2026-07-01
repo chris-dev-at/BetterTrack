@@ -54,7 +54,7 @@ Four bots, one serial loop (one task at a time — no merge-conflict roulette):
 - **Reviewer**: a *separate* `claude -p` invocation (fresh context = independent reviewer), reviews the PR against the issue's acceptance criteria, posts findings, ends with a machine-readable verdict line.
 - **Gate** (plain bash, no model): merges only when reviewer approved AND GitHub CI is green. One CI-fix round allowed, then `needs-human`.
 
-Model routing follows MODELUSE.md via issue labels: `tier:fable` → `claude-fable-5`, `tier:opus` → `claude-opus-4-8`, `tier:sonnet` → `claude-sonnet-4-6`. No label → Opus (rule: unsure = higher). Reviews run on Opus, except `tier:fable` PRs which are reviewed by Fable.
+Model routing follows MODELUSE.md via issue labels: `tier:fable` → `claude-fable-5`, `tier:opus` → `claude-opus-4-8`, `tier:sonnet` → `claude-sonnet-5`. No label → Opus (rule: unsure = higher). Reviews run on Opus, except `tier:fable` PRs which are reviewed by Fable.
 
 Token exhaustion: every `claude -p` call is wrapped in a retry that detects the usage-limit error, sleeps `LIMIT_SLEEP`, and tries again. That single wrapper IS the "wait for tokens to replenish" behavior.
 
@@ -135,7 +135,7 @@ volumes:
 #!/usr/bin/env bash
 set -uo pipefail
 STATE=/work/state; REPO_DIR=$STATE/repo; LOG=$STATE/factory.log
-MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-4-6
+MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-5
 
 log(){ printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$LOG"; }
 notify(){ log "NOTIFY: $*"; [ -n "${FACTORY_WEBHOOK_URL:-}" ] && \

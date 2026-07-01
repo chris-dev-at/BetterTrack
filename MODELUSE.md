@@ -3,7 +3,7 @@
 Which Claude model + effort level to use for each part of the v1 build (phases and section numbers reference `PROJECTPLAN.md`). Ground rules, per the owner:
 
 - **When in doubt, go one tier up** — slightly over-spec is the policy.
-- **The floor is Sonnet 4.6 at `high` effort.** Nothing runs below that — no Haiku, no medium/low.
+- **The floor is Sonnet 5 at `high` effort.** Nothing runs below that — no Haiku, no medium/low.
 - Set per session in Claude Code with `/model` and `/effort`. One work package per session keeps the prompt cache warm and the model consistent.
 
 ## The ladder
@@ -12,7 +12,7 @@ Which Claude model + effort level to use for each part of the v1 build (phases a
 |---|---|---|---|
 | **T1 — Fable** | Claude Fable 5 (`claude-fable-5`) | `max` for first implementation of the money-math cores; `xhigh` otherwise | Correctness-critical algorithms, architectural keystones, final reviews |
 | **T2 — Opus** | Claude Opus 4.8 (`claude-opus-4-8`) | `xhigh` | Security boundaries, concurrency/caching, complex interactive UI, anything subtle |
-| **T3 — Sonnet (floor)** | Claude Sonnet 4.6 (`claude-sonnet-4-6`) | `high` | CRUD pages, config files, boilerplate, docs, straightforward UI |
+| **T3 — Sonnet (floor)** | Claude Sonnet 5 (`claude-sonnet-5`) | `high` | CRUD pages, config files, boilerplate, docs, straightforward UI |
 
 > If your Claude Code build only offers `high`/`max` in `/effort`, read `xhigh` as `max`.
 
