@@ -61,9 +61,9 @@ test('anonymous visitors are sent to the admin login, not the users page', async
 
   renderAt('/admin/users');
 
-  // The login screen carries the wordmark's "Admin Panel" edition; the guarded
+  // The login screen carries the wordmark's "Admin" edition; the guarded
   // users page (with jane's email) must not render for an anonymous visitor.
-  expect(await screen.findByText('Admin Panel')).toBeInTheDocument();
+  expect(await screen.findByText('Admin')).toBeInTheDocument();
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 

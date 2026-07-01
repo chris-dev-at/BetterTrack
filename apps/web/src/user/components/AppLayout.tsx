@@ -43,7 +43,7 @@ export function AppLayout() {
       <header className="border-b border-neutral-800 bg-neutral-900">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-6">
-            <Wordmark edition="Webapp" className="text-sm" />
+            <Wordmark edition="Web" className="text-xl" />
             <nav className="flex flex-wrap gap-1">
               {NAV_ITEMS.map((item) => (
                 <NavLink
