@@ -97,7 +97,7 @@ export function Splash({ label = 'Loading…' }: { label?: string }) {
   return (
     <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
       <div className="flex flex-col items-center gap-4 text-center">
-        <Wordmark edition="Webapp" className="text-2xl" />
+        <Wordmark edition="Web" className="text-2xl" />
         <Spinner label={label} />
       </div>
     </div>
@@ -134,7 +134,7 @@ export function AuthCard({ subtitle, children }: { subtitle: string; children: R
     <div className="grid min-h-screen place-items-center bg-[#0b0e14] px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <Wordmark edition="Webapp" className="text-2xl" />
+          <Wordmark edition="Web" className="text-2xl" />
           <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
         </div>
         {children}

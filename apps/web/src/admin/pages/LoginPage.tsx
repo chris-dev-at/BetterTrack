@@ -53,7 +53,7 @@ export function LoginPage() {
     <div className="grid min-h-screen place-items-center bg-neutral-950 px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <Wordmark edition="Admin Panel" className="text-2xl" />
+          <Wordmark edition="Admin" className="text-2xl" />
         </div>
         <form
           onSubmit={onSubmit}

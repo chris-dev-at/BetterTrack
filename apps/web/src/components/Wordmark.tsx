@@ -1,14 +1,14 @@
 /**
  * BetterTrack wordmark (brand spec). "Better" in white and "Track" in gold sit
  * tight together, with an optional lighter, smaller edition label after a normal
- * space: "Admin Panel" (admin area), "Webapp" (the SPA), or "Mobile app" (the
- * future native client).
+ * space: "Admin" (admin area), "Web" (the SPA), or "App" (the future native
+ * client).
  *
  * Sizing is inherited from the parent font-size (the edition and the gap are
  * `em`-relative), so the same component works in a compact header and on a large
  * login screen — pass a Tailwind text-size through `className`.
  */
-export type WordmarkEdition = 'Admin Panel' | 'Webapp' | 'Mobile app';
+export type WordmarkEdition = 'Web' | 'Admin' | 'App';
 
 export function Wordmark({
   edition,
