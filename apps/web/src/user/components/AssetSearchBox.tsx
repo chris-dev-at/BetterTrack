@@ -83,7 +83,7 @@ export function AssetSearchBox({
 
   function handleConglomerate(item: SearchResultItem) {
     void item;
-    navigate('/conglomerates');
+    navigate('/workboard/conglomerates');
     onAction?.();
   }
 

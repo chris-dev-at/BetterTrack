@@ -2,25 +2,26 @@ import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
-import { useAuth } from '../AuthContext';
 import { CmdKPalette } from './CmdKPalette';
-import { Button, cx } from './ui';
+import { NotificationBell } from './NotificationBell';
+import { ProfileMenu } from './ProfileMenu';
+import { cx } from './ui';
 
 /**
- * Authenticated app shell (PROJECTPLAN.md §7.1, §7.2).
- * Hosts the global ⌘K / Ctrl-K search palette (§6.2) reachable from any route.
+ * Authenticated app shell (PROJECTPLAN.md §7.1, §7.2). The header is the final
+ * v2 five-tab structure — **wordmark · Portfolio · Workboard · Assets · Social ·
+ * 🔔 · profile icon** — and never grows beyond it; deeper tools live in each
+ * section's `SubNav`. Hosts the global ⌘K / Ctrl-K search palette (§6.2)
+ * reachable from any route.
  */
 const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', end: true },
-  { to: '/search', label: 'Search' },
-  { to: '/workboard', label: 'Workboard' },
-  { to: '/conglomerates', label: 'Conglomerates' },
   { to: '/portfolio', label: 'Portfolio' },
-  { to: '/settings', label: 'Settings' },
-];
+  { to: '/workboard', label: 'Workboard' },
+  { to: '/assets', label: 'Assets' },
+  { to: '/social', label: 'Social' },
+] as const;
 
 export function AppLayout() {
-  const { user, logout } = useAuth();
   const [paletteOpen, setPaletteOpen] = useState(false);
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
@@ -44,12 +45,11 @@ export function AppLayout() {
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-6">
             <Wordmark edition="Web" className="text-xl" />
-            <nav className="flex flex-wrap gap-1">
+            <nav aria-label="Primary" className="flex flex-wrap gap-1">
               {NAV_ITEMS.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  end={item.end}
                   className={({ isActive }) =>
                     cx(
                       'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
@@ -80,10 +80,8 @@ export function AppLayout() {
                 ⌘K
               </kbd>
             </button>
-            {user ? <span className="hidden text-neutral-400 sm:inline">{user.email}</span> : null}
-            <Button variant="ghost" onClick={() => void logout()}>
-              Sign out
-            </Button>
+            <NotificationBell />
+            <ProfileMenu />
           </div>
         </div>
       </header>

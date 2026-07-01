@@ -282,7 +282,7 @@ function WatchlistZone() {
           description="Find an asset and add it to your Workboard to start watching."
           cta={
             <Link
-              to="/search"
+              to="/assets/search"
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               Search for an asset →
