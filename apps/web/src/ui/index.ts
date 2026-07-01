@@ -2,5 +2,6 @@
 export { MoneyText, type MoneyTextProps } from './MoneyText';
 export { StatCard, type StatCardProps } from './StatCard';
 export { EmptyState, type EmptyStateProps } from './EmptyState';
+export { ComingSoon, type ComingSoonProps } from './ComingSoon';
 export { Skeleton, type SkeletonProps } from './Skeleton';
 export { ErrorBoundary, type ErrorBoundaryProps } from './ErrorBoundary';

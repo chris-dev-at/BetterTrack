@@ -12,6 +12,10 @@ vi.mock('../lib/workboardApi', () => ({
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
 }));
+// `/` now redirects to `/portfolio` (§7.2), so a couple of auth-flow tests land
+// on the Portfolio page. Auto-mock its data module so it settles without a real
+// network call; these tests only assert we reached the authenticated shell.
+vi.mock('../lib/portfolioApi');
 
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
@@ -148,17 +152,17 @@ test('a must-change session is trapped, then released by a successful change', a
   const user = userEvent.setup();
   renderAt('/');
 
-  // Trapped: the change screen is up and the dashboard is unreachable.
+  // Trapped: the change screen is up and the app shell is unreachable.
   expect(await screen.findByText('Choose a new password')).toBeInTheDocument();
-  expect(screen.queryByText('Your calm overview lands here.')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 
   await user.type(screen.getByLabelText('Current password'), 'temp-password-123');
   await user.type(screen.getByLabelText('New password'), 'a-brand-new-secret');
   await user.type(screen.getByLabelText('Confirm new password'), 'a-brand-new-secret');
   await user.click(screen.getByRole('button', { name: 'Update password' }));
 
-  // Released into the app.
-  expect(await screen.findByText('Your calm overview lands here.')).toBeInTheDocument();
+  // Released into the app shell (lands on /portfolio via the `/` redirect).
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(api.changePassword).toHaveBeenCalledWith({
     currentPassword: 'temp-password-123',
     newPassword: 'a-brand-new-secret',
@@ -206,7 +210,7 @@ test('invite accept: a valid token shows the fixed email and creates the account
   await user.type(screen.getByLabelText('Password'), 'a-brand-new-secret');
   await user.click(screen.getByRole('button', { name: 'Create account' }));
 
-  expect(await screen.findByText('Your calm overview lands here.')).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(api.acceptInvite).toHaveBeenCalledWith({
     token: 'tok-abc123',
     username: 'newbie',

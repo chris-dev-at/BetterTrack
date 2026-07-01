@@ -8,11 +8,47 @@ import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
 import { InvitePage } from './auth/InvitePage';
 import { LoginPage } from './auth/LoginPage';
-import { AssetDetailPage } from './assets/AssetDetailPage';
-import { ConglomeratesPage, DashboardPage, SettingsPage } from './pages/placeholders';
 import { PortfolioPage } from './portfolio/PortfolioPage';
+import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
 import { WorkboardPage } from './workboard/WorkboardPage';
+import {
+  BacktestsPage,
+  CalculatorsPage,
+  ComparisonsPage,
+  ConglomeratesPage,
+  SavedIdeasPage,
+  WatchlistPage,
+  WorkboardLayout,
+} from './workboard/WorkboardSection';
 import { SearchPage } from './assets/SearchPage';
+import { AssetDetailPage } from './assets/AssetDetailPage';
+import {
+  AssetsLayout,
+  AssetsOverviewPage,
+  CommoditiesPage,
+  CryptoPage,
+  CustomAssetsBrowsePage,
+  EtfsPage,
+  StocksPage,
+} from './assets/AssetsSection';
+import {
+  FriendsPage,
+  MySharedItemsPage,
+  PublicProfilePage,
+  SharedWithMePage,
+  SocialIdeasPage,
+  SocialLayout,
+} from './social/SocialSection';
+import {
+  AccountSettingsPage,
+  ApiAccessPage,
+  BackupsPage,
+  ConnectionsPage,
+  ImportsExportsPage,
+  NotificationSettingsPage,
+  SecuritySettingsPage,
+  SettingsLayout,
+} from './settings/SettingsSection';
 
 const queryClient = new QueryClient();
 
@@ -22,6 +58,12 @@ const queryClient = new QueryClient();
  * change trap — while either is in effect no `user`/public route is reachable,
  * which is exactly the §6.1 guarantee that a must-change user cannot navigate
  * anywhere else until the change succeeds (sign-out aside).
+ *
+ * The authenticated route tree is the v2 five-section structure of §7.2 —
+ * Portfolio · Workboard · Assets · Social (+ the Settings tree reached from the
+ * profile menu). Each section nests under a layout that renders its subnav;
+ * every not-yet-built surface resolves to a designed `ComingSoon` state, so
+ * deep links never 404.
  */
 function UserShell() {
   const { status } = useAuth();
@@ -35,13 +77,60 @@ function UserShell() {
       <Route path="invite/:token" element={<InvitePage />} />
       <Route element={<RequireUser />}>
         <Route element={<AppLayout />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="search" element={<SearchPage />} />
-          <Route path="assets/:id" element={<AssetDetailPage />} />
-          <Route path="workboard" element={<WorkboardPage />} />
-          <Route path="conglomerates/*" element={<ConglomeratesPage />} />
-          <Route path="portfolio" element={<PortfolioPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          {/* Home → Portfolio (§6.8, §7.2). */}
+          <Route index element={<Navigate to="/portfolio" replace />} />
+
+          {/* ── Portfolio ── */}
+          <Route path="portfolio" element={<PortfolioLayout />}>
+            <Route index element={<PortfolioPage />} />
+            <Route path="transactions" element={<TransactionsPage />} />
+            <Route path="custom-assets" element={<CustomAssetsPage />} />
+          </Route>
+
+          {/* ── Workboard ── */}
+          <Route path="workboard" element={<WorkboardLayout />}>
+            <Route index element={<WorkboardPage />} />
+            <Route path="watchlist" element={<WatchlistPage />} />
+            <Route path="conglomerates" element={<ConglomeratesPage />} />
+            <Route path="backtests" element={<BacktestsPage />} />
+            <Route path="calculators" element={<CalculatorsPage />} />
+            <Route path="comparisons" element={<ComparisonsPage />} />
+            <Route path="ideas" element={<SavedIdeasPage />} />
+          </Route>
+
+          {/* ── Assets ── */}
+          <Route path="assets" element={<AssetsLayout />}>
+            <Route index element={<AssetsOverviewPage />} />
+            <Route path="search" element={<SearchPage />} />
+            <Route path="stocks" element={<StocksPage />} />
+            <Route path="etfs" element={<EtfsPage />} />
+            <Route path="crypto" element={<CryptoPage />} />
+            <Route path="commodities" element={<CommoditiesPage />} />
+            <Route path="custom" element={<CustomAssetsBrowsePage />} />
+            <Route path=":id" element={<AssetDetailPage />} />
+          </Route>
+
+          {/* ── Social ── */}
+          <Route path="social" element={<SocialLayout />}>
+            <Route index element={<Navigate to="/social/friends" replace />} />
+            <Route path="friends" element={<FriendsPage />} />
+            <Route path="shared-with-me" element={<SharedWithMePage />} />
+            <Route path="my-shared" element={<MySharedItemsPage />} />
+            <Route path="ideas" element={<SocialIdeasPage />} />
+            <Route path="profile" element={<PublicProfilePage />} />
+          </Route>
+
+          {/* ── Settings (reached from the profile menu) ── */}
+          <Route path="settings" element={<SettingsLayout />}>
+            <Route index element={<Navigate to="/settings/account" replace />} />
+            <Route path="account" element={<AccountSettingsPage />} />
+            <Route path="notifications" element={<NotificationSettingsPage />} />
+            <Route path="security" element={<SecuritySettingsPage />} />
+            <Route path="imports" element={<ImportsExportsPage />} />
+            <Route path="connections" element={<ConnectionsPage />} />
+            <Route path="backups" element={<BackupsPage />} />
+            <Route path="api" element={<ApiAccessPage />} />
+          </Route>
         </Route>
       </Route>
       {/* Unknown paths fall back home (which the guard sends to /login if anon). */}

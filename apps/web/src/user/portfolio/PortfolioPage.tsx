@@ -621,7 +621,7 @@ export function PortfolioPage() {
                 New custom investment
               </Button>
               <Link
-                to="/search"
+                to="/assets/search"
                 className="rounded px-3 py-2 text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
               >
                 Search for an asset →

@@ -295,7 +295,7 @@ export function AssetDetailPage() {
   if (detailQuery.isError) {
     return (
       <div className="flex flex-col gap-4">
-        <Link to="/search" className="text-sm text-sky-400 hover:underline">
+        <Link to="/assets/search" className="text-sm text-sky-400 hover:underline">
           ← Back to Search
         </Link>
         <Alert tone="error">
@@ -315,7 +315,7 @@ export function AssetDetailPage() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex items-center gap-3">
-        <Link to="/search" className="text-sm text-neutral-500 hover:text-neutral-300">
+        <Link to="/assets/search" className="text-sm text-neutral-500 hover:text-neutral-300">
           ← Search
         </Link>
       </div>
