@@ -1,6 +1,6 @@
 # STARTAUTOMATE.md — Autonomous Build Factory Runbook
 
-**Audience: a future Claude Code session.** When the owner says "start automating — follow STARTAUTOMATE.md", execute this document top to bottom. The end state: a Docker container ("the factory") running on this machine that continuously plans issues, implements them, reviews them, and merges them — pausing on its own when subscription tokens run out and resuming when they replenish. The owner leans back and watches.
+**Audience: a future Claude Code session.** When the owner says "start automating — follow docs/STARTAUTOMATE.md", execute this document top to bottom. The end state: a Docker container ("the factory") running on this machine that continuously plans issues, implements them, reviews them, and merges them — pausing on its own when subscription tokens run out and resuming when they replenish. The owner leans back and watches.
 
 Do not execute this runbook unless the owner explicitly asked to start automating.
 

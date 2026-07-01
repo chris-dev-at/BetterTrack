@@ -5,8 +5,8 @@ import type { ValuePoint } from '@bettertrack/contracts';
 
 import { getValuePoints, putValuePoints } from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
-import { Dialog } from './Dialog';
-import { Alert, Button, cx } from './ui';
+import { Dialog } from '../components/Dialog';
+import { Alert, Button, cx } from '../components/ui';
 
 export interface ValuePointEditorAsset {
   id: string;

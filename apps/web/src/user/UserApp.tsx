@@ -5,14 +5,14 @@ import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
 import { AppLayout } from './components/AppLayout';
 import { Splash, Toast } from './components/ui';
-import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
-import { InvitePage } from './pages/InvitePage';
-import { LoginPage } from './pages/LoginPage';
-import { AssetDetailPage } from './pages/AssetDetailPage';
+import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
+import { InvitePage } from './auth/InvitePage';
+import { LoginPage } from './auth/LoginPage';
+import { AssetDetailPage } from './assets/AssetDetailPage';
 import { ConglomeratesPage, DashboardPage, SettingsPage } from './pages/placeholders';
-import { PortfolioPage } from './pages/PortfolioPage';
-import { WorkboardPage } from './pages/WorkboardPage';
-import { SearchPage } from './pages/SearchPage';
+import { PortfolioPage } from './portfolio/PortfolioPage';
+import { WorkboardPage } from './workboard/WorkboardPage';
+import { SearchPage } from './assets/SearchPage';
 
 const queryClient = new QueryClient();
 

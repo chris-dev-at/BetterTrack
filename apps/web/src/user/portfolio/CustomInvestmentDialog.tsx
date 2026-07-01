@@ -7,8 +7,8 @@ import {
 } from '@bettertrack/contracts';
 
 import { createCustomAsset } from '../../lib/portfolioApi';
-import { Dialog } from './Dialog';
-import { Alert, Button, cx } from './ui';
+import { Dialog } from '../components/Dialog';
+import { Alert, Button, cx } from '../components/ui';
 
 export interface CustomInvestmentDialogProps {
   onClose: () => void;
