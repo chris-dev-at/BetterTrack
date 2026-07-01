@@ -1,6 +1,6 @@
 # BetterTrack — Model Use Plan
 
-Which Claude model + effort level to use for each part of the v1 build (phases and section numbers reference `PROJECTPLAN.md`). Ground rules, per the owner:
+Which Claude model + effort level to use for each part of the V1 build (phases and section numbers reference `PROJECTPLAN.md`, plan v2). Ground rules, per the owner:
 
 - **When in doubt, go one tier up** — slightly over-spec is the policy.
 - **The floor is Sonnet 5 at `high` effort.** Nothing runs below that — no Haiku, no medium/low.
@@ -18,64 +18,91 @@ Which Claude model + effort level to use for each part of the v1 build (phases a
 
 ## Per-phase assignments
 
-### P0 — Foundation
+### P0 — v2 shell & restructure
 | Work | Tier |
 |---|---|
-| Auth: sessions, argon2, rate limits/lockout, forced password change, invite flow (§6.1) · Admin area + role middleware (§6.12) · Drizzle schema + migrations (§5.5) | **T2 Opus xhigh** (default for this whole phase — mistakes here propagate) |
-| Monorepo/pnpm setup, tsconfig/eslint, CI yaml, docker-compose, nginx conf, seed scripts | T3 Sonnet high |
+| File moves per §7.3 move table, ComingSoon placeholders, docs/ tidy, login-card restyle, README pointer updates | T3 Sonnet high |
+| New AppLayout: 5-tab nav + subnavs + profile dropdown (final structure, gets lived in daily) | T2 Opus xhigh |
 
-### P1 — Market data & watching
+### P1 — Asset catalog, local search & cache rework
 | Work | Tier |
 |---|---|
-| Provider abstraction + registry, caching/request-coalescing/circuit breaker, currency service (§5.1, §5.3, §5.4) | **T1 Fable xhigh** — the architectural keystone everything else sits on |
-| Yahoo provider implementation, backfill/refresh jobs (§9) | T2 Opus xhigh |
-| Search page + ⌘K palette, asset detail page, workboard watchlist UI (§6.2–6.4) | T3 Sonnet high |
+| Local search index core: catalog schema/indexes (tsvector + pg_trgm), ranking, local-first query path, provider-fallback orchestration (§6.2) | **T1 Fable xhigh** |
+| Caching/request-coalescing/serve-stale/negative-cache/provider-budget rework (§5.3) — the politeness keystone | **T1 Fable xhigh** |
+| `catalog.enrich` job, seed list plumbing, migrations | T2 Opus xhigh |
+| Search UI updates ("Searching providers…" affordance, Assets overview entry) | T3 Sonnet high |
 
-### P2 — Portfolio
+### P2 — Identity, sessions & topology
 | Work | Tier |
 |---|---|
-| `domain/holdings` (avg-cost math, P/L), portfolio value-over-time reconstruction, their table-driven tests (§6.9) | **T1 Fable max** |
-| Transactions/custom-assets services + API, validation rules | T2 Opus xhigh |
-| Portfolio page UI, dialogs, value-point editor | T3 Sonnet high |
+| Admin/user account-kind split, 30-day sessions + PIN, progressive rate limiting (§6.1, §10) | **T2 Opus xhigh** (security boundary — never below) |
+| Topology env scheme + derived origins + CORS/cookie derivation (§11) | T2 Opus xhigh |
+| nginx templates (both modes), compose wiring, SPA runtime config injection | T3 Sonnet high |
 
-### P3 — Conglomerates
+### P3 — Portfolio v2 & multi-portfolio prep
 | Work | Tier |
 |---|---|
-| `domain/backtest` (clipping, historical FX, drawdown/CAGR/contribution) + tests (§6.6) | **T1 Fable max** |
-| **The Builder** — sliders/locks/auto-balance/normalize, autosave, debounced live preview (§6.5); it's the flagship UX and gnarly frontend state | T2 Opus xhigh |
-| Conglomerate CRUD, list/detail scaffolding | T3 Sonnet high |
+| `portfolio_id`-scoping migration of schema/repositories/services + default-portfolio invariants (§6.8) | **T2 Opus xhigh** (migrations + ownership scoping) |
+| Overview blocks (winners/losers, donuts, recent transactions), switcher placeholder, visibility toggle UI | T3 Sonnet high |
+| Any change to `domain/holdings` or the value-over-time math while rescoping | **T1 Fable xhigh** |
 
-### P4 — Calculator & sharing
+### P4 — Workboard playground: Conglomerates + calculator
 | Work | Tier |
 |---|---|
 | `domain/allocation` — the never-overshoot budget algorithm, edge cases, tests (§6.7) | **T1 Fable max** |
-| Share links/tokens, clone, live-update wiring, JSON import/export incl. legacy format (§6.8) | T2 Opus xhigh |
-| Calculator UI, buy-flow dialogs | T3 Sonnet high |
+| Backtest wiring/regressions in `domain/backtest` (§6.6) | **T1 Fable xhigh** |
+| **The Builder** — sliders/locks/auto-balance/normalize, autosave, debounced live preview (§6.5); flagship UX, gnarly frontend state | T2 Opus xhigh |
+| Conglomerate CRUD, list/detail scaffolding, calculator UI + buy-flow dialogs, Workboard subnav + stubs | T3 Sonnet high |
 
-### P5 — Alerts, notifications, realtime
+### P5 — Social minimal
 | Work | Tier |
 |---|---|
-| Alert evaluation semantics (six kinds, repeat/cooldown, idempotent firing) (§6.4, §9) | **T1 Fable xhigh** |
-| Socket.IO gateway + rooms + event bus, NotificationChannel abstraction + dispatcher (§4.5, §6.11) | T2 Opus xhigh |
-| Email templates, settings page, notification bell/center UI | T3 Sonnet high |
+| Friendship/visibility privacy boundaries: request flow without enumeration, friendship-scoped reads, instant revocation (§6.9, §10) + their tests | **T2 Opus xhigh** (privacy = security) |
+| friend_requests/friendships migrations | T2 Opus xhigh |
+| Friends/Shared-With-Me/My-Shared-Items pages, read-only portfolio view UI | T3 Sonnet high |
 
-### P6 — Dashboard & polish
+### P6 — Notifications & the email log
+| Work | Tier |
+|---|---|
+| NotificationChannel dispatcher + event wiring, email_log semantics, retry/dedup (§6.10, §9) | T2 Opus xhigh |
+| Gmail app-password transport preset, templates, bell/center UI, admin email-log views | T3 Sonnet high |
+
+### P7 — Settings section
+| Work | Tier |
+|---|---|
+| Security page (PIN management, sessions info) — touches auth | T2 Opus xhigh |
+| Settings subnav, Account/Notifications pages, Coming-Soon placeholders | T3 Sonnet high |
+
+### P8 — Admin global settings & registration modes
+| Work | Tier |
+|---|---|
+| `app_settings` + registration-mode enforcement (closed enforced, others gated) (§6.12) | **T2 Opus xhigh** (access-control surface) |
+| Admin Settings page UI, overview-card refresh | T3 Sonnet high |
+
+### P9 — API `/docs`
+| Work | Tier |
+|---|---|
+| OpenAPI generation from zod contracts + CI coverage gate (§6.13) | T2 Opus xhigh |
+| `/docs` rendering page, docs content polish | T3 Sonnet high |
+
+### P10 — Polish, e2e & v1 gate
 | Work | Tier |
 |---|---|
 | Final visual/responsive design pass across the app | T2 Opus xhigh (strong design instincts; give it your palette or it defaults to its own) |
-| Dashboard page, empty states, skeletons, Playwright e2e, deploy guide/docs | T3 Sonnet high |
+| Empty states, skeletons, Playwright e2e, deploy guide (both topology modes), disclaimers, backups | T3 Sonnet high |
 | **Pre-release review:** `/code-review high` over the whole branch before tagging v1 | **T1 Fable xhigh** |
 
 ## Cross-cutting rules
 
-1. **`domain/` is Fable territory, always.** Any file under `apps/api/src/domain/` (allocation, backtest, holdings, alertEval) — first implementation at `max`, later edits at `xhigh`, never below T1. This is where a silent off-by-one costs real money.
-2. **Security floor is Opus.** Anything touching auth, sessions, admin routes, share tokens, or rate limiting never drops to T3 — not even "trivial" edits.
-3. **Escalate instead of looping.** If the same bug survives two fix attempts, move up one tier (and effort) immediately. Three Sonnet retry loops cost more than one Fable turn — and waste your weekly cap on failure.
-4. **Plan deviations go through T1.** If implementation reveals the PROJECTPLAN needs changing, discuss it with Fable at `xhigh` and update the Decision Log (§16) before coding around it.
-5. **Reviews:** quick `/code-review` per PR on whatever model the session runs; the money-math PRs (P2–P4 domain code) additionally get a Fable review before merge.
-6. **Unsure which tier? Take the higher one.** That's the policy, codified.
-7. Subagents Claude Code spawns on its own (Explore etc.) pick their own cheaper models — leave them be.
+1. **`domain/` is Fable territory, always.** Any file under `apps/api/src/domain/` (holdings, backtest, allocation; later alertEval) — first implementation at `max`, later edits at `xhigh`, never below T1. This is where a silent off-by-one costs real money.
+2. **The provider/caching/coalescing/currency keystone and the local search-index core are T1.** `providers/` cache mechanics and `services/search` ranking/orchestration carry the owner's top complaints — same rule as domain code.
+3. **Security floor is Opus.** Anything touching auth, sessions, PIN, rate limiting, account kinds, admin routes, registration modes, friendship/sharing privacy boundaries, tokens, or migrations never drops to T3 — not even "trivial" edits.
+4. **Escalate instead of looping.** If the same bug survives two fix attempts, move up one tier (and effort) immediately. Three Sonnet retry loops cost more than one Fable turn.
+5. **Plan deviations go through T1.** If implementation reveals PROJECTPLAN needs changing, discuss with Fable at `xhigh` and update the Decision Log (§16) before coding around it.
+6. **Reviews:** quick `/code-review` per PR on whatever model the session runs; money-math PRs (domain code) additionally get a Fable review before merge.
+7. **Unsure which tier? Take the higher one.** That's the policy, codified.
+8. Subagents Claude Code spawns on its own (Explore etc.) pick their own cheaper models — leave them be.
 
 ## Expected cost vs. all-Fable
 
-All-Fable-max for everything was estimated at ~$900–1,700 API-equivalent. This split lands around **$500–900** (over-speced on purpose), with most of the spend concentrated in the P2–P4 domain cores where it belongs — roughly one month of Max 5x, or a couple of heavy weeks on Max 20x.
+All-Fable-max for everything was estimated at ~$900–1,700 API-equivalent. This split lands around **$500–900** (over-speced on purpose), with the spend concentrated where it belongs: the P1 search/caching keystone, the P4 allocation core, and the P2/P5/P8 security boundaries.

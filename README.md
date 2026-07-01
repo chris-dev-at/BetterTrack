@@ -1,31 +1,41 @@
 # BetterTrack
 
-Self-hosted web app for watching stocks, building **Conglomerates** (your own
-ETF-style weighted baskets), and tracking a real **Portfolio** — including
-investments that exist nowhere else (your car, house, an unlisted stock).
+Self-hosted **personal finance and investing workspace**: track multiple
+portfolios (including investments that exist nowhere else — your car, house, an
+unlisted stock), browse assets through a local search index, build and backtest
+**Conglomerates** (your own ETF-style weighted baskets), turn a budget into a
+buy list, and share portfolios with friends. Organized around five sections:
+**Portfolio | Workboard | Assets | Social | Profile Menu**.
 
-See [`PROJECTPLAN.md`](./PROJECTPLAN.md) for the full product and architecture
-specification. This README covers local dev setup and production deploy.
+See [`PROJECTPLAN.md`](./PROJECTPLAN.md) (plan v2) for the full product and
+architecture specification. This README covers local dev setup and production
+deploy.
 
-> **Status:** P0 foundation bootstrap. The monorepo, shared contracts, a health
-> endpoint, and the web placeholder shell are in place. Product features (auth,
-> market data, portfolio, conglomerates, alerts) arrive in later phases.
+> **Status:** building toward **V1 = BetterTrack Core + Tiny Friend Sharing**
+> (PROJECTPLAN.md §13). Auth, admin, market data/providers, search, workboard
+> watchlist, portfolio, and the backtest engine exist; the v2 restructure
+> (5-tab navigation, local search index, social, notifications, settings,
+> admin app settings, API `/docs`) lands phase by phase. Future surfaces ship
+> as visible "Coming soon" pages.
 
 ## Repository layout
 
 ```
 apps/
-  web/        # React 19 + Vite + Tailwind 4 SPA (display layer)
-  api/        # Express 5 service (business layer) — GET /api/v1/health
+  web/        # React 19 + Vite + Tailwind 4 SPA (user app + admin app)
+  api/        # Express 5 service (business layer) + worker entrypoint
 packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)
   config/     # Shared tsconfig, ESLint, Prettier
 infra/
-  docker-compose.yml         # Production: web + api + db + redis (§4.6)
+  docker-compose.yml         # Production: web + api + worker + db + redis (§4.6)
   docker-compose.dev.yml     # Dev: Postgres 17 + Redis 7 only
-  nginx.conf                 # nginx: SPA serve + /api proxy
+  nginx.conf                 # nginx: SPA serve + /api proxy (both topology modes per §11)
   .env.example               # Dev env template
   .env.production.example    # Production env template
+factory/      # autonomous build factory (runner + prompts)
+docs/         # auxiliary docs — STARTAUTOMATE.md (factory runbook) and
+              # FableBackExecute.md (outage-runbook template) will live here (§4.2)
 ```
 
 ## Prerequisites
@@ -71,7 +81,9 @@ pnpm --filter @bettertrack/web dev
 ## Email (SMTP)
 
 Account emails — invites, temporary passwords, and the welcome message — go out
-over SMTP via Nodemailer (PROJECTPLAN.md §6.11). The channel is **optional**:
+over SMTP via Nodemailer (PROJECTPLAN.md §6.10); a **Gmail app password**
+(`smtp.gmail.com:465`) is the documented first-class preset, and every send is
+recorded in the per-user email log. The channel is **optional**:
 with no SMTP config the app boots and every account flow still works, because
 the admin gets a copyable temp password / invite URL straight from the API
 response. Configure these in `apps/api/.env` to turn it on:
@@ -149,6 +161,11 @@ docker compose up -d          # rolling restart
 | `WEB_PORT`             | no       | Host port nginx binds to (default `80`)                                   |
 | `SMTP_HOST/FROM`       | no       | Both required to enable email; app runs without them                      |
 | `ADMIN_EMAIL/PASSWORD` | no       | Used once by the seed command; no-op thereafter                           |
+
+> **Note:** the plan-v2 deployment topology (PROJECTPLAN.md §11 — `BT_DOMAIN`,
+> `BT_MODE=subdomains|ports`, per-service subdomain/port overrides, derived
+> origins) supersedes `APP_ORIGIN` once phase P2 lands; until then the table
+> above matches the current code.
 
 ### Worker (BullMQ)
 
