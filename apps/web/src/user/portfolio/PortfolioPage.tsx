@@ -23,8 +23,8 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
-import { ValuePointEditor, type ValuePointEditorAsset } from '../components/ValuePointEditor';
-import { CustomInvestmentDialog } from '../components/CustomInvestmentDialog';
+import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
+import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 
 // ─── Range mapping ──────────────────────────────────────────────────────────
 

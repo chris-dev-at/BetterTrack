@@ -1,6 +1,6 @@
 # FableBackExecute.md — Undo the Fable-outage fallback
 
-**Audience: a future Claude Code session. DO NOT execute any of this unless the owner explicitly says** e.g. _"Fable is back — execute FableBackExecute.md"_. Until then this file is inert documentation.
+**Audience: a future Claude Code session. DO NOT execute any of this unless the owner explicitly says** e.g. _"Fable is back — execute docs/FableBackExecute.md"_. Until then this file is inert documentation.
 
 ## What this reverses
 
@@ -67,7 +67,7 @@ Delete the bullet beginning **`7. **Model-unavailability fallback`\*\* (the whol
 
 ## Step 3 — `PROJECTPLAN.md` §16: remove the outage entry
 
-Delete the Decision Log row beginning `| 2026-06-15 | While Claude Fable 5 is unavailable, …`. (If you prefer to keep an audit trail, instead append a follow-up row `| <today> | Fable restored; outage fallback reverted (see FableBackExecute.md) | … |` — owner's choice.)
+Delete the Decision Log row beginning `| 2026-06-15 | While Claude Fable 5 is unavailable, …`. (If you prefer to keep an audit trail, instead append a follow-up row `| <today> | Fable restored; outage fallback reverted (see docs/FableBackExecute.md) | … |` — owner's choice.)
 
 ## Step 4 — `factory/prompts/writer.md`: restore the original
 
@@ -105,8 +105,8 @@ To force a clean re-do of a kept-but-suspect issue on Fable: reopen/recreate it 
 git add factory/run.sh CLAUDE.md PROJECTPLAN.md factory/prompts/writer.md
 git commit -m "revert(factory): remove Fable-outage Opus fallback — Fable restored"
 git push -u origin factory/fable-restored
-gh pr create --base main --title "revert: Fable-outage Opus fallback (Fable restored)" --body "Reverses FableBackExecute.md adjustments now that Claude Fable 5 is available again."
+gh pr create --base main --title "revert: Fable-outage Opus fallback (Fable restored)" --body "Reverses docs/FableBackExecute.md adjustments now that Claude Fable 5 is available again."
 # merge once CI is green
 ```
 
-After merge, the repo reads as if the Fable outage never happened, and `FableBackExecute.md` itself may be deleted (or kept as a template for any future outage).
+After merge, the repo reads as if the Fable outage never happened, and `docs/FableBackExecute.md` itself may be deleted (or kept as a template for any future outage).

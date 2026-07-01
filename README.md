@@ -34,8 +34,8 @@ infra/
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
-docs/         # auxiliary docs — STARTAUTOMATE.md (factory runbook) and
-              # FableBackExecute.md (outage-runbook template) will live here (§4.2)
+docs/         # auxiliary docs (§4.2) — STARTAUTOMATE.md (factory runbook) and
+              # FableBackExecute.md (outage-runbook template)
 ```
 
 ## Prerequisites
