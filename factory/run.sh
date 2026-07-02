@@ -149,6 +149,14 @@ while true; do
   # pick the oldest actionable issue
   n=$(gh issue list --label autopilot --state open --json number -q 'sort_by(.number)|.[0].number')
   [ -z "$n" ] && { sleep 60; continue; }
+  # `gh issue list` reads GitHub's eventually-consistent search index; right after a
+  # merge it can still return the just-closed issue, spawning a ghost writer cycle.
+  # Re-check the pick against the authoritative issue record and let the index settle.
+  fresh=$(gh issue view "$n" --json state,labels -q '"\(.state) \([.labels[].name]|join(","))"' 2>/dev/null)
+  case "$fresh" in
+    OPEN\ *autopilot*) ;;
+    *) log "issue #$n stale in search index ($fresh) — settling 30s"; sleep 30; continue;;
+  esac
   gh issue edit "$n" --add-label in-progress >/dev/null 2>&1 || true
   log "=== issue #$n ==="
 
