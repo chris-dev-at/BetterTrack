@@ -29,10 +29,11 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     res.json(portfolio);
   });
 
-  // GET /portfolio/history?range= — value-over-time series (§6.9).
+  // GET /portfolio/history?range=&overlay= — value-over-time series, optionally
+  // with each held asset's own price series for the chart overlay (§6.9, #122).
   router.get('/history', validateQuery(portfolioHistoryQuerySchema), async (req, res) => {
-    const { range } = req.valid?.query as PortfolioHistoryQuery;
-    const history = await ctx.portfolio.getHistory(req.authUser!.id, range);
+    const { range, overlay } = req.valid?.query as PortfolioHistoryQuery;
+    const history = await ctx.portfolio.getHistory(req.authUser!.id, range, { overlay });
     res.json(history);
   });
 

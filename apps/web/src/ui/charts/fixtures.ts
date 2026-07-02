@@ -46,6 +46,26 @@ export const sampleBenchmarkSeries: BenchmarkSeries = {
   ],
 };
 
+/** Per-asset overlay series for the portfolio graph's compare mode (#122). */
+export const sampleOverlaySeries: BenchmarkSeries[] = [
+  {
+    label: 'BAYN.DE',
+    series: [
+      { time: '2026-01-02', value: 28.4 },
+      { time: '2026-01-05', value: 27.9 },
+      { time: '2026-01-06', value: 27.1 },
+    ],
+  },
+  {
+    label: 'AAPL',
+    series: [
+      { time: '2026-01-02', value: 250.2 },
+      { time: '2026-01-05', value: 252.8 },
+      { time: '2026-01-06', value: 249.9 },
+    ],
+  },
+];
+
 /** A short 1-month sparkline series for the workboard watchlist (§6.4). */
 export const sampleSparkline: number[] = [
   27.4, 27.9, 28.3, 28.1, 27.6, 28.8, 29.2, 29.0, 29.7, 30.1, 29.8, 30.6,

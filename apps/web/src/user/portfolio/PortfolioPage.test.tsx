@@ -40,6 +40,7 @@ vi.mock('lightweight-charts', () => ({
   LineSeries: 'LineSeries',
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
   ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
+  PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2, IndexedTo100: 3 },
 }));
 
 // Recharts measures the DOM (0×0 in jsdom); hand the donut a fixed size.
@@ -248,6 +249,56 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
     // The by-type donut groups the custom asset under "Custom".
     expect(screen.getByText('Custom')).toBeInTheDocument();
     expect(screen.getByText('Stocks')).toBeInTheDocument();
+  });
+});
+
+// ─── Chart overlay (#122) ─────────────────────────────────────────────────────
+
+describe('PortfolioPage — asset overlay on the value chart', () => {
+  const HISTORY_WITH_ASSETS = {
+    ...HISTORY,
+    assets: [
+      {
+        assetId: 'a1',
+        symbol: 'AAPL',
+        name: 'Apple Inc.',
+        currency: 'USD' as const,
+        points: [
+          { date: '2024-05-01', close: 150 },
+          { date: '2024-06-01', close: 155 },
+        ],
+      },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+    vi.mocked(getPortfolioHistory).mockImplementation((_range, overlay) =>
+      Promise.resolve(overlay ? HISTORY_WITH_ASSETS : HISTORY),
+    );
+  });
+
+  test('toggling "Overlay assets" refetches with overlay=true and shows the asset legend', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const toggle = await screen.findByRole('button', { name: 'Overlay assets' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith('1M', false, expect.anything());
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() =>
+      expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith('1M', true, expect.anything()),
+    );
+    // The overlay asset's legend chip appears next to the chart ("AAPL" also
+    // exists in the holdings table / donut legend, so scope to the section).
+    const section = screen.getByRole('region', { name: 'Value over time' });
+    await waitFor(() => expect(within(section).getByText('AAPL')).toBeInTheDocument());
+
+    // Toggling off returns to the plain curve (no overlay legend).
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await waitFor(() => expect(within(section).queryByText('AAPL')).not.toBeInTheDocument());
   });
 });
 

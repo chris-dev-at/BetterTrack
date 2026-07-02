@@ -1,6 +1,7 @@
 import type {
   Holding as HoldingDto,
   HistoryRange,
+  PortfolioHistoryOverlay,
   PortfolioHistoryRange,
   PortfolioResponse,
   PortfolioTotals,
@@ -19,6 +20,7 @@ import type {
   TransactionRepository,
 } from '../../data/repositories/transactionRepository';
 import {
+  dailyCloseSeries,
   deriveHoldings,
   OversellError,
   reducePosition,
@@ -81,10 +83,12 @@ export interface PortfolioService {
   getHistory(
     userId: string,
     range: PortfolioHistoryRange,
+    opts?: { overlay?: boolean },
   ): Promise<{
     range: PortfolioHistoryRange;
     baseCurrency: string;
     points: Array<{ date: string; valueEur: number }>;
+    assets?: PortfolioHistoryOverlay[];
   }>;
   /** Drop the cached value series for a user's portfolio (called on any write). */
   invalidateHistory(userId: string): Promise<void>;
@@ -93,9 +97,24 @@ export interface PortfolioService {
 const DEFAULT_LIMIT = 50;
 const HISTORY_TTL_SECONDS = 3600; // 1 h (§6.9).
 
-/** Redis key for the cached, full value-over-time series of a portfolio. */
+/**
+ * Redis key for the cached, full value-over-time payload of a portfolio.
+ *
+ * Versioned (`v2`): the cached shape changed with #122 (portfolio points +
+ * per-asset overlay series), and bumping the version also wholesale-invalidates
+ * every series a *previous* deployment computed. The 1 h TTL is only refreshed
+ * by writes, so without the bump a pre-deploy entry — possibly computed by
+ * older, buggier code — would keep being served for up to an hour after a fix
+ * ships (exactly the stale single-point graph reported in #122).
+ */
 export function portfolioHistoryCacheKey(portfolioId: string): string {
-  return `portfolio:history:${portfolioId}`;
+  return `portfolio:history:v2:${portfolioId}`;
+}
+
+/** The full cached graph payload: EUR value curve + per-asset overlay series. */
+interface HistoryPayload {
+  points: Array<{ date: string; valueEur: number }>;
+  assets: PortfolioHistoryOverlay[];
 }
 
 /** Months of history each non-MAX range covers (§6.9: 1M / 6M / 1Y / Max). */
@@ -201,23 +220,32 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     if (portfolioId) await redis.del(portfolioHistoryCacheKey(portfolioId));
   }
 
+  /** The empty graph payload (no transactions / nothing convertible to plot). */
+  const emptyHistory = (): HistoryPayload => ({ points: [], assets: [] });
+
   /**
-   * The full value-over-time series for a portfolio (first transaction → today),
-   * cached 1 h. Recomputed on a cache miss and re-stored; the range slice is
-   * applied by the caller. Invalidated wholesale on any write (§6.9).
+   * The full value-over-time payload for a portfolio (first transaction →
+   * today), cached 1 h: the EUR value curve plus each held asset's own daily
+   * price series (the #122 overlay). Recomputed on a cache miss and re-stored;
+   * the range slice is applied by the caller. Invalidated wholesale on any
+   * write (§6.9), so a back-dated transaction reshapes the history immediately.
    *
    * Per-asset daily prices come from the provider layer (`marketData.getHistory`
-   * at `1d`, §5.2/§5.3), merged over the stored `price_history` rows which act
-   * as the outage fallback — see {@link mergeDailyPrices}.
+   * at `1d`, §5.2/§5.3 — cached, coalesced, budgeted), merged over the stored
+   * `price_history` rows which act as the outage fallback — see
+   * {@link mergeDailyPrices}. The overlay series reuse exactly these merged
+   * prices, so overlays add **zero** provider requests.
    */
-  async function loadSeries(
-    portfolioId: string,
-  ): Promise<Array<{ date: string; valueEur: number }>> {
+  async function loadSeries(portfolioId: string): Promise<HistoryPayload> {
     const key = portfolioHistoryCacheKey(portfolioId);
     const cached = await redis.get(key);
     if (cached) {
       try {
-        return JSON.parse(cached) as Array<{ date: string; valueEur: number }>;
+        const parsed = JSON.parse(cached) as HistoryPayload;
+        // Shape guard: only trust entries this code version wrote.
+        if (parsed && Array.isArray(parsed.points) && Array.isArray(parsed.assets)) {
+          return parsed;
+        }
       } catch {
         // Corrupt cache entry — fall through and recompute.
       }
@@ -225,8 +253,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
     const txns = await transactionRepo.listForPortfolio(portfolioId);
     if (txns.length === 0) {
-      await redis.set(key, JSON.stringify([]), 'EX', HISTORY_TTL_SECONDS);
-      return [];
+      const empty = emptyHistory();
+      await redis.set(key, JSON.stringify(empty), 'EX', HISTORY_TTL_SECONDS);
+      return empty;
     }
 
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
@@ -261,8 +290,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // No EUR-convertible holding has any history to plot — degrade to an empty
     // series instead of throwing mid-conversion.
     if (usableAssetIds.length === 0) {
-      await redis.set(key, JSON.stringify([]), 'EX', HISTORY_TTL_SECONDS);
-      return [];
+      const empty = emptyHistory();
+      await redis.set(key, JSON.stringify(empty), 'EX', HISTORY_TTL_SECONDS);
+      return empty;
     }
 
     const usableIdSet = new Set(usableAssetIds);
@@ -316,15 +346,37 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     });
 
-    const series = await valueOverTime({
+    const points = await valueOverTime({
       transactions: txns.filter((t) => usableIdSet.has(t.assetId)).map(recordToDomain),
       assets: valueAssets,
       today,
       converter: currencyService,
     });
 
-    await redis.set(key, JSON.stringify(series), 'EX', HISTORY_TTL_SECONDS);
-    return series;
+    // Overlay series (#122): each held asset's own daily closes over the same
+    // window, expanded to the portfolio curve's daily grid (weekends/holidays
+    // carry the last known close forward — see dailyCloseSeries) so every
+    // overlay point lines up with a curve point. Built from the merged prices
+    // already fetched above; assets whose price data starts later simply start
+    // where their data starts, and assets with no data at all are omitted.
+    const overlays: PortfolioHistoryOverlay[] = [];
+    for (const valueAsset of valueAssets) {
+      const asset = assetsById.get(valueAsset.assetId);
+      if (!asset) continue; // unreachable: valueAssets is built from assetsById
+      const overlayPoints = dailyCloseSeries(valueAsset.prices, firstTxnDay, today);
+      if (overlayPoints.length === 0) continue;
+      overlays.push({
+        assetId: asset.id,
+        symbol: asset.symbol,
+        name: asset.name,
+        currency: asset.currency,
+        points: overlayPoints,
+      });
+    }
+
+    const payload: HistoryPayload = { points, assets: overlays };
+    await redis.set(key, JSON.stringify(payload), 'EX', HISTORY_TTL_SECONDS);
+    return payload;
   }
 
   return {
@@ -516,13 +568,25 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return { baseCurrency, holdings: holdingDtos, totals: computeTotals(holdings) };
     },
 
-    async getHistory(userId, range) {
+    async getHistory(userId, range, opts) {
+      const overlay = opts?.overlay ?? false;
       const portfolioId = await portfolioRepo.findMain(userId);
-      if (!portfolioId) return { range, baseCurrency, points: [] };
+      if (!portfolioId) {
+        return { range, baseCurrency, points: [], ...(overlay ? { assets: [] } : {}) };
+      }
 
-      const series = await loadSeries(portfolioId);
-      const points = sliceRange(series, range, todayIso());
-      return { range, baseCurrency, points };
+      const today = todayIso();
+      const payload = await loadSeries(portfolioId);
+      const points = sliceRange(payload.points, range, today);
+      if (!overlay) return { range, baseCurrency, points };
+
+      // Overlays share the curve's daily grid, so the same range slice keeps
+      // them point-for-point aligned. An asset whose data lies entirely outside
+      // the window is dropped rather than sent as an empty series.
+      const assets = payload.assets
+        .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
+        .filter((a) => a.points.length > 0);
+      return { range, baseCurrency, points, assets };
     },
 
     invalidateHistory,
@@ -628,12 +692,16 @@ function mergeDailyPrices(
   return [...byDate].map(([date, close]) => ({ date, close }));
 }
 
-/** Slice the full series to a range window; MAX returns it whole (§6.9). */
-function sliceRange(
-  series: ReadonlyArray<{ date: string; valueEur: number }>,
+/**
+ * Slice a full daily series to a range window; MAX returns it whole (§6.9).
+ * Generic over the point shape so the portfolio curve (`valueEur`) and the
+ * overlay series (`close`) share one slicing rule and stay date-aligned.
+ */
+function sliceRange<P extends { date: string }>(
+  series: readonly P[],
   range: PortfolioHistoryRange,
   today: string,
-): Array<{ date: string; valueEur: number }> {
+): P[] {
   if (range === 'MAX') return [...series];
   const cutoff = monthsBefore(today, RANGE_MONTHS[range]);
   return series.filter((p) => p.date >= cutoff);
