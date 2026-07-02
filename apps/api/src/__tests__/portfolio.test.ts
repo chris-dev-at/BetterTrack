@@ -375,12 +375,15 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
   });
 
   it('builds the EUR value series and invalidates the cache on writes', async () => {
-    const user = await harness.seedUser();
-    const agent = await loginAgent(harness.app, user.email, user.password);
-    const asset = await seedAsset(harness, { currency: 'EUR' });
+    // The unconfigured stub throws on getHistory — a provider outage with no
+    // cached copy — so the series must degrade to the stored price_history rows.
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
 
-    // Two daily closes for the asset (the value series reads price_history).
-    await harness.db.insert(schema.priceHistory).values([
+    // Two stored daily closes for the asset (the outage fallback layer).
+    await h.db.insert(schema.priceHistory).values([
       { assetId: asset.id, date: dayOffset(-2), close: '100' },
       { assetId: asset.id, date: dayOffset(-1), close: '110' },
     ]);
@@ -409,17 +412,18 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
   });
 
   it('degrades (no 500) for a non-EUR holding with no historical FX', async () => {
-    const user = await harness.seedUser();
-    const agent = await loginAgent(harness.app, user.email, user.password);
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
     // Historical FX for non-base currencies is not yet supported (§5.4); a USD
     // holding with value points must not crash the series.
-    const asset = await seedAsset(harness, {
+    const asset = await seedAsset(h, {
       currency: 'USD',
       providerRef: 'AAPL',
       symbol: 'AAPL',
       exchange: 'NASDAQ',
     });
-    await harness.db.insert(schema.priceHistory).values([
+    await h.db.insert(schema.priceHistory).values([
       { assetId: asset.id, date: dayOffset(-2), close: '100' },
       { assetId: asset.id, date: dayOffset(-1), close: '110' },
     ]);
@@ -436,16 +440,17 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
   });
 
   it('keeps EUR holdings in the series while dropping unconvertible non-EUR ones', async () => {
-    const user = await harness.seedUser();
-    const agent = await loginAgent(harness.app, user.email, user.password);
-    const eur = await seedAsset(harness, { currency: 'EUR' });
-    const usd = await seedAsset(harness, {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const eur = await seedAsset(h, { currency: 'EUR' });
+    const usd = await seedAsset(h, {
       currency: 'USD',
       providerRef: 'AAPL',
       symbol: 'AAPL',
       exchange: 'NASDAQ',
     });
-    await harness.db.insert(schema.priceHistory).values([
+    await h.db.insert(schema.priceHistory).values([
       { assetId: eur.id, date: dayOffset(-1), close: '100' },
       { assetId: usd.id, date: dayOffset(-1), close: '999' },
     ]);
@@ -467,6 +472,172 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     for (const point of res.body.points) {
       expect(point.valueEur).toBeCloseTo(200, 6);
     }
+  });
+});
+
+describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () => {
+  /** Deterministic daily closes for the last 7 calendar days (−6 … today). */
+  function marketCloses(): Map<string, number> {
+    return new Map(
+      [-6, -5, -4, -3, -2, -1, 0].map((offset, i) => [dayOffset(offset), 100 + i * 2]),
+    );
+  }
+
+  /** CachedResult wrapper for stubbed provider history points. */
+  function cachedHistory(points: Array<{ time: string; close: number }>) {
+    return { value: points, stale: false, asOf: Date.now() };
+  }
+
+  it('feeds real provider daily history: the curve moves between transactions and a mid-range buy bends it', async () => {
+    const closes = marketCloses();
+    const marketData = createStubMarketData({
+      history: () =>
+        cachedHistory(
+          [...closes].map(([date, close]) => ({ time: `${date}T00:00:00.000Z`, close })),
+        ),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+    // Deliberately NO price_history rows: every point must come from the provider.
+
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        transactions: [
+          { assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-6) },
+          { assetId: asset.id, side: 'buy', quantity: 1, price: 106, executedAt: tsOffset(-3) },
+        ],
+      });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+
+    // One point per calendar day across the whole span, not just at transactions.
+    expect(res.body.points).toHaveLength(7);
+    // total_t = Σ quantity_t × price_t: 1 unit until the mid-range buy, 2 after —
+    // the buy bends the curve from its date forward.
+    for (const point of res.body.points) {
+      const qty = point.date >= dayOffset(-3) ? 2 : 1;
+      expect(point.valueEur).toBeCloseTo(qty * closes.get(point.date)!, 6);
+    }
+    // The curve moves on a day with no transaction at all (market movement).
+    expect(res.body.points[1].valueEur).not.toBe(res.body.points[0].valueEur);
+  });
+
+  it('serves a custom asset through the real manual provider with carry-forward between value points', async () => {
+    // Default harness: the manual provider is local (our own DB), so this is the
+    // real end-to-end path with zero network.
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const asset = await seedAsset(harness, {
+      providerId: 'manual',
+      providerRef: 'test-custom-ref',
+      type: 'custom',
+      symbol: 'HOUSE',
+      name: 'My house',
+      currency: 'EUR',
+      exchange: null,
+      ownerId: user.id,
+    });
+    await harness.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-6), close: '1000' },
+      { assetId: asset.id, date: dayOffset(-2), close: '1200' },
+    ]);
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 1000, executedAt: tsOffset(-6) });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    expect(res.body.points).toHaveLength(7);
+    for (const point of res.body.points) {
+      // The value steps at the second value point and carries forward in between.
+      const expected = point.date >= dayOffset(-2) ? 1200 : 1000;
+      expect(point.valueEur).toBeCloseTo(expected, 6);
+    }
+  });
+
+  it('combines market and custom assets into one curve with no special-casing', async () => {
+    const closes = marketCloses();
+    const marketData = createStubMarketData({
+      history: (ref) =>
+        ref.providerId === 'manual'
+          ? cachedHistory([
+              { time: tsOffset(-6), close: 1000 },
+              { time: tsOffset(-2), close: 1200 },
+            ])
+          : cachedHistory(
+              [...closes].map(([date, close]) => ({ time: `${date}T00:00:00.000Z`, close })),
+            ),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const stock = await seedAsset(h, { currency: 'EUR' });
+    const house = await seedAsset(h, {
+      providerId: 'manual',
+      providerRef: 'house-ref',
+      type: 'custom',
+      symbol: 'HOUSE',
+      name: 'My house',
+      currency: 'EUR',
+      ownerId: user.id,
+    });
+
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        transactions: [
+          { assetId: stock.id, side: 'buy', quantity: 2, price: 100, executedAt: tsOffset(-6) },
+          { assetId: house.id, side: 'buy', quantity: 1, price: 1000, executedAt: tsOffset(-6) },
+        ],
+      });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    expect(res.body.points).toHaveLength(7);
+    for (const point of res.body.points) {
+      const houseValue = point.date >= dayOffset(-2) ? 1200 : 1000;
+      expect(point.valueEur).toBeCloseTo(2 * closes.get(point.date)! + houseValue, 6);
+    }
+  });
+
+  it('prefers provider closes over stored rows and fills provider gaps from stored rows', async () => {
+    // Provider covers only days −6 … −3; stored rows have a conflicting close on
+    // day −5 (must lose to the provider) and a day −1 close (must fill the gap).
+    const marketData = createStubMarketData({
+      history: () =>
+        cachedHistory([-6, -5, -4, -3].map((offset) => ({ time: tsOffset(offset), close: 100 }))),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-5), close: '999' },
+      { assetId: asset.id, date: dayOffset(-1), close: '55' },
+    ]);
+
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-6) });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    const byDate = new Map(
+      (res.body.points as Array<{ date: string; valueEur: number }>).map((p) => [p.date, p]),
+    );
+    expect(byDate.get(dayOffset(-5))!.valueEur).toBeCloseTo(100, 6); // provider wins
+    expect(byDate.get(dayOffset(-2))!.valueEur).toBeCloseTo(100, 6); // carry-forward
+    expect(byDate.get(dayOffset(-1))!.valueEur).toBeCloseTo(55, 6); // stored fills the gap
+    expect(byDate.get(dayOffset(0))!.valueEur).toBeCloseTo(55, 6);
   });
 });
 
