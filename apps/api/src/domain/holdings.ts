@@ -1,5 +1,5 @@
 /**
- * Portfolio money-math core (PROJECTPLAN.md §6.9, §5.4).
+ * Portfolio money-math core (PROJECTPLAN.md §6.8, §5.4).
  *
  * Transactions are the source of truth; **holdings are derived, never stored**.
  * This module owns the three derivations that turn a transaction log into the
@@ -14,7 +14,7 @@
  *     the first transaction to a given `today`, summing every asset's held
  *     quantity × that day's price, converted at that day's FX rate.
  *
- * **Purity (a hard requirement, §6.9 acceptance):** everything here is a pure
+ * **Purity (a hard requirement, §6.8/§12):** everything here is a pure
  * function of its inputs. There are no imports — no DB, no HTTP, no clock.
  * Currency conversion is injected as a {@link CurrencyConverter}; price history,
  * the reporting day (`today`), and FX all arrive as parameters. A silent
@@ -73,7 +73,7 @@ export interface CurrencyConverter {
 
 /**
  * Thrown when a SELL would push the held quantity negative ("you only hold 3.5
- * shares" — §6.9). A typed error so the write path can map it to a 400 rather
+ * shares" — §6.8). A typed error so the write path can map it to a 400 rather
  * than a 500; the message carries the offending quantities.
  */
 export class OversellError extends Error {
@@ -97,7 +97,7 @@ export class OversellError extends Error {
 export type TransactionSide = 'buy' | 'sell';
 
 /**
- * A single portfolio transaction in its asset's **native currency** (§6.9).
+ * A single portfolio transaction in its asset's **native currency** (§6.8).
  *
  * `executedAt` is an ISO-8601 timestamp used for two things: chronological
  * ordering (BUY/SELL interleaving changes the running average, so order
@@ -135,7 +135,7 @@ export interface PositionState {
   avgCost: number;
   /** Cumulative realized P/L across every SELL, native currency. */
   realizedPnl: number;
-  /** Per-SELL realized P/L, for the transaction rows (§6.9). */
+  /** Per-SELL realized P/L, for the transaction rows (§6.8). */
   realizations: SellRealization[];
 }
 
@@ -146,7 +146,7 @@ function assertFiniteNonNegative(value: number, label: string): void {
 }
 
 /**
- * Average-cost basis and realized P/L for one asset's transactions (§6.9).
+ * Average-cost basis and realized P/L for one asset's transactions (§6.8).
  *
  * Processes transactions in chronological order (`executedAt`, ties broken by
  * input order for determinism):
@@ -238,7 +238,7 @@ export interface HoldingAssetInput {
 }
 
 /**
- * One row of the holdings view (§6.9). Native-currency facts (`avgCost`,
+ * One row of the holdings view (§6.8). Native-currency facts (`avgCost`,
  * `price`, `realizedPnl`) sit alongside EUR-converted figures. Every EUR figure
  * is `null` when it cannot be computed (no quote, or a flat position).
  *
@@ -274,7 +274,7 @@ export interface Holding {
 }
 
 /**
- * Derive the holdings view (§6.9) for a set of assets from their transactions.
+ * Derive the holdings view (§6.8) for a set of assets from their transactions.
  *
  * One {@link Holding} is produced per asset that has at least one transaction,
  * in the order the assets are supplied. Fully-closed positions (net quantity 0)
@@ -293,6 +293,17 @@ export async function deriveHoldings(
     const list = byAsset.get(t.assetId);
     if (list) list.push(t);
     else byAsset.set(t.assetId, [t]);
+  }
+
+  // Fail loud on the money path: a transacted asset with no currency/quote
+  // input would otherwise silently vanish from the holdings view (and from the
+  // portfolio totals built on it). Same contract as valueOverTime.
+  const covered = new Set(assets.map((a) => a.assetId));
+  const missing = [...byAsset.keys()].filter((id) => !covered.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `deriveHoldings: transactions reference assets with no currency/quote input: ${missing.join(', ')}.`,
+    );
   }
 
   const holdings: Holding[] = [];
@@ -353,7 +364,7 @@ export async function deriveHoldings(
 const MS_PER_DAY = 86_400_000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** A daily close / custom-asset value point, native currency (§5.3). */
+/** A daily close / custom-asset value point, native currency (§6.8). */
 export interface PricePoint {
   /** ISO `YYYY-MM-DD`. */
   date: string;
@@ -369,7 +380,7 @@ export interface ValueOverTimeAsset {
   /**
    * Daily closes or custom-asset value points, native currency, any order.
    * Between points the value carries forward (step function) — the honest
-   * treatment of sparse custom-asset data (§6.9).
+   * treatment of sparse custom-asset data (§6.8).
    */
   prices: readonly PricePoint[];
 }
@@ -413,7 +424,7 @@ function dateToMs(date: string): number {
 }
 
 /**
- * Reconstruct the daily portfolio value series in EUR (§6.9).
+ * Reconstruct the daily portfolio value series in EUR (§6.8).
  *
  * For every calendar day from the first transaction to `today`:
  * `value(d) = Σ over assets of qty_held(d) · price_native(d) · fx(currency, d)`,
@@ -472,14 +483,27 @@ export async function valueOverTime(input: ValueOverTimeInput): Promise<ValuePoi
   for (const [assetId, txns] of txnsByAsset) {
     const asset = assetById.get(assetId);
     if (!asset) continue; // unreachable: validated above.
-    const sortedTxns = [...txns].sort((a, b) =>
-      dayOf(a.executedAt) < dayOf(b.executedAt) ? -1 : 1,
-    );
-    const sortedPrices = [...asset.prices].sort((a, b) => {
-      assertIsoDate(a.date, 'price point date');
-      assertIsoDate(b.date, 'price point date');
-      return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+    // Within-day order is irrelevant here (quantities sum per day), so the day
+    // key alone is a consistent sort key.
+    const sortedTxns = [...txns].sort((a, b) => {
+      const dayA = dayOf(a.executedAt);
+      const dayB = dayOf(b.executedAt);
+      return dayA < dayB ? -1 : dayA > dayB ? 1 : 0;
     });
+    // Validate every point up front — a sort comparator never runs for 0/1
+    // element arrays, so validation there would let a lone malformed date or a
+    // NaN close silently mis-value the asset.
+    for (const point of asset.prices) {
+      assertIsoDate(point.date, 'price point date');
+      if (!Number.isFinite(point.close)) {
+        throw new Error(
+          `Price point for ${asset.assetId} on ${point.date} must be a finite number, got ${point.close}`,
+        );
+      }
+    }
+    const sortedPrices = [...asset.prices].sort((a, b) =>
+      a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
+    );
     cursors.push({
       asset,
       txns: sortedTxns,
