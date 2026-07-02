@@ -16,7 +16,8 @@
     "format:check": "prettier --check .",
     "test": "pnpm -r test",
     "build": "pnpm -r build",
-    "clean": "pnpm -r exec rm -rf dist coverage .tsbuildinfo"
+    "clean": "pnpm -r exec rm -rf dist coverage .tsbuildinfo",
+    "knowledge:build": "node factory/knowledge/build.mjs"
   },
   "devDependencies": {
     "@bettertrack/config": "workspace:*",
