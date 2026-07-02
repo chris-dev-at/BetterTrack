@@ -6,6 +6,8 @@ import {
   type InviteValidationResponse,
   type LoginRequest,
   type MeResponse,
+  type PinVerifyRequest,
+  type SetPinRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -45,6 +47,32 @@ export async function changePassword(body: ChangePasswordRequest): Promise<MeRes
     body,
     suppressAuthRedirect: true,
   });
+  return meResponseSchema.parse(data);
+}
+
+/**
+ * Verify the PIN to resume a session (§6.1). `suppressAuthRedirect`: a wrong
+ * PIN (401) or the too-many-attempts fallback is handled by the PIN gate, not
+ * the global redirect policy.
+ */
+export async function verifyPin(body: PinVerifyRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/pin/verify', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return meResponseSchema.parse(data);
+}
+
+/** Enable or change the PIN (§6.1). */
+export async function setPin(body: SetPinRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/pin', { method: 'PUT', body });
+  return meResponseSchema.parse(data);
+}
+
+/** Disable the PIN (§6.1). */
+export async function disablePin(): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/pin', { method: 'DELETE' });
   return meResponseSchema.parse(data);
 }
 

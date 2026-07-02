@@ -14,6 +14,7 @@ import type {
   ChangePasswordRequest,
   LoginRequest,
   MeResponse,
+  PinVerifyRequest,
 } from '@bettertrack/contracts';
 
 import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
@@ -26,8 +27,47 @@ import * as api from '../lib/userApi';
  * `password-change-required` — a live session whose user must change their
  *   password before reaching anything else (§6.1). The app traps every route
  *   into the forced-change screen until it clears.
+ * `pin-required` — a live session whose account has the PIN gate on, opened in
+ *   a browsing session that hasn't entered the PIN yet (§6.1). The app traps
+ *   every route into the PIN gate until a correct PIN (or sign-out) clears it.
  */
-export type AuthStatus = 'loading' | 'anonymous' | 'authenticated' | 'password-change-required';
+export type AuthStatus =
+  | 'loading'
+  | 'anonymous'
+  | 'authenticated'
+  | 'password-change-required'
+  | 'pin-required';
+
+/**
+ * Whether the PIN has been satisfied for *this* browser session (tab/window).
+ * Kept in `sessionStorage`, which is cleared when the tab closes — so the gate
+ * reappears every time the user re-opens the website, exactly as the owner
+ * directive requires, while a fresh password login is treated as already
+ * satisfied (you just proved a stronger factor). httpOnly session lifetime
+ * still lives in the server cookie; this is only the per-open gate flag.
+ */
+const PIN_OK_KEY = 'bt_pin_ok';
+const isPinSatisfied = (): boolean => {
+  try {
+    return sessionStorage.getItem(PIN_OK_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+const markPinSatisfied = (): void => {
+  try {
+    sessionStorage.setItem(PIN_OK_KEY, '1');
+  } catch {
+    // Non-fatal: without sessionStorage the gate simply shows once more.
+  }
+};
+const clearPinSatisfied = (): void => {
+  try {
+    sessionStorage.removeItem(PIN_OK_KEY);
+  } catch {
+    // Non-fatal.
+  }
+};
 
 interface AuthContextValue {
   status: AuthStatus;
@@ -38,6 +78,8 @@ interface AuthContextValue {
   login: (credentials: LoginRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
   changePassword: (body: ChangePasswordRequest) => Promise<void>;
+  /** Verify the PIN for the current session, releasing the `pin-required` trap. */
+  verifyPin: (body: PinVerifyRequest) => Promise<void>;
   logout: () => Promise<void>;
   /** Non-null while a 429 toast should be visible. Cleared on dismiss. */
   rateLimitBanner: string | null;
@@ -68,18 +110,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
 
   // Apply a resolved /auth/me-or-login user to local state, routing a
-  // forced-change account into the trap rather than the app.
+  // forced-change account into its trap, and a PIN-gated account whose PIN
+  // hasn't been entered this browser session into the PIN gate.
   const applyUser = useCallback((me: MeResponse) => {
+    setUser(me);
     if (me.mustChangePassword) {
-      setUser(me);
       setStatus('password-change-required');
+    } else if (me.pinEnabled && !isPinSatisfied()) {
+      setStatus('pin-required');
     } else {
-      setUser(me);
       setStatus('authenticated');
     }
   }, []);
 
   const clearSession = useCallback(() => {
+    clearPinSatisfied();
     setUser(null);
     setStatus('anonymous');
   }, []);
@@ -147,6 +192,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.logout().catch(() => undefined);
         throw new AdminAccountError();
       }
+      // A fresh password login is a stronger factor than the PIN — don't gate
+      // the user again in the same breath.
+      markPinSatisfied();
       applyUser(me);
     },
     [applyUser],
@@ -156,6 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: AcceptInviteRequest) => {
       // A fresh invite account is created active with no forced change, so this
       // lands authenticated; applyUser keeps it correct either way.
+      markPinSatisfied();
       applyUser(await api.acceptInvite(body));
     },
     [applyUser],
@@ -165,9 +214,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: ChangePasswordRequest) => {
       // Success rotates the session and clears the flag — the response is a
       // fresh, usable user, releasing the forced-change trap.
+      markPinSatisfied();
       applyUser(await api.changePassword(body));
     },
     [applyUser],
+  );
+
+  const verifyPin = useCallback(
+    async (body: PinVerifyRequest) => {
+      try {
+        const me = await api.verifyPin(body);
+        markPinSatisfied();
+        applyUser(me);
+      } catch (err) {
+        // Too many wrong PINs: the server dropped the session, so fall all the
+        // way back to anonymous → the guard routes to the login screen.
+        if (err instanceof ApiError && err.code === 'PIN_FALLBACK_LOGIN') {
+          clearSession();
+        }
+        throw err;
+      }
+    },
+    [applyUser, clearSession],
   );
 
   const logout = useCallback(async () => {
@@ -189,6 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       acceptInvite,
       changePassword,
+      verifyPin,
       logout,
       rateLimitBanner,
       clearRateLimitBanner,
@@ -199,6 +268,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       acceptInvite,
       changePassword,
+      verifyPin,
       logout,
       rateLimitBanner,
       clearRateLimitBanner,

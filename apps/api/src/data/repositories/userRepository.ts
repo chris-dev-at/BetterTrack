@@ -84,6 +84,22 @@ export function createUserRepository(db: Database) {
       await db.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, id));
     },
 
+    /** Enable or change the PIN (§6.1): store the argon2id hash and flip on the flag. */
+    async setPin(id: string, pinHash: string): Promise<void> {
+      await db
+        .update(users)
+        .set({ pinHash, pinEnabled: true, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
+    /** Disable the PIN (§6.1): clear both the hash and the flag together. */
+    async clearPin(id: string): Promise<void> {
+      await db
+        .update(users)
+        .set({ pinHash: null, pinEnabled: false, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
     async setRole(id: string, role: 'user' | 'admin'): Promise<void> {
       await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, id));
     },

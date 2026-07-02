@@ -16,7 +16,14 @@ import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import type { SessionService } from '../sessions/sessionService';
-import { clearLoginThrottle, failCountKey, failHourKey, lockKey } from './loginThrottle';
+import {
+  clearLoginThrottle,
+  failCountKey,
+  failHourKey,
+  lockKey,
+  pinFailCountKey,
+  PIN_FALLBACK_THRESHOLD,
+} from './loginThrottle';
 
 export interface AuthServiceDeps {
   config: AppConfig;
@@ -42,6 +49,13 @@ export interface SessionResult {
   sessionId: string;
 }
 
+export interface VerifyPinInput {
+  userId: string;
+  sessionId: string;
+  pin: string;
+  ip?: string | null;
+}
+
 export interface AuthService {
   login(input: LoginInput): Promise<SessionResult>;
   logout(sessionId: string): Promise<void>;
@@ -53,11 +67,37 @@ export interface AuthService {
   ): Promise<SessionResult>;
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
   acceptInvite(input: AcceptInviteRequest, ip?: string | null): Promise<SessionResult>;
+  /**
+   * Verify the PIN for the current session, renewing its 30-day window on
+   * success (§6.1). {@link PIN_FALLBACK_THRESHOLD} wrong PINs in a row destroy
+   * the session and throw `PIN_FALLBACK_LOGIN`, forcing a full login.
+   */
+  verifyPin(input: VerifyPinInput): Promise<UserRow>;
+  /** Enable the PIN or change it to a new value (§6.1). */
+  setPin(userId: string, pin: string, ip?: string | null): Promise<UserRow>;
+  /** Turn the PIN gate off (§6.1). */
+  disablePin(userId: string, ip?: string | null): Promise<UserRow>;
 }
 
 // Single generic failure for every login rejection — no user enumeration (§6.1).
 const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
+
+/**
+ * Two-factor authentication hook (PROJECTPLAN.md §6.1, §6.3 — planned, post-v1).
+ *
+ * ── 2FA INSERTION POINT ──────────────────────────────────────────────────────
+ * This is the single place a second verification step will plug into the login
+ * flow. It runs after the password (and account-status) checks pass but BEFORE a
+ * session is minted, so an unverified second factor can block session creation
+ * without ever exposing a usable cookie. Today it is intentionally a no-op: the
+ * TOTP/WebAuthn implementation is out of scope for P2 (§14). When 2FA lands, the
+ * real check goes here (e.g. throw a `second-factor-required` challenge, or
+ * verify a supplied code) — nothing else in `login` needs to move.
+ */
+async function verifySecondFactor(_user: UserRow): Promise<void> {
+  // No-op until 2FA is implemented (§6.1/§6.3, §14).
+}
 
 export function createAuthService(deps: AuthServiceDeps): AuthService {
   const {
@@ -156,6 +196,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         });
         throw accountDisabled();
       }
+
+      // 2FA hook (§6.1/§6.3): the insertion point for a second verification
+      // step, gating session creation. No-op until 2FA ships (see above).
+      await verifySecondFactor(user);
 
       await clearFailures(user.id);
       // Session rotation: drop any pre-login session before minting a new id.
@@ -298,6 +342,93 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const sessionId = await sessions.create(user.id);
       return { user, sessionId };
+    },
+
+    async verifyPin({ userId, sessionId, pin, ip }) {
+      const user = await userRepo.findById(userId);
+      // The session guard already resolved this user, but re-check the account.
+      if (!user || user.status !== 'active') {
+        await sessions.destroy(sessionId);
+        throw unauthorized();
+      }
+      if (!user.pinEnabled || !user.pinHash) {
+        // No PIN to verify — nothing to gate on; the client shouldn't be here.
+        throw badRequest('No PIN is set for this account.', 'PIN_NOT_ENABLED');
+      }
+
+      const ok = await passwordHasher.verify(user.pinHash, pin);
+      if (!ok) {
+        const consecutive = await redis.incr(pinFailCountKey(user.id));
+        // Match the session TTL so the tally never outlives the session itself.
+        if (consecutive === 1) {
+          await redis.expire(pinFailCountKey(user.id), Math.floor(config.cookie.maxAgeMs / 1000));
+        }
+        await audit.record({
+          action: AuditAction.PinVerifyFail,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+          meta: { consecutive },
+        });
+        if (consecutive >= PIN_FALLBACK_THRESHOLD) {
+          // Too many wrong PINs: drop the session so the only way back in is a
+          // full password login (§6.1). Clear the tally with the session.
+          await redis.del(pinFailCountKey(user.id));
+          await sessions.destroy(sessionId);
+          throw unauthorized(
+            'Too many incorrect PIN attempts. Please sign in with your password.',
+            'PIN_FALLBACK_LOGIN',
+          );
+        }
+        throw unauthorized('Incorrect PIN.', 'INVALID_PIN');
+      }
+
+      // Correct PIN: clear the tally and renew the full 30-day window (§6.1).
+      await redis.del(pinFailCountKey(user.id));
+      await sessions.renew(sessionId);
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PinVerified,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+      return user;
+    },
+
+    async setPin(userId, pin, ip) {
+      const user = await userRepo.findById(userId);
+      if (!user) throw unauthorized();
+      // PIN is hashed with the same argon2id hasher as passwords (§10), so it
+      // is never recoverable and verification is uniform across both secrets.
+      const pinHash = await passwordHasher.hash(pin);
+      await userRepo.setPin(user.id, pinHash);
+      await redis.del(pinFailCountKey(user.id));
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PinEnabled,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+      const updated = await userRepo.findById(user.id);
+      return updated ?? { ...user, pinHash, pinEnabled: true };
+    },
+
+    async disablePin(userId, ip) {
+      const user = await userRepo.findById(userId);
+      if (!user) throw unauthorized();
+      await userRepo.clearPin(user.id);
+      await redis.del(pinFailCountKey(user.id));
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PinDisabled,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+      const updated = await userRepo.findById(user.id);
+      return updated ?? { ...user, pinHash: null, pinEnabled: false };
     },
   };
 }

@@ -8,6 +8,7 @@ export interface AuthUser {
   role: Role;
   status: UserStatus;
   mustChangePassword: boolean;
+  pinEnabled: boolean;
   baseCurrency: string;
   lastLoginAt: Date | string | null;
   createdAt: Date | string;

@@ -42,6 +42,29 @@ export const acceptInviteRequestSchema = z
   .strict();
 export type AcceptInviteRequest = z.infer<typeof acceptInviteRequestSchema>;
 
+/**
+ * PIN gate (PROJECTPLAN.md §6.1, §5.5). A short numeric code the user enters to
+ * resume an existing session; a correct PIN renews the session's 30-day window.
+ * Stored argon2id-hashed server-side exactly like a password — never in the
+ * clear. 4–10 digits: long enough to matter, short enough to type on every
+ * app open.
+ */
+export const MIN_PIN_LENGTH = 4;
+export const MAX_PIN_LENGTH = 10;
+export const pinSchema = z
+  .string()
+  .regex(/^\d+$/, 'PIN must contain digits only')
+  .min(MIN_PIN_LENGTH)
+  .max(MAX_PIN_LENGTH);
+
+/** `POST /auth/pin/verify` — resume a session by entering the PIN. */
+export const pinVerifyRequestSchema = z.object({ pin: pinSchema }).strict();
+export type PinVerifyRequest = z.infer<typeof pinVerifyRequestSchema>;
+
+/** `PUT /auth/pin` — enable the PIN or change it to a new value. */
+export const setPinRequestSchema = z.object({ pin: pinSchema }).strict();
+export type SetPinRequest = z.infer<typeof setPinRequestSchema>;
+
 /** The authenticated-user view returned by `/auth/me`, `/auth/login`, etc. */
 export const meResponseSchema = z.object({
   id: z.string().uuid(),
@@ -50,6 +73,8 @@ export const meResponseSchema = z.object({
   role: roleSchema,
   status: userStatusSchema,
   mustChangePassword: z.boolean(),
+  /** Whether the account has the PIN gate turned on (§6.1). */
+  pinEnabled: z.boolean(),
   baseCurrency: z.string(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
