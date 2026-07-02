@@ -128,11 +128,17 @@ export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss:
   );
 }
 
-/** Centered card scaffold shared by the public auth screens. */
+/**
+ * Card scaffold shared by the public auth screens. Horizontally centered and
+ * anchored a little above vertical center — top-middle-ish, not bottom-anchored
+ * and not flush to the top (PROJECTPLAN.md §6.1, issue #89). The top offset is
+ * viewport-height-relative so it scales down on short viewports instead of
+ * pushing the card off-screen.
+ */
 export function AuthCard({ subtitle, children }: { subtitle: string; children: ReactNode }) {
   return (
-    <div className="grid min-h-screen place-items-center bg-[#0b0e14] px-4">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen bg-[#0b0e14] px-4 pb-12 pt-[12vh] sm:pt-[16vh]">
+      <div className="mx-auto w-full max-w-sm">
         <div className="mb-8 text-center">
           <Wordmark edition="Web" className="text-2xl" />
           <p className="mt-1 text-sm text-neutral-500">{subtitle}</p>
