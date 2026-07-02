@@ -255,6 +255,13 @@ export function createMarketCache(
       const lockGone = (await redis.exists(loadLockKey(params.key))) === 0;
       if (lockGone || now() >= deadline) break;
     }
+    // The winner may have stored its result between our last read and the lock
+    // check above — one final re-read before falling back avoids a duplicate
+    // upstream fetch.
+    const fresh = await readEntry<T>(freshCacheKey(params.key));
+    if (fresh) return { value: fresh.value, stale: false, asOf: fresh.asOf };
+    const negative = await readNegative(params.key);
+    if (negative) throw new AssetNotFoundError(negative.message, true);
     // The winner failed transiently or died without a result: fetch ourselves
     // rather than error the caller.
     return loadAndStore(params);

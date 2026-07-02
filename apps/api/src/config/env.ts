@@ -21,6 +21,11 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().optional(),
   // Per-provider request budget (§5.3): bounded concurrency + minimum spacing
   // between upstream call starts. Defaults match PROJECTPLAN §5.2/§5.3.
+  // NOTE: the budget is per *process* — the API and the BullMQ worker each run
+  // their own queue with an independent spacing clock, so the effective
+  // upstream budget is N × these values for N running processes (§5.3 only
+  // mandates the Redis lock for cross-process coalescing). Set lower values in
+  // each service's env if a tighter combined budget is needed.
   PROVIDER_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
   PROVIDER_MIN_SPACING_MS: z.coerce.number().int().nonnegative().default(250),
 });

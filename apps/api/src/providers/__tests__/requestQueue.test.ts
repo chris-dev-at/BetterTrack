@@ -14,10 +14,13 @@ function httpError(code: number): Error & { code: number } {
 }
 
 describe('isRetryableUpstreamError (§5.2)', () => {
-  it('retries 429 and 5xx, not 4xx or code-less errors', () => {
-    expect(isRetryableUpstreamError(httpError(429))).toBe(true);
+  it('retries 5xx only — not 429 (the breaker owns rate limits), 4xx or code-less errors', () => {
     expect(isRetryableUpstreamError(httpError(500))).toBe(true);
     expect(isRetryableUpstreamError(httpError(503))).toBe(true);
+    // A queue-retried 429 would starve the circuit breaker (§5.3): its backoff
+    // outlasts the service's 5 s timeout, so the breaker would only ever see
+    // TimeoutError while abandoned retries kept hitting the upstream.
+    expect(isRetryableUpstreamError(httpError(429))).toBe(false);
     expect(isRetryableUpstreamError(httpError(404))).toBe(false);
     expect(isRetryableUpstreamError(httpError(400))).toBe(false);
     expect(isRetryableUpstreamError(new Error('network'))).toBe(false);
@@ -64,7 +67,7 @@ describe('createRequestQueue concurrency cap (§5.2)', () => {
 });
 
 describe('createRequestQueue backoff (§5.2)', () => {
-  it('backs off and retries on 429, then succeeds, with exponential delays', async () => {
+  it('backs off and retries on 5xx, then succeeds, with exponential delays', async () => {
     const delays: number[] = [];
     // Spacing off so `delays` records backoff sleeps only.
     const queue = createRequestQueue({
@@ -79,13 +82,32 @@ describe('createRequestQueue backoff (§5.2)', () => {
     let attempts = 0;
     const result = await queue.run(async () => {
       attempts += 1;
-      if (attempts <= 2) throw httpError(429);
+      if (attempts <= 2) throw httpError(503);
       return 'ok';
     });
 
     expect(result).toBe('ok');
     expect(attempts).toBe(3);
     expect(delays).toEqual([100, 200]); // 100 * 2^0, 100 * 2^1
+  });
+
+  it('does not retry a 429 — it must escape promptly so the circuit breaker can trip (§5.3)', async () => {
+    const delays: number[] = [];
+    const queue = createRequestQueue({
+      minSpacingMs: 0,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+    });
+
+    let attempts = 0;
+    await expect(
+      queue.run(async () => {
+        attempts += 1;
+        throw httpError(429);
+      }),
+    ).rejects.toMatchObject({ code: 429 });
+
+    expect(attempts).toBe(1);
+    expect(delays).toEqual([]);
   });
 
   it('does not retry a non-retryable (4xx) error', async () => {
@@ -192,7 +214,7 @@ describe('createRequestQueue minimum spacing (§5.3)', () => {
     const result = await queue.run(async () => {
       starts.push(clock);
       attempts += 1;
-      if (attempts === 1) throw httpError(429);
+      if (attempts === 1) throw httpError(503);
       return 'ok';
     });
 

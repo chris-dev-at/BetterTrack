@@ -131,6 +131,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
         concurrency: config.providers.maxConcurrency,
         minSpacingMs: config.providers.minSpacingMs,
       },
+      options: {
+        // Failed background revalidations never surface to callers (§5.3 — they
+        // already got the stale copy), so the log line is their only trace.
+        onBackgroundError: (key, err) =>
+          logger.warn({ key, err }, 'market-data background refresh failed'),
+      },
     }).service;
 
   // First-touch backfill enqueue (§6.2/§9). In tests no BullMQ worker runs, so

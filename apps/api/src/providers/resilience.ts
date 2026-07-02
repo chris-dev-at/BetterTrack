@@ -49,14 +49,20 @@ export function withTimeout<T>(fn: () => Promise<T>, ms: number = DEFAULT_TIMEOU
 }
 
 /**
- * Run `fn`; on failure run it exactly once more (§5.1, "retry-once"). The second
- * failure propagates. Both attempts share the same timeout budget when composed
- * via {@link withTimeout}.
+ * Run `fn`; on failure run it at most once more (§5.1, "retry-once"). The second
+ * failure propagates. `shouldRetry` (default: always) short-circuits the retry
+ * for definitive failures — a rate limit or a not-found cannot change on a
+ * second attempt, so retrying only doubles the upstream cost. Both attempts
+ * share the same timeout budget when composed via {@link withTimeout}.
  */
-export async function retryOnce<T>(fn: () => Promise<T>): Promise<T> {
+export async function retryOnce<T>(
+  fn: () => Promise<T>,
+  shouldRetry: (err: unknown) => boolean = () => true,
+): Promise<T> {
   try {
     return await fn();
-  } catch {
+  } catch (err) {
+    if (!shouldRetry(err)) throw err;
     return await fn();
   }
 }

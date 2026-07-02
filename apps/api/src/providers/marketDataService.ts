@@ -122,9 +122,22 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
     return breaker;
   };
 
-  /** timeout → retry-once → circuit breaker (§5.1). */
+  /**
+   * timeout → retry-once → circuit breaker (§5.1). Definitive failures skip
+   * the retry: a 429 must reach the breaker on the very first attempt so it
+   * trips immediately (§5.3) instead of hitting the rate-limiting upstream
+   * again, and a not-found is about to be negative-cached — a second call
+   * cannot change either answer.
+   */
+  const isDefinitiveError = (err: unknown): boolean =>
+    isRateLimitError(err) || isNotFoundError(err);
   const callUpstream = <T>(providerId: string, fn: () => Promise<T>): Promise<T> =>
-    breakerFor(providerId).execute(() => retryOnce(() => withTimeout(fn, timeoutMs)));
+    breakerFor(providerId).execute(() =>
+      retryOnce(
+        () => withTimeout(fn, timeoutMs),
+        (err) => !isDefinitiveError(err),
+      ),
+    );
 
   /**
    * Revalidation gate: while a provider's breaker is open, expired entries are

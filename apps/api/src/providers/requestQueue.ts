@@ -2,11 +2,20 @@
  * Outbound request policy — the per-provider request budget (PROJECTPLAN.md
  * §5.2, §5.3): every upstream call runs through a queue with **bounded
  * concurrency** (default 4), a **minimum spacing** between call starts
- * (default 250 ms) and **exponential backoff on 429/5xx**. This is distinct
+ * (default 250 ms) and **exponential backoff on 5xx**. This is distinct
  * from, and sits *inside*, the market-data service's timeout → retry-once →
  * circuit-breaker → cache wrapper (§5.1): the breaker protects the app from a
  * sick upstream; this queue keeps us a polite client of an unofficial,
  * rate-limiting API.
+ *
+ * A 429 is deliberately **not** retried here: rate-limit policy belongs to the
+ * circuit breaker (§5.3 — a 429 trips it immediately and stale data is served
+ * while it cools down), and the breaker can only own that policy if the 429
+ * escapes the queue promptly. Queue-level 429 backoff (~7.5 s of sleeps at the
+ * defaults) would outlast the service's 5 s timeout, so the breaker would only
+ * ever see TimeoutError while the abandoned retry chain kept calling the
+ * already-rate-limiting upstream — the exact impoliteness §5.3 exists to
+ * prevent.
  *
  * The sleep/clock are injectable so tests drive backoff and spacing without
  * real waits.
@@ -28,7 +37,7 @@ export interface RequestQueueOptions {
    * queue, applied to retries too (§5.3). Default 250 ms; 0 disables.
    */
   minSpacingMs?: number;
-  /** Backoff retries on a retryable (429/5xx) failure. Default 4. */
+  /** Backoff retries on a retryable (5xx) failure. Default 4. */
   maxRetries?: number;
   /** First backoff delay; doubles each retry. Default 500 ms. */
   baseDelayMs?: number;
@@ -38,7 +47,7 @@ export interface RequestQueueOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Injectable clock for spacing (tests). Defaults to `Date.now`. */
   now?: () => number;
-  /** Classifies an error as worth backing off + retrying. Default: 429/5xx. */
+  /** Classifies an error as worth backing off + retrying. Default: 5xx. */
   isRetryable?: (err: unknown) => boolean;
 }
 
@@ -51,15 +60,17 @@ const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTim
 
 /**
  * `yahoo-finance2` sets `error.code` to the HTTP status on its `HTTPError`
- * (verified against the installed v3 source). 429 (rate limit) and 5xx (server)
- * are transient and worth a backed-off retry; 4xx (bad symbol, etc.) are not.
- * Network/timeout errors carry no numeric `code` here — those are handled by the
- * service-level retry-once and circuit breaker, not this queue.
+ * (verified against the installed v3 source). Only 5xx (server errors) are
+ * transient and worth a backed-off retry here. 429 must propagate immediately
+ * so the circuit breaker can trip on it (§5.3 — see the module docstring);
+ * other 4xx (bad symbol, etc.) are definitive. Network/timeout errors carry no
+ * numeric `code` here — those are handled by the service-level retry-once and
+ * circuit breaker, not this queue.
  */
 export function isRetryableUpstreamError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null | undefined)?.code;
   if (typeof code !== 'number') return false;
-  return code === 429 || (code >= 500 && code < 600);
+  return code >= 500 && code < 600;
 }
 
 /**

@@ -221,18 +221,18 @@ describe('MarketDataService — upstream 429 (§5.3)', () => {
     limited = true;
 
     // Expired entry: stale served immediately; the background refresh hits the
-    // 429 (retry-once → 2 calls) and trips the breaker.
+    // 429 exactly once (definitive — never retried) and trips the breaker.
     const first = await service.getQuote(REF);
     expect(first).toMatchObject({ stale: true, value: { price: 200 } });
     await service.settled();
-    expect(provider.calls.quote).toBe(3);
+    expect(provider.calls.quote).toBe(2);
 
     // Breaker open → TTL stretch: stale keeps being served with zero upstream
     // attempts and no error reaches the caller.
     const second = await service.getQuote(REF);
     expect(second).toMatchObject({ stale: true, value: { price: 200 } });
     await service.settled();
-    expect(provider.calls.quote).toBe(3);
+    expect(provider.calls.quote).toBe(2);
   });
 });
 
@@ -244,7 +244,7 @@ describe('MarketDataService — negative caching (§5.3)', () => {
     const { service } = serviceWith(provider);
 
     await expect(service.getQuote(REF)).rejects.toBeInstanceOf(AssetNotFoundError);
-    expect(provider.calls.quote).toBe(2); // retry-once before the miss is definitive
+    expect(provider.calls.quote).toBe(1); // a definitive not-found is never retried
 
     const negTtl = await redis.ttl(negativeCacheKey(cacheKey('fake', 'ACME', 'quote', 'spot')));
     expect(negTtl).toBeGreaterThan(0);
@@ -255,7 +255,7 @@ describe('MarketDataService — negative caching (§5.3)', () => {
       name: 'AssetNotFoundError',
       fromNegativeCache: true,
     });
-    expect(provider.calls.quote).toBe(2);
+    expect(provider.calls.quote).toBe(1);
   });
 });
 

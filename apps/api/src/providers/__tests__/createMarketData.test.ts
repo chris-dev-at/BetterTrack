@@ -2,6 +2,7 @@ import type { AssetRef } from '@bettertrack/contracts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import { CircuitOpenError } from '../circuitBreaker';
 import { createMarketData } from '../createMarketData';
 import type { YahooClient, YahooQuoteResult } from '../yahooClient';
 
@@ -53,6 +54,32 @@ describe('createMarketData registers both providers (§5.1)', () => {
     // Second read is a cache hit — no further upstream call (§5.3).
     const second = await service.getQuote(YAHOO_REF);
     expect(second.value.price).toBe(187.5);
+    expect(quote).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the breaker on an upstream 429 through the full composition (queue → timeout → retry → breaker)', async () => {
+    await h.ctx.redis.flushall();
+    // The real Yahoo provider with its real default request queue — the same
+    // wiring production uses — over a client that is being rate-limited.
+    const quote = vi.fn(
+      (): Promise<YahooQuoteResult> =>
+        Promise.reject(Object.assign(new Error('HTTP 429'), { code: 429 })),
+    );
+    const stub: YahooClient = {
+      search: () => Promise.resolve({ quotes: [] }),
+      quote,
+      chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+    };
+    const { service } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
+
+    // The 429 escapes the queue unretried and skips retry-once, so it reaches
+    // the breaker — which trips immediately — after exactly one upstream call
+    // (§5.3): no backoff chain hammering an already-rate-limiting upstream.
+    await expect(service.getQuote(YAHOO_REF)).rejects.toMatchObject({ code: 429 });
+    expect(quote).toHaveBeenCalledTimes(1);
+
+    // Breaker open → fail fast with zero further upstream calls.
+    await expect(service.getQuote(YAHOO_REF)).rejects.toBeInstanceOf(CircuitOpenError);
     expect(quote).toHaveBeenCalledTimes(1);
   });
 });
