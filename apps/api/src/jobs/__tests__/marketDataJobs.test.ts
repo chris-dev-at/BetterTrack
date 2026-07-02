@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PGlite } from '@electric-sql/pglite';
+import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import type { Job } from 'bullmq';
 import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { migrate as migratePglite } from 'drizzle-orm/pglite/migrator';
@@ -57,7 +58,8 @@ const migrationsFolder = path.join(
 const logger = pino({ level: 'silent' }) as unknown as Logger;
 
 async function makeDb(): Promise<Database> {
-  const client = new PGlite();
+  // pg_trgm must be loadable: the 0003 migration CREATEs it (§5.5 search indexes).
+  const client = new PGlite({ extensions: { pg_trgm } });
   const db = drizzlePglite(client, { schema }) as unknown as Database;
   await migratePglite(db as never, { migrationsFolder });
   return db;

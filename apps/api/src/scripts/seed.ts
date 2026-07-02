@@ -2,9 +2,11 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
 import { loadConfig } from '../config/env';
+import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import { createPasswordHasher } from '../services/password/passwordHasher';
+import { COMMON_SYMBOLS_SEED, seedAssetCatalog } from '../services/search/catalogSeed';
 
 const config = loadConfig();
 
@@ -36,5 +38,12 @@ if (existing) {
   });
   console.log(`Created admin account: ${admin.email} (username: ${admin.username}).`);
 }
+
+// Shipped common-symbols catalog (§6.2(c)) — idempotent, so re-seeding is safe.
+const assetRepo = createAssetRepository(db);
+const catalogSeed = await seedAssetCatalog(assetRepo, COMMON_SYMBOLS_SEED);
+console.log(
+  `Asset catalog seed: ${catalogSeed.created} created, ${catalogSeed.existing} already present.`,
+);
 
 await client.end();

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PGlite } from '@electric-sql/pglite';
+import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { drizzle as drizzlePglite } from 'drizzle-orm/pglite';
 import { migrate as migratePglite } from 'drizzle-orm/pglite/migrator';
 import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
@@ -126,7 +127,9 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
   if (realDbUrl) {
     db = await acquireRealDb();
   } else {
-    const client = new PGlite();
+    // pg_trgm must be loadable: the 0003 migration CREATEs it for the catalog's
+    // trigram search indexes (§5.5, §6.2).
+    const client = new PGlite({ extensions: { pg_trgm } });
     const rawDb = drizzlePglite(client, { schema });
     await migratePglite(rawDb, { migrationsFolder });
     db = rawDb as unknown as Database;
@@ -136,6 +139,9 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     redis = await acquireRealRedis();
   } else {
     redis = new RedisMock() as unknown as Redis;
+    // ioredis-mock instances share one store per worker — flush for a clean
+    // slate, mirroring the real-Redis branch above.
+    await redis.flushall();
   }
 
   const config = loadConfig({ ...BASE_TEST_ENV, ...options.env });
