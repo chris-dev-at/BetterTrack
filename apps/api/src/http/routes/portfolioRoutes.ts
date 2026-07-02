@@ -13,6 +13,7 @@ import {
   type TransactionInput,
   type TransactionListQuery,
   type UpdatePortfolioRequest,
+  type UpdatePortfolioResponse,
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
@@ -53,7 +54,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const patch = req.valid?.body as UpdatePortfolioRequest;
       const portfolio = await ctx.portfolio.updatePortfolio(req.authUser!.id, portfolioId, patch);
-      res.json({ portfolio });
+      const body: UpdatePortfolioResponse = { portfolio };
+      res.json(body);
     },
   );
 

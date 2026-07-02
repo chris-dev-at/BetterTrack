@@ -37,40 +37,77 @@ export interface PortfolioSummaryRow {
 /** The default portfolio's canonical name (§5.5). */
 const DEFAULT_PORTFOLIO_NAME = 'Main';
 
-function toSummary(row: {
-  id: string;
-  name: string;
-  visibility: 'private' | 'friends';
-  sortOrder: number;
-}): PortfolioSummaryRow {
+function toSummary(
+  row: {
+    id: string;
+    name: string;
+    visibility: 'private' | 'friends';
+    sortOrder: number;
+  },
+  isDefault: boolean,
+): PortfolioSummaryRow {
   return {
     id: row.id,
     name: row.name,
     visibility: row.visibility,
     sortOrder: row.sortOrder,
-    isDefault: row.name === DEFAULT_PORTFOLIO_NAME,
+    isDefault,
   };
+}
+
+/**
+ * The default portfolio among a user's rows: the lowest `sort_order`, breaking
+ * ties on the oldest row (ascending UUIDv7 id ⇒ creation order). Derived from a
+ * stable key rather than the name, so renaming the default never changes which
+ * row is default (§6.8). Returns null for an empty set.
+ */
+function pickDefaultId(rows: readonly { id: string; sortOrder: number }[]): string | null {
+  let best: { id: string; sortOrder: number } | null = null;
+  for (const row of rows) {
+    if (
+      best === null ||
+      row.sortOrder < best.sortOrder ||
+      (row.sortOrder === best.sortOrder && row.id < best.id)
+    ) {
+      best = row;
+    }
+  }
+  return best?.id ?? null;
 }
 
 export function createPortfolioRepository(db: Database) {
   /**
-   * Upsert the user's "Main" portfolio and return its id. Idempotent on the
-   * `portfolios_user_name_unique` index: a concurrent caller's insert is
-   * swallowed and we re-select the row either way.
+   * The user's default portfolio id — resolved from a stable key (lowest
+   * `sort_order`, then oldest row by UUIDv7 id), or null when the user has no
+   * portfolios yet. Never keys on the name, so a renamed default is still found.
+   */
+  async function selectDefaultId(userId: string): Promise<string | null> {
+    const rows = await db
+      .select({ id: portfolios.id })
+      .from(portfolios)
+      .where(eq(portfolios.userId, userId))
+      .orderBy(asc(portfolios.sortOrder), asc(portfolios.id))
+      .limit(1);
+    return rows[0]?.id ?? null;
+  }
+
+  /**
+   * The user's default portfolio id, provisioning the auto-created "Main" only
+   * when the user has *zero* portfolios. Keying on existence (not the literal
+   * name) means a renamed default is returned as-is rather than resurrecting a
+   * phantom empty "Main" on the next read (§6.8). Idempotent under concurrency
+   * via the `portfolios_user_name_unique` index.
    */
   async function getOrCreateMain(userId: string): Promise<string> {
+    const existing = await selectDefaultId(userId);
+    if (existing) return existing;
     await db
       .insert(portfolios)
       .values({ userId, name: DEFAULT_PORTFOLIO_NAME })
       .onConflictDoNothing();
-    const rows = await db
-      .select({ id: portfolios.id })
-      .from(portfolios)
-      .where(and(eq(portfolios.userId, userId), eq(portfolios.name, DEFAULT_PORTFOLIO_NAME)))
-      .limit(1);
-    const row = rows[0];
-    if (!row) throw new Error('Main portfolio vanished after upsert');
-    return row.id;
+    const created = await selectDefaultId(userId);
+    if (!created) throw new Error('Default portfolio vanished after upsert');
+    return created;
   }
 
   return {
@@ -84,16 +121,6 @@ export function createPortfolioRepository(db: Database) {
      * retried signup never duplicates it.
      */
     createDefault: getOrCreateMain,
-
-    /** The user's "Main" portfolio id, or null when they have none yet (read path). */
-    async findMain(userId: string): Promise<string | null> {
-      const rows = await db
-        .select({ id: portfolios.id })
-        .from(portfolios)
-        .where(and(eq(portfolios.userId, userId), eq(portfolios.name, DEFAULT_PORTFOLIO_NAME)))
-        .limit(1);
-      return rows[0]?.id ?? null;
-    },
 
     /**
      * Every portfolio a user owns, ordered `sort_order` then name (§6.8, §7.2).
@@ -111,7 +138,8 @@ export function createPortfolioRepository(db: Database) {
         .from(portfolios)
         .where(eq(portfolios.userId, userId))
         .orderBy(asc(portfolios.sortOrder), asc(portfolios.name));
-      return rows.map(toSummary);
+      const defaultId = pickDefaultId(rows);
+      return rows.map((row) => toSummary(row, row.id === defaultId));
     },
 
     /**
@@ -134,7 +162,9 @@ export function createPortfolioRepository(db: Database) {
         .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
         .limit(1);
       const row = rows[0];
-      return row ? toSummary(row) : null;
+      if (!row) return null;
+      const defaultId = await selectDefaultId(userId);
+      return toSummary(row, row.id === defaultId);
     },
 
     /**
@@ -164,7 +194,9 @@ export function createPortfolioRepository(db: Database) {
           .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
           .limit(1);
         const row = rows[0];
-        return row ? toSummary(row) : null;
+        if (!row) return null;
+        const defaultId = await selectDefaultId(userId);
+        return toSummary(row, row.id === defaultId);
       }
 
       const rows = await db
@@ -178,7 +210,9 @@ export function createPortfolioRepository(db: Database) {
           sortOrder: portfolios.sortOrder,
         });
       const row = rows[0];
-      return row ? toSummary(row) : null;
+      if (!row) return null;
+      const defaultId = await selectDefaultId(userId);
+      return toSummary(row, row.id === defaultId);
     },
 
     /** The asset rows for a set of ids (currency, provider ref, meta). */

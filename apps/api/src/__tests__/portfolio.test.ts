@@ -163,14 +163,18 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
     expect(portfolioSummarySchema.safeParse(res.body.portfolio).success).toBe(true);
     expect(res.body.portfolio.name).toBe('My Money');
     expect(res.body.portfolio.visibility).toBe('friends');
-    // Renamed away from "Main", so it is no longer the default marker.
-    expect(res.body.portfolio.isDefault).toBe(false);
+    // Default is a stable property of the row (§6.8), not derived from its name:
+    // renaming the auto-created portfolio keeps it the default.
+    expect(res.body.portfolio.isDefault).toBe(true);
 
-    // The change persists across a fresh read.
+    // The change persists across a fresh read — and, crucially, renaming the
+    // default must NOT resurrect a phantom empty "Main": still exactly one row.
     const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios).toHaveLength(1);
     const updated = list.body.portfolios.find((p: { id: string }) => p.id === pid);
     expect(updated.name).toBe('My Money');
     expect(updated.visibility).toBe('friends');
+    expect(updated.isDefault).toBe(true);
   });
 
   it('404s when patching another user’s portfolio', async () => {

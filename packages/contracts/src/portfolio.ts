@@ -53,6 +53,12 @@ export const updatePortfolioRequestSchema = z
   .strict();
 export type UpdatePortfolioRequest = z.infer<typeof updatePortfolioRequestSchema>;
 
+/** `PATCH /portfolios/:id` response — the updated portfolio summary (§6.8). */
+export const updatePortfolioResponseSchema = z
+  .object({ portfolio: portfolioSummarySchema })
+  .strict();
+export type UpdatePortfolioResponse = z.infer<typeof updatePortfolioResponseSchema>;
+
 /** Route param for every `/portfolios/:portfolioId/…` endpoint. */
 export const portfolioIdParamSchema = z.object({ portfolioId: z.string().uuid() }).strict();
 
@@ -158,9 +164,6 @@ export const transactionListQuerySchema = z
   })
   .strict();
 export type TransactionListQuery = z.infer<typeof transactionListQuerySchema>;
-
-/** Route param for transaction mutations. */
-export const transactionIdParamSchema = z.object({ id: z.string().uuid() }).strict();
 
 // --- Holdings + totals (`GET /portfolios/:id`) ------------------------------
 
