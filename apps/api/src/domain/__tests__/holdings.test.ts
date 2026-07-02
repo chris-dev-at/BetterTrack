@@ -43,8 +43,29 @@ function stubConverter(rates: Record<string, number> = { EUR: 1, USD: 0.9 }): Cu
   };
 }
 
+/**
+ * A date-aware stub converter for verifying **historical FX** (§5.4): EUR is
+ * identity; any other currency requires `opts.date` and looks its daily rate up
+ * in `ratesByDate` — a missing (currency, date) rate rejects, so a test fails
+ * loud if valueOverTime ever asks for a spot rate or the wrong day.
+ */
+function datedStubConverter(
+  ratesByDate: Record<string, Record<string, number>>,
+): CurrencyConverter {
+  return {
+    toBase: vi.fn((amount: number, currency: string, opts?: { date?: string }) => {
+      if (currency === 'EUR') return Promise.resolve(amount);
+      const rate = opts?.date === undefined ? undefined : ratesByDate[currency]?.[opts.date];
+      if (rate === undefined) {
+        return Promise.reject(new Error(`no rate for ${currency} on ${opts?.date ?? 'spot'}`));
+      }
+      return Promise.resolve(amount * rate);
+    }),
+  };
+}
+
 // ---------------------------------------------------------------------------
-// reducePosition — average cost & realized P/L (§6.9)
+// reducePosition — average cost & realized P/L (§6.8)
 // ---------------------------------------------------------------------------
 
 describe('reducePosition', () => {
@@ -121,6 +142,90 @@ describe('reducePosition', () => {
     });
   });
 
+  describe('precision (§5.4 — exact decimal cases, asserted with toBe, no drift)', () => {
+    // Inputs chosen so every intermediate double is exactly representable
+    // (prices on 1/4- and 1/8-cent boundaries): any mid-computation rounding or
+    // drift would break strict equality.
+    it.each([
+      {
+        name: 'buy with fee: avg = (8·100.25 + 2)/8 = 100.5 exactly',
+        txns: [tx({ side: 'buy', quantity: 8, price: 100.25, fee: 2 })],
+        quantity: 8,
+        avgCost: 100.5,
+        realizedPnl: 0,
+      },
+      {
+        name: 're-average: (4·100.5 + 4·101.5 + 1)/8 = 101.125 exactly',
+        txns: [
+          tx({ side: 'buy', quantity: 4, price: 100.5, executedAt: '2026-01-01T00:00:00Z' }),
+          tx({
+            side: 'buy',
+            quantity: 4,
+            price: 101.5,
+            fee: 1,
+            executedAt: '2026-01-02T00:00:00Z',
+          }),
+        ],
+        quantity: 8,
+        avgCost: 101.125,
+        realizedPnl: 0,
+      },
+      {
+        name: 'sell: realized = 4·(130.75 − 100.5) − 2.5 = 118.5 exactly; avg unchanged',
+        txns: [
+          tx({
+            side: 'buy',
+            quantity: 8,
+            price: 100.25,
+            fee: 2,
+            executedAt: '2026-01-01T00:00:00Z',
+          }),
+          tx({
+            side: 'sell',
+            quantity: 4,
+            price: 130.75,
+            fee: 2.5,
+            executedAt: '2026-01-02T00:00:00Z',
+          }),
+        ],
+        quantity: 4,
+        avgCost: 100.5,
+        realizedPnl: 118.5,
+      },
+      {
+        name: 'sell at avg cost: realized = −fee exactly',
+        txns: [
+          tx({ side: 'buy', quantity: 2, price: 50.25, executedAt: '2026-01-01T00:00:00Z' }),
+          tx({
+            side: 'sell',
+            quantity: 1,
+            price: 50.25,
+            fee: 1.25,
+            executedAt: '2026-01-02T00:00:00Z',
+          }),
+        ],
+        quantity: 1,
+        avgCost: 50.25,
+        realizedPnl: -1.25,
+      },
+    ])('$name', ({ txns, quantity, avgCost, realizedPnl }) => {
+      const pos = reducePosition(txns);
+      expect(pos.quantity).toBe(quantity);
+      expect(pos.avgCost).toBe(avgCost);
+      expect(pos.realizedPnl).toBe(realizedPnl);
+    });
+
+    it('handles 6-dp fractional quantities: closing the position lands on exactly 0', () => {
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 0.123456, price: 81, executedAt: '2026-01-01T00:00:00Z' }),
+        tx({ side: 'sell', quantity: 0.123456, price: 90, executedAt: '2026-01-02T00:00:00Z' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.avgCost).toBe(0);
+      expect(pos.realizedPnl).toBeCloseTo(0.123456 * 9, 9);
+    });
+  });
+
   describe('selling the whole position', () => {
     it('selling exactly the held quantity flattens to 0 and resets avg', () => {
       const pos = reducePosition([
@@ -177,6 +282,25 @@ describe('reducePosition', () => {
       }
     });
 
+    it('rejects an oversell of one stored quantity unit (1e-8) — just past the tolerance', () => {
+      expect(() =>
+        reducePosition([
+          tx({ side: 'buy', quantity: 5, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
+          tx({ side: 'sell', quantity: 5 + 1e-8, price: 10, executedAt: '2026-01-02T00:00:00Z' }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('rejects an oversell after partial sells reduced the held quantity', () => {
+      expect(() =>
+        reducePosition([
+          tx({ side: 'buy', quantity: 10, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
+          tx({ side: 'sell', quantity: 6, price: 10, executedAt: '2026-01-02T00:00:00Z' }),
+          tx({ side: 'sell', quantity: 4.001, price: 10, executedAt: '2026-01-03T00:00:00Z' }),
+        ]),
+      ).toThrow(/only 4 held/);
+    });
+
     it('allows a sell within QTY_EPSILON of the held quantity', () => {
       const pos = reducePosition([
         tx({ side: 'buy', quantity: 5, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
@@ -212,7 +336,7 @@ describe('reducePosition', () => {
 });
 
 // ---------------------------------------------------------------------------
-// deriveHoldings — the holdings view (§6.9)
+// deriveHoldings — the holdings view (§6.8)
 // ---------------------------------------------------------------------------
 
 describe('deriveHoldings', () => {
@@ -316,6 +440,19 @@ describe('deriveHoldings', () => {
     expect(h?.unrealizedPnlEur).toBeNull();
   });
 
+  it('throws when a transacted asset has no currency/quote input (no silent omission)', async () => {
+    await expect(
+      deriveHoldings(
+        [
+          tx({ assetId: 'A', side: 'buy', quantity: 1, price: 10 }),
+          tx({ assetId: 'Z', side: 'buy', quantity: 1, price: 10 }),
+        ],
+        [{ assetId: 'A', currency: 'EUR', quote: { price: 12 } }],
+        stubConverter(),
+      ),
+    ).rejects.toThrow(/assets with no currency\/quote input: Z/);
+  });
+
   it('preserves the asset input order and skips assets with no transactions', async () => {
     const holdings = await deriveHoldings(
       [tx({ assetId: 'B', side: 'buy', quantity: 1, price: 10 })],
@@ -330,7 +467,7 @@ describe('deriveHoldings', () => {
 });
 
 // ---------------------------------------------------------------------------
-// valueOverTime — daily portfolio value series (§6.9)
+// valueOverTime — daily portfolio value series (§6.8)
 // ---------------------------------------------------------------------------
 
 describe('valueOverTime', () => {
@@ -504,6 +641,168 @@ describe('valueOverTime', () => {
     });
     // 01: 4·10=40, 02: 4·12=48, 03: sold → 0
     expect(series.map((p) => p.valueEur)).toEqual([40, 48, 0]);
+  });
+
+  it("applies each day's historical FX rate — worked scenario with carry-forward and a mid-series sell", async () => {
+    const converter = datedStubConverter({
+      USD: {
+        '2026-01-01': 0.9,
+        '2026-01-02': 0.85,
+        '2026-01-03': 0.8,
+        '2026-01-04': 0.75,
+        '2026-01-05': 0.7,
+      },
+    });
+    const series = await valueOverTime({
+      transactions: [
+        tx({
+          assetId: 'C',
+          side: 'buy',
+          quantity: 2,
+          price: 50,
+          executedAt: '2026-01-01T00:00:00Z',
+        }),
+        tx({
+          assetId: 'C',
+          side: 'sell',
+          quantity: 1,
+          price: 50,
+          executedAt: '2026-01-03T00:00:00Z',
+        }),
+      ],
+      assets: [
+        {
+          assetId: 'C',
+          currency: 'USD',
+          prices: [
+            { date: '2026-01-01', close: 50 },
+            { date: '2026-01-04', close: 52 },
+          ],
+        },
+      ],
+      today: '2026-01-05',
+      converter,
+    });
+
+    // 01: 2·50·0.90 = 90       (buy day)
+    // 02: 2·50·0.85 = 85       (price carried forward, FX moves)
+    // 03: 1·50·0.80 = 40       (sell applied, price still carried)
+    // 04: 1·52·0.75 = 39       (new price point)
+    // 05: 1·52·0.70 = 36.4     (price carried forward)
+    expect(series.map((p) => p.date)).toEqual([
+      '2026-01-01',
+      '2026-01-02',
+      '2026-01-03',
+      '2026-01-04',
+      '2026-01-05',
+    ]);
+    expect(series[0]?.valueEur).toBeCloseTo(90, 9);
+    expect(series[1]?.valueEur).toBeCloseTo(85, 9);
+    expect(series[2]?.valueEur).toBeCloseTo(40, 9);
+    expect(series[3]?.valueEur).toBeCloseTo(39, 9);
+    expect(series[4]?.valueEur).toBeCloseTo(36.4, 9);
+
+    // Historical, not spot: every conversion names its day.
+    expect(converter.toBase).toHaveBeenCalledTimes(5);
+    for (const day of ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04', '2026-01-05']) {
+      expect(converter.toBase).toHaveBeenCalledWith(1, 'USD', { date: day });
+    }
+  });
+
+  it('coalesces FX to one conversion per (currency, day) across same-currency assets', async () => {
+    const converter = datedStubConverter({
+      USD: { '2026-01-01': 0.9, '2026-01-02': 0.8 },
+    });
+    const series = await valueOverTime({
+      transactions: [
+        tx({
+          assetId: 'C',
+          side: 'buy',
+          quantity: 1,
+          price: 100,
+          executedAt: '2026-01-01T00:00:00Z',
+        }),
+        tx({
+          assetId: 'D',
+          side: 'buy',
+          quantity: 2,
+          price: 50,
+          executedAt: '2026-01-01T00:00:00Z',
+        }),
+      ],
+      assets: [
+        {
+          assetId: 'C',
+          currency: 'USD',
+          prices: [
+            { date: '2026-01-01', close: 100 },
+            { date: '2026-01-02', close: 110 },
+          ],
+        },
+        {
+          assetId: 'D',
+          currency: 'USD',
+          prices: [
+            { date: '2026-01-01', close: 50 },
+            { date: '2026-01-02', close: 60 },
+          ],
+        },
+      ],
+      today: '2026-01-02',
+      converter,
+    });
+    // 01: (1·100 + 2·50)·0.9 = 180; 02: (1·110 + 2·60)·0.8 = 184
+    expect(series[0]?.valueEur).toBeCloseTo(180, 9);
+    expect(series[1]?.valueEur).toBeCloseTo(184, 9);
+    // Both USD assets share one rate lookup per day.
+    expect(converter.toBase).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws on an invalid FX rate instead of producing a wrong value', async () => {
+    await expect(
+      valueOverTime({
+        transactions: [
+          tx({
+            assetId: 'C',
+            side: 'buy',
+            quantity: 1,
+            price: 10,
+            executedAt: '2026-01-01T00:00:00Z',
+          }),
+        ],
+        assets: [{ assetId: 'C', currency: 'USD', prices: [{ date: '2026-01-01', close: 10 }] }],
+        today: '2026-01-01',
+        converter: stubConverter({ EUR: 1, USD: 0 }),
+      }),
+    ).rejects.toThrow(/Invalid FX rate 0 for USD/);
+  });
+
+  it('rejects a malformed price point date even when it is the only point', async () => {
+    await expect(
+      valueOverTime({
+        transactions: [
+          tx({ side: 'buy', quantity: 1, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
+        ],
+        assets: [{ assetId: 'A', currency: 'EUR', prices: [{ date: '2026-1-3', close: 10 }] }],
+        today: '2026-01-05',
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/price point date/);
+  });
+
+  it('rejects a non-finite price point close', async () => {
+    await expect(
+      valueOverTime({
+        transactions: [
+          tx({ side: 'buy', quantity: 1, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
+        ],
+        assets: [
+          { assetId: 'A', currency: 'EUR', prices: [{ date: '2026-01-01', close: Number.NaN }] },
+        ],
+        today: '2026-01-02',
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/finite/);
   });
 
   it('returns an empty series when there are no transactions', async () => {
