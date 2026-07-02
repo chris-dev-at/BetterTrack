@@ -39,6 +39,7 @@ vi.mock('lightweight-charts', () => ({
   LineSeries: 'LineSeries',
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
   ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
+  PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2, IndexedTo100: 3 },
 }));
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';

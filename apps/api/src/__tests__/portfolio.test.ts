@@ -641,6 +641,196 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
   });
 });
 
+describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)', () => {
+  /** CachedResult wrapper for stubbed provider history points. */
+  function cachedHistory(points: Array<{ time: string; close: number }>) {
+    return { value: points, stale: false, asOf: Date.now() };
+  }
+
+  /** UTC weekday (0 = Sunday … 6 = Saturday) of an ISO day. */
+  function weekdayOf(day: string): number {
+    return new Date(`${day}T00:00:00.000Z`).getUTCDay();
+  }
+
+  /**
+   * A deterministic **trading-day** fixture over the last two years: one close
+   * per weekday from −730 … 0, none on weekends — like a real exchange, so the
+   * series must carry Friday's close across Saturday/Sunday.
+   */
+  function twoYearWeekdayCloses(): Map<string, number> {
+    const closes = new Map<string, number>();
+    for (let offset = -730; offset <= 0; offset += 1) {
+      const day = dayOffset(offset);
+      const dow = weekdayOf(day);
+      if (dow === 0 || dow === 6) continue;
+      closes.set(day, 100 + (offset + 730) * 0.1); // strictly increasing, unique
+    }
+    return closes;
+  }
+
+  /** Expected carried-forward close for `day` (latest fixture close ≤ `day`). */
+  function carriedClose(closes: Map<string, number>, day: string): number | null {
+    let best: number | null = null;
+    for (const [date, close] of closes) if (date <= day) best = close;
+    return best;
+  }
+
+  function twoYearHarnessStub() {
+    const closes = twoYearWeekdayCloses();
+    const marketData = createStubMarketData({
+      history: () =>
+        cachedHistory(
+          [...closes].map(([date, close]) => ({ time: `${date}T00:00:00.000Z`, close })),
+        ),
+    });
+    return { closes, marketData };
+  }
+
+  it('a buy dated 2 years ago yields a daily series spanning the full range, tracking the real price fixture across weekends', async () => {
+    const { closes, marketData } = twoYearHarnessStub();
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 10,
+        price: 100,
+        executedAt: tsOffset(-730),
+      });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+
+    // One point per calendar day from the transaction date to today — 731 days.
+    expect(res.body.points).toHaveLength(731);
+    expect(res.body.points[0].date).toBe(dayOffset(-730));
+    expect(res.body.points[730].date).toBe(dayOffset(0));
+
+    // Every day is valued at 10 × the latest close on or before it: weekdays
+    // track the fixture exactly; weekends carry Friday's close forward.
+    for (const point of res.body.points as Array<{ date: string; valueEur: number }>) {
+      const expected = carriedClose(closes, point.date);
+      expect(expected).not.toBeNull();
+      expect(point.valueEur).toBeCloseTo(10 * expected!, 6);
+    }
+    // No overlay requested → no per-asset series in the payload.
+    expect(res.body.assets).toBeUndefined();
+  });
+
+  it('overlay=true returns each asset own daily price series, date-aligned with the curve', async () => {
+    const { closes, marketData } = twoYearHarnessStub();
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 10,
+        price: 100,
+        executedAt: tsOffset(-730),
+      });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX&overlay=true');
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+
+    expect(res.body.assets).toHaveLength(1);
+    const overlay = res.body.assets[0];
+    expect(overlay.assetId).toBe(asset.id);
+    expect(overlay.symbol).toBe('BAYN.DE');
+    expect(overlay.currency).toBe('EUR');
+
+    // Point-for-point aligned with the portfolio curve (same daily grid), with
+    // the same carry-forward over weekends, in the asset's native prices.
+    expect(overlay.points).toHaveLength(res.body.points.length);
+    for (let i = 0; i < overlay.points.length; i += 1) {
+      expect(overlay.points[i].date).toBe(res.body.points[i].date);
+      expect(overlay.points[i].close).toBeCloseTo(carriedClose(closes, overlay.points[i].date)!, 6);
+    }
+  });
+
+  it('range slicing applies to overlays too, keeping them aligned with the curve', async () => {
+    const { marketData } = twoYearHarnessStub();
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        executedAt: tsOffset(-730),
+      });
+
+    const res = await agent.get('/api/v1/portfolio/history?range=1M&overlay=true');
+    expect(res.status).toBe(200);
+    // ~1 month of days, far fewer than the 2-year span.
+    expect(res.body.points.length).toBeGreaterThan(20);
+    expect(res.body.points.length).toBeLessThan(40);
+    expect(res.body.assets[0].points.map((p: { date: string }) => p.date)).toEqual(
+      res.body.points.map((p: { date: string }) => p.date),
+    );
+  });
+
+  it('back-dating a transaction later immediately extends the history (cache invalidated on write)', async () => {
+    const { marketData } = twoYearHarnessStub();
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // A recent buy first: the series starts a few days ago (and gets cached).
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 170, executedAt: tsOffset(-3) });
+    const before = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(before.status).toBe(200);
+    expect(before.body.points[0].date).toBe(dayOffset(-3));
+
+    // The owner then records a purchase from two years ago: the very next read
+    // must serve the full reconstructed history, not the cached short series.
+    await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        executedAt: tsOffset(-730),
+      });
+    const after = await agent.get('/api/v1/portfolio/history?range=MAX');
+    expect(after.status).toBe(200);
+    expect(after.body.points[0].date).toBe(dayOffset(-730));
+    expect(after.body.points).toHaveLength(731);
+  });
+
+  it('rejects an invalid overlay token instead of guessing', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const res = await agent.get('/api/v1/portfolio/history?range=MAX&overlay=yes');
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('first-reference history backfill (§6.2/§9)', () => {
   it('creating transactions enqueues one backfill per distinct history-less asset', async () => {
     const backfill = createRecordingBackfill();

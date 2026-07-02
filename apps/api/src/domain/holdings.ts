@@ -424,6 +424,58 @@ function dateToMs(date: string): number {
 }
 
 /**
+ * Expand a sparse price series into one close per calendar day over
+ * `[startDay, endDay]` (issue #122: the per-asset overlay series the portfolio
+ * graph draws next to the value curve).
+ *
+ * **Carry-forward is the gap policy** (the same step function
+ * {@link valueOverTime} applies): a weekend, market holiday or provider gap has
+ * no close of its own, so the last known close before it is repeated — the
+ * honest daily valuation of an asset that simply didn't trade that day. Days
+ * *before* the first available close are omitted rather than invented (an asset
+ * listed after `startDay` starts where its data starts).
+ *
+ * Pure and deterministic: unsorted input is sorted, later duplicates of a date
+ * win (matching the provider-over-stored merge order upstream), and malformed
+ * dates or non-finite closes throw rather than silently mis-plotting.
+ */
+export function dailyCloseSeries(
+  prices: readonly PricePoint[],
+  startDay: string,
+  endDay: string,
+): PricePoint[] {
+  assertIsoDate(startDay, 'startDay');
+  assertIsoDate(endDay, 'endDay');
+  if (endDay < startDay || prices.length === 0) return [];
+
+  for (const point of prices) {
+    assertIsoDate(point.date, 'price point date');
+    if (!Number.isFinite(point.close)) {
+      throw new Error(`Price point on ${point.date} must be a finite number, got ${point.close}`);
+    }
+  }
+  const byDate = new Map<string, number>();
+  for (const p of prices) byDate.set(p.date, p.close);
+  const sorted = [...byDate].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const series: PricePoint[] = [];
+  let idx = 0;
+  let lastClose: number | null = null;
+  for (let ms = dateToMs(startDay); ms <= dateToMs(endDay); ms += MS_PER_DAY) {
+    const day = new Date(ms).toISOString().slice(0, 10);
+    while (idx < sorted.length) {
+      const entry = sorted[idx];
+      if (entry === undefined || entry[0] > day) break;
+      lastClose = entry[1];
+      idx += 1;
+    }
+    if (lastClose === null) continue; // before the first known close
+    series.push({ date: day, close: lastClose });
+  }
+  return series;
+}
+
+/**
  * Reconstruct the daily portfolio value series in EUR (§6.8).
  *
  * For every calendar day from the first transaction to `today`:

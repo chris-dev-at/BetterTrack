@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  dailyCloseSeries,
   deriveHoldings,
   OversellError,
   QTY_EPSILON,
@@ -838,5 +839,78 @@ describe('valueOverTime', () => {
         converter: stubConverter(),
       }),
     ).rejects.toThrow(/no price\/currency input/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dailyCloseSeries — the per-asset overlay grid (#122)
+// ---------------------------------------------------------------------------
+
+describe('dailyCloseSeries', () => {
+  it('expands sparse closes to one point per calendar day, carrying forward over gaps', () => {
+    // 2026-01-02/03 is a weekend-style gap; 01-05 resumes trading.
+    const series = dailyCloseSeries(
+      [
+        { date: '2026-01-01', close: 100 },
+        { date: '2026-01-05', close: 110 },
+      ],
+      '2026-01-01',
+      '2026-01-06',
+    );
+    expect(series).toEqual([
+      { date: '2026-01-01', close: 100 },
+      { date: '2026-01-02', close: 100 }, // carried forward
+      { date: '2026-01-03', close: 100 }, // carried forward
+      { date: '2026-01-04', close: 100 }, // carried forward
+      { date: '2026-01-05', close: 110 },
+      { date: '2026-01-06', close: 110 }, // carried forward
+    ]);
+  });
+
+  it('omits days before the first known close instead of inventing prices', () => {
+    const series = dailyCloseSeries(
+      [{ date: '2026-01-03', close: 50 }],
+      '2026-01-01',
+      '2026-01-04',
+    );
+    expect(series).toEqual([
+      { date: '2026-01-03', close: 50 },
+      { date: '2026-01-04', close: 50 },
+    ]);
+  });
+
+  it('sorts unsorted input and lets a later duplicate of a date win', () => {
+    const series = dailyCloseSeries(
+      [
+        { date: '2026-01-02', close: 20 },
+        { date: '2026-01-01', close: 10 },
+        { date: '2026-01-02', close: 22 }, // later entry wins (provider over stored)
+      ],
+      '2026-01-01',
+      '2026-01-02',
+    );
+    expect(series).toEqual([
+      { date: '2026-01-01', close: 10 },
+      { date: '2026-01-02', close: 22 },
+    ]);
+  });
+
+  it('returns empty for no prices or an inverted window', () => {
+    expect(dailyCloseSeries([], '2026-01-01', '2026-01-05')).toEqual([]);
+    expect(
+      dailyCloseSeries([{ date: '2026-01-01', close: 1 }], '2026-01-05', '2026-01-01'),
+    ).toEqual([]);
+  });
+
+  it('rejects malformed dates and non-finite closes instead of mis-plotting', () => {
+    expect(() =>
+      dailyCloseSeries([{ date: '01.02.2026', close: 1 }], '2026-01-01', '2026-01-02'),
+    ).toThrow(/ISO YYYY-MM-DD/);
+    expect(() =>
+      dailyCloseSeries([{ date: '2026-01-01', close: Number.NaN }], '2026-01-01', '2026-01-02'),
+    ).toThrow(/finite/);
+    expect(() =>
+      dailyCloseSeries([{ date: '2026-01-01', close: 1 }], 'nope', '2026-01-02'),
+    ).toThrow(/startDay/);
   });
 });
