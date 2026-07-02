@@ -1,52 +1,69 @@
-import type { Request } from 'express';
-import rateLimit, { type RateLimitRequestHandler } from 'express-rate-limit';
-import { RedisStore, type SendCommandFn } from 'rate-limit-redis';
+import type { Request, RequestHandler } from 'express';
 
 import { tooManyRequests } from '../../errors';
+import {
+  createProgressiveLimiter,
+  type ProgressiveLimiter,
+} from '../../services/security/progressiveLimiter';
 import type { AppContext } from '../context';
 
 const keyByIp = (req: Request): string => req.ip ?? 'unknown';
 const keyByUserOrIp = (req: Request): string => req.authUser?.id ?? req.ip ?? 'unknown';
 
 export interface RateLimiters {
-  login: RateLimitRequestHandler;
-  general: RateLimitRequestHandler;
-  admin: RateLimitRequestHandler;
-  search: RateLimitRequestHandler;
+  login: RequestHandler;
+  general: RequestHandler;
+  admin: RequestHandler;
+  search: RequestHandler;
 }
 
 /**
- * Redis-backed rate limits (PROJECTPLAN.md §10). Disabled under test (skip) so
- * the limiter — and its Redis store — never runs against the in-memory mock.
+ * Redis-backed progressive rate limiting (PROJECTPLAN.md §10). Each request
+ * counts against a generous steady-state allowance; an over-limit trips a short
+ * cooldown that escalates only on repeat violations and decays after ~15 min of
+ * good behavior. A 429 carries the wait both as a `Retry-After` header (which the
+ * SPA reads) and in the body's `details.retryAfter`.
+ *
+ * Disabled under test (`rateLimits.enabled`) so the HTTP limiter stays out of the
+ * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const enabled = ctx.config.rateLimits.enabled;
+  const { enabled, general, search, loginIp } = ctx.config.rateLimits;
 
-  const sendCommand: SendCommandFn = (...args: string[]) =>
-    ctx.redis.call(...(args as [string, ...string[]])) as unknown as ReturnType<SendCommandFn>;
+  const guard = (
+    limiter: ProgressiveLimiter,
+    keyGenerator: (req: Request) => string,
+  ): RequestHandler => {
+    return (req, res, next) => {
+      if (!enabled) {
+        next();
+        return;
+      }
+      limiter
+        .consume(keyGenerator(req))
+        .then((decision) => {
+          if (decision.allowed) {
+            next();
+            return;
+          }
+          // The SPA's fetch chokepoint reads Retry-After to drive its toast.
+          res.setHeader('Retry-After', String(decision.retryAfterSec));
+          next(tooManyRequests(decision.retryAfterSec));
+        })
+        .catch(next);
+    };
+  };
 
-  const make = (windowMs: number, limit: number, keyGenerator: (req: Request) => string) =>
-    rateLimit({
-      windowMs,
-      limit,
-      keyGenerator,
-      standardHeaders: true,
-      legacyHeaders: false,
-      validate: false,
-      skip: () => !enabled,
-      handler: (_req, _res, next) => next(tooManyRequests()),
-      // RedisStore loads its Lua scripts eagerly on construction, so only build
-      // it when limiting is on. Disabled (tests) falls back to the unused
-      // in-memory store. A fresh store per limiter keeps their counters separate.
-      store: enabled ? new RedisStore({ sendCommand }) : undefined,
-    });
+  const loginLimiter = createProgressiveLimiter(ctx.redis, 'login_ip', loginIp);
+  const generalLimiter = createProgressiveLimiter(ctx.redis, 'general', general);
+  const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
 
-  const { loginPerMinutePerIp, generalPer15MinPerUser, adminPer15Min, searchPerMinutePerUser } =
-    ctx.config.rateLimits;
   return {
-    login: make(60_000, loginPerMinutePerIp, keyByIp),
-    general: make(15 * 60_000, generalPer15MinPerUser, keyByUserOrIp),
-    admin: make(15 * 60_000, adminPer15Min, keyByUserOrIp),
-    search: make(60_000, searchPerMinutePerUser, keyByUserOrIp),
+    login: guard(loginLimiter, keyByIp),
+    general: guard(generalLimiter, keyByUserOrIp),
+    // Admin endpoints share the general schedule (§10); a distinct namespace
+    // keeps their counter independent of a co-located user's general traffic.
+    admin: guard(createProgressiveLimiter(ctx.redis, 'admin', general), keyByUserOrIp),
+    search: guard(searchLimiter, keyByUserOrIp),
   };
 }

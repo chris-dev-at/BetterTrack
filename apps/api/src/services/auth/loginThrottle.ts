@@ -1,20 +1,23 @@
 import type { Redis } from 'ioredis';
 
+import { resetProgressiveLimiter } from '../security/progressiveLimiter';
+
 /**
- * Per-account login throttle/lockout Redis keys (PROJECTPLAN.md §6.1, §10).
- * Owned here so both the auth service (which sets them) and the admin service
- * (which clears them on password reset / re-enable) share one definition —
- * the key format never drifts between writer and clearer.
+ * Per-account progressive login throttle (PROJECTPLAN.md §6.1, §10). The auth
+ * service tracks failed logins per account with a {@link createProgressiveLimiter}
+ * under this namespace — independent of the per-IP counter the HTTP middleware
+ * keeps. Owned here so both the auth service (which drives it) and the admin
+ * service (which clears it on password reset / re-enable) name the namespace once
+ * and never drift.
  */
-export const failCountKey = (userId: string) => `login_fail:${userId}`;
-export const failHourKey = (userId: string) => `login_fail_hour:${userId}`;
-export const lockKey = (userId: string) => `login_lock:${userId}`;
+export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 
 /**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
- * password counters above: five wrong PINs in a row drop the user back to full
- * login (the session is destroyed), so the gate can never be a lighter-weight
- * bypass of password brute-force protection.
+ * login throttle above: five wrong PINs in a row drop the user back to full login
+ * (the session is destroyed), so the gate can never be a lighter-weight bypass of
+ * password brute-force protection. Session/PIN fallback mechanics are their own
+ * P2 issue — this counter is left untouched by the progressive-limit rework.
  */
 export const pinFailCountKey = (userId: string) => `pin_fail:${userId}`;
 
@@ -22,10 +25,11 @@ export const pinFailCountKey = (userId: string) => `pin_fail:${userId}`;
 export const PIN_FALLBACK_THRESHOLD = 5;
 
 /**
- * Drop all failed-login / lockout state for a user so they can authenticate
- * immediately. Called on successful login, admin password reset, and re-enable.
- * Includes the PIN counter so a successful login also clears any pending
- * PIN-fallback tally.
+ * Drop all per-account login-throttle and PIN-fallback state for a user so they
+ * can authenticate immediately. Called on successful login, admin password reset,
+ * and re-enable.
  */
-export const clearLoginThrottle = (redis: Redis, userId: string): Promise<number> =>
-  redis.del(failCountKey(userId), failHourKey(userId), lockKey(userId), pinFailCountKey(userId));
+export const clearLoginThrottle = async (redis: Redis, userId: string): Promise<void> => {
+  await resetProgressiveLimiter(redis, LOGIN_ACCOUNT_NAMESPACE, userId);
+  await redis.del(pinFailCountKey(userId));
+};

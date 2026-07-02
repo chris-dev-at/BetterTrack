@@ -15,12 +15,11 @@ import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
+import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SessionService } from '../sessions/sessionService';
 import {
   clearLoginThrottle,
-  failCountKey,
-  failHourKey,
-  lockKey,
+  LOGIN_ACCOUNT_NAMESPACE,
   pinFailCountKey,
   PIN_FALLBACK_THRESHOLD,
 } from './loginThrottle';
@@ -111,7 +110,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     passwordHasher,
     email,
   } = deps;
-  const limits = config.rateLimits;
+  // Per-account failed-login throttle (§6.1, §10): ~10 failures → a short
+  // cooldown, escalating on repeat batches and decaying after a quiet period.
+  // Tracked independently of the per-IP counter the HTTP middleware keeps.
+  const accountThrottle = createProgressiveLimiter(
+    redis,
+    LOGIN_ACCOUNT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
 
   // Computed once, lazily — verified against on unknown-user logins so response
   // timing doesn't reveal whether an account exists.
@@ -120,19 +126,6 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     dummyHashPromise ??= passwordHasher.hash(randomBytes(16).toString('hex'));
     return dummyHashPromise;
   };
-
-  async function registerFailure(userId: string): Promise<void> {
-    const consecutive = await redis.incr(failCountKey(userId));
-    if (consecutive === 1) await redis.expire(failCountKey(userId), limits.lockoutSeconds);
-
-    const hourly = await redis.incr(failHourKey(userId));
-    if (hourly === 1) await redis.expire(failHourKey(userId), 3600);
-
-    if (consecutive >= limits.lockoutThreshold) {
-      await redis.set(lockKey(userId), '1', 'EX', limits.lockoutSeconds);
-      await redis.del(failCountKey(userId));
-    }
-  }
 
   const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
 
@@ -146,7 +139,11 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw invalidCredentials();
       }
 
-      if (await redis.get(lockKey(user.id))) {
+      // Account already cooling down from prior failures: reject before touching
+      // the password hash. Stays a generic INVALID_CREDENTIALS (no retryAfter) so
+      // the cooldown never leaks that the account exists (§6.1); the per-IP
+      // limiter is what surfaces a retryAfter to the client.
+      if ((await accountThrottle.peek(user.id)) > 0) {
         await audit.record({
           action: AuditAction.LoginFail,
           targetType: 'user',
@@ -157,27 +154,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw invalidCredentials();
       }
 
-      const hourlyFailures = Number(await redis.get(failHourKey(user.id))) || 0;
-      if (hourlyFailures >= limits.accountFailuresPerHour) {
-        await audit.record({
-          action: AuditAction.LoginFail,
-          targetType: 'user',
-          targetId: user.id,
-          ip,
-          meta: { reason: 'throttled' },
-        });
-        throw invalidCredentials();
-      }
-
       const passwordOk = await passwordHasher.verify(user.passwordHash, password);
       if (!passwordOk) {
-        await registerFailure(user.id);
+        // Count the failure; the attempt that overflows the allowance arms (or
+        // escalates) the cooldown for subsequent attempts.
+        const decision = await accountThrottle.consume(user.id);
         await audit.record({
           action: AuditAction.LoginFail,
           targetType: 'user',
           targetId: user.id,
           ip,
-          meta: { reason: 'bad_password' },
+          meta: { reason: decision.allowed ? 'bad_password' : 'locked' },
         });
         throw invalidCredentials();
       }
