@@ -1,0 +1,4 @@
+# This directory holds the factory's usage ledger (ledger.jsonl), bind-mounted
+# into the container at /work/usage. The data files are git-ignored (see
+# .gitignore); this .gitkeep keeps the directory present on checkout so the
+# compose bind-mount has a host directory to bind. See docs/factory-usage.md.

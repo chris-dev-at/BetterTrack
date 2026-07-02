@@ -2,6 +2,9 @@
 set -uo pipefail
 STATE=/work/state; REPO_DIR=$STATE/repo; LOG=$STATE/factory.log
 PROMPTS=$STATE/prompts
+# Per-issue token/cost ledger. Written to a host-mounted path (compose bind-mounts
+# ./usage → /work/usage) so records survive container restarts; override with LEDGER.
+LEDGER=${LEDGER:-/work/usage/ledger.jsonl}
 MF=claude-fable-5; MO=claude-opus-4-8; MS=claude-sonnet-5
 LIMIT_SLEEP=${LIMIT_SLEEP:-1800}
 
@@ -9,6 +12,62 @@ log(){ printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$LOG"; }
 notify(){ log "NOTIFY: $*"; [ -n "${FACTORY_WEBHOOK_URL:-}" ] && \
   curl -fsS -m10 -H 'Content-Type: application/json' \
     -d "{\"content\":\"🏭 BetterTrack factory: $*\"}" "$FACTORY_WEBHOOK_URL" >/dev/null || true; }
+
+# ---- usage & cost ledger -----------------------------------------------------
+# Fallback pricing (USD per 1,000,000 tokens) — ONLY consulted when a claude run
+# omits total_cost_usd (rare; the CLI reports it on almost every run). Edit these as
+# pricing changes. Columns: input, output, cache-read, cache-write (5-minute TTL).
+declare -A PRICE_IN=(  [claude-sonnet-5]=3    [claude-opus-4-8]=5     [claude-fable-5]=10    )
+declare -A PRICE_OUT=( [claude-sonnet-5]=15   [claude-opus-4-8]=25    [claude-fable-5]=50    )
+declare -A PRICE_CR=(  [claude-sonnet-5]=0.30 [claude-opus-4-8]=0.50  [claude-fable-5]=2.50  )
+declare -A PRICE_CW=(  [claude-sonnet-5]=3.75 [claude-opus-4-8]=6.25  [claude-fable-5]=12.50 )
+
+# Append one JSONL record for a single role run. A missing/garbled usage line must
+# never break the pipeline, so every failure path degrades to a no-op (|| true).
+# Cost = total_cost_usd from the CLI when present; otherwise tokens × the table above.
+ledger_record(){
+  local issue=$1 role=$2 model=$3 res=$4 dur=$5 outcome=$6
+  [ -n "$res" ] || res='{}'
+  local in_r=${PRICE_IN[$model]:-5} out_r=${PRICE_OUT[$model]:-25}
+  local cr_r=${PRICE_CR[$model]:-0.50} cw_r=${PRICE_CW[$model]:-6.25}
+  mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || true
+  jq -cn \
+    --arg ts "$(date -Is)" --arg issue "$issue" --arg role "$role" --arg model "$model" \
+    --argjson dur "${dur:-0}" --arg outcome "$outcome" \
+    --argjson in_r "$in_r" --argjson out_r "$out_r" --argjson cr_r "$cr_r" --argjson cw_r "$cw_r" \
+    --argjson res "$res" '
+      ($res.usage // {}) as $u
+    | ($u.input_tokens // 0) as $it
+    | ($u.output_tokens // 0) as $ot
+    | ($u.cache_read_input_tokens // 0) as $crt
+    | ($u.cache_creation_input_tokens // 0) as $cwt
+    | (if ($res.total_cost_usd|type)=="number" then $res.total_cost_usd
+       else ($it*$in_r + $ot*$out_r + $crt*$cr_r + $cwt*$cw_r)/1000000 end) as $cost
+    | {ts:$ts, issue:$issue, role:$role, model:$model,
+       input_tokens:$it, output_tokens:$ot,
+       cache_read_tokens:$crt, cache_creation_tokens:$cwt,
+       cost_usd:(($cost*10000|round)/10000), duration_s:$dur, outcome:$outcome}
+    ' >>"$LEDGER" 2>/dev/null || true
+}
+
+# After an issue's cycle ends, log a timestamped COST line (visible in docker logs).
+# Sums ALL of the issue's records — writer/reviewer/fixer plus any retries/failures.
+issue_cost(){
+  local n=$1 line
+  [ -s "$LEDGER" ] || return 0
+  line=$(jq -R 'fromjson?' "$LEDGER" 2>/dev/null | jq -rs --arg n "$n" '
+      def usd: (.*100|round) as $c
+             | ($c/100|floor|tostring) + "." + ((($c%100)+100|tostring)[1:]);
+      map(select(.issue==$n))
+    | if length==0 then empty
+      else (map(.cost_usd)|add) as $tot
+        | ( group_by(.role)
+            | map({role:.[0].role, c:(map(.cost_usd)|add)})
+            | sort_by(-.c) | map("\(.role) $\(.c|usd)") | join(", ") ) as $bd
+        | "COST: issue #\($n) — $\($tot|usd) total (\($bd))"
+      end') || return 0
+  [ -n "$line" ] && log "$line"
+}
 
 # Limit wording we look for ONLY inside the structured result line (never the raw
 # event stream, which carries benign "rate_limit_event" objects on every run).
@@ -41,13 +100,19 @@ wait_for_capacity(){
 # real problem is exhausted tokens: in that case it waits and retries forever.
 # Returns 0 on a clean run, 1 only on a genuine (non-capacity) task failure.
 cc(){ local model=$1; shift; local prompt="$*"
+  # Role/issue for the usage ledger — set by callers (CC_ROLE / CC_ISSUE); default
+  # to a generic bucket so an un-tagged call still records without failing.
+  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--}
   while true; do
-    local out rc res err
+    local out rc res err start dur
+    start=$(date +%s)
     out=$(claude -p "$prompt" --model "$model" --output-format stream-json --verbose \
           --dangerously-skip-permissions 2>&1 | tee -a "$LOG"); rc=${PIPESTATUS[0]}
+    dur=$(( $(date +%s) - start ))
     res=$(grep '"type":"result"' <<<"$out" | tail -1)
     err=$(jq -r 'try .is_error catch "x"' <<<"$res" 2>/dev/null)
     if [ "$err" = "false" ]; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" ok
       log "  ↳ ok ($(jq -r 'try "\(.num_turns) turns, $\(.total_cost_usd)" catch "done"' <<<"$res"))"
       return 0
     fi
@@ -56,6 +121,7 @@ cc(){ local model=$1; shift; local prompt="$*"
     # must never be mistaken for an error.
     local sig; sig=$(jq -r 'try ((.subtype // "")+" "+(.result // "")) catch ""' <<<"$res" 2>/dev/null)
     if printf '%s' "$sig" | grep -qiE "$LIMIT_RE"; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
       notify "usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
       sleep "$LIMIT_SLEEP"; continue
     fi
@@ -63,8 +129,10 @@ cc(){ local model=$1; shift; local prompt="$*"
     # limit message). Probe the API: if it's also down, treat as capacity and
     # wait; otherwise it's a real task failure — let the caller handle it.
     if ! api_ok; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
       wait_for_capacity "ambiguous failure rc=$rc"; continue
     fi
+    ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
     log "  ↳ genuine task failure (rc=$rc, is_error=$err)"
     return 1
   done
@@ -74,7 +142,7 @@ tier_model(){ case "$(gh issue view "$1" --json labels -q '.labels[].name' | gre
   tier:fable) echo "$MF";; tier:sonnet) echo "$MS";; *) echo "$MO";; esac; }
 
 mark_human(){ gh issue edit "$1" --add-label needs-human --remove-label autopilot,in-progress >/dev/null 2>&1 || true
-  notify "issue #$1 → needs-human ($2)"; }
+  notify "issue #$1 → needs-human ($2)"; issue_cost "$1"; }
 
 # ---- knowledge pack ----------------------------------------------------------
 # Standing context injected into every role prompt so agents skip cold-start
@@ -141,7 +209,7 @@ while true; do
   backlog=$(gh issue list --label autopilot --state open --json number -q 'length')
   if [ "$backlog" -lt "${MIN_BACKLOG:-3}" ]; then
     log "backlog=$backlog → running planner"
-    cc "$MO" "$(with_pack "$(sed "s/\$PLANNER_BATCH/${PLANNER_BATCH:-5}/g; s/{{BATCH}}/${PLANNER_BATCH:-5}/g; s/{{AFTER_V1}}/${AFTER_V1:-propose}/g" "$PROMPTS/planner.md")")" || true
+    CC_ISSUE=- CC_ROLE=planner cc "$MO" "$(with_pack "$(sed "s/\$PLANNER_BATCH/${PLANNER_BATCH:-5}/g; s/{{BATCH}}/${PLANNER_BATCH:-5}/g; s/{{AFTER_V1}}/${AFTER_V1:-propose}/g" "$PROMPTS/planner.md")")" || true
     backlog=$(gh issue list --label autopilot --state open --json number -q 'length')
     [ "$backlog" -eq 0 ] && { notify "planner produced nothing (v1 done or awaiting owner) — idling 2h"; sleep 7200; continue; }
   fi
@@ -158,13 +226,14 @@ while true; do
     *) log "issue #$n stale in search index ($fresh) — settling 30s"; sleep 30; continue;;
   esac
   gh issue edit "$n" --add-label in-progress >/dev/null 2>&1 || true
+  CC_ISSUE="$n"   # tag every cc() run this cycle with the issue number for the ledger
   log "=== issue #$n ==="
 
   # WRITER — cc() already waits out token limits, so a failure here is genuine.
   # Give it a couple of attempts for transient (non-capacity) hiccups.
   writer_ok=0
   for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
-    if cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
+    if CC_ROLE=writer cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
       writer_ok=1; break
     fi
     log "writer attempt $w_try/${WRITER_RETRIES:-2} failed"
@@ -179,7 +248,7 @@ while true; do
     labels=$(gh issue view "$n" --json labels -q '.labels[].name' 2>/dev/null)
     if [ "$state" = "CLOSED" ] || grep -q needs-human <<<"$labels"; then
       gh issue edit "$n" --remove-label in-progress,autopilot >/dev/null 2>&1 || true
-      log "issue #$n self-resolved by writer (no PR needed)"; continue
+      log "issue #$n self-resolved by writer (no PR needed)"; issue_cost "$n"; continue
     fi
     mark_human "$n" "no PR appeared"; continue
   fi
@@ -188,18 +257,18 @@ while true; do
   approved=0
   for round in $(seq 1 "${MAX_FIX_ROUNDS:-2}"); do
     rmodel=$MO; [ "$(tier_model "$n")" = "$MF" ] && rmodel=$MF
-    cc "$rmodel" "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
+    CC_ROLE=reviewer cc "$rmodel" "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
     verdict=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
     [ "$verdict" = "FACTORY-VERDICT: APPROVE" ] && { approved=1; break; }
     log "round $round: changes requested"
-    cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
+    CC_ROLE=fixer cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
   done
   [ "$approved" -eq 1 ] || { mark_human "$n" "review not clean after ${MAX_FIX_ROUNDS:-2} rounds"; continue; }
 
   # GATE: CI green (one automated fix attempt), then merge
   if ! gh pr checks "$pr" --watch --fail-fast; then
     log "CI red — one fix attempt"
-    cc "$(tier_model "$n")" "CI failed on PR #$pr of $REPO. cd into the repo, check out the PR branch, run 'gh pr checks $pr' and 'gh run view --log-failed' to see why, fix it properly (no test-deletion, no skips), run the tests locally, push." || true
+    CC_ROLE=ci-fix cc "$(tier_model "$n")" "CI failed on PR #$pr of $REPO. cd into the repo, check out the PR branch, run 'gh pr checks $pr' and 'gh run view --log-failed' to see why, fix it properly (no test-deletion, no skips), run the tests locally, push." || true
     gh pr checks "$pr" --watch --fail-fast || { mark_human "$n" "CI red after fix attempt"; continue; }
   fi
   merged=0
@@ -215,7 +284,7 @@ while true; do
   if [ "$merged" -eq 1 ]; then
     gh issue close "$n" >/dev/null 2>&1 || true
     gh issue edit "$n" --remove-label in-progress,autopilot >/dev/null 2>&1 || true
-    notify "merged PR #$pr (issue #$n) ✅"
+    notify "merged PR #$pr (issue #$n) ✅"; issue_cost "$n"
   else
     mark_human "$n" "merge failed"
   fi
