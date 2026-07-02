@@ -1,8 +1,10 @@
 import type {
   Holding as HoldingDto,
+  HistoryRange,
   PortfolioHistoryRange,
   PortfolioResponse,
   PortfolioTotals,
+  PricePoint as ProviderPricePoint,
   TransactionInput,
   TransactionListResponse,
   Transaction as TransactionDto,
@@ -28,7 +30,7 @@ import {
   type ValueOverTimeAsset,
 } from '../../domain/holdings';
 import { badRequest, notFound } from '../../errors';
-import type { MarketDataService } from '../../providers';
+import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import type { CurrencyService } from '../currency/currencyService';
 
@@ -203,6 +205,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * The full value-over-time series for a portfolio (first transaction → today),
    * cached 1 h. Recomputed on a cache miss and re-stored; the range slice is
    * applied by the caller. Invalidated wholesale on any write (§6.9).
+   *
+   * Per-asset daily prices come from the provider layer (`marketData.getHistory`
+   * at `1d`, §5.2/§5.3), merged over the stored `price_history` rows which act
+   * as the outage fallback — see {@link mergeDailyPrices}.
    */
   async function loadSeries(
     portfolioId: string,
@@ -260,19 +266,54 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     }
 
     const usableIdSet = new Set(usableAssetIds);
+
+    // Stored daily closes / custom value points (`price_history`): the durable
+    // fallback layer of the series.
     const priceRows = await portfolioRepo.pricesForAssets(usableAssetIds);
-    const pricesByAsset = new Map<string, PricePoint[]>();
+    const storedByAsset = new Map<string, PricePoint[]>();
     for (const row of priceRows) {
-      const list = pricesByAsset.get(row.assetId);
+      const list = storedByAsset.get(row.assetId);
       const point: PricePoint = { date: row.date, close: row.close };
       if (list) list.push(point);
-      else pricesByAsset.set(row.assetId, [point]);
+      else storedByAsset.set(row.assetId, [point]);
     }
 
-    const valueAssets: ValueOverTimeAsset[] = usableAssetIds.map((assetId) => {
+    // The primary layer is each asset's real daily history through the
+    // market-data keystone (§5.2/§5.3) — cached, coalesced, serve-stale — so
+    // the curve moves with the market day by day instead of only at
+    // transaction or value-point events. Custom assets route through the
+    // manual provider via the exact same call: zero special-casing (§5.2).
+    // Best-effort per asset: an outage past the stale window degrades that
+    // asset to its stored rows above — the chart renders what is available.
+    const firstTxnDay = txns
+      .map((t) => t.executedAt.toISOString().slice(0, 10))
+      .reduce((a, b) => (a < b ? a : b));
+    const range = seriesHistoryRange(firstTxnDay, today);
+    const providerPrices = await Promise.all(
+      usableAssetIds.map(async (assetId): Promise<readonly ProviderPricePoint[]> => {
+        const asset = assetsById.get(assetId);
+        if (!asset) return [];
+        try {
+          const cached = await marketData.getHistory(
+            { providerId: asset.providerId, providerRef: asset.providerRef },
+            range,
+            '1d',
+          );
+          return cached.value;
+        } catch {
+          return [];
+        }
+      }),
+    );
+
+    const valueAssets: ValueOverTimeAsset[] = usableAssetIds.map((assetId, i) => {
       const asset = assetsById.get(assetId);
       if (!asset) throw new Error(`Asset ${assetId} missing while building value series`);
-      return { assetId, currency: asset.currency, prices: pricesByAsset.get(assetId) ?? [] };
+      return {
+        assetId,
+        currency: asset.currency,
+        prices: mergeDailyPrices(storedByAsset.get(assetId) ?? [], providerPrices[i] ?? []),
+      };
     });
 
     const series = await valueOverTime({
@@ -535,6 +576,56 @@ function monthsBefore(today: string, months: number): string {
   const d = new Date(`${today}T00:00:00.000Z`);
   d.setUTCMonth(d.getUTCMonth() - months);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Left-edge margin when picking the provider history window: the series starts
+ * at the first transaction day, which may be a weekend/market holiday, so the
+ * window must reach back far enough that a prior close exists to carry forward.
+ */
+const SERIES_EDGE_MARGIN_DAYS = 7;
+
+const SERIES_RANGE_LADDER: ReadonlyArray<Exclude<HistoryRange, '1D' | '1W' | 'MAX'>> = [
+  '1M',
+  '6M',
+  '1Y',
+  '5Y',
+];
+
+/**
+ * Smallest §5.3 range preset whose lookback (per {@link rangeStartMs}) covers
+ * the first transaction day plus {@link SERIES_EDGE_MARGIN_DAYS}. The interval
+ * is always `1d` — the value series is daily regardless of span.
+ */
+function seriesHistoryRange(firstTxnDay: string, today: string): HistoryRange {
+  const todayMs = Date.parse(`${today}T00:00:00.000Z`);
+  const neededMs =
+    Date.parse(`${firstTxnDay}T00:00:00.000Z`) - SERIES_EDGE_MARGIN_DAYS * 86_400_000;
+  for (const range of SERIES_RANGE_LADDER) {
+    if (rangeStartMs(todayMs, range) <= neededMs) return range;
+  }
+  return 'MAX';
+}
+
+/**
+ * Combine an asset's stored `price_history` rows with its provider history into
+ * one daily series for {@link valueOverTime}. Provider candles collapse to one
+ * close per calendar day (chronological order upstream, so the last candle of a
+ * day wins) and take precedence over a stored row on the same date — they are
+ * adjusted and fresher; stored rows fill dates the provider window missed and
+ * carry the whole asset when the provider call failed.
+ */
+function mergeDailyPrices(
+  stored: readonly PricePoint[],
+  provider: readonly ProviderPricePoint[],
+): PricePoint[] {
+  const byDate = new Map<string, number>();
+  for (const p of stored) byDate.set(p.date, p.close);
+  for (const p of provider) {
+    if (!Number.isFinite(p.close)) continue;
+    byDate.set(p.time.slice(0, 10), p.close);
+  }
+  return [...byDate].map(([date, close]) => ({ date, close }));
 }
 
 /** Slice the full series to a range window; MAX returns it whole (§6.9). */
