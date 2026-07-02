@@ -32,17 +32,15 @@ the host across container restarts (unlike the `factory-work` named volume). The
 directory is kept in git via `factory/usage/.gitkeep`; the data files
 (`factory/usage/*.jsonl`) are git-ignored — only code is committed.
 
-One record per role run:
+One compact JSON object per line (JSONL) — one record per role run:
 
-```json
-{"ts":"2026-07-02T18:00:00+00:00","issue":"95","role":"writer","model":"claude-opus-4-8",
- "input_tokens":1234,"output_tokens":5678,"cache_read_tokens":900000,"cache_creation_tokens":40000,
- "cost_usd":0.8123,"duration_s":142,"outcome":"ok"}
+```text
+{"ts":"2026-07-02T18:00:00+00:00","issue":"95","role":"writer","model":"claude-opus-4-8","input_tokens":1234,"output_tokens":5678,"cache_read_tokens":900000,"cache_creation_tokens":40000,"cost_usd":0.8123,"duration_s":142,"outcome":"ok"}
 ```
 
 `outcome` is `ok` (clean run), `fail` (genuine task failure), or `retry` (a
 usage-limit or ambiguous failure that `cc()` will retry). Retries and failures are
-kept so an issue's *true* spend — not just its final successful run — is visible.
+kept so an issue's _true_ spend — not just its final successful run — is visible.
 
 ## Cost derivation
 
