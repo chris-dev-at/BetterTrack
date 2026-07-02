@@ -202,7 +202,17 @@ while true; do
     cc "$(tier_model "$n")" "CI failed on PR #$pr of $REPO. cd into the repo, check out the PR branch, run 'gh pr checks $pr' and 'gh run view --log-failed' to see why, fix it properly (no test-deletion, no skips), run the tests locally, push." || true
     gh pr checks "$pr" --watch --fail-fast || { mark_human "$n" "CI red after fix attempt"; continue; }
   fi
-  if gh pr merge "$pr" --squash --delete-branch; then
+  merged=0
+  if gh pr merge "$pr" --squash --delete-branch; then merged=1; else
+    # The repo requires branches up to date with base; if main moved during this
+    # cycle the merge fails as BEHIND. Update the branch, let the new checks
+    # register, re-gate on CI, and retry once before involving a human.
+    log "merge failed — updating branch, re-gating CI, retrying once"
+    if gh pr update-branch "$pr" && sleep 15 \
+       && gh pr checks "$pr" --watch --fail-fast \
+       && gh pr merge "$pr" --squash --delete-branch; then merged=1; fi
+  fi
+  if [ "$merged" -eq 1 ]; then
     gh issue close "$n" >/dev/null 2>&1 || true
     gh issue edit "$n" --remove-label in-progress,autopilot >/dev/null 2>&1 || true
     notify "merged PR #$pr (issue #$n) ✅"
