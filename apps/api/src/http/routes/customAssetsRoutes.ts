@@ -10,7 +10,7 @@ import {
   type UpdateCustomAssetRequest,
 } from '@bettertrack/contracts';
 
-import { requireAuth } from '../middleware/session';
+import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
@@ -18,7 +18,7 @@ import type { AppContext } from '../context';
 export function createCustomAssetsRouter(ctx: AppContext): Router {
   const router = Router();
 
-  router.use(requireAuth);
+  router.use(requireUser);
 
   // POST /custom-assets — create a custom asset, optional initial BUY (§6.9).
   router.post('/', validateBody(createCustomAssetRequestSchema), async (req, res) => {

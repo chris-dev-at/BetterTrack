@@ -6,6 +6,7 @@ import type { AcceptInviteRequest, ChangePasswordRequest } from '@bettertrack/co
 
 import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
+import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, unauthorized } from '../../errors';
@@ -22,6 +23,7 @@ export interface AuthServiceDeps {
   redis: Redis;
   userRepo: UserRepository;
   inviteRepo: InviteRepository;
+  portfolioRepo: PortfolioRepository;
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
@@ -58,7 +60,17 @@ const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
 
 export function createAuthService(deps: AuthServiceDeps): AuthService {
-  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher, email } = deps;
+  const {
+    config,
+    redis,
+    userRepo,
+    inviteRepo,
+    portfolioRepo,
+    sessions,
+    audit,
+    passwordHasher,
+    email,
+  } = deps;
   const limits = config.rateLimits;
 
   // Computed once, lazily — verified against on unknown-user logins so response
@@ -255,6 +267,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         status: 'active',
         mustChangePassword: false,
       });
+
+      // Invited accounts are always the user kind (§5.5): provision their one
+      // default portfolio up front so the app opens onto a real workspace.
+      await portfolioRepo.createDefault(user.id);
 
       await inviteRepo.markUsed(invite.id, new Date());
       await audit.record({

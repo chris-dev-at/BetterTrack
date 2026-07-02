@@ -46,6 +46,19 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+/**
+ * Thrown by {@link AuthContextValue.login} when the credentials belong to an
+ * administrator account. Account kinds are disjoint (§3, §5.5, §10): admins
+ * have no user-app workspace, so the login is rejected here and the message
+ * points them at the admin area.
+ */
+export class AdminAccountError extends Error {
+  constructor() {
+    super('This is an administrator account. Please sign in through the admin area.');
+    this.name = 'AdminAccountError';
+  }
+}
+
 const isPasswordChangeRequired = (err: unknown): boolean =>
   err instanceof ApiError && err.status === 403 && err.code === 'PASSWORD_CHANGE_REQUIRED';
 
@@ -101,7 +114,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const controller = new AbortController();
     void (async () => {
       try {
-        applyUser(await api.getMe(controller.signal));
+        const me = await api.getMe(controller.signal);
+        // An admin who still holds a session (e.g. arrived from the admin area)
+        // has no user-app workspace — treat as anonymous rather than admitting
+        // them here (§3, §5.5, §10).
+        if (me.role === 'admin') {
+          setUser(null);
+          setStatus('anonymous');
+          return;
+        }
+        applyUser(me);
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (isPasswordChangeRequired(err)) {
@@ -118,7 +140,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (credentials: LoginRequest) => {
-      applyUser(await api.login(credentials));
+      const me = await api.login(credentials);
+      if (me.role === 'admin') {
+        // A valid admin login still minted a session cookie — drop it so no
+        // half-authenticated admin session lingers on the user origin.
+        await api.logout().catch(() => undefined);
+        throw new AdminAccountError();
+      }
+      applyUser(me);
     },
     [applyUser],
   );

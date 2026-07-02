@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { searchQuerySchema, type SearchQuery } from '@bettertrack/contracts';
 
 import type { RateLimiters } from '../middleware/rateLimit';
-import { requireAuth } from '../middleware/session';
+import { requireUser } from '../middleware/session';
 import { validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
@@ -11,7 +11,7 @@ import type { AppContext } from '../context';
 export function createSearchRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
-  router.use(requireAuth);
+  router.use(requireUser);
 
   // GET /search?q= — local-first catalog search merged with the caller's custom
   // assets, rate-limited 60/min/user (§6.2, §10). Answers from Postgres only;

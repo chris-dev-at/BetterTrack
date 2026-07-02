@@ -25,23 +25,34 @@ export interface AssetPriceRow {
 }
 
 export function createPortfolioRepository(db: Database) {
+  /**
+   * Upsert the user's "Main" portfolio and return its id. Idempotent on the
+   * `portfolios_user_name_unique` index: a concurrent caller's insert is
+   * swallowed and we re-select the row either way.
+   */
+  async function getOrCreateMain(userId: string): Promise<string> {
+    await db.insert(portfolios).values({ userId, name: 'Main' }).onConflictDoNothing();
+    const rows = await db
+      .select({ id: portfolios.id })
+      .from(portfolios)
+      .where(and(eq(portfolios.userId, userId), eq(portfolios.name, 'Main')))
+      .limit(1);
+    const row = rows[0];
+    if (!row) throw new Error('Main portfolio vanished after upsert');
+    return row.id;
+  }
+
   return {
+    /** The id of the user's "Main" portfolio, creating it on first touch. */
+    getOrCreateMain,
+
     /**
-     * The id of the user's "Main" portfolio, creating it on first touch.
-     * Idempotent on the `portfolios_user_name_unique` index: a concurrent
-     * caller's insert is swallowed and we re-select the row either way.
+     * Provision the default "Main" portfolio at account creation (§5.5): a
+     * newly created/invited *user* account starts with exactly one portfolio,
+     * while *admin* accounts get none. Idempotent, so re-running the seed or a
+     * retried signup never duplicates it.
      */
-    async getOrCreateMain(userId: string): Promise<string> {
-      await db.insert(portfolios).values({ userId, name: 'Main' }).onConflictDoNothing();
-      const rows = await db
-        .select({ id: portfolios.id })
-        .from(portfolios)
-        .where(and(eq(portfolios.userId, userId), eq(portfolios.name, 'Main')))
-        .limit(1);
-      const row = rows[0];
-      if (!row) throw new Error('Main portfolio vanished after upsert');
-      return row.id;
-    },
+    createDefault: getOrCreateMain,
 
     /** The user's "Main" portfolio id, or null when they have none yet (read path). */
     async findMain(userId: string): Promise<string | null> {
