@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
+
 /**
  * Environment schema (PROJECTPLAN.md §11). Validated once at boot so a
  * misconfigured deployment fails fast and loudly instead of at first request.
@@ -65,18 +67,24 @@ export interface AppConfig {
     maxConcurrency: number;
     minSpacingMs: number;
   };
+  /**
+   * Progressive rate limiting (PROJECTPLAN.md §10). Each schedule pairs a
+   * generous steady-state allowance with an escalating cooldown ladder; the
+   * middleware and the auth service read them from here and never inline the
+   * numbers. `general` also backs the admin endpoints (§10 — admin uses the
+   * general schedule).
+   */
   rateLimits: {
-    /** Disabled under test to keep API tests deterministic. */
+    /** Disabled under test to keep the HTTP limiter deterministic. */
     enabled: boolean;
-    loginPerMinutePerIp: number;
-    generalPer15MinPerUser: number;
-    adminPer15Min: number;
-    /** Provider search is rate-limited tighter than the general API (§6.2, §10). */
-    searchPerMinutePerUser: number;
-    /** Per-account failed-login controls (PROJECTPLAN.md §6.1). */
-    accountFailuresPerHour: number;
-    lockoutThreshold: number;
-    lockoutSeconds: number;
+    /** General API request rate, per user (falls back to IP when anonymous). */
+    general: ProgressiveSchedule;
+    /** Provider search budget, per user — tighter than the general API (§6.2). */
+    search: ProgressiveSchedule;
+    /** Login/PIN request rate, per IP. */
+    loginIp: ProgressiveSchedule;
+    /** Failed-login tracking, per account — independent of the per-IP counter. */
+    loginAccount: ProgressiveSchedule;
   };
 }
 
@@ -125,33 +133,45 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,
       minSpacingMs: e.PROVIDER_MIN_SPACING_MS,
     },
-    // Relaxed per the owner-authorized 2026-06-16 deviation from §6.1/§10
-    // (PROJECTPLAN.md §16 Decision Log): the original numbers tripped 429s
-    // during normal logged-in use (rapid tab switching / multi-tab TanStack
-    // refetches). These stay the single source of truth — the middleware and
-    // auth service read them from here; never inline the magic numbers.
+    // Progressive schedules (§10, owner directive #79). Normal users stay far
+    // under the steady-state `limit`; the first over-limit is a short cooldown
+    // and only sustained abuse climbs the ladder. `decaySec` (~15 min) returns a
+    // reformed caller to level 0. These stay the single source of truth — the
+    // middleware and auth service read them from here; never inline the numbers.
     rateLimits: {
       enabled: !isTest,
-      // §16 (2026-06-16): 5 → 25/min/IP. Still blunts single-IP credential
-      // stuffing but tolerates shared-NAT and quick legitimate retries.
-      loginPerMinutePerIp: 25,
-      // §16 (2026-06-16): 600 → 4500/15min/user (~300 req/min sustained), so
-      // rapid multi-tab navigation never trips the general limiter — the
-      // primary fix for the "request spam" complaint.
-      generalPer15MinPerUser: 4500,
-      // §16 (2026-06-16): 120 → 600/15min, so the admin UI's polling and
-      // navigation aren't throttled.
-      adminPer15Min: 600,
-      // §6.2/§10: provider search is capped at 60/min/user (client debounces at
+      // ~300 req/min sustained per user so rapid multi-tab TanStack refetch
+      // bursts never trip; over-limit → 20 s, then 1 m → 3 m → 10 m (cap).
+      general: {
+        windowSec: 15 * 60,
+        limit: 4500,
+        cooldownsSec: [20, 60, 180, 600],
+        decaySec: 15 * 60,
+      },
+      // Provider search is tighter (§6.2): 60/min/user (client debounces at
       // 300 ms + min 2 chars, so legitimate typing stays well under this).
-      searchPerMinutePerUser: 60,
-      // §16 (2026-06-16): 10 → 20 failures/hour/account — more forgiving but
-      // still a real per-account brute-force guard.
-      accountFailuresPerHour: 20,
-      // §16 (2026-06-16): 10 → 20 consecutive failures before lockout, and
-      // lockout shortened 15 min → 5 min. Lenient but protection intact.
-      lockoutThreshold: 20,
-      lockoutSeconds: 5 * 60,
+      search: {
+        windowSec: 60,
+        limit: 60,
+        cooldownsSec: [20, 60, 180, 600],
+        decaySec: 15 * 60,
+      },
+      // Login is stricter and per-IP: blunts single-IP credential stuffing while
+      // tolerating shared-NAT bursts. Over-limit → 30 s → 5 m → 10 m → 15 m.
+      loginIp: {
+        windowSec: 60,
+        limit: 25,
+        cooldownsSec: [30, 300, 600, 900],
+        decaySec: 15 * 60,
+      },
+      // Per-account failed-login tracking, independent of the per-IP counter:
+      // ~10 failures → 30 s, next batch → 5 m, escalating to 10–15 min (§6.1).
+      loginAccount: {
+        windowSec: 15 * 60,
+        limit: 10,
+        cooldownsSec: [30, 300, 600, 900],
+        decaySec: 15 * 60,
+      },
     },
   };
 }

@@ -50,8 +50,21 @@ export const notFound = (message = 'Not found.', code = 'NOT_FOUND') =>
 
 export const conflict = (message: string, code = 'CONFLICT') => new ApiError(409, code, message);
 
-export const tooManyRequests = (message = 'Too many requests.', code = 'RATE_LIMITED') =>
-  new ApiError(429, code, message);
+/**
+ * Progressive rate-limit rejection (PROJECTPLAN.md §10). `retryAfterSeconds` is
+ * surfaced both in the body (`details.retryAfter`) and — set by the caller — as
+ * the `Retry-After` header the SPA reads to tell the user how long to wait.
+ */
+export const tooManyRequests = (
+  retryAfterSeconds?: number,
+  message = 'Too many requests. Please slow down.',
+) =>
+  new ApiError(
+    429,
+    'RATE_LIMITED',
+    message,
+    retryAfterSeconds !== undefined ? { retryAfter: retryAfterSeconds } : undefined,
+  );
 
 /**
  * An upstream data provider failed and we have no cached value to serve in its

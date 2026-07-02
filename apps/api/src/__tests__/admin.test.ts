@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
 
-import { failHourKey } from '../services/auth/loginThrottle';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -33,6 +32,12 @@ async function failLogin(app: Application, identifier: string, times: number) {
       .send({ identifier, password: 'definitely-the-wrong-password' });
   }
 }
+
+/**
+ * Number of failed attempts that arms the per-account progressive cooldown: the
+ * allowance (`limit`) worth of failures, plus the one that overflows it (§10).
+ */
+const failsToLock = (harness: TestHarness) => harness.ctx.config.rateLimits.loginAccount.limit + 1;
 
 describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
   it('returns 404 for normal users and anonymous requests — no route disclosure', async () => {
@@ -241,8 +246,8 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
       .send({ email: 'locked@test.dev', username: 'locked_user' });
     const userId = created.body.user.id as string;
 
-    // `lockoutThreshold` consecutive bad passwords → account locked.
-    await failLogin(harness.app, 'locked@test.dev', harness.ctx.config.rateLimits.lockoutThreshold);
+    // Enough consecutive bad passwords → the account is cooling down.
+    await failLogin(harness.app, 'locked@test.dev', failsToLock(harness));
     const whileLocked = await request(harness.app)
       .post('/api/v1/auth/login')
       .set(...XRW)
@@ -269,11 +274,7 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
     const userId = created.body.user.id as string;
     const tempPassword = created.body.tempPassword as string;
 
-    await failLogin(
-      harness.app,
-      'reenable@test.dev',
-      harness.ctx.config.rateLimits.lockoutThreshold,
-    );
+    await failLogin(harness.app, 'reenable@test.dev', failsToLock(harness));
 
     await adminAgent
       .patch(`/api/v1/admin/users/${userId}`)
@@ -295,22 +296,17 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
 });
 
 describe('throttled login failures are audited (PROJECTPLAN.md §10)', () => {
-  it('records a login.fail with reason throttled', async () => {
+  it('records a login.fail with reason locked once the account cools down', async () => {
     const admin = await harness.seedAdmin();
     const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
       .send({ email: 'throttled@test.dev', username: 'throttled_user' });
-    const userId = created.body.user.id as string;
 
-    // Drive the per-account hourly throttle directly (the consecutive-failure
-    // lockout would otherwise mask it within a single hour).
-    await harness.ctx.redis.set(
-      failHourKey(userId),
-      String(harness.ctx.config.rateLimits.accountFailuresPerHour),
-    );
-
+    // Enough failures to arm the progressive cooldown, then one more attempt —
+    // even with the correct password — is rejected while the account is cooling.
+    await failLogin(harness.app, 'throttled@test.dev', failsToLock(harness));
     const res = await request(harness.app)
       .post('/api/v1/auth/login')
       .set(...XRW)
@@ -319,10 +315,10 @@ describe('throttled login failures are audited (PROJECTPLAN.md §10)', () => {
     expect(res.body.error.code).toBe('INVALID_CREDENTIALS');
 
     const audit = await adminAgent.get('/api/v1/admin/audit');
-    const throttled = (
+    const locked = (
       audit.body.entries as Array<{ action: string; meta: { reason?: string } | null }>
-    ).filter((e) => e.action === 'login.fail' && e.meta?.reason === 'throttled');
-    expect(throttled.length).toBeGreaterThanOrEqual(1);
+    ).filter((e) => e.action === 'login.fail' && e.meta?.reason === 'locked');
+    expect(locked.length).toBeGreaterThanOrEqual(1);
   });
 });
 
