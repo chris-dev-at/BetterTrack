@@ -48,16 +48,71 @@ export interface TransactionDialogProps {
   today?: string;
 }
 
+/**
+ * How the user is entering the trade size.
+ * - `quantity`: enter quantity + price (the canonical stored shape).
+ * - `amount`: enter price + total amount (invested on buy / received on sell);
+ *   the quantity is derived as `amount / price` (§14, owner request 2026-07-02).
+ */
+export type EntryMode = 'quantity' | 'amount';
+
 /** One editable transaction line. Numeric fields are raw strings, parsed on submit. */
 interface Row {
   key: string;
   asset: TransactionDialogAsset;
   side: TransactionSide;
+  entryMode: EntryMode;
   quantity: string;
+  /** Total money moved, used only when `entryMode === 'amount'`. */
+  amount: string;
   price: string;
   fee: string;
   date: string;
   note: string;
+}
+
+/**
+ * Decimal places the derived quantity is rounded to. Eight covers fractional
+ * shares and crypto (BTC has 8 — a satoshi); the same precision Yahoo/most
+ * brokers surface. Rounding is round-half-up via `Math.round`.
+ */
+export const DERIVED_QUANTITY_DECIMALS = 8;
+
+export interface DerivedQuantity {
+  /** `amount / price`, rounded to {@link DERIVED_QUANTITY_DECIMALS}. */
+  quantity: number;
+  /** `quantity * price` — the money that will actually be recorded. */
+  recordedAmount: number;
+  /** `recordedAmount - amount`: the rounding residual, disclosed to the user. */
+  residual: number;
+}
+
+/**
+ * Derive a canonical quantity from a (price, amount) pair. Returns `null` when
+ * the inputs cannot yield a valid, positive, finite quantity — so callers never
+ * submit NaN/Infinity. The recorded cost basis is `quantity * price`, which may
+ * differ from the entered `amount` by up to half a unit in the last decimal
+ * times the price; that residual is surfaced in the UI, never hidden.
+ */
+export function deriveQuantityFromAmount(price: number, amount: number): DerivedQuantity | null {
+  if (!Number.isFinite(price) || !Number.isFinite(amount)) return null;
+  if (price <= 0 || amount <= 0) return null;
+  const factor = 10 ** DERIVED_QUANTITY_DECIMALS;
+  const quantity = Math.round((amount / price) * factor) / factor;
+  if (!Number.isFinite(quantity) || quantity <= 0) return null;
+  const recordedAmount = quantity * price;
+  return { quantity, recordedAmount, residual: recordedAmount - amount };
+}
+
+/** Render a quantity with up to {@link DERIVED_QUANTITY_DECIMALS}, trimming trailing zeros. */
+export function formatDerivedQuantity(quantity: number): string {
+  const fixed = quantity.toFixed(DERIVED_QUANTITY_DECIMALS);
+  return fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed;
+}
+
+/** Two-decimal money string for previews and mode-switch preservation. */
+function formatMoney(amount: number): string {
+  return amount.toFixed(2);
 }
 
 const inputClass = cx(
@@ -86,7 +141,9 @@ function makeRow(
     key,
     asset,
     side: 'buy',
+    entryMode: 'quantity',
     quantity: '',
+    amount: '',
     price: '',
     fee: '',
     date: today,
@@ -108,7 +165,9 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
           currency: t.asset.currency,
         },
         side: t.side,
+        entryMode: 'quantity',
         quantity: String(t.quantity),
+        amount: '',
         price: String(t.price),
         fee: String(t.fee),
         date: t.executedAt.slice(0, 10),
@@ -136,16 +195,38 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
 
 /** Parse a row into a wire `TransactionInput`, or collect a human error. */
 function validateRow(row: Row): { input?: TransactionInput; error?: string } {
-  const quantity = Number(row.quantity);
   const price = Number(row.price);
   const fee = row.fee.trim() === '' ? 0 : Number(row.fee);
 
-  if (!row.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) {
-    return { error: `${row.asset.symbol}: quantity must be greater than 0.` };
+  let quantity: number;
+
+  if (row.entryMode === 'amount') {
+    // Amount mode divides by price, so price must be strictly positive here
+    // (unlike quantity mode, where a 0 price — e.g. an airdrop — is allowed).
+    const amount = Number(row.amount);
+    if (!row.price.trim() || !Number.isFinite(price) || price <= 0) {
+      return { error: `${row.asset.symbol}: price must be greater than 0.` };
+    }
+    if (!row.amount.trim() || !Number.isFinite(amount) || amount <= 0) {
+      return { error: `${row.asset.symbol}: amount must be greater than 0.` };
+    }
+    const derived = deriveQuantityFromAmount(price, amount);
+    if (!derived) {
+      return {
+        error: `${row.asset.symbol}: could not derive a valid quantity from that price and amount.`,
+      };
+    }
+    quantity = derived.quantity;
+  } else {
+    quantity = Number(row.quantity);
+    if (!row.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) {
+      return { error: `${row.asset.symbol}: quantity must be greater than 0.` };
+    }
+    if (!row.price.trim() || !Number.isFinite(price) || price < 0) {
+      return { error: `${row.asset.symbol}: price must be 0 or more.` };
+    }
   }
-  if (!row.price.trim() || !Number.isFinite(price) || price < 0) {
-    return { error: `${row.asset.symbol}: price must be 0 or more.` };
-  }
+
   if (!Number.isFinite(fee) || fee < 0) {
     return { error: `${row.asset.symbol}: fee must be 0 or more.` };
   }
@@ -308,6 +389,35 @@ export function TransactionDialog(props: TransactionDialogProps) {
   );
 }
 
+/**
+ * Switch a row's entry mode, carrying already-entered values across sensibly:
+ * quantity→amount fills the amount from `quantity * price`, and amount→quantity
+ * fills the quantity from the derived value — so a toggle never loses work.
+ */
+function switchEntryMode(row: Row, next: EntryMode, onChange: (patch: Partial<Row>) => void) {
+  if (next === row.entryMode) return;
+  const price = Number(row.price);
+  const priceUsable = row.price.trim() !== '' && Number.isFinite(price) && price > 0;
+
+  if (next === 'amount') {
+    const quantity = Number(row.quantity);
+    const patch: Partial<Row> = { entryMode: 'amount' };
+    if (row.quantity.trim() !== '' && Number.isFinite(quantity) && quantity > 0 && priceUsable) {
+      patch.amount = formatMoney(quantity * price);
+    }
+    onChange(patch);
+    return;
+  }
+
+  const amount = Number(row.amount);
+  const patch: Partial<Row> = { entryMode: 'quantity' };
+  if (row.amount.trim() !== '' && Number.isFinite(amount) && amount > 0 && priceUsable) {
+    const derived = deriveQuantityFromAmount(price, amount);
+    if (derived) patch.quantity = formatDerivedQuantity(derived.quantity);
+  }
+  onChange(patch);
+}
+
 function RowFields({
   row,
   showAssetHeader,
@@ -319,6 +429,22 @@ function RowFields({
   showDivider: boolean;
   onChange: (patch: Partial<Row>) => void;
 }) {
+  const isAmountMode = row.entryMode === 'amount';
+  const derived =
+    isAmountMode && row.price.trim() !== '' && row.amount.trim() !== ''
+      ? deriveQuantityFromAmount(Number(row.price), Number(row.amount))
+      : null;
+  const amountLabel = row.side === 'sell' ? 'Amount received' : 'Amount invested';
+
+  const toggleBtn = (mode: EntryMode) =>
+    cx(
+      'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+      row.entryMode === mode
+        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-600'
+        : 'text-neutral-400 hover:text-neutral-200',
+    );
+
   return (
     <div className={cx('flex flex-col gap-3', showDivider && 'border-t border-neutral-800 pt-4')}>
       {showAssetHeader ? (
@@ -355,19 +481,60 @@ function RowFields({
           />
         </label>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Quantity</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="any"
-            min="0"
-            value={row.quantity}
-            onChange={(e) => onChange({ quantity: e.target.value })}
-            aria-label={`Quantity for ${row.asset.symbol}`}
-            className={inputClass}
-          />
-        </label>
+        <div
+          className="col-span-2 flex gap-1 rounded-md bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-700"
+          role="group"
+          aria-label={`Entry mode for ${row.asset.symbol}`}
+        >
+          <button
+            type="button"
+            onClick={() => switchEntryMode(row, 'quantity', onChange)}
+            aria-pressed={!isAmountMode}
+            className={toggleBtn('quantity')}
+          >
+            By quantity
+          </button>
+          <button
+            type="button"
+            onClick={() => switchEntryMode(row, 'amount', onChange)}
+            aria-pressed={isAmountMode}
+            className={toggleBtn('amount')}
+          >
+            By amount
+          </button>
+        </div>
+
+        {isAmountMode ? (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-neutral-300">
+              {amountLabel} ({row.asset.currency})
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              min="0"
+              value={row.amount}
+              onChange={(e) => onChange({ amount: e.target.value })}
+              aria-label={`${amountLabel} for ${row.asset.symbol}`}
+              className={inputClass}
+            />
+          </label>
+        ) : (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-neutral-300">Quantity</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              min="0"
+              value={row.quantity}
+              onChange={(e) => onChange({ quantity: e.target.value })}
+              aria-label={`Quantity for ${row.asset.symbol}`}
+              className={inputClass}
+            />
+          </label>
+        )}
 
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-neutral-300">Price ({row.asset.currency})</span>
@@ -382,6 +549,34 @@ function RowFields({
             className={inputClass}
           />
         </label>
+
+        {isAmountMode ? (
+          <p
+            className="col-span-2 text-xs text-neutral-400"
+            role="status"
+            aria-label={`Derived quantity for ${row.asset.symbol}`}
+          >
+            {derived ? (
+              <>
+                ≈{' '}
+                <span className="font-mono text-neutral-200">
+                  {formatDerivedQuantity(derived.quantity)}
+                </span>{' '}
+                {row.asset.symbol} · records{' '}
+                <span className="font-mono text-neutral-200">
+                  {formatMoney(derived.recordedAmount)} {row.asset.currency}
+                </span>
+                {Math.abs(derived.residual) >= 0.005
+                  ? ` (${derived.residual > 0 ? '+' : '−'}${formatMoney(
+                      Math.abs(derived.residual),
+                    )} vs entered, from 8-decimal rounding)`
+                  : ''}
+              </>
+            ) : (
+              'Enter a price and amount above 0 to derive the quantity.'
+            )}
+          </p>
+        ) : null}
 
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-neutral-300">Fee ({row.asset.currency})</span>
