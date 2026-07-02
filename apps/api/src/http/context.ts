@@ -36,6 +36,8 @@ import {
   createPortfolioService,
   type PortfolioService,
 } from '../services/portfolio/portfolioService';
+import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
+import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createSessionService } from '../services/sessions/sessionService';
 import {
   createWorkboardService,
@@ -52,8 +54,10 @@ export interface AppContext {
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
   marketData: MarketDataService;
-  /** Search + asset detail/quote/history over the market-data layer (§6.2, §6.3). */
+  /** Asset detail/quote/history over the market-data layer (§6.3). */
   assets: AssetService;
+  /** Local-first catalog search + background provider enrichment (§6.2). */
+  search: SearchService;
   /** Transactions, holdings/totals and the value-over-time series (§6.9). */
   portfolio: PortfolioService;
   /** Custom investments + their value-points editor (§6.9). */
@@ -136,9 +140,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const assets = createAssetService({
     marketData,
     assetRepo,
-    backfill,
     currencyService: currency,
   });
+
+  // Local-first search (§6.2): answers from the Postgres catalog; a thin result
+  // set triggers a background, coalesced provider search that enriches it.
+  const enrichment = createCatalogEnrichment({ marketData, assetRepo, backfill, redis, logger });
+  const search = createSearchService({ assetRepo, enrichment });
 
   // Portfolio + custom investments (§6.9). The custom-asset service records its
   // optional initial purchase through the portfolio service and shares its
@@ -164,6 +172,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     workboard,
     marketData,
     assets,
+    search,
     portfolio,
     customAssets,
   };

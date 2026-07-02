@@ -51,8 +51,19 @@ export const searchResultItemSchema = z
   .strict();
 export type SearchResultItem = z.infer<typeof searchResultItemSchema>;
 
-/** `GET /search` response. */
-export const searchResponseSchema = z.object({ results: z.array(searchResultItemSchema) }).strict();
+/**
+ * `GET /search` response (§6.2). Results always come straight from the local
+ * catalog (Postgres) — never from a synchronous provider round-trip. When the
+ * catalog had too few matches, `enriching: true` signals that a background
+ * provider search was kicked off: the client may show "Searching providers…"
+ * and refetch after a short delay to pick up the enriched rows.
+ */
+export const searchResponseSchema = z
+  .object({
+    results: z.array(searchResultItemSchema),
+    enriching: z.boolean().optional(),
+  })
+  .strict();
 export type SearchResponse = z.infer<typeof searchResponseSchema>;
 
 // --- Asset detail / quote / history (§6.3) ---------------------------------
