@@ -30,7 +30,7 @@ packages/
 infra/
   docker-compose.yml         # Production: web + api + worker + db + redis (§4.6)
   docker-compose.dev.yml     # Dev: Postgres 17 + Redis 7 only
-  nginx.conf                 # nginx: SPA serve + /api proxy (both topology modes per §11)
+  nginx/                     # nginx front-proxy: mode templates (subdomains|ports) + entrypoint (§11)
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
@@ -117,7 +117,7 @@ via `infra/docker-compose.yml` — see PROJECTPLAN.md §4.6 for the full spec.
 ```bash
 # 1. Copy and fill in the production env file
 cp infra/.env.production.example infra/.env
-$EDITOR infra/.env          # set POSTGRES_PASSWORD, SESSION_SECRET, APP_ORIGIN
+$EDITOR infra/.env          # set POSTGRES_PASSWORD, SESSION_SECRET, BT_MODE, BT_DOMAIN
 
 # 2. Build all images
 docker compose -f infra/docker-compose.yml build
@@ -151,21 +151,30 @@ docker compose up -d          # rolling restart
 
 ### Environment variables
 
-| Variable               | Required | Notes                                                                     |
-| ---------------------- | -------- | ------------------------------------------------------------------------- |
-| `DATABASE_URL`         | yes      | Must use `db` hostname (e.g. `postgres://bt:pw@db:5432/bettertrack`)      |
-| `POSTGRES_PASSWORD`    | yes      | Password for the `db` service and `DATABASE_URL`                          |
-| `REDIS_URL`            | yes      | `redis://redis:6379`                                                      |
-| `SESSION_SECRET`       | yes      | 64 random hex bytes (`openssl rand -hex 64`); comma-separate for rotation |
-| `APP_ORIGIN`           | yes      | Public HTTPS origin (`https://track.example.at`)                          |
-| `WEB_PORT`             | no       | Host port nginx binds to (default `80`)                                   |
-| `SMTP_HOST/FROM`       | no       | Both required to enable email; app runs without them                      |
-| `ADMIN_EMAIL/PASSWORD` | no       | Used once by the seed command; no-op thereafter                           |
+| Variable                  | Required | Notes                                                                             |
+| ------------------------- | -------- | --------------------------------------------------------------------------------- |
+| `DATABASE_URL`            | yes      | Must use `db` hostname (e.g. `postgres://bt:pw@db:5432/bettertrack`)              |
+| `POSTGRES_PASSWORD`       | yes      | Password for the `db` service and `DATABASE_URL`                                  |
+| `REDIS_URL`               | yes      | `redis://redis:6379`                                                              |
+| `SESSION_SECRET`          | yes      | 64 random hex bytes (`openssl rand -hex 64`); comma-separate for rotation         |
+| `BT_MODE`                 | no       | `subdomains` (default) or `ports` — picks the deployment topology (§4.6, §11)     |
+| `BT_DOMAIN`               | yes      | Base domain/host (`track.example.at`); origins are derived from it                |
+| `BT_TLS`                  | no       | Force the derived scheme; blank = per-mode default (subdomains https, ports http) |
+| `BT_SUB_API/WEB/ADMIN`    | no       | Subdomain labels in subdomains mode (default `api`/`web`/`admin`)                 |
+| `BT_PORT_API/WEB/ADMIN`   | no       | Public service ports in ports mode (default `3000`/`8080`/`8081`)                 |
+| `BT_HTTP_PORT`            | no       | Host port the front proxy binds in subdomains mode (default `80`; TLS in front)   |
+| `BT_API/WEB/ADMIN_ORIGIN` | no       | Explicit origin overrides — win over derivation (`APP_ORIGIN` = legacy web alias) |
+| `SMTP_HOST/FROM`          | no       | Both required to enable email; app runs without them (Gmail preset in `.env`)     |
+| `ADMIN_EMAIL/PASSWORD`    | no       | Used once by the seed command; no-op thereafter                                   |
 
-> **Note:** the plan-v2 deployment topology (PROJECTPLAN.md §11 — `BT_DOMAIN`,
-> `BT_MODE=subdomains|ports`, per-service subdomain/port overrides, derived
-> origins) supersedes `APP_ORIGIN` once phase P2 lands; until then the table
-> above matches the current code.
+> **Deployment topology (§4.6, §11):** one env scheme drives every public origin,
+> and the CORS allowlist + session-cookie attributes are **derived** from it —
+> never hand-maintained. `subdomains` fronts `api.` / `web.` / `admin.` of
+> `BT_DOMAIN` behind a TLS proxy; `ports` puts each service on its own port of a
+> single host. The API validates & derives the origins in `apps/api/src/config/env.ts`;
+> the one web image renders the matching nginx layout from `infra/nginx/templates/`
+> and injects a per-origin `window.__BT__` (`config.js`) at container start. See
+> `infra/.env.production.example` for a fully commented both-modes template.
 
 ### Worker (BullMQ)
 

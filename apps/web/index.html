@@ -9,6 +9,9 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Runtime config (window.__BT__) — must load before the app bundle. Served
+         from /public in dev; overwritten per-origin by nginx in production. -->
+    <script src="/config.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
