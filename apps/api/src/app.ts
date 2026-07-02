@@ -4,7 +4,8 @@ import helmet from 'helmet';
 
 import { createErrorHandler } from './http/errorHandler';
 import { healthRouter } from './http/healthRouter';
-import { requireCsrfHeader } from './http/middleware/csrf';
+import { createCorsMiddleware } from './http/middleware/cors';
+import { createCsrfGuard } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { enforcePasswordChange, loadSession } from './http/middleware/session';
 import { createAdminRouter } from './http/routes/adminRoutes';
@@ -30,6 +31,10 @@ export function createApp(ctx: AppContext) {
   app.disable('x-powered-by');
 
   app.use(helmet());
+  // Credentialed CORS first, so preflight (OPTIONS) short-circuits before any
+  // session/rate-limit work and cross-origin web/admin callers get their headers
+  // (§4.6, §10). The allowlist is the derived web+admin origins.
+  app.use(createCorsMiddleware(ctx.config.corsOrigins));
   app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser(ctx.config.sessionSecrets));
 
@@ -40,7 +45,7 @@ export function createApp(ctx: AppContext) {
   // allowlist, so any future /api/v1 router is covered without opting in.
   app.use('/api/v1', loadSession(ctx));
   app.use('/api/v1', limiters.general);
-  app.use('/api/v1', requireCsrfHeader);
+  app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
 
   app.use('/api/v1', healthRouter);

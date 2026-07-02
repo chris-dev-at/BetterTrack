@@ -1,0 +1,67 @@
+# Ports topology (PROJECTPLAN.md §4.6, §11). One host, one front proxy, each
+# service on its own port (routed by `listen`). Plain http by default; set
+# BT_TLS=true (and front with a TLS terminator) for https.
+# Generated at container start from env by docker-entrypoint.sh (envsubst).
+
+# ── API port → Express service ──────────────────────────────────────────────
+server {
+    listen ${BT_PORT_API};
+
+    location / {
+        proxy_pass http://${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# ── Web port → user SPA ─────────────────────────────────────────────────────
+server {
+    listen ${BT_PORT_WEB} default_server;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Per-origin runtime config (§7.1): app kind + cross-origin API origin.
+    location = /config.js {
+        default_type application/javascript;
+        add_header Cache-Control "no-store";
+        return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}" };';
+    }
+
+    location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
+        expires max;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+# ── Admin port → same SPA, app kind "admin" ─────────────────────────────────
+server {
+    listen ${BT_PORT_ADMIN};
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location = /config.js {
+        default_type application/javascript;
+        add_header Cache-Control "no-store";
+        return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}" };';
+    }
+
+    location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
+        expires max;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

@@ -1,7 +1,14 @@
 import { apiErrorSchema } from '@bettertrack/contracts';
 
-/** Base path for the JSON API (proxied to the API service in dev, same-origin in prod). */
-const API_BASE = '/api/v1';
+import { apiBaseUrl } from './runtimeConfig';
+
+/**
+ * Base URL for the JSON API. Resolved from the injected runtime config
+ * (window.__BT__.apiOrigin): an absolute cross-origin URL in subdomains/ports
+ * deployments, or relative `/api/v1` in dev (Vite proxy) and single-origin
+ * setups. Read once at module load — config.js runs before the bundle.
+ */
+const API_BASE = apiBaseUrl();
 
 /** The CSRF belt-and-suspenders header the API requires on every mutation (§10). */
 const CSRF_HEADER = 'X-Requested-With';

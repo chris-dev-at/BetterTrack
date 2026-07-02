@@ -84,7 +84,11 @@ const BASE_TEST_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: realDbUrl ?? 'postgres://test',
   REDIS_URL: realRedisUrl ?? 'redis://test',
   SESSION_SECRET: 'test-session-secret-please-change-0123456789',
-  APP_ORIGIN: 'http://localhost:5173',
+  // Explicit origin overrides mirror the local dev topology (ports mode); the
+  // web origin doubles as appOrigin for generated links.
+  BT_WEB_ORIGIN: 'http://localhost:5173',
+  BT_ADMIN_ORIGIN: 'http://localhost:5174',
+  BT_API_ORIGIN: 'http://localhost:3000',
 };
 
 export interface SeededAdmin {
