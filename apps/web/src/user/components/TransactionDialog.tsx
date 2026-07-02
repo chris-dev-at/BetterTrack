@@ -35,6 +35,8 @@ export interface TransactionPrefillRow {
 }
 
 export interface TransactionDialogProps {
+  /** The portfolio these transactions belong to (§6.8 — the API is id-scoped). */
+  portfolioId: string;
   onClose: () => void;
   /** Called after a successful create/edit so the page can refetch. */
   onSubmitted: () => void;
@@ -255,7 +257,7 @@ function validateRow(row: Row): { input?: TransactionInput; error?: string } {
  * component; the buy flow always posts the `{ transactions: [...] }` batch.
  */
 export function TransactionDialog(props: TransactionDialogProps) {
-  const { onClose, onSubmitted, transaction } = props;
+  const { portfolioId, onClose, onSubmitted, transaction } = props;
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
@@ -303,7 +305,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     try {
       if (isEdit) {
         const input = inputs[0]!;
-        await updateTransaction(transaction.id, {
+        await updateTransaction(portfolioId, transaction.id, {
           side: input.side,
           quantity: input.quantity,
           price: input.price,
@@ -312,7 +314,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
           note: input.note ?? null,
         });
       } else {
-        await createTransactions(inputs);
+        await createTransactions(portfolioId, inputs);
       }
       onSubmitted();
       onClose();

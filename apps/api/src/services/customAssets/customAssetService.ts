@@ -80,8 +80,10 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       if (input.initialPurchase) {
         const p = input.initialPurchase;
         // Recorded as a BUY through the portfolio service: it validates, inserts
-        // and invalidates the value-series cache in one place (§6.9).
-        const [txn] = await portfolio.createTransactions(userId, [
+        // and invalidates the value-series cache in one place (§6.9). Custom
+        // investments live in the user's default portfolio.
+        const portfolioId = await portfolio.getDefaultPortfolioId(userId);
+        const [txn] = await portfolio.createTransactions(userId, portfolioId, [
           {
             assetId: row.id,
             side: 'buy',
@@ -113,7 +115,7 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       const deleted = await repo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
       // The asset's transactions + value points cascade away; drop the series.
-      await portfolio.invalidateHistory(userId);
+      await portfolio.invalidateHistory(await portfolio.getDefaultPortfolioId(userId));
     },
 
     async getValuePoints(userId, id) {
@@ -141,7 +143,7 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
         id,
         points.map((p) => ({ date: p.date, value: p.value })),
       );
-      await portfolio.invalidateHistory(userId);
+      await portfolio.invalidateHistory(await portfolio.getDefaultPortfolioId(userId));
 
       const stored = await repo.getValuePoints(id);
       return stored.map((p) => ({ date: p.date, value: p.value }));

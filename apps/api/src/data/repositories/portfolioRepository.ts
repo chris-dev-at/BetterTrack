@@ -24,6 +24,34 @@ export interface AssetPriceRow {
   close: number;
 }
 
+/** A portfolio row for the list / single-portfolio views (§6.8, §7.2). */
+export interface PortfolioSummaryRow {
+  id: string;
+  name: string;
+  visibility: 'private' | 'friends';
+  sortOrder: number;
+  /** True for the auto-created "Main" portfolio (§6.8). */
+  isDefault: boolean;
+}
+
+/** The default portfolio's canonical name (§5.5). */
+const DEFAULT_PORTFOLIO_NAME = 'Main';
+
+function toSummary(row: {
+  id: string;
+  name: string;
+  visibility: 'private' | 'friends';
+  sortOrder: number;
+}): PortfolioSummaryRow {
+  return {
+    id: row.id,
+    name: row.name,
+    visibility: row.visibility,
+    sortOrder: row.sortOrder,
+    isDefault: row.name === DEFAULT_PORTFOLIO_NAME,
+  };
+}
+
 export function createPortfolioRepository(db: Database) {
   /**
    * Upsert the user's "Main" portfolio and return its id. Idempotent on the
@@ -31,11 +59,14 @@ export function createPortfolioRepository(db: Database) {
    * swallowed and we re-select the row either way.
    */
   async function getOrCreateMain(userId: string): Promise<string> {
-    await db.insert(portfolios).values({ userId, name: 'Main' }).onConflictDoNothing();
+    await db
+      .insert(portfolios)
+      .values({ userId, name: DEFAULT_PORTFOLIO_NAME })
+      .onConflictDoNothing();
     const rows = await db
       .select({ id: portfolios.id })
       .from(portfolios)
-      .where(and(eq(portfolios.userId, userId), eq(portfolios.name, 'Main')))
+      .where(and(eq(portfolios.userId, userId), eq(portfolios.name, DEFAULT_PORTFOLIO_NAME)))
       .limit(1);
     const row = rows[0];
     if (!row) throw new Error('Main portfolio vanished after upsert');
@@ -59,9 +90,95 @@ export function createPortfolioRepository(db: Database) {
       const rows = await db
         .select({ id: portfolios.id })
         .from(portfolios)
-        .where(and(eq(portfolios.userId, userId), eq(portfolios.name, 'Main')))
+        .where(and(eq(portfolios.userId, userId), eq(portfolios.name, DEFAULT_PORTFOLIO_NAME)))
         .limit(1);
       return rows[0]?.id ?? null;
+    },
+
+    /**
+     * Every portfolio a user owns, ordered `sort_order` then name (§6.8, §7.2).
+     * V1 returns just the default; additional rows appear here with no code
+     * change, which is the whole point of the `portfolio_id`-scoped model.
+     */
+    async listForUser(userId: string): Promise<PortfolioSummaryRow[]> {
+      const rows = await db
+        .select({
+          id: portfolios.id,
+          name: portfolios.name,
+          visibility: portfolios.visibility,
+          sortOrder: portfolios.sortOrder,
+        })
+        .from(portfolios)
+        .where(eq(portfolios.userId, userId))
+        .orderBy(asc(portfolios.sortOrder), asc(portfolios.name));
+      return rows.map(toSummary);
+    },
+
+    /**
+     * A single portfolio scoped to its owner (§8): returns null when the id is
+     * unknown *or* belongs to another user, so callers 404 without leaking
+     * existence — no IDOR by construction.
+     */
+    async findByIdForUser(
+      userId: string,
+      portfolioId: string,
+    ): Promise<PortfolioSummaryRow | null> {
+      const rows = await db
+        .select({
+          id: portfolios.id,
+          name: portfolios.name,
+          visibility: portfolios.visibility,
+          sortOrder: portfolios.sortOrder,
+        })
+        .from(portfolios)
+        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+        .limit(1);
+      const row = rows[0];
+      return row ? toSummary(row) : null;
+    },
+
+    /**
+     * Update a portfolio's mutable fields (name, visibility), scoped to the owner
+     * at the DB layer (§8). Returns the updated summary, or null when the id is
+     * not one of the caller's own portfolios.
+     */
+    async updatePortfolio(
+      userId: string,
+      portfolioId: string,
+      patch: { name?: string; visibility?: 'private' | 'friends' },
+    ): Promise<PortfolioSummaryRow | null> {
+      const set: Partial<{ name: string; visibility: 'private' | 'friends' }> = {};
+      if (patch.name !== undefined) set.name = patch.name;
+      if (patch.visibility !== undefined) set.visibility = patch.visibility;
+
+      // Nothing to change — return the current row (still ownership-scoped).
+      if (Object.keys(set).length === 0) {
+        const rows = await db
+          .select({
+            id: portfolios.id,
+            name: portfolios.name,
+            visibility: portfolios.visibility,
+            sortOrder: portfolios.sortOrder,
+          })
+          .from(portfolios)
+          .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+          .limit(1);
+        const row = rows[0];
+        return row ? toSummary(row) : null;
+      }
+
+      const rows = await db
+        .update(portfolios)
+        .set(set)
+        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+        .returning({
+          id: portfolios.id,
+          name: portfolios.name,
+          visibility: portfolios.visibility,
+          sortOrder: portfolios.sortOrder,
+        });
+      const row = rows[0];
+      return row ? toSummary(row) : null;
     },
 
     /** The asset rows for a set of ids (currency, provider ref, meta). */

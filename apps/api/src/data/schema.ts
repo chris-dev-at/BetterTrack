@@ -328,6 +328,12 @@ export const shareLinks = pgTable(
 
 // --- Portfolio -------------------------------------------------------------
 
+/**
+ * Per-portfolio visibility (§6.8/§6.9): `private` (default) or `friends`. V1
+ * only *stores + exposes* this flag; social consumption of it is P5 (§6.9).
+ */
+export const portfolioVisibilityEnum = pgEnum('portfolio_visibility', ['private', 'friends']);
+
 export const portfolios = pgTable(
   'portfolios',
   {
@@ -336,6 +342,10 @@ export const portfolios = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull().default('Main'),
+    // V1: exactly one auto-created "Main" per user; all portfolio queries are
+    // portfolio_id-scoped so multi-portfolio is purely additive (§6.8).
+    visibility: portfolioVisibilityEnum('visibility').notNull().default('private'),
+    sortOrder: integer('sort_order').notNull().default(0),
   },
   (t) => [uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name)],
 );
@@ -406,4 +416,5 @@ export const schema = {
   notificationChannelEnum,
   conglomerateStatusEnum,
   transactionSideEnum,
+  portfolioVisibilityEnum,
 };

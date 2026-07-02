@@ -75,7 +75,9 @@ describe('POST /api/v1/custom-assets', () => {
     expect(res.status).toBe(201);
     expect(res.body.transactionId).not.toBeNull();
 
-    const txns = await agent.get('/api/v1/portfolio/transactions');
+    const portfolios = await agent.get('/api/v1/portfolios');
+    const pid = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault).id;
+    const txns = await agent.get(`/api/v1/portfolios/${pid}/transactions`);
     expect(txns.status).toBe(200);
     expect(txns.body.items).toHaveLength(1);
     expect(txns.body.items[0].assetId).toBe(res.body.asset.id);
@@ -235,7 +237,9 @@ describe('GET/PUT /api/v1/custom-assets/:id/value-points', () => {
       .set(...XRW)
       .send({ points: [{ date: dayOffset(-5), value: 250000 }] });
 
-    const first = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const portfolios = await agent.get('/api/v1/portfolios');
+    const pid = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault).id;
+    const first = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(first.status).toBe(200);
     expect(first.body.points.at(-1).valueEur).toBeCloseTo(250000, 6);
 
@@ -245,7 +249,7 @@ describe('GET/PUT /api/v1/custom-assets/:id/value-points', () => {
       .set(...XRW)
       .send({ points: [{ date: dayOffset(-5), value: 300000 }] });
 
-    const second = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const second = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(second.status).toBe(200);
     expect(second.body.points.at(-1).valueEur).toBeCloseTo(300000, 6);
   });

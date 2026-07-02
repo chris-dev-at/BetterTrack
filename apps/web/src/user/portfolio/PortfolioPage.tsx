@@ -14,6 +14,7 @@ import {
   deleteTransaction,
   getPortfolio,
   getPortfolioHistory,
+  listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
 import { cx } from '../../lib/cx';
@@ -482,27 +483,43 @@ export function PortfolioPage() {
   const [customOpen, setCustomOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // The API is portfolio_id-scoped (§6.8): resolve the default portfolio first,
+  // then thread its id through every scoped read/write. V1 has exactly one.
+  const portfoliosQuery = useQuery({
+    queryKey: ['portfolios'],
+    queryFn: ({ signal }) => listPortfolios(signal),
+    staleTime: 60_000,
+  });
+
+  const portfolioId = useMemo(() => {
+    const list = portfoliosQuery.data?.portfolios ?? [];
+    return (list.find((p) => p.isDefault) ?? list[0])?.id ?? null;
+  }, [portfoliosQuery.data]);
+
   const portfolioQuery = useQuery({
-    queryKey: ['portfolio'],
-    queryFn: ({ signal }) => getPortfolio(signal),
+    queryKey: ['portfolio', portfolioId],
+    queryFn: ({ signal }) => getPortfolio(portfolioId!, signal),
+    enabled: portfolioId !== null,
     staleTime: 60_000,
   });
 
   const historyQuery = useQuery({
-    queryKey: ['portfolio', 'history', toHistoryRange(range)],
-    queryFn: ({ signal }) => getPortfolioHistory(toHistoryRange(range), signal),
+    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
+    queryFn: ({ signal }) => getPortfolioHistory(portfolioId!, toHistoryRange(range), signal),
+    enabled: portfolioId !== null,
     staleTime: HISTORY_STALE_MS,
   });
 
   // Recent ledger, grouped client-side so each holding's expansion shows its rows.
   const transactionsQuery = useQuery({
-    queryKey: ['portfolio', 'transactions'],
-    queryFn: ({ signal }) => listTransactions({ limit: 200 }, signal),
+    queryKey: ['portfolio', portfolioId, 'transactions'],
+    queryFn: ({ signal }) => listTransactions(portfolioId!, { limit: 200 }, signal),
+    enabled: portfolioId !== null,
     staleTime: 60_000,
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteTransaction(id),
+    mutationFn: (id: string) => deleteTransaction(portfolioId!, id),
     onSuccess: () => {
       setActionError(null);
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
@@ -543,7 +560,7 @@ export function PortfolioPage() {
   );
 
   // ── Loading / error ──
-  if (portfolioQuery.isLoading) {
+  if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
     return (
       <div className="flex flex-col gap-6">
         <Skeleton height="h-8" width="w-48" />
@@ -558,7 +575,12 @@ export function PortfolioPage() {
     );
   }
 
-  if (portfolioQuery.isError || !portfolioQuery.data) {
+  if (
+    portfoliosQuery.isError ||
+    portfolioId === null ||
+    portfolioQuery.isError ||
+    !portfolioQuery.data
+  ) {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader
@@ -580,8 +602,9 @@ export function PortfolioPage() {
   function renderDialogs() {
     return (
       <>
-        {txnDialog ? (
+        {txnDialog && portfolioId ? (
           <TransactionDialog
+            portfolioId={portfolioId}
             transaction={txnDialog.kind === 'edit' ? txnDialog.transaction : undefined}
             asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
             onClose={() => setTxnDialog(null)}
