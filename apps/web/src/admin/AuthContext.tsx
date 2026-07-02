@@ -11,7 +11,7 @@ type AuthStatus = 'loading' | 'authenticated' | 'anonymous';
 /** Thrown by {@link AuthContextValue.login} when valid creds belong to a non-admin. */
 export class NotAdminError extends Error {
   constructor() {
-    super('This account does not have admin access.');
+    super('This is a user account, not an administrator — please sign in through the main app.');
     this.name = 'NotAdminError';
   }
 }

@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 
-import { forbidden, notFound, unauthorized } from '../../errors';
+import { adminAccountKind, forbidden, notFound, unauthorized } from '../../errors';
 import type { AppContext } from '../context';
 import { clearSessionCookie, setSessionCookie } from '../cookies';
 import { toAuthUser } from '../serializers';
@@ -37,6 +37,26 @@ export function loadSession(ctx: AppContext): RequestHandler {
 export const requireAuth: RequestHandler = (req, _res, next) => {
   if (!req.authUser) {
     next(unauthorized());
+    return;
+  }
+  next();
+};
+
+/**
+ * User-app endpoints. Requires a session (401 otherwise) and rejects admin-kind
+ * sessions: account kinds are disjoint, so an administrator has no portfolio,
+ * workboard, assets, search or social surface (PROJECTPLAN.md §3, §5.5, §10).
+ * The rejection is a pointed `403 ADMIN_ACCOUNT_KIND` sending them to the admin
+ * area — never a 404, unlike the reverse guard, because an authenticated admin
+ * already knows that area exists.
+ */
+export const requireUser: RequestHandler = (req, _res, next) => {
+  if (!req.authUser) {
+    next(unauthorized());
+    return;
+  }
+  if (req.authUser.role === 'admin') {
+    next(adminAccountKind());
     return;
   }
   next();

@@ -8,6 +8,7 @@ import type {
 
 import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
+import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
@@ -24,6 +25,7 @@ export interface AdminServiceDeps {
   redis: Redis;
   userRepo: UserRepository;
   inviteRepo: InviteRepository;
+  portfolioRepo: PortfolioRepository;
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
@@ -38,7 +40,17 @@ export interface AdminActor {
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function createAdminService(deps: AdminServiceDeps) {
-  const { config, redis, userRepo, inviteRepo, sessions, audit, passwordHasher, email } = deps;
+  const {
+    config,
+    redis,
+    userRepo,
+    inviteRepo,
+    portfolioRepo,
+    sessions,
+    audit,
+    passwordHasher,
+    email,
+  } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
     const user = await userRepo.findById(id);
@@ -79,6 +91,12 @@ export function createAdminService(deps: AdminServiceDeps) {
         status: 'active',
         mustChangePassword: true,
       });
+
+      // Account kinds are disjoint (§5.5): a new *user* opens onto a default
+      // portfolio; a management-only *admin* never gets one.
+      if (user.role === 'user') {
+        await portfolioRepo.createDefault(user.id);
+      }
 
       await audit.record({
         actorId: actor.id,

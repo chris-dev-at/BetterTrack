@@ -8,7 +8,7 @@ import {
   type ReorderWorkboardRequest,
 } from '@bettertrack/contracts';
 
-import { requireAuth } from '../middleware/session';
+import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 import { toWorkboardItem } from '../serializers';
@@ -17,7 +17,7 @@ import { toWorkboardItem } from '../serializers';
 export function createWorkboardRouter(ctx: AppContext): Router {
   const router = Router();
 
-  router.use(requireAuth);
+  router.use(requireUser);
 
   router.get('/', async (req, res) => {
     const items = await ctx.workboard.list(req.authUser!.id);

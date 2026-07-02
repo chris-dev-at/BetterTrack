@@ -32,6 +32,19 @@ export const accountDisabled = (
   message = 'This account has been suspended. Please contact the administrator.',
 ) => new ApiError(403, 'ACCOUNT_DISABLED', message);
 
+/**
+ * An admin-kind session reaching a user-app endpoint (PROJECTPLAN.md §3, §5.5,
+ * §10). Admin accounts administer the system in their own admin area and have
+ * no personal portfolio/workboard/social surface; the message points them back
+ * there rather than 404-ing (an authenticated admin already knows the admin
+ * area exists, so this leaks nothing). The reverse — a user-kind session on an
+ * `/api/v1/admin/*` route — stays a bare 404 (see `requireAdmin`), so a
+ * non-admin learns nothing about the admin surface (§6.12).
+ */
+export const adminAccountKind = (
+  message = 'Administrator accounts have no personal workspace — sign in through the admin area to manage the system.',
+) => new ApiError(403, 'ADMIN_ACCOUNT_KIND', message);
+
 export const notFound = (message = 'Not found.', code = 'NOT_FOUND') =>
   new ApiError(404, code, message);
 

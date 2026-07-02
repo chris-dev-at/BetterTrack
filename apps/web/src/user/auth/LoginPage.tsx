@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 
 import { ApiError } from '../../lib/apiClient';
-import { useAuth } from '../AuthContext';
+import { AdminAccountError, useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 
 /** Where to land after a successful sign-in: the intended route, else home. */
@@ -57,6 +57,9 @@ export function LoginPage() {
           ? ` Please wait ${err.retryAfterSeconds} second${err.retryAfterSeconds === 1 ? '' : 's'} and try again.`
           : ' Please wait a moment and try again.';
         setError(`Too many login attempts.${wait}`);
+      } else if (err instanceof AdminAccountError) {
+        // Admin credentials on the user app: point them at the admin area (§10).
+        setError(err.message);
       } else if (err instanceof ApiError && err.status === 403 && err.code === 'ACCOUNT_DISABLED') {
         // Correct password but the account is suspended: a distinct message,
         // separate from bad-credentials and the rate-limit notice (§6.1, §16).

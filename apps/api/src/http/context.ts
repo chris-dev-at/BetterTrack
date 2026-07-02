@@ -85,6 +85,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const userRepo = createUserRepository(db);
   const inviteRepo = createInviteRepository(db);
   const auditRepo = createAuditRepository(db);
+  // Shared by auth/admin (default-portfolio provisioning at account creation,
+  // §5.5) and the portfolio service below.
+  const portfolioRepo = createPortfolioRepository(db);
 
   const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000));
   const audit = createAuditService(auditRepo);
@@ -104,6 +107,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     userRepo,
     inviteRepo,
+    portfolioRepo,
     sessions,
     audit,
     passwordHasher,
@@ -114,6 +118,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     userRepo,
     inviteRepo,
+    portfolioRepo,
     sessions,
     audit,
     passwordHasher,
@@ -172,7 +177,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Portfolio + custom investments (§6.9). The custom-asset service records its
   // optional initial purchase through the portfolio service and shares its
   // value-series cache invalidation.
-  const portfolioRepo = createPortfolioRepository(db);
   const transactionRepo = createTransactionRepository(db);
   const portfolio = createPortfolioService({
     portfolioRepo,

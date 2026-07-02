@@ -2,7 +2,7 @@ import { Router } from 'express';
 
 import { assetIdParamSchema, historyQuerySchema, type HistoryQuery } from '@bettertrack/contracts';
 
-import { requireAuth } from '../middleware/session';
+import { requireUser } from '../middleware/session';
 import { validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
@@ -10,7 +10,7 @@ import type { AppContext } from '../context';
 export function createAssetsRouter(ctx: AppContext): Router {
   const router = Router();
 
-  router.use(requireAuth);
+  router.use(requireUser);
 
   // GET /assets/:id — meta + latest quote.
   router.get('/:id', validateParams(assetIdParamSchema), async (req, res) => {

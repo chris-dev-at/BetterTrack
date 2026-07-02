@@ -13,7 +13,7 @@ import {
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
-import { requireAuth } from '../middleware/session';
+import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
@@ -21,7 +21,7 @@ import type { AppContext } from '../context';
 export function createPortfolioRouter(ctx: AppContext): Router {
   const router = Router();
 
-  router.use(requireAuth);
+  router.use(requireUser);
 
   // GET /portfolio — holdings + totals (§6.9).
   router.get('/', async (req, res) => {
