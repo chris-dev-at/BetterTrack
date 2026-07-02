@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRequestQueue, isRetryableUpstreamError } from '../requestQueue';
+import {
+  createRequestQueue,
+  DEFAULT_MIN_SPACING_MS,
+  isRetryableUpstreamError,
+} from '../requestQueue';
 
 /** A fake HTTPError shaped like `yahoo-finance2`'s: an Error with a numeric `code`. */
 function httpError(code: number): Error & { code: number } {
@@ -10,10 +14,13 @@ function httpError(code: number): Error & { code: number } {
 }
 
 describe('isRetryableUpstreamError (§5.2)', () => {
-  it('retries 429 and 5xx, not 4xx or code-less errors', () => {
-    expect(isRetryableUpstreamError(httpError(429))).toBe(true);
+  it('retries 5xx only — not 429 (the breaker owns rate limits), 4xx or code-less errors', () => {
     expect(isRetryableUpstreamError(httpError(500))).toBe(true);
     expect(isRetryableUpstreamError(httpError(503))).toBe(true);
+    // A queue-retried 429 would starve the circuit breaker (§5.3): its backoff
+    // outlasts the service's 5 s timeout, so the breaker would only ever see
+    // TimeoutError while abandoned retries kept hitting the upstream.
+    expect(isRetryableUpstreamError(httpError(429))).toBe(false);
     expect(isRetryableUpstreamError(httpError(404))).toBe(false);
     expect(isRetryableUpstreamError(httpError(400))).toBe(false);
     expect(isRetryableUpstreamError(new Error('network'))).toBe(false);
@@ -24,7 +31,8 @@ describe('isRetryableUpstreamError (§5.2)', () => {
 describe('createRequestQueue concurrency cap (§5.2)', () => {
   it('never runs more than `concurrency` tasks at once', async () => {
     const N = 12;
-    const queue = createRequestQueue({ concurrency: 4 });
+    // Spacing off: this test drives waves manually and measures only concurrency.
+    const queue = createRequestQueue({ concurrency: 4, minSpacingMs: 0 });
     let active = 0;
     let peak = 0;
     let started = 0;
@@ -59,10 +67,12 @@ describe('createRequestQueue concurrency cap (§5.2)', () => {
 });
 
 describe('createRequestQueue backoff (§5.2)', () => {
-  it('backs off and retries on 429, then succeeds, with exponential delays', async () => {
+  it('backs off and retries on 5xx, then succeeds, with exponential delays', async () => {
     const delays: number[] = [];
+    // Spacing off so `delays` records backoff sleeps only.
     const queue = createRequestQueue({
       baseDelayMs: 100,
+      minSpacingMs: 0,
       sleep: (ms) => {
         delays.push(ms);
         return Promise.resolve();
@@ -72,7 +82,7 @@ describe('createRequestQueue backoff (§5.2)', () => {
     let attempts = 0;
     const result = await queue.run(async () => {
       attempts += 1;
-      if (attempts <= 2) throw httpError(429);
+      if (attempts <= 2) throw httpError(503);
       return 'ok';
     });
 
@@ -81,9 +91,31 @@ describe('createRequestQueue backoff (§5.2)', () => {
     expect(delays).toEqual([100, 200]); // 100 * 2^0, 100 * 2^1
   });
 
+  it('does not retry a 429 — it must escape promptly so the circuit breaker can trip (§5.3)', async () => {
+    const delays: number[] = [];
+    const queue = createRequestQueue({
+      minSpacingMs: 0,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+    });
+
+    let attempts = 0;
+    await expect(
+      queue.run(async () => {
+        attempts += 1;
+        throw httpError(429);
+      }),
+    ).rejects.toMatchObject({ code: 429 });
+
+    expect(attempts).toBe(1);
+    expect(delays).toEqual([]);
+  });
+
   it('does not retry a non-retryable (4xx) error', async () => {
     const delays: number[] = [];
-    const queue = createRequestQueue({ sleep: (ms) => (delays.push(ms), Promise.resolve()) });
+    const queue = createRequestQueue({
+      minSpacingMs: 0,
+      sleep: (ms) => (delays.push(ms), Promise.resolve()),
+    });
 
     let attempts = 0;
     await expect(
@@ -100,6 +132,7 @@ describe('createRequestQueue backoff (§5.2)', () => {
   it('gives up after maxRetries and rethrows the last error', async () => {
     const queue = createRequestQueue({
       maxRetries: 3,
+      minSpacingMs: 0,
       sleep: () => Promise.resolve(),
     });
 
@@ -120,6 +153,7 @@ describe('createRequestQueue backoff (§5.2)', () => {
       baseDelayMs: 1000,
       maxDelayMs: 2500,
       maxRetries: 4,
+      minSpacingMs: 0,
       sleep: (ms) => (delays.push(ms), Promise.resolve()),
     });
 
@@ -127,5 +161,66 @@ describe('createRequestQueue backoff (§5.2)', () => {
 
     // 1000, 2000, then capped at 2500, 2500.
     expect(delays).toEqual([1000, 2000, 2500, 2500]);
+  });
+});
+
+describe('createRequestQueue minimum spacing (§5.3)', () => {
+  it('defaults to the §5.3 polite spacing', () => {
+    expect(DEFAULT_MIN_SPACING_MS).toBe(250);
+  });
+
+  it('spaces successive upstream call starts by minSpacingMs', async () => {
+    // Fake clock: sleeping advances time, so spacing is asserted deterministically.
+    let clock = 0;
+    const waits: number[] = [];
+    const queue = createRequestQueue({
+      concurrency: 1,
+      minSpacingMs: 100,
+      now: () => clock,
+      sleep: (ms) => {
+        waits.push(ms);
+        clock += ms;
+        return Promise.resolve();
+      },
+    });
+
+    const starts: number[] = [];
+    await Promise.all(
+      [0, 1, 2].map(() =>
+        queue.run(async () => {
+          starts.push(clock);
+        }),
+      ),
+    );
+
+    expect(starts).toEqual([0, 100, 200]);
+    expect(waits).toEqual([100, 100]);
+  });
+
+  it('applies the spacing to backoff retries too', async () => {
+    let clock = 0;
+    const queue = createRequestQueue({
+      minSpacingMs: 100,
+      baseDelayMs: 10,
+      now: () => clock,
+      sleep: (ms) => {
+        clock += ms;
+        return Promise.resolve();
+      },
+    });
+
+    const starts: number[] = [];
+    let attempts = 0;
+    const result = await queue.run(async () => {
+      starts.push(clock);
+      attempts += 1;
+      if (attempts === 1) throw httpError(503);
+      return 'ok';
+    });
+
+    expect(result).toBe('ok');
+    // Attempt 1 at t=0 reserves the next start for t=100; the 10 ms backoff
+    // elapses first, then the retry still waits for its spacing slot.
+    expect(starts).toEqual([0, 100]);
   });
 });

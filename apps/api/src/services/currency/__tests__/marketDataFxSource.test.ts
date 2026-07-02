@@ -44,6 +44,7 @@ function stubMarketData(prices: Record<string, number>): {
     search: unused('search'),
     getHistory: unused('getHistory'),
     getMeta: unused('getMeta'),
+    settled: async () => {},
   };
   return { service, getQuote };
 }

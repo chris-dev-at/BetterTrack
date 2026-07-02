@@ -19,6 +19,15 @@ const envSchema = z.object({
   SMTP_FROM: z.string().optional(),
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD: z.string().optional(),
+  // Per-provider request budget (§5.3): bounded concurrency + minimum spacing
+  // between upstream call starts. Defaults match PROJECTPLAN §5.2/§5.3.
+  // NOTE: the budget is per *process* — the API and the BullMQ worker each run
+  // their own queue with an independent spacing clock, so the effective
+  // upstream budget is N × these values for N running processes (§5.3 only
+  // mandates the Redis lock for cross-process coalescing). Set lower values in
+  // each service's env if a tighter combined budget is needed.
+  PROVIDER_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
+  PROVIDER_MIN_SPACING_MS: z.coerce.number().int().nonnegative().default(250),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -50,6 +59,11 @@ export interface AppConfig {
   admin: {
     email?: string;
     password?: string;
+  };
+  /** Per-provider upstream request budget (§5.3), enforced by the request queue. */
+  providers: {
+    maxConcurrency: number;
+    minSpacingMs: number;
   };
   rateLimits: {
     /** Disabled under test to keep API tests deterministic. */
@@ -106,6 +120,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     admin: {
       email: e.ADMIN_EMAIL,
       password: e.ADMIN_PASSWORD,
+    },
+    providers: {
+      maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,
+      minSpacingMs: e.PROVIDER_MIN_SPACING_MS,
     },
     // Relaxed per the owner-authorized 2026-06-16 deviation from §6.1/§10
     // (PROJECTPLAN.md §16 Decision Log): the original numbers tripped 429s

@@ -44,7 +44,20 @@ const registry = createQueueRegistry(createConnection());
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
 const marketDataConnection = createConnection();
-const { service: marketData } = createMarketData({ db, redis: marketDataConnection });
+const { service: marketData } = createMarketData({
+  db,
+  redis: marketDataConnection,
+  queueOptions: {
+    concurrency: config.providers.maxConcurrency,
+    minSpacingMs: config.providers.minSpacingMs,
+  },
+  options: {
+    // Failed background revalidations never surface to callers (§5.3 — they
+    // already got the stale copy), so the log line is their only trace.
+    onBackgroundError: (key, err) =>
+      logger.warn({ key, err }, 'market-data background refresh failed'),
+  },
+});
 const definitions = createJobDefinitions({ db, marketData });
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
@@ -66,6 +79,9 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'worker shutting down');
   try {
     await running.close();
+    // Let in-flight background cache revalidations write their results before
+    // their Redis connection goes away.
+    await marketData.settled();
     await registry.close();
     await events.close();
     await deadLetterConnection.quit();

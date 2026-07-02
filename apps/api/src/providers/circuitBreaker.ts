@@ -18,6 +18,12 @@ export interface CircuitBreakerOptions {
   openMs?: number;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Failures matching this predicate trip the breaker open immediately,
+   * regardless of the consecutive-failure count. Used for upstream 429s
+   * (PROJECTPLAN.md §5.3: "429 from upstream opens the circuit breaker").
+   */
+  tripImmediately?: (err: unknown) => boolean;
 }
 
 export class CircuitOpenError extends Error {
@@ -36,6 +42,7 @@ export class CircuitBreaker {
   private readonly failureThreshold: number;
   private readonly openMs: number;
   private readonly now: () => number;
+  private readonly tripImmediately?: (err: unknown) => boolean;
 
   private state: CircuitState = 'closed';
   private failures = 0;
@@ -50,6 +57,7 @@ export class CircuitBreaker {
     this.failureThreshold = options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD;
     this.openMs = options.openMs ?? DEFAULT_OPEN_MS;
     this.now = options.now ?? Date.now;
+    this.tripImmediately = options.tripImmediately;
   }
 
   /** Current state, after applying any elapsed-cooldown transition. */
@@ -85,7 +93,7 @@ export class CircuitBreaker {
       this.onSuccess();
       return result;
     } catch (err) {
-      this.onFailure();
+      this.onFailure(err);
       throw err;
     }
   }
@@ -96,8 +104,14 @@ export class CircuitBreaker {
     this.state = 'closed';
   }
 
-  private onFailure(): void {
+  private onFailure(err: unknown): void {
     this.probing = false;
+    // An upstream rate limit is a definitive "back off now" — trip without
+    // waiting for the consecutive-failure threshold (§5.3).
+    if (this.tripImmediately?.(err)) {
+      this.trip();
+      return;
+    }
     if (this.state === 'half-open') {
       // Probe failed → straight back to open with a fresh cooldown.
       this.trip();

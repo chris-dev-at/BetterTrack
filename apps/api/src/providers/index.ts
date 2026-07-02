@@ -8,10 +8,12 @@ export { createProviderRegistry, type ProviderRegistry } from './registry';
 export {
   createMarketDataService,
   defaultIntervalForRange,
+  normalizeSearchQuery,
   type MarketDataService,
   type MarketDataServiceOptions,
   type CreateMarketDataServiceDeps,
 } from './marketDataService';
+export { AssetNotFoundError, isNotFoundError, isRateLimitError } from './errors';
 export {
   CircuitBreaker,
   CircuitOpenError,
@@ -20,7 +22,14 @@ export {
 } from './circuitBreaker';
 export { TimeoutError, withTimeout, retryOnce, DEFAULT_TIMEOUT_MS } from './resilience';
 export { cacheKey, createMarketCache, type MarketCache } from './cache';
-export { QUOTE_TTL_SECONDS, META_TTL_SECONDS, STALE_TTL_SECONDS, historyTtlSeconds } from './ttl';
+export {
+  QUOTE_TTL_SECONDS,
+  META_TTL_SECONDS,
+  STALE_TTL_SECONDS,
+  SEARCH_TTL_SECONDS,
+  NEGATIVE_TTL_SECONDS,
+  historyTtlSeconds,
+} from './ttl';
 
 // Concrete providers (§5.1, §5.2) and the composition root that registers them.
 export { createYahooProvider, type CreateYahooProviderDeps } from './yahooProvider';
@@ -37,6 +46,7 @@ export {
   createRequestQueue,
   isRetryableUpstreamError,
   DEFAULT_CONCURRENCY,
+  DEFAULT_MIN_SPACING_MS,
   type RequestQueue,
   type RequestQueueOptions,
 } from './requestQueue';

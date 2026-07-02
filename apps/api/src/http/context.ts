@@ -122,7 +122,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
   // (§5.1–§5.2). `registry.for(asset)` lives inside; routes use the service.
-  const marketData = deps.marketData ?? createMarketData({ db, redis }).service;
+  const marketData =
+    deps.marketData ??
+    createMarketData({
+      db,
+      redis,
+      queueOptions: {
+        concurrency: config.providers.maxConcurrency,
+        minSpacingMs: config.providers.minSpacingMs,
+      },
+      options: {
+        // Failed background revalidations never surface to callers (§5.3 — they
+        // already got the stale copy), so the log line is their only trace.
+        onBackgroundError: (key, err) =>
+          logger.warn({ key, err }, 'market-data background refresh failed'),
+      },
+    }).service;
 
   // First-touch backfill enqueue (§6.2/§9). In tests no BullMQ worker runs, so
   // default to a no-op; production enqueues onto the shared Redis-backed queue.

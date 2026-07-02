@@ -43,6 +43,24 @@ describe('retryOnce', () => {
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
+  it('does not retry when shouldRetry rejects the error (definitive failures)', async () => {
+    const definitive = Object.assign(new Error('HTTP 429'), { code: 429 });
+    const fn = vi.fn(() => Promise.reject(definitive));
+    await expect(
+      retryOnce(fn, (err) => (err as { code?: number }).code !== 429),
+    ).rejects.toThrowError('HTTP 429');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still retries errors shouldRetry accepts', async () => {
+    const fn = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValueOnce('ok');
+    await expect(retryOnce(fn, () => true)).resolves.toBe('ok');
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
   it('composes with withTimeout for timeout → retry-once', async () => {
     const deferred = createDeferred<string>();
     let attempt = 0;

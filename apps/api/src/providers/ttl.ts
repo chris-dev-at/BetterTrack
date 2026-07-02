@@ -34,6 +34,15 @@ export function historyTtlSeconds(range: HistoryRange): number {
  */
 export const META_TTL_SECONDS = 24 * 60 * 60;
 
+/** Provider search results (catalog-fill), keyed by normalized query: 24 h (§5.3). */
+export const SEARCH_TTL_SECONDS = 24 * 60 * 60;
+
+/**
+ * Negative results (unknown symbol, 404): 15 min (§5.3), so repeated misses
+ * don't hammer the provider.
+ */
+export const NEGATIVE_TTL_SECONDS = 15 * 60;
+
 /**
  * Retention of the last-known-good copy used for stale-while-revalidate (§5.1).
  * Long enough to ride out a multi-hour upstream outage; not permanent (durable

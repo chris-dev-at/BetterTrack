@@ -23,6 +23,14 @@ export interface AssetProvider {
   /** Stable id used as the routing key and as the first cache-key segment. */
   readonly id: string;
 
+  /**
+   * True when this provider's data lives in our own database (the `manual`
+   * provider). Local providers are exempt from the §5.3 upstream-politeness
+   * machinery — no Redis TTL cache and no negative caching — because there is
+   * no upstream to protect and a user's edit must be visible immediately.
+   */
+  readonly local?: boolean;
+
   /** Symbol/name lookup across this provider's universe (§6.2). */
   search(query: string): Promise<AssetSearchResult[]>;
 
