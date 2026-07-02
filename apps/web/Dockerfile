@@ -16,9 +16,17 @@ COPY packages/ ./packages/
 COPY apps/web/ ./apps/web/
 RUN pnpm --filter @bettertrack/web build
 
-# ── runner: nginx serving the SPA + proxying /api ───────────────────────────
+# ── runner: nginx front proxy — fronts web/admin/api origins, both modes ─────
 FROM nginx:alpine AS runner
 COPY --from=builder /app/apps/web/dist /usr/share/nginx/html
-# nginx.conf is at infra/nginx.conf relative to the repo root (build context)
-COPY infra/nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
+# Drop the stock catch-all server; our entrypoint renders the real config from
+# the selected mode template into conf.d/default.conf at start.
+RUN rm -f /etc/nginx/conf.d/default.conf
+# Mode templates (subdomains|ports) live outside /etc/nginx/templates so the
+# stock envsubst step never mangles nginx's own $variables.
+COPY infra/nginx/templates/ /etc/nginx/bt-templates/
+COPY infra/nginx/docker-entrypoint.sh /usr/local/bin/bt-web-entrypoint.sh
+RUN chmod +x /usr/local/bin/bt-web-entrypoint.sh
+# 80 (subdomains) + the ports-mode service ports; publish per mode in compose.
+EXPOSE 80 3000 8080 8081
+ENTRYPOINT ["/usr/local/bin/bt-web-entrypoint.sh"]

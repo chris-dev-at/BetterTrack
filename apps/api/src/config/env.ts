@@ -13,7 +13,32 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
   // 64 random bytes recommended; comma-separated to support key rotation.
   SESSION_SECRET: z.string().min(16, 'SESSION_SECRET must be at least 16 characters'),
-  APP_ORIGIN: z.string().url(),
+
+  // ── Deployment topology (PROJECTPLAN.md §4.6, §10, §11) ────────────────────
+  // One global scheme that drives every public origin. `subdomains` (default)
+  // fronts each service on its own subdomain of BT_DOMAIN with TLS at the proxy;
+  // `ports` puts each service on its own port of a single host. The three
+  // origins (api/web/admin) are DERIVED from these (see deriveOrigins); CORS,
+  // cookies and link generation consume the derived values so no origin is ever
+  // hand-maintained. Explicit BT_*_ORIGIN overrides win over derivation.
+  BT_MODE: z.enum(['subdomains', 'ports']).default('subdomains'),
+  BT_DOMAIN: z.string().min(1).default('localhost'),
+  // Front-proxy TLS. Defaults per mode (subdomains → https, ports → http) when
+  // unset; an explicit value forces the scheme of every derived origin.
+  BT_TLS: z.string().optional(),
+  BT_SUB_API: z.string().min(1).default('api'),
+  BT_SUB_WEB: z.string().min(1).default('web'),
+  BT_SUB_ADMIN: z.string().min(1).default('admin'),
+  BT_PORT_API: z.coerce.number().int().positive().default(3000),
+  BT_PORT_WEB: z.coerce.number().int().positive().default(8080),
+  BT_PORT_ADMIN: z.coerce.number().int().positive().default(8081),
+  // Explicit origin overrides (win over derivation). Useful for split hosting or
+  // a legacy single-origin setup. APP_ORIGIN is a legacy alias for BT_WEB_ORIGIN.
+  BT_API_ORIGIN: z.string().url().optional(),
+  BT_WEB_ORIGIN: z.string().url().optional(),
+  BT_ADMIN_ORIGIN: z.string().url().optional(),
+  APP_ORIGIN: z.string().url().optional(),
+
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().optional(),
   SMTP_USER: z.string().optional(),
@@ -34,6 +59,96 @@ const envSchema = z.object({
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
+export type DeploymentMode = 'subdomains' | 'ports';
+
+/** The three public origins the app fronts, derived from the topology scheme. */
+export interface Topology {
+  mode: DeploymentMode;
+  domain: string;
+  /** `true` when the derived origins use https (front-proxy TLS). */
+  tls: boolean;
+  /** Origin the SPA/admin call for the JSON API. */
+  apiOrigin: string;
+  /** Origin serving the user SPA (also the base for generated links). */
+  webOrigin: string;
+  /** Origin serving the admin SPA. */
+  adminOrigin: string;
+}
+
+/** Optional boolean env parse: unset/empty → fall back to `dflt`. */
+function boolFrom(value: string | undefined, dflt: boolean): boolean {
+  if (value === undefined || value.trim() === '') return dflt;
+  const v = value.trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+function stripTrailingSlash(origin: string): string {
+  return origin.endsWith('/') ? origin.slice(0, -1) : origin;
+}
+
+type Service = 'api' | 'web' | 'admin';
+
+/**
+ * Derive the three public origins from the topology scheme (§11). Explicit
+ * BT_*_ORIGIN overrides win; otherwise:
+ *   subdomains → `{scheme}://{sub}.{domain}`
+ *   ports      → `{scheme}://{domain}:{port}`
+ * The scheme comes from BT_TLS, defaulting to https for subdomains and http for
+ * ports (typical self-hosted layouts). Cookies/CORS read these, never raw env.
+ */
+export function deriveOrigins(e: {
+  BT_MODE: DeploymentMode;
+  BT_DOMAIN: string;
+  BT_TLS?: string;
+  BT_SUB_API: string;
+  BT_SUB_WEB: string;
+  BT_SUB_ADMIN: string;
+  BT_PORT_API: number;
+  BT_PORT_WEB: number;
+  BT_PORT_ADMIN: number;
+  BT_API_ORIGIN?: string;
+  BT_WEB_ORIGIN?: string;
+  BT_ADMIN_ORIGIN?: string;
+  APP_ORIGIN?: string;
+}): Topology {
+  const mode = e.BT_MODE;
+  const tls = boolFrom(e.BT_TLS, mode === 'subdomains');
+  const scheme = tls ? 'https' : 'http';
+  const subs: Record<Service, string> = {
+    api: e.BT_SUB_API,
+    web: e.BT_SUB_WEB,
+    admin: e.BT_SUB_ADMIN,
+  };
+  const ports: Record<Service, number> = {
+    api: e.BT_PORT_API,
+    web: e.BT_PORT_WEB,
+    admin: e.BT_PORT_ADMIN,
+  };
+  // APP_ORIGIN is a legacy alias for the web origin override only.
+  const overrides: Record<Service, string | undefined> = {
+    api: e.BT_API_ORIGIN,
+    web: e.BT_WEB_ORIGIN ?? e.APP_ORIGIN,
+    admin: e.BT_ADMIN_ORIGIN,
+  };
+
+  const derive = (service: Service): string => {
+    const override = overrides[service];
+    if (override) return stripTrailingSlash(override);
+    return mode === 'subdomains'
+      ? `${scheme}://${subs[service]}.${e.BT_DOMAIN}`
+      : `${scheme}://${e.BT_DOMAIN}:${ports[service]}`;
+  };
+
+  return {
+    mode,
+    domain: e.BT_DOMAIN,
+    tls,
+    apiOrigin: derive('api'),
+    webOrigin: derive('web'),
+    adminOrigin: derive('admin'),
+  };
+}
+
 export interface AppConfig {
   nodeEnv: 'development' | 'test' | 'production';
   isProduction: boolean;
@@ -41,13 +156,30 @@ export interface AppConfig {
   port: number;
   databaseUrl: string;
   redisUrl: string;
+  /** Base origin for generated links (invites, emails) — the user web origin. */
   appOrigin: string;
+  /** Derived deployment topology (§4.6, §11). */
+  topology: Topology;
+  /**
+   * CORS allowlist (§10): the web + admin origins, the only cross-origin callers
+   * of the API. Credentialed and derived from {@link Topology} — never hardcoded.
+   */
+  corsOrigins: string[];
   /** First secret signs new cookies; all are accepted for verification (rotation). */
   sessionSecrets: string[];
   cookie: {
     name: string;
+    /** Derived from the API origin scheme (https → Secure), not NODE_ENV. */
     secure: boolean;
+    /**
+     * SameSite=Lax works in BOTH modes: `web`/`admin` and `api` share a
+     * registrable domain (subdomains) or a host (ports), so credentialed XHR is
+     * same-site and Lax cookies flow. The cookie stays host-only (no Domain
+     * attribute) — only the API reads it, so scoping it wider would be needless
+     * exposure. `domain` is derived but left undefined for that reason.
+     */
     sameSite: 'lax';
+    domain?: string;
     maxAgeMs: number;
   };
   email: {
@@ -100,6 +232,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const isProduction = e.NODE_ENV === 'production';
   const isTest = e.NODE_ENV === 'test';
 
+  const topology = deriveOrigins(e);
+  // Secure follows the API origin scheme: an https deployment gets Secure cookies
+  // regardless of NODE_ENV; a plain-http ports layout stays non-Secure so the
+  // cookie is actually accepted by the browser.
+  const cookieSecure = topology.apiOrigin.startsWith('https://');
+
   return {
     nodeEnv: e.NODE_ENV,
     isProduction,
@@ -107,13 +245,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: e.PORT,
     databaseUrl: e.DATABASE_URL,
     redisUrl: e.REDIS_URL,
-    appOrigin: e.APP_ORIGIN,
+    appOrigin: topology.webOrigin,
+    topology,
+    corsOrigins: [topology.webOrigin, topology.adminOrigin],
     sessionSecrets: e.SESSION_SECRET.split(',')
       .map((s) => s.trim())
       .filter((s) => s.length > 0),
     cookie: {
       name: 'bt_sid',
-      secure: isProduction,
+      secure: cookieSecure,
       sameSite: 'lax',
       maxAgeMs: THIRTY_DAYS_MS,
     },

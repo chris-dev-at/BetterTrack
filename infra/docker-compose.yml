@@ -11,13 +11,35 @@ name: bettertrack
 #   docker compose up -d
 
 services:
+  # Front proxy: serves the user + admin SPAs and reverse-proxies the api origin.
+  # One image, both topologies — BT_MODE selects the nginx layout at start (§4.6).
   web:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
     restart: unless-stopped
+    environment:
+      # Topology (§11) — the same scheme the api derives its origins from.
+      BT_MODE: '${BT_MODE:-subdomains}'
+      BT_DOMAIN: '${BT_DOMAIN:-localhost}'
+      BT_TLS: '${BT_TLS:-}'
+      BT_SUB_API: '${BT_SUB_API:-api}'
+      BT_SUB_WEB: '${BT_SUB_WEB:-web}'
+      BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+      BT_PORT_API: '${BT_PORT_API:-3000}'
+      BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
+      BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+      BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
+      API_UPSTREAM: 'api:3000'
+    # Publish the front port (subdomains, TLS terminated ahead of it) AND the
+    # three service ports (ports mode). Ports the active mode doesn't listen on
+    # simply have nothing behind them — trim this list to your mode when locking
+    # a host down.
     ports:
-      - '${WEB_PORT:-80}:80'
+      - '${BT_HTTP_PORT:-80}:80'
+      - '${BT_PORT_WEB:-8080}:${BT_PORT_WEB:-8080}'
+      - '${BT_PORT_ADMIN:-8081}:${BT_PORT_ADMIN:-8081}'
+      - '${BT_PORT_API:-3000}:${BT_PORT_API:-3000}'
     depends_on:
       api:
         condition: service_healthy
@@ -33,7 +55,19 @@ services:
       DATABASE_URL: '${DATABASE_URL}'
       REDIS_URL: '${REDIS_URL}'
       SESSION_SECRET: '${SESSION_SECRET}'
-      APP_ORIGIN: '${APP_ORIGIN}'
+      # Topology (§11): the api derives api/web/admin origins → CORS + cookies.
+      BT_MODE: '${BT_MODE:-subdomains}'
+      BT_DOMAIN: '${BT_DOMAIN:-localhost}'
+      BT_TLS: '${BT_TLS:-}'
+      BT_SUB_API: '${BT_SUB_API:-api}'
+      BT_SUB_WEB: '${BT_SUB_WEB:-web}'
+      BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+      BT_PORT_API: '${BT_PORT_API:-3000}'
+      BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
+      BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+      BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
+      BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
+      BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
       SMTP_HOST: '${SMTP_HOST:-}'
       SMTP_PORT: '${SMTP_PORT:-}'
       SMTP_USER: '${SMTP_USER:-}'
@@ -67,7 +101,8 @@ services:
   #     DATABASE_URL: "${DATABASE_URL}"
   #     REDIS_URL: "${REDIS_URL}"
   #     SESSION_SECRET: "${SESSION_SECRET}"
-  #     APP_ORIGIN: "${APP_ORIGIN}"
+  #     BT_MODE: "${BT_MODE:-subdomains}"
+  #     BT_DOMAIN: "${BT_DOMAIN:-localhost}"
   #   depends_on:
   #     db:
   #       condition: service_healthy
