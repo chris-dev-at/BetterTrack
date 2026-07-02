@@ -93,7 +93,12 @@ export class BacktestError extends Error {
 // Inputs
 // ---------------------------------------------------------------------------
 
-/** A single basket member: which asset, and its relative weight (see {@link backtest}). */
+/**
+ * A single basket member: which asset, and its relative weight (see
+ * {@link backtest}). A zero-weight position contributes nothing to the index
+ * but still participates in common-start clipping and the trading-day axis —
+ * §6.6 clips "across positions" without qualification.
+ */
 export interface BacktestPosition {
   assetId: string;
   /** Relative weight; non-negative. Normalised across the basket so the index opens at 100. */
@@ -120,7 +125,11 @@ export interface BacktestRange {
 export interface BacktestInput {
   /** Basket members; at least one. */
   positions: readonly BacktestPosition[];
-  /** Market data for every position asset (and the benchmark, if any). A missing asset throws. */
+  /**
+   * Market data for every position asset; a position referencing a missing
+   * asset throws. (The benchmark carries its own prices via {@link benchmark}
+   * and does not need an entry here.)
+   */
   assets: readonly BacktestAsset[];
   /** Requested window; the start is clipped up to the common start. */
   range: BacktestRange;
@@ -222,13 +231,25 @@ function dateToMs(date: string): number {
   return Date.parse(`${date}T00:00:00Z`);
 }
 
-/** Stable ascending sort of a price series by date, validating each date is ISO. */
+/**
+ * Validate a price series up front — every date ISO, every close finite — then
+ * return a stable ascending copy. Validation must not live in the sort
+ * comparator: a comparator never runs for 0/1-element arrays, so a lone
+ * malformed point would slip through and silently mis-value the series (the
+ * same fail-loud contract as `holdings.valueOverTime`). Finiteness is checked
+ * for *every* close, not just t₀ — a NaN or Infinity mid-series would otherwise
+ * flow straight into the index and every statistic derived from it.
+ */
 function sortPrices(prices: readonly PricePoint[], symbol: string): PricePoint[] {
-  return [...prices].sort((a, b) => {
-    assertIsoDate(a.date, `price date for ${symbol}`);
-    assertIsoDate(b.date, `price date for ${symbol}`);
-    return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
-  });
+  for (const point of prices) {
+    assertIsoDate(point.date, `price date for ${symbol}`);
+    if (!Number.isFinite(point.close)) {
+      throw new Error(
+        `Price point for ${symbol} on ${point.date} must be a finite close, got ${point.close}`,
+      );
+    }
+  }
+  return [...prices].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 // ---------------------------------------------------------------------------

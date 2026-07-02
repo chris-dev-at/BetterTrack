@@ -178,6 +178,39 @@ describe('backtest — common-start clipping', () => {
     expect(res.series[0]?.value).toBe(100);
   });
 
+  it('a zero-weight position still clips the window but contributes nothing (§6.6: "across positions")', async () => {
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 100 },
+        { assetId: 'Z', weight: 0 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110, 120, 130]),
+        },
+        {
+          assetId: 'Z',
+          symbol: 'Z',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-03', [50, 55]),
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+    });
+    expect(res.notice).toBe('Limited by Z (data since 2026-01-03)');
+    expect(res.startDate).toBe('2026-01-03');
+    // Index is A alone, re-based at 120.
+    expect(res.series[0]?.value).toBe(100);
+    expect(res.series[1]?.value).toBeCloseTo((130 / 120) * 100, 10);
+    const z = res.contributions.find((c) => c.assetId === 'Z');
+    expect(z?.weight).toBe(0);
+    expect(z?.contributionPct).toBe(0);
+  });
+
   it('produces no notice when the requested start is already within every asset’s history', async () => {
     const res = await backtest(singleAssetInput([100, 101, 102], '2026-03-02'));
     expect(res.notice).toBeNull();
@@ -225,6 +258,71 @@ describe('backtest — FX conversion', () => {
     });
     expect(res.series[0]?.value).toBe(100);
     expect(res.series[1]?.value).toBeCloseTo(111.11111111111111, 9);
+  });
+
+  it('worked scenario (§6.6): per-day FX × carry-forward, hand-computed end to end', async () => {
+    // 50/50 basket. E (EUR) trades daily, flat at 100 — it pins the axis to all
+    // four days. U (USD) trades only 01-01 (100) and 01-04 (110); on 01-02/01-03
+    // its last close carries forward but is revalued at THAT day's FX rate.
+    //
+    //   day        U close   USD→EUR   U in EUR   U ratio    index
+    //   2026-01-01   100      0.90        90       1         100
+    //   2026-01-02  (100)     0.92        92       92/90     100·(0.5 + 0.5·92/90)  = 101.11̄
+    //   2026-01-03  (100)     0.95        95       95/90     100·(0.5 + 0.5·95/90)  = 102.77̄
+    //   2026-01-04   110      1.00       110      110/90     100·(0.5 + 0.5·110/90) = 111.11̄
+    const res = await backtest({
+      positions: [
+        { assetId: 'E', weight: 50 },
+        { assetId: 'U', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'E',
+          symbol: 'E',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 100, 100, 100]),
+        },
+        {
+          assetId: 'U',
+          symbol: 'U',
+          currency: 'USD',
+          prices: [
+            { date: '2026-01-01', close: 100 },
+            { date: '2026-01-04', close: 110 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: datedConverter({
+        EUR: { '2026-01-01': 1, '2026-01-02': 1, '2026-01-03': 1, '2026-01-04': 1 },
+        USD: {
+          '2026-01-01': 0.9,
+          '2026-01-02': 0.92,
+          '2026-01-03': 0.95,
+          '2026-01-04': 1.0,
+        },
+      }),
+    });
+
+    const expected = [
+      100,
+      100 * (0.5 + (0.5 * 92) / 90),
+      100 * (0.5 + (0.5 * 95) / 90),
+      100 * (0.5 + (0.5 * 110) / 90),
+    ];
+    expected.forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+
+    // Attribution stays exact under moving FX: U returns (110/90 − 1) in EUR
+    // terms, E is flat; weighted contributions sum to the total return.
+    const u = res.contributions.find((c) => c.assetId === 'U');
+    const e = res.contributions.find((c) => c.assetId === 'E');
+    expect(u?.returnPct).toBeCloseTo((110 / 90 - 1) * 100, 9);
+    expect(u?.contributionPct).toBeCloseTo(0.5 * (110 / 90 - 1) * 100, 9);
+    expect(e?.contributionPct).toBeCloseTo(0, 9);
+    const summed = res.contributions.reduce((s, c) => s + c.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+    // total return = index(end) − 100 = 11.11̄%
+    expect(res.stats.totalReturnPct).toBeCloseTo(100 * (0.5 + (0.5 * 110) / 90) - 100, 9);
   });
 
   it('coalesces FX: exactly one converter call per (currency, day)', async () => {
@@ -353,6 +451,22 @@ describe('backtest — statistics', () => {
     expect(stats.volatilityPct).toBeCloseTo(168.1826371806, 6);
   });
 
+  it('max drawdown tracks the running peak across recoveries (deepest trough wins)', async () => {
+    // [100, 90, 105, 80]: first trough −10% off the 100 peak, then a NEW peak at
+    // 105, then the deeper trough 80/105 − 1 = −23.809…%. A naive min/max pair
+    // (80/105 vs 80/100) or a peak that never updates would both get this wrong.
+    const { stats } = await backtest(singleAssetInput([100, 90, 105, 80]));
+    expect(stats.maxDrawdownPct).toBeCloseTo((80 / 105 - 1) * 100, 10);
+    expect(stats.bestDay).toEqual({
+      date: '2026-01-03',
+      returnPct: expect.closeTo((105 / 90 - 1) * 100, 9),
+    });
+    expect(stats.worstDay).toEqual({
+      date: '2026-01-04',
+      returnPct: expect.closeTo((80 / 105 - 1) * 100, 9),
+    });
+  });
+
   it('CAGR annualises with ACT/365.25 and round-trips against the total growth', async () => {
     // Two points: 100 → 200 over 2024-01-01 … 2025-12-31 (730 days).
     const res = await backtest({
@@ -471,6 +585,39 @@ describe('backtest — benchmark overlay', () => {
     // Benchmark re-based at the portfolio t₀ (2026-01-01 = 1000), not its own first day.
     expect(res.benchmark?.series[0]).toEqual({ date: '2026-01-01', value: 100 });
     expect(res.benchmark?.series[1]?.value).toBeCloseTo(110, 9);
+  });
+
+  it('converts the benchmark at each day’s FX and shares the coalesced rate cache with the basket', async () => {
+    // Basket and benchmark are both USD → the distinct (USD, day) pairs number
+    // exactly 2; a per-pipeline cache would fetch 4. The benchmark's native
+    // price moves 200 → 210 while USD→EUR moves 0.9 → 1.0, so its EUR series is
+    // 180 → 210 (index 100 → 116.66̄) — proving day-of FX applies to it too.
+    const converter = datedConverter({
+      USD: { '2026-01-01': 0.9, '2026-01-02': 1.0 },
+    });
+    const res = await backtest({
+      positions: [{ assetId: 'A', weight: 100 }],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'USD',
+          prices: dailyCloses('2026-01-01', [100, 100]),
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-02' },
+      converter,
+      benchmark: {
+        assetId: 'GSPC',
+        symbol: '^GSPC',
+        currency: 'USD',
+        prices: dailyCloses('2026-01-01', [200, 210]),
+      },
+    });
+    expect(res.series[1]?.value).toBeCloseTo((1.0 / 0.9) * 100, 9);
+    expect(res.benchmark?.series[0]?.value).toBe(100);
+    expect(res.benchmark?.series[1]?.value).toBeCloseTo((210 / 180) * 100, 9);
+    expect(converter.toBase).toHaveBeenCalledTimes(2);
   });
 
   it('throws BacktestError when the benchmark lacks data at the backtest start', async () => {
@@ -594,5 +741,59 @@ describe('backtest — validation', () => {
         }),
       ),
     ).rejects.toThrow(/ISO YYYY-MM-DD/);
+  });
+
+  it('rejects a malformed date even in a single-point price series (comparator-escape regression)', async () => {
+    // A sort comparator never runs for a 1-element array — validation must be
+    // an explicit pass, or this lone bad date slips straight into the axis.
+    await expect(
+      backtest({
+        positions: [{ assetId: 'A', weight: 100 }],
+        assets: [
+          { assetId: 'A', symbol: 'A', currency: 'EUR', prices: [{ date: '2026-1-1', close: 10 }] },
+        ],
+        range: { start: '2026-01-01', end: '2026-01-02' },
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/ISO YYYY-MM-DD/);
+  });
+
+  it('rejects a non-finite close anywhere in the series (not only at t₀)', async () => {
+    await expect(
+      backtest({
+        positions: [{ assetId: 'A', weight: 100 }],
+        assets: [
+          {
+            assetId: 'A',
+            symbol: 'A',
+            currency: 'EUR',
+            prices: [
+              { date: '2026-01-01', close: 100 },
+              { date: '2026-01-02', close: Number.NaN },
+            ],
+          },
+        ],
+        range: { start: '2026-01-01', end: '2026-01-02' },
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/finite close/);
+  });
+
+  it('rejects a non-finite close in the benchmark series too', async () => {
+    await expect(
+      backtest(
+        singleAssetInput([100, 110], '2026-01-01', {
+          benchmark: {
+            assetId: 'B',
+            symbol: 'B',
+            currency: 'EUR',
+            prices: [
+              { date: '2026-01-01', close: 100 },
+              { date: '2026-01-02', close: Number.POSITIVE_INFINITY },
+            ],
+          },
+        }),
+      ),
+    ).rejects.toThrow(/finite close/);
   });
 });
