@@ -2,10 +2,14 @@ import { QUEUE_NAMES } from './types';
 import type { QueueRegistry } from './queues';
 
 /**
- * Enqueues the on-demand `prices.backfill` job (PROJECTPLAN.md §9) the first
- * time an asset is referenced (§6.2 first-touch). Kept behind this tiny port so
- * the search service depends on an intent ("backfill this asset"), not on
- * BullMQ — which also lets tests assert enqueues without a real queue.
+ * Enqueues the on-demand `prices.backfill` job (PROJECTPLAN.md §9). Two call
+ * sites: catalog enrichment, when a provider search *creates* a catalog row
+ * (§6.2 first touch), and the first-reference trigger
+ * (`services/assets/referenceBackfill.ts`), when a user first uses an asset
+ * that still has no history — which covers seeded and pre-existing rows. Kept
+ * behind this tiny port so services depend on an intent ("backfill this
+ * asset"), not on BullMQ — which also lets tests assert enqueues without a
+ * real queue.
  */
 export interface BackfillScheduler {
   /** Enqueue a history backfill for `assetId`. Idempotent per asset. */
@@ -15,8 +19,8 @@ export interface BackfillScheduler {
 /**
  * Production scheduler over a {@link QueueRegistry}. The job id is derived from
  * the asset id, so a duplicate enqueue for the same asset is coalesced by BullMQ
- * into the existing job — belt-and-suspenders on top of the first-touch guard
- * (the asset row is created exactly once, so this normally fires once anyway).
+ * into the existing job — belt-and-suspenders on top of the callers' own guards
+ * (row created exactly once / asset still has no history).
  */
 export function createBackfillScheduler(queues: QueueRegistry): BackfillScheduler {
   return {

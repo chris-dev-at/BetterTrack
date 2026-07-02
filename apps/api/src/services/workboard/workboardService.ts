@@ -3,9 +3,11 @@ import type {
   WorkboardItemWithAsset,
 } from '../../data/repositories/workboardRepository';
 import { conflict, notFound } from '../../errors';
+import type { ReferenceBackfill } from '../assets/referenceBackfill';
 
 export interface WorkboardServiceDeps {
   repo: WorkboardRepository;
+  referenceBackfill: ReferenceBackfill;
 }
 
 export interface WorkboardService {
@@ -16,7 +18,7 @@ export interface WorkboardService {
 }
 
 export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardService {
-  const { repo } = deps;
+  const { repo, referenceBackfill } = deps;
 
   return {
     async list(userId) {
@@ -33,6 +35,10 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
       if (!row) {
         throw conflict('Asset is already on your workboard.', 'ALREADY_WATCHING');
       }
+
+      // First reference (§6.2/§9): watching an asset warms its daily history so
+      // sparklines and later series have data. Best-effort — never fails the add.
+      await referenceBackfill.ensureHistory(assetId);
 
       const item = await repo.findOneWithAsset(userId, row.id);
       if (!item) throw new Error('Workboard item vanished after insert');

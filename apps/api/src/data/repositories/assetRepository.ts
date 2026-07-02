@@ -1,7 +1,7 @@
 import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { assets } from '../schema';
+import { assets, priceHistory } from '../schema';
 import type { AssetRow } from '../schema';
 
 /**
@@ -78,6 +78,14 @@ export function createAssetRepository(db: Database) {
      * trigram fuzzy (3). Ties break on trigram similarity, then name, so the
      * closest spelling wins within a tier. All tiers are case-insensitive and
      * LIKE wildcards in the query are treated literally.
+     *
+     * Plan note: this is a deliberate sequential scan. The OR of four match
+     * arms defeats index use regardless of the fuzzy arm — `upper(symbol) LIKE`
+     * has no expression index, and `similarity() >= τ` (unlike the `%` operator,
+     * whose threshold lives in the `pg_trgm.similarity_threshold` GUC) is not
+     * index-supported. At self-hosted catalog scale (thousands of rows, LIMIT
+     * ~20) that's sub-millisecond; revisit with `%` + an expression index on
+     * `upper(symbol)` only if the catalog grows orders of magnitude.
      */
     async searchCatalog(
       userId: string,
@@ -158,6 +166,20 @@ export function createAssetRepository(db: Database) {
         throw new Error('Global asset upsert found no row after conflict');
       }
       return { row: existing, created: false };
+    },
+
+    /**
+     * Whether at least one `price_history` row exists for this asset — the
+     * emptiness probe behind the first-reference backfill trigger (§6.2/§9,
+     * `services/assets/referenceBackfill.ts`).
+     */
+    async hasPriceHistory(assetId: string): Promise<boolean> {
+      const rows = await db
+        .select({ assetId: priceHistory.assetId })
+        .from(priceHistory)
+        .where(eq(priceHistory.assetId, assetId))
+        .limit(1);
+      return rows.length > 0;
     },
 
     /** The global (owner-less) asset for a provider ref, or null. */

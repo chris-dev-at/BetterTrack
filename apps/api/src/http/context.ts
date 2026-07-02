@@ -21,6 +21,7 @@ import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
+import { createReferenceBackfill } from '../services/assets/referenceBackfill';
 import { createAuditService } from '../services/audit/auditService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createCurrencyService } from '../services/currency/currencyService';
@@ -119,9 +120,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
   });
 
-  const workboardRepo = createWorkboardRepository(db);
-  const workboard = createWorkboardService({ repo: workboardRepo });
-
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
   // (§5.1–§5.2). `registry.for(asset)` lives inside; routes use the service.
   const marketData = deps.marketData ?? createMarketData({ db, redis }).service;
@@ -143,6 +141,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     currencyService: currency,
   });
 
+  // First-reference history warming (§6.2/§9): the first workboard add or
+  // transaction on a history-less asset enqueues its max-range backfill —
+  // this is how seeded catalog rows (§6.2(c)) get price history at all.
+  const referenceBackfill = createReferenceBackfill({ assetRepo, backfill, logger });
+
+  const workboardRepo = createWorkboardRepository(db);
+  const workboard = createWorkboardService({ repo: workboardRepo, referenceBackfill });
+
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
   const enrichment = createCatalogEnrichment({ marketData, assetRepo, backfill, redis, logger });
@@ -158,6 +164,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     transactionRepo,
     marketData,
     currencyService: currency,
+    referenceBackfill,
     redis,
   });
   const customAssetRepo = createCustomAssetRepository(db);

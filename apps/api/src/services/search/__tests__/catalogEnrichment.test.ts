@@ -11,7 +11,13 @@ import {
   providerHit,
   type StubMarketDataControls,
 } from '../../../testing/marketDataStubs';
-import { createCatalogEnrichment, enrichGuardKey } from '../catalogEnrichment';
+import {
+  createCatalogEnrichment,
+  enrichGuardKey,
+  ENRICH_GUARD_DONE,
+  ENRICH_GUARD_RUNNING,
+  ENRICH_GUARD_TTL_SECONDS,
+} from '../catalogEnrichment';
 
 /**
  * Unit tests for the provider-fallback orchestration (§6.2, §5.3): background
@@ -53,6 +59,40 @@ describe('catalogEnrichment', () => {
     expect(await assetRepo.findGlobal('yahoo', 'BAYN.DE')).not.toBeNull();
     expect(await assetRepo.findGlobal('yahoo', 'MSFT')).not.toBeNull();
     expect(backfill.enqueued).toHaveLength(2);
+  });
+
+  it('a request racing the guard write coalesces onto it and still reports enriching', async () => {
+    const { marketData, enrichment } = await makeEnrichment({ search: () => [providerHit()] });
+
+    // Both issued before either awaits: the second lands in the gap while the
+    // first is still awaiting the Redis NX write. It must share the first
+    // call's outcome (true), not lose the NX race and report false.
+    const [first, second] = await Promise.all([
+      enrichment.request('tesla'),
+      enrichment.request('tesla'),
+    ]);
+    expect(first).toBe(true);
+    expect(second).toBe(true);
+
+    await enrichment.settled();
+    expect(marketData.calls.search).toBe(1);
+  });
+
+  it('reports enriching while another process holds the guard, and not after it finished', async () => {
+    const { marketData, enrichment, redis } = await makeEnrichment();
+
+    // Another API process is mid-enrichment for this query.
+    await redis.set(enrichGuardKey('bmw'), ENRICH_GUARD_RUNNING, 'EX', ENRICH_GUARD_TTL_SECONDS);
+    await expect(enrichment.request('bmw')).resolves.toBe(true);
+    await enrichment.settled();
+
+    // …and now it has finished within the TTL window (negative cache).
+    await redis.set(enrichGuardKey('bmw'), ENRICH_GUARD_DONE, 'EX', ENRICH_GUARD_TTL_SECONDS);
+    await expect(enrichment.request('bmw')).resolves.toBe(false);
+    await enrichment.settled();
+
+    // Neither call may have run a provider search of its own.
+    expect(marketData.calls.search).toBe(0);
   });
 
   it('coalesces concurrent requests for the same query into one provider search', async () => {

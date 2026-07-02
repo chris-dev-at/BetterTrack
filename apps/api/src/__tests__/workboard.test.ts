@@ -6,6 +6,7 @@ import { workboardItemSchema, workboardListResponseSchema } from '@bettertrack/c
 
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { createRecordingBackfill } from '../testing/marketDataStubs';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -444,5 +445,41 @@ describe('Ownership isolation (§10)', () => {
 
     // Verify user B's item wasn't clobbered — still visible to B, not to A
     expect(itemB.id).toBe(idB);
+  });
+});
+
+describe('first-reference history backfill (§6.2/§9)', () => {
+  it('adding a history-less asset to the workboard enqueues its backfill', async () => {
+    const backfill = createRecordingBackfill();
+    const h = await createTestApp({ backfill });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    // A seeded catalog row: exists in `assets`, no `price_history` yet.
+    const asset = await seedAsset(h);
+
+    const res = await agent
+      .post('/api/v1/workboard')
+      .set(...XRW)
+      .send({ assetId: asset.id });
+    expect(res.status).toBe(201);
+    expect(backfill.enqueued).toEqual([asset.id]);
+  });
+
+  it('adding an asset that already has price history does not enqueue', async () => {
+    const backfill = createRecordingBackfill();
+    const h = await createTestApp({ backfill });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h);
+    await h.db
+      .insert(schema.priceHistory)
+      .values({ assetId: asset.id, date: '2026-01-02', close: '10' });
+
+    const res = await agent
+      .post('/api/v1/workboard')
+      .set(...XRW)
+      .send({ assetId: asset.id });
+    expect(res.status).toBe(201);
+    expect(backfill.enqueued).toEqual([]);
   });
 });

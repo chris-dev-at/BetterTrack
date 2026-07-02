@@ -26,7 +26,9 @@ export interface CatalogSeedResult {
 /**
  * Idempotently upsert `entries` as global catalog rows. Seeding deliberately
  * enqueues **no** history backfills — hundreds of untouched seed rows must not
- * flood the queue at boot; history arrives on first user touch (§6.2).
+ * flood the queue at boot. A seeded asset's history is backfilled the first
+ * time a user actually *references* it (workboard add / transaction) by the
+ * first-reference trigger in `services/assets/referenceBackfill.ts` (§6.2, §9).
  */
 export async function seedAssetCatalog(
   assetRepo: AssetRepository,
