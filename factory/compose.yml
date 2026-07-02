@@ -8,5 +8,8 @@ services:
       - factory-work:/work/state
       # Live-editable prompts: tune these on the host and restart, no rebuild.
       - ./prompts:/work/state/prompts:ro
+      # Usage ledger: per-issue token/cost records land on the HOST at
+      # factory/usage/ledger.jsonl so `factory/usage-report.sh` can read them.
+      - ./usage:/work/usage
 volumes:
   factory-work:

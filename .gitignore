@@ -20,3 +20,7 @@ coverage/
 # factory knowledge pack — generated outputs (generator is committed; run pnpm knowledge:build)
 factory/knowledge/graph.json
 factory/knowledge/MAP.md
+
+# factory usage ledger — per-issue token/cost data (code is committed; data is not)
+factory/usage/*.jsonl
+factory/usage/*.json
