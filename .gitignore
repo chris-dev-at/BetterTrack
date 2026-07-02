@@ -16,3 +16,7 @@ coverage/
 # tooling caches
 .vite/
 .eslintcache
+
+# factory knowledge pack — generated outputs (generator is committed; run pnpm knowledge:build)
+factory/knowledge/graph.json
+factory/knowledge/MAP.md

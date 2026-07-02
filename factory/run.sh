@@ -76,6 +76,37 @@ tier_model(){ case "$(gh issue view "$1" --json labels -q '.labels[].name' | gre
 mark_human(){ gh issue edit "$1" --add-label needs-human --remove-label autopilot,in-progress >/dev/null 2>&1 || true
   notify "issue #$1 → needs-human ($2)"; }
 
+# ---- knowledge pack ----------------------------------------------------------
+# Standing context injected into every role prompt so agents skip cold-start
+# re-reads of PROJECTPLAN/MODELUSE/CLAUDE and tree exploration. PACK.md + MAP.md
+# are committed/regenerated; the STATE block is live. Every gh/git call degrades
+# gracefully (|| true) so pack() can never abort a cycle.
+KNOW="$REPO_DIR/factory/knowledge"
+pack(){
+  echo "=== FACTORY KNOWLEDGE PACK ==="
+  [ -f "$KNOW/PACK.md" ] && cat "$KNOW/PACK.md"
+  if [ -f "$KNOW/MAP.md" ]; then echo; cat "$KNOW/MAP.md"; fi
+  echo; echo "=== LIVE STATE (generated $(date -Is)) ==="
+  echo "## Recent commits (main, newest first)"
+  git -C "$REPO_DIR" log --oneline -15 2>/dev/null || true
+  echo; echo "## Open autopilot issues (queued for the factory)"
+  gh issue list --label autopilot --state open --json number,title,labels \
+    -q '.[]|"#\(.number) \(.title) [\(.labels|map(.name)|join(","))]"' 2>/dev/null || true
+  echo "## Open awaiting-owner issues (planned; NOT autopilot)"
+  gh issue list --label awaiting-owner --state open --json number,title \
+    -q '.[]|"#\(.number) \(.title)"' 2>/dev/null || true
+  echo "## Open needs-human issues (stuck)"
+  gh issue list --label needs-human --state open --json number,title \
+    -q '.[]|"#\(.number) \(.title)"' 2>/dev/null || true
+  echo "## Open PRs"
+  gh pr list --state open --json number,title,headRefName \
+    -q '.[]|"#\(.number) \(.title) (\(.headRefName))"' 2>/dev/null || true
+  echo "=== END PACK ==="
+}
+# Prepend the pack to a role prompt as ONE argument (data-safe: backticks/quotes/%
+# in the pack are inert since they are printf DATA, not the format string).
+with_pack(){ printf '%s\n\n%s' "$(pack)" "$1"; }
+
 # ---- bootstrap ----
 mkdir -p "$PROMPTS"
 # Seed prompts from the image copy if the prompts dir is empty (no bind-mount case).
@@ -98,6 +129,8 @@ wait_for_capacity "startup"
 while true; do
   [ -f "$STATE/STOP" ] && { notify "STOP file present — exiting"; exit 0; }
   git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main
+  # Regenerate the knowledge pack from the fresh tree (non-fatal on failure).
+  node factory/knowledge/build.mjs 2>>"$LOG" || log "knowledge build failed (non-fatal)"
 
   # stuck guard
   stuck=$(gh issue list --label needs-human --state open --json number -q 'length')
@@ -108,7 +141,7 @@ while true; do
   backlog=$(gh issue list --label autopilot --state open --json number -q 'length')
   if [ "$backlog" -lt "${MIN_BACKLOG:-3}" ]; then
     log "backlog=$backlog → running planner"
-    cc "$MO" "$(sed "s/\$PLANNER_BATCH/${PLANNER_BATCH:-5}/g; s/{{BATCH}}/${PLANNER_BATCH:-5}/g; s/{{AFTER_V1}}/${AFTER_V1:-propose}/g" "$PROMPTS/planner.md")" || true
+    cc "$MO" "$(with_pack "$(sed "s/\$PLANNER_BATCH/${PLANNER_BATCH:-5}/g; s/{{BATCH}}/${PLANNER_BATCH:-5}/g; s/{{AFTER_V1}}/${AFTER_V1:-propose}/g" "$PROMPTS/planner.md")")" || true
     backlog=$(gh issue list --label autopilot --state open --json number -q 'length')
     [ "$backlog" -eq 0 ] && { notify "planner produced nothing (v1 done or awaiting owner) — idling 2h"; sleep 7200; continue; }
   fi
@@ -123,7 +156,7 @@ while true; do
   # Give it a couple of attempts for transient (non-capacity) hiccups.
   writer_ok=0
   for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
-    if cc "$(tier_model "$n")" "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")"; then
+    if cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
       writer_ok=1; break
     fi
     log "writer attempt $w_try/${WRITER_RETRIES:-2} failed"
@@ -147,11 +180,11 @@ while true; do
   approved=0
   for round in $(seq 1 "${MAX_FIX_ROUNDS:-2}"); do
     rmodel=$MO; [ "$(tier_model "$n")" = "$MF" ] && rmodel=$MF
-    cc "$rmodel" "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")" || true
+    cc "$rmodel" "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
     verdict=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
     [ "$verdict" = "FACTORY-VERDICT: APPROVE" ] && { approved=1; break; }
     log "round $round: changes requested"
-    cc "$(tier_model "$n")" "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")" || true
+    cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
   done
   [ "$approved" -eq 1 ] || { mark_human "$n" "review not clean after ${MAX_FIX_ROUNDS:-2} rounds"; continue; }
 
