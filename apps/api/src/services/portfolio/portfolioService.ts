@@ -29,6 +29,7 @@ import {
 } from '../../domain/holdings';
 import { badRequest, notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
+import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import type { CurrencyService } from '../currency/currencyService';
 
 /**
@@ -56,6 +57,7 @@ export interface PortfolioServiceDeps {
   transactionRepo: TransactionRepository;
   marketData: MarketDataService;
   currencyService: CurrencyService;
+  referenceBackfill: ReferenceBackfill;
   redis: Redis;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -102,7 +104,8 @@ const RANGE_MONTHS: Record<Exclude<PortfolioHistoryRange, 'MAX'>, number> = {
 };
 
 export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioService {
-  const { portfolioRepo, transactionRepo, marketData, currencyService, redis } = deps;
+  const { portfolioRepo, transactionRepo, marketData, currencyService, referenceBackfill, redis } =
+    deps;
   const now = deps.now ?? Date.now;
   const baseCurrency = currencyService.baseCurrency;
 
@@ -343,6 +346,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       );
 
       await invalidateHistory(userId);
+
+      // First reference (§6.2/§9): transacting on an asset warms its daily
+      // history so the value-over-time series has closes to plot — seeded and
+      // enrichment-upserted catalog rows get their backfill here. Best-effort.
+      for (const assetId of assetIds) {
+        await referenceBackfill.ensureHistory(assetId);
+      }
 
       return inserted.map((r) => {
         const asset = assetsById.get(r.assetId);

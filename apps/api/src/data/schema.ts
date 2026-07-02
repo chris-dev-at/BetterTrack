@@ -1,8 +1,9 @@
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import {
   boolean,
   char,
   check,
+  customType,
   date,
   index,
   integer,
@@ -89,6 +90,16 @@ export const auditLog = pgTable(
 
 // --- Market data: assets & price history ---------------------------------
 
+/**
+ * Postgres `tsvector` for the catalog's full-text column (§5.5). Drizzle has no
+ * built-in type; the column is DB-generated, so the app only ever reads it.
+ */
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return 'tsvector';
+  },
+});
+
 export const assetTypeEnum = pgEnum('asset_type', [
   'stock',
   'etf',
@@ -113,9 +124,22 @@ export const assets = pgTable(
     exchange: text('exchange'),
     currency: char('currency', { length: 3 }).notNull(),
     meta: jsonb('meta'),
+    // Local search catalog (§5.5, §6.2): full-text document over symbol + name,
+    // maintained by Postgres itself so it can never drift from the row.
+    searchText: tsvector('search_text').generatedAlwaysAs(
+      (): SQL => sql`to_tsvector('simple', ${assets.symbol} || ' ' || ${assets.name})`,
+    ),
   },
   (t) => [
     uniqueIndex('assets_provider_owner_unique').on(t.providerId, t.providerRef, t.ownerId),
+    // §5.5 search indexes: GIN over the generated tsvector for word matches, and
+    // a trigram GIN over (symbol, name) so misspellings ("bayr") still resolve.
+    index('assets_search_text_gin').using('gin', t.searchText),
+    index('assets_symbol_name_trgm_gin').using(
+      'gin',
+      t.symbol.op('gin_trgm_ops'),
+      t.name.op('gin_trgm_ops'),
+    ),
     // §5.5 intends one global row per (provider, ref) for market assets, but a
     // plain UNIQUE over (provider_id, provider_ref, owner_id) does NOT enforce
     // it: Postgres treats NULLs as distinct, so NULL owner_id rows never collide.

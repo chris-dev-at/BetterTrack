@@ -9,7 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
-import { createStubMarketData } from '../testing/marketDataStubs';
+import { createRecordingBackfill, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -467,5 +467,50 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     for (const point of res.body.points) {
       expect(point.valueEur).toBeCloseTo(200, 6);
     }
+  });
+});
+
+describe('first-reference history backfill (§6.2/§9)', () => {
+  it('creating transactions enqueues one backfill per distinct history-less asset', async () => {
+    const backfill = createRecordingBackfill();
+    const h = await createTestApp({ marketData: createStubMarketData(), backfill });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    // Seeded catalog rows: present in `assets`, no `price_history` yet.
+    const bayer = await seedAsset(h);
+    const apple = await seedAsset(h, { symbol: 'AAPL', providerRef: 'AAPL', currency: 'USD' });
+
+    const res = await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({
+        transactions: [
+          { assetId: bayer.id, side: 'buy', quantity: 2, price: 50, executedAt: tsOffset(-3) },
+          { assetId: bayer.id, side: 'buy', quantity: 1, price: 55, executedAt: tsOffset(-2) },
+          { assetId: apple.id, side: 'buy', quantity: 4, price: 100, executedAt: tsOffset(-2) },
+        ],
+      });
+
+    expect(res.status).toBe(201);
+    expect([...backfill.enqueued].sort()).toEqual([bayer.id, apple.id].sort());
+  });
+
+  it('transacting on an asset that already has price history does not enqueue', async () => {
+    const backfill = createRecordingBackfill();
+    const h = await createTestApp({ marketData: createStubMarketData(), backfill });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const asset = await seedAsset(h);
+    await h.db
+      .insert(schema.priceHistory)
+      .values({ assetId: asset.id, date: dayOffset(-10), close: '48' });
+
+    const res = await agent
+      .post('/api/v1/portfolio/transactions')
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 50, executedAt: tsOffset(-3) });
+
+    expect(res.status).toBe(201);
+    expect(backfill.enqueued).toEqual([]);
   });
 });

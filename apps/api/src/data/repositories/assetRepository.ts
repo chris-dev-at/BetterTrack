@@ -1,7 +1,7 @@
-import { and, eq, ilike, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, ilike, isNull, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { assets } from '../schema';
+import { assets, priceHistory } from '../schema';
 import type { AssetRow } from '../schema';
 
 /**
@@ -13,8 +13,15 @@ import type { AssetRow } from '../schema';
  *  - a **custom asset** (`owner_id = user`) is readable only by its owner.
  */
 
-/** A custom-asset search match scoped to its owner (§6.2). */
-export interface CustomAssetMatch {
+/**
+ * Trigram floor for the fuzzy tier (§6.2): pg_trgm's default cutoff. Below it a
+ * match is noise ("bay" vs "Deutsche Telekom"), at/above it a near-miss like
+ * "bayr" → BAYN.DE still resolves.
+ */
+export const FUZZY_SIMILARITY_THRESHOLD = 0.3;
+
+/** One ranked hit from the local catalog (§6.2): a global market asset or the caller's own custom asset. */
+export interface CatalogSearchMatch {
   id: string;
   providerId: string;
   providerRef: string;
@@ -23,6 +30,8 @@ export interface CustomAssetMatch {
   exchange: string | null;
   currency: string;
   type: AssetRow['type'];
+  /** NULL = global market asset; the caller's id = their custom asset. */
+  ownerId: string | null;
 }
 
 /** The shape a first-touch upsert needs from a provider search result (§6.2). */
@@ -60,10 +69,40 @@ export function createAssetRepository(db: Database) {
     },
 
     /**
-     * The caller's own custom assets whose name matches `query`
-     * (case-insensitive substring), ordered by name (§6.2). Owner-scoped.
+     * Ranked local-catalog search (§6.2): one Postgres round-trip over the
+     * caller's visible assets — every global market asset plus their own custom
+     * assets (another user's custom assets are invisible by construction, §10).
+     *
+     * A row qualifies through any of four tiers, and is ranked by the best tier
+     * it hits: exact symbol (0) → symbol prefix (1) → name word/substring (2) →
+     * trigram fuzzy (3). Ties break on trigram similarity, then name, so the
+     * closest spelling wins within a tier. All tiers are case-insensitive and
+     * LIKE wildcards in the query are treated literally.
+     *
+     * Plan note: this is a deliberate sequential scan. The OR of four match
+     * arms defeats index use regardless of the fuzzy arm — `upper(symbol) LIKE`
+     * has no expression index, and `similarity() >= τ` (unlike the `%` operator,
+     * whose threshold lives in the `pg_trgm.similarity_threshold` GUC) is not
+     * index-supported. At self-hosted catalog scale (thousands of rows, LIMIT
+     * ~20) that's sub-millisecond; revisit with `%` + an expression index on
+     * `upper(symbol)` only if the catalog grows orders of magnitude.
      */
-    async searchCustomByName(userId: string, query: string): Promise<CustomAssetMatch[]> {
+    async searchCatalog(
+      userId: string,
+      query: string,
+      limit: number,
+    ): Promise<CatalogSearchMatch[]> {
+      const prefix = `${escapeLike(query)}%`;
+      const substring = `%${escapeLike(query)}%`;
+      const similarity = sql<number>`greatest(similarity(${assets.symbol}, ${query}), similarity(${assets.name}, ${query}))`;
+      const rank = sql<number>`case
+        when upper(${assets.symbol}) = upper(${query}) then 0
+        when upper(${assets.symbol}) like upper(${prefix}) then 1
+        when ${assets.name} ilike ${substring}
+          or ${assets.searchText} @@ plainto_tsquery('simple', ${query}) then 2
+        else 3
+      end`;
+
       const rows = await db
         .select({
           id: assets.id,
@@ -74,11 +113,24 @@ export function createAssetRepository(db: Database) {
           exchange: assets.exchange,
           currency: assets.currency,
           type: assets.type,
+          ownerId: assets.ownerId,
         })
         .from(assets)
-        .where(and(eq(assets.ownerId, userId), ilike(assets.name, `%${escapeLike(query)}%`)))
-        .orderBy(assets.name);
-      return rows.map((r) => ({ ...r, exchange: r.exchange ?? null }));
+        .where(
+          and(
+            or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+            or(
+              sql`upper(${assets.symbol}) like upper(${prefix})`,
+              ilike(assets.name, substring),
+              sql`${assets.searchText} @@ plainto_tsquery('simple', ${query})`,
+              sql`${similarity} >= ${FUZZY_SIMILARITY_THRESHOLD}`,
+            ),
+          ),
+        )
+        .orderBy(rank, desc(similarity), assets.name)
+        .limit(limit);
+
+      return rows.map((r) => ({ ...r, exchange: r.exchange ?? null, ownerId: r.ownerId ?? null }));
     },
 
     /**
@@ -114,6 +166,20 @@ export function createAssetRepository(db: Database) {
         throw new Error('Global asset upsert found no row after conflict');
       }
       return { row: existing, created: false };
+    },
+
+    /**
+     * Whether at least one `price_history` row exists for this asset — the
+     * emptiness probe behind the first-reference backfill trigger (§6.2/§9,
+     * `services/assets/referenceBackfill.ts`).
+     */
+    async hasPriceHistory(assetId: string): Promise<boolean> {
+      const rows = await db
+        .select({ assetId: priceHistory.assetId })
+        .from(priceHistory)
+        .where(eq(priceHistory.assetId, assetId))
+        .limit(1);
+      return rows.length > 0;
     },
 
     /** The global (owner-less) asset for a provider ref, or null. */

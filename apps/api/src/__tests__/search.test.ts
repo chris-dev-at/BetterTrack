@@ -27,6 +27,27 @@ async function loginAgent(app: Application, identifier: string, password: string
   return agent;
 }
 
+/** Insert a global (owner-less) catalog row directly, as the seed/enrichment would. */
+async function seedCatalogAsset(
+  h: TestHarness,
+  input: { symbol: string; name: string; providerRef?: string },
+): Promise<string> {
+  const [row] = await h.db
+    .insert(schema.assets)
+    .values({
+      providerId: 'yahoo',
+      providerRef: input.providerRef ?? input.symbol,
+      ownerId: null,
+      type: 'stock',
+      symbol: input.symbol,
+      name: input.name,
+      exchange: 'XETRA',
+      currency: 'EUR',
+    })
+    .returning();
+  return row!.id;
+}
+
 /** Count asset rows for a provider ref (global market assets in these tests). */
 async function countGlobal(h: TestHarness, providerRef: string): Promise<number> {
   const rows = await h.db
@@ -59,164 +80,152 @@ describe('GET /api/v1/search', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
-  it('merges provider results with the caller’s matching custom assets', async () => {
+  it.each(['bayer', 'bay', 'bayr', 'BAYN'])(
+    'answers %j with BAYN.DE from the catalog with zero synchronous provider calls',
+    async (q) => {
+      // A provider that never answers: if the response depended on any
+      // synchronous provider round-trip, the request would hang and time out.
+      const marketData = createStubMarketData({
+        search: () => new Promise<never>(() => undefined),
+      });
+      const h = await createTestApp({ marketData, backfill });
+      await seedCatalogAsset(h, { symbol: 'BAYN.DE', name: 'Bayer AG' });
+      await seedCatalogAsset(h, { symbol: 'AAPL', name: 'Apple Inc.' });
+      await seedCatalogAsset(h, { symbol: 'SAP.DE', name: 'SAP SE' });
+
+      const user = await h.seedUser();
+      const agent = await loginAgent(h.app, user.email, user.password);
+
+      const res = await agent.get(`/api/v1/search?q=${encodeURIComponent(q)}`);
+      expect(res.status).toBe(200);
+
+      const parsed = searchResponseSchema.safeParse(res.body);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) return;
+      expect(parsed.data.results[0]?.symbol).toBe('BAYN.DE');
+    },
+  );
+
+  it('resolves a misspelled query via the trigram index where a provider would 404', async () => {
+    // The provider hard-fails on the misspelling — no error may surface (§6.2).
     const marketData = createStubMarketData({
-      search: () => [
-        providerHit({ providerRef: 'AAPL', symbol: 'AAPL', name: 'Apple Inc.' }),
-        providerHit({ providerRef: 'MSFT', symbol: 'MSFT', name: 'Microsoft' }),
-      ],
+      search: () => {
+        throw new Error('provider 404: no symbol BAYR');
+      },
     });
     const h = await createTestApp({ marketData, backfill });
+    await seedCatalogAsset(h, { symbol: 'BAYN.DE', name: 'Bayer AG' });
+
     const user = await h.seedUser();
-
-    // A custom asset of this user whose name matches the query.
-    const [custom] = await h.db
-      .insert(schema.assets)
-      .values({
-        providerId: 'manual',
-        providerRef: 'custom-apple-house',
-        ownerId: user.id,
-        type: 'custom',
-        symbol: 'HOUSE',
-        name: 'Apple Street House',
-        currency: 'EUR',
-      })
-      .returning();
-
     const agent = await loginAgent(h.app, user.email, user.password);
-    const res = await agent.get('/api/v1/search?q=apple');
+
+    const res = await agent.get('/api/v1/search?q=bayr');
     expect(res.status).toBe(200);
+    expect(res.body.results[0]?.symbol).toBe('BAYN.DE');
 
-    const parsed = searchResponseSchema.safeParse(res.body);
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) return;
-
-    const results = parsed.data.results;
-    // Two provider hits + one custom match.
-    expect(results).toHaveLength(3);
-
-    const market = results.filter((r) => !r.isCustom);
-    const custom2 = results.filter((r) => r.isCustom);
-    expect(market.map((r) => r.symbol).sort()).toEqual(['AAPL', 'MSFT']);
-    expect(custom2).toHaveLength(1);
-    expect(custom2[0]!.id).toBe(custom!.id);
-    expect(custom2[0]!.name).toBe('Apple Street House');
-
-    // Every result carries a materialized asset id.
-    for (const r of results) expect(r.id).toMatch(/^[0-9a-f-]{36}$/);
+    // The background fallback failed silently; the API stays healthy.
+    await h.ctx.search.enrichmentSettled();
+    const again = await agent.get('/api/v1/search?q=bayr');
+    expect(again.status).toBe(200);
+    expect(again.body.results[0]?.symbol).toBe('BAYN.DE');
   });
 
-  it('first-touch upserts each provider hit and enqueues exactly one backfill', async () => {
+  it('on a catalog miss runs exactly one background provider search, upserts, and serves the follow-up from Postgres', async () => {
     const marketData = createStubMarketData({
-      search: () => [
-        providerHit({ providerRef: 'AAPL', symbol: 'AAPL', name: 'Apple Inc.' }),
-        providerHit({ providerRef: 'MSFT', symbol: 'MSFT', name: 'Microsoft' }),
-      ],
+      search: () => [providerHit({ providerRef: 'BAYN.DE', symbol: 'BAYN.DE', name: 'Bayer AG' })],
     });
     const h = await createTestApp({ marketData, backfill });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
 
-    const res = await agent.get('/api/v1/search?q=apple');
-    expect(res.status).toBe(200);
+    // Empty catalog: immediate empty answer, enrichment kicked off in the background.
+    const miss = await agent.get('/api/v1/search?q=bayn');
+    expect(miss.status).toBe(200);
+    expect(miss.body.results).toHaveLength(0);
+    expect(miss.body.enriching).toBe(true);
 
-    // One global row per provider ref, and one backfill enqueued per new asset.
-    expect(await countGlobal(h, 'AAPL')).toBe(1);
-    expect(await countGlobal(h, 'MSFT')).toBe(1);
-    expect(backfill.enqueued).toHaveLength(2);
+    await h.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(1);
+    expect(await countGlobal(h, 'BAYN.DE')).toBe(1);
+    // First touch: exactly one backfill for the newly created row.
+    expect(backfill.enqueued).toHaveLength(1);
 
-    // The enqueued ids are the materialized asset ids.
-    const ids = res.body.results.map((r: { id: string }) => r.id).sort();
-    expect([...backfill.enqueued].sort()).toEqual(ids);
-  });
-
-  it('is idempotent: a repeated search upserts no new rows and enqueues no new backfills', async () => {
-    const marketData = createStubMarketData({
-      search: () => [providerHit({ providerRef: 'AAPL', symbol: 'AAPL', name: 'Apple Inc.' })],
-    });
-    const h = await createTestApp({ marketData, backfill });
-    const user = await h.seedUser();
-    const agent = await loginAgent(h.app, user.email, user.password);
-
-    const first = await agent.get('/api/v1/search?q=apple');
-    expect(first.status).toBe(200);
-    const firstId = first.body.results[0].id as string;
-
-    const second = await agent.get('/api/v1/search?q=apple');
-    expect(second.status).toBe(200);
-    const secondId = second.body.results[0].id as string;
-
-    // Same row reused, no duplicate global asset, exactly one backfill total.
-    expect(secondId).toBe(firstId);
-    expect(await countGlobal(h, 'AAPL')).toBe(1);
-    expect(backfill.enqueued).toEqual([firstId]);
-  });
-
-  it('shares one global row across users and still enqueues only one backfill', async () => {
-    const marketData = createStubMarketData({
-      search: () => [providerHit({ providerRef: 'AAPL', symbol: 'AAPL', name: 'Apple Inc.' })],
-    });
-    const h = await createTestApp({ marketData, backfill });
-    const userA = await h.seedUser({ email: 'a@s.test', username: 'sa' });
-    const userB = await h.seedUser({ email: 'b@s.test', username: 'sb' });
-    const agentA = await loginAgent(h.app, userA.email, userA.password);
-    const agentB = await loginAgent(h.app, userB.email, userB.password);
-
-    const ra = await agentA.get('/api/v1/search?q=apple');
-    const rb = await agentB.get('/api/v1/search?q=apple');
-    expect(ra.body.results[0].id).toBe(rb.body.results[0].id);
-    expect(await countGlobal(h, 'AAPL')).toBe(1);
+    // Follow-up query ("Searching providers…" refetch): enriched rows from the
+    // catalog, no second provider search, and no further "still enriching" signal.
+    const hit = await agent.get('/api/v1/search?q=bayn');
+    expect(hit.status).toBe(200);
+    expect(hit.body.results.map((r: { symbol: string }) => r.symbol)).toEqual(['BAYN.DE']);
+    expect(hit.body.enriching).toBe(false);
+    expect(marketData.calls.search).toBe(1);
     expect(backfill.enqueued).toHaveLength(1);
   });
 
-  it('does not surface another user’s custom assets', async () => {
-    const h = await createTestApp({ marketData: createStubMarketData(), backfill });
+  it('coalesces concurrent catalog misses into one provider search', async () => {
+    const marketData = createStubMarketData({
+      search: () => [providerHit({ providerRef: 'TSLA', symbol: 'TSLA', name: 'Tesla, Inc.' })],
+    });
+    const h = await createTestApp({ marketData, backfill });
+    const user = await h.seedUser();
+
+    // Independent connections (not one keep-alive agent socket) so the five
+    // requests genuinely run concurrently.
+    const login = await request(h.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    expect(login.status).toBe(200);
+    const cookies = login.get('Set-Cookie') ?? [];
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        request(h.app).get('/api/v1/search?q=tesla').set('Cookie', cookies),
+      ),
+    );
+    for (const res of responses) expect(res.status).toBe(200);
+
+    await h.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(1);
+    expect(await countGlobal(h, 'TSLA')).toBe(1);
+    expect(backfill.enqueued).toHaveLength(1);
+  });
+
+  it('merges the caller’s custom assets and keeps them owner-scoped', async () => {
+    const marketData = createStubMarketData({ search: () => [] });
+    const h = await createTestApp({ marketData, backfill });
     const owner = await h.seedUser({ email: 'owner@s.test', username: 'owner' });
     const other = await h.seedUser({ email: 'other@s.test', username: 'other' });
 
+    await seedCatalogAsset(h, { symbol: 'AAPL', name: 'Apple Inc.' });
     await h.db.insert(schema.assets).values({
       providerId: 'manual',
-      providerRef: 'owner-apple',
+      providerRef: 'custom-apple-house',
       ownerId: owner.id,
       type: 'custom',
-      symbol: 'OWN',
-      name: 'Apple Private',
+      symbol: 'HOUSE',
+      name: 'Apple Street House',
       currency: 'EUR',
     });
 
-    const agent = await loginAgent(h.app, other.email, other.password);
-    const res = await agent.get('/api/v1/search?q=apple');
-    expect(res.status).toBe(200);
-    expect(res.body.results).toHaveLength(0);
+    const ownerAgent = await loginAgent(h.app, owner.email, owner.password);
+    const ownerRes = await ownerAgent.get('/api/v1/search?q=apple');
+    expect(ownerRes.status).toBe(200);
+    const ownerSymbols = ownerRes.body.results.map((r: { symbol: string }) => r.symbol);
+    expect(ownerSymbols).toEqual(['AAPL', 'HOUSE']);
+    const customHit = ownerRes.body.results.find((r: { isCustom: boolean }) => r.isCustom);
+    expect(customHit.name).toBe('Apple Street House');
+
+    // The other user sees the global row but never the owner's custom asset (§10).
+    const otherAgent = await loginAgent(h.app, other.email, other.password);
+    const otherRes = await otherAgent.get('/api/v1/search?q=apple');
+    expect(otherRes.status).toBe(200);
+    expect(otherRes.body.results.map((r: { symbol: string }) => r.symbol)).toEqual(['AAPL']);
   });
 
-  it('skips failing providers and returns only custom matches', async () => {
-    // marketData.search throwing models the service-level fan-out already having
-    // dropped a sick provider; here the whole fan-out yields nothing.
+  it('treats LIKE wildcards in the query literally', async () => {
     const marketData = createStubMarketData({ search: () => [] });
     const h = await createTestApp({ marketData, backfill });
     const user = await h.seedUser();
-    await h.db.insert(schema.assets).values({
-      providerId: 'manual',
-      providerRef: 'mine-apple',
-      ownerId: user.id,
-      type: 'custom',
-      symbol: 'MINE',
-      name: 'Apple Mine',
-      currency: 'EUR',
-    });
-
-    const agent = await loginAgent(h.app, user.email, user.password);
-    const res = await agent.get('/api/v1/search?q=apple');
-    expect(res.status).toBe(200);
-    expect(res.body.results).toHaveLength(1);
-    expect(res.body.results[0].isCustom).toBe(true);
-    expect(backfill.enqueued).toHaveLength(0);
-  });
-
-  it('does not match custom assets by an unrelated query (LIKE-escaped)', async () => {
-    const h = await createTestApp({ marketData: createStubMarketData(), backfill });
-    const user = await h.seedUser();
+    await seedCatalogAsset(h, { symbol: 'AAPL', name: 'Apple Inc.' });
     await h.db.insert(schema.assets).values({
       providerId: 'manual',
       providerRef: 'house-1',
@@ -232,5 +241,28 @@ describe('GET /api/v1/search', () => {
     const res = await agent.get('/api/v1/search?q=%25%25');
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(0);
+  });
+
+  it('does not re-run enrichment while the catalog answers well', async () => {
+    const marketData = createStubMarketData({
+      search: () => {
+        throw new Error('must not be called');
+      },
+    });
+    const h = await createTestApp({ marketData, backfill });
+    await seedCatalogAsset(h, { symbol: 'BAYN.DE', name: 'Bayer AG' });
+    await seedCatalogAsset(h, { symbol: 'BAYP', name: 'Bay Properties' });
+    await seedCatalogAsset(h, { symbol: 'BAYT', name: 'Bay Technologies' });
+
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/search?q=bay');
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(3);
+    expect(res.body.enriching).toBe(false);
+
+    await h.ctx.search.enrichmentSettled();
+    expect(marketData.calls.search).toBe(0);
   });
 });
