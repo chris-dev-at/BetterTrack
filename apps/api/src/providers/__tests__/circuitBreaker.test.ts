@@ -79,6 +79,28 @@ describe('CircuitBreaker', () => {
     await expect(breaker.execute(ok)).rejects.toBeInstanceOf(CircuitOpenError);
   });
 
+  it('trips open immediately on a failure matching tripImmediately (§5.3, upstream 429)', async () => {
+    const clock = fakeClock();
+    const rateLimited = Object.assign(new Error('HTTP 429'), { code: 429 });
+    const breaker = new CircuitBreaker('yahoo', {
+      failureThreshold: 5, // far from exhausted — the 429 alone must trip it
+      openMs: 1_000,
+      now: clock.now,
+      tripImmediately: (err) => (err as { code?: unknown }).code === 429,
+    });
+
+    await expect(breaker.execute(() => Promise.reject(rateLimited))).rejects.toThrowError(
+      'HTTP 429',
+    );
+    expect(breaker.getState()).toBe('open');
+
+    // Fails fast while open; recovers through the normal half-open probe.
+    await expect(breaker.execute(ok)).rejects.toBeInstanceOf(CircuitOpenError);
+    clock.advance(1_000);
+    await expect(breaker.execute(ok)).resolves.toBe('ok');
+    expect(breaker.getState()).toBe('closed');
+  });
+
   it('resets consecutive failures on a success', async () => {
     const breaker = new CircuitBreaker('p', { failureThreshold: 3 });
     await expect(breaker.execute(fail)).rejects.toThrowError();

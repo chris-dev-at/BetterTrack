@@ -68,6 +68,8 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
       calls.meta += 1;
       return meta(ref);
     },
+    // The stub has no cache, so there is never a background refresh to await.
+    async settled() {},
   };
 }
 

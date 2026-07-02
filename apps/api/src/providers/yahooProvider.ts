@@ -9,8 +9,9 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { AssetProvider } from './AssetProvider';
+import { AssetNotFoundError } from './errors';
 import { rangeStartMs } from './historyWindow';
-import { createRequestQueue, type RequestQueue } from './requestQueue';
+import { createRequestQueue, type RequestQueue, type RequestQueueOptions } from './requestQueue';
 import { currencyForSearchResult, mapAssetType, normalizeCurrency } from './yahooMapping';
 import type { YahooChartInterval, YahooClient } from './yahooClient';
 
@@ -41,8 +42,10 @@ const INTERVAL_MAP: Record<HistoryInterval, YahooChartInterval> = {
 export interface CreateYahooProviderDeps {
   /** The (real or stubbed) Yahoo client. Stubbed in tests — no live network. */
   client: YahooClient;
-  /** Outbound queue policy; defaults to the §5.2 concurrency-4 + backoff queue. */
+  /** Outbound queue policy; defaults to the §5.2/§5.3 concurrency + spacing + backoff queue. */
   queue?: RequestQueue;
+  /** Tuning for the default queue (per-provider budget, §5.3); ignored when `queue` is given. */
+  queueOptions?: RequestQueueOptions;
   /** Injectable clock (tests) used to derive history windows. */
   now?: () => number;
 }
@@ -60,7 +63,7 @@ function toIso(value: Date | number | string | undefined, fallbackMs: number): s
 
 export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvider {
   const { client } = deps;
-  const queue = deps.queue ?? createRequestQueue();
+  const queue = deps.queue ?? createRequestQueue(deps.queueOptions);
   const now = deps.now ?? Date.now;
 
   async function search(query: string): Promise<AssetSearchResult[]> {
@@ -89,7 +92,10 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
   async function getQuote(ref: AssetRef): Promise<Quote> {
     const q = await queue.run(() => client.quote(ref.providerRef));
     if (typeof q.regularMarketPrice !== 'number') {
-      throw new Error(`Yahoo returned no price for "${ref.providerRef}"`);
+      // A priceless quote means the symbol is unknown/delisted — a definitive
+      // answer, negative-cached per §5.3 (vs. a transient failure, which throws
+      // from the client itself).
+      throw new AssetNotFoundError(`Yahoo returned no price for "${ref.providerRef}"`);
     }
     const { code, priceScale } = normalizeCurrency(q.currency);
     const price = q.regularMarketPrice * priceScale;

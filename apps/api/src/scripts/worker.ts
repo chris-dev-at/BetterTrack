@@ -44,7 +44,14 @@ const registry = createQueueRegistry(createConnection());
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
 const marketDataConnection = createConnection();
-const { service: marketData } = createMarketData({ db, redis: marketDataConnection });
+const { service: marketData } = createMarketData({
+  db,
+  redis: marketDataConnection,
+  queueOptions: {
+    concurrency: config.providers.maxConcurrency,
+    minSpacingMs: config.providers.minSpacingMs,
+  },
+});
 const definitions = createJobDefinitions({ db, marketData });
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

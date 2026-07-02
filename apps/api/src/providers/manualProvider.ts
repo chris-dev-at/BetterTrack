@@ -204,5 +204,7 @@ export function createManualProvider(deps: CreateManualProviderDeps): AssetProvi
     };
   }
 
-  return { id: PROVIDER_ID, search, getQuote, getHistory, getMeta };
+  // `local: true`: values live in our own DB, so the market-data service skips
+  // the §5.3 TTL/negative caching — an edited value point is visible immediately.
+  return { id: PROVIDER_ID, local: true, search, getQuote, getHistory, getMeta };
 }

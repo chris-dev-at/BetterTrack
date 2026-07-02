@@ -9,6 +9,7 @@ import {
   type MarketDataServiceOptions,
 } from './marketDataService';
 import { createProviderRegistry, type ProviderRegistry } from './registry';
+import type { RequestQueueOptions } from './requestQueue';
 import { createYahooClient, type YahooClient } from './yahooClient';
 import { createYahooProvider } from './yahooProvider';
 
@@ -23,6 +24,8 @@ export interface CreateMarketDataDeps {
   redis: Redis;
   /** Test seam: inject a stubbed Yahoo client; defaults to the live one. */
   yahooClient?: YahooClient;
+  /** Per-provider request budget (concurrency + spacing, §5.3), from config §11. */
+  queueOptions?: RequestQueueOptions;
   options?: MarketDataServiceOptions;
 }
 
@@ -32,7 +35,10 @@ export interface MarketData {
 }
 
 export function createMarketData(deps: CreateMarketDataDeps): MarketData {
-  const yahoo = createYahooProvider({ client: deps.yahooClient ?? createYahooClient() });
+  const yahoo = createYahooProvider({
+    client: deps.yahooClient ?? createYahooClient(),
+    queueOptions: deps.queueOptions,
+  });
   const manual = createManualProvider({ source: createManualAssetSource(deps.db) });
   const registry = createProviderRegistry([yahoo, manual]);
   const service = createMarketDataService({

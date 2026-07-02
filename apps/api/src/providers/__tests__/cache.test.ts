@@ -2,7 +2,15 @@ import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { cacheKey, createMarketCache, freshCacheKey, staleCacheKey } from '../cache';
+import {
+  cacheKey,
+  createMarketCache,
+  freshCacheKey,
+  loadLockKey,
+  negativeCacheKey,
+  staleCacheKey,
+} from '../cache';
+import { AssetNotFoundError } from '../errors';
 
 import { createDeferred } from './fakeProvider';
 
@@ -22,7 +30,7 @@ describe('cacheKey', () => {
   });
 });
 
-describe('MarketCache.getOrLoad', () => {
+describe('MarketCache.getOrLoad — hit/miss/coalesce', () => {
   it('loads on a miss, then serves a cached hit without calling the loader again', async () => {
     const cache = createMarketCache(redis);
     let calls = 0;
@@ -68,28 +76,6 @@ describe('MarketCache.getOrLoad', () => {
     expect(calls).toBe(1);
   });
 
-  it('serves the stale copy marked stale:true when the loader fails after expiry', async () => {
-    const cache = createMarketCache(redis);
-
-    await cache.getOrLoad({
-      key: KEY,
-      ttlSeconds: 60,
-      loader: () => Promise.resolve({ price: 100 }),
-    });
-
-    // Simulate the fresh TTL expiring while the long-lived stale copy remains.
-    await redis.del(freshCacheKey(KEY));
-    expect(await redis.get(staleCacheKey(KEY))).not.toBeNull();
-
-    const result = await cache.getOrLoad({
-      key: KEY,
-      ttlSeconds: 60,
-      loader: () => Promise.reject(new Error('upstream down')),
-    });
-
-    expect(result).toMatchObject({ value: { price: 100 }, stale: true });
-  });
-
   it('propagates the error when the loader fails and there is no stale copy', async () => {
     const cache = createMarketCache(redis);
     await expect(
@@ -115,5 +101,230 @@ describe('MarketCache.getOrLoad', () => {
     expect(freshTtl).toBeGreaterThan(0);
     expect(freshTtl).toBeLessThanOrEqual(60);
     expect(staleTtl).toBeGreaterThan(freshTtl);
+  });
+});
+
+describe('MarketCache — serve-stale-while-revalidate (§5.3)', () => {
+  it('serves an expired entry immediately marked stale while ONE background refresh runs', async () => {
+    const cache = createMarketCache(redis);
+    let calls = 0;
+    await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        calls += 1;
+        return Promise.resolve({ price: 100 });
+      },
+    });
+
+    // Simulate the fresh TTL expiring while the long-lived stale copy remains.
+    await redis.del(freshCacheKey(KEY));
+
+    const deferred = createDeferred<{ price: number }>();
+    const slowLoader = () => {
+      calls += 1;
+      return deferred.promise;
+    };
+
+    // Three concurrent requests on the expired entry: all get the stale copy
+    // immediately (no thundering herd), exactly one refresh goes upstream.
+    const results = await Promise.all([
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader: slowLoader }),
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader: slowLoader }),
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader: slowLoader }),
+    ]);
+    for (const r of results) {
+      expect(r).toMatchObject({ value: { price: 100 }, stale: true });
+    }
+
+    deferred.resolve({ price: 105 });
+    await cache.settled();
+    expect(calls).toBe(2); // initial load + exactly one background refresh
+
+    // The refresh repopulated the fresh copy: next read is fresh, no load.
+    const after = await cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader: slowLoader });
+    expect(after).toMatchObject({ value: { price: 105 }, stale: false });
+    expect(calls).toBe(2);
+  });
+
+  it('keeps serving stale (never errors) when the background refresh fails', async () => {
+    const cache = createMarketCache(redis);
+    await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => Promise.resolve({ price: 100 }),
+    });
+    await redis.del(freshCacheKey(KEY));
+
+    const result = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => Promise.reject(new Error('upstream down')),
+    });
+    expect(result).toMatchObject({ value: { price: 100 }, stale: true });
+
+    // The failed refresh is swallowed; the stale copy is still served.
+    await cache.settled();
+    const again = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => Promise.reject(new Error('upstream down')),
+    });
+    expect(again).toMatchObject({ value: { price: 100 }, stale: true });
+    await cache.settled();
+  });
+
+  it('skips revalidation entirely while shouldRevalidate is false (TTL stretch)', async () => {
+    const cache = createMarketCache(redis);
+    let calls = 0;
+    const loader = () => {
+      calls += 1;
+      return Promise.resolve({ price: calls });
+    };
+    await cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader });
+    await redis.del(freshCacheKey(KEY));
+
+    const result = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader,
+      shouldRevalidate: () => false,
+    });
+    await cache.settled();
+
+    expect(result).toMatchObject({ value: { price: 1 }, stale: true });
+    expect(calls).toBe(1); // no upstream attempt at all while the gate is closed
+  });
+});
+
+describe('MarketCache — negative caching (§5.3)', () => {
+  const isNotFound = (err: unknown) => err instanceof AssetNotFoundError;
+
+  it('caches a not-found answer; repeated lookups make no further upstream calls', async () => {
+    const cache = createMarketCache(redis);
+    let calls = 0;
+    const loader = () => {
+      calls += 1;
+      return Promise.reject(new AssetNotFoundError('unknown symbol "NOPE"'));
+    };
+
+    await expect(
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader, isNotFound }),
+    ).rejects.toThrowError('unknown symbol "NOPE"');
+    expect(calls).toBe(1);
+
+    // The negative entry is in Redis with the §5.3 ~15 min window.
+    const negTtl = await redis.ttl(negativeCacheKey(KEY));
+    expect(negTtl).toBeGreaterThan(0);
+    expect(negTtl).toBeLessThanOrEqual(15 * 60);
+
+    // Within the window: same error, zero upstream calls.
+    await expect(
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader, isNotFound }),
+    ).rejects.toMatchObject({ name: 'AssetNotFoundError', fromNegativeCache: true });
+    expect(calls).toBe(1);
+
+    // Window over (entry dropped): the loader is consulted again.
+    await redis.del(negativeCacheKey(KEY));
+    await expect(
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader, isNotFound }),
+    ).rejects.toThrowError();
+    expect(calls).toBe(2);
+  });
+
+  it('does not negative-cache transient failures', async () => {
+    const cache = createMarketCache(redis);
+    let calls = 0;
+    const loader = () => {
+      calls += 1;
+      return Promise.reject(new Error('timeout'));
+    };
+
+    await expect(
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader, isNotFound }),
+    ).rejects.toThrowError('timeout');
+    expect(await redis.exists(negativeCacheKey(KEY))).toBe(0);
+
+    await expect(
+      cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader, isNotFound }),
+    ).rejects.toThrowError('timeout');
+    expect(calls).toBe(2); // retried — transient errors must not stick
+  });
+
+  it('blocks background revalidation while a negative window is live', async () => {
+    const cache = createMarketCache(redis);
+    let calls = 0;
+    const loader = () => {
+      calls += 1;
+      return Promise.resolve({ price: 1 });
+    };
+    await cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader });
+    await redis.del(freshCacheKey(KEY));
+    // A delisting: upstream said "gone" recently, stale copy still retained.
+    await redis.set(negativeCacheKey(KEY), JSON.stringify({ message: 'gone', asOf: 1 }), 'EX', 900);
+
+    const result = await cache.getOrLoad({ key: KEY, ttlSeconds: 60, loader });
+    await cache.settled();
+
+    expect(result).toMatchObject({ value: { price: 1 }, stale: true });
+    expect(calls).toBe(1); // the negative window suppressed the refresh
+  });
+});
+
+describe('MarketCache — cross-process coalescing (§5.3 Redis lock)', () => {
+  it('a second process awaiting the same cold miss reuses the winner’s result', async () => {
+    // Two cache instances over the shared mock store = two processes.
+    const winner = createMarketCache(redis, { pollIntervalMs: 5 });
+    const loser = createMarketCache(redis, { pollIntervalMs: 5 });
+
+    const deferred = createDeferred<{ price: number }>();
+    let winnerCalls = 0;
+    let loserCalls = 0;
+
+    const winnerResult = winner.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        winnerCalls += 1;
+        return deferred.promise;
+      },
+    });
+    // Give the winner a beat to take the Redis lock before the loser arrives.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await redis.exists(loadLockKey(KEY))).toBe(1);
+
+    const loserResult = loser.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        loserCalls += 1;
+        return Promise.resolve({ price: -1 });
+      },
+    });
+
+    deferred.resolve({ price: 42 });
+    expect(await winnerResult).toMatchObject({ value: { price: 42 }, stale: false });
+    expect(await loserResult).toMatchObject({ value: { price: 42 }, stale: false });
+    expect(winnerCalls).toBe(1);
+    expect(loserCalls).toBe(0); // exactly one upstream fetch across both processes
+  });
+
+  it('a lock loser falls back to loading itself when the winner never produces a result', async () => {
+    const cache = createMarketCache(redis, { lockTtlMs: 60, pollIntervalMs: 10 });
+    // A dead process left a lock behind and will never write a value.
+    await redis.set(loadLockKey(KEY), 'stale-lock-of-dead-process', 'PX', 10_000);
+
+    let calls = 0;
+    const result = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        calls += 1;
+        return Promise.resolve({ price: 9 });
+      },
+    });
+
+    expect(result).toMatchObject({ value: { price: 9 }, stale: false });
+    expect(calls).toBe(1); // progress guaranteed despite the stuck lock
   });
 });
