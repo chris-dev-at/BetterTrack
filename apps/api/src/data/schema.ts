@@ -42,6 +42,11 @@ export const users = pgTable(
     role: userRoleEnum('role').notNull().default('user'),
     status: userStatusEnum('status').notNull().default('active'),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
+    // Optional PIN gate (§6.1, §5.5): when enabled the user re-enters this
+    // argon2id-hashed code to resume a session, which renews its 30-day window.
+    // NULL hash = no PIN set; the enabled flag and hash always move together.
+    pinHash: text('pin_hash'),
+    pinEnabled: boolean('pin_enabled').notNull().default(false),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -51,6 +56,35 @@ export const users = pgTable(
     // Email is stored lowercased; username uniqueness is case-insensitive.
     uniqueIndex('users_email_unique').on(t.email),
     uniqueIndex('users_username_lower_unique').on(sql`lower(${t.username})`),
+  ],
+);
+
+/**
+ * Personal API keys (PROJECTPLAN.md §5.5, §6.1). Issuance/OAuth is post-v1
+ * (§6.13, §14) — this table exists schema-only so the invariant is fixed from
+ * day one: **API keys never expire.** They are revoke-only — there is
+ * deliberately NO `expires_at` column; access ends solely when `revoked_at` is
+ * set (or the owning user is deleted). Session-expiry logic lives entirely in
+ * Redis and never touches this table, so a 30-day session lapse can never
+ * expire a key. Only the argon2id-style token *hash* is stored, never the token.
+ */
+export const apiKeys = pgTable(
+  'api_keys',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: varchar('name', { length: 80 }).notNull(),
+    tokenHash: text('token_hash').notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    // Revoke-only lifecycle: set to end access. No expiry counterpart exists.
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('api_keys_token_hash_unique').on(t.tokenHash),
+    index('api_keys_user_idx').on(t.userId),
   ],
 );
 
@@ -333,6 +367,7 @@ export const transactions = pgTable(
 
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
+export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
@@ -349,6 +384,7 @@ export type TransactionRow = typeof transactions.$inferSelect;
 
 export const schema = {
   users,
+  apiKeys,
   invites,
   auditLog,
   assets,

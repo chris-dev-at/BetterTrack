@@ -8,6 +8,7 @@ import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
 import { InvitePage } from './auth/InvitePage';
 import { LoginPage } from './auth/LoginPage';
+import { PinGate } from './auth/PinGate';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
 import { WorkboardPage } from './workboard/WorkboardPage';
@@ -70,6 +71,10 @@ function UserShell() {
 
   if (status === 'loading') return <Splash label="Loading…" />;
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
+  // PIN gate wraps the whole app while a PIN-enabled account hasn't been
+  // unlocked this browsing session (§6.1) — the trap sits above routing, so no
+  // /pin URL is needed and deep links resolve only after the PIN clears.
+  if (status === 'pin-required') return <PinGate />;
 
   return (
     <Routes>

@@ -4,10 +4,14 @@ import {
   acceptInviteRequestSchema,
   changePasswordRequestSchema,
   loginRequestSchema,
+  pinVerifyRequestSchema,
+  setPinRequestSchema,
   tokenParamSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type LoginRequest,
+  type PinVerifyRequest,
+  type SetPinRequest,
 } from '@bettertrack/contracts';
 
 import { clearSessionCookie, setSessionCookie } from '../cookies';
@@ -56,6 +60,42 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       res.json(toMeResponseFromRow(user));
     },
   );
+
+  // ── PIN gate (§6.1, §8) ────────────────────────────────────────────────────
+  // Verify is rate-limited on the login schedule (per-IP) since it is a
+  // credential check; the auth service also falls the session back to full
+  // login after 5 consecutive wrong PINs.
+  router.post(
+    '/pin/verify',
+    requireAuth,
+    limiters.login,
+    validateBody(pinVerifyRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as PinVerifyRequest;
+      const user = await ctx.auth.verifyPin({
+        userId: req.authUser!.id,
+        sessionId: req.sessionId!,
+        pin: body.pin,
+        ip: req.ip,
+      });
+      // The 30-day window was renewed; refresh the cookie's max-age to match.
+      setSessionCookie(res, ctx.config, req.sessionId!);
+      res.json(toMeResponseFromRow(user));
+    },
+  );
+
+  // Enable or change the PIN.
+  router.put('/pin', requireAuth, validateBody(setPinRequestSchema), async (req, res) => {
+    const body = req.valid?.body as SetPinRequest;
+    const user = await ctx.auth.setPin(req.authUser!.id, body.pin, req.ip);
+    res.json(toMeResponseFromRow(user));
+  });
+
+  // Disable the PIN.
+  router.delete('/pin', requireAuth, async (req, res) => {
+    const user = await ctx.auth.disablePin(req.authUser!.id, req.ip);
+    res.json(toMeResponseFromRow(user));
+  });
 
   router.get('/invite/:token', validateParams(tokenParamSchema), async (req, res) => {
     const { token } = req.valid?.params as { token: string };
