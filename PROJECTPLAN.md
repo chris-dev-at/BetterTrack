@@ -767,6 +767,7 @@ The intentional parking lot — scoped out of V1, designed-for in V1. Roughly or
 
 **Portfolio & finance**
 - Broker CSV imports (Trade Republic, George, Flatex, IBKR mappers); FIFO/tax-lot accounting + realized P/L & dividend reports (AT tax view); dividends as cash-flow transactions; daily snapshot table; benchmark-vs-portfolio overlay; per-user base currency (currencyService is already parameterized).
+- **Buy-price → date lookup** (owner idea, 2026-07-02): in the "price + invested amount" transaction entry mode (#109), optionally search the asset's price history backwards for the most recent time it traded at the entered buy price and suggest that as the transaction date (with a hint when the price crossed that level multiple times).
 - **Personal finance / expense tracking** (larger future direction): upload bank-transaction CSVs → categorized spending analytics (by category/month), budgets, personal finance dashboard; later bank APIs and automatic import.
 
 **Market data & assets**
