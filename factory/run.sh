@@ -274,11 +274,25 @@ while true; do
   merged=0
   if gh pr merge "$pr" --squash --delete-branch; then merged=1; else
     # The repo requires branches up to date with base; if main moved during this
-    # cycle the merge fails as BEHIND. Update the branch, let the new checks
-    # register, re-gate on CI, and retry once before involving a human.
+    # cycle the merge fails as BEHIND. Update the branch and re-gate — but
+    # GitHub's update-branch push does not always trigger workflows (0 check
+    # runs on the new head ⇒ the required check can never report and the PR
+    # blocks forever), and the checks rollup lags briefly after the head moves.
+    # So: update, poll the new head's actual check runs, kick CI via
+    # close/reopen if none appear, then gate and retry the merge once.
     log "merge failed — updating branch, re-gating CI, retrying once"
-    if gh pr update-branch "$pr" && sleep 15 \
-       && gh pr checks "$pr" --watch --fail-fast \
+    gh pr update-branch "$pr" >/dev/null 2>&1 || true
+    sleep 20
+    head=$(gh pr view "$pr" --json headRefOid -q .headRefOid)
+    for i in 1 2 3 4 5 6; do
+      [ "$(gh api "repos/$REPO/commits/$head/check-runs" --jq .total_count 2>/dev/null || echo 0)" != "0" ] && break
+      if [ "$i" = "3" ]; then
+        log "no CI on updated head — close/reopen PR #$pr to trigger workflows"
+        gh pr close "$pr" >/dev/null 2>&1 && sleep 5 && gh pr reopen "$pr" >/dev/null 2>&1 || true
+      fi
+      sleep 30
+    done
+    if gh pr checks "$pr" --watch --fail-fast \
        && gh pr merge "$pr" --squash --delete-branch; then merged=1; fi
   fi
   if [ "$merged" -eq 1 ]; then
