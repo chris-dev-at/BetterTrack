@@ -386,6 +386,53 @@ describe('PUT /api/v1/conglomerates/:id/positions', () => {
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('ASSET_NOT_FOUND');
   });
+
+  it("returns 404 (nothing leaks) for another owner's private custom asset (§8, §10)", async () => {
+    const owner = await harness.seedUser({ email: 'owner@bettertrack.test', username: 'owner' });
+    const other = await harness.seedUser({ email: 'other@bettertrack.test', username: 'other' });
+    // A private custom asset belonging to `other` (house / vehicle / unlisted).
+    const foreign = await seedAsset(harness, {
+      symbol: 'HOUSE',
+      name: 'Other user house',
+      type: 'custom',
+      providerId: 'manual',
+      providerRef: `custom-${other.id}`,
+      ownerId: other.id,
+    });
+
+    const agent = await loginAgent(harness.app, owner.email, owner.password);
+    const created = await createConglomerate(agent, 'Leaky');
+    const res = await agent
+      .put(`/api/v1/conglomerates/${created.body.id}/positions`)
+      .set(...XRW)
+      .send({ positions: [{ assetId: foreign.id, weightPct: 100 }] });
+
+    // Treated exactly like a non-existent asset — the asset's identity is never embedded.
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('ASSET_NOT_FOUND');
+  });
+
+  it("accepts the caller's own custom asset in a position", async () => {
+    const owner = await harness.seedUser({ email: 'owner@bettertrack.test', username: 'owner' });
+    const mine = await seedAsset(harness, {
+      symbol: 'MYCAR',
+      name: 'My car',
+      type: 'custom',
+      providerId: 'manual',
+      providerRef: `custom-${owner.id}`,
+      ownerId: owner.id,
+    });
+
+    const agent = await loginAgent(harness.app, owner.email, owner.password);
+    const created = await createConglomerate(agent, 'Mine');
+    const res = await agent
+      .put(`/api/v1/conglomerates/${created.body.id}/positions`)
+      .set(...XRW)
+      .send({ positions: [{ assetId: mine.id, weightPct: 100 }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.positions[0].assetId).toBe(mine.id);
+  });
 });
 
 describe('POST /api/v1/conglomerates/:id/activate', () => {

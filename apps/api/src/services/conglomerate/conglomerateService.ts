@@ -93,9 +93,14 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
    * Validate a position set against the §6.5 model rules that zod can't express:
    * the ≤ 50 cap (defence-in-depth over the contract), and no duplicate asset —
    * the same asset may not appear twice in one basket. Also confirm every
-   * referenced asset exists, so a bad id is a clean 400 rather than an FK 500.
+   * referenced asset is *visible* to the owner (a global asset or their own
+   * custom asset): a missing id — or another user's private custom asset — is a
+   * 404, so nothing leaks and a bad id can't become an FK 500 (§8, §10).
    */
-  async function validatePositions(positions: readonly ReplacePositionInput[]): Promise<void> {
+  async function validatePositions(
+    ownerId: string,
+    positions: readonly ReplacePositionInput[],
+  ): Promise<void> {
     if (positions.length > MAX_POSITIONS) {
       throw badRequest(
         `A conglomerate may have at most ${MAX_POSITIONS} positions.`,
@@ -111,9 +116,9 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
       seen.add(p.assetId);
     }
 
-    const existing = await repo.existingAssetIds([...seen]);
+    const visible = await repo.visibleAssetIds(ownerId, [...seen]);
     for (const assetId of seen) {
-      if (!existing.has(assetId)) {
+      if (!visible.has(assetId)) {
         throw notFound('One or more assets do not exist.', 'ASSET_NOT_FOUND');
       }
     }
@@ -168,7 +173,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     },
 
     async replacePositions(ownerId, id, positions) {
-      await validatePositions(positions);
+      await validatePositions(ownerId, positions);
       const ok = await repo.replacePositions(
         ownerId,
         id,

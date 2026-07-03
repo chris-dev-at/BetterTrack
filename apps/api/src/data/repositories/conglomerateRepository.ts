@@ -184,6 +184,17 @@ export function createConglomerateRepository(db: Database) {
         set.name = patch.name;
       }
       if (patch.description !== undefined) set.description = patch.description;
+
+      // A no-field PATCH shouldn't touch `updatedAt`; still confirm ownership so
+      // an unknown/foreign id 404s rather than silently succeeding.
+      if (Object.keys(set).length === 0) {
+        const owned = await db
+          .select({ id: conglomerates.id })
+          .from(conglomerates)
+          .where(and(eq(conglomerates.id, id), eq(conglomerates.ownerId, ownerId)))
+          .limit(1);
+        return owned.length > 0;
+      }
       set.updatedAt = new Date();
 
       const rows = await db
@@ -203,13 +214,24 @@ export function createConglomerateRepository(db: Database) {
       return rows.length > 0;
     },
 
-    /** The subset of the given asset ids that exist. */
-    async existingAssetIds(ids: readonly string[]): Promise<Set<string>> {
+    /**
+     * The subset of the given asset ids that are *visible* to `ownerId`: a
+     * global market asset (`owner_id IS NULL`) or the caller's own custom asset.
+     * Another user's private custom asset (house, vehicle, unlisted stock) is
+     * omitted, so it can never be embedded into a Conglomerate and leaked —
+     * mirrors `portfolioService.loadVisibleAssets`, no IDOR (§8, §10).
+     */
+    async visibleAssetIds(ownerId: string, ids: readonly string[]): Promise<Set<string>> {
       if (ids.length === 0) return new Set();
       const rows = await db
         .select({ id: assets.id })
         .from(assets)
-        .where(inArray(assets.id, [...ids]));
+        .where(
+          and(
+            inArray(assets.id, [...ids]),
+            sql`(${assets.ownerId} is null or ${assets.ownerId} = ${ownerId})`,
+          ),
+        );
       return new Set(rows.map((r) => r.id));
     },
 
