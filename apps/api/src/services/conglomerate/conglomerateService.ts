@@ -263,6 +263,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
 
       let anyStale = false;
       const nameByAssetId = new Map<string, string>();
+      // Native (own-currency) price per asset — a transaction's `price` is
+      // recorded in the asset's native currency (`domain/holdings.ts`), so the
+      // bulk buy-flow prefill must carry this, not the EUR-converted costEur.
+      const nativeByAssetId = new Map<string, { price: number; currency: string }>();
       const positions: AllocationPositionInput[] = [];
       for (const pos of conglo.positions) {
         // The embedded position asset carries neither the provider ref nor is a
@@ -279,6 +283,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
             providerRef: asset.providerRef,
           });
           if (cached.stale) anyStale = true;
+          nativeByAssetId.set(pos.assetId, {
+            price: cached.value.price,
+            currency: asset.currency,
+          });
           // EUR-convert here, before the pure engine — the domain does no FX (§5.4).
           priceEur = await currencyService.toBase(cached.value.price, asset.currency);
         } catch {
@@ -310,12 +318,17 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
 
       return {
         positions: result.positions.map((line) => {
+          // Every input position was resolved and quoted above before the
+          // engine ran, so its native price/currency is always present here.
+          const native = nativeByAssetId.get(line.assetId)!;
           const row: AllocateResponse['positions'][number] = {
             assetId: line.assetId,
             symbol: line.symbol,
             name: nameByAssetId.get(line.assetId) ?? line.symbol,
             qty: line.qty,
             costEur: line.costEur,
+            nativePrice: native.price,
+            currency: native.currency,
             actualPct: line.actualPct,
             targetPct: line.targetPct,
             deltaPp: line.deltaPp,

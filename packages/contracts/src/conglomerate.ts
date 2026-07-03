@@ -158,6 +158,12 @@ export type AllocateRequest = z.infer<typeof allocateRequestSchema>;
  * percentage points (`deltaPp`). `unbuyable`/`note` surface a positive-weight
  * position that cannot be reached within this budget — never silently
  * mis-weighted. Quantities/costs are full precision; the client rounds.
+ *
+ * `nativePrice`/`currency` carry the asset's own-currency quote (the same
+ * price the EUR conversion started from) alongside the EUR-converted
+ * `costEur` used for budget accounting — a transaction's `price` is recorded
+ * in the asset's native currency (`domain/holdings.ts`), so the bulk buy-flow
+ * must prefill from these, not from `costEur`.
  */
 export const allocatePositionSchema = z
   .object({
@@ -166,6 +172,8 @@ export const allocatePositionSchema = z
     name: z.string(),
     qty: z.number(),
     costEur: z.number(),
+    nativePrice: z.number(),
+    currency: currencyCodeSchema,
     actualPct: z.number(),
     targetPct: z.number(),
     deltaPp: z.number(),

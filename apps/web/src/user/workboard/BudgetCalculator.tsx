@@ -34,9 +34,6 @@ const inputClass = cx(
   'focus:outline-none focus:ring-2 focus:ring-sky-500',
 );
 
-/** Every position the calculator returns gets recorded in EUR (§6.7 — the allocate endpoint EUR-converts every quote). */
-const CALCULATOR_CURRENCY = 'EUR';
-
 function ModeToggle({
   active,
   onSelect,
@@ -165,7 +162,12 @@ function TotalsFooter({ result, budgetEur }: { result: AllocateResponse; budgetE
   );
 }
 
-/** Non-zero positions become the pre-filled BUY rows for the bulk buy flow (§6.7). */
+/**
+ * Non-zero positions become the pre-filled BUY rows for the bulk buy flow
+ * (§6.7). A transaction's `price` is recorded in the asset's **native**
+ * currency (`domain/holdings.ts`), not the EUR-converted `costEur` used for
+ * budget accounting — so the prefill must use `nativePrice`/`currency`.
+ */
 function toPrefillRows(positions: AllocatePosition[]): TransactionPrefillRow[] {
   return positions
     .filter((p) => p.qty > 0)
@@ -174,13 +176,13 @@ function toPrefillRows(positions: AllocatePosition[]): TransactionPrefillRow[] {
         id: p.assetId,
         symbol: p.symbol,
         name: p.name,
-        currency: CALCULATOR_CURRENCY,
+        currency: p.currency,
       };
       return {
         asset,
         side: 'buy',
         quantity: p.qty,
-        price: p.costEur / p.qty,
+        price: p.nativePrice,
       };
     });
 }
@@ -287,8 +289,11 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
 
       {mutation.data ? (
         <>
-          {mutation.data.stale && mutation.data.quoteNotice ? (
-            <Alert tone="info">{mutation.data.quoteNotice}</Alert>
+          {mutation.data.stale ? (
+            <Alert tone="info">
+              {mutation.data.quoteNotice ??
+                'Some quotes are stale; showing the last known prices.'}
+            </Alert>
           ) : null}
           {mutation.data.warnings.map((warning) => (
             <Alert tone="info" key={warning}>

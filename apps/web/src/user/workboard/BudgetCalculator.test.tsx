@@ -32,6 +32,8 @@ const RESPONSE: AllocateResponse = {
       name: 'Bayer AG',
       qty: 12,
       costEur: 300,
+      nativePrice: 25,
+      currency: 'EUR',
       actualPct: 30,
       targetPct: 30,
       deltaPp: 0,
@@ -42,6 +44,10 @@ const RESPONSE: AllocateResponse = {
       name: 'NVIDIA Corp.',
       qty: 4,
       costEur: 600,
+      // Native-currency price differs from the EUR-converted costEur/qty (163.20 €)
+      // to prove the prefill uses nativePrice/currency, not costEur.
+      nativePrice: 163.2,
+      currency: 'USD',
       actualPct: 60,
       targetPct: 60,
       deltaPp: 0,
@@ -52,6 +58,8 @@ const RESPONSE: AllocateResponse = {
       name: 'Alphabet Inc.',
       qty: 0,
       costEur: 0,
+      nativePrice: 152.6,
+      currency: 'USD',
       actualPct: 0,
       targetPct: 10,
       deltaPp: -10,
@@ -183,7 +191,11 @@ describe('BudgetCalculator', () => {
     expect(within(dialog).getByLabelText('Quantity for BAYN.DE')).toHaveValue(12);
     expect(within(dialog).getByLabelText('Price for BAYN.DE')).toHaveValue(25);
     expect(within(dialog).getByLabelText('Quantity for NVDA')).toHaveValue(4);
-    expect(within(dialog).getByLabelText('Price for NVDA')).toHaveValue(150);
+    // NVDA is USD-quoted: the prefilled price is the native 163.20 USD/share,
+    // not the EUR-converted costEur/qty (150) — proves the buy flow records
+    // cost basis in the asset's own currency, not a mis-currencied EUR amount.
+    expect(within(dialog).getByText('Price (USD)')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Price for NVDA')).toHaveValue(163.2);
 
     await user.click(within(dialog).getByRole('button', { name: 'Record' }));
 
@@ -192,7 +204,7 @@ describe('BudgetCalculator', () => {
         'p1',
         expect.arrayContaining([
           expect.objectContaining({ assetId: 'a-bayn', side: 'buy', quantity: 12, price: 25 }),
-          expect.objectContaining({ assetId: 'a-nvda', side: 'buy', quantity: 4, price: 150 }),
+          expect.objectContaining({ assetId: 'a-nvda', side: 'buy', quantity: 4, price: 163.2 }),
         ]),
       ),
     );
