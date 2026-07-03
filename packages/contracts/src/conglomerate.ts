@@ -1,0 +1,136 @@
+import { z } from 'zod';
+
+import { assetTypeSchema, currencyCodeSchema } from './market';
+
+/**
+ * Conglomerate contracts (PROJECTPLAN.md §6.5, §7.2, §8).
+ *
+ * A Conglomerate is a user-defined, ETF-style weighted basket of assets. This
+ * module defines every wire shape the Conglomerate CRUD surface speaks — once —
+ * so the API validates against it and the web client derives its types from the
+ * same source. Weights are `numeric(6,3)` end-to-end: `0 < w ≤ 100` with **≤ 3
+ * decimals**, never rounded on write (§2.6). Display rounds to 1 dp in the client.
+ */
+
+// --- Status ----------------------------------------------------------------
+
+/**
+ * A Conglomerate is a `draft` while being edited (autosave persists every
+ * change and permits any weight state) or `active` once validated (Σ weights =
+ * 100 ± 0.01). "Activate" flips draft → active (§6.5).
+ */
+export const conglomerateStatusSchema = z.enum(['draft', 'active']);
+export type ConglomerateStatus = z.infer<typeof conglomerateStatusSchema>;
+
+// --- Positions -------------------------------------------------------------
+
+/**
+ * A weight percentage: `0 < w ≤ 100` with at most 3 decimal places, matching
+ * the `numeric(6,3)` storage (§2.6). The decimal check keeps precision honest
+ * end-to-end — the value is stored exactly as submitted, never rounded on write.
+ */
+export const weightPctSchema = z
+  .number()
+  .gt(0, 'Weight must be greater than 0.')
+  .lte(100, 'Weight must be at most 100.')
+  .refine((v) => Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6, {
+    message: 'Weight may have at most 3 decimal places.',
+  });
+
+/** Asset identity embedded in a position for display (§6.5). */
+export const conglomerateAssetSchema = z
+  .object({
+    symbol: z.string(),
+    name: z.string(),
+    currency: currencyCodeSchema,
+    type: assetTypeSchema,
+  })
+  .strict();
+export type ConglomerateAsset = z.infer<typeof conglomerateAssetSchema>;
+
+/** One stored position — asset id, weight, and its `sortOrder` (§6.5). */
+export const conglomeratePositionSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    weightPct: weightPctSchema,
+    sortOrder: z.number().int(),
+  })
+  .strict();
+export type ConglomeratePosition = z.infer<typeof conglomeratePositionSchema>;
+
+/** A position enriched with its asset identity for the detail response (§6.5). */
+export const conglomeratePositionWithAssetSchema = conglomeratePositionSchema
+  .extend({ asset: conglomerateAssetSchema })
+  .strict();
+export type ConglomeratePositionWithAsset = z.infer<typeof conglomeratePositionWithAssetSchema>;
+
+// --- Conglomerates (list + detail) -----------------------------------------
+
+/** One Conglomerate in the list, with its position count (§6.5, §7.2). */
+export const conglomerateSummarySchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    description: z.string().nullable(),
+    status: conglomerateStatusSchema,
+    positionCount: z.number().int(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type ConglomerateSummary = z.infer<typeof conglomerateSummarySchema>;
+
+/** A single Conglomerate with its positions (ordered by `sortOrder`) (§6.5). */
+export const conglomerateDetailSchema = conglomerateSummarySchema
+  .extend({ positions: z.array(conglomeratePositionWithAssetSchema) })
+  .strict();
+export type ConglomerateDetail = z.infer<typeof conglomerateDetailSchema>;
+
+/** `GET /conglomerates` response — the caller's Conglomerates. */
+export const conglomerateListResponseSchema = z
+  .object({ conglomerates: z.array(conglomerateSummarySchema) })
+  .strict();
+export type ConglomerateListResponse = z.infer<typeof conglomerateListResponseSchema>;
+
+// --- Requests --------------------------------------------------------------
+
+/** `POST /conglomerates` body — a new `draft` with a name and optional note. */
+export const createConglomerateRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(2000).nullish(),
+  })
+  .strict();
+export type CreateConglomerateRequest = z.infer<typeof createConglomerateRequestSchema>;
+
+/** `PATCH /conglomerates/:id` body — rename and/or edit the description. */
+export const updateConglomerateRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(2000).nullish(),
+  })
+  .strict();
+export type UpdateConglomerateRequest = z.infer<typeof updateConglomerateRequestSchema>;
+
+/** One position as submitted by the client — `sortOrder` is derived server-side. */
+export const replacePositionInputSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    weightPct: weightPctSchema,
+  })
+  .strict();
+export type ReplacePositionInput = z.infer<typeof replacePositionInputSchema>;
+
+/**
+ * `PUT /conglomerates/:id/positions` body — bulk-replace all positions (the
+ * Builder autosave, §6.5). 0–50 items; `sortOrder` is assigned from array order.
+ */
+export const replacePositionsRequestSchema = z
+  .object({
+    positions: z.array(replacePositionInputSchema).max(50),
+  })
+  .strict();
+export type ReplacePositionsRequest = z.infer<typeof replacePositionsRequestSchema>;
+
+/** Route param for every `/conglomerates/:conglomerateId/…` endpoint. */
+export const conglomerateIdParamSchema = z.object({ conglomerateId: z.string().uuid() }).strict();

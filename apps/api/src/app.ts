@@ -11,6 +11,7 @@ import { enforcePasswordChange, loadSession } from './http/middleware/session';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAssetsRouter } from './http/routes/assetsRoutes';
 import { createAuthRouter } from './http/routes/authRoutes';
+import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
@@ -56,6 +57,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/assets', createAssetsRouter(ctx));
   app.use('/api/v1/portfolios', createPortfolioRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
+  app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
 
   app.use(createErrorHandler(ctx.logger));
   return app;
