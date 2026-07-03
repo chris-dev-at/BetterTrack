@@ -37,6 +37,12 @@ export interface PriceChartProps {
   ranges?: readonly PriceRange[];
   /** Notified whenever the user picks a range (the parent refetches). */
   onRangeChange?: (range: PriceRange) => void;
+  /**
+   * Hide the built-in range toggle when a caller drives its own range
+   * selector over a different token set (e.g. the backtest panel's
+   * 1Y/3Y/5Y/Max, PROJECTPLAN.md §6.5/§6.6). Defaults to `true`.
+   */
+  showRangeToggle?: boolean;
   /** Optional overlay series, e.g. a benchmark index (PROJECTPLAN.md §6.6). */
   benchmark?: BenchmarkSeries | null;
   /**
@@ -95,6 +101,7 @@ export function PriceChart({
   defaultRange = '1M',
   ranges = PRICE_RANGES,
   onRangeChange,
+  showRangeToggle = true,
   benchmark = null,
   overlays = [],
   loading = false,
@@ -222,7 +229,11 @@ export function PriceChart({
   return (
     <div className={cx('flex flex-col gap-3', className)}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <RangeToggle active={activeRange} ranges={ranges} onSelect={selectRange} />
+        {showRangeToggle ? (
+          <RangeToggle active={activeRange} ranges={ranges} onSelect={selectRange} />
+        ) : (
+          <span aria-hidden="true" />
+        )}
         {hasBenchmark || overlayCount > 0 ? (
           <div className="flex flex-wrap items-center gap-3">
             {hasBenchmark ? (
