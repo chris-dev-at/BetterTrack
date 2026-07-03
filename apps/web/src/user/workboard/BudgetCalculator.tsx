@@ -292,8 +292,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
         <>
           {mutation.data.stale ? (
             <Alert tone="info">
-              {mutation.data.quoteNotice ??
-                'Some quotes are stale; showing the last known prices.'}
+              {mutation.data.quoteNotice ?? 'Some quotes are stale; showing the last known prices.'}
             </Alert>
           ) : null}
           {mutation.data.warnings.map((warning) => (
