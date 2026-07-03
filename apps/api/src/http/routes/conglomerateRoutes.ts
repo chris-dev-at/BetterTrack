@@ -1,10 +1,12 @@
 import { Router } from 'express';
 
 import {
+  allocateRequestSchema,
   conglomerateIdParamSchema,
   createConglomerateRequestSchema,
   replacePositionsRequestSchema,
   updateConglomerateRequestSchema,
+  type AllocateRequest,
   type CreateConglomerateRequest,
   type ReplacePositionsRequest,
   type UpdateConglomerateRequest,
@@ -18,8 +20,9 @@ import type { AppContext } from '../context';
  * Conglomerate CRUD endpoints (PROJECTPLAN.md §6.5, §7.2, §8). Every
  * `/:conglomerateId/…` handler is ownership-scoped in the repository — a
  * Conglomerate owned by another user is a 404, never a 403 (no IDOR, §8).
- * Controllers stay thin: parse → service → respond. Backtest/allocate wiring is
- * a separate P4 issue and not mounted here.
+ * Controllers stay thin: parse → service → respond. The Invest Calculator's
+ * `POST /:id/allocate` (§6.7) is mounted here; the backtest endpoint lives on
+ * its own router.
  */
 export function createConglomerateRouter(ctx: AppContext): Router {
   const router = Router();
@@ -91,6 +94,19 @@ export function createConglomerateRouter(ctx: AppContext): Router {
       const { conglomerateId } = req.valid?.params as { conglomerateId: string };
       const detail = await ctx.conglomerate.activate(req.authUser!.id, conglomerateId);
       res.json(detail);
+    },
+  );
+
+  // POST /conglomerates/:id/allocate — Invest Calculator: EUR budget → buy list (§6.7).
+  router.post(
+    '/:conglomerateId/allocate',
+    validateParams(conglomerateIdParamSchema),
+    validateBody(allocateRequestSchema),
+    async (req, res) => {
+      const { conglomerateId } = req.valid?.params as { conglomerateId: string };
+      const body = req.valid?.body as AllocateRequest;
+      const result = await ctx.conglomerate.allocate(req.authUser!.id, conglomerateId, body);
+      res.json(result);
     },
   );
 
