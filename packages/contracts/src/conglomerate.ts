@@ -134,3 +134,62 @@ export type ReplacePositionsRequest = z.infer<typeof replacePositionsRequestSche
 
 /** Route param for every `/conglomerates/:conglomerateId/…` endpoint. */
 export const conglomerateIdParamSchema = z.object({ conglomerateId: z.string().uuid() }).strict();
+
+// --- Allocate (Invest Calculator, §6.7) ------------------------------------
+
+/**
+ * `POST /conglomerates/:id/allocate` body — turn a EUR budget into a buy list
+ * (§6.7). `budgetEur` is a finite amount ≥ 0; `mode` chooses whole-share vs.
+ * fractional buying; `step` is the fractional quantity granularity (e.g. 0.0001)
+ * and is ignored in whole mode.
+ */
+export const allocateRequestSchema = z
+  .object({
+    budgetEur: z.number().finite().nonnegative(),
+    mode: z.enum(['whole', 'fractional']),
+    step: z.number().finite().positive().optional(),
+  })
+  .strict();
+export type AllocateRequest = z.infer<typeof allocateRequestSchema>;
+
+/**
+ * One buy-list row (§6.7): shares to buy, their EUR cost, and the achieved
+ * (`actualPct`) vs. target (`targetPct`) share of the budget with the gap in
+ * percentage points (`deltaPp`). `unbuyable`/`note` surface a positive-weight
+ * position that cannot be reached within this budget — never silently
+ * mis-weighted. Quantities/costs are full precision; the client rounds.
+ */
+export const allocatePositionSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    symbol: z.string(),
+    name: z.string(),
+    qty: z.number(),
+    costEur: z.number(),
+    actualPct: z.number(),
+    targetPct: z.number(),
+    deltaPp: z.number(),
+    unbuyable: z.boolean().optional(),
+    note: z.string().optional(),
+  })
+  .strict();
+export type AllocatePosition = z.infer<typeof allocatePositionSchema>;
+
+/**
+ * `POST /conglomerates/:id/allocate` response (§6.7). `totalCostEur ≤ budgetEur`
+ * always (never overshoot); `leftoverEur` is the un-allocated remainder;
+ * `warnings` aggregates the unreachable-weight notes. `stale` flags that at
+ * least one quote was served stale (market closed / provider unreachable) with
+ * `quoteNotice` carrying the human banner — surfaced, never an error.
+ */
+export const allocateResponseSchema = z
+  .object({
+    positions: z.array(allocatePositionSchema),
+    totalCostEur: z.number(),
+    leftoverEur: z.number(),
+    warnings: z.array(z.string()),
+    stale: z.boolean(),
+    quoteNotice: z.string().nullable(),
+  })
+  .strict();
+export type AllocateResponse = z.infer<typeof allocateResponseSchema>;

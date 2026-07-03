@@ -201,7 +201,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
   const conglomerateRepo = createConglomerateRepository(db);
-  const conglomerate = createConglomerateService({ repo: conglomerateRepo });
+  const conglomerate = createConglomerateService({
+    repo: conglomerateRepo,
+    assetRepo,
+    marketData,
+    currencyService: currency,
+  });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
   // keystones to feed the pure engine over inline draft positions.

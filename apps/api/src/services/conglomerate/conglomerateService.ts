@@ -1,4 +1,6 @@
 import type {
+  AllocateRequest,
+  AllocateResponse,
   ConglomerateDetail,
   ConglomerateListResponse,
   ConglomerateSummary,
@@ -7,13 +9,22 @@ import type {
   UpdateConglomerateRequest,
 } from '@bettertrack/contracts';
 
+import type { AssetRepository } from '../../data/repositories/assetRepository';
 import {
   ConglomerateNameConflictError,
   type ConglomerateDetailRow,
   type ConglomerateRepository,
   type ConglomerateSummaryRow,
 } from '../../data/repositories/conglomerateRepository';
-import { badRequest, conflict, notFound } from '../../errors';
+import {
+  allocateBudget,
+  AllocationError,
+  type AllocationPositionInput,
+  type AllocationResult,
+} from '../../domain/allocation';
+import { badRequest, conflict, notFound, unprocessable } from '../../errors';
+import type { MarketDataService } from '../../providers';
+import type { CurrencyService } from '../currency/currencyService';
 
 /**
  * Conglomerate orchestration + rule enforcement (PROJECTPLAN.md §6.5, §8).
@@ -27,6 +38,12 @@ import { badRequest, conflict, notFound } from '../../errors';
 
 export interface ConglomerateServiceDeps {
   repo: ConglomerateRepository;
+  /** Resolves a position's asset (owner-scoped) for its provider ref + native currency. */
+  assetRepo: AssetRepository;
+  /** Live quotes for the Invest Calculator (§6.7), cached/coalesced/serve-stale (§5.3). */
+  marketData: MarketDataService;
+  /** The single EUR-conversion keystone (§5.4); quotes are converted before the engine. */
+  currencyService: CurrencyService;
 }
 
 export interface ConglomerateService {
@@ -45,6 +62,8 @@ export interface ConglomerateService {
   ): Promise<ConglomerateDetail>;
   activate(ownerId: string, id: string): Promise<ConglomerateDetail>;
   remove(ownerId: string, id: string): Promise<void>;
+  /** Turn a EUR budget into a buy list over the Conglomerate's positions (§6.7). */
+  allocate(ownerId: string, id: string, req: AllocateRequest): Promise<AllocateResponse>;
 }
 
 /** §6.5: at most 50 positions per Conglomerate. */
@@ -80,7 +99,7 @@ function toDetail(row: ConglomerateDetailRow): ConglomerateDetail {
 }
 
 export function createConglomerateService(deps: ConglomerateServiceDeps): ConglomerateService {
-  const { repo } = deps;
+  const { repo, assetRepo, marketData, currencyService } = deps;
 
   /** Fetch the detail after a mutation; the row must exist at this point. */
   async function detailOrThrow(ownerId: string, id: string): Promise<ConglomerateDetail> {
@@ -209,6 +228,110 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     async remove(ownerId, id) {
       const deleted = await repo.delete(ownerId, id);
       if (!deleted) throw NOT_FOUND();
+    },
+
+    /**
+     * Invest Calculator (§6.7): fetch a current EUR-converted quote per position
+     * and hand the basket to the pure {@link allocateBudget} engine. The
+     * orchestration seam does all the I/O and FX — the domain does neither:
+     *
+     *  1. Load the Conglomerate owner-scoped — a foreign/unknown id is a 404,
+     *     never a 403 (no IDOR, §8).
+     *  2. For each position, resolve its asset (owner-scoped) for the provider
+     *     ref + native currency, fetch a quote through the market-data keystone
+     *     (§5.3), and convert it to EUR through the {@link CurrencyService} (§5.4)
+     *     **before** the engine sees any price. A quote served stale is surfaced
+     *     as a response flag, never an error; a quote that is wholly unavailable
+     *     is a 422 (the position cannot be priced).
+     *  3. Normalise the stored percent weights to fractions summing to ~1 — by
+     *     the basket's own weight sum, so both an active (Σ=100) and a draft
+     *     basket allocate proportionally; the engine re-normalises to exactly 1.
+     *  4. Run the engine and shape its result to the wire contract; an
+     *     {@link AllocationError} (e.g. a non-positive quote) becomes a 422.
+     */
+    async allocate(ownerId, id, req) {
+      const conglo = await repo.findByIdForOwner(ownerId, id);
+      if (!conglo) throw NOT_FOUND();
+      if (conglo.positions.length === 0) {
+        throw badRequest(
+          'This conglomerate has no positions to allocate a budget over.',
+          'ALLOCATION_NO_POSITIONS',
+        );
+      }
+
+      const weightSumPct = conglo.positions.reduce((acc, p) => acc + p.weightPct, 0);
+
+      let anyStale = false;
+      const nameByAssetId = new Map<string, string>();
+      const positions: AllocationPositionInput[] = [];
+      for (const pos of conglo.positions) {
+        // The embedded position asset carries neither the provider ref nor is a
+        // full row, so re-resolve owner-scoped (a vanished/foreign asset 404s —
+        // nothing leaks, §10 — though positions are validated on write).
+        const asset = await assetRepo.findByIdForUser(pos.assetId, ownerId);
+        if (!asset) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+        nameByAssetId.set(pos.assetId, asset.name);
+
+        let priceEur: number;
+        try {
+          const cached = await marketData.getQuote({
+            providerId: asset.providerId,
+            providerRef: asset.providerRef,
+          });
+          if (cached.stale) anyStale = true;
+          // EUR-convert here, before the pure engine — the domain does no FX (§5.4).
+          priceEur = await currencyService.toBase(cached.value.price, asset.currency);
+        } catch {
+          throw unprocessable(`No current quote available for ${asset.symbol}.`, 'NO_QUOTE');
+        }
+
+        positions.push({
+          assetId: pos.assetId,
+          symbol: asset.symbol,
+          weight: pos.weightPct / weightSumPct,
+          priceEur,
+        });
+      }
+
+      let result: AllocationResult;
+      try {
+        result = allocateBudget({
+          budgetEur: req.budgetEur,
+          mode: req.mode,
+          step: req.step,
+          positions,
+        });
+      } catch (err) {
+        if (err instanceof AllocationError) {
+          throw unprocessable(err.message, 'ALLOCATION_INVALID');
+        }
+        throw err;
+      }
+
+      return {
+        positions: result.positions.map((line) => {
+          const row: AllocateResponse['positions'][number] = {
+            assetId: line.assetId,
+            symbol: line.symbol,
+            name: nameByAssetId.get(line.assetId) ?? line.symbol,
+            qty: line.qty,
+            costEur: line.costEur,
+            actualPct: line.actualPct,
+            targetPct: line.targetPct,
+            deltaPp: line.deltaPp,
+          };
+          if (line.unbuyable) row.unbuyable = true;
+          if (line.note !== undefined) row.note = line.note;
+          return row;
+        }),
+        totalCostEur: result.totalCostEur,
+        leftoverEur: result.leftoverEur,
+        warnings: result.warnings,
+        stale: anyStale,
+        quoteNotice: anyStale
+          ? 'Some quotes are stale (market closed or the data provider is unreachable); showing the last known prices.'
+          : null,
+      };
     },
   };
 }
