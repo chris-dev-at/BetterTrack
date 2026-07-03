@@ -2,7 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import type { ConglomeratePositionWithAsset } from '@bettertrack/contracts';
+import type {
+  BacktestPreviewPosition,
+  ConglomeratePositionWithAsset,
+} from '@bettertrack/contracts';
 
 import { deleteConglomerate, getConglomerate } from '../../lib/conglomerateApi';
 import { formatWeight } from '../../lib/format';
@@ -10,6 +13,7 @@ import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { Dialog } from '../components/Dialog';
+import { BacktestPanel } from './BacktestPanel';
 import { StatusBadge } from './ConglomeratesListPage';
 
 // ─── Positions table ────────────────────────────────────────────────────────
@@ -122,9 +126,9 @@ function DeleteConfirmDialog({
 
 /**
  * `/workboard/conglomerates/:id` — Conglomerate detail scaffold (PROJECTPLAN.md
- * §6.5, §7.2): header, positions table, allocation donut, and placeholder slots
- * for the backtest (#129/#137) and Invest Calculator (#132/#138) panels landing
- * in follow-up issues.
+ * §6.5, §7.2): header, positions table, allocation donut, the backtest panel
+ * (#137), and a placeholder slot for the Invest Calculator (#132/#138) landing
+ * in a follow-up issue.
  */
 export function ConglomerateDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -175,6 +179,10 @@ export function ConglomerateDetailPage() {
     .filter((p) => p.weightPct > 0)
     .map((p) => ({ label: p.asset.symbol, value: p.weightPct }));
 
+  const backtestPositions: BacktestPreviewPosition[] = data.positions
+    .filter((p) => p.weightPct > 0)
+    .map((p) => ({ assetId: p.assetId, weight: p.weightPct }));
+
   return (
     <div className="flex flex-col gap-8">
       <Link
@@ -224,8 +232,15 @@ export function ConglomerateDetailPage() {
         </section>
       </div>
 
-      {/* Placeholder slots for follow-up issues */}
-      <PlaceholderSlot title="Backtest" description="Backtest — coming with the backtest panel." />
+      {/* Backtest panel (#137) */}
+      <section aria-labelledby="backtest-heading" className="flex flex-col gap-3">
+        <h2 id="backtest-heading" className="text-base font-semibold text-neutral-200">
+          Backtest
+        </h2>
+        <BacktestPanel positions={backtestPositions} />
+      </section>
+
+      {/* Placeholder slot for the follow-up Invest Calculator issue */}
       <PlaceholderSlot
         title="Calculator"
         description="Calculator — coming with the Invest Calculator."
