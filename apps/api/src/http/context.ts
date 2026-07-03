@@ -4,6 +4,7 @@ import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
@@ -23,6 +24,10 @@ import { createAdminService, type AdminService } from '../services/admin/adminSe
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
 import { createAuditService } from '../services/audit/auditService';
+import {
+  createConglomerateService,
+  type ConglomerateService,
+} from '../services/conglomerate/conglomerateService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createCurrencyService } from '../services/currency/currencyService';
 import {
@@ -63,6 +68,8 @@ export interface AppContext {
   portfolio: PortfolioService;
   /** Custom investments + their value-points editor (§6.9). */
   customAssets: CustomAssetService;
+  /** Conglomerate CRUD — user-defined weighted asset baskets (§6.5). */
+  conglomerate: ConglomerateService;
 }
 
 export interface BuildContextDeps {
@@ -189,6 +196,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({ repo: customAssetRepo, portfolio });
 
+  // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
+  const conglomerateRepo = createConglomerateRepository(db);
+  const conglomerate = createConglomerateService({ repo: conglomerateRepo });
+
   return {
     config,
     redis,
@@ -201,5 +212,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     search,
     portfolio,
     customAssets,
+    conglomerate,
   };
 }
