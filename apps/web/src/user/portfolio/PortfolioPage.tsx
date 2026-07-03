@@ -116,6 +116,203 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
   );
 }
 
+// ─── Top winners / losers ───────────────────────────────────────────────────
+
+type RankMetric = 'day' | 'total';
+
+interface RankedHolding {
+  holding: Holding;
+  pct: number;
+  deltaEur: number | null;
+}
+
+const WINNERS_LOSERS_LIMIT = 5;
+
+function rankHoldings(holdings: Holding[], metric: RankMetric): RankedHolding[] {
+  const ranked: RankedHolding[] = [];
+  for (const holding of holdings) {
+    const pct = metric === 'day' ? holding.dayChangePct : holding.unrealizedPnlPct;
+    if (pct == null) continue;
+    const deltaEur = metric === 'day' ? holding.dayChangeEur : holding.unrealizedPnlEur;
+    ranked.push({ holding, pct, deltaEur });
+  }
+  return ranked;
+}
+
+function RankedHoldingRow({ holding, pct, deltaEur }: RankedHolding) {
+  return (
+    <li className="flex items-center justify-between gap-3">
+      <div className="min-w-0">
+        <Link
+          to={`/assets/${holding.asset.id}`}
+          className="block truncate font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
+        >
+          {holding.asset.symbol}
+        </Link>
+        <p className="max-w-[10rem] truncate text-xs text-neutral-500" title={holding.asset.name}>
+          {holding.asset.name}
+        </p>
+      </div>
+      <div className="flex shrink-0 flex-col items-end">
+        <DeltaPct value={pct} />
+        {deltaEur != null ? (
+          <span className="text-xs text-neutral-500">
+            <MoneyText amount={deltaEur} signed />
+          </span>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function RankedList({ title, items }: { title: string; items: RankedHolding[] }) {
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-neutral-200">{title}</h3>
+      {items.length === 0 ? (
+        <p className="text-sm text-neutral-500">Nothing to show.</p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {items.map((item) => (
+            <RankedHoldingRow key={item.holding.asset.id} {...item} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** §6.8 top winners / top losers — ranked by day % or total P/L %, toggleable. */
+function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
+  const [metric, setMetric] = useState<RankMetric>('day');
+  const ranked = rankHoldings(holdings, metric);
+
+  if (ranked.length === 0) return null;
+
+  const winners = ranked
+    .filter((r) => r.pct > 0)
+    .sort((a, b) => b.pct - a.pct)
+    .slice(0, WINNERS_LOSERS_LIMIT);
+  const losers = ranked
+    .filter((r) => r.pct < 0)
+    .sort((a, b) => a.pct - b.pct)
+    .slice(0, WINNERS_LOSERS_LIMIT);
+
+  return (
+    <section aria-label="Top winners and losers" className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-neutral-200">Top winners / losers</h2>
+        <div className="flex gap-1 rounded p-0.5 ring-1 ring-inset ring-neutral-800">
+          <button
+            type="button"
+            aria-pressed={metric === 'day'}
+            onClick={() => setMetric('day')}
+            className={cx(
+              'rounded px-2 py-1 text-xs font-medium transition-colors',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+              metric === 'day'
+                ? 'bg-sky-600 text-white'
+                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+            )}
+          >
+            Day %
+          </button>
+          <button
+            type="button"
+            aria-pressed={metric === 'total'}
+            onClick={() => setMetric('total')}
+            className={cx(
+              'rounded px-2 py-1 text-xs font-medium transition-colors',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+              metric === 'total'
+                ? 'bg-sky-600 text-white'
+                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+            )}
+          >
+            Total P/L
+          </button>
+        </div>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <RankedList title="Top winners" items={winners} />
+        <RankedList title="Top losers" items={losers} />
+      </div>
+    </section>
+  );
+}
+
+// ─── Recent transactions ────────────────────────────────────────────────────
+
+const RECENT_TRANSACTIONS_LIMIT = 8;
+
+/** §6.8 recent transactions — flat, newest-first ledger across all holdings. */
+function RecentTransactionsSection({ transactions }: { transactions: Transaction[] }) {
+  if (transactions.length === 0) return null;
+  const recent = [...transactions]
+    .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())
+    .slice(0, RECENT_TRANSACTIONS_LIMIT);
+
+  return (
+    <section aria-label="Recent transactions" className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold text-neutral-200">Recent transactions</h2>
+      <div className="overflow-x-auto rounded-lg border border-neutral-800">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
+              <th scope="col" className="px-3 py-2">
+                Asset
+              </th>
+              <th scope="col" className="px-3 py-2">
+                Side
+              </th>
+              <th scope="col" className="px-3 py-2 text-right">
+                Qty
+              </th>
+              <th scope="col" className="px-3 py-2 text-right">
+                Price
+              </th>
+              <th scope="col" className="px-3 py-2">
+                Date
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {recent.map((t) => (
+              <tr key={t.id} className="border-b border-neutral-800 last:border-b-0">
+                <td className="min-w-0 px-3 py-2">
+                  <Link
+                    to={`/assets/${t.assetId}`}
+                    className="font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
+                  >
+                    {t.asset.symbol}
+                  </Link>
+                </td>
+                <td className="px-3 py-2">
+                  <span
+                    className={cx(
+                      'rounded px-1.5 py-0.5 text-xs font-medium',
+                      t.side === 'buy'
+                        ? 'bg-emerald-900/50 text-emerald-300'
+                        : 'bg-amber-900/50 text-amber-300',
+                    )}
+                  >
+                    {t.side === 'buy' ? 'Buy' : 'Sell'}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(t.quantity)}</td>
+                <td className="px-3 py-2 text-right">
+                  <MoneyText amount={t.price} currency={t.asset.currency} />
+                </td>
+                <td className="px-3 py-2 text-neutral-400">{formatDate(t.executedAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 // ─── Holdings table ─────────────────────────────────────────────────────────
 
 interface HoldingsTableProps {
@@ -716,6 +913,10 @@ export function PortfolioPage() {
               deletingId={deleteMutation.isPending ? (deleteMutation.variables ?? null) : null}
             />
           </section>
+
+          <WinnersLosersSection holdings={holdings} />
+
+          <RecentTransactionsSection transactions={transactionsQuery.data?.items ?? []} />
         </>
       )}
 

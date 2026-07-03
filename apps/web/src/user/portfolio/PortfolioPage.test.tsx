@@ -217,9 +217,15 @@ beforeEach(() => {
 describe('PortfolioPage — empty & error states', () => {
   test('shows a designed empty state when there are no holdings', async () => {
     vi.mocked(getPortfolio).mockResolvedValue(EMPTY_PORTFOLIO);
+    vi.mocked(listTransactions).mockResolvedValue({ items: [], nextCursor: null });
     renderPage();
     await waitFor(() => expect(screen.getByText(/Your portfolio is empty/i)).toBeInTheDocument());
     expect(screen.getByRole('link', { name: /Search for an asset/i })).toBeInTheDocument();
+    // Winners/losers and recent-transactions blocks stay hidden with no holdings.
+    expect(
+      screen.queryByRole('region', { name: 'Top winners and losers' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Recent transactions' })).not.toBeInTheDocument();
   });
 
   test('shows an error state when the portfolio fails to load', async () => {
@@ -251,12 +257,17 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
 
   test('renders a holdings row per asset', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByRole('link', { name: 'AAPL' })).toBeInTheDocument());
-    expect(screen.getByText('Apple Inc.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'HOUSE' })).toBeInTheDocument();
-    expect(screen.getByText('Vienna Apartment')).toBeInTheDocument();
+    // AAPL/HOUSE symbols and the "100,00 $" figure also appear in the
+    // winners/losers and recent-transactions blocks — scope to the table.
+    const holdingsRegion = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(holdingsRegion).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
+    expect(within(holdingsRegion).getByText('Apple Inc.')).toBeInTheDocument();
+    expect(within(holdingsRegion).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument();
+    expect(within(holdingsRegion).getByText('Vienna Apartment')).toBeInTheDocument();
     // Native avg cost is shown in the asset's currency ($).
-    expect(screen.getByText('100,00 $')).toBeInTheDocument();
+    expect(within(holdingsRegion).getByText('100,00 $')).toBeInTheDocument();
   });
 
   test('renders both allocation donuts with legends', async () => {
@@ -337,19 +348,27 @@ describe('PortfolioPage — expandable rows', () => {
   test('expands a holding to reveal its transactions', async () => {
     const user = userEvent.setup();
     renderPage();
-    await waitFor(() => expect(screen.getByRole('link', { name: 'AAPL' })).toBeInTheDocument());
+    const holdingsRegion = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(holdingsRegion).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
 
     await user.click(screen.getByRole('button', { name: /Expand AAPL transactions/i }));
 
-    // The HOUSE note proves only the expanded asset's rows show — expand it too.
-    expect(screen.getByText('Buy')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Edit transaction from/i })).toBeInTheDocument();
+    // "Buy" also appears in the recent-transactions block — scope to the
+    // expanded row (found via its edit button) to check this specific one.
+    const editButton = screen.getByRole('button', { name: /Edit transaction from/i });
+    expect(editButton).toBeInTheDocument();
+    expect(within(editButton.closest('tr')!).getByText('Buy')).toBeInTheDocument();
   });
 
   test('deletes a transaction through the inline confirm', async () => {
     const user = userEvent.setup();
     renderPage();
-    await waitFor(() => expect(screen.getByRole('link', { name: 'HOUSE' })).toBeInTheDocument());
+    const holdingsRegion = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(holdingsRegion).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument(),
+    );
 
     await user.click(screen.getByRole('button', { name: /Expand HOUSE transactions/i }));
     // The down-payment note proves HOUSE's transaction is rendered.
@@ -371,7 +390,10 @@ describe('PortfolioPage — dialogs', () => {
   test('opens the transaction dialog from the header action', async () => {
     const user = userEvent.setup();
     renderPage();
-    await waitFor(() => expect(screen.getByRole('link', { name: 'AAPL' })).toBeInTheDocument());
+    const holdingsRegion = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(holdingsRegion).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
 
     await user.click(screen.getByRole('button', { name: '+ Transaction' }));
     expect(screen.getByRole('dialog', { name: /Record transaction/i })).toBeInTheDocument();
@@ -380,10 +402,91 @@ describe('PortfolioPage — dialogs', () => {
   test('opens the value-point editor for a custom holding', async () => {
     const user = userEvent.setup();
     renderPage();
-    await waitFor(() => expect(screen.getByRole('link', { name: 'HOUSE' })).toBeInTheDocument());
+    const holdingsRegion = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(holdingsRegion).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument(),
+    );
 
     await user.click(screen.getByRole('button', { name: /Expand HOUSE transactions/i }));
     await user.click(screen.getByRole('button', { name: 'Edit value points' }));
     expect(screen.getByRole('dialog', { name: /Value points/i })).toBeInTheDocument();
+  });
+});
+
+// ─── Top winners / losers (#120) ───────────────────────────────────────────────
+
+const TSLA = {
+  asset: {
+    id: 'a2',
+    symbol: 'TSLA',
+    name: 'Tesla Inc.',
+    exchange: 'NASDAQ',
+    currency: 'USD' as const,
+    type: 'stock' as const,
+    isCustom: false,
+  },
+  quantity: 5,
+  avgCost: 200,
+  realizedPnl: 0,
+  price: 240,
+  marketValueEur: 1100,
+  costBasisEur: 900,
+  unrealizedPnlEur: 200,
+  unrealizedPnlPct: 20,
+  // Down on the day, but up overall — makes the metric toggle change both
+  // membership (winners vs losers) and ordering.
+  dayChangeEur: -50,
+  dayChangePct: -4.5,
+};
+
+const PORTFOLIO_WITH_MOVERS = {
+  baseCurrency: 'EUR' as const,
+  holdings: [STOCK, HOUSE, TSLA],
+  totals: TOTALS,
+};
+
+describe('PortfolioPage — top winners / losers', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO_WITH_MOVERS));
+
+  test('ranks by day % by default, then re-ranks when the metric toggle switches to total P/L', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const winnersLosers = await screen.findByRole('region', { name: 'Top winners and losers' });
+
+    // Day % (default): AAPL is up 0.67% → winner. TSLA is down 4.5% → loser.
+    // HOUSE has no day change and is excluded from this metric entirely.
+    const winnersBox = within(winnersLosers).getByText('Top winners').closest('div')!;
+    const losersBox = within(winnersLosers).getByText('Top losers').closest('div')!;
+    expect(within(winnersBox).getByRole('link', { name: 'AAPL' })).toBeInTheDocument();
+    expect(within(winnersBox).queryByRole('link', { name: 'HOUSE' })).not.toBeInTheDocument();
+    expect(within(losersBox).getByRole('link', { name: 'TSLA' })).toBeInTheDocument();
+
+    // Switch to total P/L: all three holdings are net positive, so TSLA moves
+    // from losers to winners and HOUSE now appears too — ranked below TSLA.
+    await user.click(within(winnersLosers).getByRole('button', { name: 'Total P/L' }));
+
+    const winnersAfter = within(winnersLosers).getByText('Top winners').closest('div')!;
+    const losersAfter = within(winnersLosers).getByText('Top losers').closest('div')!;
+    const order = within(winnersAfter)
+      .getAllByRole('link')
+      .map((el) => el.textContent);
+    expect(order).toEqual(['AAPL', 'TSLA', 'HOUSE']);
+    expect(within(losersAfter).getByText('Nothing to show.')).toBeInTheDocument();
+  });
+});
+
+// ─── Recent transactions (#120) ────────────────────────────────────────────────
+
+describe('PortfolioPage — recent transactions', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('lists the most recent transactions newest-first', async () => {
+    renderPage();
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+
+    // t2 (HOUSE, 2024-02-01) is newer than t1 (AAPL, 2024-01-15).
+    const rows = within(recent).getAllByRole('row').slice(1); // drop the header row
+    expect(within(rows[0]!).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument();
+    expect(within(rows[1]!).getByRole('link', { name: 'AAPL' })).toBeInTheDocument();
   });
 });
