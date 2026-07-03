@@ -10,6 +10,26 @@ vi.mock('../../lib/conglomerateApi', () => ({
   deleteConglomerate: vi.fn(),
 }));
 
+vi.mock('../../lib/backtestApi', () => ({
+  previewBacktest: vi.fn(),
+}));
+
+// Mock the canvas-backed charting lib the backtest panel's PriceChart drives;
+// jsdom can't draw (mirrors PriceChart.test.tsx).
+vi.mock('lightweight-charts', () => ({
+  createChart: vi.fn(() => ({
+    addSeries: vi.fn(() => ({ setData: vi.fn(), applyOptions: vi.fn() })),
+    applyOptions: vi.fn(),
+    timeScale: () => ({ fitContent: vi.fn() }),
+    remove: vi.fn(),
+  })),
+  AreaSeries: 'AreaSeries',
+  LineSeries: 'LineSeries',
+  LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
+  ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
+  PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2, IndexedTo100: 3 },
+}));
+
 // Recharts measures the DOM (0×0 in jsdom); hand the donut a fixed size (mirrors
 // AllocationDonut.test.tsx / PortfolioPage.test.tsx).
 vi.mock('recharts', async (importOriginal) => {
@@ -26,6 +46,7 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
+import { previewBacktest } from '../../lib/backtestApi';
 import { deleteConglomerate, getConglomerate } from '../../lib/conglomerateApi';
 import { ConglomerateDetailPage } from './ConglomerateDetailPage';
 
@@ -84,6 +105,25 @@ function renderPage(id = CONGLOMERATE_ID) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(previewBacktest).mockResolvedValue({
+    startDate: '2020-01-01',
+    endDate: '2025-01-01',
+    series: [
+      { date: '2020-01-01', value: 100 },
+      { date: '2025-01-01', value: 142.5 },
+    ],
+    stats: {
+      totalReturnPct: 42.5,
+      cagrPct: 7.3,
+      maxDrawdownPct: -9.1,
+      volatilityPct: 14.6,
+      bestDay: { date: '2020-03-24', returnPct: 3.2 },
+      worstDay: { date: '2020-03-16', returnPct: -2.8 },
+    },
+    contributions: [],
+    notice: null,
+    benchmark: null,
+  });
 });
 
 describe('ConglomerateDetailPage', () => {
@@ -105,12 +145,23 @@ describe('ConglomerateDetailPage', () => {
     expect(donut).toBeInTheDocument();
   });
 
-  test('shows placeholder slots for the backtest and calculator panels', async () => {
+  test('renders the backtest panel and a placeholder slot for the calculator', async () => {
     vi.mocked(getConglomerate).mockResolvedValue(DETAIL);
     renderPage();
 
     await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
-    expect(screen.getByText(/Backtest — coming with the backtest panel/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Backtest' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(previewBacktest).toHaveBeenCalledWith(
+        [
+          { assetId: 'a1', weight: 60 },
+          { assetId: 'a2', weight: 40 },
+        ],
+        '5Y',
+        null,
+        expect.anything(),
+      ),
+    );
     expect(screen.getByText(/Calculator — coming with the Invest Calculator/i)).toBeInTheDocument();
   });
 
