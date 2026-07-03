@@ -2,6 +2,7 @@ import {
   createCustomAssetResponseSchema,
   customAssetSchema,
   portfolioHistoryResponseSchema,
+  portfolioListResponseSchema,
   portfolioResponseSchema,
   transactionListResponseSchema,
   transactionSchema,
@@ -11,6 +12,7 @@ import {
   type CustomAsset,
   type PortfolioHistoryRange,
   type PortfolioHistoryResponse,
+  type PortfolioListResponse,
   type PortfolioResponse,
   type Transaction,
   type TransactionInput,
@@ -24,31 +26,48 @@ import {
 import { apiRequest } from './apiClient';
 
 /**
- * Typed client for the portfolio + custom-asset surface (PROJECTPLAN.md §6.9, §8).
+ * Typed client for the portfolio + custom-asset surface (PROJECTPLAN.md §6.8, §8).
  * Every response is parsed through its contract schema so the page works against
  * validated shapes, never raw JSON. Money values arrive at full precision and are
  * rounded only at display time (§5.4).
+ *
+ * Every portfolio read/write is `portfolio_id`-scoped (§6.8): callers resolve the
+ * default id via {@link listPortfolios} and thread it through the scoped paths.
  */
+
+// --- Portfolios (the list) -------------------------------------------------
+
+/** `GET /portfolios` — the user's portfolios (V1: the single auto-created default). */
+export async function listPortfolios(signal?: AbortSignal): Promise<PortfolioListResponse> {
+  const data = await apiRequest<unknown>('/portfolios', { signal });
+  return portfolioListResponseSchema.parse(data);
+}
 
 // --- Holdings + totals -----------------------------------------------------
 
-/** `GET /portfolio` — holdings + totals header. */
-export async function getPortfolio(signal?: AbortSignal): Promise<PortfolioResponse> {
-  const data = await apiRequest<unknown>('/portfolio', { signal });
+/** `GET /portfolios/:id` — holdings + totals header. */
+export async function getPortfolio(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<PortfolioResponse> {
+  const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}`, {
+    signal,
+  });
   return portfolioResponseSchema.parse(data);
 }
 
 /**
- * `GET /portfolio/history?range=&overlay=` — EUR value-over-time series;
+ * `GET /portfolios/:id/history?range=&overlay=` — EUR value-over-time series;
  * `overlay=true` additionally returns each held asset's own daily price series
  * so the chart can overlay them on the portfolio curve (#122).
  */
 export async function getPortfolioHistory(
+  portfolioId: string,
   range: PortfolioHistoryRange,
   overlay = false,
   signal?: AbortSignal,
 ): Promise<PortfolioHistoryResponse> {
-  const data = await apiRequest<unknown>('/portfolio/history', {
+  const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/history`, {
     query: { range, ...(overlay ? { overlay: 'true' } : {}) },
     signal,
   });
@@ -57,48 +76,62 @@ export async function getPortfolioHistory(
 
 // --- Transactions ----------------------------------------------------------
 
-/** `GET /portfolio/transactions?cursor=` — newest-first ledger, keyset paginated. */
+/** `GET /portfolios/:id/transactions?cursor=` — newest-first ledger, keyset paginated. */
 export async function listTransactions(
+  portfolioId: string,
   params: { cursor?: string; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<TransactionListResponse> {
-  const data = await apiRequest<unknown>('/portfolio/transactions', {
-    query: { cursor: params.cursor, limit: params.limit },
-    signal,
-  });
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/transactions`,
+    {
+      query: { cursor: params.cursor, limit: params.limit },
+      signal,
+    },
+  );
   return transactionListResponseSchema.parse(data);
 }
 
 /**
- * `POST /portfolio/transactions` — single or bulk (the buy flow, §6.9). Always
- * sent in the `{ transactions: [...] }` bulk form; a one-element batch is the
- * single-add case. Each returned row is validated through `transactionSchema`.
+ * `POST /portfolios/:id/transactions` — single or bulk (the buy flow, §6.8).
+ * Always sent in the `{ transactions: [...] }` bulk form; a one-element batch is
+ * the single-add case. Each returned row is validated through `transactionSchema`.
  */
-export async function createTransactions(inputs: TransactionInput[]): Promise<Transaction[]> {
-  const data = await apiRequest<{ transactions: unknown[] }>('/portfolio/transactions', {
-    method: 'POST',
-    body: { transactions: inputs },
-  });
+export async function createTransactions(
+  portfolioId: string,
+  inputs: TransactionInput[],
+): Promise<Transaction[]> {
+  const data = await apiRequest<{ transactions: unknown[] }>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/transactions`,
+    {
+      method: 'POST',
+      body: { transactions: inputs },
+    },
+  );
   return data.transactions.map((t) => transactionSchema.parse(t));
 }
 
-/** `PATCH /portfolio/transactions/:id` — edit a transaction; re-validates oversell. */
+/** `PATCH /portfolios/:id/transactions/:txId` — edit a transaction; re-validates oversell. */
 export async function updateTransaction(
+  portfolioId: string,
   id: string,
   patch: UpdateTransactionRequest,
 ): Promise<Transaction> {
   const data = await apiRequest<{ transaction: unknown }>(
-    `/portfolio/transactions/${encodeURIComponent(id)}`,
+    `/portfolios/${encodeURIComponent(portfolioId)}/transactions/${encodeURIComponent(id)}`,
     { method: 'PATCH', body: patch },
   );
   return transactionSchema.parse(data.transaction);
 }
 
-/** `DELETE /portfolio/transactions/:id` — remove a transaction; re-validates oversell. */
-export async function deleteTransaction(id: string): Promise<void> {
-  await apiRequest<unknown>(`/portfolio/transactions/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
+/** `DELETE /portfolios/:id/transactions/:txId` — remove a transaction; re-validates oversell. */
+export async function deleteTransaction(portfolioId: string, id: string): Promise<void> {
+  await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/transactions/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 // --- Custom assets ---------------------------------------------------------

@@ -3,12 +3,15 @@ import type {
   HistoryRange,
   PortfolioHistoryOverlay,
   PortfolioHistoryRange,
+  PortfolioListResponse,
   PortfolioResponse,
+  PortfolioSummary,
   PortfolioTotals,
   PricePoint as ProviderPricePoint,
   TransactionInput,
   TransactionListResponse,
   Transaction as TransactionDto,
+  UpdatePortfolioRequest,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
@@ -68,20 +71,37 @@ export interface PortfolioServiceDeps {
 }
 
 export interface PortfolioService {
+  /** The user's portfolios (§6.8/§7.2). V1 auto-materialises the single default. */
+  listPortfolios(userId: string): Promise<PortfolioListResponse>;
+  /** Rename / change visibility of an owned portfolio; 404 otherwise (§8). */
+  updatePortfolio(
+    userId: string,
+    portfolioId: string,
+    patch: UpdatePortfolioRequest,
+  ): Promise<PortfolioSummary>;
+  /** The default ("Main") portfolio id, materialised on first touch (§6.8). */
+  getDefaultPortfolioId(userId: string): Promise<string>;
   listTransactions(
     userId: string,
+    portfolioId: string,
     params: { cursor?: string; limit?: number },
   ): Promise<TransactionListResponse>;
-  createTransactions(userId: string, inputs: TransactionInput[]): Promise<TransactionDto[]>;
+  createTransactions(
+    userId: string,
+    portfolioId: string,
+    inputs: TransactionInput[],
+  ): Promise<TransactionDto[]>;
   updateTransaction(
     userId: string,
+    portfolioId: string,
     id: string,
     patch: UpdateTransactionRequest,
   ): Promise<TransactionDto>;
-  deleteTransaction(userId: string, id: string): Promise<void>;
-  getPortfolio(userId: string): Promise<PortfolioResponse>;
+  deleteTransaction(userId: string, portfolioId: string, id: string): Promise<void>;
+  getPortfolio(userId: string, portfolioId: string): Promise<PortfolioResponse>;
   getHistory(
     userId: string,
+    portfolioId: string,
     range: PortfolioHistoryRange,
     opts?: { overlay?: boolean },
   ): Promise<{
@@ -90,8 +110,8 @@ export interface PortfolioService {
     points: Array<{ date: string; valueEur: number }>;
     assets?: PortfolioHistoryOverlay[];
   }>;
-  /** Drop the cached value series for a user's portfolio (called on any write). */
-  invalidateHistory(userId: string): Promise<void>;
+  /** Drop the cached value series for a portfolio (called on any write). */
+  invalidateHistory(portfolioId: string): Promise<void>;
 }
 
 const DEFAULT_LIMIT = 50;
@@ -215,9 +235,22 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     }
   }
 
-  async function invalidateHistory(userId: string): Promise<void> {
-    const portfolioId = await portfolioRepo.findMain(userId);
-    if (portfolioId) await redis.del(portfolioHistoryCacheKey(portfolioId));
+  async function invalidateHistory(portfolioId: string): Promise<void> {
+    await redis.del(portfolioHistoryCacheKey(portfolioId));
+  }
+
+  /**
+   * Resolve a portfolio the caller owns, or 404 (§8). Ownership is enforced in
+   * the repository (`WHERE user_id = session.user`), so another user's id is
+   * indistinguishable from a missing one — no IDOR, and never a 403.
+   */
+  async function requireOwnedPortfolio(
+    userId: string,
+    portfolioId: string,
+  ): Promise<PortfolioSummary> {
+    const portfolio = await portfolioRepo.findByIdForUser(userId, portfolioId);
+    if (!portfolio) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+    return portfolio;
   }
 
   /** The empty graph payload (no transactions / nothing convertible to plot). */
@@ -380,9 +413,31 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   return {
-    async listTransactions(userId, params) {
+    async listPortfolios(userId) {
+      // Materialise the guaranteed default so the list is never empty (§6.8):
+      // seeded/invited users alike always have exactly one auto-created row.
+      await portfolioRepo.getOrCreateMain(userId);
+      const portfolios = await portfolioRepo.listForUser(userId);
+      return { portfolios };
+    },
+
+    async updatePortfolio(userId, portfolioId, patch) {
+      const updated = await portfolioRepo.updatePortfolio(userId, portfolioId, {
+        name: patch.name,
+        visibility: patch.visibility,
+      });
+      if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      return updated;
+    },
+
+    getDefaultPortfolioId(userId) {
+      return portfolioRepo.getOrCreateMain(userId);
+    },
+
+    async listTransactions(userId, portfolioId, params) {
+      await requireOwnedPortfolio(userId, portfolioId);
       const limit = params.limit ?? DEFAULT_LIMIT;
-      const { items, nextCursor } = await transactionRepo.listByUser(userId, {
+      const { items, nextCursor } = await transactionRepo.listByPortfolio(portfolioId, {
         limit,
         cursor: params.cursor,
       });
@@ -410,12 +465,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     },
 
-    async createTransactions(userId, inputs) {
+    async createTransactions(userId, portfolioId, inputs) {
       if (inputs.length === 0) throw badRequest('No transactions to create.', 'EMPTY_BATCH');
+      await requireOwnedPortfolio(userId, portfolioId);
 
       const assetIds = [...new Set(inputs.map((i) => i.assetId))];
       const assetsById = await loadVisibleAssets(userId, assetIds);
-      const portfolioId = await portfolioRepo.getOrCreateMain(userId);
 
       // Validate per asset against the *whole* timeline (existing + pending), so
       // back-dated sells and intra-batch interleaving are judged correctly.
@@ -438,7 +493,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         })),
       );
 
-      await invalidateHistory(userId);
+      await invalidateHistory(portfolioId);
 
       // First reference (§6.2/§9): transacting on an asset warms its daily
       // history so the value-over-time series has closes to plot — seeded and
@@ -454,9 +509,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
     },
 
-    async updateTransaction(userId, id, patch) {
+    async updateTransaction(userId, portfolioId, id, patch) {
+      await requireOwnedPortfolio(userId, portfolioId);
       const existing = await transactionRepo.findByIdForUser(userId, id);
-      if (!existing) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
+      // Scope the transaction to *this* portfolio: a txn in another (even owned)
+      // portfolio is a 404 on this path, matching the scoped URL (§8).
+      if (!existing || existing.portfolioId !== portfolioId) {
+        throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
+      }
 
       // Build the asset's set with the edited row swapped in, then re-validate.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
@@ -482,16 +542,19 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
       if (!updated) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
 
-      await invalidateHistory(userId);
+      await invalidateHistory(portfolioId);
 
       const [asset] = await portfolioRepo.assetsByIds([updated.assetId]);
       if (!asset) throw new Error(`Asset ${updated.assetId} missing after update`);
       return recordToDto(updated, asset);
     },
 
-    async deleteTransaction(userId, id) {
+    async deleteTransaction(userId, portfolioId, id) {
+      await requireOwnedPortfolio(userId, portfolioId);
       const existing = await transactionRepo.findByIdForUser(userId, id);
-      if (!existing) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
+      if (!existing || existing.portfolioId !== portfolioId) {
+        throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
+      }
 
       // Removing a BUY can leave a later SELL over-selling; replay without it.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
@@ -501,17 +564,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const deleted = await transactionRepo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
 
-      await invalidateHistory(userId);
+      await invalidateHistory(portfolioId);
     },
 
-    async getPortfolio(userId) {
+    async getPortfolio(userId, portfolioId) {
+      await requireOwnedPortfolio(userId, portfolioId);
       const empty: PortfolioResponse = {
         baseCurrency,
         holdings: [],
         totals: emptyTotals(),
       };
-      const portfolioId = await portfolioRepo.findMain(userId);
-      if (!portfolioId) return empty;
 
       const txns = await transactionRepo.listForPortfolio(portfolioId);
       if (txns.length === 0) return empty;
@@ -568,12 +630,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return { baseCurrency, holdings: holdingDtos, totals: computeTotals(holdings) };
     },
 
-    async getHistory(userId, range, opts) {
+    async getHistory(userId, portfolioId, range, opts) {
+      // Ownership is enforced against the scoped id (§6.8): another user's — or a
+      // missing — portfolio is a 404, not a silent fall-back to the default.
+      await requireOwnedPortfolio(userId, portfolioId);
       const overlay = opts?.overlay ?? false;
-      const portfolioId = await portfolioRepo.findMain(userId);
-      if (!portfolioId) {
-        return { range, baseCurrency, points: [], ...(overlay ? { assets: [] } : {}) };
-      }
 
       const today = todayIso();
       const payload = await loadSeries(portfolioId);

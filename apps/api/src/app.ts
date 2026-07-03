@@ -54,7 +54,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/workboard', createWorkboardRouter(ctx));
   app.use('/api/v1/search', createSearchRouter(ctx, limiters));
   app.use('/api/v1/assets', createAssetsRouter(ctx));
-  app.use('/api/v1/portfolio', createPortfolioRouter(ctx));
+  app.use('/api/v1/portfolios', createPortfolioRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
 
   app.use(createErrorHandler(ctx.logger));

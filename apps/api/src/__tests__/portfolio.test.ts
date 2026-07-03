@@ -4,7 +4,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   portfolioHistoryResponseSchema,
+  portfolioListResponseSchema,
   portfolioResponseSchema,
+  portfolioSummarySchema,
   transactionListResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -35,6 +37,15 @@ async function loginAgent(app: Application, identifier: string, password: string
   return agent;
 }
 
+/** Resolve the caller's default ("Main") portfolio id via the scoped list endpoint. */
+async function defaultPortfolioId(agent: ReturnType<typeof request.agent>): Promise<string> {
+  const res = await agent.get('/api/v1/portfolios');
+  expect(res.status).toBe(200);
+  const def = res.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault);
+  expect(def).toBeTruthy();
+  return def.id as string;
+}
+
 async function seedAsset(
   h: TestHarness,
   overrides: Partial<typeof schema.assets.$inferInsert> = {},
@@ -62,10 +73,132 @@ beforeEach(async () => {
   harness = await createTestApp();
 });
 
-describe('POST /api/v1/portfolio/transactions', () => {
+// ─── Portfolio list + single portfolio + PATCH ────────────────────────────────
+
+describe('GET /api/v1/portfolios (list, scoped model)', () => {
+  it('requires authentication', async () => {
+    const res = await request(harness.app).get('/api/v1/portfolios');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns the auto-created default portfolio for a new user', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/portfolios');
+    expect(res.status).toBe(200);
+    expect(portfolioListResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.portfolios).toHaveLength(1);
+    const [main] = res.body.portfolios;
+    expect(main.name).toBe('Main');
+    expect(main.isDefault).toBe(true);
+    expect(main.visibility).toBe('private');
+    expect(main.sortOrder).toBe(0);
+  });
+
+  it('surfaces a second portfolio inserted directly via SQL with no code change', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    // Materialise the default first (the list endpoint does this lazily).
+    await agent.get('/api/v1/portfolios');
+
+    // A future multi-portfolio feature only inserts a row — the scoped model
+    // makes it appear immediately with zero handler changes (§13 P3 done-when).
+    await harness.db
+      .insert(schema.portfolios)
+      .values({ userId: user.id, name: 'Trading', visibility: 'friends', sortOrder: 1 });
+
+    const res = await agent.get('/api/v1/portfolios');
+    expect(res.status).toBe(200);
+    expect(res.body.portfolios).toHaveLength(2);
+    const names = res.body.portfolios.map((p: { name: string }) => p.name);
+    expect(names).toEqual(['Main', 'Trading']); // ordered by sort_order
+    const trading = res.body.portfolios.find((p: { name: string }) => p.name === 'Trading');
+    expect(trading.isDefault).toBe(false);
+    expect(trading.visibility).toBe('friends');
+  });
+});
+
+describe('GET /api/v1/portfolios/:id (single, ownership-scoped)', () => {
+  it('returns an empty portfolio for a new user', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(res.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.holdings).toHaveLength(0);
+    expect(res.body.totals.marketValueEur).toBe(0);
+  });
+
+  it('404s a portfolio id owned by another user (no IDOR, not 403)', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const ownerPid = await defaultPortfolioId(ownerAgent);
+
+    const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
+    const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+
+    const res = await intruderAgent.get(`/api/v1/portfolios/${ownerPid}`);
+    expect(res.status).toBe(404);
+    const hist = await intruderAgent.get(`/api/v1/portfolios/${ownerPid}/history?range=MAX`);
+    expect(hist.status).toBe(404);
+    const txns = await intruderAgent.get(`/api/v1/portfolios/${ownerPid}/transactions`);
+    expect(txns.status).toBe(404);
+  });
+});
+
+describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
+  it('updates name and visibility, and is ownership-scoped', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const res = await agent
+      .patch(`/api/v1/portfolios/${pid}`)
+      .set(...XRW)
+      .send({ name: 'My Money', visibility: 'friends' });
+    expect(res.status).toBe(200);
+    expect(portfolioSummarySchema.safeParse(res.body.portfolio).success).toBe(true);
+    expect(res.body.portfolio.name).toBe('My Money');
+    expect(res.body.portfolio.visibility).toBe('friends');
+    // Default is a stable property of the row (§6.8), not derived from its name:
+    // renaming the auto-created portfolio keeps it the default.
+    expect(res.body.portfolio.isDefault).toBe(true);
+
+    // The change persists across a fresh read — and, crucially, renaming the
+    // default must NOT resurrect a phantom empty "Main": still exactly one row.
+    const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios).toHaveLength(1);
+    const updated = list.body.portfolios.find((p: { id: string }) => p.id === pid);
+    expect(updated.name).toBe('My Money');
+    expect(updated.visibility).toBe('friends');
+    expect(updated.isDefault).toBe(true);
+  });
+
+  it('404s when patching another user’s portfolio', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const ownerPid = await defaultPortfolioId(ownerAgent);
+
+    const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
+    const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+
+    const res = await intruderAgent
+      .patch(`/api/v1/portfolios/${ownerPid}`)
+      .set(...XRW)
+      .send({ visibility: 'friends' });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ─── Transactions (scoped under a portfolio) ──────────────────────────────────
+
+describe('POST /api/v1/portfolios/:id/transactions', () => {
   it('requires authentication', async () => {
     const res = await request(harness.app)
-      .post('/api/v1/portfolio/transactions')
+      .post('/api/v1/portfolios/11111111-1111-7111-8111-111111111111/transactions')
       .set(...XRW)
       .send({
         assetId: '00000000-0000-0000-0000-000000000000',
@@ -76,13 +209,30 @@ describe('POST /api/v1/portfolio/transactions', () => {
     expect(res.status).toBe(401);
   });
 
+  it('404s posting to a portfolio the caller does not own', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const ownerPid = await defaultPortfolioId(ownerAgent);
+    const asset = await seedAsset(harness);
+
+    const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
+    const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+
+    const res = await intruderAgent
+      .post(`/api/v1/portfolios/${ownerPid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 1, executedAt: tsOffset(-1) });
+    expect(res.status).toBe(404);
+  });
+
   it('creates a single transaction', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 50, executedAt: tsOffset(-3) });
 
@@ -96,10 +246,11 @@ describe('POST /api/v1/portfolio/transactions', () => {
   it('creates transactions in bulk (the buy flow)', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         transactions: [
@@ -112,7 +263,7 @@ describe('POST /api/v1/portfolio/transactions', () => {
     expect(res.status).toBe(201);
     expect(res.body.transactions).toHaveLength(3);
 
-    const list = await agent.get('/api/v1/portfolio/transactions');
+    const list = await agent.get(`/api/v1/portfolios/${pid}/transactions`);
     expect(list.status).toBe(200);
     expect(transactionListResponseSchema.safeParse(list.body).success).toBe(true);
     expect(list.body.items).toHaveLength(3);
@@ -121,15 +272,16 @@ describe('POST /api/v1/portfolio/transactions', () => {
   it('rejects a SELL that would make the held quantity negative', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 3.5, price: 50, executedAt: tsOffset(-3) });
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'sell', quantity: 5, price: 60, executedAt: tsOffset(-2) });
 
@@ -141,16 +293,17 @@ describe('POST /api/v1/portfolio/transactions', () => {
   it('rejects a back-dated SELL that over-sells at an earlier point in time', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     // Buy 10 today; a SELL of 5 dated *before* the buy over-sells at that moment.
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 50, executedAt: tsOffset(-1) });
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'sell', quantity: 5, price: 60, executedAt: tsOffset(-5) });
 
@@ -161,9 +314,10 @@ describe('POST /api/v1/portfolio/transactions', () => {
   it('rejects a transaction against an unknown asset', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         assetId: '11111111-1111-7111-8111-111111111111',
@@ -177,14 +331,15 @@ describe('POST /api/v1/portfolio/transactions', () => {
   });
 });
 
-describe('GET /api/v1/portfolio/transactions (pagination)', () => {
+describe('GET /api/v1/portfolios/:id/transactions (pagination)', () => {
   it('paginates newest-first with a cursor', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         transactions: [
@@ -194,13 +349,13 @@ describe('GET /api/v1/portfolio/transactions (pagination)', () => {
         ],
       });
 
-    const first = await agent.get('/api/v1/portfolio/transactions?limit=2');
+    const first = await agent.get(`/api/v1/portfolios/${pid}/transactions?limit=2`);
     expect(first.status).toBe(200);
     expect(first.body.items).toHaveLength(2);
     expect(first.body.nextCursor).toBeTruthy();
 
     const second = await agent.get(
-      `/api/v1/portfolio/transactions?limit=2&cursor=${first.body.nextCursor}`,
+      `/api/v1/portfolios/${pid}/transactions?limit=2&cursor=${first.body.nextCursor}`,
     );
     expect(second.status).toBe(200);
     expect(second.body.items).toHaveLength(1);
@@ -208,20 +363,21 @@ describe('GET /api/v1/portfolio/transactions (pagination)', () => {
   });
 });
 
-describe('PATCH/DELETE /api/v1/portfolio/transactions/:id', () => {
+describe('PATCH/DELETE /api/v1/portfolios/:id/transactions/:txId', () => {
   it('updates a transaction', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     const created = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 50, executedAt: tsOffset(-3) });
     const id = created.body.transactions[0].id;
 
     const res = await agent
-      .patch(`/api/v1/portfolio/transactions/${id}`)
+      .patch(`/api/v1/portfolios/${pid}/transactions/${id}`)
       .set(...XRW)
       .send({ quantity: 12, note: 'topped up' });
     expect(res.status).toBe(200);
@@ -232,20 +388,21 @@ describe('PATCH/DELETE /api/v1/portfolio/transactions/:id', () => {
   it('rejects an edit that would over-sell', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     const buy = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 50, executedAt: tsOffset(-3) });
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'sell', quantity: 8, price: 60, executedAt: tsOffset(-2) });
 
     // Shrinking the BUY to 5 would make the existing SELL of 8 invalid.
     const res = await agent
-      .patch(`/api/v1/portfolio/transactions/${buy.body.transactions[0].id}`)
+      .patch(`/api/v1/portfolios/${pid}/transactions/${buy.body.transactions[0].id}`)
       .set(...XRW)
       .send({ quantity: 5 });
     expect(res.status).toBe(400);
@@ -255,27 +412,28 @@ describe('PATCH/DELETE /api/v1/portfolio/transactions/:id', () => {
   it('deletes a transaction, but refuses when it would over-sell', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness);
 
     const buy = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 50, executedAt: tsOffset(-3) });
     const sell = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'sell', quantity: 8, price: 60, executedAt: tsOffset(-2) });
 
     // Deleting the BUY would leave the SELL of 8 over-selling.
     const blocked = await agent
-      .delete(`/api/v1/portfolio/transactions/${buy.body.transactions[0].id}`)
+      .delete(`/api/v1/portfolios/${pid}/transactions/${buy.body.transactions[0].id}`)
       .set(...XRW);
     expect(blocked.status).toBe(400);
     expect(blocked.body.error.code).toBe('OVERSELL');
 
     // Deleting the SELL first is fine.
     const ok = await agent
-      .delete(`/api/v1/portfolio/transactions/${sell.body.transactions[0].id}`)
+      .delete(`/api/v1/portfolios/${pid}/transactions/${sell.body.transactions[0].id}`)
       .set(...XRW);
     expect(ok.status).toBe(204);
   });
@@ -283,39 +441,33 @@ describe('PATCH/DELETE /api/v1/portfolio/transactions/:id', () => {
   it('does not expose another user’s transactions (IDOR)', async () => {
     const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
     const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const ownerPid = await defaultPortfolioId(ownerAgent);
     const asset = await seedAsset(harness);
     const created = await ownerAgent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${ownerPid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 1, executedAt: tsOffset(-1) });
     const id = created.body.transactions[0].id;
 
     const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
     const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+    const intruderPid = await defaultPortfolioId(intruderAgent);
 
+    // The intruder's own portfolio does not contain the owner's txn → 404.
     const patch = await intruderAgent
-      .patch(`/api/v1/portfolio/transactions/${id}`)
+      .patch(`/api/v1/portfolios/${intruderPid}/transactions/${id}`)
       .set(...XRW)
       .send({ quantity: 999 });
     expect(patch.status).toBe(404);
 
-    const del = await intruderAgent.delete(`/api/v1/portfolio/transactions/${id}`).set(...XRW);
+    const del = await intruderAgent
+      .delete(`/api/v1/portfolios/${intruderPid}/transactions/${id}`)
+      .set(...XRW);
     expect(del.status).toBe(404);
   });
 });
 
-describe('GET /api/v1/portfolio (holdings + totals)', () => {
-  it('returns an empty portfolio for a new user', async () => {
-    const user = await harness.seedUser();
-    const agent = await loginAgent(harness.app, user.email, user.password);
-
-    const res = await agent.get('/api/v1/portfolio');
-    expect(res.status).toBe(200);
-    expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
-    expect(res.body.holdings).toHaveLength(0);
-    expect(res.body.totals.marketValueEur).toBe(0);
-  });
-
+describe('GET /api/v1/portfolios/:id (holdings + totals)', () => {
   it('derives holdings + totals from the transaction log and a live quote', async () => {
     // Deterministic EUR quote with a prior close, so day change is exercised too.
     const marketData = createStubMarketData({
@@ -334,14 +486,15 @@ describe('GET /api/v1/portfolio (holdings + totals)', () => {
     const stubHarness = await createTestApp({ marketData });
     const user = await stubHarness.seedUser();
     const agent = await loginAgent(stubHarness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(stubHarness, { currency: 'EUR' });
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-3) });
 
-    const res = await agent.get('/api/v1/portfolio');
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
     expect(res.status).toBe(200);
     expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
 
@@ -364,11 +517,12 @@ describe('GET /api/v1/portfolio (holdings + totals)', () => {
   });
 });
 
-describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
+describe('GET /api/v1/portfolios/:id/history (value over time + cache)', () => {
   it('returns an empty series for a new user', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const pid = await defaultPortfolioId(agent);
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.points).toHaveLength(0);
@@ -380,6 +534,7 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
 
     // Two stored daily closes for the asset (the outage fallback layer).
@@ -389,11 +544,11 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     ]);
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 2, price: 100, executedAt: tsOffset(-2) });
 
-    const first = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const first = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(first.status).toBe(200);
     expect(portfolioHistoryResponseSchema.safeParse(first.body).success).toBe(true);
     const firstStart = first.body.points[0];
@@ -402,11 +557,11 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
 
     // A second buy must invalidate the cached series and change the result.
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 2, price: 110, executedAt: tsOffset(-2) });
 
-    const second = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const second = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(second.status).toBe(200);
     expect(second.body.points[0].valueEur).toBeCloseTo(400, 6); // 4 × 100
   });
@@ -415,6 +570,7 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     // Historical FX for non-base currencies is not yet supported (§5.4); a USD
     // holding with value points must not crash the series.
     const asset = await seedAsset(h, {
@@ -428,11 +584,11 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
       { assetId: asset.id, date: dayOffset(-1), close: '110' },
     ]);
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 2, price: 100, executedAt: tsOffset(-2) });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
     // The unconvertible USD holding is dropped from the series rather than 500ing.
@@ -443,6 +599,7 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const eur = await seedAsset(h, { currency: 'EUR' });
     const usd = await seedAsset(h, {
       currency: 'USD',
@@ -455,7 +612,7 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
       { assetId: usd.id, date: dayOffset(-1), close: '999' },
     ]);
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         transactions: [
@@ -464,7 +621,7 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
         ],
       });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(res.body.points.length).toBeGreaterThan(0);
     // Only the EUR holding contributes (2 × 100) on every point; the USD leg
@@ -475,7 +632,7 @@ describe('GET /api/v1/portfolio/history (value over time + cache)', () => {
   });
 });
 
-describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () => {
+describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', () => {
   /** Deterministic daily closes for the last 7 calendar days (−6 … today). */
   function marketCloses(): Map<string, number> {
     return new Map(
@@ -499,11 +656,12 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
     // Deliberately NO price_history rows: every point must come from the provider.
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         transactions: [
@@ -512,7 +670,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
         ],
       });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
 
@@ -533,6 +691,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
     // real end-to-end path with zero network.
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness, {
       providerId: 'manual',
       providerRef: 'test-custom-ref',
@@ -548,11 +707,11 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
       { assetId: asset.id, date: dayOffset(-2), close: '1200' },
     ]);
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 1000, executedAt: tsOffset(-6) });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(res.body.points).toHaveLength(7);
     for (const point of res.body.points) {
@@ -578,6 +737,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const stock = await seedAsset(h, { currency: 'EUR' });
     const house = await seedAsset(h, {
       providerId: 'manual',
@@ -590,7 +750,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
     });
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         transactions: [
@@ -599,7 +759,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
         ],
       });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(res.body.points).toHaveLength(7);
     for (const point of res.body.points) {
@@ -618,6 +778,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
     await h.db.insert(schema.priceHistory).values([
       { assetId: asset.id, date: dayOffset(-5), close: '999' },
@@ -625,11 +786,11 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
     ]);
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-6) });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     const byDate = new Map(
       (res.body.points as Array<{ date: string; valueEur: number }>).map((p) => [p.date, p]),
@@ -641,7 +802,7 @@ describe('GET /api/v1/portfolio/history (provider-fed daily curve, #108)', () =>
   });
 });
 
-describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)', () => {
+describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #122)', () => {
   /** CachedResult wrapper for stubbed provider history points. */
   function cachedHistory(points: Array<{ time: string; close: number }>) {
     return { value: points, stale: false, asOf: Date.now() };
@@ -691,10 +852,11 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         assetId: asset.id,
@@ -704,7 +866,7 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
         executedAt: tsOffset(-730),
       });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(res.status).toBe(200);
     expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
 
@@ -729,10 +891,11 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         assetId: asset.id,
@@ -742,7 +905,7 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
         executedAt: tsOffset(-730),
       });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX&overlay=true');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX&overlay=true`);
     expect(res.status).toBe(200);
     expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
 
@@ -766,10 +929,11 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
 
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         assetId: asset.id,
@@ -779,7 +943,7 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
         executedAt: tsOffset(-730),
       });
 
-    const res = await agent.get('/api/v1/portfolio/history?range=1M&overlay=true');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M&overlay=true`);
     expect(res.status).toBe(200);
     // ~1 month of days, far fewer than the 2-year span.
     expect(res.body.points.length).toBeGreaterThan(20);
@@ -794,21 +958,22 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
 
     // A recent buy first: the series starts a few days ago (and gets cached).
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 170, executedAt: tsOffset(-3) });
-    const before = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const before = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(before.status).toBe(200);
     expect(before.body.points[0].date).toBe(dayOffset(-3));
 
     // The owner then records a purchase from two years ago: the very next read
     // must serve the full reconstructed history, not the cached short series.
     await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         assetId: asset.id,
@@ -817,7 +982,7 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
         price: 100,
         executedAt: tsOffset(-730),
       });
-    const after = await agent.get('/api/v1/portfolio/history?range=MAX');
+    const after = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(after.status).toBe(200);
     expect(after.body.points[0].date).toBe(dayOffset(-730));
     expect(after.body.points).toHaveLength(731);
@@ -826,7 +991,8 @@ describe('GET /api/v1/portfolio/history (2-year reconstruction + overlay, #122)'
   it('rejects an invalid overlay token instead of guessing', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
-    const res = await agent.get('/api/v1/portfolio/history?range=MAX&overlay=yes');
+    const pid = await defaultPortfolioId(agent);
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX&overlay=yes`);
     expect(res.status).toBe(400);
   });
 });
@@ -837,12 +1003,13 @@ describe('first-reference history backfill (§6.2/§9)', () => {
     const h = await createTestApp({ marketData: createStubMarketData(), backfill });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     // Seeded catalog rows: present in `assets`, no `price_history` yet.
     const bayer = await seedAsset(h);
     const apple = await seedAsset(h, { symbol: 'AAPL', providerRef: 'AAPL', currency: 'USD' });
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({
         transactions: [
@@ -861,13 +1028,14 @@ describe('first-reference history backfill (§6.2/§9)', () => {
     const h = await createTestApp({ marketData: createStubMarketData(), backfill });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h);
     await h.db
       .insert(schema.priceHistory)
       .values({ assetId: asset.id, date: dayOffset(-10), close: '48' });
 
     const res = await agent
-      .post('/api/v1/portfolio/transactions')
+      .post(`/api/v1/portfolios/${pid}/transactions`)
       .set(...XRW)
       .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 50, executedAt: tsOffset(-3) });
 

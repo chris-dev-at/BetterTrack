@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock('../../lib/portfolioApi', () => ({
+  listPortfolios: vi.fn(),
   getPortfolio: vi.fn(),
   getPortfolioHistory: vi.fn(),
   listTransactions: vi.fn(),
@@ -63,9 +64,24 @@ import {
   getPortfolio,
   getPortfolioHistory,
   getValuePoints,
+  listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
 import { PortfolioPage } from './PortfolioPage';
+
+/** The single auto-created default portfolio (§6.8) resolved before any scoped call. */
+const DEFAULT_PORTFOLIO_ID = 'p1';
+const PORTFOLIO_LIST = {
+  portfolios: [
+    {
+      id: DEFAULT_PORTFOLIO_ID,
+      name: 'Main',
+      visibility: 'private' as const,
+      sortOrder: 0,
+      isDefault: true,
+    },
+  ],
+};
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -189,6 +205,7 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(listTransactions).mockResolvedValue(TXNS);
   vi.mocked(deleteTransaction).mockResolvedValue(undefined);
@@ -284,7 +301,7 @@ describe('PortfolioPage — asset overlay on the value chart', () => {
 
   beforeEach(() => {
     vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
-    vi.mocked(getPortfolioHistory).mockImplementation((_range, overlay) =>
+    vi.mocked(getPortfolioHistory).mockImplementation((_portfolioId, _range, overlay) =>
       Promise.resolve(overlay ? HISTORY_WITH_ASSETS : HISTORY),
     );
   });
@@ -294,12 +311,22 @@ describe('PortfolioPage — asset overlay on the value chart', () => {
     renderPage();
     const toggle = await screen.findByRole('button', { name: 'Overlay assets' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith('1M', false, expect.anything());
+    expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith(
+      DEFAULT_PORTFOLIO_ID,
+      '1M',
+      false,
+      expect.anything(),
+    );
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() =>
-      expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith('1M', true, expect.anything()),
+      expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith(
+        DEFAULT_PORTFOLIO_ID,
+        '1M',
+        true,
+        expect.anything(),
+      ),
     );
     // The overlay asset's legend chip appears next to the chart ("AAPL" also
     // exists in the holdings table / donut legend, so scope to the section).
@@ -349,7 +376,9 @@ describe('PortfolioPage — expandable rows', () => {
     await user.click(within(region).getByRole('button', { name: /Delete transaction from/i }));
     await user.click(screen.getByRole('button', { name: 'Yes' }));
 
-    await waitFor(() => expect(vi.mocked(deleteTransaction)).toHaveBeenCalledWith('t2'));
+    await waitFor(() =>
+      expect(vi.mocked(deleteTransaction)).toHaveBeenCalledWith(DEFAULT_PORTFOLIO_ID, 't2'),
+    );
   });
 });
 

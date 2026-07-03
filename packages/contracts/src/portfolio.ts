@@ -13,6 +13,60 @@ import { assetTypeSchema, currencyCodeSchema } from './market';
  * (§5.4), never in the contract.
  */
 
+// --- Portfolios (the list + a single portfolio) ----------------------------
+
+/**
+ * Per-portfolio visibility (§6.8/§6.9): `private` (default) or `friends`. V1
+ * stores + exposes this flag only; social consumption is P5 (§6.9).
+ */
+export const portfolioVisibilitySchema = z.enum(['private', 'friends']);
+export type PortfolioVisibility = z.infer<typeof portfolioVisibilitySchema>;
+
+/**
+ * One portfolio in the list (§6.8, §7.2). V1 auto-creates exactly one "Main"
+ * per user — `isDefault` marks it — but the shape is already multi-portfolio so
+ * additional rows are purely additive.
+ */
+export const portfolioSummarySchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    visibility: portfolioVisibilitySchema,
+    sortOrder: z.number().int(),
+    isDefault: z.boolean(),
+  })
+  .strict();
+export type PortfolioSummary = z.infer<typeof portfolioSummarySchema>;
+
+/** `GET /portfolios` response — the user's portfolios (V1: the single default). */
+export const portfolioListResponseSchema = z
+  .object({ portfolios: z.array(portfolioSummarySchema) })
+  .strict();
+export type PortfolioListResponse = z.infer<typeof portfolioListResponseSchema>;
+
+/** `PATCH /portfolios/:id` body — rename and/or change visibility (§6.8). */
+export const updatePortfolioRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    visibility: portfolioVisibilitySchema.optional(),
+  })
+  .strict();
+export type UpdatePortfolioRequest = z.infer<typeof updatePortfolioRequestSchema>;
+
+/** `PATCH /portfolios/:id` response — the updated portfolio summary (§6.8). */
+export const updatePortfolioResponseSchema = z
+  .object({ portfolio: portfolioSummarySchema })
+  .strict();
+export type UpdatePortfolioResponse = z.infer<typeof updatePortfolioResponseSchema>;
+
+/** Route param for every `/portfolios/:portfolioId/…` endpoint. */
+export const portfolioIdParamSchema = z.object({ portfolioId: z.string().uuid() }).strict();
+
+/** Route params for `/portfolios/:portfolioId/transactions/:txId` mutations. */
+export const portfolioTransactionParamsSchema = z
+  .object({ portfolioId: z.string().uuid(), txId: z.string().uuid() })
+  .strict();
+
 // --- Transactions ----------------------------------------------------------
 
 /** BUY adds to a position; SELL reduces it (§6.9). */
@@ -39,7 +93,7 @@ export const transactionInputSchema = z
 export type TransactionInput = z.infer<typeof transactionInputSchema>;
 
 /**
- * `POST /portfolio/transactions` request body — single **or bulk** (the buy
+ * `POST /portfolios/:id/transactions` request body — single **or bulk** (the buy
  * flow, §6.9). A bare transaction object is accepted, as is `{ transactions:
  * [...] }` with one or more rows. The bulk form is tried first so the
  * discriminating `transactions` key wins.
@@ -50,7 +104,7 @@ export const createTransactionsRequestSchema = z.union([
 ]);
 export type CreateTransactionsRequest = z.infer<typeof createTransactionsRequestSchema>;
 
-/** `PATCH /portfolio/transactions/:id` body — every field optional. */
+/** `PATCH /portfolios/:id/transactions/:txId` body — every field optional. */
 export const updateTransactionRequestSchema = z
   .object({
     side: transactionSideSchema.optional(),
@@ -93,7 +147,7 @@ export const transactionSchema = z
   .strict();
 export type Transaction = z.infer<typeof transactionSchema>;
 
-/** `GET /portfolio/transactions?cursor=` response (keyset paginated, newest first). */
+/** `GET /portfolios/:id/transactions?cursor=` response (keyset paginated, newest first). */
 export const transactionListResponseSchema = z
   .object({
     items: z.array(transactionSchema),
@@ -111,10 +165,7 @@ export const transactionListQuerySchema = z
   .strict();
 export type TransactionListQuery = z.infer<typeof transactionListQuerySchema>;
 
-/** Route param for transaction mutations. */
-export const transactionIdParamSchema = z.object({ id: z.string().uuid() }).strict();
-
-// --- Holdings + totals (`GET /portfolio`) ----------------------------------
+// --- Holdings + totals (`GET /portfolios/:id`) ------------------------------
 
 /**
  * One row of the holdings view (§6.9). Native-currency facts sit alongside
@@ -152,7 +203,7 @@ export const portfolioTotalsSchema = z
   .strict();
 export type PortfolioTotals = z.infer<typeof portfolioTotalsSchema>;
 
-/** `GET /portfolio` response — holdings + totals (§6.9, §8). */
+/** `GET /portfolios/:id` response — holdings + totals (§6.9, §8). */
 export const portfolioResponseSchema = z
   .object({
     baseCurrency: currencyCodeSchema,
@@ -162,7 +213,7 @@ export const portfolioResponseSchema = z
   .strict();
 export type PortfolioResponse = z.infer<typeof portfolioResponseSchema>;
 
-// --- Value over time (`GET /portfolio/history`) ----------------------------
+// --- Value over time (`GET /portfolios/:id/history`) ----------------------------
 
 /** Portfolio history ranges (§6.9): 1M / 6M / 1Y / Max. */
 export const PORTFOLIO_HISTORY_RANGES = ['1M', '6M', '1Y', 'MAX'] as const;
@@ -170,7 +221,7 @@ export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
 export type PortfolioHistoryRange = z.infer<typeof portfolioHistoryRangeSchema>;
 
 /**
- * `GET /portfolio/history?range=&overlay=` query. `overlay=true` additionally
+ * `GET /portfolios/:id/history?range=&overlay=` query. `overlay=true` additionally
  * returns each held asset's own daily price series (issue #122) so the chart
  * can overlay them on the portfolio curve; it arrives as a query-string token,
  * so it is an explicit `'true' | 'false'` enum rather than a boolean coercion
@@ -223,7 +274,7 @@ export const portfolioHistoryOverlaySchema = z
   .strict();
 export type PortfolioHistoryOverlay = z.infer<typeof portfolioHistoryOverlaySchema>;
 
-/** `GET /portfolio/history` response. `assets` is present only when `overlay=true`. */
+/** `GET /portfolios/:id/history` response. `assets` is present only when `overlay=true`. */
 export const portfolioHistoryResponseSchema = z
   .object({
     range: portfolioHistoryRangeSchema,

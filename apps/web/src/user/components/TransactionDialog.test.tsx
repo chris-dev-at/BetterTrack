@@ -31,6 +31,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof TransactionDial
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <TransactionDialog
+          portfolioId="p1"
           onClose={onClose}
           onSubmitted={onSubmitted}
           asset={BTC}
@@ -117,7 +118,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.click(screen.getByRole('button', { name: /^record$/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
-    const [inputs] = vi.mocked(portfolioApi.createTransactions).mock.calls[0]!;
+    const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
     const submitted = inputs as TransactionInput[];
     expect(submitted).toEqual([
       {
@@ -143,7 +144,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.type(screen.getByLabelText(/price for btc/i), '54000');
     await user.click(screen.getByRole('button', { name: /^record$/i }));
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
-    const byQuantity = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![0];
+    const byQuantity = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
     first.unmount();
     vi.clearAllMocks();
     vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
@@ -156,7 +157,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.type(screen.getByLabelText(/amount invested for btc/i), '1000');
     await user.click(screen.getByRole('button', { name: /^record$/i }));
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
-    const byAmount = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![0];
+    const byAmount = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
 
     expect(byAmount).toEqual(byQuantity);
   });
@@ -200,7 +201,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.click(screen.getByRole('button', { name: /^record$/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
-    const [inputs] = vi.mocked(portfolioApi.createTransactions).mock.calls[0]!;
+    const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
     expect((inputs as TransactionInput[])[0]).toMatchObject({
       side: 'sell',
       quantity: 0.01851852,
@@ -239,7 +240,7 @@ describe('TransactionDialog — quantity entry mode (regression)', () => {
     await user.click(screen.getByRole('button', { name: /^record$/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
-    const [inputs] = vi.mocked(portfolioApi.createTransactions).mock.calls[0]!;
+    const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
     expect((inputs as TransactionInput[])[0]).toMatchObject({ quantity: 5, price: 0 });
   });
 

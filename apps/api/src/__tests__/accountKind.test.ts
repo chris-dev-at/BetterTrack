@@ -36,7 +36,7 @@ async function portfolioCount(h: TestHarness, userId: string): Promise<number> {
 // Every user-app route group is mounted behind `requireUser` (§10). The guard
 // runs before any handler, so a bare GET is enough to prove the rejection.
 const USER_ENDPOINTS = [
-  '/api/v1/portfolio',
+  '/api/v1/portfolios',
   '/api/v1/workboard',
   '/api/v1/search?q=bay',
   '/api/v1/assets/00000000-0000-0000-0000-000000000000',
@@ -68,7 +68,7 @@ describe('account-kind separation (PROJECTPLAN.md §3, §5.5, §10)', () => {
   });
 
   it('anonymous callers get 401 on user endpoints (not the admin-kind pointer)', async () => {
-    const res = await request(harness.app).get('/api/v1/portfolio');
+    const res = await request(harness.app).get('/api/v1/portfolios');
     expect(res.status).toBe(401);
   });
 });

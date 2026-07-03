@@ -112,12 +112,12 @@ export function createTransactionRepository(db: Database) {
     },
 
     /**
-     * Newest-first ledger for a user, keyset paginated by UUIDv7 id (§8). The
-     * portfolio join scopes the result to the caller; the asset join enriches
-     * each row for display.
+     * Newest-first ledger for one portfolio, keyset paginated by UUIDv7 id (§8).
+     * The caller authorises portfolio ownership first; this only scopes rows to
+     * the portfolio and enriches each with its asset for display.
      */
-    async listByUser(
-      userId: string,
+    async listByPortfolio(
+      portfolioId: string,
       params: { limit: number; cursor?: string },
     ): Promise<{ items: TransactionWithAsset[]; nextCursor: string | null }> {
       const rows = await db
@@ -139,11 +139,10 @@ export function createTransactionRepository(db: Database) {
           assetOwnerId: assets.ownerId,
         })
         .from(transactions)
-        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
         .innerJoin(assets, eq(transactions.assetId, assets.id))
         .where(
           and(
-            eq(portfolios.userId, userId),
+            eq(transactions.portfolioId, portfolioId),
             params.cursor ? lt(transactions.id, params.cursor) : undefined,
           ),
         )
