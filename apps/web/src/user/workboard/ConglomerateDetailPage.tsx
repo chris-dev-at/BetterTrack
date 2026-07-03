@@ -14,6 +14,7 @@ import { AllocationDonut } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { Dialog } from '../components/Dialog';
 import { BacktestPanel } from './BacktestPanel';
+import { BudgetCalculator } from './BudgetCalculator';
 import { StatusBadge } from './ConglomeratesListPage';
 
 // ─── Positions table ────────────────────────────────────────────────────────
@@ -61,21 +62,6 @@ function PositionsTable({ positions }: { positions: ConglomeratePositionWithAsse
         </tbody>
       </table>
     </div>
-  );
-}
-
-// ─── Placeholder slots ──────────────────────────────────────────────────────
-
-function PlaceholderSlot({ title, description }: { title: string; description: string }) {
-  return (
-    <section aria-labelledby={`${title}-heading`} className="flex flex-col gap-3">
-      <h2 id={`${title}-heading`} className="text-base font-semibold text-neutral-200">
-        {title}
-      </h2>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-6">
-        <EmptyState title={description} />
-      </div>
-    </section>
   );
 }
 
@@ -127,8 +113,7 @@ function DeleteConfirmDialog({
 /**
  * `/workboard/conglomerates/:id` — Conglomerate detail scaffold (PROJECTPLAN.md
  * §6.5, §7.2): header, positions table, allocation donut, the backtest panel
- * (#137), and a placeholder slot for the Invest Calculator (#132/#138) landing
- * in a follow-up issue.
+ * (#137), and the Invest Calculator (§6.7, #138).
  */
 export function ConglomerateDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -240,11 +225,13 @@ export function ConglomerateDetailPage() {
         <BacktestPanel positions={backtestPositions} />
       </section>
 
-      {/* Placeholder slot for the follow-up Invest Calculator issue */}
-      <PlaceholderSlot
-        title="Calculator"
-        description="Calculator — coming with the Invest Calculator."
-      />
+      {/* Invest Calculator (§6.7, #138) */}
+      <section aria-labelledby="calculator-heading" className="flex flex-col gap-3">
+        <h2 id="calculator-heading" className="text-base font-semibold text-neutral-200">
+          Calculator
+        </h2>
+        <BudgetCalculator conglomerateId={id} />
+      </section>
 
       {confirmOpen ? (
         <DeleteConfirmDialog

@@ -1,6 +1,9 @@
 import {
+  allocateResponseSchema,
   conglomerateDetailSchema,
   conglomerateListResponseSchema,
+  type AllocateRequest,
+  type AllocateResponse,
   type ConglomerateDetail,
   type ConglomerateListResponse,
   type CreateConglomerateRequest,
@@ -78,4 +81,19 @@ export async function activateConglomerate(id: string): Promise<ConglomerateDeta
 /** `DELETE /conglomerates/:id` — hard-delete (cascades positions). */
 export async function deleteConglomerate(id: string): Promise<void> {
   await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * `POST /conglomerates/:id/allocate` — Invest Calculator: turn a EUR budget
+ * into a never-overshoot buy list (§6.7).
+ */
+export async function allocateConglomerate(
+  id: string,
+  body: AllocateRequest,
+): Promise<AllocateResponse> {
+  const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}/allocate`, {
+    method: 'POST',
+    body,
+  });
+  return allocateResponseSchema.parse(data);
 }
