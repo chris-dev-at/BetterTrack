@@ -23,6 +23,7 @@ import type { MarketDataService } from '../providers';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
+import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
 import { createAuditService } from '../services/audit/auditService';
 import {
   createConglomerateService,
@@ -70,6 +71,8 @@ export interface AppContext {
   customAssets: CustomAssetService;
   /** Conglomerate CRUD — user-defined weighted asset baskets (§6.5). */
   conglomerate: ConglomerateService;
+  /** Backtest preview over inline draft baskets for the Builder (§6.5, §6.6). */
+  backtest: BacktestService;
 }
 
 export interface BuildContextDeps {
@@ -200,6 +203,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const conglomerateRepo = createConglomerateRepository(db);
   const conglomerate = createConglomerateService({ repo: conglomerateRepo });
 
+  // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
+  // keystones to feed the pure engine over inline draft positions.
+  const backtestPreview = createBacktestService({
+    assetRepo,
+    marketData,
+    currencyService: currency,
+    redis,
+  });
+
   return {
     config,
     redis,
@@ -213,5 +225,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio,
     customAssets,
     conglomerate,
+    backtest: backtestPreview,
   };
 }

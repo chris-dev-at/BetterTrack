@@ -51,6 +51,16 @@ export const notFound = (message = 'Not found.', code = 'NOT_FOUND') =>
 export const conflict = (message: string, code = 'CONFLICT') => new ApiError(409, code, message);
 
 /**
+ * A well-formed request the server understood but cannot process as a data
+ * state rather than a syntax error (PROJECTPLAN.md §8) — e.g. a backtest whose
+ * positions share no overlapping price history in the requested window. Distinct
+ * from a 400 (which signals a malformed request the client should fix) so the
+ * SPA can surface the engine's explanation instead of a validation hint.
+ */
+export const unprocessable = (message: string, code = 'UNPROCESSABLE') =>
+  new ApiError(422, code, message);
+
+/**
  * Progressive rate-limit rejection (PROJECTPLAN.md §10). `retryAfterSeconds` is
  * surfaced both in the body (`details.retryAfter`) and — set by the caller — as
  * the `Retry-After` header the SPA reads to tell the user how long to wait.
