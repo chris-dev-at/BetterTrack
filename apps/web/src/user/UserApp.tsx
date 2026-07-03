@@ -34,8 +34,8 @@ import {
   EtfsPage,
   StocksPage,
 } from './assets/AssetsSection';
+import { FriendsPage } from './social/FriendsPage';
 import {
-  FriendsPage,
   MySharedItemsPage,
   PublicProfilePage,
   SharedWithMePage,
