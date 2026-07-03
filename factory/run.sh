@@ -209,7 +209,7 @@ while true; do
   backlog=$(gh issue list --label autopilot --state open --json number -q 'length')
   if [ "$backlog" -lt "${MIN_BACKLOG:-3}" ]; then
     log "backlog=$backlog → running planner"
-    CC_ISSUE=- CC_ROLE=planner cc "$MO" "$(with_pack "$(sed "s/\$PLANNER_BATCH/${PLANNER_BATCH:-7}/g; s/{{BATCH}}/${PLANNER_BATCH:-7}/g; s/{{AFTER_V1}}/${AFTER_V1:-propose}/g" "$PROMPTS/planner.md")")" || true
+    CC_ISSUE=- CC_ROLE=planner cc "$MO" "$(with_pack "$(sed "s/\$PLANNER_BATCH/${PLANNER_BATCH:-10}/g; s/{{BATCH}}/${PLANNER_BATCH:-10}/g; s/{{AFTER_V1}}/${AFTER_V1:-propose}/g" "$PROMPTS/planner.md")")" || true
     backlog=$(gh issue list --label autopilot --state open --json number -q 'length')
     [ "$backlog" -eq 0 ] && { notify "planner produced nothing (v1 done or awaiting owner) — idling 2h"; sleep 7200; continue; }
   fi
