@@ -4,6 +4,8 @@ import {
   type ConglomerateDetail,
   type ConglomerateListResponse,
   type CreateConglomerateRequest,
+  type ReplacePositionInput,
+  type UpdateConglomerateRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -34,6 +36,42 @@ export async function createConglomerate(
   body: CreateConglomerateRequest,
 ): Promise<ConglomerateDetail> {
   const data = await apiRequest<unknown>('/conglomerates', { method: 'POST', body });
+  return conglomerateDetailSchema.parse(data);
+}
+
+/** `PATCH /conglomerates/:id` — rename / edit the description (the Builder autosave). */
+export async function updateConglomerate(
+  id: string,
+  body: UpdateConglomerateRequest,
+): Promise<ConglomerateDetail> {
+  const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body,
+  });
+  return conglomerateDetailSchema.parse(data);
+}
+
+/**
+ * `PUT /conglomerates/:id/positions` — bulk-replace all positions (the Builder
+ * autosave, §6.5). `sortOrder` is derived server-side from array order. Weights
+ * must be `0 < w ≤ 100` (≤ 3 dp), so a caller drops any weight-0 rows.
+ */
+export async function replaceConglomeratePositions(
+  id: string,
+  positions: ReplacePositionInput[],
+): Promise<ConglomerateDetail> {
+  const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}/positions`, {
+    method: 'PUT',
+    body: { positions },
+  });
+  return conglomerateDetailSchema.parse(data);
+}
+
+/** `POST /conglomerates/:id/activate` — draft → active when Σ weights = 100 ± 0.01. */
+export async function activateConglomerate(id: string): Promise<ConglomerateDetail> {
+  const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}/activate`, {
+    method: 'POST',
+  });
   return conglomerateDetailSchema.parse(data);
 }
 
