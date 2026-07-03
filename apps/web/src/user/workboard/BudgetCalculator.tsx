@@ -214,7 +214,8 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   const mutation = useMutation({
     mutationFn: (budgetEur: number) => {
       const stepValue = Number(step);
-      const hasStep = mode === 'fractional' && step.trim() !== '' && Number.isFinite(stepValue);
+      const hasStep =
+        mode === 'fractional' && step.trim() !== '' && Number.isFinite(stepValue) && stepValue > 0;
       return allocateConglomerate(conglomerateId, {
         budgetEur,
         mode,
