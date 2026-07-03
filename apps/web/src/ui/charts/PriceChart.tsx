@@ -4,6 +4,7 @@ import {
   createChart,
   LineSeries,
   LineType,
+  PriceScaleMode,
   type IChartApi,
   type ISeriesApi,
 } from 'lightweight-charts';
@@ -38,6 +39,14 @@ export interface PriceChartProps {
   onRangeChange?: (range: PriceRange) => void;
   /** Optional overlay series, e.g. a benchmark index (PROJECTPLAN.md §6.6). */
   benchmark?: BenchmarkSeries | null;
+  /**
+   * Per-asset overlay series drawn over the main one (#122). When non-empty the
+   * price scale switches to **percentage mode**: every series (main + overlays)
+   * is normalized to its own first visible value, so differently-scaled series
+   * (a €500 portfolio, a €28 stock) become comparable relative moves — an asset
+   * drop visibly lines up with the portfolio drop it caused.
+   */
+  overlays?: readonly BenchmarkSeries[];
   /** Show a spinner instead of the chart (parent is fetching). */
   loading?: boolean;
   /** Chart height in px. Defaults to 320. */
@@ -54,6 +63,21 @@ const MAIN_AREA_BOTTOM = 'rgba(56, 189, 248, 0.02)';
 const BENCHMARK_LINE = '#a78bfa'; // violet-400
 const GRID = 'rgba(82, 82, 91, 0.25)'; // neutral-600 @ 25%
 const TEXT = '#a1a1aa'; // neutral-400
+
+/** Distinguishable overlay palette for the dark shell; cycles past its length. */
+const OVERLAY_LINES = [
+  '#fbbf24', // amber-400
+  '#34d399', // emerald-400
+  '#fb7185', // rose-400
+  '#a78bfa', // violet-400
+  '#67e8f9', // cyan-300
+  '#a3e635', // lime-400
+] as const;
+
+/** Colour for the `i`-th overlay series (and its legend chip). */
+export function overlayColor(i: number): string {
+  return OVERLAY_LINES[i % OVERLAY_LINES.length]!;
+}
 
 /**
  * `lightweight-charts` wrapper with a range toggle, area/step modes and an
@@ -72,6 +96,7 @@ export function PriceChart({
   ranges = PRICE_RANGES,
   onRangeChange,
   benchmark = null,
+  overlays = [],
   loading = false,
   height = 320,
   className,
@@ -91,9 +116,11 @@ export function PriceChart({
   const chartRef = useRef<IChartApi | null>(null);
   const mainRef = useRef<ISeriesApi<'Area'> | ISeriesApi<'Line'> | null>(null);
   const benchRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const overlayRefs = useRef<Array<ISeriesApi<'Line'>>>([]);
 
   const isEmpty = series.length === 0;
   const hasBenchmark = benchmark !== null && benchmark.series.length > 0;
+  const overlayCount = overlays.length;
 
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
   // of a benchmark, height) rather than the data, so wiggling data is cheap.
@@ -113,7 +140,13 @@ export function PriceChart({
         vertLines: { color: GRID },
         horzLines: { color: GRID },
       },
-      rightPriceScale: { borderColor: GRID },
+      rightPriceScale: {
+        borderColor: GRID,
+        // Overlay mode compares differently-scaled series (portfolio EUR value
+        // vs. single-asset prices), so the scale normalizes every series to its
+        // first visible value (percentage mode) — the standard "compare" view.
+        mode: overlayCount > 0 ? PriceScaleMode.Percentage : PriceScaleMode.Normal,
+      },
       timeScale: { borderColor: GRID, fixLeftEdge: true, fixRightEdge: true },
       handleScale: false,
       handleScroll: false,
@@ -147,6 +180,16 @@ export function PriceChart({
       });
     }
 
+    // One thin line per overlay asset (#122); data flows in via the data effect.
+    overlayRefs.current = Array.from({ length: overlayCount }, (_, i) =>
+      chart.addSeries(LineSeries, {
+        color: overlayColor(i),
+        lineWidth: 1,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      }),
+    );
+
     // Keep the chart sized to its container across responsive layout changes.
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width;
@@ -161,29 +204,51 @@ export function PriceChart({
       chartRef.current = null;
       mainRef.current = null;
       benchRef.current = null;
+      overlayRefs.current = [];
     };
-  }, [mode, hasBenchmark, height, loading, isEmpty]);
+  }, [mode, hasBenchmark, overlayCount, height, loading, isEmpty]);
 
   // Push data into the existing series instances; refit the visible window.
   useEffect(() => {
     if (mainRef.current) mainRef.current.setData(series);
     if (benchRef.current && benchmark) benchRef.current.setData(benchmark.series);
+    overlayRefs.current.forEach((line, i) => {
+      const overlay = overlays[i];
+      if (overlay) line.setData(overlay.series);
+    });
     chartRef.current?.timeScale().fitContent();
-  }, [series, benchmark]);
+  }, [series, benchmark, overlays]);
 
   return (
     <div className={cx('flex flex-col gap-3', className)}>
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <RangeToggle active={activeRange} ranges={ranges} onSelect={selectRange} />
-        {hasBenchmark ? (
-          <span className="flex items-center gap-1.5 text-xs text-neutral-400">
-            <span
-              aria-hidden="true"
-              className="inline-block h-0.5 w-4"
-              style={{ backgroundColor: BENCHMARK_LINE }}
-            />
-            {benchmark.label}
-          </span>
+        {hasBenchmark || overlayCount > 0 ? (
+          <div className="flex flex-wrap items-center gap-3">
+            {hasBenchmark ? (
+              <span className="flex items-center gap-1.5 text-xs text-neutral-400">
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-0.5 w-4"
+                  style={{ backgroundColor: BENCHMARK_LINE }}
+                />
+                {benchmark.label}
+              </span>
+            ) : null}
+            {overlays.map((overlay, i) => (
+              <span
+                key={overlay.label}
+                className="flex items-center gap-1.5 text-xs text-neutral-400"
+              >
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-0.5 w-4"
+                  style={{ backgroundColor: overlayColor(i) }}
+                />
+                {overlay.label}
+              </span>
+            ))}
+          </div>
         ) : null}
       </div>
 

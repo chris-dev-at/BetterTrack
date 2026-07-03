@@ -21,7 +21,7 @@ import { cx } from '../../lib/cx';
 import { EM_DASH, formatDate, formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
-import type { AllocationSegment, PriceRange } from '../../ui/charts';
+import type { AllocationSegment, BenchmarkSeries, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
@@ -477,6 +477,7 @@ type TxnDialogState =
 export function PortfolioPage() {
   const queryClient = useQueryClient();
   const [range, setRange] = useState<PriceRange>('1M');
+  const [overlay, setOverlay] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [txnDialog, setTxnDialog] = useState<TxnDialogState | null>(null);
   const [valuePointAsset, setValuePointAsset] = useState<ValuePointEditorAsset | null>(null);
@@ -504,8 +505,9 @@ export function PortfolioPage() {
   });
 
   const historyQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
-    queryFn: ({ signal }) => getPortfolioHistory(portfolioId!, toHistoryRange(range), signal),
+    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range), overlay],
+    queryFn: ({ signal }) =>
+      getPortfolioHistory(portfolioId!, toHistoryRange(range), overlay, signal),
     enabled: portfolioId !== null,
     staleTime: HISTORY_STALE_MS,
   });
@@ -555,6 +557,17 @@ export function PortfolioPage() {
       (historyQuery.data?.points ?? []).map((p) => ({
         time: p.date as Time,
         value: p.valueEur,
+      })),
+    [historyQuery.data],
+  );
+
+  // Per-asset overlay series (#122): raw native-currency closes; the chart
+  // normalizes everything to percentage moves when overlays are shown.
+  const chartOverlays = useMemo<BenchmarkSeries[]>(
+    () =>
+      (historyQuery.data?.assets ?? []).map((a) => ({
+        label: a.symbol,
+        series: a.points.map((p) => ({ time: p.date as Time, value: p.close })),
       })),
     [historyQuery.data],
   );
@@ -657,13 +670,30 @@ export function PortfolioPage() {
           <TotalsHeader totals={totals} />
 
           <section aria-label="Value over time" className="flex flex-col gap-3">
-            <h2 className="text-lg font-semibold text-neutral-200">Value over time</h2>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-neutral-200">Value over time</h2>
+              <button
+                type="button"
+                aria-pressed={overlay}
+                onClick={() => setOverlay((v) => !v)}
+                className={cx(
+                  'rounded px-2 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                  overlay
+                    ? 'bg-sky-600 text-white ring-sky-600'
+                    : 'bg-neutral-900 text-neutral-400 ring-neutral-800 hover:bg-neutral-800 hover:text-neutral-100',
+                )}
+              >
+                Overlay assets
+              </button>
+            </div>
             <PriceChart
               series={chartPoints}
               mode="area"
               range={range}
               ranges={PORTFOLIO_RANGES}
               onRangeChange={setRange}
+              overlays={overlay ? chartOverlays : []}
               loading={historyQuery.isLoading || historyQuery.isFetching}
               ariaLabel="Portfolio value over time"
             />

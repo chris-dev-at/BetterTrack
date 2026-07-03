@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => {
     setData,
     applyOptions: vi.fn(),
   }));
-  const createChart = vi.fn(() => ({
+  const createChart = vi.fn((_el: unknown, _opts?: unknown) => ({
     addSeries,
     applyOptions,
     timeScale: () => ({ fitContent }),
@@ -28,10 +28,11 @@ vi.mock('lightweight-charts', () => ({
   LineSeries: 'LineSeries',
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
   ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
+  PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2, IndexedTo100: 3 },
 }));
 
-import { PriceChart } from './PriceChart';
-import { sampleBenchmarkSeries, samplePriceSeries } from './fixtures';
+import { overlayColor, PriceChart } from './PriceChart';
+import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from './fixtures';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -66,6 +67,32 @@ describe('PriceChart', () => {
     expect(mocks.addSeries).toHaveBeenCalledTimes(2);
     expect(screen.getByText(sampleBenchmarkSeries.label)).toBeInTheDocument();
     expect(mocks.setData).toHaveBeenCalledWith(sampleBenchmarkSeries.series);
+  });
+
+  test('asset overlays draw one line each, switch the scale to percentage mode and show legend chips (#122)', () => {
+    render(<PriceChart series={samplePriceSeries} overlays={sampleOverlaySeries} />);
+
+    // Main series + one line per overlay asset, each with its palette colour.
+    expect(mocks.addSeries).toHaveBeenCalledTimes(1 + sampleOverlaySeries.length);
+    sampleOverlaySeries.forEach((overlay, i) => {
+      expect(mocks.addSeries.mock.calls[1 + i]?.[0]).toBe('LineSeries');
+      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({ color: overlayColor(i) });
+      expect(screen.getByText(overlay.label)).toBeInTheDocument();
+      expect(mocks.setData).toHaveBeenCalledWith(overlay.series);
+    });
+
+    // Differently-scaled series are only comparable normalized: percentage mode.
+    expect(mocks.createChart.mock.calls[0]?.[1]).toMatchObject({
+      rightPriceScale: expect.objectContaining({ mode: 2 }),
+    });
+  });
+
+  test('without overlays the price scale stays in normal (absolute) mode', () => {
+    render(<PriceChart series={samplePriceSeries} />);
+
+    expect(mocks.createChart.mock.calls[0]?.[1]).toMatchObject({
+      rightPriceScale: expect.objectContaining({ mode: 0 }),
+    });
   });
 
   test('empty series renders an empty state without creating a chart', () => {

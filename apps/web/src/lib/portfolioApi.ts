@@ -56,14 +56,19 @@ export async function getPortfolio(
   return portfolioResponseSchema.parse(data);
 }
 
-/** `GET /portfolios/:id/history?range=` — EUR value-over-time series. */
+/**
+ * `GET /portfolios/:id/history?range=&overlay=` — EUR value-over-time series;
+ * `overlay=true` additionally returns each held asset's own daily price series
+ * so the chart can overlay them on the portfolio curve (#122).
+ */
 export async function getPortfolioHistory(
   portfolioId: string,
   range: PortfolioHistoryRange,
+  overlay = false,
   signal?: AbortSignal,
 ): Promise<PortfolioHistoryResponse> {
   const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/history`, {
-    query: { range },
+    query: { range, ...(overlay ? { overlay: 'true' } : {}) },
     signal,
   });
   return portfolioHistoryResponseSchema.parse(data);

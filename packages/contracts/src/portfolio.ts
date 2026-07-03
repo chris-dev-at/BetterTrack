@@ -220,9 +220,21 @@ export const PORTFOLIO_HISTORY_RANGES = ['1M', '6M', '1Y', 'MAX'] as const;
 export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
 export type PortfolioHistoryRange = z.infer<typeof portfolioHistoryRangeSchema>;
 
-/** `GET /portfolios/:id/history?range=` query. */
+/**
+ * `GET /portfolios/:id/history?range=&overlay=` query. `overlay=true` additionally
+ * returns each held asset's own daily price series (issue #122) so the chart
+ * can overlay them on the portfolio curve; it arrives as a query-string token,
+ * so it is an explicit `'true' | 'false'` enum rather than a boolean coercion
+ * (`z.coerce.boolean()` would turn the literal string `"false"` into `true`).
+ */
 export const portfolioHistoryQuerySchema = z
-  .object({ range: portfolioHistoryRangeSchema.default('MAX') })
+  .object({
+    range: portfolioHistoryRangeSchema.default('MAX'),
+    overlay: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  })
   .strict();
 export type PortfolioHistoryQuery = z.infer<typeof portfolioHistoryQuerySchema>;
 
@@ -235,12 +247,40 @@ export const portfolioHistoryPointSchema = z
   .strict();
 export type PortfolioHistoryPoint = z.infer<typeof portfolioHistoryPointSchema>;
 
-/** `GET /portfolios/:id/history` response. */
+/** One point of an overlay asset's daily price series, **native currency**. */
+export const portfolioHistoryOverlayPointSchema = z
+  .object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    close: z.number(),
+  })
+  .strict();
+export type PortfolioHistoryOverlayPoint = z.infer<typeof portfolioHistoryOverlayPointSchema>;
+
+/**
+ * One held asset's own daily price series, returned alongside the portfolio
+ * curve when `overlay=true` (issue #122). Closes are in the asset's **native
+ * currency** — the chart renders overlays in normalized (percentage) mode, which
+ * is scale- and currency-invariant, so no EUR conversion is done here and the
+ * series honestly shows the asset's own movement ("when Bayer tanked…").
+ */
+export const portfolioHistoryOverlaySchema = z
+  .object({
+    assetId: z.string().uuid(),
+    symbol: z.string(),
+    name: z.string(),
+    currency: currencyCodeSchema,
+    points: z.array(portfolioHistoryOverlayPointSchema),
+  })
+  .strict();
+export type PortfolioHistoryOverlay = z.infer<typeof portfolioHistoryOverlaySchema>;
+
+/** `GET /portfolios/:id/history` response. `assets` is present only when `overlay=true`. */
 export const portfolioHistoryResponseSchema = z
   .object({
     range: portfolioHistoryRangeSchema,
     baseCurrency: currencyCodeSchema,
     points: z.array(portfolioHistoryPointSchema),
+    assets: z.array(portfolioHistoryOverlaySchema).optional(),
   })
   .strict();
 export type PortfolioHistoryResponse = z.infer<typeof portfolioHistoryResponseSchema>;
