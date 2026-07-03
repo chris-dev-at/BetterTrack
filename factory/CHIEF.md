@@ -46,7 +46,7 @@ Drive BetterTrack to **v1** per `PROJECTPLAN.md` §13 (build order) and `MODELUS
    - Factory event lines only: `docker logs bettertrack-factory-factory-1 --since 50m 2>&1 | grep -E "^[0-9]{4}-"` (skips untimestamped agent chatter)
    - `gh pr list --state open` + `gh issue list --state open --limit 20`
    - `curl` both health endpoints
-   If all is fine: no report, just schedule the next beat. If something notable happened (merges, failures, queue changes): one short status note to the owner.
+     If all is fine: no report, just schedule the next beat. If something notable happened (merges, failures, queue changes): one short status note to the owner.
 4. **Intervene only on**: factory stuck >60 min on one issue with zero event output, a container death, CI-red merges, or the live preview going down. Even then you stay Chief: if diagnosis needs more than the sweep output, order an investigation subagent (sonnet/opus per severity) and read its report; then decide and order the fix from an appropriately-tiered subagent or a factory issue. You never fix code yourself.
 5. Known self-heal behavior in `run.sh`: authoritative re-check of picked issues (ghost-cycle race) and BEHIND-merge update-branch+retry; repo auto-merge is enabled. A run frozen by `docker pause` fails its dead API socket on resume and retries cleanly.
 
