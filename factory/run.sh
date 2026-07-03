@@ -186,7 +186,10 @@ if [ -z "$(ls -A "$PROMPTS" 2>/dev/null)" ]; then
 fi
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git config user.name "bettertrack-factory"; git config user.email "factory@bettertrack.local"
+# Owner directive: commits carry ONLY the owner's identity — no bot author, no
+# Co-Authored-By trailers (GitHub squash-merge harvests every distinct PR commit
+# author into the squash body, which is where stray avatars come from).
+git config user.name "Christian Wiesinger"; git config user.email "chrisiclemi@gmail.com"
 git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
 export GH_REPO="$REPO"
 notify "factory started"
