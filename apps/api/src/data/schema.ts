@@ -375,6 +375,64 @@ export const transactions = pgTable(
   ],
 );
 
+/**
+ * Social graph (PROJECTPLAN.md §5.5, §6.9). Two tables:
+ *
+ * `friend_requests` — a directed request from one user to another. A pair may
+ * hold at most one *pending* request at a time (partial unique index below);
+ * accepted/declined/cancelled rows are kept for history and never block a fresh
+ * request. Deleting either user cascades the request away.
+ *
+ * `friendships` — the undirected result of an accepted request, stored once per
+ * pair with the canonical ordering `user_a < user_b` so a friendship is a single
+ * row regardless of who sent the request. Deleting either user cascades the
+ * friendship away, closing all shared access.
+ */
+export const friendRequestStatusEnum = pgEnum('friend_request_status', [
+  'pending',
+  'accepted',
+  'declined',
+  'cancelled',
+]);
+
+export const friendRequests = pgTable(
+  'friend_requests',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    fromUser: uuid('from_user')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    toUser: uuid('to_user')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: friendRequestStatusEnum('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    respondedAt: timestamp('responded_at', { withTimezone: true }),
+  },
+  (t) => [
+    // At most one *pending* request per ordered pair; resolved rows don't block.
+    uniqueIndex('friend_requests_pending_pair_unique')
+      .on(t.fromUser, t.toUser)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+
+export const friendships = pgTable(
+  'friendships',
+  {
+    // Canonical ordering: rows are always stored with user_a < user_b, so a
+    // friendship is one row per pair regardless of request direction.
+    userA: uuid('user_a')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    userB: uuid('user_b')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ name: 'friendships_pk', columns: [t.userA, t.userB] })],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
@@ -391,6 +449,10 @@ export type ConglomeratePositionRow = typeof conglomeratePositions.$inferSelect;
 export type ShareLinkRow = typeof shareLinks.$inferSelect;
 export type PortfolioRow = typeof portfolios.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
+export type FriendRequestRow = typeof friendRequests.$inferSelect;
+export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
+export type FriendshipRow = typeof friendships.$inferSelect;
+export type NewFriendshipRow = typeof friendships.$inferInsert;
 
 export const schema = {
   users,
@@ -408,6 +470,8 @@ export const schema = {
   shareLinks,
   portfolios,
   transactions,
+  friendRequests,
+  friendships,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -417,4 +481,5 @@ export const schema = {
   conglomerateStatusEnum,
   transactionSideEnum,
   portfolioVisibilityEnum,
+  friendRequestStatusEnum,
 };
