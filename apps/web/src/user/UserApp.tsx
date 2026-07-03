@@ -16,11 +16,12 @@ import {
   BacktestsPage,
   CalculatorsPage,
   ComparisonsPage,
-  ConglomeratesPage,
   SavedIdeasPage,
   WatchlistPage,
   WorkboardLayout,
 } from './workboard/WorkboardSection';
+import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
+import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
 import { SearchPage } from './assets/SearchPage';
 import { AssetDetailPage } from './assets/AssetDetailPage';
 import {
@@ -96,7 +97,8 @@ function UserShell() {
           <Route path="workboard" element={<WorkboardLayout />}>
             <Route index element={<WorkboardPage />} />
             <Route path="watchlist" element={<WatchlistPage />} />
-            <Route path="conglomerates" element={<ConglomeratesPage />} />
+            <Route path="conglomerates" element={<ConglomeratesListPage />} />
+            <Route path="conglomerates/:id" element={<ConglomerateDetailPage />} />
             <Route path="backtests" element={<BacktestsPage />} />
             <Route path="calculators" element={<CalculatorsPage />} />
             <Route path="comparisons" element={<ComparisonsPage />} />

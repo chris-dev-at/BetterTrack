@@ -29,15 +29,6 @@ export function WorkboardLayout() {
 
 // ─── Not-yet-built surfaces (own feature issues) ──────────────────────────────
 
-export function ConglomeratesPage() {
-  return (
-    <ComingSoon
-      title="Conglomerates"
-      description="Build custom ETF-like baskets, backtest them and turn a budget into a buy list. The flagship Builder arrives in the Conglomerates phase."
-    />
-  );
-}
-
 /**
  * The dedicated watchlist view lands with the Workboard overview/watchlist split
  * (§7.3). Until then the working watchlist lives on the Workboard Overview.
