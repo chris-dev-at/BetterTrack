@@ -22,6 +22,7 @@ import {
 } from './workboard/WorkboardSection';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
+import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
 import { SearchPage } from './assets/SearchPage';
 import { AssetDetailPage } from './assets/AssetDetailPage';
 import {
@@ -82,6 +83,11 @@ function UserShell() {
       <Route path="login" element={<LoginPage />} />
       <Route path="invite/:token" element={<InvitePage />} />
       <Route element={<RequireUser />}>
+        {/* The Conglomerate Builder is a full-screen surface (§6.5) — it sits
+            outside the AppLayout chrome/subnav rather than inside the Workboard
+            section. Both `/new` and `/:id/edit` render the same Builder. */}
+        <Route path="workboard/conglomerates/new" element={<ConglomerateBuilderPage />} />
+        <Route path="workboard/conglomerates/:id/edit" element={<ConglomerateBuilderPage />} />
         <Route element={<AppLayout />}>
           {/* Home → Portfolio (§6.8, §7.2). */}
           <Route index element={<Navigate to="/portfolio" replace />} />
