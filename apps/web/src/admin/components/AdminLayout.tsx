@@ -1,6 +1,7 @@
-import { NavLink, Navigate, Outlet } from 'react-router-dom';
+import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
+import { ErrorBoundary } from '../../ui';
 import { useAuth } from '../AuthContext';
 import { Button, Spinner, cx } from './ui';
 
@@ -21,6 +22,7 @@ const NAV_ITEMS = [
  */
 export function AdminLayout() {
   const { status, user, logout } = useAuth();
+  const location = useLocation();
 
   if (status === 'loading') {
     return (
@@ -65,7 +67,11 @@ export function AdminLayout() {
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-4 py-8">
-        <Outlet />
+        {/* Keyed on the route so navigating away from a failed page always
+            resets the boundary (§7.1) rather than leaving it stuck. */}
+        <ErrorBoundary key={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );
