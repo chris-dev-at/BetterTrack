@@ -46,7 +46,9 @@ const clog = async (line) => {
   try {
     await mkdir(dirname(CONTROL_LOG), { recursive: true });
     await appendFile(CONTROL_LOG, `${new Date().toISOString()} ${line}\n`);
-  } catch {}
+  } catch {
+    /* best-effort log — must never break an action */
+  }
 };
 
 // ---- state dir readers ----------------------------------------------------------
@@ -90,7 +92,9 @@ async function readProtocolState() {
     queue = (await Promise.all(files.map((f) => readJson(join(STATE, 'merge-queue', f))))).filter(
       Boolean,
     );
-  } catch {}
+  } catch {
+    /* queue dir may not exist before first start */
+  }
   const eventsRaw = await readText(join(STATE, 'logs', 'events.log'));
   return {
     mode: (await readText(join(CONTROL, 'mode'))) || 'run',
@@ -371,7 +375,9 @@ setInterval(async () => {
       timeout: 120000,
     });
     drainedSince = 0;
-  } catch {}
+  } catch {
+    /* watcher must survive transient docker/fs errors */
+  }
 }, 5000);
 
 // ---- http ------------------------------------------------------------------------------
@@ -381,7 +387,9 @@ setInterval(async () => {
   try {
     const data = `data: ${JSON.stringify(await snapshot())}\n\n`;
     for (const res of sseClients) res.write(data);
-  } catch {}
+  } catch {
+    /* a failed snapshot skips one SSE beat, never kills the stream */
+  }
 }, 2000);
 
 const server = createServer(async (req, res) => {
