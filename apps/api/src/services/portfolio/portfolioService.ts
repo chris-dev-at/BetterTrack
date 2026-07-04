@@ -17,6 +17,7 @@ import type {
 import type { Redis } from 'ioredis';
 
 import type { AssetRow } from '../../data/schema';
+import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type {
   TransactionRecord,
@@ -35,6 +36,8 @@ import {
   type ValueOverTimeAsset,
 } from '../../domain/holdings';
 import { badRequest, notFound } from '../../errors';
+import type { EventBus } from '../../events';
+import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import type { CurrencyService } from '../currency/currencyService';
@@ -66,6 +69,11 @@ export interface PortfolioServiceDeps {
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
   redis: Redis;
+  /** Social graph — used to resolve the owner's friends when a portfolio is shared (§6.10). */
+  friendshipRepo: FriendshipRepository;
+  /** Domain event bus — `portfolio.shared` is published here on a friends-transition (§6.10). */
+  events: EventBus;
+  logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
 }
@@ -145,8 +153,17 @@ const RANGE_MONTHS: Record<Exclude<PortfolioHistoryRange, 'MAX'>, number> = {
 };
 
 export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioService {
-  const { portfolioRepo, transactionRepo, marketData, currencyService, referenceBackfill, redis } =
-    deps;
+  const {
+    portfolioRepo,
+    transactionRepo,
+    marketData,
+    currencyService,
+    referenceBackfill,
+    redis,
+    friendshipRepo,
+    events,
+    logger,
+  } = deps;
   const now = deps.now ?? Date.now;
   const baseCurrency = currencyService.baseCurrency;
 
@@ -237,6 +254,33 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
   async function invalidateHistory(portfolioId: string): Promise<void> {
     await redis.del(portfolioHistoryCacheKey(portfolioId));
+  }
+
+  /**
+   * Publish one `portfolio.shared` per current friend of the owner (§6.10) so the
+   * notification dispatcher can tell each friend the portfolio is now shared.
+   * Best-effort: resolving friends or a bus failure never fails the update.
+   */
+  async function emitPortfolioShared(ownerId: string, portfolioId: string): Promise<void> {
+    try {
+      const [ownerUsername, friends] = await Promise.all([
+        friendshipRepo.getUsername(ownerId),
+        friendshipRepo.listFriends(ownerId),
+      ]);
+      const occurredAt = new Date(now()).toISOString();
+      for (const friend of friends) {
+        await events.publish({
+          type: 'portfolio.shared',
+          userId: friend.id,
+          actorId: ownerId,
+          actorUsername: ownerUsername ?? '',
+          portfolioId,
+          occurredAt,
+        });
+      }
+    } catch (err) {
+      logger?.error({ err, portfolioId }, 'portfolio.shared event publish failed');
+    }
   }
 
   /**
@@ -422,11 +466,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     },
 
     async updatePortfolio(userId, portfolioId, patch) {
+      // Capture the prior visibility so we only fire `portfolio.shared` on an
+      // actual transition *to* friends — not on a no-op re-save or a toggle-off.
+      const before = await portfolioRepo.findByIdForUser(userId, portfolioId);
       const updated = await portfolioRepo.updatePortfolio(userId, portfolioId, {
         name: patch.name,
         visibility: patch.visibility,
       });
       if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+
+      if (patch.visibility === 'friends' && before?.visibility !== 'friends') {
+        await emitPortfolioShared(userId, portfolioId);
+      }
       return updated;
     },
 

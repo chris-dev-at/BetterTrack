@@ -14,6 +14,8 @@ import type {
   PendingRequestRow,
 } from '../../data/repositories/friendshipRepository';
 import { notFound } from '../../errors';
+import type { EventBus } from '../../events';
+import type { Logger } from '../../logger';
 import type { PortfolioService } from '../portfolio/portfolioService';
 
 /**
@@ -30,8 +32,9 @@ import type { PortfolioService } from '../portfolio/portfolioService';
  *    pending), or removing a non-friend, is a plain 404 — the same response a
  *    caller gets for an id that never existed, so no membership is leaked.
  *
- * Bell notifications / `friend.request` + `friend.accepted` events are **P6**
- * and deliberately not wired here.
+ * `friend.request` + `friend.accepted` domain events are published here (§6.10)
+ * so the notification dispatcher — a pure bus subscriber — can turn them into
+ * bell notifications without this service knowing about notifications at all.
  */
 
 export interface SocialServiceDeps {
@@ -42,6 +45,9 @@ export interface SocialServiceDeps {
    * re-implements the money-math (§6.9).
    */
   portfolio: PortfolioService;
+  /** Domain event bus — `friend.request` / `friend.accepted` are published here (§6.10). */
+  events: EventBus;
+  logger?: Logger;
 }
 
 export interface SocialService {
@@ -94,7 +100,16 @@ function toFriendship(row: FriendRow): Friendship {
 }
 
 export function createSocialService(deps: SocialServiceDeps): SocialService {
-  const { repo, portfolio } = deps;
+  const { repo, portfolio, events, logger } = deps;
+
+  /** Publish a domain event best-effort — a bus failure never fails the request. */
+  async function emit(event: Parameters<EventBus['publish']>[0]): Promise<void> {
+    try {
+      await events.publish(event);
+    } catch (err) {
+      logger?.error({ err, type: event.type }, 'social event publish failed');
+    }
+  }
 
   return {
     async sendRequest(fromUserId, identifier) {
@@ -111,7 +126,19 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (reverse) return;
       // Otherwise create it; the partial unique index makes a duplicate
       // same-direction request a silent no-op (idempotent).
-      await repo.createRequest(fromUserId, targetId);
+      const requestId = await repo.createRequest(fromUserId, targetId);
+      // Only notify on a genuinely new request — a deduped no-op returns null.
+      if (requestId) {
+        const actorUsername = (await repo.getUsername(fromUserId)) ?? '';
+        await emit({
+          type: 'friend.request',
+          userId: targetId,
+          actorId: fromUserId,
+          actorUsername,
+          requestId,
+          occurredAt: new Date().toISOString(),
+        });
+      }
     },
 
     async listRequests(userId) {
@@ -125,8 +152,19 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async accept(userId, requestId) {
-      const ok = await repo.acceptRequest(userId, requestId);
-      if (!ok) throw REQUEST_NOT_FOUND();
+      const accepted = await repo.acceptRequest(userId, requestId);
+      if (!accepted) throw REQUEST_NOT_FOUND();
+      // Notify the original requester that the user accepted (§6.10). The actor
+      // is the accepter; the recipient is whoever sent the request.
+      const actorUsername = (await repo.getUsername(userId)) ?? '';
+      await emit({
+        type: 'friend.accepted',
+        userId: accepted.fromUser,
+        actorId: userId,
+        actorUsername,
+        requestId,
+        occurredAt: new Date().toISOString(),
+      });
     },
 
     async decline(userId, requestId) {
