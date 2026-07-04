@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y git curl jq \
 RUN useradd -m factory && mkdir -p /work/state && chown -R factory:factory /work
 USER factory
 WORKDIR /work
-COPY --chown=factory run.sh /work/run.sh
+COPY --chown=factory run.sh lib.sh /work/
 # Bake prompts into the image as a fallback; compose bind-mounts factory/prompts
 # over /work/state/prompts so they can be tuned without rebuilding.
 COPY --chown=factory prompts /work/prompts
