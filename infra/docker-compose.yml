@@ -116,9 +116,13 @@ services:
       POSTGRES_USER: '${POSTGRES_USER:-bt}'
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
       POSTGRES_DB: '${POSTGRES_DB:-bettertrack}'
+      # Nightly backup rotation window (§10) — consumed by backup.sh, triggered
+      # via host cron (see README.md "Backups & restore"), not a 6th service.
+      BACKUP_RETENTION_DAYS: '${BACKUP_RETENTION_DAYS:-14}'
     volumes:
       - pgdata:/var/lib/postgresql/data
       - pgbackups:/backups
+      - ./backup/backup.sh:/opt/bettertrack/backup.sh:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-bt} -d ${POSTGRES_DB:-bettertrack}']
       interval: 10s

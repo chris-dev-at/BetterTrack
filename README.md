@@ -31,6 +31,7 @@ infra/
   docker-compose.yml         # Production: web + api + worker + db + redis (§4.6)
   docker-compose.dev.yml     # Dev: Postgres 17 + Redis 7 only
   nginx/                     # nginx front-proxy: mode templates (subdomains|ports) + entrypoint (§11)
+  backup/                    # backup.sh — nightly pg_dump + rotation, run inside `db` via host cron (§10)
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
@@ -137,6 +138,52 @@ docker compose -f infra/docker-compose.yml run --rm api node dist/scripts/seed.j
 docker compose -f infra/docker-compose.yml up -d
 ```
 
+### Worked example — Mode A: subdomains
+
+Starting from a fresh server with a domain (`track.example.at`) and a TLS-terminating
+front proxy (Caddy/Traefik/Cloudflare Tunnel) already pointed at it:
+
+1. Create three DNS records, all pointing at the server: `api.track.example.at`,
+   `web.track.example.at`, `admin.track.example.at`.
+2. Point your TLS proxy at this compose stack's `web` service, port 80
+   (`BT_HTTP_PORT`, default `80`) — it's a plain HTTP origin behind the proxy.
+3. `infra/.env`:
+   ```
+   BT_MODE=subdomains
+   BT_DOMAIN=track.example.at
+   BT_HTTP_PORT=80
+   POSTGRES_PASSWORD=<strong password>
+   DATABASE_URL=postgres://bt:<strong password>@db:5432/bettertrack
+   SESSION_SECRET=<openssl rand -hex 64>
+   ```
+4. Run the **First-time setup** steps above.
+5. Verify: `https://api.track.example.at/api/v1/health`, `https://web.track.example.at`,
+   `https://admin.track.example.at` all resolve through the proxy.
+
+### Worked example — Mode B: ports
+
+Starting from a fresh server with only a bare IP or hostname, no subdomains, no
+front proxy — every service is exposed on its own port:
+
+1. `infra/.env`:
+   ```
+   BT_MODE=ports
+   BT_DOMAIN=203.0.113.10   # or a hostname
+   BT_TLS=false
+   BT_PORT_API=3000
+   BT_PORT_WEB=8080
+   BT_PORT_ADMIN=8081
+   POSTGRES_PASSWORD=<strong password>
+   DATABASE_URL=postgres://bt:<strong password>@db:5432/bettertrack
+   SESSION_SECRET=<openssl rand -hex 64>
+   ```
+2. Open (or forward) ports `3000`, `8080`, `8081` on the host firewall.
+3. Run the **First-time setup** steps above.
+4. Verify: `http://203.0.113.10:3000/api/v1/health`, `http://203.0.113.10:8080`,
+   `http://203.0.113.10:8081` are all reachable directly, no proxy required.
+   Put a TLS-terminating proxy in front and set `BT_TLS=true` once you're ready
+   for HTTPS — cookies become `Secure` and require it.
+
 ### Day-to-day commands
 
 ```bash
@@ -171,6 +218,7 @@ docker compose up -d          # rolling restart
 | `BT_API/WEB/ADMIN_ORIGIN` | no       | Explicit origin overrides — win over derivation (`APP_ORIGIN` = legacy web alias) |
 | `SMTP_HOST/FROM`          | no       | Both required to enable email; app runs without them (Gmail preset in `.env`)     |
 | `ADMIN_EMAIL/PASSWORD`    | no       | Used once by the seed command; no-op thereafter                                   |
+| `BACKUP_RETENTION_DAYS`   | no       | Days of nightly dumps to keep in the `pgbackups` volume (default `14`)            |
 
 > **Deployment topology (§4.6, §11):** one env scheme drives every public origin,
 > and the CORS allowlist + session-cookie attributes are **derived** from it —
@@ -185,6 +233,50 @@ docker compose up -d          # rolling restart
 
 The worker service is commented out in `infra/docker-compose.yml` — it will be uncommented in Phase 1
 when `apps/api/src/worker.ts` is implemented. The compose comment block shows the exact config.
+
+### Backups & restore
+
+The `db` service mounts a dedicated `pgbackups` volume at `/backups` and
+`infra/backup/backup.sh` is bind-mounted read-only into that same container at
+`/opt/bettertrack/backup.sh`. Nothing runs it automatically — wire it to your
+host's cron (kept out of the compose topology so the stack stays at five
+services, §4.6):
+
+```bash
+# Host crontab (crontab -e) — nightly at 03:00 server time:
+0 3 * * * cd /path/to/bettertrack/infra && docker compose exec -T db bash /opt/bettertrack/backup.sh >> /var/log/bettertrack-backup.log 2>&1
+```
+
+Each run writes a gzip'd, timestamped dump (`bettertrack-YYYYmmdd-HHMMSS.sql.gz`)
+into the `pgbackups` volume, verifies the archive (`gzip -t`), then deletes
+dumps older than `BACKUP_RETENTION_DAYS` (default 14). Take a manual backup the
+same way, on demand:
+
+```bash
+cd infra
+docker compose exec -T db bash /opt/bettertrack/backup.sh
+docker compose exec db ls -la /backups
+```
+
+**Restore from a dump:**
+
+```bash
+cd infra
+
+# 1. Pick a dump (lists everything currently retained).
+docker compose exec db ls -la /backups
+
+# 2. Stop the api (and worker, once it exists) so nothing writes during restore.
+docker compose stop api
+
+# 3. Restore — the dump was taken with --clean --if-exists, so it drops and
+#    recreates every object itself; safe to run against the existing database.
+docker compose exec -T db bash -c \
+  'gunzip -c /backups/bettertrack-20260704-030000.sql.gz | psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+
+# 4. Bring the api back up.
+docker compose start api
+```
 
 ## Quality gates
 

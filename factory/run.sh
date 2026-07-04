@@ -76,7 +76,18 @@ while true; do
   done
   [ "$writer_ok" -eq 1 ] || { mark_human "$n" "writer failed after ${WRITER_RETRIES:-2} attempts"; continue; }
 
-  pr=$(gh pr list --head "task/$n" --state open --json number -q '.[0].number')
+  # PR detection — a transient GitHub/network failure here must not condemn the
+  # issue (seen live 2026-07-04: a TLS timeout marked two finished issues
+  # needs-human while their PRs existed). Distinguish "gh failed" from "no PR".
+  pr=""
+  for pd_try in 1 2 3; do
+    if pr=$(gh pr list --head "task/$n" --state open --json number -q '.[0].number' 2>/dev/null); then
+      break
+    fi
+    pr=""
+    log "PR detection failed (attempt $pd_try/3) — retrying in 20s"
+    [ "$pd_try" -lt 3 ] && sleep 20
+  done
   if [ -z "$pr" ]; then
     # No PR: the writer may have self-marked the issue (already done / ambiguous).
     state=$(gh issue view "$n" --json state -q '.state' 2>/dev/null)

@@ -1,6 +1,7 @@
 import type {
   AdminInvite,
   AdminUser,
+  AppSettingsResponse,
   AuditLogEntry,
   EmailLogEntry,
   MeResponse,
@@ -9,6 +10,7 @@ import type {
 
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
 import type { AuditLogRow, EmailLogRow, InviteRow, UserRow } from '../data/schema';
+import type { AppSettings } from '../services/appSettings/appSettingsService';
 import type { AuthUser } from './types';
 
 const toIso = (value: Date | string | null | undefined): string | null => {
@@ -109,6 +111,15 @@ export function toEmailLogEntry(row: EmailLogRow): EmailLogEntry {
     status: row.status,
     errorCode: row.errorCode,
     createdAt: toIsoRequired(row.createdAt),
+  };
+}
+
+export function toAppSettings(settings: AppSettings): AppSettingsResponse {
+  return {
+    registrationMode: settings.registrationMode,
+    betaMode: settings.betaMode,
+    updatedAt: toIso(settings.updatedAt),
+    updatedBy: settings.updatedBy,
   };
 }
 
