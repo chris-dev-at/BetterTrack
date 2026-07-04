@@ -1,10 +1,16 @@
 import {
   friendRequestListResponseSchema,
   friendsListResponseSchema,
+  mySharedListResponseSchema,
   okResponseSchema,
+  sharedPortfolioDetailResponseSchema,
+  sharedPortfolioListResponseSchema,
   type CreateFriendRequestRequest,
   type FriendRequestListResponse,
   type FriendsListResponse,
+  type MySharedListResponse,
+  type SharedPortfolioDetailResponse,
+  type SharedPortfolioListResponse,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -63,4 +69,31 @@ export async function listFriends(signal?: AbortSignal): Promise<FriendsListResp
 /** `DELETE /social/friends/:userId` — remove a friendship (either side may). */
 export async function removeFriend(userId: string): Promise<void> {
   await apiRequest<unknown>(`/social/friends/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+}
+
+/** `GET /social/shared` — friends' portfolios currently at `visibility=friends`. */
+export async function listSharedWithMe(signal?: AbortSignal): Promise<SharedPortfolioListResponse> {
+  const data = await apiRequest<unknown>('/social/shared', { signal });
+  return sharedPortfolioListResponseSchema.parse(data);
+}
+
+/**
+ * `GET /social/shared/:portfolioId` — read-only overview of one friend-shared
+ * portfolio (totals, holdings, performance history). 404s for a non-friend,
+ * private, or unknown portfolio.
+ */
+export async function getSharedPortfolio(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<SharedPortfolioDetailResponse> {
+  const data = await apiRequest<unknown>(`/social/shared/${encodeURIComponent(portfolioId)}`, {
+    signal,
+  });
+  return sharedPortfolioDetailResponseSchema.parse(data);
+}
+
+/** `GET /social/my-shared` — the caller's own `visibility=friends` portfolios. */
+export async function listMyShared(signal?: AbortSignal): Promise<MySharedListResponse> {
+  const data = await apiRequest<unknown>('/social/my-shared', { signal });
+  return mySharedListResponseSchema.parse(data);
 }
