@@ -53,3 +53,15 @@ test('navigating to a different route clears a stuck error boundary', async () =
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByText('Invites page')).toBeInTheDocument();
 });
+
+test('the admin nav scrolls horizontally rather than wrapping on phones', () => {
+  renderAdmin('/admin/invites');
+
+  const nav = screen.getByRole('navigation', { name: 'Admin' });
+  expect(nav.className).toContain('overflow-x-auto');
+  expect(nav.className).toContain('no-scrollbar');
+  expect(nav.className).not.toContain('flex-wrap');
+
+  const link = screen.getByRole('link', { name: 'Invites' });
+  expect(link.className).toContain('min-h-[40px]');
+});

@@ -85,6 +85,21 @@ test('toggling beta mode and saving persists via updateSettings', async () => {
   expect(await screen.findByText(/settings saved/i)).toBeInTheDocument();
 });
 
+test('offers a retry after a load failure', async () => {
+  const { ApiError } = await import('../../lib/apiClient');
+  vi.mocked(api.getSettings).mockRejectedValueOnce(
+    new ApiError(500, 'internal_error', 'Something went wrong.'),
+  );
+  renderPage();
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.');
+
+  vi.mocked(api.getSettings).mockResolvedValueOnce(settings);
+  await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+  expect(await screen.findByRole('radio', { name: /Closed/i })).toBeInTheDocument();
+});
+
 test('surfaces a save error from the API', async () => {
   const { ApiError } = await import('../../lib/apiClient');
   vi.mocked(api.updateSettings).mockRejectedValueOnce(
