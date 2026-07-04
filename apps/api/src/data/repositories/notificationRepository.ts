@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { notifications, notificationSettings } from '../schema';
@@ -24,6 +24,29 @@ export interface InsertNotificationInput {
   title: string;
   body: string;
   payload: unknown;
+}
+
+/** One notification row as read back for the user-facing list (§8). */
+export interface NotificationRecord {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  payload: unknown;
+  readAt: Date | null;
+  createdAt: Date;
+}
+
+function toRecord(row: typeof notifications.$inferSelect): NotificationRecord {
+  return {
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    body: row.body,
+    payload: row.payload,
+    readAt: row.readAt,
+    createdAt: row.createdAt,
+  };
 }
 
 export function createNotificationRepository(db: Database) {
@@ -75,6 +98,63 @@ export function createNotificationRepository(db: Database) {
         )
         .limit(1);
       return row?.enabled;
+    },
+
+    /**
+     * Newest-first notifications for one user, keyset paginated by UUIDv7 id
+     * (§8). Scoped by `user_id` so another user's id is never returned — no
+     * IDOR by construction (§10).
+     */
+    async listForUser(
+      userId: string,
+      params: { limit: number; cursor?: string },
+    ): Promise<{ items: NotificationRecord[]; nextCursor: string | null }> {
+      const rows = await db
+        .select()
+        .from(notifications)
+        .where(
+          and(
+            eq(notifications.userId, userId),
+            params.cursor ? lt(notifications.id, params.cursor) : undefined,
+          ),
+        )
+        .orderBy(desc(notifications.id))
+        .limit(params.limit + 1);
+
+      const hasMore = rows.length > params.limit;
+      const page = hasMore ? rows.slice(0, params.limit) : rows;
+      const items = page.map(toRecord);
+      return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+    },
+
+    /** Count of the user's unread notifications, for the bell badge (§6.10). */
+    async countUnread(userId: string): Promise<number> {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(notifications)
+        .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+      return row?.count ?? 0;
+    },
+
+    /**
+     * Mark exactly the given (owned, unread) rows read. Ids belonging to
+     * another user, or already-read rows, are silently excluded — idempotent
+     * and no cross-user leak.
+     */
+    async markRead(userId: string, ids: readonly string[]): Promise<void> {
+      if (ids.length === 0) return;
+      await db
+        .update(notifications)
+        .set({ readAt: new Date() })
+        .where(and(eq(notifications.userId, userId), inArray(notifications.id, [...ids])));
+    },
+
+    /** Mark every unread row for the user read (idempotent — a no-op if none). */
+    async markAllRead(userId: string): Promise<void> {
+      await db
+        .update(notifications)
+        .set({ readAt: new Date() })
+        .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
     },
   };
 }
