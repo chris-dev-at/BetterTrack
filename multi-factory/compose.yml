@@ -1,0 +1,68 @@
+# BetterTrack multi-factory — 1 master + N workers (see multi-factory/BRIEF.md).
+#
+# Reuses the single factory's image (built from ../factory) with the entrypoint
+# swapped per service. Scripts, lib and prompts are bind-mounted read-only so
+# they are live-editable without a rebuild (same convention as factory/prompts).
+# Each container gets its OWN named volume at /work/state (isolated repo clone,
+# own factory.log with the full agent stream); the shared ./state bind mount at
+# /work/mfstate carries the master↔worker protocol, control files and the shared
+# event log. Never run this at the same time as the single factory — autorun.sh
+# guards both directions.
+name: bettertrack-multifactory
+
+x-common: &common
+  build: ../factory
+  env_file: ../factory/.env
+  restart: unless-stopped
+  environment: &common-env
+    FACTORY_NAME: multi
+    WORKERS: ${WORKERS:-2}
+    MF_DRY_RUN: ${MF_DRY_RUN:-0}
+
+services:
+  master:
+    <<: *common
+    entrypoint: ['bash', '/work/mf/master.sh']
+    volumes:
+      - mf-master-work:/work/state
+      - ./state:/work/mfstate
+      - ./master.sh:/work/mf/master.sh:ro
+      - ../factory/lib.sh:/work/mf/lib.sh:ro
+      - ../factory/prompts:/work/state/prompts:ro
+      - ./prompts:/work/state/mf-prompts:ro
+      - ../factory/usage:/work/usage
+
+  worker-1:
+    <<: *common
+    entrypoint: ['bash', '/work/mf/worker.sh']
+    environment:
+      <<: *common-env
+      WORKER_ID: '1'
+    volumes:
+      - mf-w1-work:/work/state
+      - ./state:/work/mfstate
+      - ./worker.sh:/work/mf/worker.sh:ro
+      - ../factory/lib.sh:/work/mf/lib.sh:ro
+      - ../factory/prompts:/work/state/prompts:ro
+      - ./prompts:/work/state/mf-prompts:ro
+      - ../factory/usage:/work/usage
+
+  worker-2:
+    <<: *common
+    entrypoint: ['bash', '/work/mf/worker.sh']
+    environment:
+      <<: *common-env
+      WORKER_ID: '2'
+    volumes:
+      - mf-w2-work:/work/state
+      - ./state:/work/mfstate
+      - ./worker.sh:/work/mf/worker.sh:ro
+      - ../factory/lib.sh:/work/mf/lib.sh:ro
+      - ../factory/prompts:/work/state/prompts:ro
+      - ./prompts:/work/state/mf-prompts:ro
+      - ../factory/usage:/work/usage
+
+volumes:
+  mf-master-work:
+  mf-w1-work:
+  mf-w2-work:
