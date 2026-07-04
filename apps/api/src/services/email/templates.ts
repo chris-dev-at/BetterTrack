@@ -137,6 +137,85 @@ export function testEmail(params: { appUrl: string }): EmailContent {
   };
 }
 
+/**
+ * Notification emails (PROJECTPLAN.md §6.10). Sent by the dispatcher when the
+ * recipient's email channel is enabled. Same minimal shell as the account
+ * templates — no images, no tracking, inline styles only.
+ */
+export function friendRequestEmail(params: {
+  actorUsername: string;
+  appUrl: string;
+}): EmailContent {
+  const { actorUsername, appUrl } = params;
+  return {
+    subject: `New friend request on ${BRAND}`,
+    html: layout(
+      'New friend request',
+      [
+        `<p><strong>${escapeHtml(actorUsername)}</strong> sent you a friend request on ${BRAND}.</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, 'View request')}</p>`,
+      ].join(''),
+    ),
+    text: [
+      `New friend request on ${BRAND}.`,
+      '',
+      `${actorUsername} sent you a friend request.`,
+      '',
+      `View it: ${appUrl}`,
+    ].join('\n'),
+  };
+}
+
+export function friendAcceptedEmail(params: {
+  actorUsername: string;
+  appUrl: string;
+}): EmailContent {
+  const { actorUsername, appUrl } = params;
+  return {
+    subject: `${actorUsername} accepted your friend request`,
+    html: layout(
+      'Friend request accepted',
+      [
+        `<p><strong>${escapeHtml(actorUsername)}</strong> accepted your friend request on ${BRAND}. `,
+        'You can now see the portfolios they share with friends.</p>',
+        `<p style="padding:8px 0 0;">${button(appUrl, 'Open BetterTrack')}</p>`,
+      ].join(''),
+    ),
+    text: [
+      `${actorUsername} accepted your friend request.`,
+      '',
+      'You can now see the portfolios they share with friends.',
+      '',
+      `Open BetterTrack: ${appUrl}`,
+    ].join('\n'),
+  };
+}
+
+export function portfolioSharedEmail(params: {
+  actorUsername: string;
+  appUrl: string;
+}): EmailContent {
+  const { actorUsername, appUrl } = params;
+  return {
+    subject: `${actorUsername} shared a portfolio with you`,
+    html: layout(
+      'Portfolio shared with you',
+      [
+        `<p><strong>${escapeHtml(actorUsername)}</strong> shared a portfolio with friends on ${BRAND}. `,
+        'It is now visible to you under Shared With Me.</p>',
+        `<p style="padding:8px 0 0;">${button(appUrl, 'View shared portfolio')}</p>`,
+      ].join(''),
+    ),
+    text: [
+      `${actorUsername} shared a portfolio with you on ${BRAND}.`,
+      '',
+      'It is now visible under Shared With Me.',
+      '',
+      `View it: ${appUrl}`,
+    ].join('\n'),
+  };
+}
+
 export function welcomeEmail(params: { username: string; appUrl: string }): EmailContent {
   const { username, appUrl } = params;
   return {

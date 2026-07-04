@@ -280,6 +280,33 @@ export const notificationSettings = pgTable(
   ],
 );
 
+/**
+ * Email send log (PROJECTPLAN.md §6.10). One row per send *attempt* — never a
+ * body or any secret, only a coarse `error_code` on failure. `user_id` is
+ * nullable (pre-account sends like invites) and set null (not cascaded) on user
+ * deletion so the log survives for admin review. Admins read it globally and
+ * per user (§6.12).
+ */
+export const emailStatusEnum = pgEnum('email_status', ['sent', 'failed', 'suppressed']);
+
+export const emailLog = pgTable(
+  'email_log',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    recipient: varchar('recipient', { length: 320 }).notNull(),
+    template: varchar('template', { length: 64 }).notNull(),
+    subject: text('subject').notNull(),
+    status: emailStatusEnum('status').notNull(),
+    errorCode: varchar('error_code', { length: 64 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('email_log_created_at_idx').on(t.createdAt),
+    index('email_log_user_id_idx').on(t.userId),
+  ],
+);
+
 // --- Conglomerates & sharing ----------------------------------------------
 
 export const conglomerateStatusEnum = pgEnum('conglomerate_status', ['draft', 'active']);
@@ -444,6 +471,8 @@ export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;
 export type NotificationRow = typeof notifications.$inferSelect;
 export type NotificationSettingRow = typeof notificationSettings.$inferSelect;
+export type EmailLogRow = typeof emailLog.$inferSelect;
+export type NewEmailLogRow = typeof emailLog.$inferInsert;
 export type ConglomerateRow = typeof conglomerates.$inferSelect;
 export type ConglomeratePositionRow = typeof conglomeratePositions.$inferSelect;
 export type ShareLinkRow = typeof shareLinks.$inferSelect;
@@ -465,6 +494,7 @@ export const schema = {
   alerts,
   notifications,
   notificationSettings,
+  emailLog,
   conglomerates,
   conglomeratePositions,
   shareLinks,
@@ -478,6 +508,7 @@ export const schema = {
   alertKindEnum,
   alertStatusEnum,
   notificationChannelEnum,
+  emailStatusEnum,
   conglomerateStatusEnum,
   transactionSideEnum,
   portfolioVisibilityEnum,

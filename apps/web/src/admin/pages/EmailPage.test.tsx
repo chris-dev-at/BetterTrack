@@ -34,6 +34,7 @@ beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: true });
   vi.mocked(api.sendTestEmail).mockResolvedValue({ status: 'sent', to: admin.email });
+  vi.mocked(api.listEmails).mockResolvedValue({ entries: [], nextCursor: null });
 });
 
 test('shows the channel as enabled and sends a test email', async () => {

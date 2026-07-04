@@ -1,22 +1,27 @@
 import type { EventBus, Unsubscribe } from '../../events';
 import type { FriendAcceptedEvent, FriendRequestEvent, PortfolioSharedEvent } from '../../events';
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
+import type { EmailService } from '../email/emailService';
 import type { Logger } from '../../logger';
 
 /**
  * Notification dispatcher (PROJECTPLAN.md §9, §6.10). Subscribes to the V1
- * social domain events and turns each into an **in-app** notification row for the
- * recipient. Email delivery + `email_log` and the other channels land in a
- * follow-up; this consumer only fans out to the in-app channel.
+ * social domain events and fans each out to the recipient's enabled channels:
+ * an **in-app** notification row and, when the email channel is enabled, an
+ * email via {@link EmailService} (which writes the `email_log` row).
  *
- * Two rules from §6.10:
- *  - **In-app is on by default.** A user with no `notification_settings` row for
- *    the in-app channel still gets in-app notifications; only an explicit
- *    `enabled = false` suppresses them.
+ * Rules from §6.10:
+ *  - **In-app and email are on by default.** A user with no
+ *    `notification_settings` row for a channel still gets it; only an explicit
+ *    `enabled = false` suppresses that channel.
  *  - **Deduped per (user, event key).** Each event has a deterministic
- *    {@link eventKeyFor} key stamped into the row's `payload.eventKey`; an
- *    at-least-once redelivery of the same event finds the row and no-ops, so no
- *    duplicate is written.
+ *    {@link eventKeyFor} key stamped into the in-app row's `payload.eventKey`;
+ *    an at-least-once redelivery finds the row and no-ops, so neither a
+ *    duplicate row nor a duplicate email is produced.
+ *  - **Email is best-effort.** {@link EmailService} never throws (it logs the
+ *    attempt as sent/failed/suppressed), so a mail problem never blocks the
+ *    in-app row or the consumer.
  *
  * A new consumer subscribes without touching producers (§9): the dispatcher is a
  * pure subscriber over the typed bus.
@@ -103,6 +108,10 @@ function render(event: DispatchableEvent): RenderedNotification {
 export interface NotificationDispatcherDeps {
   bus: EventBus;
   repo: NotificationRepository;
+  /** Email channel (§6.10). Omit to disable email fan-out (e.g. in-app-only tests). */
+  email?: EmailService;
+  /** Resolves the recipient's address for the email channel. Required with `email`. */
+  users?: Pick<UserRepository, 'findById'>;
   logger?: Logger;
 }
 
@@ -121,19 +130,44 @@ export interface NotificationDispatcher {
 export function createNotificationDispatcher(
   deps: NotificationDispatcherDeps,
 ): NotificationDispatcher {
-  const { bus, repo, logger } = deps;
+  const { bus, repo, email, users, logger } = deps;
   const unsubscribers: Unsubscribe[] = [];
 
-  async function dispatch(event: DispatchableEvent): Promise<void> {
-    // In-app is on by default: only an explicit `false` suppresses it (§6.10).
-    const enabled = await repo.channelEnabled(event.userId, 'inapp');
-    if (enabled === false) return;
+  /** Send the event's email on the recipient's enabled email channel (§6.10). */
+  async function sendEmail(event: DispatchableEvent): Promise<void> {
+    if (!email || !users) return;
+    // Email is on by default: only an explicit `false` suppresses it (§6.10).
+    if ((await repo.channelEnabled(event.userId, 'email')) === false) return;
+    const recipient = await users.findById(event.userId);
+    if (!recipient?.email) return;
 
+    const to = recipient.email;
+    const userId = recipient.id;
+    switch (event.type) {
+      case 'friend.request':
+        await email.sendFriendRequest({ to, userId, actorUsername: event.actorUsername });
+        return;
+      case 'friend.accepted':
+        await email.sendFriendAccepted({ to, userId, actorUsername: event.actorUsername });
+        return;
+      case 'portfolio.shared':
+        await email.sendPortfolioShared({ to, userId, actorUsername: event.actorUsername });
+        return;
+    }
+  }
+
+  async function dispatch(event: DispatchableEvent): Promise<void> {
     const { eventKey, title, body, payload } = render(event);
-    // At-least-once delivery: a redelivered event must not double-insert (§6.10).
+    // At-least-once delivery: a redelivered event must not fan out twice — the
+    // in-app row is the dedupe marker for both channels (§6.10).
     if (await repo.existsForEventKey(event.userId, eventKey)) return;
 
-    await repo.insert({ userId: event.userId, type: event.type, title, body, payload });
+    // In-app is on by default: only an explicit `false` suppresses it (§6.10).
+    if ((await repo.channelEnabled(event.userId, 'inapp')) !== false) {
+      await repo.insert({ userId: event.userId, type: event.type, title, body, payload });
+    }
+
+    await sendEmail(event);
   }
 
   return {
