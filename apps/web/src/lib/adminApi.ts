@@ -3,6 +3,7 @@ import {
   adminStatsSchema,
   adminUserListResponseSchema,
   adminUserSchema,
+  appSettingsResponseSchema,
   auditLogListResponseSchema,
   createInviteResponseSchema,
   createUserResponseSchema,
@@ -16,6 +17,7 @@ import {
   type AdminStats,
   type AdminUser,
   type AdminUserListResponse,
+  type AppSettingsResponse,
   type AuditLogListResponse,
   type CreateInviteRequest,
   type CreateInviteResponse,
@@ -28,6 +30,7 @@ import {
   type ResetPasswordResponse,
   type TestEmailRequest,
   type TestEmailResponse,
+  type UpdateAppSettingsRequest,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -133,6 +136,20 @@ export async function listAudit(
     signal,
   });
   return auditLogListResponseSchema.parse(data);
+}
+
+// --- Admin: global settings -----------------------------------------------
+
+export async function getSettings(signal?: AbortSignal): Promise<AppSettingsResponse> {
+  const data = await apiRequest<unknown>('/admin/settings', { signal });
+  return appSettingsResponseSchema.parse(data);
+}
+
+export async function updateSettings(
+  body: UpdateAppSettingsRequest,
+): Promise<AppSettingsResponse> {
+  const data = await apiRequest<unknown>('/admin/settings', { method: 'PATCH', body });
+  return appSettingsResponseSchema.parse(data);
 }
 
 // --- Admin: email log -----------------------------------------------------
