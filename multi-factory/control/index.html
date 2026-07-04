@@ -18,9 +18,11 @@
         --serious: #ec835a;
         --crit: #d03b3b;
         --accent: #7aa2f7;
+        --master: #82d99a;
         --w1: #5ab0f2;
         --w2: #c792ea;
-        --master: #82d99a;
+        --w3: #e5c07b;
+        --w4: #56b6c2;
       }
       * {
         box-sizing: border-box;
@@ -39,7 +41,7 @@
           'Segoe UI',
           Roboto,
           sans-serif;
-        padding: 18px 22px 40px;
+        padding: 16px 20px 40px;
       }
       a {
         color: var(--accent);
@@ -49,20 +51,20 @@
         text-decoration: underline;
       }
       h1 {
-        font-size: 17px;
+        font-size: 16px;
         margin: 0;
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 9px;
         flex-wrap: wrap;
       }
       header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
         flex-wrap: wrap;
-        margin-bottom: 14px;
+        margin-bottom: 10px;
       }
       .pill {
         display: inline-flex;
@@ -92,19 +94,39 @@
       .dot.stale {
         background: var(--warn);
       }
+      .tabs {
+        display: inline-flex;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        overflow: hidden;
+      }
+      .tabs button {
+        background: var(--surface);
+        border: 0;
+        color: var(--ink2);
+        padding: 6px 14px;
+        font-size: 12.5px;
+        cursor: pointer;
+        border-radius: 0;
+      }
+      .tabs button.on {
+        background: var(--surface2);
+        color: var(--ink);
+        font-weight: 600;
+      }
       .bar {
         display: flex;
         gap: 8px;
         flex-wrap: wrap;
         align-items: center;
-        margin: 10px 0 16px;
+        margin: 8px 0 12px;
       }
       button {
         background: var(--surface2);
         border: 1px solid var(--border);
         color: var(--ink);
         border-radius: 8px;
-        padding: 7px 13px;
+        padding: 6px 12px;
         font-size: 13px;
         cursor: pointer;
       }
@@ -126,13 +148,483 @@
         width: 1px;
         height: 22px;
         background: var(--border);
-        margin: 0 4px;
+        margin: 0 3px;
       }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 14px;
+        min-width: 0;
+      }
+      .card h2 {
+        font-size: 11.5px;
+        margin: 0 0 9px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .chip {
+        font-size: 10.5px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 0 5px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .tag {
+        font-weight: 600;
+        font-size: 10.5px;
+        border-radius: 4px;
+        padding: 0 5px;
+        white-space: nowrap;
+      }
+      .tag.master {
+        color: var(--master);
+        border: 1px solid var(--master);
+      }
+      .tag.w1 {
+        color: var(--w1);
+        border: 1px solid var(--w1);
+      }
+      .tag.w2 {
+        color: var(--w2);
+        border: 1px solid var(--w2);
+      }
+      .tag.w3 {
+        color: var(--w3);
+        border: 1px solid var(--w3);
+      }
+      .tag.w4 {
+        color: var(--w4);
+        border: 1px solid var(--w4);
+      }
+      .ck {
+        font-size: 12px;
+      }
+      .ck.passing {
+        color: var(--good);
+      }
+      .ck.pending {
+        color: var(--warn);
+      }
+      .ck.failing {
+        color: var(--crit);
+      }
+      .warnbox {
+        border: 1px solid var(--warn);
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 13px;
+        color: var(--ink2);
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      #toast {
+        position: fixed;
+        bottom: 18px;
+        right: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 9;
+      }
+      .toastmsg {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--good);
+        border-radius: 8px;
+        padding: 9px 14px;
+        font-size: 13px;
+        max-width: 420px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      }
+      .toastmsg.err {
+        border-left-color: var(--crit);
+      }
+      .hint {
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+
+      /* ---- overview: compact strip ---- */
+      .strip {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .tile {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 9px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+      }
+      .tile .l {
+        font-size: 10.5px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .tile .v {
+        font-size: 17px;
+        font-weight: 650;
+        letter-spacing: -0.01em;
+      }
+      .tile .s {
+        font-size: 11.5px;
+        color: var(--ink2);
+      }
+      .meter {
+        height: 5px;
+        background: var(--surface2);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-top: 3px;
+      }
+      .meter i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+        border-radius: 3px;
+        transition: width 0.6s;
+      }
+      .meter i.warn {
+        background: var(--warn);
+      }
+      .meter i.crit {
+        background: var(--crit);
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      /* ---- unified issue list ---- */
+      .ilist {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .irow {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 7px 11px;
+        min-width: 0;
+      }
+      .irow.dim {
+        opacity: 0.62;
+      }
+      .irow .num {
+        font-weight: 650;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .irow .title {
+        color: var(--ink2);
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+        min-width: 60px;
+      }
+      .irow .chips {
+        display: flex;
+        gap: 5px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .st {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        border-radius: 5px;
+        padding: 1px 7px;
+        border: 1px solid var(--border);
+        color: var(--ink2);
+        white-space: nowrap;
+      }
+      .st::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--muted);
+        flex: none;
+      }
+      .st.active::before {
+        background: var(--accent);
+      }
+      .st.q::before {
+        background: var(--warn);
+      }
+      .st.merge::before {
+        background: var(--good);
+      }
+      .st.block::before {
+        background: var(--serious);
+      }
+      .st.hold::before {
+        background: var(--muted);
+      }
+
+      /* ---- recently completed ---- */
+      .done-item {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        font-size: 13px;
+        padding: 3px 0;
+        min-width: 0;
+      }
+      .done-item .t {
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .done-item .m {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      /* ---- triggers / workers ---- */
+      .trow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12.5px;
+        color: var(--ink2);
+        padding: 4px 0;
+        border-bottom: 1px dashed var(--border);
+      }
+      .trow:last-child {
+        border-bottom: 0;
+      }
+      .trow .x {
+        margin-left: auto;
+        background: none;
+        border: none;
+        color: var(--muted);
+        font-size: 14px;
+        padding: 0 4px;
+        cursor: pointer;
+      }
+      .trow .x:hover {
+        color: var(--crit);
+      }
+      .trow.fired {
+        opacity: 0.55;
+      }
+      .addrow {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 8px;
+      }
+      select,
+      input[type='number'] {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink);
+        border-radius: 7px;
+        padding: 5px 7px;
+        font-size: 12.5px;
+      }
+      input[type='number'] {
+        width: 64px;
+      }
+      label.cb {
+        font-size: 11.5px;
+        color: var(--ink2);
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .stepper {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 20px;
+        font-weight: 650;
+      }
+      .stepper button {
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border-radius: 8px;
+        font-size: 16px;
+      }
+
+      /* ---- flow view ---- */
+      #flowwrap {
+        position: relative;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 26px 18px;
+        min-height: 430px;
+      }
+      #flowwrap.off::after {
+        content: 'factory stopped — start it to see the pipeline live';
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--muted);
+        font-size: 14px;
+        background: rgba(19, 19, 18, 0.55);
+        border-radius: 12px;
+      }
+      #flowsvg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      #flowsvg path {
+        fill: none;
+        stroke: var(--border);
+        stroke-width: 1.6;
+      }
+      #flowsvg path.on {
+        stroke: var(--accent);
+        stroke-width: 2;
+        stroke-dasharray: 7 6;
+        animation: dashrun 0.5s linear infinite;
+      }
+      #flowsvg path.pulse {
+        stroke: var(--good);
+        stroke-width: 2;
+        stroke-dasharray: 7 6;
+        animation: dashrun 0.35s linear infinite;
+      }
+      @keyframes dashrun {
+        to {
+          stroke-dashoffset: -13;
+        }
+      }
+      #flowcols {
+        position: relative;
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        z-index: 1;
+      }
+      .fcol {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        justify-content: center;
+        min-width: 0;
+      }
+      .fnode {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        padding: 9px 12px;
+        font-size: 12px;
+        color: var(--ink2);
+        min-width: 104px;
+        text-align: center;
+      }
+      .fnode b {
+        display: block;
+        color: var(--ink);
+        font-size: 12.5px;
+        margin-bottom: 2px;
+      }
+      .fnode .sub {
+        font-size: 10.5px;
+        color: var(--muted);
+      }
+      .fnode.pulse {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 0 rgba(122, 162, 247, 0.5);
+        animation: npulse 1.6s ease-out infinite;
+      }
+      .fnode.gpulse {
+        border-color: var(--good);
+        animation: gpulse 1.2s ease-out 3;
+      }
+      @keyframes npulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(122, 162, 247, 0.45);
+        }
+        100% {
+          box-shadow: 0 0 0 12px rgba(122, 162, 247, 0);
+        }
+      }
+      @keyframes gpulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(12, 163, 12, 0.5);
+        }
+        100% {
+          box-shadow: 0 0 0 14px rgba(12, 163, 12, 0);
+        }
+      }
+      .fsteps {
+        display: flex;
+        gap: 4px;
+        justify-content: center;
+        margin-top: 5px;
+      }
+      .fsteps span {
+        font-size: 12px;
+        opacity: 0.28;
+        transition: opacity 0.3s;
+      }
+      .fsteps span.on {
+        opacity: 1;
+      }
+      .fq {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 120px;
+        overflow: hidden;
+      }
+      .fq .qi {
+        font-size: 10.5px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--ink2);
+      }
+      .fnode.dim {
+        opacity: 0.5;
+      }
+
+      /* ---- detail view (v1 layout) ---- */
       .kpis {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
         gap: 10px;
-        margin-bottom: 16px;
+        margin-bottom: 14px;
       }
       .kpi {
         background: var(--surface);
@@ -157,55 +649,6 @@
         grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
         gap: 12px;
         margin-bottom: 14px;
-      }
-      .card {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 12px;
-        padding: 13px 15px;
-        min-width: 0;
-      }
-      .card h2 {
-        font-size: 12px;
-        margin: 0 0 10px;
-        color: var(--muted);
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        font-size: 12px;
-        border-radius: 6px;
-        padding: 2px 8px;
-        border: 1px solid var(--border);
-        color: var(--ink2);
-      }
-      .badge::before {
-        content: '';
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--muted);
-      }
-      .badge.idle::before {
-        background: var(--muted);
-      }
-      .badge.working::before {
-        background: var(--accent);
-      }
-      .badge.done::before {
-        background: var(--good);
-      }
-      .badge.warn::before {
-        background: var(--warn);
-      }
-      .badge.failed::before {
-        background: var(--crit);
       }
       .row {
         display: flex;
@@ -250,53 +693,46 @@
         font-size: 12px;
         white-space: nowrap;
       }
-      .chip {
-        font-size: 10.5px;
-        border: 1px solid var(--border);
-        border-radius: 5px;
-        padding: 0 5px;
-        color: var(--muted);
-        white-space: nowrap;
-      }
-      .tag {
-        font-weight: 600;
-        font-size: 11px;
-        border-radius: 4px;
-        padding: 0 5px;
-      }
-      .tag.master {
-        color: var(--master);
-        border: 1px solid var(--master);
-      }
-      .tag.w1 {
-        color: var(--w1);
-        border: 1px solid var(--w1);
-      }
-      .tag.w2 {
-        color: var(--w2);
-        border: 1px solid var(--w2);
-      }
-      .ck {
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
         font-size: 12px;
+        border-radius: 6px;
+        padding: 2px 8px;
+        border: 1px solid var(--border);
+        color: var(--ink2);
       }
-      .ck.passing {
-        color: var(--good);
+      .badge::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
       }
-      .ck.pending {
-        color: var(--warn);
+      .badge.idle::before {
+        background: var(--muted);
       }
-      .ck.failing {
-        color: var(--crit);
+      .badge.working::before {
+        background: var(--accent);
       }
-      #log {
+      .badge.done::before {
+        background: var(--good);
+      }
+      .badge.warn::before {
+        background: var(--warn);
+      }
+      .badge.failed::before {
+        background: var(--crit);
+      }
+      .log {
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 12px;
-        padding: 12px 14px;
-        height: 300px;
+        padding: 11px 13px;
         overflow-y: auto;
         font:
-          12px/1.6 ui-monospace,
+          11.5px/1.6 ui-monospace,
           SFMono-Regular,
           Menlo,
           monospace;
@@ -304,57 +740,37 @@
         white-space: pre-wrap;
         word-break: break-all;
       }
-      #toast {
-        position: fixed;
-        bottom: 18px;
-        right: 18px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        z-index: 9;
+      #log-d {
+        height: 300px;
       }
-      .toastmsg {
-        background: var(--surface2);
-        border: 1px solid var(--border);
-        border-left: 3px solid var(--good);
-        border-radius: 8px;
-        padding: 9px 14px;
-        font-size: 13px;
-        max-width: 420px;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      #log-o {
+        height: 190px;
       }
-      .toastmsg.err {
-        border-left-color: var(--crit);
+      section.tab {
+        display: none;
       }
-      .note {
-        font-size: 12px;
-        color: var(--muted);
-        margin: 4px 0 14px;
-      }
-      .warnbox {
-        border: 1px solid var(--warn);
-        border-radius: 10px;
-        padding: 8px 12px;
-        font-size: 13px;
-        color: var(--ink2);
-        display: flex;
-        gap: 10px;
-        align-items: center;
-        margin-bottom: 12px;
+      section.tab.on {
+        display: block;
       }
     </style>
   </head>
   <body>
     <header>
       <h1>
-        🏭 BetterTrack Multi-Factory
+        🏭 Multi-Factory
         <span class="pill">mode <b id="mode">–</b></span>
         <span class="pill">phase <b id="phase">–</b></span>
-        <span class="pill">master hb <b id="mhb">–</b></span>
       </h1>
-      <span class="pill"
-        ><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span
-      >
+      <div style="display: flex; gap: 10px; align-items: center">
+        <nav class="tabs" id="tabs">
+          <button data-tab="overview" class="on">Overview</button>
+          <button data-tab="flow">Flow</button>
+          <button data-tab="detail">DetailView</button>
+        </nav>
+        <span class="pill"
+          ><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span
+        >
+      </div>
     </header>
 
     <div id="sfwarn" class="warnbox" style="display: none">
@@ -395,7 +811,7 @@
         title="Normal operation: composer keeps the queue full"
         onclick="act('mode-run', this)"
       >
-        🟢 Mode: run
+        🟢 Run
       </button>
       <button
         id="b-runout"
@@ -427,52 +843,145 @@
         🗑 Down
       </button>
     </div>
-    <div class="note">
-      Run out = finish <em>all</em> open issues, no new planning. Close down = finish only
-      <em>started</em> issues. Both end in phase=drained → this server downs the project
-      automatically. Destructive buttons ask twice.
-    </div>
 
-    <div class="kpis" id="kpis"></div>
+    <!-- ================= OVERVIEW ================= -->
+    <section class="tab on" id="tab-overview">
+      <div class="strip" id="strip"></div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Triggers <span class="hint">automation rules</span></h2>
+          <div id="triggers"></div>
+          <div class="addrow">
+            <select id="tg-type" onchange="tgTypeChanged()">
+              <option value="usage">5h usage ≥</option>
+              <option value="usage7">7d usage ≥</option>
+              <option value="timer">in … minutes</option>
+            </select>
+            <input type="number" id="tg-value" value="40" min="1" max="1440" />
+            <span id="tg-unit" class="hint">%</span>
+            <select id="tg-action">
+              <option value="mode-close-down">→ Close down</option>
+              <option value="mode-run-out">→ Run out</option>
+              <option value="stop">→ Hard stop</option>
+            </select>
+            <label class="cb" id="tg-resetwrap"
+              ><input type="checkbox" id="tg-reset" checked />start on new window</label
+            >
+            <label class="cb" id="tg-repeatwrap"
+              ><input type="checkbox" id="tg-repeat" checked />repeat</label
+            >
+            <button onclick="tgAdd(this)">＋ Add</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Workers <span class="hint" id="wk-running"></span></h2>
+          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
+            <span class="stepper"
+              ><button onclick="wkStep(-1, this)">−</button><span id="wk-n">2</span
+              ><button onclick="wkStep(1, this)">＋</button></span
+            >
+            <button id="wk-apply" style="display: none" onclick="act('restart', this, true)">
+              ↻ Apply &amp; restart
+            </button>
+            <span class="hint" id="wk-note"></span>
+          </div>
+          <details style="margin-top: 8px">
+            <summary class="hint" style="cursor: pointer">how many workers make sense?</summary>
+            <div class="hint" style="margin-top: 6px; line-height: 1.5">
+              <b>2 is the sweet spot</b> — this repo usually has two truly independent lanes (api +
+              web). Parallelism only exists when issues claim non-overlapping paths; workers beyond
+              the number of open lanes just idle or serialize.<br />
+              <b>3</b> pays off occasionally (contracts / docs / admin lane open at the same time)
+              at the cost of more conflict-serialization and BEHIND re-gates at the single
+              merger.<br />
+              <b>4</b> is the hard cap — beyond that everything fights: one merge queue, one shared
+              5h token budget, overlapping touches, CI queueing. 10 would mostly be 8 idle
+              containers burning your window.
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom: 10px">
+        <h2>Issues <span class="hint" id="icount"></span></h2>
+        <div class="ilist" id="ilist"></div>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>
+            Recently completed
+            <button
+              id="rc-more"
+              style="font-size: 11px; padding: 2px 8px"
+              onclick="
+                rcExpanded = !rcExpanded;
+                render(S);
+              "
+            >
+              expand
+            </button>
+          </h2>
+          <div id="recent"></div>
+        </div>
+        <div class="card">
+          <h2>Events</h2>
+          <div class="log" id="log-o"></div>
+        </div>
+      </div>
+    </section>
 
-    <div class="grid" id="workergrid"></div>
+    <!-- ================= FLOW ================= -->
+    <section class="tab" id="tab-flow">
+      <div id="flowwrap">
+        <svg id="flowsvg"></svg>
+        <div id="flowcols"></div>
+      </div>
+      <div class="hint" style="margin-top: 8px">
+        Live pipeline: composer plans → scheduler assigns lane-free issues → workers
+        write/review/fix in isolation → approved PRs queue → the single merger lands them on main.
+        Animated edges = data flowing right now.
+      </div>
+    </section>
 
-    <div class="grid">
-      <div class="card">
-        <h2>Merge queue <span id="qcount" class="chip">0</span></h2>
-        <div class="list" id="queue"></div>
+    <!-- ================= DETAIL (v1 view) ================= -->
+    <section class="tab" id="tab-detail">
+      <div class="kpis" id="kpis"></div>
+      <div class="grid" id="workergrid"></div>
+      <div class="grid">
+        <div class="card">
+          <h2>Merge queue <span id="qcount" class="chip">0</span></h2>
+          <div class="list" id="queue"></div>
+        </div>
+        <div class="card">
+          <h2>Open PRs</h2>
+          <div class="list" id="prs"></div>
+        </div>
+        <div class="card">
+          <h2>Autopilot issues</h2>
+          <div class="list" id="issues"></div>
+        </div>
+        <div class="card">
+          <h2>Recently merged</h2>
+          <div class="list" id="merged"></div>
+        </div>
+        <div class="card">
+          <h2>Needs human <span id="nhcount" class="chip">0</span></h2>
+          <div class="list" id="needshuman"></div>
+        </div>
+        <div class="card">
+          <h2>Cost (multi-factory) by issue</h2>
+          <div class="list" id="costs"></div>
+        </div>
       </div>
       <div class="card">
-        <h2>Open PRs</h2>
-        <div class="list" id="prs"></div>
+        <h2>
+          Factory events
+          <label style="text-transform: none; letter-spacing: 0"
+            ><input type="checkbox" id="autoscroll" checked /> autoscroll</label
+          >
+        </h2>
+        <div class="log" id="log-d"></div>
       </div>
-      <div class="card">
-        <h2>Autopilot issues</h2>
-        <div class="list" id="issues"></div>
-      </div>
-      <div class="card">
-        <h2>Recently merged</h2>
-        <div class="list" id="merged"></div>
-      </div>
-      <div class="card">
-        <h2>Needs human <span id="nhcount" class="chip">0</span></h2>
-        <div class="list" id="needshuman"></div>
-      </div>
-      <div class="card">
-        <h2>Cost (multi-factory) by issue</h2>
-        <div class="list" id="costs"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom: 10px">
-      <h2>
-        Factory events
-        <label style="text-transform: none; letter-spacing: 0"
-          ><input type="checkbox" id="autoscroll" checked /> autoscroll</label
-        >
-      </h2>
-      <div id="log"></div>
-    </div>
+    </section>
 
     <div id="toast"></div>
 
@@ -498,10 +1007,38 @@
         const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
         return ago(Math.round(s)) + ' ago';
       };
+      const tuntil = (iso) => {
+        if (!iso) return '–';
+        let s = Math.max(0, (new Date(iso) - Date.now()) / 1000);
+        const h = Math.floor(s / 3600);
+        s -= h * 3600;
+        const m = Math.round(s / 60);
+        return (h ? h + 'h ' : '') + m + 'm';
+      };
+      let S = null,
+        rcExpanded = false,
+        activeTab = localStorage.getItem('mf-tab') || 'overview';
 
-      // two-click confirm for destructive actions
+      /* ---- tabs ---- */
+      $('tabs').addEventListener('click', (e) => {
+        const t = e.target.dataset?.tab;
+        if (t) setTab(t);
+      });
+      function setTab(t) {
+        activeTab = t;
+        localStorage.setItem('mf-tab', t);
+        document
+          .querySelectorAll('.tabs button')
+          .forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+        document
+          .querySelectorAll('section.tab')
+          .forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
+        if (S) render(S);
+      }
+
+      /* ---- actions ---- */
       const armed = new Map();
-      async function act(action, btn, confirm = false) {
+      async function act(action, btn, confirm = false, payload = {}) {
         if (confirm && armed.get(action) !== true) {
           armed.set(action, true);
           const old = btn.textContent;
@@ -515,12 +1052,12 @@
           return;
         }
         armed.delete(action);
-        btn.classList.remove('armed');
+        if (btn) btn.classList.remove('armed');
         try {
           const r = await fetch('/api/action', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ action }),
+            body: JSON.stringify({ action, ...payload }),
           });
           const j = await r.json();
           toast(j.message || action, j.ok);
@@ -536,41 +1073,154 @@
         setTimeout(() => d.remove(), 6000);
       }
 
-      const phaseClass = (p) =>
-        ({
-          idle: 'idle',
-          writing: 'working',
-          reviewing: 'working',
-          fixing: 'working',
-          triage: 'warn',
-          'awaiting-merge': 'warn',
-          done: 'done',
-          failed: 'failed',
-        })[p] || 'idle';
-      const phaseIcon = (p) =>
-        ({
-          idle: '…',
-          writing: '✍️',
-          reviewing: '🔍',
-          fixing: '🔧',
-          triage: '⚖️',
-          done: '✓',
-          failed: '✗',
-        })[p] || '…';
-
-      function kpi(v, l) {
-        return `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+      /* ---- triggers UI ---- */
+      function tgTypeChanged() {
+        const t = $('tg-type').value;
+        $('tg-unit').textContent = t === 'timer' ? 'min' : '%';
+        $('tg-value').value = t === 'timer' ? 50 : t === 'usage7' ? 80 : 40;
+        const usage = t !== 'timer';
+        $('tg-resetwrap').style.display = usage ? '' : 'none';
+        $('tg-repeatwrap').style.display = usage ? '' : 'none';
+      }
+      function tgAdd(btn) {
+        const t = $('tg-type').value,
+          v = Number($('tg-value').value),
+          action = $('tg-action').value;
+        const trigger =
+          t === 'timer'
+            ? { type: 'timer', minutes: v, action }
+            : {
+                type: 'usage',
+                metric: t === 'usage7' ? 'seven_day' : 'five_hour',
+                threshold: v,
+                action,
+                onReset: $('tg-reset').checked ? 'start' : 'none',
+                repeat: $('tg-repeat').checked,
+              };
+        act('trigger-add', btn, false, { trigger });
+      }
+      const ACTION_LABEL = {
+        'mode-close-down': 'Close down',
+        'mode-run-out': 'Run out',
+        stop: 'Hard stop',
+      };
+      function renderTriggers(list) {
+        $('triggers').innerHTML =
+          (list || [])
+            .map((t) => {
+              const what =
+                t.type === 'timer'
+                  ? `⏱ at ${new Date(t.fireAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${t.armed ? ' (in ' + tuntil(t.fireAt) + ')' : ''}`
+                  : `📊 ${t.metric === 'seven_day' ? '7d' : '5h'} ≥ ${t.threshold}%`;
+              const extra =
+                t.type === 'usage' && t.onReset === 'start'
+                  ? ` · then start on new window${t.repeat ? ' · repeat' : ''}`
+                  : '';
+              const state = t.armed
+                ? ''
+                : t.waitingReset
+                  ? ' — fired, waiting for new window…'
+                  : ` — fired ${tago(t.firedAt)}${t.note ? ' (' + esc(t.note) + ')' : ''}`;
+              return `<div class="trow${t.armed || t.waitingReset ? '' : ' fired'}"><span>${what} → <b>${ACTION_LABEL[t.action] || esc(t.action)}</b>${extra}${state}</span><button class="x" title="remove" onclick="act('trigger-remove',this,false,{id:'${esc(t.id)}'})">✕</button></div>`;
+            })
+            .join('') ||
+          '<div class="hint">no triggers — add one below (e.g. 5h ≥ 40% → Close down, start on new window)</div>';
       }
 
+      /* ---- workers UI ---- */
+      let wkDesired = null;
+      function wkStep(d, btn) {
+        const cur = wkDesired ?? S?.workers?.desired ?? 2;
+        const n = Math.min(4, Math.max(1, cur + d));
+        if (n === cur) return;
+        wkDesired = n;
+        $('wk-n').textContent = n;
+        act('set-workers', btn, false, { value: n });
+      }
+
+      /* ---- data joins ---- */
+      function claimPrefix(c) {
+        return c.split('*')[0];
+      }
+      function claimsConflict(a, b) {
+        const x = claimPrefix(a),
+          y = claimPrefix(b);
+        return x.startsWith(y) || y.startsWith(x);
+      }
+      function joinIssues(s) {
+        const p = s.protocol || {},
+          gh = s.github || {};
+        const workers = p.workers || [],
+          queue = p.queue || [],
+          prs = gh.prs || [];
+        const openSet = new Set((gh.issues || []).map((i) => i.number));
+        const inflight = [];
+        for (const w of workers)
+          if (w.assignment)
+            inflight.push({
+              n: w.assignment.issue,
+              claims: w.assignment.touches?.length ? w.assignment.touches : ['**'],
+            });
+        for (const q of queue)
+          inflight.push({ n: q.issue, claims: q.touches?.length ? q.touches : ['**'] });
+        return (gh.issues || [])
+          .map((i) => {
+            const w = workers.find(
+              (w) =>
+                w.status &&
+                w.status.issue === i.number &&
+                !['idle', 'done', 'failed'].includes(w.status.phase),
+            );
+            const pr = prs.find((pr) => pr.branch === 'task/' + i.number);
+            const qi = queue.findIndex((q) => q.issue === i.number);
+            const merging =
+              p.masterActivity &&
+              ['merging', 'ci-fix'].includes(p.masterActivity.activity) &&
+              qi >= 0 &&
+              p.masterActivity.pr === queue[qi].pr;
+            const deps = (i.meta?.dependsOn || []).filter((d) => openSet.has(d));
+            let conflict = null;
+            if (!w && qi < 0 && !deps.length) {
+              const claims = i.meta?.touches?.length ? i.meta.touches : ['**'];
+              for (const f of inflight) {
+                if (
+                  f.n !== i.number &&
+                  claims.some((c) => f.claims.some((fc) => claimsConflict(c, fc)))
+                ) {
+                  conflict = f.n;
+                  break;
+                }
+              }
+            }
+            return {
+              ...i,
+              w,
+              pr,
+              queuePos: qi >= 0 ? qi + 1 : null,
+              merging,
+              deps,
+              conflict,
+              rank: w ? 0 : qi >= 0 ? 1 : conflict || deps.length ? 3 : 2,
+            };
+          })
+          .sort((a, b) => a.rank - b.rank || a.number - b.number);
+      }
+      const PHASE_ICON = { writing: '✍️', reviewing: '🔍', fixing: '🔧', triage: '⚖️' };
+
+      /* ---- renderers ---- */
       function render(s) {
-        const p = s.protocol || {};
+        S = s;
+        const p = s.protocol || {},
+          gh = s.github || {},
+          led = s.ledger || {},
+          u = s.usage || {};
         $('mode').textContent = p.mode || '–';
         $('phase').textContent = p.phase || '–';
-        $('mhb').textContent = ago(p.masterHeartbeatAge);
 
         const multiC = s.docker?.multi?.containers || [];
         const running = multiC.some((c) => /running/i.test(c.state));
         const paused = multiC.some((c) => /paused/i.test(c.state));
+        const upCount = multiC.filter((c) => /running/i.test(c.state)).length;
         const sfC = (s.docker?.single?.containers || []).filter((c) =>
           /running|paused/i.test(c.state),
         );
@@ -583,8 +1233,210 @@
         $('b-down').disabled = !multiC.length;
         for (const id of ['b-run', 'b-runout', 'b-close']) $(id).disabled = !running && !paused;
 
-        const gh = s.github || {};
-        const led = s.ledger || {};
+        /* --- strip --- */
+        const mcls = (pct) => (pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : '');
+        const u5 = u.fiveHour,
+          u7 = u.sevenDay;
+        const scoped = (u.scoped || []).map((x) => `${esc(x.name)} ${x.pct}%`).join(' · ');
+        $('strip').innerHTML =
+          `<div class="tile"><span class="l">Factory</span><span class="v">${running ? upCount + ' up' : paused ? 'paused' : 'stopped'}</span><span class="s">${esc(p.mode || '–')} · ${esc(p.phase || '–')} · master hb ${ago(p.masterHeartbeatAge)}</span></div>` +
+          `<div class="tile"><span class="l">Cost (multi)</span><span class="v">$${led.multiToday ?? 0} today</span><span class="s">$${led.multiTotal ?? 0} total · queue ${(p.queue || []).length} · ✋ ${(gh.needsHuman || []).length}</span></div>` +
+          (u5
+            ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
+            : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
+          (u7
+            ? `<div class="tile"><span class="l">7-day window</span><span class="v">${u7.pct}% used</span><span class="s">resets ${new Date(u7.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${scoped ? ' · ' + scoped : ''}</span><span class="meter"><i class="${mcls(u7.pct)}" style="width:${Math.min(100, u7.pct)}%"></i></span></div>`
+            : '') +
+          `<div class="tile"><span class="l">Open issues</span><span class="v">${(gh.issues || []).length}</span><span class="s">${(gh.prs || []).length} open PRs · ${s.inflight?.length ? 'action: ' + esc(s.inflight.join(',')) : s.lastAutoAction ? esc(s.lastAutoAction.action) + ' ' + tago(s.lastAutoAction.at) : 'no pending action'}</span></div>`;
+
+        /* --- triggers + workers --- */
+        renderTriggers(s.triggers);
+        const desired = wkDesired ?? s.workers?.desired ?? 2;
+        $('wk-n').textContent = desired;
+        const liveWorkers = multiC.filter(
+          (c) => /^worker-/.test(c.service) && /running|paused/i.test(c.state),
+        ).length;
+        $('wk-running').textContent =
+          running || paused ? `running: ${liveWorkers}` : 'factory stopped';
+        const mismatch = (running || paused) && liveWorkers !== desired;
+        $('wk-apply').style.display = mismatch ? '' : 'none';
+        $('wk-note').textContent = mismatch
+          ? `restart applies ${desired} workers`
+          : running || paused
+            ? ''
+            : 'applies on next start';
+
+        /* --- unified issues --- */
+        const joined = joinIssues(s);
+        $('icount').textContent = `${joined.length} open`;
+        $('ilist').innerHTML =
+          joined
+            .map((i) => {
+              const tier = (i.labels || []).find((l) => l.startsWith('tier:'))?.slice(5) || '?';
+              const chips = [];
+              if (i.w)
+                chips.push(
+                  `<span class="st active"><span class="tag w${i.w.id}">w${i.w.id}</span> ${PHASE_ICON[i.w.status.phase] || ''} ${esc(i.w.status.phase)}</span>`,
+                );
+              if (i.pr)
+                chips.push(
+                  `<span class="st"><a target="_blank" href="${REPO}/pull/${i.pr.number}">PR #${i.pr.number}</a> <span class="ck ${i.pr.checks}">${i.pr.checks === 'passing' ? '✓' : i.pr.checks === 'failing' ? '✗' : '●'}</span></span>`,
+                );
+              if (i.merging) chips.push('<span class="st merge">⚙ merging</span>');
+              else if (i.queuePos) chips.push(`<span class="st q">queued #${i.queuePos}</span>`);
+              if (i.deps.length)
+                chips.push(
+                  `<span class="st block">⛔ needs ${i.deps.map((d) => '#' + d).join(',')}</span>`,
+                );
+              else if (i.conflict)
+                chips.push(`<span class="st hold">⏸ waits for #${i.conflict}</span>`);
+              if ((i.labels || []).includes('mf:relocated'))
+                chips.push('<span class="chip">relocated</span>');
+              chips.push(`<span class="chip">${esc(tier)}</span>`);
+              const dim = !i.w && !i.queuePos && (i.deps.length || i.conflict);
+              return `<div class="irow${dim ? ' dim' : ''}"><span class="num"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a></span><span class="title" title="${esc(i.title)}">${esc(i.title)}</span><span class="chips">${chips.join('')}</span></div>`;
+            })
+            .join('') ||
+          '<div class="hint">no open autopilot issues — the composer will plan when the factory runs</div>';
+
+        /* --- recently completed --- */
+        const doneAll = (gh.merged || []).filter((m) => /^task\//.test(m.headRefName || ''));
+        const shown = rcExpanded ? doneAll : doneAll.slice(0, 3);
+        $('rc-more').textContent = rcExpanded ? 'collapse' : `expand (${doneAll.length})`;
+        $('recent').innerHTML =
+          shown
+            .map((m) => {
+              const n = (m.headRefName || '').replace('task/', '');
+              const cost = led.multiByIssue?.[n];
+              return `<div class="done-item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${esc(n)}</a> ${esc(m.title)}</span><span class="m">${cost != null ? '$' + cost : '—'} · ${tago(m.mergedAt)}</span></div>`;
+            })
+            .join('') || '<div class="hint">nothing merged yet</div>';
+
+        /* --- events (both views) --- */
+        const evHtml = (p.events || [])
+          .map((l) =>
+            esc(l)
+              .replace(/\[master\]/, '<span class="tag master">master</span>')
+              .replace(/\[w(\d)\]/, (mm, d) => `<span class="tag w${d}">w${d}</span>`),
+          )
+          .join('\n');
+        for (const id of ['log-o', 'log-d']) {
+          const log = $(id);
+          const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+          log.innerHTML = evHtml;
+          if ((id === 'log-o' || $('autoscroll').checked) && atBottom !== false)
+            log.scrollTop = log.scrollHeight;
+        }
+
+        if (activeTab === 'flow') renderFlow(s, running || paused);
+        if (activeTab === 'detail') renderDetail(s, multiC);
+      }
+
+      /* ---- FLOW view ---- */
+      let prevQueuePrs = new Set(),
+        prevMergedHead = null;
+      const pulses = new Map();
+      function pulse(key, ms) {
+        pulses.set(key, Date.now() + ms);
+      }
+      function pulsing(key) {
+        return (pulses.get(key) || 0) > Date.now();
+      }
+      function renderFlow(s, on) {
+        const p = s.protocol || {};
+        const wrap = $('flowwrap');
+        wrap.classList.toggle('off', !on);
+        const activity = p.masterActivity?.activity || 'idle';
+        const workers = p.workers || [];
+        const queue = p.queue || [];
+        const qPrs = new Set(queue.map((q) => q.pr));
+        for (const pr of qPrs)
+          if (!prevQueuePrs.has(pr)) {
+            const q = queue.find((x) => x.pr === pr);
+            const w = workers.find((w) => w.status?.issue === q?.issue);
+            pulse('w' + (w?.id ?? '?') + 'q', 5000);
+          }
+        prevQueuePrs = qPrs;
+        const mergedHead = s.github?.merged?.[0]?.number;
+        if (prevMergedHead && mergedHead !== prevMergedHead) pulse('main', 5000);
+        prevMergedHead = mergedHead;
+
+        const wnodes = workers
+          .map((w) => {
+            const ph = w.status?.phase || 'idle';
+            const busy = !['idle', 'done', 'failed'].includes(ph);
+            const steps =
+              ['writing', 'reviewing', 'fixing']
+                .map((st) => `<span class="${ph === st ? 'on' : ''}">${PHASE_ICON[st]}</span>`)
+                .join('') + (ph === 'triage' ? '<span class="on">⚖️</span>' : '');
+            return `<div class="fnode${busy ? ' pulse' : ' dim'}" id="fn-w${w.id}"><b><span class="tag w${w.id}">w${w.id}</span></b>${busy ? `#${w.status.issue} · ${esc(ph)}` : esc(ph)}<div class="fsteps">${steps}</div></div>`;
+          })
+          .join('');
+        $('flowcols').innerHTML =
+          `<div class="fcol"><div class="fnode${activity === 'composing' ? ' pulse' : ''}" id="fn-composer"><b>🧠 Composer</b><span class="sub">${activity === 'composing' ? 'planning issues…' : 'opus · plans batches'}</span></div></div>` +
+          `<div class="fcol"><div class="fnode" id="fn-sched"><b>🗂 Scheduler</b><span class="sub">${(s.github?.issues || []).length} open · deterministic</span></div></div>` +
+          `<div class="fcol" id="fn-workers">${wnodes}</div>` +
+          `<div class="fcol"><div class="fnode" id="fn-queue"><b>📥 Merge queue</b><div class="fq">${queue.map((q) => `<span class="qi">PR #${q.pr} ← #${q.issue}</span>`).join('') || '<span class="sub">empty</span>'}</div></div></div>` +
+          `<div class="fcol"><div class="fnode${['merging', 'ci-fix'].includes(activity) ? ' pulse' : ''}" id="fn-merger"><b>⚙️ Merger</b><span class="sub">${activity === 'merging' ? 'merging PR #' + (p.masterActivity?.pr ?? '?') : activity === 'ci-fix' ? 'ci-fix PR #' + (p.masterActivity?.pr ?? '?') : 'sequential · re-gates'}</span></div></div>` +
+          `<div class="fcol"><div class="fnode${pulsing('main') ? ' gpulse' : ''}" id="fn-main"><b>🌳 main</b><span class="sub">${esc(s.github?.merged?.[0] ? '#' + s.github.merged[0].number + ' ' + tago(s.github.merged[0].mergedAt) : '')}</span></div></div>`;
+
+        const svg = $('flowsvg');
+        const box = wrap.getBoundingClientRect();
+        const pt = (el, side) => {
+          const r = el.getBoundingClientRect();
+          return [
+            side === 'r' ? r.right - box.left : r.left - box.left,
+            r.top - box.top + r.height / 2,
+          ];
+        };
+        const path = (a, b, cls) => {
+          const dx = Math.max(30, (b[0] - a[0]) / 2);
+          return `<path class="${cls}" d="M${a[0]},${a[1]} C${a[0] + dx},${a[1]} ${b[0] - dx},${b[1]} ${b[0]},${b[1]}"/>`;
+        };
+        let d = '';
+        const C = $('fn-composer'),
+          SC = $('fn-sched'),
+          Q = $('fn-queue'),
+          M = $('fn-merger'),
+          MN = $('fn-main');
+        if (C && SC) d += path(pt(C, 'r'), pt(SC, 'l'), activity === 'composing' ? 'on' : '');
+        for (const w of workers) {
+          const WN = $('fn-w' + w.id);
+          if (!WN) continue;
+          const busy = w.status && !['idle', 'done', 'failed'].includes(w.status.phase);
+          d += path(pt(SC, 'r'), pt(WN, 'l'), busy ? 'on' : '');
+          d += path(pt(WN, 'r'), pt(Q, 'l'), pulsing('w' + w.id + 'q') ? 'pulse' : '');
+        }
+        if (Q && M)
+          d += path(pt(Q, 'r'), pt(M, 'l'), ['merging', 'ci-fix'].includes(activity) ? 'on' : '');
+        if (M && MN)
+          d += path(
+            pt(M, 'r'),
+            pt(MN, 'l'),
+            activity === 'merging' ? 'on' : pulsing('main') ? 'pulse' : '',
+          );
+        svg.setAttribute('viewBox', `0 0 ${box.width} ${box.height}`);
+        svg.innerHTML = d;
+      }
+
+      /* ---- DETAIL view (v1) ---- */
+      function kpi(v, l) {
+        return `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+      }
+      const phaseClass = (p) =>
+        ({
+          idle: 'idle',
+          writing: 'working',
+          reviewing: 'working',
+          fixing: 'working',
+          triage: 'warn',
+          done: 'done',
+          failed: 'failed',
+        })[p] || 'idle';
+      function renderDetail(s, multiC) {
+        const p = s.protocol || {},
+          gh = s.github || {},
+          led = s.ledger || {};
         $('kpis').innerHTML =
           kpi(
             multiC.filter((c) => /running/i.test(c.state)).length + '/' + (multiC.length || '–'),
@@ -595,9 +1447,8 @@
           kpi((gh.needsHuman || []).length, 'needs human') +
           kpi('$' + (led.multiToday ?? '0'), 'multi cost today') +
           kpi('$' + (led.multiTotal ?? '0'), 'multi cost total');
-
-        // master + worker cards
         let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
+    <div class="row"><span class="k">activity</span><span class="val">${esc(p.masterActivity?.activity || '–')}${p.masterActivity?.pr ? ' PR #' + p.masterActivity.pr : ''}</span></div>
     <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
     <div class="row"><span class="k">heartbeat</span><span class="val">${ago(p.masterHeartbeatAge)}</span></div>
     <div class="row"><span class="k">containers</span><span class="val">${esc(multiC.map((c) => `${c.service}:${c.state}`).join(' · ') || 'none')}</span></div>
@@ -608,14 +1459,13 @@
           const ph = st.phase || 'idle';
           const hbWarn = w.assignment && w.heartbeatAge != null && w.heartbeatAge > 900;
           cards += `<div class="card"><h2>Worker ${w.id} <span class="tag w${w.id}">w${w.id}</span></h2>
-      <div class="row"><span class="k">phase</span><span class="val"><span class="badge ${phaseClass(ph)}">${phaseIcon(ph)} ${esc(ph)}</span></span></div>
+      <div class="row"><span class="k">phase</span><span class="val"><span class="badge ${phaseClass(ph)}">${PHASE_ICON[ph] || '…'} ${esc(ph)}</span></span></div>
       <div class="row"><span class="k">issue</span><span class="val">${st.issue ? `<a target="_blank" href="${REPO}/issues/${st.issue}">#${st.issue}</a>` : '–'}</span></div>
       <div class="row"><span class="k">PR</span><span class="val">${st.pr ? `<a target="_blank" href="${REPO}/pull/${st.pr}">#${st.pr}</a>` : '–'}</span></div>
       <div class="row"><span class="k">heartbeat</span><span class="val">${hbWarn ? '⚠️ ' : ''}${ago(w.heartbeatAge)}</span></div>
       <div class="row"><span class="k">assigned</span><span class="val">${w.assignment ? '#' + w.assignment.issue + ' · ' + esc((w.assignment.touches || []).join(', ').slice(0, 60) || '**') : '–'}</span></div></div>`;
         }
         $('workergrid').innerHTML = cards;
-
         $('qcount').textContent = (p.queue || []).length;
         $('queue').innerHTML =
           (p.queue || [])
@@ -624,17 +1474,15 @@
                 `<div class="item"><span class="m">${i + 1}.</span><span class="t"><a target="_blank" href="${REPO}/pull/${q.pr}">PR #${q.pr}</a> ← issue <a target="_blank" href="${REPO}/issues/${q.issue}">#${q.issue}</a></span><span class="m">${tago(q.enqueued_at)}</span></div>`,
             )
             .join('') || '<div class="item"><span class="m">empty</span></div>';
-
         $('prs').innerHTML =
-          (s.github?.prs || [])
+          (gh.prs || [])
             .map(
               (pr) =>
                 `<div class="item"><span class="ck ${pr.checks}">${pr.checks === 'passing' ? '✓' : pr.checks === 'failing' ? '✗' : '●'}</span><span class="t"><a target="_blank" href="${REPO}/pull/${pr.number}">#${pr.number}</a> ${esc(pr.title)}</span><span class="m">${esc(pr.checks)}</span></div>`,
             )
             .join('') || '<div class="item"><span class="m">none</span></div>';
-
         $('issues').innerHTML =
-          (s.github?.issues || [])
+          (gh.issues || [])
             .map((i) => {
               const tier = (i.labels || []).find((l) => l.startsWith('tier:')) || '';
               const inprog = (i.labels || []).includes('in-progress');
@@ -647,25 +1495,23 @@
               return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span><span class="chip" title="${esc(touches + deps)}">${esc(tier.replace('tier:', '') || '?')}${inprog ? ' · wip' : ''}</span></div>`;
             })
             .join('') || '<div class="item"><span class="m">none</span></div>';
-
         $('merged').innerHTML =
-          (s.github?.merged || [])
+          (gh.merged || [])
+            .slice(0, 10)
             .map(
               (m) =>
                 `<div class="item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${m.number}</a> ${esc(m.title)}</span><span class="m">${tago(m.mergedAt)}</span></div>`,
             )
             .join('') || '<div class="item"><span class="m">none yet</span></div>';
-
-        $('nhcount').textContent = (s.github?.needsHuman || []).length;
+        $('nhcount').textContent = (gh.needsHuman || []).length;
         $('needshuman').innerHTML =
-          (s.github?.needsHuman || [])
+          (gh.needsHuman || [])
             .map(
               (i) =>
                 `<div class="item"><span class="ck failing">✋</span><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span></div>`,
             )
             .join('') || '<div class="item"><span class="m">none 🎉</span></div>';
-
-        const costs = Object.entries(s.ledger?.multiByIssue || {}).sort((a, b) => b[1] - a[1]);
+        const costs = Object.entries(led.multiByIssue || {}).sort((a, b) => b[1] - a[1]);
         $('costs').innerHTML =
           costs
             .map(
@@ -674,20 +1520,9 @@
             )
             .join('') ||
           '<div class="item"><span class="m">no multi-factory records yet</span></div>';
-
-        const log = $('log');
-        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-        log.innerHTML = (p.events || [])
-          .map((l) =>
-            esc(l)
-              .replace(/\[master\]/, '<span class="tag master">master</span>')
-              .replace(/\[w1\]/, '<span class="tag w1">w1</span>')
-              .replace(/\[w2\]/, '<span class="tag w2">w2</span>'),
-          )
-          .join('\n');
-        if ($('autoscroll').checked && atBottom !== false) log.scrollTop = log.scrollHeight;
       }
 
+      /* ---- live ---- */
       let lastEvent = 0;
       function connect() {
         const es = new EventSource('/api/events');
@@ -695,7 +1530,9 @@
           lastEvent = Date.now();
           try {
             render(JSON.parse(e.data));
-          } catch {}
+          } catch {
+            /* skip bad frame */
+          }
         };
         es.onerror = () => {
           es.close();
@@ -707,6 +1544,11 @@
         $('livedot').className = 'dot ' + (fresh ? 'live' : 'stale');
         $('livetxt').textContent = fresh ? 'live' : 'reconnecting…';
       }, 1000);
+      window.addEventListener('resize', () => {
+        if (S && activeTab === 'flow') renderFlow(S, true);
+      });
+      setTab(activeTab);
+      tgTypeChanged();
       connect();
     </script>
   </body>

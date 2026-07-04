@@ -27,3 +27,4 @@ factory/usage/*.json
 
 # multi-factory runtime state — protocol files, never committed
 multi-factory/state/
+compose.extra.yml

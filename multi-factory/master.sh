@@ -47,6 +47,9 @@ file_age(){ # seconds since mtime; huge when missing
   local m; m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || { echo 9999999; return; }
   echo $(( $(date +%s) - m ))
 }
+# Master activity for the dashboard (composing / ci-fix / merging / idle).
+mstatus(){ atomic_write "$STATUS/master.json" "$(jq -cn --arg a "$1" --argjson pr "${2:-null}" \
+  --arg at "$(date -Is)" '{activity:$a,pr:$pr,updated_at:$at}')" 2>/dev/null || true; }
 
 # ---- mf-meta parsing (BRIEF §4/§5) ----------------------------------------------
 # Body comes in on stdin. A missing/unparseable block (no touches) is treated by
@@ -208,6 +211,7 @@ composer_step(){ # $1=mode
   touch "$CONTROL/.composer-last"
   if [ "$MF_DRY_RUN" = 1 ]; then log "DRY: composer would run (runnable=$count)"; return 0; fi
   log "runnable=$count < $((WORKERS+1)) → running composer"
+  mstatus composing
   ( cd "$REPO_DIR" \
     && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
     && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "composer pre-sync failed (non-fatal)"
@@ -276,6 +280,7 @@ merger_step(){
   if grep -qE 'FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED' <<<"$rollup"; then
     if [ ! -f "$marker" ]; then
       touch "$marker"; log "merger: CI red on PR #$pr — one fix attempt"
+      mstatus ci-fix "$pr"
       CC_ISSUE=$n CC_ROLE=ci-fix cc "$(tier_model "$n")" "CI failed on PR #$pr of $REPO. cd into the repo, check out the PR branch, run 'gh pr checks $pr' and 'gh run view --log-failed' to see why, fix it properly (no test-deletion, no skips), run the tests locally, push." || true
       return 0
     fi
@@ -285,6 +290,7 @@ merger_step(){
     return 0   # still running — check again next tick
   fi
   # Green — merge (BEHIND re-gate handled inside, retried once; proven block).
+  mstatus merging "$pr"
   if merge_with_regate "$pr"; then
     finalize_issue "$pr" "$n"
   else
@@ -341,6 +347,7 @@ tick(){
   scheduler "$mode"
   merger_step
   drained_check "$mode"
+  mstatus idle
 }
 
 # ---- boot + main loop (skipped when sourced for tests) -----------------------------
