@@ -8,6 +8,9 @@ import { ComingSoon, EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from '../components/ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
+export { AccountSettingsPage } from './AccountSettingsPage';
+export { SecuritySettingsPage } from './SecuritySettingsPage';
+
 /**
  * Settings section shell (PROJECTPLAN.md §6.11, §7.2), reached from the profile
  * menu. Subnav: Account · Notifications · Security, plus the Coming-Soon pages
@@ -35,15 +38,9 @@ export function SettingsLayout() {
 }
 
 // ─── V1 pages (built in the Settings phase) ───────────────────────────────────
-
-export function AccountSettingsPage() {
-  return (
-    <ComingSoon
-      title="Account"
-      description="Username and email, change password, base currency (EUR), and portfolio sharing preferences."
-    />
-  );
-}
+//
+// Account and Security live in dedicated files (re-exported above); the
+// Notifications panel stays here.
 
 const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
 
@@ -155,15 +152,6 @@ export function NotificationSettingsPage() {
         </div>
       )}
     </div>
-  );
-}
-
-export function SecuritySettingsPage() {
-  return (
-    <ComingSoon
-      title="Security"
-      description="Sessions info, PIN enable/change/disable, and the planned two-factor section."
-    />
   );
 }
 

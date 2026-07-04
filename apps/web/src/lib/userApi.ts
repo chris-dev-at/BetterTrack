@@ -1,12 +1,14 @@
 import {
   inviteValidationResponseSchema,
   meResponseSchema,
+  sessionInfoResponseSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type InviteValidationResponse,
   type LoginRequest,
   type MeResponse,
   type PinVerifyRequest,
+  type SessionInfoResponse,
   type SetPinRequest,
 } from '@bettertrack/contracts';
 
@@ -39,6 +41,16 @@ export async function logout(): Promise<void> {
 export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/me', { signal, suppressAuthRedirect: true });
   return meResponseSchema.parse(data);
+}
+
+/**
+ * `GET /auth/session` — the caller's own session timestamps (§6.11 Security):
+ * when it was created, last renewed, and when the 30-day window lapses. Consumed
+ * by Settings → Security.
+ */
+export async function getSession(signal?: AbortSignal): Promise<SessionInfoResponse> {
+  const data = await apiRequest<unknown>('/auth/session', { signal, suppressAuthRedirect: true });
+  return sessionInfoResponseSchema.parse(data);
 }
 
 export async function changePassword(body: ChangePasswordRequest): Promise<MeResponse> {
