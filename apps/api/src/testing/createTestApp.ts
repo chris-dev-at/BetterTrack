@@ -78,6 +78,51 @@ async function acquireRealRedis(): Promise<Redis> {
   return realRedisClient;
 }
 
+// ---- PGlite singleton (one per worker process) ----
+// Booting WASM Postgres and replaying every migration used to happen on EACH
+// createTestApp call and dominated the unit suite's runtime. Instead the PGlite
+// branch now follows the exact lifecycle contract of the real-Postgres branch
+// above (and of the shared RedisMock store): one migrated instance per worker,
+// truncated to a clean slate on every createTestApp call. The integration mode
+// already runs the whole suite under that contract, so no test depends on two
+// harnesses being live at once. The instance lives on globalThis because vitest
+// resets the module registry per test file but reuses the worker process.
+const gt = globalThis as typeof globalThis & { __btPglite?: Promise<PGlite> };
+
+async function bootMigratedPglite(): Promise<PGlite> {
+  // pg_trgm must be loadable: the 0003 migration CREATEs it for the catalog's
+  // trigram search indexes (§5.5, §6.2).
+  const client = new PGlite({ extensions: { pg_trgm } });
+  await migratePglite(drizzlePglite(client, { schema }), { migrationsFolder });
+  return client;
+}
+
+async function acquirePgliteDb(): Promise<Database> {
+  gt.__btPglite ??= bootMigratedPglite();
+  const client = await gt.__btPglite;
+  // Derive the table list from the DB so new migrations are picked up
+  // automatically (mirrors acquireRealDb above).
+  const tableRows = await client.query<{ table_name: string }>(`
+    SELECT table_name FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_type = 'BASE TABLE'
+      AND table_name <> '__drizzle_migrations'
+    ORDER BY table_name
+  `);
+  if (tableRows.rows.length > 0) {
+    const tableList = tableRows.rows.map((r) => `"${r.table_name}"`).join(', ');
+    await client.exec(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE`);
+  }
+  return drizzlePglite(client, { schema }) as unknown as Database;
+}
+
+// §10's argon2id parameters are deliberately slow — that is the security
+// property in production and pure overhead here, where seeds and login flows
+// mint hashes constantly. Same code path at minimum cost; password.test.ts
+// still exercises the real parameters, and because the parameters travel
+// inside each hash the two costs coexist freely.
+const testPasswordHasher = createPasswordHasher({ memoryCost: 4096, timeCost: 1 });
+
 // Base env used for loadConfig. URLs reflect whichever backend is active.
 const BASE_TEST_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: 'test',
@@ -131,12 +176,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
   if (realDbUrl) {
     db = await acquireRealDb();
   } else {
-    // pg_trgm must be loadable: the 0003 migration CREATEs it for the catalog's
-    // trigram search indexes (§5.5, §6.2).
-    const client = new PGlite({ extensions: { pg_trgm } });
-    const rawDb = drizzlePglite(client, { schema });
-    await migratePglite(rawDb, { migrationsFolder });
-    db = rawDb as unknown as Database;
+    db = await acquirePgliteDb();
   }
 
   if (realRedisUrl) {
@@ -158,11 +198,12 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     emailTransport: options.emailTransport,
     marketData: options.marketData,
     backfill: options.backfill,
+    passwordHasher: testPasswordHasher,
   });
   const app = createApp(ctx);
 
   const userRepo = createUserRepository(db);
-  const hasher = createPasswordHasher();
+  const hasher = testPasswordHasher;
 
   async function seedAdmin(input: Partial<Omit<SeededAdmin, 'id'>> = {}): Promise<SeededAdmin> {
     const email = input.email ?? 'admin@bettertrack.test';
