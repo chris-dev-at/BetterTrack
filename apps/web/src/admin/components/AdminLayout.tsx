@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: '/admin/invites', label: 'Invites' },
   { to: '/admin/email', label: 'Email' },
   { to: '/admin/audit', label: 'Audit log' },
+  { to: '/admin/settings', label: 'Settings' },
 ];
 
 /**

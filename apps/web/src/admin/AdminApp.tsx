@@ -6,6 +6,7 @@ import { AuditPage } from './pages/AuditPage';
 import { EmailPage } from './pages/EmailPage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { UsersPage } from './pages/UsersPage';
 
 /**
@@ -24,6 +25,7 @@ export function AdminApp() {
           <Route path="invites" element={<InvitesPage />} />
           <Route path="email" element={<EmailPage />} />
           <Route path="audit" element={<AuditPage />} />
+          <Route path="settings" element={<SettingsPage />} />
         </Route>
         {/* Unknown admin paths fall back to the users page (or login if anonymous). */}
         <Route path="*" element={<Navigate to="users" replace />} />
