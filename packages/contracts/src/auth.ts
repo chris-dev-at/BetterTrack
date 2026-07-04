@@ -43,6 +43,21 @@ export const acceptInviteRequestSchema = z
 export type AcceptInviteRequest = z.infer<typeof acceptInviteRequestSchema>;
 
 /**
+ * Public self-serve registration (PROJECTPLAN.md §4, §6.12). The route exists as
+ * enforcement plumbing from day one: it reads the stored registration mode and,
+ * in V1's `closed` mode, always rejects with 403 `REGISTRATION_CLOSED`. The body
+ * is validated here so the concrete self-serve flow (post-v1) needs no reshape.
+ */
+export const registerRequestSchema = z
+  .object({
+    email: emailSchema,
+    username: usernameSchema,
+    password: passwordSchema,
+  })
+  .strict();
+export type RegisterRequest = z.infer<typeof registerRequestSchema>;
+
+/**
  * PIN gate (PROJECTPLAN.md §6.1, §5.5). A short numeric code the user enters to
  * resume an existing session; a correct PIN renews the session's 30-day window.
  * Stored argon2id-hashed server-side exactly like a password — never in the

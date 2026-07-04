@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import type {
   AcceptInviteRequest,
   ChangePasswordRequest,
+  RegisterRequest,
   SessionInfoResponse,
 } from '@bettertrack/contracts';
 
@@ -13,7 +14,8 @@ import type { InviteRepository } from '../../data/repositories/inviteRepository'
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
-import { accountDisabled, badRequest, conflict, unauthorized } from '../../errors';
+import { accountDisabled, badRequest, conflict, forbidden, unauthorized } from '../../errors';
+import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
@@ -38,6 +40,7 @@ export interface AuthServiceDeps {
   audit: AuditService;
   passwordHasher: PasswordHasher;
   email: EmailService;
+  appSettings: AppSettingsService;
 }
 
 export interface LoginInput {
@@ -70,6 +73,13 @@ export interface AuthService {
   ): Promise<SessionResult>;
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
   acceptInvite(input: AcceptInviteRequest, ip?: string | null): Promise<SessionResult>;
+  /**
+   * Public self-serve registration (§4, §6.12). Reads the stored registration
+   * mode and rejects with 403 `REGISTRATION_CLOSED` unless the mode permits
+   * self-registration. V1 runs `closed`, so this always rejects; it exists as
+   * enforcement plumbing so activating a self-serve mode post-v1 is a switch.
+   */
+  register(input: RegisterRequest, ip?: string | null): Promise<SessionResult>;
   /**
    * Verify the PIN for the current session, renewing its 30-day window on
    * success (§6.1). {@link PIN_FALLBACK_THRESHOLD} wrong PINs in a row destroy
@@ -120,6 +130,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     audit,
     passwordHasher,
     email,
+    appSettings,
   } = deps;
   // Per-account failed-login throttle (§6.1, §10): ~10 failures → a short
   // cooldown, escalating on repeat batches and decaying after a quiet period.
@@ -340,6 +351,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const sessionId = await sessions.create(user.id);
       return { user, sessionId };
+    },
+
+    async register(_input, _ip) {
+      // Enforcement plumbing (§4, §6.12): read the stored registration mode.
+      // V1 runs `closed`, so this always rejects with 403 `REGISTRATION_CLOSED`.
+      await appSettings.assertSelfRegistrationAllowed();
+      // Unreachable in V1 — the guard rejects every stored mode. The concrete
+      // account-creation path lands when a self-serve mode is activated post-v1.
+      throw forbidden('Self-serve registration is not available.', 'REGISTRATION_CLOSED');
     },
 
     async verifyPin({ userId, sessionId, pin, ip }) {
