@@ -45,13 +45,16 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await builderSearch.fill('Microsoft');
   await owner.getByRole('button', { name: 'Select MSFT' }).click();
   await owner.getByRole('button', { name: 'Auto-balance' }).click();
-  await expect(owner.getByRole('status')).toHaveText('100.0%');
+  const positionsRegion = owner.getByRole('region', { name: 'Positions' });
+  await expect(positionsRegion.getByRole('status')).toHaveText('100.0%');
   await owner.getByRole('button', { name: 'Activate' }).click();
   await expect(owner).toHaveURL(/\/workboard\/conglomerates\/[^/]+$/, { timeout: 20_000 });
 
-  // allocate → buy list
+  // allocate → buy list (the deviation table has a "Cost" column the
+  // always-present Positions table does not, so this only passes once the
+  // buy list itself has rendered)
   await owner.getByRole('button', { name: 'Calculate' }).click();
-  await expect(owner.getByRole('table')).toBeVisible({ timeout: 30_000 });
+  await expect(owner.getByRole('columnheader', { name: 'Cost' })).toBeVisible({ timeout: 30_000 });
 
   // add to portfolio
   await owner.getByRole('button', { name: 'Add to Portfolio' }).click();
@@ -61,7 +64,10 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(transactionDialog).toBeHidden();
 
   await owner.goto('/portfolio');
-  await expect(owner.getByRole('link', { name: 'AAPL' })).toBeVisible({ timeout: 15_000 });
+  const ownerHoldings = owner.getByRole('region', { name: 'Holdings' });
+  await expect(ownerHoldings.getByRole('link', { name: 'AAPL' })).toBeVisible({
+    timeout: 15_000,
+  });
 
   // enable friend sharing on the (default "Main") portfolio
   await owner.goto('/settings/account');
@@ -86,5 +92,8 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await sharedLink.click();
 
   await expect(friend.getByText(new RegExp(`shared by ${ownerUsername}`, 'i'))).toBeVisible();
-  await expect(friend.getByText('AAPL')).toBeVisible({ timeout: 15_000 });
+  const friendHoldings = friend.getByRole('region', { name: 'Holdings' });
+  await expect(friendHoldings.getByRole('link', { name: 'AAPL' })).toBeVisible({
+    timeout: 15_000,
+  });
 });
