@@ -57,7 +57,7 @@ case "${1:-up}" in
   --smoke) require_env; guard_multi_factory; stop_legacy
            echo "→ smoke run (one issue, foreground)…"
            dc build
-           ONE_SHOT=1 dc run --rm factory
+           dc run --rm -e ONE_SHOT=1 factory
            exit 0 ;;
   up|"")   require_env; guard_multi_factory; stop_legacy ;;
   *) echo "usage: autorun.sh [--fresh|--logs|--stop|--smoke]"; exit 1 ;;
