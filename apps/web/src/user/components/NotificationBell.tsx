@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { MarkReadRequest, Notification } from '@bettertrack/contracts';
 
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
-import { EmptyState } from '../../ui';
-import { cx } from './ui';
+import { EmptyState, Skeleton } from '../../ui';
+import { Alert, cx } from './ui';
 
 const POLL_INTERVAL_MS = 30_000;
 const NOTIFICATIONS_QUERY_KEY = ['notifications'];
@@ -73,7 +73,7 @@ export function NotificationBell() {
   const rootRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
-  const { data } = useQuery({
+  const query = useQuery({
     queryKey: NOTIFICATIONS_QUERY_KEY,
     queryFn: ({ signal }) => listNotifications({}, signal),
     refetchInterval: POLL_INTERVAL_MS,
@@ -103,15 +103,15 @@ export function NotificationBell() {
     };
   }, [open]);
 
-  const unreadCount = data?.unreadCount ?? 0;
-  const items = data?.items ?? [];
+  const unreadCount = query.data?.unreadCount ?? 0;
+  const items = query.data?.items ?? [];
 
   return (
     <div ref={rootRef} className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
         className="relative grid h-9 w-9 place-items-center rounded-md text-neutral-300 ring-1 ring-inset ring-neutral-800 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
@@ -131,7 +131,7 @@ export function NotificationBell() {
 
       {open ? (
         <div
-          role="menu"
+          role="dialog"
           aria-label="Notifications"
           className="absolute right-0 z-40 mt-2 w-80 rounded-lg border border-neutral-800 bg-neutral-900 shadow-xl"
         >
@@ -147,7 +147,25 @@ export function NotificationBell() {
             </button>
           </div>
 
-          {items.length === 0 ? (
+          {markReadMutation.isError ? (
+            <div className="px-3 pt-2">
+              <Alert tone="error">Couldn't update that notification. Please try again.</Alert>
+            </div>
+          ) : null}
+
+          {query.isPending ? (
+            <div className="flex flex-col gap-2 p-3">
+              <Skeleton height="h-12" />
+              <Skeleton height="h-12" />
+              <Skeleton height="h-12" />
+            </div>
+          ) : query.isError && items.length === 0 ? (
+            <EmptyState
+              title="Couldn't load notifications"
+              description="Please try again in a moment."
+              className="py-10"
+            />
+          ) : items.length === 0 ? (
             <EmptyState
               icon="🔔"
               title="No notifications yet"

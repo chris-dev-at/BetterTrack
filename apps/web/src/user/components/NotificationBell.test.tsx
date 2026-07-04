@@ -89,7 +89,7 @@ describe('NotificationBell', () => {
 
     await user.click(await screen.findByRole('button', { name: /Notifications/ }));
 
-    expect(await screen.findByRole('menu', { name: 'Notifications' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByText('Unread item')).toBeInTheDocument();
     expect(screen.getByText('Read item')).toBeInTheDocument();
   });
@@ -170,5 +170,70 @@ describe('NotificationBell', () => {
     await user.click(await screen.findByRole('button', { name: 'Notifications' }));
 
     expect(await screen.findByRole('button', { name: 'Mark all read' })).toBeDisabled();
+  });
+
+  test('shows a loading skeleton before the first fetch resolves', async () => {
+    const user = userEvent.setup();
+    let resolveFetch!: (value: NotificationListResponse) => void;
+    vi.mocked(listNotifications).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    renderBell();
+
+    await user.click(await screen.findByRole('button', { name: 'Notifications' }));
+
+    expect(await screen.findAllByRole('status')).not.toHaveLength(0);
+
+    resolveFetch(EMPTY_RESPONSE);
+    await waitFor(() => expect(screen.queryAllByRole('status')).toHaveLength(0));
+  });
+
+  test('shows an error state when the dropdown fails to load', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockRejectedValue(new Error('boom'));
+    renderBell();
+
+    await user.click(await screen.findByRole('button', { name: 'Notifications' }));
+
+    expect(await screen.findByText("Couldn't load notifications")).toBeInTheDocument();
+  });
+
+  test('keeps the previously loaded list visible when a background refetch fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({
+        items: [notification({ id: '00000000-0000-0000-0000-000000000002' })],
+        nextCursor: null,
+        unreadCount: 1,
+      })
+      .mockRejectedValueOnce(new Error('network blip'));
+    renderBell();
+
+    await user.click(await screen.findByRole('button', { name: /Notifications/ }));
+    expect(await screen.findByText('New friend request')).toBeInTheDocument();
+
+    await user.click(screen.getByText('New friend request'));
+
+    await waitFor(() => expect(vi.mocked(listNotifications)).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('New friend request')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load notifications")).not.toBeInTheDocument();
+  });
+
+  test('surfaces a "Mark all read" failure instead of doing nothing visibly', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [notification({ id: '00000000-0000-0000-0000-000000000002' })],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    vi.mocked(markNotificationsRead).mockRejectedValue(new Error('boom'));
+    renderBell();
+
+    await user.click(await screen.findByRole('button', { name: /Notifications/ }));
+    await user.click(screen.getByRole('button', { name: 'Mark all read' }));
+
+    expect(await screen.findByText(/Couldn't update that notification/i)).toBeInTheDocument();
   });
 });

@@ -206,4 +206,88 @@ describe('NotificationSettingsPage', () => {
 
     expect(await screen.findByRole('button', { name: 'Mark all read' })).toBeDisabled();
   });
+
+  test('shows a loading skeleton before the full list resolves', async () => {
+    let resolveFetch!: (value: NotificationListResponse) => void;
+    vi.mocked(listNotifications).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    renderPage();
+
+    expect(await screen.findAllByRole('status')).not.toHaveLength(0);
+
+    resolveFetch(EMPTY_LIST_RESPONSE);
+    await waitFor(() => expect(screen.getByText('No notifications yet')).toBeInTheDocument());
+  });
+
+  test('shows an error state when the full list fails to load', async () => {
+    vi.mocked(listNotifications).mockRejectedValue(new Error('boom'));
+    renderPage();
+
+    expect(await screen.findByText("Couldn't load your notifications")).toBeInTheDocument();
+  });
+
+  test('keeps the previously loaded list visible when a background refetch fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce({
+        items: [notification({ id: '00000000-0000-0000-0000-000000000002' })],
+        nextCursor: null,
+        unreadCount: 1,
+      })
+      .mockRejectedValueOnce(new Error('network blip'));
+    renderPage();
+
+    expect(await screen.findByText('New friend request')).toBeInTheDocument();
+
+    await user.click(screen.getByText('New friend request'));
+
+    await waitFor(() => expect(vi.mocked(listNotifications)).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('New friend request')).toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load your notifications")).not.toBeInTheDocument();
+  });
+
+  test('surfaces a mark-read failure instead of doing nothing visibly', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [notification({ id: '00000000-0000-0000-0000-000000000002' })],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    vi.mocked(markNotificationsRead).mockRejectedValue(new Error('boom'));
+    renderPage();
+
+    await user.click(await screen.findByText('New friend request'));
+
+    expect(await screen.findByText(/Couldn't update that notification/i)).toBeInTheDocument();
+  });
+
+  test('only disables the row currently being marked read, not the whole list', async () => {
+    const user = userEvent.setup();
+    let resolveMarkRead!: () => void;
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [
+        notification({ id: '00000000-0000-0000-0000-000000000002', title: 'First' }),
+        notification({ id: '00000000-0000-0000-0000-000000000003', title: 'Second' }),
+      ],
+      nextCursor: null,
+      unreadCount: 2,
+    });
+    vi.mocked(markNotificationsRead).mockReturnValue(
+      new Promise((resolve) => {
+        resolveMarkRead = () => resolve(undefined);
+      }),
+    );
+    renderPage();
+
+    await user.click(await screen.findByText('First'));
+
+    expect(screen.getByText('First').closest('button')).toBeDisabled();
+    expect(screen.getByText('Second').closest('button')).not.toBeDisabled();
+
+    resolveMarkRead();
+    await waitFor(() => expect(vi.mocked(markNotificationsRead)).toHaveBeenCalled());
+  });
 });
