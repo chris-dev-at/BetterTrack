@@ -80,26 +80,31 @@ pnpm --filter @bettertrack/web dev
 
 ## Email (SMTP)
 
-Account emails — invites, temporary passwords, and the welcome message — go out
+Account emails — invites, temporary passwords, the welcome message — plus the
+social notification emails (friend request / accepted, portfolio shared) go out
 over SMTP via Nodemailer (PROJECTPLAN.md §6.10); a **Gmail app password**
-(`smtp.gmail.com:465`) is the documented first-class preset, and every send is
-recorded in the per-user email log. The channel is **optional**:
+(`smtp.gmail.com:465`) is the documented first-class preset, and every send
+attempt is recorded in the email log. The channel is **optional**:
 with no SMTP config the app boots and every account flow still works, because
 the admin gets a copyable temp password / invite URL straight from the API
 response. Configure these in `apps/api/.env` to turn it on:
 
-| Variable    | Example                             | Notes                                          |
-| ----------- | ----------------------------------- | ---------------------------------------------- |
-| `SMTP_HOST` | `smtp.mailgun.org`                  | required to enable the channel                 |
-| `SMTP_PORT` | `587`                               | `465` ⇒ implicit TLS, anything else ⇒ STARTTLS |
-| `SMTP_USER` | `postmaster@mg.example.at`          | optional (omit for unauthenticated relays)     |
-| `SMTP_PASS` | —                                   | optional; never logged or returned by the API  |
-| `SMTP_FROM` | `BetterTrack <no-reply@example.at>` | required to enable the channel                 |
+| Variable    | Example (Gmail preset)        | Notes                                          |
+| ----------- | ----------------------------- | ---------------------------------------------- |
+| `SMTP_HOST` | `smtp.gmail.com`              | required to enable the channel                 |
+| `SMTP_PORT` | `465`                         | `465` ⇒ implicit TLS, anything else ⇒ STARTTLS |
+| `SMTP_USER` | `you@gmail.com`               | your Gmail address (omit for unauth relays)    |
+| `SMTP_PASS` | your 16-char **app password** | never logged or returned by the API            |
+| `SMTP_FROM` | `BetterTrack <you@gmail.com>` | required to enable the channel                 |
 
 The channel is enabled only when both `SMTP_HOST` and `SMTP_FROM` are set. Send
 failures never roll back account creation/reset/invite state — they are logged
 and written to the audit log as `email.send_failed` with a coarse error code,
-no secrets.
+no secrets. Every attempt (whether `sent`, `failed`, or — when SMTP is
+unconfigured — `suppressed`) is written to an **email log**, viewable in the
+admin console globally (Email page) and per user (Users → Emails); rows store
+recipient, template, subject, status and a coarse error code only — never a
+body or secret.
 
 ## Production deploy
 

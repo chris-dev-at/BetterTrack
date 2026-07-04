@@ -7,6 +7,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
+import type { EmailLogPage, EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
@@ -30,6 +31,7 @@ export interface AdminServiceDeps {
   audit: AuditService;
   passwordHasher: PasswordHasher;
   email: EmailService;
+  emailLog: EmailLogRepository;
 }
 
 export interface AdminActor {
@@ -50,6 +52,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     audit,
     passwordHasher,
     email,
+    emailLog,
   } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
@@ -290,6 +293,19 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     listAudit: (params: { limit: number; cursor?: string }) => deps.audit.list(params),
+
+    /** Global email send log, newest first (PROJECTPLAN.md §6.10, §6.12). */
+    listEmails: (params: { limit: number; cursor?: string }): Promise<EmailLogPage> =>
+      emailLog.listGlobal(params.limit, params.cursor),
+
+    /** One user's email send log (PROJECTPLAN.md §6.10, §6.12). */
+    async listUserEmails(
+      userId: string,
+      params: { limit: number; cursor?: string },
+    ): Promise<EmailLogPage> {
+      await loadUser(userId); // 404 for an unknown user, like the other per-user reads.
+      return emailLog.listForUser(userId, params.limit, params.cursor);
+    },
 
     /** Whether the email channel is configured + wired (PROJECTPLAN.md §6.11). */
     emailStatus(): { enabled: boolean } {
