@@ -57,6 +57,13 @@
       "when": 1783145353060,
       "tag": "0007_thick_spot",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783149527921,
+      "tag": "0008_app_settings",
+      "breakpoints": true
     }
   ]
 }

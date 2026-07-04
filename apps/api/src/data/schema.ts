@@ -483,6 +483,24 @@ export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
 export type NewFriendshipRow = typeof friendships.$inferInsert;
 
+/**
+ * Global admin settings (PROJECTPLAN.md §5.5, §6.12). A keyed settings store —
+ * one row per setting, the value carried as jsonb so new flags are additive and
+ * never need a migration. V1 keys: `registration_mode`
+ * (`closed | invite_token | approval | open`, default `closed`) and `beta_mode`
+ * (bool, default false); future app-wide toggles live here too. `updated_by`
+ * points at the admin who last wrote the key (nulled if that account is deleted).
+ */
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+});
+
+export type AppSettingRow = typeof appSettings.$inferSelect;
+export type NewAppSettingRow = typeof appSettings.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -502,6 +520,7 @@ export const schema = {
   transactions,
   friendRequests,
   friendships,
+  appSettings,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,

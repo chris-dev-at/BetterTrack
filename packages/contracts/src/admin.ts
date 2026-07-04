@@ -2,6 +2,44 @@ import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
 
+/**
+ * Global registration mode (PROJECTPLAN.md §4, §6.12). Governs how accounts come
+ * to exist. V1 runs `closed` (admin-created users + invite links only) and fully
+ * enforces it; the other three modes are designed and stored but inactive until
+ * post-v1, so activating one later is a data switch, not a rebuild.
+ */
+export const REGISTRATION_MODES = ['closed', 'invite_token', 'approval', 'open'] as const;
+export const registrationModeSchema = z.enum(REGISTRATION_MODES);
+export type RegistrationMode = z.infer<typeof registrationModeSchema>;
+
+/** `GET /admin/settings` — current global app settings (defaults when unset). */
+export const appSettingsResponseSchema = z.object({
+  registrationMode: registrationModeSchema,
+  betaMode: z.boolean(),
+  /** When any setting was last written; null while every key is at its default. */
+  updatedAt: z.string().datetime().nullable(),
+  /** The admin who last wrote a setting; null if unset or that account is gone. */
+  updatedBy: z.string().uuid().nullable(),
+});
+export type AppSettingsResponse = z.infer<typeof appSettingsResponseSchema>;
+
+/**
+ * `PATCH /admin/settings` — partial update. At least one field required; unknown
+ * fields rejected. V1 only accepts `registrationMode: 'closed'` (the API rejects
+ * any other mode) so the stored state can never claim a mode the guard would not
+ * enforce.
+ */
+export const updateAppSettingsRequestSchema = z
+  .object({
+    registrationMode: registrationModeSchema.optional(),
+    betaMode: z.boolean().optional(),
+  })
+  .strict()
+  .refine((d) => d.registrationMode !== undefined || d.betaMode !== undefined, {
+    message: 'Provide at least one setting to update.',
+  });
+export type UpdateAppSettingsRequest = z.infer<typeof updateAppSettingsRequestSchema>;
+
 export const adminUserSchema = z.object({
   id: z.string().uuid(),
   email: z.string(),

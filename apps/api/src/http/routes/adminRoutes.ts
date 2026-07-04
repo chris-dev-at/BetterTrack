@@ -9,6 +9,7 @@ import {
   emailLogQuerySchema,
   idParamSchema,
   testEmailRequestSchema,
+  updateAppSettingsRequestSchema,
   updateUserRequestSchema,
   type AuditQuery,
   type CreateInviteRequest,
@@ -16,6 +17,7 @@ import {
   type DeleteUserRequest,
   type EmailLogQuery,
   type TestEmailRequest,
+  type UpdateAppSettingsRequest,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -24,7 +26,13 @@ import type { AppContext } from '../context';
 import { requireAdmin } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
-import { toAdminInvite, toAdminUser, toAuditEntry, toEmailLogEntry } from '../serializers';
+import {
+  toAdminInvite,
+  toAdminUser,
+  toAppSettings,
+  toAuditEntry,
+  toEmailLogEntry,
+} from '../serializers';
 
 const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.ip });
 
@@ -107,6 +115,21 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   router.get('/stats', async (_req, res) => {
     res.json(await ctx.admin.stats());
+  });
+
+  // Global app settings (§6.12, §8): registration mode + beta toggle. Reads
+  // return defaults when unset; every write is audit-logged in the service, and
+  // V1 rejects any registration mode other than `closed`.
+  router.get('/settings', async (_req, res) => {
+    res.json(toAppSettings(await ctx.admin.getSettings()));
+  });
+
+  router.patch('/settings', validateBody(updateAppSettingsRequestSchema), async (req, res) => {
+    const settings = await ctx.admin.updateSettings(
+      req.valid?.body as UpdateAppSettingsRequest,
+      actorOf(req),
+    );
+    res.json(toAppSettings(settings));
   });
 
   router.get('/email/status', async (_req, res) => {

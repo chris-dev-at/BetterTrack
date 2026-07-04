@@ -2,6 +2,7 @@ import type { Redis } from 'ioredis';
 
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
+import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
@@ -25,6 +26,7 @@ import type { Logger } from '../logger';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import { createAppSettingsService } from '../services/appSettings/appSettingsService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
 import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
@@ -128,6 +130,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const audit = createAuditService(auditRepo);
   const passwordHasher = createPasswordHasher();
 
+  // Global app settings (§6.12): registration-mode enforcement + beta toggle,
+  // read by the auth register guard and the admin settings API.
+  const appSettings = createAppSettingsService({ repo: createAppSettingsRepository(db) });
+
   // Typed domain event bus (§9, §4.5). Pub/sub needs a dedicated subscriber
   // connection, so publisher and subscriber each get their own duplicated Redis
   // connection. The API only *publishes* (producers); the notification dispatcher
@@ -162,6 +168,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     passwordHasher,
     email,
+    appSettings,
   });
   const admin = createAdminService({
     config,
@@ -174,6 +181,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     passwordHasher,
     email,
     emailLog: emailLogRepo,
+    appSettings,
   });
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience

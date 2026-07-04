@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import type {
   CreateInviteRequest,
   CreateUserRequest,
+  UpdateAppSettingsRequest,
   UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -13,6 +14,7 @@ import type { PortfolioRepository } from '../../data/repositories/portfolioRepos
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
+import type { AppSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
@@ -32,6 +34,7 @@ export interface AdminServiceDeps {
   passwordHasher: PasswordHasher;
   email: EmailService;
   emailLog: EmailLogRepository;
+  appSettings: AppSettingsService;
 }
 
 export interface AdminActor {
@@ -53,6 +56,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     passwordHasher,
     email,
     emailLog,
+    appSettings,
   } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
@@ -310,6 +314,27 @@ export function createAdminService(deps: AdminServiceDeps) {
     /** Whether the email channel is configured + wired (PROJECTPLAN.md §6.11). */
     emailStatus(): { enabled: boolean } {
       return { enabled: email.enabled };
+    },
+
+    /** Current global app settings, defaults filled in (PROJECTPLAN.md §6.12). */
+    getSettings: (): Promise<AppSettings> => appSettings.get(),
+
+    /**
+     * Persist a global-settings change and audit it (PROJECTPLAN.md §6.12, §8).
+     * The settings service rejects any non-`closed` registration mode in V1;
+     * every accepted change is recorded with the actor and what changed.
+     */
+    async updateSettings(input: UpdateAppSettingsRequest, actor: AdminActor): Promise<AppSettings> {
+      const settings = await appSettings.update(input, actor.id);
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.SettingsUpdated,
+        targetType: 'app_settings',
+        targetId: null,
+        ip: actor.ip,
+        meta: { changed: input },
+      });
+      return settings;
     },
 
     /**
