@@ -17,10 +17,10 @@ and benchmark service tests), v1 is ready to tag.
 ## What was reviewed
 
 - **Money-math (`apps/api/src/domain/**`)** — holdings cost-basis/P&L, oversell and
-  division-by-zero guards, value-over-time/net-flows FX handling, time-weighted return
-  (perf-% mode, #125), backtest normalization/clipping/carry-forward/metrics, and the
-  allocation never-overshoot invariant (verified bit-for-bit: the buy list is admitted
-  by the same summation that reports `totalCostEur`). Engine code is correct; the one
+division-by-zero guards, value-over-time/net-flows FX handling, time-weighted return
+(perf-% mode, #125), backtest normalization/clipping/carry-forward/metrics, and the
+allocation never-overshoot invariant (verified bit-for-bit: the buy list is admitted
+by the same summation that reports `totalCostEur`). Engine code is correct; the one
   blocking defect (#216) is in the FX-source composition, not the engine.
 - **Sharing/privacy (§6.9)** — friendship AND visibility enforced per request in one
   SQL join; uniform 404s (no exists-oracle); no enumeration in `POST /social/requests`
@@ -61,16 +61,16 @@ and benchmark service tests), v1 is ready to tag.
 
 ## Follow-ups filed
 
-| Issue | Tier | Severity | Summary |
-| --- | --- | --- | --- |
-| #216 | fable | **blocking** | Backtest preview 500s for any non-EUR asset or USD benchmark (historical FX source throws) |
-| #217 | sonnet | gate gap | Playwright happy path has no phone-width viewport project |
-| #218 | fable | minor | Domain: lexicographic `executedAt` ordering (spurious `OversellError`), `monthsBefore` month-end rollover, TWR first-flow-day basis |
-| #219 | opus | minor | Social: friend requests can target admin/disabled accounts; unthrottled request/decline loop; disabled owners keep sharing |
-| #221 | sonnet | minor | Notifications UX: bell lacks loading/error states; mark-read errors silent; list vanishes on background refetch error |
-| #222 | sonnet | minor | Admin shell missed the responsive pass (nav overflow at 375px, tap targets); Settings error lacks retry |
-| #223 | sonnet | minor | Infra/docs: dead rate-limit knobs in compose; restore doc leaves worker stopped; unconditional host-port binds; README TLS/`ADMIN_EMAIL` accuracy; nightly e2e uploads a nonexistent report dir |
-| #224 | sonnet | minor | Custom-asset category blind-cast can break the strict SPA parse; OpenAPI coverage gate only checks one direction |
+| Issue | Tier   | Severity     | Summary                                                                                                                                                                                         |
+| ----- | ------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #216  | fable  | **blocking** | Backtest preview 500s for any non-EUR asset or USD benchmark (historical FX source throws)                                                                                                      |
+| #217  | sonnet | gate gap     | Playwright happy path has no phone-width viewport project                                                                                                                                       |
+| #218  | fable  | minor        | Domain: lexicographic `executedAt` ordering (spurious `OversellError`), `monthsBefore` month-end rollover, TWR first-flow-day basis                                                             |
+| #219  | opus   | minor        | Social: friend requests can target admin/disabled accounts; unthrottled request/decline loop; disabled owners keep sharing                                                                      |
+| #221  | sonnet | minor        | Notifications UX: bell lacks loading/error states; mark-read errors silent; list vanishes on background refetch error                                                                           |
+| #222  | sonnet | minor        | Admin shell missed the responsive pass (nav overflow at 375px, tap targets); Settings error lacks retry                                                                                         |
+| #223  | sonnet | minor        | Infra/docs: dead rate-limit knobs in compose; restore doc leaves worker stopped; unconditional host-port binds; README TLS/`ADMIN_EMAIL` accuracy; nightly e2e uploads a nonexistent report dir |
+| #224  | sonnet | minor        | Custom-asset category blind-cast can break the strict SPA parse; OpenAPI coverage gate only checks one direction                                                                                |
 
 Accepted-design notes (no issue): per-account login-lockout DoS tradeoff (generic
 responses preserved); non-Secure cookie on plain-HTTP ports mode (by design — TLS
