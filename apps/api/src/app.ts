@@ -8,6 +8,7 @@ import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { enforcePasswordChange, loadSession } from './http/middleware/session';
+import { createOpenApiRouter } from './http/openapi';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAssetsRouter } from './http/routes/assetsRoutes';
 import { createAuthRouter } from './http/routes/authRoutes';
@@ -42,6 +43,11 @@ export function createApp(ctx: AppContext) {
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
   app.use(express.json({ limit: '100kb' }));
   app.use(cookieParser(ctx.config.sessionSecrets));
+
+  // Public API docs (§5 Meta, §6.13): mounted at the origin root, BEFORE the
+  // /api/v1 session/CSRF/password-change chain, so `GET /openapi.json` and
+  // `GET /docs` are reachable with no session. The API itself stays guarded.
+  app.use(createOpenApiRouter());
 
   const limiters = createRateLimiters(ctx);
 
