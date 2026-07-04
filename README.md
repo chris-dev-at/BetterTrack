@@ -109,8 +109,11 @@ body or secret.
 
 ## Production deploy
 
-The production topology runs five containers (nginx, api, worker placeholder, Postgres 17, Redis 7)
-via `infra/docker-compose.yml` — see PROJECTPLAN.md §4.6 for the full spec.
+The production topology runs five containers (nginx, api, worker, Postgres 17, Redis 7)
+via `infra/docker-compose.yml` — see PROJECTPLAN.md §4.6 for the full spec. `docker compose up -d`
+starts all five, including the BullMQ **worker** (`node dist/scripts/worker.js`) that runs the
+background jobs (§9): nightly quote refresh, on-demand backfill, hourly FX spot refresh, catalog
+enrichment for search misses, and notification/email dispatch.
 
 ### Prerequisites
 
@@ -233,8 +236,13 @@ docker compose up -d          # rolling restart
 
 ### Worker (BullMQ)
 
-The worker service is commented out in `infra/docker-compose.yml` — it will be uncommented in Phase 1
-when `apps/api/src/worker.ts` is implemented. The compose comment block shows the exact config.
+The `worker` service in `infra/docker-compose.yml` is the fifth production container, built from the
+same `apps/api/Dockerfile` image as the api and started by `docker compose up -d` (command
+`node dist/scripts/worker.js`). It carries the same environment as the api and depends on healthy
+`db` + `redis` (it needs Postgres and Redis, not the api HTTP service), and publishes no host ports.
+It runs the scheduled and event-driven jobs (§9): `prices.refreshDaily` (nightly closes),
+`prices.backfill` (on-demand history), `fx.refreshSpot` (hourly FX), `catalog.enrich` (search-miss
+enrichment), and `notifications.dispatch` (friend request/accept/share email + notification fan-out).
 
 ### Backups & restore
 
@@ -268,8 +276,8 @@ cd infra
 # 1. Pick a dump (lists everything currently retained).
 docker compose exec db ls -la /backups
 
-# 2. Stop the api (and worker, once it exists) so nothing writes during restore.
-docker compose stop api
+# 2. Stop the api and worker so nothing writes during restore.
+docker compose stop api worker
 
 # 3. Restore — the dump was taken with --clean --if-exists, so it drops and
 #    recreates every object itself; safe to run against the existing database.
