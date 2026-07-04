@@ -114,15 +114,25 @@ export function NotificationBell() {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
-        className="relative grid h-9 w-9 place-items-center rounded-md text-neutral-300 ring-1 ring-inset ring-neutral-800 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        className="relative grid h-9 w-9 place-items-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
-        <span aria-hidden="true" className="text-base">
-          🔔
-        </span>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={1.75}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="h-5 w-5"
+        >
+          <path d="M18 16v-5a6 6 0 1 0-12 0v5l-1.5 2.5h15z" />
+          <path d="M10 20a2 2 0 0 0 4 0" />
+        </svg>
         {unreadCount > 0 ? (
           <span
             aria-hidden="true"
-            className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-sky-500 px-1 text-[0.625rem] font-semibold leading-none text-white"
+            className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-sky-500 px-1 text-[0.625rem] font-semibold leading-none text-white ring-2 ring-neutral-900"
           >
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
