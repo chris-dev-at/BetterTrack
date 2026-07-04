@@ -114,6 +114,16 @@ function formatRelativeTime(iso: string): string {
   return relativeTimeFormatter.format(diffDays, 'day');
 }
 
+/** Whether a mark-read mutation currently in flight targets this specific notification. */
+function isMarkReadPendingFor(
+  mutation: { isPending: boolean; variables: MarkReadRequest | undefined },
+  id: string,
+): boolean {
+  if (!mutation.isPending) return false;
+  const vars = mutation.variables;
+  return vars !== undefined && 'ids' in vars && vars.ids.includes(id);
+}
+
 function NotificationListRow({
   notification,
   busy,
@@ -200,13 +210,17 @@ function NotificationList() {
         </button>
       </div>
 
+      {markReadMutation.isError ? (
+        <Alert tone="error">Couldn't update that notification. Please try again.</Alert>
+      ) : null}
+
       {query.isPending ? (
         <div className="flex flex-col gap-2">
           <Skeleton height="h-16" />
           <Skeleton height="h-16" />
           <Skeleton height="h-16" />
         </div>
-      ) : query.isError ? (
+      ) : query.isError && items.length === 0 ? (
         <EmptyState
           title="Couldn't load your notifications"
           description="Please try again in a moment."
@@ -219,12 +233,17 @@ function NotificationList() {
         />
       ) : (
         <>
+          {query.isError ? (
+            <Alert tone="error">
+              Couldn't refresh notifications. Showing the last loaded list.
+            </Alert>
+          ) : null}
           <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
             {items.map((notification) => (
               <NotificationListRow
                 key={notification.id}
                 notification={notification}
-                busy={markReadMutation.isPending}
+                busy={isMarkReadPendingFor(markReadMutation, notification.id)}
                 onRead={() => markReadMutation.mutate({ ids: [notification.id] })}
               />
             ))}
