@@ -86,9 +86,7 @@ test('the header exposes a live, enabled notification bell', async () => {
 test('the footer shows the passion tagline on every page', async () => {
   renderAt('/portfolio');
 
-  expect(
-    await screen.findByText('BetterTrack — finances under your control'),
-  ).toBeInTheDocument();
+  expect(await screen.findByText('BetterTrack — finances under your control')).toBeInTheDocument();
 });
 
 // ─── Profile dropdown (§6.11) ─────────────────────────────────────────────────
