@@ -714,10 +714,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const today = todayIso();
       const payload = await loadSeries(portfolioId);
       const points = sliceRange(payload.points, range, today);
-      // The performance curve is cumulative since inception, so a range slice
-      // is re-based to 0 % at the window start (#125): 1M shows the TWR of
-      // that month, not an arbitrary offset. Compounding, not subtraction.
-      const performance = rebasePerformance(sliceRange(payload.performance, range, today));
+      // The performance curve is cumulative since inception. MAX serves it
+      // unchanged: the domain index is anchored at 1 (0 %) *before* day one,
+      // so day one's execution→close move (and its fee drag) is genuine
+      // since-inception return — re-basing to the first plotted point would
+      // divide it out of every response. A range slice (1M/6M/1Y/5Y) IS
+      // re-based to 0 % at the window start (#125): it shows the TWR of that
+      // window, not an arbitrary offset. Compounding, not subtraction.
+      const perfSlice = sliceRange(payload.performance, range, today);
+      const performance = range === 'MAX' ? perfSlice : rebasePerformance(perfSlice);
       if (!overlay) return { range, baseCurrency, points, performance };
 
       // Overlays share the curve's daily grid, so the same range slice keeps

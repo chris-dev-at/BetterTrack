@@ -708,6 +708,40 @@ describe('GET /api/v1/portfolios/:id/history (performance-% mode, #125)', () => 
     expect(month.body.performance[0].pct).toBeCloseTo(0, 9);
     expect(month.body.performance.at(-1).pct).toBeCloseTo(25, 9);
   });
+
+  it('MAX keeps since-inception semantics: day one’s execution→close move is not re-based away', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // Bought intraday at 100/unit; that day CLOSED at 104, latest close 150.
+    // True since-inception TWR is +50 %. Re-basing MAX to its first plotted
+    // point would divide out the day-one +4 % and wrongly report +44.23 %.
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-3), close: '104' },
+      { assetId: asset.id, date: dayOffset(-1), close: '150' },
+    ]);
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 100, executedAt: tsOffset(-3) });
+
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(max.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(max.body).success).toBe(true);
+    expect(max.body.performance[0].pct).toBeCloseTo(4, 9);
+    expect(max.body.performance.at(-1).pct).toBeCloseTo(50, 9);
+
+    // A sliced window still re-bases to its first plotted point (return since
+    // that day's close) even when it happens to contain inception — only MAX
+    // carries the since-inception anchor.
+    const month = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    expect(month.status).toBe(200);
+    expect(month.body.performance[0].pct).toBeCloseTo(0, 9);
+    expect(month.body.performance.at(-1).pct).toBeCloseTo((150 / 104 - 1) * 100, 9);
+  });
 });
 
 describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', () => {

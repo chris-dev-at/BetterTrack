@@ -769,6 +769,15 @@ export interface PerformancePoint {
  * keeps the chained index strictly positive, so a later rebase is always
  * well-defined.
  *
+ * A zero-value day **without** a flow is treated as a data gap, not a
+ * liquidation, and the previous real value is kept as the next day's linking
+ * base — so the move across the gap still counts instead of being dropped from
+ * the chain. The flip side: a genuine total-loss day (true value 0, no flow)
+ * is indistinguishable from such a gap and also links flat rather than −100 %.
+ * That is a deliberate tradeoff — {@link valueOverTime} carries closes
+ * forward, so a true zero close cannot occur there; only a flow (a sell) takes
+ * the reconstructed value to 0.
+ *
  * Flows on days outside the value series (e.g. a future-dated transaction) are
  * ignored — that money never enters the plotted window.
  */
@@ -801,7 +810,10 @@ export function timeWeightedReturn(
       numerator > VALUE_EPSILON && denominator > VALUE_EPSILON ? numerator / denominator : 1;
     index *= r;
     series.push({ date: point.date, pct: (index - 1) * 100 });
-    prevValue = point.valueEur;
+    // A flow-less zero-value day is a data gap (see docstring): keep the last
+    // real value as the linking base so the move across the gap isn't lost.
+    // With a flow the zero is genuine (a full liquidation) and the base resets.
+    if (point.valueEur > VALUE_EPSILON || flow !== 0) prevValue = point.valueEur;
   }
   return series;
 }

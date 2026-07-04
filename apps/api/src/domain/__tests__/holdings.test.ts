@@ -1123,6 +1123,42 @@ describe('timeWeightedReturn', () => {
     expect(perf[2]?.pct).toBeCloseTo(10, 10);
   });
 
+  it('a mid-series zero-value gap does not swallow the move across it', () => {
+    // Data gap in the middle: 1 000 → 0 (missing prices, no flow) → 1 100. The
+    // +10 % must survive — the day after the gap links against the carried
+    // 1 000, not the degenerate 0.
+    const values = [
+      { date: '2026-01-01', valueEur: 1000 },
+      { date: '2026-01-02', valueEur: 0 },
+      { date: '2026-01-03', valueEur: 1100 },
+    ];
+    const flows = [{ date: '2026-01-01', flowEur: 1000 }];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[1]?.pct).toBe(0); // the gap itself links flat
+    expect(perf[2]?.pct).toBeCloseTo(10, 10);
+  });
+
+  it('re-entering after a full liquidation measures from the new money, not a stale base', () => {
+    // Sell everything (the linking base genuinely resets to 0 — the zero has a
+    // flow, so it is NOT a data gap), stay empty, then buy back in: the new
+    // position's first day is measured against the fresh inflow only.
+    const values = [
+      { date: '2026-01-01', valueEur: 1000 },
+      { date: '2026-01-02', valueEur: 0 },
+      { date: '2026-01-03', valueEur: 0 },
+      { date: '2026-01-04', valueEur: 550 },
+    ];
+    const flows = [
+      { date: '2026-01-01', flowEur: 1000 },
+      { date: '2026-01-02', flowEur: -1000 },
+      { date: '2026-01-04', flowEur: 500 },
+    ];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[1]?.pct).toBe(0); // sold at the carried value → flat
+    expect(perf[2]?.pct).toBe(0); // flat while empty
+    expect(perf[3]?.pct).toBeCloseTo(10, 10); // 550 / (0 + 500) − 1
+  });
+
   it('ignores flows outside the value window (future-dated transaction)', () => {
     const values = [{ date: '2026-01-01', valueEur: 1000 }];
     const flows = [
