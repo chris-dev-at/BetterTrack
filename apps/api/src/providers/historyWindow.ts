@@ -12,6 +12,7 @@ const LOOKBACK_DAYS: Record<Exclude<HistoryRange, 'MAX'>, number> = {
   '1D': 1,
   '1W': 7,
   '1M': 31,
+  '3M': 93,
   '6M': 186,
   '1Y': 366,
   '5Y': 1830,

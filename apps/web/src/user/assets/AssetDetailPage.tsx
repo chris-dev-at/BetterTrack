@@ -30,6 +30,7 @@ const HISTORY_STALE_MS: Record<HistoryRange, number> = {
   '1D': 60_000,
   '1W': 300_000,
   '1M': 900_000,
+  '3M': 3_600_000,
   '6M': 3_600_000,
   '1Y': 3_600_000,
   '5Y': 21_600_000,
