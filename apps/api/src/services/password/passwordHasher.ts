@@ -6,20 +6,33 @@ import { hash, verify } from '@node-rs/argon2';
  * (the password test asserts the `$argon2id$` output format). Parameters are
  * embedded in the hash, so verifying older hashes keeps working after a tune.
  */
-const HASH_OPTIONS = {
+export interface HashOptions {
+  memoryCost: number;
+  timeCost: number;
+  parallelism: number;
+}
+
+const HASH_OPTIONS: HashOptions = {
   memoryCost: 65536,
   timeCost: 3,
   parallelism: 1,
-} as const;
+};
 
 export interface PasswordHasher {
   hash(password: string): Promise<string>;
   verify(passwordHash: string, password: string): Promise<boolean>;
 }
 
-export function createPasswordHasher(): PasswordHasher {
+/**
+ * Production callers pass no arguments and get §10's parameters. `overrides`
+ * is a test seam: the deliberate slowness of those parameters is the security
+ * property in production and pure overhead in tests, and because the parameters
+ * are embedded in each hash, hashes minted at different costs verify freely.
+ */
+export function createPasswordHasher(overrides?: Partial<HashOptions>): PasswordHasher {
+  const options: HashOptions = { ...HASH_OPTIONS, ...overrides };
   return {
-    hash: (password) => hash(password, HASH_OPTIONS),
+    hash: (password) => hash(password, options),
     async verify(passwordHash, password) {
       try {
         return await verify(passwordHash, password);

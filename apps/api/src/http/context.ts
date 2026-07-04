@@ -52,7 +52,7 @@ import {
   type NotificationSettingsService,
 } from '../services/notifications/notificationSettingsService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
-import { createPasswordHasher } from '../services/password/passwordHasher';
+import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import {
   createPortfolioService,
   type PortfolioService,
@@ -113,6 +113,8 @@ export interface BuildContextDeps {
   marketData?: MarketDataService;
   /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
   backfill?: BackfillScheduler;
+  /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
+  passwordHasher?: PasswordHasher;
 }
 
 /** Composition root: repositories → services → context. */
@@ -128,7 +130,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000));
   const audit = createAuditService(auditRepo);
-  const passwordHasher = createPasswordHasher();
+  const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
   // read by the auth register guard and the admin settings API.
