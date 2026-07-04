@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRouteTable,
   checkCoverage,
+  findPhantomRoutes,
   findUndocumentedRoutes,
 } from '../scripts/checkOpenapiCoverage';
 import { getOpenApiDocument } from '../http/openapi';
@@ -17,6 +18,7 @@ describe('checkOpenapiCoverage', () => {
     const result = checkCoverage();
 
     expect(result.missing).toEqual([]);
+    expect(result.phantom).toEqual([]);
     expect(result.ok).toBe(true);
     expect(result.mountedCount).toBeGreaterThan(0);
     expect(result.documentedCount).toBeGreaterThan(0);
@@ -46,5 +48,30 @@ describe('checkOpenapiCoverage', () => {
     expect(missing).toEqual(
       expect.arrayContaining(['GET /api/v1/workboard', 'POST /api/v1/workboard']),
     );
+  });
+
+  it('reports a documented route with no matching mounted route (phantom endpoint)', () => {
+    const doc = getOpenApiDocument();
+    const withPhantom = {
+      ...doc,
+      paths: {
+        ...doc.paths,
+        '/totally/not/mounted': { get: {} },
+      },
+    };
+    const routes = buildRouteTable();
+
+    const phantom = findPhantomRoutes(routes, withPhantom as never);
+
+    expect(phantom).toEqual(['GET /api/v1/totally/not/mounted']);
+  });
+
+  it('does not flag a real route as phantom', () => {
+    const doc = getOpenApiDocument();
+    const routes = buildRouteTable();
+
+    const phantom = findPhantomRoutes(routes, doc as never);
+
+    expect(phantom).toEqual([]);
   });
 });

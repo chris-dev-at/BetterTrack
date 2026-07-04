@@ -38,6 +38,8 @@ export interface CoverageResult {
   ok: boolean;
   /** `"METHOD /path"` entries mounted but absent from the OpenAPI document. */
   missing: string[];
+  /** `"METHOD /path"` entries documented but not actually mounted (phantom endpoints). */
+  phantom: string[];
   mountedCount: number;
   documentedCount: number;
 }
@@ -50,6 +52,9 @@ export interface CoverageResult {
 const SELF_DOCUMENTING = new Set(['GET /docs', 'GET /openapi.json']);
 
 const API_PREFIX = '/api/v1';
+
+/** The HTTP methods a path item's operations can be keyed by (per {@link EndpointDef}). */
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
 
 function toOpenApiPath(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -191,14 +196,41 @@ export function findUndocumentedRoutes(
   return missing;
 }
 
+/**
+ * Documented operations with no matching mounted route, as `"METHOD /path"` —
+ * a phantom endpoint that would render on `/docs` but 404 for real callers.
+ */
+export function findPhantomRoutes(
+  routes: readonly MountedRoute[],
+  doc: OpenApiDocumentLike,
+): string[] {
+  const mounted = new Set(routes.map((route) => `${route.method} ${route.path}`));
+  const phantom: string[] = [];
+
+  for (const [path, pathItem] of Object.entries(doc.paths)) {
+    if (!pathItem) continue;
+    const fullPath = path === '/' ? API_PREFIX : API_PREFIX + path;
+    for (const method of HTTP_METHODS) {
+      if (pathItem[method] === undefined) continue;
+      const key = `${method.toUpperCase()} ${fullPath}`;
+      if (!mounted.has(key)) {
+        phantom.push(key);
+      }
+    }
+  }
+  return phantom;
+}
+
 export function checkCoverage(): CoverageResult {
   const mounted = buildRouteTable();
   const doc = getOpenApiDocument() as unknown as OpenApiDocumentLike;
   const missing = findUndocumentedRoutes(mounted, doc);
+  const phantom = findPhantomRoutes(mounted, doc);
 
   return {
-    ok: missing.length === 0,
+    ok: missing.length === 0 && phantom.length === 0,
     missing,
+    phantom,
     mountedCount: mounted.length,
     documentedCount: Object.keys(doc.paths).length,
   };
@@ -207,15 +239,27 @@ export function checkCoverage(): CoverageResult {
 function main(): void {
   const result = checkCoverage();
   if (!result.ok) {
-    console.error('OpenAPI coverage check failed — undocumented routes:');
-    for (const route of result.missing) {
-      console.error(`  - ${route}`);
+    if (result.missing.length > 0) {
+      console.error('OpenAPI coverage check failed — undocumented routes:');
+      for (const route of result.missing) {
+        console.error(`  - ${route}`);
+      }
+      console.error(
+        `\n${result.missing.length} of ${result.mountedCount} mounted routes are missing from ` +
+          'the OpenAPI document. Add each to the `endpoints` table in ' +
+          'apps/api/src/http/openapi/document.ts.',
+      );
     }
-    console.error(
-      `\n${result.missing.length} of ${result.mountedCount} mounted routes are missing from ` +
-        'the OpenAPI document. Add each to the `endpoints` table in ' +
-        'apps/api/src/http/openapi/document.ts.',
-    );
+    if (result.phantom.length > 0) {
+      console.error('OpenAPI coverage check failed — phantom (documented, unmounted) routes:');
+      for (const route of result.phantom) {
+        console.error(`  - ${route}`);
+      }
+      console.error(
+        `\n${result.phantom.length} documented route(s) have no matching mounted route. Remove ` +
+          'each from the `endpoints` table in apps/api/src/http/openapi/document.ts or mount it.',
+      );
+    }
     process.exitCode = 1;
     return;
   }
