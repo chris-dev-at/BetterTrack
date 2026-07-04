@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import type {
@@ -13,6 +13,7 @@ import * as api from '../../lib/adminApi';
 import { useAuth } from '../AuthContext';
 import { formatDateTime } from '../format';
 import { useResource } from '../useResource';
+import { EmailLogTable } from '../components/EmailLogTable';
 import { Modal } from '../components/Modal';
 import {
   Alert,
@@ -30,7 +31,8 @@ type Dialog =
   | { type: 'created'; result: CreateUserResponse }
   | { type: 'reset'; user: AdminUser }
   | { type: 'reset-done'; user: AdminUser; result: ResetPasswordResponse }
-  | { type: 'delete'; user: AdminUser };
+  | { type: 'delete'; user: AdminUser }
+  | { type: 'emails'; user: AdminUser };
 
 function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
@@ -149,6 +151,13 @@ export function UsersPage() {
                           Reset password
                         </Button>
                         <Button
+                          variant="secondary"
+                          disabled={busy}
+                          onClick={() => setDialog({ type: 'emails', user: u })}
+                        >
+                          Emails
+                        </Button>
+                        <Button
                           variant="danger"
                           disabled={busy || isSelf}
                           title={isSelf ? 'You cannot delete your own account.' : undefined}
@@ -213,6 +222,10 @@ export function UsersPage() {
         </Modal>
       )}
 
+      {dialog?.type === 'emails' && (
+        <UserEmailsDialog user={dialog.user} onClose={() => setDialog(null)} />
+      )}
+
       {dialog?.type === 'delete' && (
         <DeleteUserDialog
           user={dialog.user}
@@ -248,6 +261,26 @@ function StatsStrip({ data }: { data: AdminStats | null }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/** Per-user email send log (PROJECTPLAN.md §6.10, §6.12). */
+function UserEmailsDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
+  const load = useCallback(
+    (params: { cursor?: string }, signal?: AbortSignal) =>
+      api.listUserEmails(user.id, params, signal),
+    [user.id],
+  );
+  return (
+    <Modal title={`Emails to ${user.username}`} onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-neutral-400">
+          Every send attempt to <span className="text-neutral-200">{user.email}</span>. No bodies or
+          secrets are stored.
+        </p>
+        <EmailLogTable load={load} emptyLabel="No emails sent to this user yet." />
+      </div>
+    </Modal>
   );
 }
 

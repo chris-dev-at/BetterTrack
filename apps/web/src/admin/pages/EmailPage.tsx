@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import type { TestEmailResponse } from '@bettertrack/contracts';
@@ -6,6 +6,7 @@ import type { TestEmailResponse } from '@bettertrack/contracts';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
+import { EmailLogTable } from '../components/EmailLogTable';
 import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../components/ui';
 
 function errorMessage(err: unknown): string {
@@ -20,6 +21,10 @@ function errorMessage(err: unknown): string {
  */
 export function EmailPage() {
   const status = useResource((signal) => api.getEmailStatus(signal), []);
+  const loadLog = useCallback(
+    (params: { cursor?: string }, signal?: AbortSignal) => api.listEmails(params, signal),
+    [],
+  );
   const [to, setTo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<TestEmailResponse | null>(null);
@@ -105,6 +110,17 @@ export function EmailPage() {
           try again.
         </Alert>
       ) : null}
+
+      <div className="flex flex-col gap-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
+          Email log
+        </h2>
+        <p className="text-sm text-neutral-500">
+          Every send attempt — invites, temp passwords, welcome and notification emails. No bodies
+          or secrets are stored.
+        </p>
+        <EmailLogTable load={loadLog} />
+      </div>
     </div>
   );
 }

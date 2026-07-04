@@ -1,7 +1,9 @@
+import { desc } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { emailLog, type EmailLogRow } from '../data/schema';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import {
   createTestApp,
@@ -247,6 +249,84 @@ describe('admin test-email diagnostic (PROJECTPLAN.md §6.12)', () => {
     const audit = await agent.get('/api/v1/admin/audit');
     const actions = (audit.body.entries as Array<{ action: string }>).map((e) => e.action);
     expect(actions).toContain('email.test_sent');
+  });
+});
+
+describe('email_log — one row per send attempt (PROJECTPLAN.md §6.10)', () => {
+  async function logRows(harness: TestHarness): Promise<EmailLogRow[]> {
+    return harness.db.select().from(emailLog).orderBy(desc(emailLog.id));
+  }
+
+  it('logs `sent` (no error code, no secret) when the channel delivers', async () => {
+    const transport = recordingTransport();
+    const { harness, agent } = await adminHarness({ env: SMTP_ENV, emailTransport: transport });
+
+    const created = await agent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'logged@test.dev', username: 'logged' });
+    expect(created.status).toBe(201);
+
+    const rows = await logRows(harness);
+    const row = rows.find((r) => r.recipient === 'logged@test.dev');
+    expect(row).toBeDefined();
+    expect(row?.status).toBe('sent');
+    expect(row?.template).toBe('temp_password');
+    expect(row?.errorCode).toBeNull();
+    expect(row?.userId).toBe(created.body.user.id);
+    // No body or secret is ever stored.
+    expect(JSON.stringify(row)).not.toContain(created.body.tempPassword);
+    expect(JSON.stringify(row)).not.toContain('super-secret-smtp-pass');
+  });
+
+  it('logs `suppressed` when SMTP is unconfigured', async () => {
+    const transport = recordingTransport();
+    const { harness, agent } = await adminHarness({ emailTransport: transport });
+
+    const created = await agent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'suppressed@test.dev', username: 'suppressed' });
+    expect(created.status).toBe(201);
+
+    const rows = await logRows(harness);
+    const row = rows.find((r) => r.recipient === 'suppressed@test.dev');
+    expect(row?.status).toBe('suppressed');
+    expect(row?.errorCode).toBeNull();
+    expect(transport.sent).toHaveLength(0);
+  });
+
+  it('logs `failed` with a coarse error code on a transport error', async () => {
+    const transport = recordingTransport({ fail: true });
+    const { harness, agent } = await adminHarness({ env: SMTP_ENV, emailTransport: transport });
+
+    const created = await agent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'failed@test.dev', username: 'failed' });
+    expect(created.status).toBe(201);
+
+    const rows = await logRows(harness);
+    const row = rows.find((r) => r.recipient === 'failed@test.dev');
+    expect(row?.status).toBe('failed');
+    expect(row?.errorCode).toBe('ECONNECTION');
+    expect(JSON.stringify(row)).not.toContain('super-secret-smtp-pass');
+  });
+
+  it('logs an invite send with a null user_id (no account yet)', async () => {
+    const transport = recordingTransport();
+    const { harness, agent } = await adminHarness({ env: SMTP_ENV, emailTransport: transport });
+
+    await agent
+      .post('/api/v1/admin/invites')
+      .set(...XRW)
+      .send({ email: 'invitee@test.dev' });
+
+    const rows = await logRows(harness);
+    const row = rows.find((r) => r.recipient === 'invitee@test.dev');
+    expect(row?.template).toBe('invite');
+    expect(row?.status).toBe('sent');
+    expect(row?.userId).toBeNull();
   });
 });
 

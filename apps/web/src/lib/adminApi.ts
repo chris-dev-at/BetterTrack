@@ -6,6 +6,7 @@ import {
   auditLogListResponseSchema,
   createInviteResponseSchema,
   createUserResponseSchema,
+  emailLogListResponseSchema,
   emailStatusResponseSchema,
   meResponseSchema,
   okResponseSchema,
@@ -20,6 +21,7 @@ import {
   type CreateInviteResponse,
   type CreateUserRequest,
   type CreateUserResponse,
+  type EmailLogListResponse,
   type EmailStatusResponse,
   type LoginRequest,
   type MeResponse,
@@ -131,4 +133,29 @@ export async function listAudit(
     signal,
   });
   return auditLogListResponseSchema.parse(data);
+}
+
+// --- Admin: email log -----------------------------------------------------
+
+export async function listEmails(
+  params: { cursor?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<EmailLogListResponse> {
+  const data = await apiRequest<unknown>('/admin/emails', {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
+  });
+  return emailLogListResponseSchema.parse(data);
+}
+
+export async function listUserEmails(
+  userId: string,
+  params: { cursor?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<EmailLogListResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${userId}/emails`, {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
+  });
+  return emailLogListResponseSchema.parse(data);
 }

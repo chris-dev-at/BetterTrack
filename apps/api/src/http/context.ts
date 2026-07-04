@@ -6,6 +6,7 @@ import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
+import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
@@ -135,7 +136,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       : config.email.enabled
         ? createSmtpTransport(config.email)
         : null;
-  const email = createEmailService({ config, logger, audit, transport });
+  const emailLogRepo = createEmailLogRepository(db);
+  const email = createEmailService({ config, logger, audit, emailLog: emailLogRepo, transport });
 
   const auth = createAuthService({
     config,
@@ -158,6 +160,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     passwordHasher,
     email,
+    emailLog: emailLogRepo,
   });
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
