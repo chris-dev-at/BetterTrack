@@ -767,7 +767,9 @@ The intentional parking lot — scoped out of V1, designed-for in V1. Roughly or
 
 **Portfolio & finance**
 - Broker CSV imports (Trade Republic, George, Flatex, IBKR mappers); FIFO/tax-lot accounting + realized P/L & dividend reports (AT tax view); dividends as cash-flow transactions; daily snapshot table; benchmark-vs-portfolio overlay; per-user base currency (currencyService is already parameterized).
-- **Buy-price → date lookup** (owner idea, 2026-07-02): in the "price + invested amount" transaction entry mode (#109), optionally search the asset's price history backwards for the most recent time it traded at the entered buy price and suggest that as the transaction date (with a hint when the price crossed that level multiple times).
+- **Portfolio cash balance ("Bargeld")** (owner idea, 2026-07-04 → #220): per-portfolio cash ledger with deposit/withdraw; buy flow gets "Pay from cash balance", sell flow "Add proceeds to cash balance", with a live cash-after preview and no silent negative balances; every cash movement is a reconciling transaction. Buying *from cash* is not a TWR cash-flow event (#125 interplay).
+- **Inflation comparison / real-terms view** (owner idea, 2026-07-04): measure portfolio performance against selectable inflation measures (AT/EU HICP, US CPI, or a custom flat rate) — as a benchmark-overlay series and/or a graph display mode normalizing the value curve to inflation-adjusted ("real") terms; composes with the performance-% display mode (#125).
+- **Linked date ↔ price transaction entry** (owner idea, 2026-07-02; expanded 2026-07-04 → #226): the buy/sell dialog pre-fills today + current price; while linked, picking a date auto-loads that day's price and entering a price jumps the date to the most recent time the asset traded there; explicit unlink toggle for free-form entry. Supersedes the earlier one-way "buy-price → date lookup" note.
 - **Personal finance / expense tracking** (larger future direction): upload bank-transaction CSVs → categorized spending analytics (by category/month), budgets, personal finance dashboard; later bank APIs and automatic import.
 
 **Market data & assets**
@@ -776,6 +778,8 @@ The intentional parking lot — scoped out of V1, designed-for in V1. Roughly or
 
 **Conglomerates & Workboard**
 - Rebalanced backtest mode (monthly/quarterly/yearly); conglomerate-vs-conglomerate comparisons; what-if sandboxes on shared views; nested conglomerates; multiple named watchlists; saved strategy ideas.
+- **Backtest: late-listed constituents** (owner idea, 2026-07-04 → #231): full-window strategies instead of clipping — a not-yet-listed asset's share either sits as uninvested cash until its first trading day ("cash until listing") or is split equally among the listed constituents with an entry-day rebalance to target weights ("redistribute until listing"); clipping stays as the third mode.
+- **Backtest: custom benchmark + benchmark stats** (owner idea, 2026-07-04 → #232): compare against any of the user's other conglomerates or any catalog asset/index (presets stay as quick picks), and show the bottom stats row (total %, avg %/year, …) for both series side by side — numeric comparison, not just two lines.
 
 **Notifications**
 - ⚡ Telegram/Discord channels (implement `NotificationChannel`, register, add settings fields); digest mode; quiet hours; web-push (PWA).
