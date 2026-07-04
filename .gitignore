@@ -17,6 +17,12 @@ coverage/
 .vite/
 .eslintcache
 
+# Playwright e2e
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/blob-report/
+
 # factory knowledge pack — generated outputs (generator is committed; run pnpm knowledge:build)
 factory/knowledge/graph.json
 factory/knowledge/MAP.md
