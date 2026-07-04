@@ -55,6 +55,14 @@ const envSchema = z.object({
   // each service's env if a tighter combined budget is needed.
   PROVIDER_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
   PROVIDER_MIN_SPACING_MS: z.coerce.number().int().nonnegative().default(250),
+  // Short-window burst dimension of the general limiter (§10, owner report #202):
+  // the 15-min steady-state allowance is generous enough that a rapid page-reload
+  // flood never reaches it, so a second, short window catches the flood without
+  // touching the steady-state bar. Sized well above a multi-tab TanStack refetch
+  // burst so legitimate use never trips; over-limit feeds the SAME escalation
+  // ladder as the steady-state limiter.
+  RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(60),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -211,6 +219,12 @@ export interface AppConfig {
     enabled: boolean;
     /** General API request rate, per user (falls back to IP when anonymous). */
     general: ProgressiveSchedule;
+    /**
+     * Short-window burst dimension layered on the general limiter: same key,
+     * same escalation ladder, a tighter window that trips a reload flood the
+     * generous steady-state allowance can't (§10, owner report #202).
+     */
+    generalBurst: ProgressiveSchedule;
     /** Provider search budget, per user — tighter than the general API (§6.2). */
     search: ProgressiveSchedule;
     /** Login/PIN request rate, per IP. */
@@ -231,6 +245,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const e = parsed.data;
   const isProduction = e.NODE_ENV === 'production';
   const isTest = e.NODE_ENV === 'test';
+
+  // General steady-state schedule, defined up front so the burst dimension can
+  // reuse its escalation ladder and decay verbatim (§10 — the burst window feeds
+  // the SAME progressive escalation as the steady-state limiter).
+  const general: ProgressiveSchedule = {
+    windowSec: 15 * 60,
+    limit: 4500,
+    cooldownsSec: [20, 60, 180, 600],
+    decaySec: 15 * 60,
+  };
 
   const topology = deriveOrigins(e);
   // Secure follows the API origin scheme: an https deployment gets Secure cookies
@@ -282,11 +306,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: !isTest,
       // ~300 req/min sustained per user so rapid multi-tab TanStack refetch
       // bursts never trip; over-limit → 20 s, then 1 m → 3 m → 10 m (cap).
-      general: {
-        windowSec: 15 * 60,
-        limit: 4500,
-        cooldownsSec: [20, 60, 180, 600],
-        decaySec: 15 * 60,
+      general,
+      // Short-window burst guard on the SAME key + SAME ladder as `general`. The
+      // 15-min/4500 steady-state bar is too high for a page-reload flood to reach
+      // (owner report #202), so a ~60-req / 10-s window trips the flood after a
+      // handful of reloads while staying far above any multi-tab refetch burst.
+      generalBurst: {
+        windowSec: e.RATE_LIMIT_BURST_WINDOW_SEC,
+        limit: e.RATE_LIMIT_BURST_LIMIT,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
       },
       // Provider search is tighter (§6.2): 60/min/user (client debounces at
       // 300 ms + min 2 chars, so legitimate typing stays well under this).

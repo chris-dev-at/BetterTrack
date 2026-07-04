@@ -28,10 +28,17 @@ export interface RateLimiters {
  * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const { enabled, general, search, loginIp } = ctx.config.rateLimits;
+  const { enabled, general, generalBurst, search, loginIp } = ctx.config.rateLimits;
 
+  /**
+   * Guard a request against one or more limiters sharing a key. Each is consumed
+   * in order and the first denial wins — so the general guard can layer a tight
+   * burst window in front of the generous steady-state window and either one
+   * trips the same 429. A denial short-circuits, so the caller's later windows
+   * aren't counted while it's already being turned away.
+   */
   const guard = (
-    limiter: ProgressiveLimiter,
+    limiters: readonly ProgressiveLimiter[],
     keyGenerator: (req: Request) => string,
   ): RequestHandler => {
     return (req, res, next) => {
@@ -39,31 +46,38 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
         next();
         return;
       }
-      limiter
-        .consume(keyGenerator(req))
-        .then((decision) => {
-          if (decision.allowed) {
-            next();
+      const key = keyGenerator(req);
+      void (async () => {
+        for (const limiter of limiters) {
+          const decision = await limiter.consume(key);
+          if (!decision.allowed) {
+            // The SPA's fetch chokepoint reads Retry-After to drive its toast.
+            res.setHeader('Retry-After', String(decision.retryAfterSec));
+            next(tooManyRequests(decision.retryAfterSec));
             return;
           }
-          // The SPA's fetch chokepoint reads Retry-After to drive its toast.
-          res.setHeader('Retry-After', String(decision.retryAfterSec));
-          next(tooManyRequests(decision.retryAfterSec));
-        })
-        .catch(next);
+        }
+        next();
+      })().catch(next);
     };
   };
 
   const loginLimiter = createProgressiveLimiter(ctx.redis, 'login_ip', loginIp);
   const generalLimiter = createProgressiveLimiter(ctx.redis, 'general', general);
+  // Short-window burst dimension (owner report #202): a page-reload flood fires
+  // far more requests in a few seconds than the 15-min steady-state allowance can
+  // notice, so this tighter window trips it. It feeds the SAME escalation ladder
+  // (its own namespace, the general ladder + decay) and fronts every /api/v1
+  // route, since `general` is mounted app-wide before any per-router limiter.
+  const generalBurstLimiter = createProgressiveLimiter(ctx.redis, 'general_burst', generalBurst);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
 
   return {
-    login: guard(loginLimiter, keyByIp),
-    general: guard(generalLimiter, keyByUserOrIp),
+    login: guard([loginLimiter], keyByIp),
+    general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.
-    admin: guard(createProgressiveLimiter(ctx.redis, 'admin', general), keyByUserOrIp),
-    search: guard(searchLimiter, keyByUserOrIp),
+    admin: guard([createProgressiveLimiter(ctx.redis, 'admin', general)], keyByUserOrIp),
+    search: guard([searchLimiter], keyByUserOrIp),
   };
 }
