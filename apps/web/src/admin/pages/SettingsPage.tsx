@@ -116,7 +116,12 @@ export function SettingsPage() {
       {settings.loading ? (
         <Spinner label="Loading settings…" />
       ) : settings.error ? (
-        <Alert tone="error">{settings.error}</Alert>
+        <Alert tone="error">
+          {settings.error}{' '}
+          <button className="underline" onClick={settings.reload}>
+            Retry
+          </button>
+        </Alert>
       ) : (
         <>
           <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
