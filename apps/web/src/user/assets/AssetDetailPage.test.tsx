@@ -158,6 +158,16 @@ describe('AssetDetailPage — header rendering', () => {
       expect(screen.getByText(/Could not load asset details/i)).toBeInTheDocument(),
     );
   });
+
+  test('shows the unofficial/delayed market-data disclaimer', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(
+      screen.getByText(
+        'Market data comes from an unofficial source and may be delayed or inaccurate.',
+      ),
+    ).toBeInTheDocument();
+  });
 });
 
 describe('AssetDetailPage — range switching', () => {

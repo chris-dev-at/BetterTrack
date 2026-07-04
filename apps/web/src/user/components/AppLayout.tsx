@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
+import { Disclaimer } from '../../ui';
 import { CmdKPalette } from './CmdKPalette';
 import { NotificationBell } from './NotificationBell';
 import { ProfileMenu } from './ProfileMenu';
@@ -88,6 +89,9 @@ export function AppLayout() {
       <main className="mx-auto max-w-6xl px-4 py-8">
         <Outlet />
       </main>
+      <footer className="mx-auto max-w-6xl px-4 pb-8">
+        <Disclaimer>BetterTrack is not investment advice.</Disclaimer>
+      </footer>
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>
   );

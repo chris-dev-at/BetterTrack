@@ -13,7 +13,7 @@ import type {
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { addToWorkboard } from '../../lib/workboardApi';
 import { formatDateTime, formatSignedPercent } from '../../lib/format';
-import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
+import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
@@ -340,6 +340,10 @@ export function AssetDetailPage() {
       <AlertsSection assetId={id} />
       <AppearsInSection />
       <ActionsSection assetId={id} />
+
+      <Disclaimer>
+        Market data comes from an unofficial source and may be delayed or inaccurate.
+      </Disclaimer>
     </div>
   );
 }
