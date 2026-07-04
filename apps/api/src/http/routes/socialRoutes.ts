@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   createFriendRequestRequestSchema,
   idParamSchema,
+  portfolioIdParamSchema,
   type CreateFriendRequestRequest,
 } from '@bettertrack/contracts';
 
@@ -72,6 +73,26 @@ export function createSocialRouter(ctx: AppContext): Router {
     const { userId } = req.valid?.params as { userId: string };
     await ctx.social.removeFriend(req.authUser!.id, userId);
     res.status(204).send();
+  });
+
+  // GET /social/shared — friends' portfolios shared with me (visibility=friends).
+  router.get('/shared', async (req, res) => {
+    const result = await ctx.social.listSharedWithMe(req.authUser!.id);
+    res.json(result);
+  });
+
+  // GET /social/shared/:portfolioId — read-only overview of a friend-shared portfolio.
+  // A non-friend / private / unknown portfolio 404s (never 403), recomputed per request.
+  router.get('/shared/:portfolioId', validateParams(portfolioIdParamSchema), async (req, res) => {
+    const { portfolioId } = req.valid?.params as { portfolioId: string };
+    const result = await ctx.social.getSharedPortfolio(req.authUser!.id, portfolioId);
+    res.json(result);
+  });
+
+  // GET /social/my-shared — my own portfolios currently at visibility=friends (toggle-off list).
+  router.get('/my-shared', async (req, res) => {
+    const result = await ctx.social.listMyShared(req.authUser!.id);
+    res.json(result);
   });
 
   return router;
