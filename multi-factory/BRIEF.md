@@ -127,7 +127,7 @@ Bash only. The scheduler **never infers** compatibility; it checks claims:
   the worker acknowledges completion.
 - `state/status/worker-N.json` — written atomically by the worker:
   `{ "phase": "idle|writing|reviewing|fixing|awaiting-merge|triage|done|failed",
-   "issue": 144, "pr": 158, "updated_at": "…" }`. The worker touches this
+ "issue": 144, "pr": 158, "updated_at": "…" }`. The worker touches this
   file at least once per phase change; the master treats an `updated_at` older
   than 60 min with no container log output as a stall → apply the existing
   killed-mid-run recovery semantics (re-check issue/PR state authoritatively,
