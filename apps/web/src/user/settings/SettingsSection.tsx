@@ -1,6 +1,11 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Outlet } from 'react-router-dom';
 
-import { ComingSoon } from '../../ui';
+import type { NotificationSettingsResponse } from '@bettertrack/contracts';
+
+import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
+import { ComingSoon, EmptyState, Skeleton } from '../../ui';
+import { Alert, cx } from '../components/ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
 /**
@@ -40,12 +45,116 @@ export function AccountSettingsPage() {
   );
 }
 
-export function NotificationSettingsPage() {
+const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
+
+/** A minimal on/off switch. Locked (disabled) rows always render as on. */
+function Toggle({
+  label,
+  description,
+  checked,
+  disabled,
+  busy,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  disabled?: boolean;
+  busy?: boolean;
+  onChange?: (next: boolean) => void;
+}) {
   return (
-    <ComingSoon
-      title="Notifications"
-      description="Per-channel toggles (in-app, email) and the full notification list."
-    />
+    <div className="flex items-start justify-between gap-4 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+      <div className="flex flex-col gap-0.5">
+        <span className="text-sm font-medium text-neutral-100">{label}</span>
+        <span className="text-xs text-neutral-500">{description}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled || busy}
+        onClick={() => onChange?.(!checked)}
+        className={cx(
+          'relative mt-0.5 inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+          'disabled:cursor-not-allowed',
+          checked ? 'bg-sky-600' : 'bg-neutral-700',
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className={cx(
+            'inline-block h-5 w-5 translate-y-0.5 rounded-full bg-white transition-transform',
+            checked ? 'translate-x-[1.375rem]' : 'translate-x-0.5',
+          )}
+        />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Minimal Settings → Notifications panel (PROJECTPLAN.md §6.10, §6.11). Wires the
+ * in-app (locked on) and email toggles to `GET/PATCH /settings/notifications`.
+ * The full Settings layout + notification list ships in P7.
+ */
+export function NotificationSettingsPage() {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: NOTIFICATION_SETTINGS_KEY,
+    queryFn: ({ signal }) => getNotificationSettings(signal),
+    staleTime: 30_000,
+  });
+
+  const mutation = useMutation({
+    mutationFn: (enabled: boolean) => updateNotificationSettings({ email: { enabled } }),
+    onSuccess: (data: NotificationSettingsResponse) => {
+      queryClient.setQueryData(NOTIFICATION_SETTINGS_KEY, data);
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold text-neutral-100">Notifications</h2>
+        <p className="text-sm text-neutral-500">
+          Choose how BetterTrack notifies you. In-app notifications are always on.
+        </p>
+      </div>
+
+      {query.isPending ? (
+        <div className="flex flex-col gap-3">
+          <Skeleton height="h-16" />
+          <Skeleton height="h-16" />
+        </div>
+      ) : query.isError ? (
+        <EmptyState
+          title="Couldn't load your notification settings"
+          description="Please try again in a moment."
+        />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <Toggle
+            label="In-app"
+            description="Notifications in the bell menu. Always on."
+            checked
+            disabled
+          />
+          <Toggle
+            label="Email"
+            description="Get an email for friend requests and shared portfolios."
+            checked={query.data.email.enabled}
+            busy={mutation.isPending}
+            onChange={(next) => mutation.mutate(next)}
+          />
+          {mutation.isError ? (
+            <Alert tone="error">Couldn't save that change. Please try again.</Alert>
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }
 

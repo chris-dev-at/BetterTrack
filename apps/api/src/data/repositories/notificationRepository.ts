@@ -101,6 +101,40 @@ export function createNotificationRepository(db: Database) {
     },
 
     /**
+     * Every `notification_settings` row for the user as a `channel → enabled`
+     * map. Absent channels fall back to their default in the caller (§6.10) —
+     * this only surfaces explicit rows and is strictly `user_id`-scoped.
+     */
+    async settingsForUser(userId: string): Promise<Partial<Record<NotificationChannel, boolean>>> {
+      const rows = await db
+        .select({ channel: notificationSettings.channel, enabled: notificationSettings.enabled })
+        .from(notificationSettings)
+        .where(eq(notificationSettings.userId, userId));
+      const settings: Partial<Record<NotificationChannel, boolean>> = {};
+      for (const row of rows) settings[row.channel] = row.enabled;
+      return settings;
+    },
+
+    /**
+     * Set the user's `enabled` flag for a channel, inserting or updating the
+     * `(user_id, channel)` row (composite PK). Scoped to the given user, so it
+     * can never touch another user's settings.
+     */
+    async upsertChannelEnabled(
+      userId: string,
+      channel: NotificationChannel,
+      enabled: boolean,
+    ): Promise<void> {
+      await db
+        .insert(notificationSettings)
+        .values({ userId, channel, enabled })
+        .onConflictDoUpdate({
+          target: [notificationSettings.userId, notificationSettings.channel],
+          set: { enabled },
+        });
+    },
+
+    /**
      * Newest-first notifications for one user, keyset paginated by UUIDv7 id
      * (§8). Scoped by `user_id` so another user's id is never returned — no
      * IDOR by construction (§10).
