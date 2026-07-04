@@ -27,24 +27,6 @@ export function SocialLayout() {
 
 // ─── Not-yet-built surfaces (own feature issues) ──────────────────────────────
 
-export function SharedWithMePage() {
-  return (
-    <ComingSoon
-      title="Shared With Me"
-      description="Read-only portfolios your friends have shared with you."
-    />
-  );
-}
-
-export function MySharedItemsPage() {
-  return (
-    <ComingSoon
-      title="My Shared Items"
-      description="Everything you're currently sharing with friends, with a quick toggle to stop sharing."
-    />
-  );
-}
-
 export function SocialIdeasPage() {
   return (
     <ComingSoon
