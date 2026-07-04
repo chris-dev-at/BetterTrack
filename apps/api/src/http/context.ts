@@ -45,6 +45,10 @@ import {
   createNotificationService,
   type NotificationService,
 } from '../services/notifications/notificationService';
+import {
+  createNotificationSettingsService,
+  type NotificationSettingsService,
+} from '../services/notifications/notificationSettingsService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import {
@@ -86,6 +90,8 @@ export interface AppContext {
   social: SocialService;
   /** User-scoped notification read/mark-read — the bell + Settings list (§6.10). */
   notifications: NotificationService;
+  /** Per-user notification channel toggles — Settings → Notifications (§6.10, §6.11). */
+  notificationSettings: NotificationSettingsService;
   /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
    * dispatcher (worker process) subscribes. Held on the context so the process
@@ -263,6 +269,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Notification read/mark-read (§6.10): user-scoped over the dispatcher's rows.
   const notificationRepo = createNotificationRepository(db);
   const notifications = createNotificationService({ repo: notificationRepo });
+  // Notification channel toggles (§6.10, §6.11): in-app always on, email on by
+  // default; writes the settings rows the dispatcher reads.
+  const notificationSettings = createNotificationSettingsService({ repo: notificationRepo });
 
   return {
     config,
@@ -280,6 +289,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     backtest: backtestPreview,
     social,
     notifications,
+    notificationSettings,
     events,
   };
 }
