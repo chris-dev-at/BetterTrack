@@ -11,7 +11,10 @@
  */
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
+import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
   createDeadLetter,
@@ -24,6 +27,9 @@ import {
 } from '../jobs';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
+import { createAuditService } from '../services/audit/auditService';
+import { createEmailService } from '../services/email/emailService';
+import { createSmtpTransport } from '../services/email/transport';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
 
 const config = loadConfig();
@@ -71,12 +77,25 @@ const running = createJobWorkers({
   logger,
 });
 
-// Notification dispatcher (§9, §6.10): a pure bus subscriber that turns the V1
-// social domain events into in-app notification rows. It shares the worker's
-// event bus and reads/writes Postgres through the same connection as the jobs.
+// Email channel (§6.10): the worker owns its own SMTP transport + email service
+// so the dispatcher can send notification emails and write `email_log` rows.
+const emailTransport = config.email.enabled ? createSmtpTransport(config.email) : null;
+const email = createEmailService({
+  config,
+  logger,
+  audit: createAuditService(createAuditRepository(db)),
+  emailLog: createEmailLogRepository(db),
+  transport: emailTransport,
+});
+
+// Notification dispatcher (§9, §6.10): a pure bus subscriber that fans the V1
+// social domain events out to the recipient's in-app + email channels. It shares
+// the worker's event bus and reads/writes Postgres through the same connection.
 const notificationDispatcher = createNotificationDispatcher({
   bus: events,
   repo: createNotificationRepository(db),
+  email,
+  users: createUserRepository(db),
   logger,
 });
 await notificationDispatcher.start();

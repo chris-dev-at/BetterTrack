@@ -2,12 +2,13 @@ import type {
   AdminInvite,
   AdminUser,
   AuditLogEntry,
+  EmailLogEntry,
   MeResponse,
   WorkboardItem,
 } from '@bettertrack/contracts';
 
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
-import type { AuditLogRow, InviteRow, UserRow } from '../data/schema';
+import type { AuditLogRow, EmailLogRow, InviteRow, UserRow } from '../data/schema';
 import type { AuthUser } from './types';
 
 const toIso = (value: Date | string | null | undefined): string | null => {
@@ -95,6 +96,19 @@ export function toWorkboardItem(item: WorkboardItemWithAsset): WorkboardItem {
       currency: item.asset.currency,
       type: item.asset.type,
     },
+  };
+}
+
+export function toEmailLogEntry(row: EmailLogRow): EmailLogEntry {
+  return {
+    id: row.id,
+    userId: row.userId,
+    recipient: row.recipient,
+    template: row.template,
+    subject: row.subject,
+    status: row.status,
+    errorCode: row.errorCode,
+    createdAt: toIsoRequired(row.createdAt),
   };
 }
 

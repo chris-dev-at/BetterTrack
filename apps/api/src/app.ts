@@ -14,8 +14,10 @@ import { createAuthRouter } from './http/routes/authRoutes';
 import { createBacktestRouter } from './http/routes/backtestRoutes';
 import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
+import { createNotificationsRouter } from './http/routes/notificationsRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
+import { createSettingsRouter } from './http/routes/settingsRoutes';
 import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
@@ -62,6 +64,8 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
   app.use('/api/v1/social', createSocialRouter(ctx));
+  app.use('/api/v1/notifications', createNotificationsRouter(ctx));
+  app.use('/api/v1/settings', createSettingsRouter(ctx));
 
   app.use(createErrorHandler(ctx.logger));
   return app;

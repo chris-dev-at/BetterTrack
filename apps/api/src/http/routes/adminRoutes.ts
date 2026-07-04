@@ -6,6 +6,7 @@ import {
   createInviteRequestSchema,
   createUserRequestSchema,
   deleteUserRequestSchema,
+  emailLogQuerySchema,
   idParamSchema,
   testEmailRequestSchema,
   updateUserRequestSchema,
@@ -13,6 +14,7 @@ import {
   type CreateInviteRequest,
   type CreateUserRequest,
   type DeleteUserRequest,
+  type EmailLogQuery,
   type TestEmailRequest,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
@@ -22,7 +24,7 @@ import type { AppContext } from '../context';
 import { requireAdmin } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
-import { toAdminInvite, toAdminUser, toAuditEntry } from '../serializers';
+import { toAdminInvite, toAdminUser, toAuditEntry, toEmailLogEntry } from '../serializers';
 
 const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.ip });
 
@@ -125,6 +127,31 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     });
     res.json({ entries: entries.map(toAuditEntry), nextCursor });
   });
+
+  // Email send log (§6.10, §6.12): global and per-user, cursor-paged.
+  router.get('/emails', validateQuery(emailLogQuerySchema), async (req, res) => {
+    const query = req.valid?.query as EmailLogQuery;
+    const { entries, nextCursor } = await ctx.admin.listEmails({
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    res.json({ entries: entries.map(toEmailLogEntry), nextCursor });
+  });
+
+  router.get(
+    '/users/:id/emails',
+    validateParams(idParamSchema),
+    validateQuery(emailLogQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const query = req.valid?.query as EmailLogQuery;
+      const { entries, nextCursor } = await ctx.admin.listUserEmails(id, {
+        limit: query.limit,
+        cursor: query.cursor,
+      });
+      res.json({ entries: entries.map(toEmailLogEntry), nextCursor });
+    },
+  );
 
   return router;
 }

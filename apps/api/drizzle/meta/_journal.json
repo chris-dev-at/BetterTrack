@@ -50,6 +50,13 @@
       "when": 1783119703509,
       "tag": "0006_sleepy_tenebrous",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783145353060,
+      "tag": "0007_thick_spot",
+      "breakpoints": true
     }
   ]
 }

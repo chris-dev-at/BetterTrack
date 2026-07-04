@@ -113,6 +113,33 @@ export const auditLogListResponseSchema = z.object({
 });
 export type AuditLogListResponse = z.infer<typeof auditLogListResponseSchema>;
 
+/** One email send-log row (PROJECTPLAN.md §6.10) — no body, no secrets. */
+export const emailLogEntrySchema = z.object({
+  id: z.string().uuid(),
+  userId: z.string().uuid().nullable(),
+  recipient: z.string(),
+  template: z.string(),
+  subject: z.string(),
+  status: z.enum(['sent', 'failed', 'suppressed']),
+  errorCode: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export type EmailLogEntry = z.infer<typeof emailLogEntrySchema>;
+
+export const emailLogQuerySchema = z
+  .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+export type EmailLogQuery = z.infer<typeof emailLogQuerySchema>;
+
+export const emailLogListResponseSchema = z.object({
+  entries: z.array(emailLogEntrySchema),
+  nextCursor: z.string().uuid().nullable(),
+});
+export type EmailLogListResponse = z.infer<typeof emailLogListResponseSchema>;
+
 export const adminStatsSchema = z.object({
   userCount: z.number().int(),
   activeUserCount: z.number().int(),

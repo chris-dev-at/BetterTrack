@@ -6,8 +6,10 @@ import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
+import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
+import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -39,6 +41,14 @@ import {
 } from '../services/customAssets/customAssetService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
+import {
+  createNotificationService,
+  type NotificationService,
+} from '../services/notifications/notificationService';
+import {
+  createNotificationSettingsService,
+  type NotificationSettingsService,
+} from '../services/notifications/notificationSettingsService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import {
@@ -78,6 +88,10 @@ export interface AppContext {
   backtest: BacktestService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
   social: SocialService;
+  /** User-scoped notification read/mark-read — the bell + Settings list (§6.10). */
+  notifications: NotificationService;
+  /** Per-user notification channel toggles — Settings → Notifications (§6.10, §6.11). */
+  notificationSettings: NotificationSettingsService;
   /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
    * dispatcher (worker process) subscribes. Held on the context so the process
@@ -135,7 +149,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       : config.email.enabled
         ? createSmtpTransport(config.email)
         : null;
-  const email = createEmailService({ config, logger, audit, transport });
+  const emailLogRepo = createEmailLogRepository(db);
+  const email = createEmailService({ config, logger, audit, emailLog: emailLogRepo, transport });
 
   const auth = createAuthService({
     config,
@@ -158,6 +173,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     passwordHasher,
     email,
+    emailLog: emailLogRepo,
   });
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
@@ -250,6 +266,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Publishes friend.request / friend.accepted for the notification dispatcher.
   const social = createSocialService({ repo: friendshipRepo, portfolio, events, logger });
 
+  // Notification read/mark-read (§6.10): user-scoped over the dispatcher's rows.
+  const notificationRepo = createNotificationRepository(db);
+  const notifications = createNotificationService({ repo: notificationRepo });
+  // Notification channel toggles (§6.10, §6.11): in-app always on, email on by
+  // default; writes the settings rows the dispatcher reads.
+  const notificationSettings = createNotificationSettingsService({ repo: notificationRepo });
+
   return {
     config,
     redis,
@@ -265,6 +288,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     conglomerate,
     backtest: backtestPreview,
     social,
+    notifications,
+    notificationSettings,
     events,
   };
 }
