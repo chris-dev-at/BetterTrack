@@ -149,6 +149,15 @@ function assertFiniteNonNegative(value: number, label: string): void {
   }
 }
 
+/** Epoch-ms of a transaction's `executedAt`; unparseable input fails loud. */
+function executedAtToMs(executedAt: string): number {
+  const ms = Date.parse(executedAt);
+  if (Number.isNaN(ms)) {
+    throw new Error(`Transaction executedAt must be an ISO-8601 date/time, got ${executedAt}`);
+  }
+  return ms;
+}
+
 /**
  * Average-cost basis and realized P/L for one asset's transactions (§6.8).
  *
@@ -167,14 +176,14 @@ function assertFiniteNonNegative(value: number, label: string): void {
 export function reducePosition(transactions: readonly Transaction[]): PositionState {
   // Tag with original indices, then stable-sort by (executedAt, index) so the
   // running average sees BUY/SELL in the true chronological order regardless of
-  // how the caller supplied the list.
+  // how the caller supplied the list. Compare as epoch-ms, NOT as strings:
+  // ISO-8601 admits mixed sub-second precision (`…T10:00:00Z` vs
+  // `…T10:00:00.500Z`) and non-UTC offsets, neither of which sorts
+  // lexicographically in time order ('.' < 'Z'), so a string comparison here
+  // would replay sells before the buys that funded them (issue #218).
   const ordered = transactions
-    .map((t, index) => ({ t, index }))
-    .sort((a, b) => {
-      if (a.t.executedAt < b.t.executedAt) return -1;
-      if (a.t.executedAt > b.t.executedAt) return 1;
-      return a.index - b.index;
-    });
+    .map((t, index) => ({ t, index, executedAtMs: executedAtToMs(t.executedAt) }))
+    .sort((a, b) => a.executedAtMs - b.executedAtMs || a.index - b.index);
 
   let assetId: string | null = null;
   let held = 0;
@@ -769,6 +778,15 @@ export interface PerformancePoint {
  * keeps the chained index strictly positive, so a later rebase is always
  * well-defined.
  *
+ * Inflows on such pre-price days are not lost, though: while the value is
+ * unmeasurable, incoming cash accumulates into the linking base, so the first
+ * real value point links against the money actually put in (issue #218 — a
+ * custom asset bought before its first value point shows its true first move,
+ * not 0 %). The residual tradeoff: a *partial* sell before the first value
+ * point books against that full basis as if the remainder were worth 0 — with
+ * no price the domain cannot know otherwise, and a full pre-price liquidation
+ * (the far likelier case) is booked correctly by the same rule.
+ *
  * A zero-value day **without** a flow is treated as a data gap, not a
  * liquidation, and the previous real value is kept as the next day's linking
  * base — so the move across the gap still counts instead of being dropped from
@@ -810,10 +828,20 @@ export function timeWeightedReturn(
       numerator > VALUE_EPSILON && denominator > VALUE_EPSILON ? numerator / denominator : 1;
     index *= r;
     series.push({ date: point.date, pct: (index - 1) * 100 });
-    // A flow-less zero-value day is a data gap (see docstring): keep the last
-    // real value as the linking base so the move across the gap isn't lost.
-    // With a flow the zero is genuine (a full liquidation) and the base resets.
-    if (point.valueEur > VALUE_EPSILON || flow !== 0) prevValue = point.valueEur;
+    // Next day's linking base (see docstring):
+    //  - a real value is the base;
+    //  - a flow-less zero-value day is a data gap — keep the last base so the
+    //    move across the gap isn't lost;
+    //  - an INFLOW day with no measurable value means the assets have no price
+    //    yet (a custom asset transacted before its first value point): the cash
+    //    that came in IS the invested basis, so accumulate it (issue #218) —
+    //    the first real value then links against the money put in instead of
+    //    collapsing the whole pre-price stretch to a flat 0 %;
+    //  - an OUTFLOW day with no value is a genuine liquidation and the base
+    //    resets (that day's return was already booked via the numerator).
+    if (point.valueEur > VALUE_EPSILON) prevValue = point.valueEur;
+    else if (flow > 0) prevValue += flow;
+    else if (flow < 0) prevValue = 0;
   }
   return series;
 }

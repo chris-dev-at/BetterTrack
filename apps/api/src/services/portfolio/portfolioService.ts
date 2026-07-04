@@ -198,7 +198,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       quantity: i.quantity,
       price: i.price,
       fee: i.fee,
-      executedAt: i.executedAt,
+      // Normalize through Date exactly like the insert + recordToDomain path
+      // does, so create-time oversell validation replays the timeline the DB
+      // will hold — client timestamps may carry a different sub-second
+      // precision or zone offset than the stored rows (issue #218).
+      executedAt: new Date(i.executedAt).toISOString(),
     };
   }
 
@@ -780,10 +784,23 @@ function computeTotals(holdings: readonly Holding[]): PortfolioTotals {
   };
 }
 
-/** Calendar day `months` before `today` (ISO `YYYY-MM-DD`), UTC. */
-function monthsBefore(today: string, months: number): string {
+/**
+ * Calendar day `months` before `today` (ISO `YYYY-MM-DD`), UTC. When the target
+ * month is shorter than `today`'s day-of-month, clamps to the target month's
+ * last day — a naive `setUTCMonth` would roll over (Mar 31 − 1M → Mar 3) and
+ * silently shorten the 1M/6M chart windows (issue #218).
+ *
+ * Exported for unit tests only.
+ */
+export function monthsBefore(today: string, months: number): string {
   const d = new Date(`${today}T00:00:00.000Z`);
+  const dayOfMonth = d.getUTCDate();
+  d.setUTCDate(1);
   d.setUTCMonth(d.getUTCMonth() - months);
+  const lastDayOfTargetMonth = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0),
+  ).getUTCDate();
+  d.setUTCDate(Math.min(dayOfMonth, lastDayOfTargetMonth));
   return d.toISOString().slice(0, 10);
 }
 
