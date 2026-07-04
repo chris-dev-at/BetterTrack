@@ -15,6 +15,7 @@ export interface RateLimiters {
   general: RequestHandler;
   admin: RequestHandler;
   search: RequestHandler;
+  social: RequestHandler;
 }
 
 /**
@@ -28,7 +29,7 @@ export interface RateLimiters {
  * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const { enabled, general, generalBurst, search, loginIp } = ctx.config.rateLimits;
+  const { enabled, general, generalBurst, search, social, loginIp } = ctx.config.rateLimits;
 
   /**
    * Guard a request against one or more limiters sharing a key. Each is consumed
@@ -71,6 +72,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   // route, since `general` is mounted app-wide before any per-router limiter.
   const generalBurstLimiter = createProgressiveLimiter(ctx.redis, 'general_burst', generalBurst);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
+  const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
 
   return {
     login: guard([loginLimiter], keyByIp),
@@ -79,5 +81,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     // keeps their counter independent of a co-located user's general traffic.
     admin: guard([createProgressiveLimiter(ctx.redis, 'admin', general)], keyByUserOrIp),
     search: guard([searchLimiter], keyByUserOrIp),
+    // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
+    social: guard([socialLimiter], keyByUserOrIp),
   };
 }

@@ -227,6 +227,8 @@ export interface AppConfig {
     generalBurst: ProgressiveSchedule;
     /** Provider search budget, per user — tighter than the general API (§6.2). */
     search: ProgressiveSchedule;
+    /** Friend-request creation, per user — blunts bulk email→username probing (§6.9). */
+    social: ProgressiveSchedule;
     /** Login/PIN request rate, per IP. */
     loginIp: ProgressiveSchedule;
     /** Failed-login tracking, per account — independent of the per-IP counter. */
@@ -323,6 +325,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         windowSec: 60,
         limit: 60,
         cooldownsSec: [20, 60, 180, 600],
+        decaySec: 15 * 60,
+      },
+      // Friend-request creation, per user (§6.9): sending a request creates an
+      // outbox row revealing the target's username, so bulk email→username
+      // probing must be expensive. 30/hour is far above any legitimate use;
+      // over-limit → 1 m, then 5 m → 15 m → 1 h (cap).
+      social: {
+        windowSec: 60 * 60,
+        limit: 30,
+        cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
       },
       // Login is stricter and per-IP: blunts single-IP credential stuffing while

@@ -1,9 +1,13 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { friendRequestListResponseSchema, friendsListResponseSchema } from '@bettertrack/contracts';
 
+import { createUserRepository } from '../data/repositories/userRepository';
+import * as schema from '../data/schema';
+import { DECLINE_COOLDOWN_MS } from '../services/social/socialService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -126,6 +130,79 @@ describe('POST /api/v1/social/requests — no enumeration', () => {
     expect(res.status).toBe(202);
     const requests = await listRequests(aliceAgent);
     expect(requests.outgoing).toHaveLength(0);
+  });
+});
+
+describe('POST /api/v1/social/requests — admin/disabled targets are unrequestable (no enumeration)', () => {
+  it('cannot target an admin account — same 202, no outbox row (admin email stays a black hole)', async () => {
+    const { aliceAgent } = await seedTwo(harness);
+    const admin = await harness.seedAdmin({ email: 'root@bt.test', username: 'root' });
+
+    // Both the admin's email and username resolve to nothing, exactly like a
+    // missing account — so a guessed admin address never leaks its username.
+    const byEmail = await sendRequest(aliceAgent, admin.email);
+    const byUsername = await sendRequest(aliceAgent, admin.username);
+    expect(byEmail.status).toBe(202);
+    expect(byUsername.status).toBe(202);
+
+    const requests = await listRequests(aliceAgent);
+    expect(requests.outgoing).toHaveLength(0);
+  });
+
+  it('cannot target a disabled account — same 202, no outbox row', async () => {
+    const { aliceAgent } = await seedTwo(harness);
+    const disabled = await harness.seedUser({ email: 'ghost@bt.test', username: 'ghost' });
+    await createUserRepository(harness.db).setStatus(disabled.id, 'disabled');
+
+    const byEmail = await sendRequest(aliceAgent, disabled.email);
+    const byUsername = await sendRequest(aliceAgent, disabled.username);
+    expect(byEmail.status).toBe(202);
+    expect(byUsername.status).toBe(202);
+
+    const requests = await listRequests(aliceAgent);
+    expect(requests.outgoing).toHaveLength(0);
+  });
+});
+
+describe('POST /api/v1/social/requests — decline cooldown', () => {
+  async function declineAliceToBob() {
+    const { alice, bob, aliceAgent, bobAgent } = await seedTwo(harness);
+    await sendRequest(aliceAgent, 'bob');
+    const { incoming } = await listRequests(bobAgent);
+    const res = await bobAgent
+      .post(`/api/v1/social/requests/${incoming[0]!.id}/decline`)
+      .set(...XRW)
+      .send();
+    expect(res.status).toBe(200);
+    return { alice, bob, aliceAgent, bobAgent };
+  }
+
+  it('a declined sender cannot immediately re-request (same 202, no new pending row)', async () => {
+    const { aliceAgent, bobAgent } = await declineAliceToBob();
+
+    // Re-request right after the decline: uniform 202, but no fresh pending row
+    // is created, so the recipient is not re-notified.
+    const resend = await sendRequest(aliceAgent, 'bob');
+    expect(resend.status).toBe(202);
+
+    expect((await listRequests(aliceAgent)).outgoing).toHaveLength(0);
+    expect((await listRequests(bobAgent)).incoming).toHaveLength(0);
+  });
+
+  it('re-requesting is allowed again once the cooldown has elapsed', async () => {
+    const { bob, aliceAgent, bobAgent } = await declineAliceToBob();
+
+    // Age the declined row past the cooldown window.
+    const past = new Date(Date.now() - DECLINE_COOLDOWN_MS - 60_000);
+    await harness.db
+      .update(schema.friendRequests)
+      .set({ respondedAt: past })
+      .where(eq(schema.friendRequests.status, 'declined'));
+
+    const resend = await sendRequest(aliceAgent, bob.username);
+    expect(resend.status).toBe(202);
+    expect((await listRequests(aliceAgent)).outgoing).toHaveLength(1);
+    expect((await listRequests(bobAgent)).incoming).toHaveLength(1);
   });
 });
 

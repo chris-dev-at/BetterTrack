@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -235,6 +236,39 @@ describe('GET /api/v1/social/shared/:portfolioId (read-only friend view)', () =>
     expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
     // And it vanishes from Shared With Me too.
     expect((await bobAgent.get('/api/v1/social/shared')).body.portfolios).toHaveLength(0);
+  });
+});
+
+describe('a disabled owner stops sharing (§6.9)', () => {
+  /** Admin-disable the given user id directly (mirrors the admin disable action). */
+  async function disable(userId: string): Promise<void> {
+    await harness.db
+      .update(schema.users)
+      .set({ status: 'disabled' })
+      .where(eq(schema.users.id, userId));
+  }
+
+  it('drops the disabled owner’s portfolio from a friend’s Shared With Me', async () => {
+    const { alice, bobAgent } = await scenario();
+
+    // Accessible while the owner is active.
+    expect((await bobAgent.get('/api/v1/social/shared')).body.portfolios).toHaveLength(1);
+
+    await disable(alice.id);
+
+    const res = await bobAgent.get('/api/v1/social/shared');
+    expect(res.status).toBe(200);
+    expect(res.body.portfolios).toHaveLength(0);
+  });
+
+  it('404s the read-only friend view once the owner is disabled', async () => {
+    const { alice, bobAgent, pid } = await scenario();
+
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+
+    await disable(alice.id);
+
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
   });
 });
 

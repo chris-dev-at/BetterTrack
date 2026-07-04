@@ -77,6 +77,15 @@ export interface SocialService {
   listMyShared(userId: string): Promise<MySharedListResponse>;
 }
 
+/**
+ * Cooldown after a decline before the same sender may request the same target
+ * again (§6.9 hardening). A declined request frees the pending-pair unique index,
+ * so without this a rejected sender could immediately re-request — re-notifying
+ * the recipient on every attempt. Seven days is long enough to blunt harassment
+ * yet short enough that a genuine later reconnect still works.
+ */
+export const DECLINE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
 const REQUEST_NOT_FOUND = () => notFound('Friend request not found.', 'FRIEND_REQUEST_NOT_FOUND');
 const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOUND');
 const SHARED_NOT_FOUND = () => notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
@@ -124,6 +133,10 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // accept rather than creating a crossing second request.
       const reverse = await repo.findPendingRequest(targetId, fromUserId);
       if (reverse) return;
+      // Recently declined by this target: silently no-op until the cooldown
+      // elapses, so a rejection can't be re-sent (and re-notified) on repeat.
+      const cooldownSince = new Date(Date.now() - DECLINE_COOLDOWN_MS);
+      if (await repo.hasDeclinedSince(fromUserId, targetId, cooldownSince)) return;
       // Otherwise create it; the partial unique index makes a duplicate
       // same-direction request a silent no-op (idempotent).
       const requestId = await repo.createRequest(fromUserId, targetId);

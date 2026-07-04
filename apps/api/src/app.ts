@@ -69,7 +69,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
-  app.use('/api/v1/social', createSocialRouter(ctx));
+  app.use('/api/v1/social', createSocialRouter(ctx, limiters));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
   app.use('/api/v1/settings', createSettingsRouter(ctx));
 
