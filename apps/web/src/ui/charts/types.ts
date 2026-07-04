@@ -21,8 +21,10 @@ export const PRICE_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y', 'Max'] as const
 export type PriceRange = (typeof PRICE_RANGES)[number];
 
 /** Drawing mode: `area` for market assets, `step` for custom assets whose
- * value points carry forward between sparse entries (PROJECTPLAN.md §6.3). */
-export type PriceChartMode = 'area' | 'step';
+ * value points carry forward between sparse entries (PROJECTPLAN.md §6.3), and
+ * `baseline` for series centred on 0 (the performance-% portfolio curve, #125:
+ * green above the baseline, red below). */
+export type PriceChartMode = 'area' | 'step' | 'baseline';
 
 /** An optional second series drawn over the main one (PROJECTPLAN.md §6.6). */
 export interface BenchmarkSeries {

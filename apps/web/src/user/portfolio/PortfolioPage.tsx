@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
@@ -675,6 +675,8 @@ export function PortfolioPage() {
   const queryClient = useQueryClient();
   const [range, setRange] = useState<PriceRange>('1M');
   const [overlay, setOverlay] = useState(false);
+  // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
+  const [perfMode, setPerfMode] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [txnDialog, setTxnDialog] = useState<TxnDialogState | null>(null);
   const [valuePointAsset, setValuePointAsset] = useState<ValuePointEditorAsset | null>(null);
@@ -749,25 +751,48 @@ export function PortfolioPage() {
     });
   }
 
+  // #125: in performance mode the curve is the deposit-neutralized TWR series —
+  // a 1 000 € top-up causes no jump; the line only moves when holdings move.
   const chartPoints = useMemo(
     () =>
-      (historyQuery.data?.points ?? []).map((p) => ({
-        time: p.date as Time,
-        value: p.valueEur,
-      })),
-    [historyQuery.data],
+      perfMode
+        ? (historyQuery.data?.performance ?? []).map((p) => ({
+            time: p.date as Time,
+            value: p.pct,
+          }))
+        : (historyQuery.data?.points ?? []).map((p) => ({
+            time: p.date as Time,
+            value: p.valueEur,
+          })),
+    [historyQuery.data, perfMode],
   );
 
   // Per-asset overlay series (#122): raw native-currency closes; the chart
-  // normalizes everything to percentage moves when overlays are shown.
-  const chartOverlays = useMemo<BenchmarkSeries[]>(
-    () =>
-      (historyQuery.data?.assets ?? []).map((a) => ({
+  // normalizes everything to percentage moves when overlays are shown. In
+  // performance mode (#125) the main curve already *is* a % series, so each
+  // overlay is instead re-based here to its own first close in the window —
+  // one consistent % unit across every drawn series.
+  const chartOverlays = useMemo<BenchmarkSeries[]>(() => {
+    const assets = historyQuery.data?.assets ?? [];
+    if (!perfMode) {
+      return assets.map((a) => ({
         label: a.symbol,
         series: a.points.map((p) => ({ time: p.date as Time, value: p.close })),
-      })),
-    [historyQuery.data],
-  );
+      }));
+    }
+    return assets
+      .filter((a) => (a.points[0]?.close ?? 0) > 0)
+      .map((a) => {
+        const first = a.points[0]!.close;
+        return {
+          label: a.symbol,
+          series: a.points.map((p) => ({
+            time: p.date as Time,
+            value: (p.close / first - 1) * 100,
+          })),
+        };
+      });
+  }, [historyQuery.data, perfMode]);
 
   // ── Loading / error ──
   if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
@@ -869,30 +894,51 @@ export function PortfolioPage() {
           <section aria-label="Value over time" className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-semibold text-neutral-200">Value over time</h2>
-              <button
-                type="button"
-                aria-pressed={overlay}
-                onClick={() => setOverlay((v) => !v)}
-                className={cx(
-                  'rounded px-2 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                  overlay
-                    ? 'bg-sky-600 text-white ring-sky-600'
-                    : 'bg-neutral-900 text-neutral-400 ring-neutral-800 hover:bg-neutral-800 hover:text-neutral-100',
-                )}
-              >
-                Overlay assets
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <div
+                  role="group"
+                  aria-label="Chart display mode"
+                  className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+                >
+                  <ModeButton selected={!perfMode} onClick={() => setPerfMode(false)}>
+                    Value &euro;
+                  </ModeButton>
+                  <ModeButton selected={perfMode} onClick={() => setPerfMode(true)}>
+                    Performance %
+                  </ModeButton>
+                </div>
+                <button
+                  type="button"
+                  aria-pressed={overlay}
+                  onClick={() => setOverlay((v) => !v)}
+                  className={cx(
+                    'rounded px-2 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                    overlay
+                      ? 'bg-sky-600 text-white ring-sky-600'
+                      : 'bg-neutral-900 text-neutral-400 ring-neutral-800 hover:bg-neutral-800 hover:text-neutral-100',
+                  )}
+                >
+                  Overlay assets
+                </button>
+              </div>
             </div>
+            {perfMode ? (
+              <p className="text-xs text-neutral-500">
+                Deposits and withdrawals are neutralized (time-weighted return) — the curve only
+                moves when your holdings move.
+              </p>
+            ) : null}
             <PriceChart
               series={chartPoints}
-              mode="area"
+              mode={perfMode ? 'baseline' : 'area'}
+              percentValues={perfMode}
               range={range}
               ranges={PORTFOLIO_RANGES}
               onRangeChange={setRange}
               overlays={overlay ? chartOverlays : []}
               loading={historyQuery.isLoading || historyQuery.isFetching}
-              ariaLabel="Portfolio value over time"
+              ariaLabel={perfMode ? 'Portfolio performance over time' : 'Portfolio value over time'}
             />
           </section>
 
@@ -922,6 +968,34 @@ export function PortfolioPage() {
 
       {renderDialogs()}
     </div>
+  );
+}
+
+/** One segment of the €/% chart display-mode toggle (#125). */
+function ModeButton({
+  selected,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      className={cx(
+        'rounded px-2 py-1 text-xs font-medium transition-colors',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+        selected
+          ? 'bg-sky-600 text-white'
+          : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

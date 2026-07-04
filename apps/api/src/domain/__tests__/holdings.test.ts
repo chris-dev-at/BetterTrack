@@ -3,9 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   dailyCloseSeries,
   deriveHoldings,
+  netFlowsOverTime,
   OversellError,
   QTY_EPSILON,
+  rebasePerformance,
   reducePosition,
+  timeWeightedReturn,
   valueOverTime,
   type CurrencyConverter,
   type HoldingAssetInput,
@@ -912,5 +915,268 @@ describe('dailyCloseSeries', () => {
     expect(() =>
       dailyCloseSeries([{ date: '2026-01-01', close: 1 }], 'nope', '2026-01-02'),
     ).toThrow(/startDay/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// netFlowsOverTime — daily external cash flows in EUR (#125)
+// ---------------------------------------------------------------------------
+
+describe('netFlowsOverTime', () => {
+  const CCY = new Map([
+    ['A', 'EUR'],
+    ['U', 'USD'],
+  ]);
+
+  it('signs flows correctly: buys (cost + fee) in, sells (proceeds − fee) out', async () => {
+    const flows = await netFlowsOverTime({
+      transactions: [
+        tx({ side: 'buy', quantity: 10, price: 100, fee: 5, executedAt: '2026-01-01T10:00:00Z' }),
+        tx({ side: 'sell', quantity: 4, price: 110, fee: 3, executedAt: '2026-01-03T10:00:00Z' }),
+      ],
+      currencyByAsset: CCY,
+      converter: stubConverter(),
+    });
+    expect(flows).toEqual([
+      { date: '2026-01-01', flowEur: 1005 }, // 10·100 + 5
+      { date: '2026-01-03', flowEur: -437 }, // −(4·110 − 3)
+    ]);
+  });
+
+  it('aggregates same-day transactions into one point and sorts ascending', async () => {
+    const flows = await netFlowsOverTime({
+      transactions: [
+        tx({ side: 'sell', quantity: 1, price: 50, fee: 0, executedAt: '2026-02-01T12:00:00Z' }),
+        tx({ side: 'buy', quantity: 2, price: 100, fee: 0, executedAt: '2026-02-01T09:00:00Z' }),
+        tx({ side: 'buy', quantity: 1, price: 10, fee: 0, executedAt: '2026-01-15T09:00:00Z' }),
+      ],
+      currencyByAsset: CCY,
+      converter: stubConverter(),
+    });
+    expect(flows).toEqual([
+      { date: '2026-01-15', flowEur: 10 },
+      { date: '2026-02-01', flowEur: 150 }, // 200 in − 50 out
+    ]);
+  });
+
+  it('converts native flows at that day’s historical rate, coalesced per (currency, day)', async () => {
+    const converter = datedStubConverter({
+      USD: { '2026-01-01': 0.9, '2026-01-02': 0.8 },
+    });
+    const flows = await netFlowsOverTime({
+      transactions: [
+        tx({
+          assetId: 'U',
+          side: 'buy',
+          quantity: 10,
+          price: 100,
+          executedAt: '2026-01-01T10:00:00Z',
+        }),
+        tx({
+          assetId: 'U',
+          side: 'buy',
+          quantity: 5,
+          price: 100,
+          executedAt: '2026-01-01T15:00:00Z',
+        }),
+        tx({
+          assetId: 'U',
+          side: 'buy',
+          quantity: 10,
+          price: 100,
+          executedAt: '2026-01-02T10:00:00Z',
+        }),
+      ],
+      currencyByAsset: CCY,
+      converter,
+    });
+    expect(flows).toEqual([
+      { date: '2026-01-01', flowEur: 1500 * 0.9 },
+      { date: '2026-01-02', flowEur: 1000 * 0.8 },
+    ]);
+    // Same-day USD amounts were summed natively first: one rate call per day.
+    expect(converter.toBase).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails loud on a transaction whose asset has no currency input', async () => {
+    await expect(
+      netFlowsOverTime({
+        transactions: [tx({ assetId: 'X', side: 'buy', quantity: 1, price: 1 })],
+        currencyByAsset: CCY,
+        converter: stubConverter(),
+      }),
+    ).rejects.toThrow(/no currency input/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// timeWeightedReturn — cash-flow-neutralized performance (#125)
+// ---------------------------------------------------------------------------
+
+describe('timeWeightedReturn', () => {
+  it('a deposit causes NO jump: buying more at the current price leaves the curve flat', () => {
+    // Day 1: invest 1 000. Day 2: price unchanged, top up another 1 000.
+    // The absolute curve jumps 1 000 → 2 000; performance must stay at 0 %.
+    const values = [
+      { date: '2026-01-01', valueEur: 1000 },
+      { date: '2026-01-02', valueEur: 2000 },
+      { date: '2026-01-03', valueEur: 2200 },
+    ];
+    const flows = [
+      { date: '2026-01-01', flowEur: 1000 },
+      { date: '2026-01-02', flowEur: 1000 },
+    ];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf).toEqual([
+      { date: '2026-01-01', pct: 0 },
+      { date: '2026-01-02', pct: 0 },
+      { date: '2026-01-03', pct: 10.000000000000009 }, // 2200/2000 − 1, full float precision
+    ]);
+  });
+
+  it('the issue-#125 scenario: investing more after a loss shows the loss, not the deposit', () => {
+    // 4 000 invested, market drops 25 % → 3 000. Then 1 000 more is invested:
+    // the absolute curve rises 3 000 → 4 000 (reads like a recovery), while the
+    // higher-invested point sits at the same EUR level as the start (reads
+    // wrong). Performance mode must show −25 % throughout the deposit.
+    const values = [
+      { date: '2026-01-01', valueEur: 4000 },
+      { date: '2026-01-02', valueEur: 3000 },
+      { date: '2026-01-03', valueEur: 4000 },
+    ];
+    const flows = [
+      { date: '2026-01-01', flowEur: 4000 },
+      { date: '2026-01-03', flowEur: 1000 },
+    ];
+    expect(timeWeightedReturn(values, flows)).toEqual([
+      { date: '2026-01-01', pct: 0 },
+      { date: '2026-01-02', pct: -25 },
+      { date: '2026-01-03', pct: -25 },
+    ]);
+  });
+
+  it('chains market moves across a deposit multiplicatively', () => {
+    // +10 % on 1 000, deposit 1 100 (value doubles), then +10 % again → 21 %.
+    const values = [
+      { date: '2026-01-01', valueEur: 1000 },
+      { date: '2026-01-02', valueEur: 1100 },
+      { date: '2026-01-03', valueEur: 2200 },
+      { date: '2026-01-04', valueEur: 2420 },
+    ];
+    const flows = [
+      { date: '2026-01-01', flowEur: 1000 },
+      { date: '2026-01-03', flowEur: 1100 },
+    ];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[1]?.pct).toBeCloseTo(10, 10);
+    expect(perf[2]?.pct).toBeCloseTo(10, 10);
+    expect(perf[3]?.pct).toBeCloseTo(21, 10);
+  });
+
+  it('books a full liquidation’s final day correctly (outflows count end-of-day)', () => {
+    // 4 000 → sold everything for 3 900 (the last −2.5 % happened on the sell
+    // day). The naive start-of-day convention would collapse to −100 % here.
+    const values = [
+      { date: '2026-01-01', valueEur: 4000 },
+      { date: '2026-01-02', valueEur: 0 },
+      { date: '2026-01-03', valueEur: 0 },
+    ];
+    const flows = [
+      { date: '2026-01-01', flowEur: 4000 },
+      { date: '2026-01-02', flowEur: -3900 },
+    ];
+    expect(timeWeightedReturn(values, flows)).toEqual([
+      { date: '2026-01-01', pct: 0 },
+      { date: '2026-01-02', pct: -2.5000000000000022 },
+      { date: '2026-01-03', pct: -2.5000000000000022 }, // flat while empty
+    ]);
+  });
+
+  it('captures the first day’s execution→close move (inflows count start-of-day)', () => {
+    // Bought at 100/unit intraday, closed at 104: day one is +4 %.
+    const values = [{ date: '2026-01-01', valueEur: 1040 }];
+    const flows = [{ date: '2026-01-01', flowEur: 1000 }];
+    expect(timeWeightedReturn(values, flows)).toEqual([
+      { date: '2026-01-01', pct: 4.0000000000000036 },
+    ]);
+  });
+
+  it('fees drag performance (flows are gross of fee, value is not)', () => {
+    // 1 000 invested + 10 fee, value at close exactly 1 000 → −0.99 %.
+    const values = [{ date: '2026-01-01', valueEur: 1000 }];
+    const flows = [{ date: '2026-01-01', flowEur: 1010 }];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[0]?.pct).toBeCloseTo((1000 / 1010 - 1) * 100, 10);
+  });
+
+  it('a zero-value day from missing price data links flat and recovers — never −100 %', () => {
+    // Buy day has no known close yet (value 0); the next day data appears.
+    const values = [
+      { date: '2026-01-01', valueEur: 0 },
+      { date: '2026-01-02', valueEur: 1000 },
+      { date: '2026-01-03', valueEur: 1100 },
+    ];
+    const flows = [{ date: '2026-01-01', flowEur: 1000 }];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[0]?.pct).toBe(0);
+    expect(perf[1]?.pct).toBe(0); // resumes flat — the gap carries no information
+    expect(perf[2]?.pct).toBeCloseTo(10, 10);
+  });
+
+  it('ignores flows outside the value window (future-dated transaction)', () => {
+    const values = [{ date: '2026-01-01', valueEur: 1000 }];
+    const flows = [
+      { date: '2026-01-01', flowEur: 1000 },
+      { date: '2026-02-01', flowEur: 500 },
+    ];
+    expect(timeWeightedReturn(values, flows)).toEqual([{ date: '2026-01-01', pct: 0 }]);
+  });
+
+  it('sorts unsorted value input and fails loud on malformed points', () => {
+    const perf = timeWeightedReturn(
+      [
+        { date: '2026-01-02', valueEur: 1100 },
+        { date: '2026-01-01', valueEur: 1000 },
+      ],
+      [{ date: '2026-01-01', flowEur: 1000 }],
+    );
+    expect(perf.map((p) => p.date)).toEqual(['2026-01-01', '2026-01-02']);
+    expect(perf[1]?.pct).toBeCloseTo(10, 10);
+
+    expect(() => timeWeightedReturn([{ date: '01.02.2026', valueEur: 1 }], [])).toThrow(
+      /ISO YYYY-MM-DD/,
+    );
+    expect(() => timeWeightedReturn([{ date: '2026-01-01', valueEur: Number.NaN }], [])).toThrow(
+      /finite/,
+    );
+    expect(() =>
+      timeWeightedReturn(
+        [{ date: '2026-01-01', valueEur: 1 }],
+        [{ date: '2026-01-01', flowEur: Number.POSITIVE_INFINITY }],
+      ),
+    ).toThrow(/finite/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rebasePerformance — window slices restart at 0 % (#125)
+// ---------------------------------------------------------------------------
+
+describe('rebasePerformance', () => {
+  it('re-bases by compounding, not subtraction', () => {
+    // Sliced window starts at +25 %; a later −10 % day sits at 1.25·0.9 − 1.
+    const rebased = rebasePerformance([
+      { date: '2026-03-01', pct: 25 },
+      { date: '2026-03-02', pct: 12.5 },
+    ]);
+    expect(rebased[0]).toEqual({ date: '2026-03-01', pct: 0 });
+    expect(rebased[1]?.pct).toBeCloseTo((1.125 / 1.25 - 1) * 100, 10); // −10 %
+  });
+
+  it('handles the empty slice and rejects a corrupt (≤ −100 %) base', () => {
+    expect(rebasePerformance([])).toEqual([]);
+    expect(() => rebasePerformance([{ date: '2026-01-01', pct: -100 }])).toThrow(
+      /non-positive base/,
+    );
   });
 });

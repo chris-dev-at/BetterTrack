@@ -3,6 +3,7 @@ import type {
   HistoryRange,
   PortfolioHistoryOverlay,
   PortfolioHistoryRange,
+  PortfolioPerformancePoint,
   PortfolioListResponse,
   PortfolioResponse,
   PortfolioSummary,
@@ -26,8 +27,11 @@ import type {
 import {
   dailyCloseSeries,
   deriveHoldings,
+  netFlowsOverTime,
   OversellError,
+  rebasePerformance,
   reducePosition,
+  timeWeightedReturn,
   valueOverTime,
   type Holding,
   type HoldingAssetInput,
@@ -116,6 +120,7 @@ export interface PortfolioService {
     range: PortfolioHistoryRange;
     baseCurrency: string;
     points: Array<{ date: string; valueEur: number }>;
+    performance: PortfolioPerformancePoint[];
     assets?: PortfolioHistoryOverlay[];
   }>;
   /** Drop the cached value series for a portfolio (called on any write). */
@@ -128,20 +133,22 @@ const HISTORY_TTL_SECONDS = 3600; // 1 h (§6.9).
 /**
  * Redis key for the cached, full value-over-time payload of a portfolio.
  *
- * Versioned (`v2`): the cached shape changed with #122 (portfolio points +
- * per-asset overlay series), and bumping the version also wholesale-invalidates
- * every series a *previous* deployment computed. The 1 h TTL is only refreshed
- * by writes, so without the bump a pre-deploy entry — possibly computed by
- * older, buggier code — would keep being served for up to an hour after a fix
- * ships (exactly the stale single-point graph reported in #122).
+ * Versioned (`v3`): the cached shape changed with #125 (the performance/TWR
+ * series joined the payload; `v2` added the #122 overlay series), and bumping
+ * the version also wholesale-invalidates every series a *previous* deployment
+ * computed. The 1 h TTL is only refreshed by writes, so without the bump a
+ * pre-deploy entry — possibly computed by older, buggier code — would keep
+ * being served for up to an hour after a fix ships (exactly the stale
+ * single-point graph reported in #122).
  */
 export function portfolioHistoryCacheKey(portfolioId: string): string {
-  return `portfolio:history:v2:${portfolioId}`;
+  return `portfolio:history:v3:${portfolioId}`;
 }
 
-/** The full cached graph payload: EUR value curve + per-asset overlay series. */
+/** The full cached graph payload: EUR value curve + TWR performance curve + per-asset overlay series. */
 interface HistoryPayload {
   points: Array<{ date: string; valueEur: number }>;
+  performance: PortfolioPerformancePoint[];
   assets: PortfolioHistoryOverlay[];
 }
 
@@ -298,7 +305,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /** The empty graph payload (no transactions / nothing convertible to plot). */
-  const emptyHistory = (): HistoryPayload => ({ points: [], assets: [] });
+  const emptyHistory = (): HistoryPayload => ({ points: [], performance: [], assets: [] });
 
   /**
    * The full value-over-time payload for a portfolio (first transaction →
@@ -320,7 +327,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       try {
         const parsed = JSON.parse(cached) as HistoryPayload;
         // Shape guard: only trust entries this code version wrote.
-        if (parsed && Array.isArray(parsed.points) && Array.isArray(parsed.assets)) {
+        if (
+          parsed &&
+          Array.isArray(parsed.points) &&
+          Array.isArray(parsed.performance) &&
+          Array.isArray(parsed.assets)
+        ) {
           return parsed;
         }
       } catch {
@@ -423,12 +435,24 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     });
 
+    const usableTxns = txns.filter((t) => usableIdSet.has(t.assetId)).map(recordToDomain);
     const points = await valueOverTime({
-      transactions: txns.filter((t) => usableIdSet.has(t.assetId)).map(recordToDomain),
+      transactions: usableTxns,
       assets: valueAssets,
       today,
       converter: currencyService,
     });
+
+    // Performance mode (#125): the same value curve with deposits/withdrawals
+    // neutralized — daily time-weighted return, chain-linked. Flows reuse the
+    // exact transaction set and currencies the value curve was built from, so
+    // both series describe the same portfolio slice.
+    const flows = await netFlowsOverTime({
+      transactions: usableTxns,
+      currencyByAsset: new Map(valueAssets.map((a) => [a.assetId, a.currency])),
+      converter: currencyService,
+    });
+    const performance = timeWeightedReturn(points, flows);
 
     // Overlay series (#122): each held asset's own daily closes over the same
     // window, expanded to the portfolio curve's daily grid (weekends/holidays
@@ -451,7 +475,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
     }
 
-    const payload: HistoryPayload = { points, assets: overlays };
+    const payload: HistoryPayload = { points, performance, assets: overlays };
     await redis.set(key, JSON.stringify(payload), 'EX', HISTORY_TTL_SECONDS);
     return payload;
   }
@@ -690,7 +714,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const today = todayIso();
       const payload = await loadSeries(portfolioId);
       const points = sliceRange(payload.points, range, today);
-      if (!overlay) return { range, baseCurrency, points };
+      // The performance curve is cumulative since inception, so a range slice
+      // is re-based to 0 % at the window start (#125): 1M shows the TWR of
+      // that month, not an arbitrary offset. Compounding, not subtraction.
+      const performance = rebasePerformance(sliceRange(payload.performance, range, today));
+      if (!overlay) return { range, baseCurrency, points, performance };
 
       // Overlays share the curve's daily grid, so the same range slice keeps
       // them point-for-point aligned. An asset whose data lies entirely outside
@@ -698,7 +726,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const assets = payload.assets
         .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
         .filter((a) => a.points.length > 0);
-      return { range, baseCurrency, points, assets };
+      return { range, baseCurrency, points, performance, assets };
     },
 
     invalidateHistory,
