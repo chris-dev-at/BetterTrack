@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -39,8 +39,8 @@ const BAYN: SearchResultItem = {
   isCustom: false,
 };
 
-function makeSearchResponse(items: SearchResultItem[]): SearchResponse {
-  return { results: items };
+function makeSearchResponse(items: SearchResultItem[], enriching?: boolean): SearchResponse {
+  return enriching === undefined ? { results: items } : { results: items, enriching };
 }
 
 function renderSearchBox(props: Partial<React.ComponentProps<typeof AssetSearchBox>> = {}) {
@@ -200,5 +200,79 @@ describe('AssetSearchBox', () => {
     await user.click(screen.getByRole('button', { name: /add nvda to workboard/i }));
 
     await waitFor(() => expect(onAction).toHaveBeenCalledOnce());
+  });
+
+  describe('enriching (§6.2 background provider fetch)', () => {
+    test('shows a subtle inline message and polls again while enriching:true', async () => {
+      vi.mocked(searchApi.searchAssets)
+        .mockResolvedValueOnce(makeSearchResponse([], true))
+        .mockResolvedValueOnce(makeSearchResponse([BAYN], false));
+
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      // Two chars only: with `useDebounce` bypassed in tests, a longer string
+      // would fire one fetch per enabled intermediate query state.
+      await user.type(screen.getByRole('searchbox'), 'NV');
+
+      expect(await screen.findByText(/searching the market/i)).toBeInTheDocument();
+
+      await waitFor(() => expect(searchApi.searchAssets).toHaveBeenCalledTimes(2), {
+        timeout: 3000,
+      });
+      expect(await screen.findByText('BAYN.DE')).toBeInTheDocument();
+      expect(screen.queryByText(/searching the market/i)).not.toBeInTheDocument();
+    });
+
+    test('enriching:false responses never show the inline message or trigger a second fetch', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA], false));
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+
+      expect(screen.queryByText(/searching the market/i)).not.toBeInTheDocument();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(searchApi.searchAssets).toHaveBeenCalledTimes(1);
+    });
+
+    test('selecting an already-visible result still works while enriching is in progress', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA], true));
+      vi.mocked(workboardApi.addToWorkboard).mockResolvedValue();
+
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      expect(await screen.findByText(/searching the market/i)).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /add nvda to workboard/i }));
+      expect(await screen.findByText(/watchlisted/i)).toBeInTheDocument();
+    });
+
+    test('stops polling once the ~10s enrichment window elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([], true));
+        renderSearchBox();
+
+        // Fire the DOM event directly: userEvent's own internal scheduling
+        // doesn't mix well with fake timers.
+        fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'NV' } });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(screen.getByText(/searching the market/i)).toBeInTheDocument();
+
+        await vi.advanceTimersByTimeAsync(11_000);
+        expect(screen.queryByText(/searching the market/i)).not.toBeInTheDocument();
+
+        const callsAtCutoff = vi.mocked(searchApi.searchAssets).mock.calls.length;
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(vi.mocked(searchApi.searchAssets).mock.calls.length).toBe(callsAtCutoff);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
