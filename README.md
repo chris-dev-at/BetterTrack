@@ -330,6 +330,24 @@ as the `integration` job in `.github/workflows/ci.yml`.
 Both variables must be set together — the fast default is used for any variable
 that is absent.
 
+### End-to-end — Playwright happy path (nightly, not per-commit)
+
+```bash
+pnpm exec playwright install --with-deps chromium   # one-time browser install
+pnpm dev:infra                                       # Postgres + Redis
+pnpm test:e2e
+```
+
+One spec (`e2e/happy-path.spec.ts`) drives the real app in two browser
+contexts: invite → login → local search → watch → build a conglomerate →
+allocate → add to portfolio → enable friend sharing → a second account
+accepts the request and sees the shared portfolio. `playwright.config.ts`
+boots the real api + web dev servers (migrating and seeding the api's
+database first) against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at
+(defaults match `pnpm dev:infra`). This is **not** part of `pnpm test` or the
+per-commit CI gate — it runs nightly via
+`.github/workflows/e2e-nightly.yml` (also triggerable manually).
+
 ## How the layers stay in sync
 
 Every request/response body is a zod schema defined once in

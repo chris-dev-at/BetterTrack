@@ -15,12 +15,15 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm -r test",
+    "test:e2e": "playwright test",
     "build": "pnpm -r build",
     "clean": "pnpm -r exec rm -rf dist coverage .tsbuildinfo",
     "knowledge:build": "node factory/knowledge/build.mjs"
   },
   "devDependencies": {
     "@bettertrack/config": "workspace:*",
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.10.0",
     "eslint": "^9.19.0",
     "prettier": "^3.4.2",
     "typescript": "~5.7.3"
