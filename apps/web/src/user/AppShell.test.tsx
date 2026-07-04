@@ -15,8 +15,13 @@ vi.mock('../lib/workboardApi', () => ({
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
 }));
+vi.mock('../lib/notificationsApi', () => ({
+  listNotifications: vi.fn(),
+  markNotificationsRead: vi.fn(),
+}));
 
 import * as api from '../lib/userApi';
+import { listNotifications } from '../lib/notificationsApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 
@@ -48,6 +53,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+  vi.mocked(listNotifications).mockResolvedValue({ items: [], nextCursor: null, unreadCount: 0 });
 });
 
 // ─── Top nav ──────────────────────────────────────────────────────────────────
@@ -70,11 +76,11 @@ test('the primary nav shows exactly the four section tabs — no sixth item', as
   expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 
-test('the header exposes the notification bell as an inert placeholder', async () => {
+test('the header exposes a live, enabled notification bell', async () => {
   renderAt('/portfolio');
 
-  const bell = await screen.findByRole('button', { name: /notifications \(coming soon\)/i });
-  expect(bell).toBeDisabled();
+  const bell = await screen.findByRole('button', { name: 'Notifications' });
+  expect(bell).not.toBeDisabled();
 });
 
 // ─── Profile dropdown (§6.11) ─────────────────────────────────────────────────

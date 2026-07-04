@@ -9,6 +9,7 @@ import { createCustomAssetRepository } from '../data/repositories/customAssetRep
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
+import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -40,6 +41,10 @@ import {
 } from '../services/customAssets/customAssetService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
+import {
+  createNotificationService,
+  type NotificationService,
+} from '../services/notifications/notificationService';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import {
@@ -79,6 +84,8 @@ export interface AppContext {
   backtest: BacktestService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
   social: SocialService;
+  /** User-scoped notification read/mark-read — the bell + Settings list (§6.10). */
+  notifications: NotificationService;
   /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
    * dispatcher (worker process) subscribes. Held on the context so the process
@@ -253,6 +260,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Publishes friend.request / friend.accepted for the notification dispatcher.
   const social = createSocialService({ repo: friendshipRepo, portfolio, events, logger });
 
+  // Notification read/mark-read (§6.10): user-scoped over the dispatcher's rows.
+  const notificationRepo = createNotificationRepository(db);
+  const notifications = createNotificationService({ repo: notificationRepo });
+
   return {
     config,
     redis,
@@ -268,6 +279,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     conglomerate,
     backtest: backtestPreview,
     social,
+    notifications,
     events,
   };
 }
