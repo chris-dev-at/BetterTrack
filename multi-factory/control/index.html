@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BetterTrack Multi-Factory — Control</title>
+    <style>
+      :root {
+        --bg: #131312;
+        --surface: #1a1a19;
+        --surface2: #222220;
+        --border: #32322f;
+        --ink: #f2f1ec;
+        --ink2: #b8b6ad;
+        --muted: #7d7b72;
+        --good: #0ca30c;
+        --warn: #fab219;
+        --serious: #ec835a;
+        --crit: #d03b3b;
+        --accent: #7aa2f7;
+        --w1: #5ab0f2;
+        --w2: #c792ea;
+        --master: #82d99a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.45 -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        padding: 18px 22px 40px;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      h1 {
+        font-size: 17px;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 14px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 10px;
+        font-size: 12px;
+        color: var(--ink2);
+        background: var(--surface);
+      }
+      .pill b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+        display: inline-block;
+      }
+      .dot.live {
+        background: var(--good);
+      }
+      .dot.stale {
+        background: var(--warn);
+      }
+      .bar {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin: 10px 0 16px;
+      }
+      button {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 7px 13px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--muted);
+      }
+      button:disabled {
+        opacity: 0.38;
+        cursor: not-allowed;
+      }
+      button.armed {
+        border-color: var(--crit);
+        color: var(--crit);
+      }
+      button.primary {
+        border-color: var(--good);
+      }
+      .sep {
+        width: 1px;
+        height: 22px;
+        background: var(--border);
+        margin: 0 4px;
+      }
+      .kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .kpi {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 14px;
+      }
+      .kpi .v {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+      .kpi .l {
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-top: 2px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 13px 15px;
+        min-width: 0;
+      }
+      .card h2 {
+        font-size: 12px;
+        margin: 0 0 10px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+        border-radius: 6px;
+        padding: 2px 8px;
+        border: 1px solid var(--border);
+        color: var(--ink2);
+      }
+      .badge::before {
+        content: '';
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .badge.idle::before {
+        background: var(--muted);
+      }
+      .badge.working::before {
+        background: var(--accent);
+      }
+      .badge.done::before {
+        background: var(--good);
+      }
+      .badge.warn::before {
+        background: var(--warn);
+      }
+      .badge.failed::before {
+        background: var(--crit);
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 3px 0;
+        font-size: 13px;
+      }
+      .row .k {
+        color: var(--muted);
+      }
+      .row .val {
+        color: var(--ink2);
+        text-align: right;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 260px;
+        overflow-y: auto;
+      }
+      .item {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        font-size: 13px;
+        min-width: 0;
+      }
+      .item .t {
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .item .m {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .chip {
+        font-size: 10.5px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 0 5px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .tag {
+        font-weight: 600;
+        font-size: 11px;
+        border-radius: 4px;
+        padding: 0 5px;
+      }
+      .tag.master {
+        color: var(--master);
+        border: 1px solid var(--master);
+      }
+      .tag.w1 {
+        color: var(--w1);
+        border: 1px solid var(--w1);
+      }
+      .tag.w2 {
+        color: var(--w2);
+        border: 1px solid var(--w2);
+      }
+      .ck {
+        font-size: 12px;
+      }
+      .ck.passing {
+        color: var(--good);
+      }
+      .ck.pending {
+        color: var(--warn);
+      }
+      .ck.failing {
+        color: var(--crit);
+      }
+      #log {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 14px;
+        height: 300px;
+        overflow-y: auto;
+        font:
+          12px/1.6 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        color: var(--ink2);
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      #toast {
+        position: fixed;
+        bottom: 18px;
+        right: 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 9;
+      }
+      .toastmsg {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--good);
+        border-radius: 8px;
+        padding: 9px 14px;
+        font-size: 13px;
+        max-width: 420px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+      }
+      .toastmsg.err {
+        border-left-color: var(--crit);
+      }
+      .note {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 4px 0 14px;
+      }
+      .warnbox {
+        border: 1px solid var(--warn);
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 13px;
+        color: var(--ink2);
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>
+        🏭 BetterTrack Multi-Factory
+        <span class="pill">mode <b id="mode">–</b></span>
+        <span class="pill">phase <b id="phase">–</b></span>
+        <span class="pill">master hb <b id="mhb">–</b></span>
+      </h1>
+      <span class="pill"
+        ><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span
+      >
+    </header>
+
+    <div id="sfwarn" class="warnbox" style="display: none">
+      ⚠️ <b>Single factory is running/paused</b> — the multi-factory refuses to start until it
+      stops. <button onclick="act('single-stop', this)">Stop single factory</button>
+    </div>
+
+    <div class="bar">
+      <button
+        id="b-start"
+        class="primary"
+        title="Build + start master and workers"
+        onclick="act('start', this)"
+      >
+        ▶ Start
+      </button>
+      <button
+        id="b-dry"
+        title="Start with MF_DRY_RUN=1 — full protocol, no LLM calls"
+        onclick="act('start-dry', this)"
+      >
+        🧪 Dry-run
+      </button>
+      <div class="sep"></div>
+      <button
+        id="b-pause"
+        title="docker compose pause — freeze all containers"
+        onclick="act('pause', this)"
+      >
+        ⏸ Pause
+      </button>
+      <button id="b-unpause" title="docker compose unpause" onclick="act('unpause', this)">
+        ⏵ Resume
+      </button>
+      <div class="sep"></div>
+      <button
+        id="b-run"
+        title="Normal operation: composer keeps the queue full"
+        onclick="act('mode-run', this)"
+      >
+        🟢 Mode: run
+      </button>
+      <button
+        id="b-runout"
+        title="No NEW composed issues; drains until every open autopilot issue is done, then shuts down"
+        onclick="act('mode-run-out', this, true)"
+      >
+        🌗 Run out
+      </button>
+      <button
+        id="b-close"
+        title="Takes no more issues; finishes only what's in flight, then shuts down"
+        onclick="act('mode-close-down', this, true)"
+      >
+        🌙 Close down
+      </button>
+      <div class="sep"></div>
+      <button
+        id="b-stop"
+        title="Hard stop (containers kept, resumable)"
+        onclick="act('stop', this, true)"
+      >
+        ⏹ Stop
+      </button>
+      <button
+        id="b-down"
+        title="Stop and remove containers (state + clones persist)"
+        onclick="act('down', this, true)"
+      >
+        🗑 Down
+      </button>
+    </div>
+    <div class="note">
+      Run out = finish <em>all</em> open issues, no new planning. Close down = finish only
+      <em>started</em> issues. Both end in phase=drained → this server downs the project
+      automatically. Destructive buttons ask twice.
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="grid" id="workergrid"></div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Merge queue <span id="qcount" class="chip">0</span></h2>
+        <div class="list" id="queue"></div>
+      </div>
+      <div class="card">
+        <h2>Open PRs</h2>
+        <div class="list" id="prs"></div>
+      </div>
+      <div class="card">
+        <h2>Autopilot issues</h2>
+        <div class="list" id="issues"></div>
+      </div>
+      <div class="card">
+        <h2>Recently merged</h2>
+        <div class="list" id="merged"></div>
+      </div>
+      <div class="card">
+        <h2>Needs human <span id="nhcount" class="chip">0</span></h2>
+        <div class="list" id="needshuman"></div>
+      </div>
+      <div class="card">
+        <h2>Cost (multi-factory) by issue</h2>
+        <div class="list" id="costs"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 10px">
+      <h2>
+        Factory events
+        <label style="text-transform: none; letter-spacing: 0"
+          ><input type="checkbox" id="autoscroll" checked /> autoscroll</label
+        >
+      </h2>
+      <div id="log"></div>
+    </div>
+
+    <div id="toast"></div>
+
+    <script>
+      'use strict';
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) =>
+        String(s ?? '').replace(
+          /[&<>"]/g,
+          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c],
+        );
+      const REPO = 'https://github.com/chris-dev-at/BetterTrack';
+      const ago = (s) =>
+        s == null
+          ? '–'
+          : s < 90
+            ? s + 's'
+            : s < 5400
+              ? Math.round(s / 60) + 'm'
+              : Math.round(s / 3600) + 'h';
+      const tago = (iso) => {
+        if (!iso) return '–';
+        const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+        return ago(Math.round(s)) + ' ago';
+      };
+
+      // two-click confirm for destructive actions
+      const armed = new Map();
+      async function act(action, btn, confirm = false) {
+        if (confirm && armed.get(action) !== true) {
+          armed.set(action, true);
+          const old = btn.textContent;
+          btn.classList.add('armed');
+          btn.textContent = 'Sure? ' + old;
+          setTimeout(() => {
+            armed.delete(action);
+            btn.classList.remove('armed');
+            btn.textContent = old;
+          }, 3500);
+          return;
+        }
+        armed.delete(action);
+        btn.classList.remove('armed');
+        try {
+          const r = await fetch('/api/action', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action }),
+          });
+          const j = await r.json();
+          toast(j.message || action, j.ok);
+        } catch (e) {
+          toast(String(e), false);
+        }
+      }
+      function toast(msg, ok) {
+        const d = document.createElement('div');
+        d.className = 'toastmsg' + (ok ? '' : ' err');
+        d.textContent = (ok ? '✓ ' : '✗ ') + msg;
+        $('toast').appendChild(d);
+        setTimeout(() => d.remove(), 6000);
+      }
+
+      const phaseClass = (p) =>
+        ({
+          idle: 'idle',
+          writing: 'working',
+          reviewing: 'working',
+          fixing: 'working',
+          triage: 'warn',
+          'awaiting-merge': 'warn',
+          done: 'done',
+          failed: 'failed',
+        })[p] || 'idle';
+      const phaseIcon = (p) =>
+        ({
+          idle: '…',
+          writing: '✍️',
+          reviewing: '🔍',
+          fixing: '🔧',
+          triage: '⚖️',
+          done: '✓',
+          failed: '✗',
+        })[p] || '…';
+
+      function kpi(v, l) {
+        return `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+      }
+
+      function render(s) {
+        const p = s.protocol || {};
+        $('mode').textContent = p.mode || '–';
+        $('phase').textContent = p.phase || '–';
+        $('mhb').textContent = ago(p.masterHeartbeatAge);
+
+        const multiC = s.docker?.multi?.containers || [];
+        const running = multiC.some((c) => /running/i.test(c.state));
+        const paused = multiC.some((c) => /paused/i.test(c.state));
+        const sfC = (s.docker?.single?.containers || []).filter((c) =>
+          /running|paused/i.test(c.state),
+        );
+        $('sfwarn').style.display = sfC.length ? 'flex' : 'none';
+        $('b-start').disabled = running || paused;
+        $('b-dry').disabled = running || paused;
+        $('b-pause').disabled = !running;
+        $('b-unpause').disabled = !paused;
+        $('b-stop').disabled = !running && !paused;
+        $('b-down').disabled = !multiC.length;
+        for (const id of ['b-run', 'b-runout', 'b-close']) $(id).disabled = !running && !paused;
+
+        const gh = s.github || {};
+        const led = s.ledger || {};
+        $('kpis').innerHTML =
+          kpi(
+            multiC.filter((c) => /running/i.test(c.state)).length + '/' + (multiC.length || '–'),
+            'containers up',
+          ) +
+          kpi((p.queue || []).length, 'merge queue') +
+          kpi((gh.issues || []).length, 'open autopilot') +
+          kpi((gh.needsHuman || []).length, 'needs human') +
+          kpi('$' + (led.multiToday ?? '0'), 'multi cost today') +
+          kpi('$' + (led.multiTotal ?? '0'), 'multi cost total');
+
+        // master + worker cards
+        let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
+    <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
+    <div class="row"><span class="k">heartbeat</span><span class="val">${ago(p.masterHeartbeatAge)}</span></div>
+    <div class="row"><span class="k">containers</span><span class="val">${esc(multiC.map((c) => `${c.service}:${c.state}`).join(' · ') || 'none')}</span></div>
+    ${s.lastAutoAction ? `<div class="row"><span class="k">auto</span><span class="val">${esc(s.lastAutoAction.action)} ${tago(s.lastAutoAction.at)}</span></div>` : ''}
+    ${p.stopFile ? '<div class="row"><span class="k">STOP</span><span class="val">⚠️ STOP file present</span></div>' : ''}</div>`;
+        for (const w of p.workers || []) {
+          const st = w.status || {};
+          const ph = st.phase || 'idle';
+          const hbWarn = w.assignment && w.heartbeatAge != null && w.heartbeatAge > 900;
+          cards += `<div class="card"><h2>Worker ${w.id} <span class="tag w${w.id}">w${w.id}</span></h2>
+      <div class="row"><span class="k">phase</span><span class="val"><span class="badge ${phaseClass(ph)}">${phaseIcon(ph)} ${esc(ph)}</span></span></div>
+      <div class="row"><span class="k">issue</span><span class="val">${st.issue ? `<a target="_blank" href="${REPO}/issues/${st.issue}">#${st.issue}</a>` : '–'}</span></div>
+      <div class="row"><span class="k">PR</span><span class="val">${st.pr ? `<a target="_blank" href="${REPO}/pull/${st.pr}">#${st.pr}</a>` : '–'}</span></div>
+      <div class="row"><span class="k">heartbeat</span><span class="val">${hbWarn ? '⚠️ ' : ''}${ago(w.heartbeatAge)}</span></div>
+      <div class="row"><span class="k">assigned</span><span class="val">${w.assignment ? '#' + w.assignment.issue + ' · ' + esc((w.assignment.touches || []).join(', ').slice(0, 60) || '**') : '–'}</span></div></div>`;
+        }
+        $('workergrid').innerHTML = cards;
+
+        $('qcount').textContent = (p.queue || []).length;
+        $('queue').innerHTML =
+          (p.queue || [])
+            .map(
+              (q, i) =>
+                `<div class="item"><span class="m">${i + 1}.</span><span class="t"><a target="_blank" href="${REPO}/pull/${q.pr}">PR #${q.pr}</a> ← issue <a target="_blank" href="${REPO}/issues/${q.issue}">#${q.issue}</a></span><span class="m">${tago(q.enqueued_at)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">empty</span></div>';
+
+        $('prs').innerHTML =
+          (s.github?.prs || [])
+            .map(
+              (pr) =>
+                `<div class="item"><span class="ck ${pr.checks}">${pr.checks === 'passing' ? '✓' : pr.checks === 'failing' ? '✗' : '●'}</span><span class="t"><a target="_blank" href="${REPO}/pull/${pr.number}">#${pr.number}</a> ${esc(pr.title)}</span><span class="m">${esc(pr.checks)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">none</span></div>';
+
+        $('issues').innerHTML =
+          (s.github?.issues || [])
+            .map((i) => {
+              const tier = (i.labels || []).find((l) => l.startsWith('tier:')) || '';
+              const inprog = (i.labels || []).includes('in-progress');
+              const touches = i.meta?.touches?.length
+                ? i.meta.touches.join(' ')
+                : 'no mf-meta (runs alone)';
+              const deps = i.meta?.dependsOn?.length
+                ? ' · deps: ' + i.meta.dependsOn.map((d) => '#' + d).join(',')
+                : '';
+              return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span><span class="chip" title="${esc(touches + deps)}">${esc(tier.replace('tier:', '') || '?')}${inprog ? ' · wip' : ''}</span></div>`;
+            })
+            .join('') || '<div class="item"><span class="m">none</span></div>';
+
+        $('merged').innerHTML =
+          (s.github?.merged || [])
+            .map(
+              (m) =>
+                `<div class="item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${m.number}</a> ${esc(m.title)}</span><span class="m">${tago(m.mergedAt)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">none yet</span></div>';
+
+        $('nhcount').textContent = (s.github?.needsHuman || []).length;
+        $('needshuman').innerHTML =
+          (s.github?.needsHuman || [])
+            .map(
+              (i) =>
+                `<div class="item"><span class="ck failing">✋</span><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span></div>`,
+            )
+            .join('') || '<div class="item"><span class="m">none 🎉</span></div>';
+
+        const costs = Object.entries(s.ledger?.multiByIssue || {}).sort((a, b) => b[1] - a[1]);
+        $('costs').innerHTML =
+          costs
+            .map(
+              ([iss, c]) =>
+                `<div class="item"><span class="t">${iss === '-' ? 'composer/overhead' : `<a target="_blank" href="${REPO}/issues/${iss}">#${esc(iss)}</a>`}</span><span class="m">$${c}</span></div>`,
+            )
+            .join('') ||
+          '<div class="item"><span class="m">no multi-factory records yet</span></div>';
+
+        const log = $('log');
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+        log.innerHTML = (p.events || [])
+          .map((l) =>
+            esc(l)
+              .replace(/\[master\]/, '<span class="tag master">master</span>')
+              .replace(/\[w1\]/, '<span class="tag w1">w1</span>')
+              .replace(/\[w2\]/, '<span class="tag w2">w2</span>'),
+          )
+          .join('\n');
+        if ($('autoscroll').checked && atBottom !== false) log.scrollTop = log.scrollHeight;
+      }
+
+      let lastEvent = 0;
+      function connect() {
+        const es = new EventSource('/api/events');
+        es.onmessage = (e) => {
+          lastEvent = Date.now();
+          try {
+            render(JSON.parse(e.data));
+          } catch {}
+        };
+        es.onerror = () => {
+          es.close();
+          setTimeout(connect, 3000);
+        };
+      }
+      setInterval(() => {
+        const fresh = Date.now() - lastEvent < 6000;
+        $('livedot').className = 'dot ' + (fresh ? 'live' : 'stale');
+        $('livetxt').textContent = fresh ? 'live' : 'reconnecting…';
+      }, 1000);
+      connect();
+    </script>
+  </body>
+</html>
