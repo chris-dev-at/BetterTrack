@@ -29,8 +29,13 @@ import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 
 // ─── Range mapping ──────────────────────────────────────────────────────────
 
-/** The value-over-time chart offers only these ranges (PROJECTPLAN.md §6.9). */
-const PORTFOLIO_RANGES: readonly PriceRange[] = ['1M', '6M', '1Y', 'Max'];
+/**
+ * The value-over-time chart offers only these ranges (PROJECTPLAN.md §6.9): the
+ * portfolio history endpoint is month-granular ({@link PortfolioHistoryRange})
+ * with no day-level `1D`/`1W`/`3M` window, so it sticks to the subset of the
+ * chart's range tokens it can actually serve.
+ */
+const PORTFOLIO_RANGES: readonly PriceRange[] = ['1M', '1Y', 'Max'];
 
 /** The chart's `PriceRange` tokens use 'Max'; the contract uses 'MAX'. */
 function toHistoryRange(r: PriceRange): PortfolioHistoryRange {
@@ -898,7 +903,7 @@ export function PortfolioPage() {
                 <div
                   role="group"
                   aria-label="Chart display mode"
-                  className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+                  className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
                 >
                   <ModeButton selected={!perfMode} onClick={() => setPerfMode(false)}>
                     Value &euro;
@@ -912,7 +917,7 @@ export function PortfolioPage() {
                   aria-pressed={overlay}
                   onClick={() => setOverlay((v) => !v)}
                   className={cx(
-                    'rounded px-2 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
+                    'rounded-md px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
                     'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
                     overlay
                       ? 'bg-sky-600 text-white ring-sky-600'
@@ -987,7 +992,7 @@ function ModeButton({
       aria-pressed={selected}
       onClick={onClick}
       className={cx(
-        'rounded px-2 py-1 text-xs font-medium transition-colors',
+        'rounded px-2.5 py-1 text-xs font-medium transition-colors',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
         selected
           ? 'bg-sky-600 text-white'

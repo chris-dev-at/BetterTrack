@@ -171,12 +171,25 @@ describe('AssetDetailPage — header rendering', () => {
 });
 
 describe('AssetDetailPage — range switching', () => {
-  test('renders all seven range buttons', async () => {
+  test('renders all six range buttons', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
-    for (const r of ['1D', '1W', '1M', '6M', '1Y', '5Y', 'Max']) {
+    for (const r of ['1D', '1W', '1M', '3M', '1Y', 'Max']) {
       expect(screen.getByRole('button', { name: r })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('button', { name: '6M' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '5Y' })).not.toBeInTheDocument();
+  });
+
+  test('switching to 3M fetches ~3 months of history', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: '3M' }));
+    await waitFor(() =>
+      expect(vi.mocked(getAssetHistory)).toHaveBeenCalledWith(ASSET_ID, '3M', expect.anything()),
+    );
   });
 
   test('switching range triggers a new history fetch with the correct range', async () => {

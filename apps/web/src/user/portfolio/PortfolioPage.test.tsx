@@ -294,6 +294,21 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
   });
 });
 
+describe('PortfolioPage — value chart range toggle', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('offers only 1M/1Y/Max — no 6M or 5Y buttons', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('321.350,00 €')).toBeInTheDocument());
+    for (const r of ['1M', '1Y', 'Max']) {
+      expect(screen.getByRole('button', { name: r })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: '6M' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '5Y' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '3M' })).not.toBeInTheDocument();
+  });
+});
+
 // ─── Chart overlay (#122) ─────────────────────────────────────────────────────
 
 describe('PortfolioPage — asset overlay on the value chart', () => {
