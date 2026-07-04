@@ -18,10 +18,18 @@ export interface SubNavItem {
  * its own `items`; every entry routes to an implemented page or a designed
  * `ComingSoon` surface (§7.2), so every tab resolves without a 404. Coming-soon
  * tabs still navigate — they just carry a muted "soon" hint.
+ *
+ * On narrow (phone) viewports the strip scrolls horizontally instead of
+ * wrapping: tabs stay on one line (`whitespace-nowrap` + `overflow-x-auto`) and
+ * the scrollbar is hidden (`.no-scrollbar`), so sections with many subnav
+ * entries (e.g. Settings' seven) never clip or push the page wider than 375px.
  */
 export function SubNav({ items }: { items: readonly SubNavItem[] }) {
   return (
-    <nav aria-label="Section" className="flex flex-wrap gap-1 border-b border-neutral-800 pb-px">
+    <nav
+      aria-label="Section"
+      className="no-scrollbar -mx-4 flex gap-1 overflow-x-auto border-b border-neutral-800 px-4 pb-px sm:mx-0 sm:px-0"
+    >
       {items.map((item) => (
         <NavLink
           key={item.to}
@@ -29,7 +37,7 @@ export function SubNav({ items }: { items: readonly SubNavItem[] }) {
           end={item.end}
           className={({ isActive }) =>
             cx(
-              'relative -mb-px flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-sm font-medium transition-colors',
+              'relative -mb-px flex min-h-[40px] flex-none items-center gap-1.5 whitespace-nowrap rounded-t-md border-b-2 px-3 py-2 text-sm font-medium transition-colors',
               isActive
                 ? 'border-sky-400 text-white'
                 : 'border-transparent text-neutral-400 hover:text-neutral-200',

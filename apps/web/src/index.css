@@ -1,1 +1,15 @@
 @import 'tailwindcss';
+
+/**
+ * Horizontally-scrollable tab strips (primary nav + section subnavs) hide their
+ * scrollbar so the row reads as a clean strip on touch devices while still
+ * swipe-scrolling. Used by `AppLayout` and `SubNav` for the mobile responsive
+ * pass (PROJECTPLAN.md §7.4).
+ */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
