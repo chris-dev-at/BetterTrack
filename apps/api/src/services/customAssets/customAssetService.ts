@@ -1,10 +1,11 @@
-import type {
-  CreateCustomAssetRequest,
-  CreateCustomAssetResponse,
-  CustomAsset,
-  CustomAssetCategory,
-  UpdateCustomAssetRequest,
-  ValuePoint,
+import {
+  customAssetCategorySchema,
+  type CreateCustomAssetRequest,
+  type CreateCustomAssetResponse,
+  type CustomAsset,
+  type CustomAssetCategory,
+  type UpdateCustomAssetRequest,
+  type ValuePoint,
 } from '@bettertrack/contracts';
 
 import type { CustomAssetRepository } from '../../data/repositories/customAssetRepository';
@@ -41,7 +42,8 @@ export interface CustomAssetService {
 
 function categoryOf(row: AssetRow): CustomAssetCategory {
   const meta = (row.meta ?? {}) as { category?: string };
-  return (meta.category ?? 'other') as CustomAssetCategory;
+  const parsed = customAssetCategorySchema.safeParse(meta.category);
+  return parsed.success ? parsed.data : 'other';
 }
 
 function toDto(row: AssetRow): CustomAsset {
