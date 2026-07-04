@@ -34,7 +34,7 @@ guard_single_factory(){
 
 prepare_state(){
   mkdir -p state/assignments state/status state/merge-queue state/control state/logs prompts
-  rm -f state/STOP
+  rm -f state/STOP state/control/dry-done
   # (Re)starting the factory means: run. Drain modes are set via control/mode later.
   printf 'run\n' > state/control/mode.tmp && mv -f state/control/mode.tmp state/control/mode
 }

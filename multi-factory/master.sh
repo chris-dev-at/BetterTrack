@@ -139,6 +139,8 @@ runnable_issues(){
   inflight=$(inflight_issues)
   for n in $(issue_numbers_asc); do
     grep -qx "$n" <<<"$inflight" && continue
+    # Dry-run cycles don't close real issues; skip ones already fake-completed.
+    [ "$MF_DRY_RUN" = 1 ] && grep -qx "$n" "$CONTROL/dry-done" 2>/dev/null && continue
     deps=$(issue_body "$n" | mf_meta_deps)
     if [ -n "$deps" ]; then deps_closed "$deps" || continue; fi
     echo "$n"
