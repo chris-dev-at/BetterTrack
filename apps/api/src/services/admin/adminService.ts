@@ -324,10 +324,7 @@ export function createAdminService(deps: AdminServiceDeps) {
      * The settings service rejects any non-`closed` registration mode in V1;
      * every accepted change is recorded with the actor and what changed.
      */
-    async updateSettings(
-      input: UpdateAppSettingsRequest,
-      actor: AdminActor,
-    ): Promise<AppSettings> {
+    async updateSettings(input: UpdateAppSettingsRequest, actor: AdminActor): Promise<AppSettings> {
       const settings = await appSettings.update(input, actor.id);
       await audit.record({
         actorId: actor.id,

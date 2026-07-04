@@ -72,12 +72,8 @@
           "name": "alerts_user_id_users_id_fk",
           "tableFrom": "alerts",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -85,12 +81,8 @@
           "name": "alerts_asset_id_assets_id_fk",
           "tableFrom": "alerts",
           "tableTo": "assets",
-          "columnsFrom": [
-            "asset_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["asset_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -186,12 +178,8 @@
           "name": "api_keys_user_id_users_id_fk",
           "tableFrom": "api_keys",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -238,12 +226,8 @@
           "name": "app_settings_updated_by_users_id_fk",
           "tableFrom": "app_settings",
           "tableTo": "users",
-          "columnsFrom": [
-            "updated_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["updated_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -424,12 +408,8 @@
           "name": "assets_owner_id_users_id_fk",
           "tableFrom": "assets",
           "tableTo": "users",
-          "columnsFrom": [
-            "owner_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["owner_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -516,12 +496,8 @@
           "name": "audit_log_actor_id_users_id_fk",
           "tableFrom": "audit_log",
           "tableTo": "users",
-          "columnsFrom": [
-            "actor_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["actor_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -595,12 +571,8 @@
           "name": "conglomerate_positions_conglomerate_id_conglomerates_id_fk",
           "tableFrom": "conglomerate_positions",
           "tableTo": "conglomerates",
-          "columnsFrom": [
-            "conglomerate_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["conglomerate_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -608,12 +580,8 @@
           "name": "conglomerate_positions_asset_id_assets_id_fk",
           "tableFrom": "conglomerate_positions",
           "tableTo": "assets",
-          "columnsFrom": [
-            "asset_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["asset_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -680,12 +648,8 @@
           "name": "conglomerates_owner_id_users_id_fk",
           "tableFrom": "conglomerates",
           "tableTo": "users",
-          "columnsFrom": [
-            "owner_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["owner_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -788,12 +752,8 @@
           "name": "email_log_user_id_users_id_fk",
           "tableFrom": "email_log",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -877,12 +837,8 @@
           "name": "friend_requests_from_user_users_id_fk",
           "tableFrom": "friend_requests",
           "tableTo": "users",
-          "columnsFrom": [
-            "from_user"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["from_user"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -890,12 +846,8 @@
           "name": "friend_requests_to_user_users_id_fk",
           "tableFrom": "friend_requests",
           "tableTo": "users",
-          "columnsFrom": [
-            "to_user"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["to_user"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -936,12 +888,8 @@
           "name": "friendships_user_a_users_id_fk",
           "tableFrom": "friendships",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_a"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_a"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -949,12 +897,8 @@
           "name": "friendships_user_b_users_id_fk",
           "tableFrom": "friendships",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_b"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_b"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -962,10 +906,7 @@
       "compositePrimaryKeys": {
         "friendships_pk": {
           "name": "friendships_pk",
-          "columns": [
-            "user_a",
-            "user_b"
-          ]
+          "columns": ["user_a", "user_b"]
         }
       },
       "uniqueConstraints": {},
@@ -1064,12 +1005,8 @@
           "name": "invites_created_by_users_id_fk",
           "tableFrom": "invites",
           "tableTo": "users",
-          "columnsFrom": [
-            "created_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["created_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -1116,12 +1053,8 @@
           "name": "notification_settings_user_id_users_id_fk",
           "tableFrom": "notification_settings",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1129,10 +1062,7 @@
       "compositePrimaryKeys": {
         "notification_settings_user_channel_pk": {
           "name": "notification_settings_user_channel_pk",
-          "columns": [
-            "user_id",
-            "channel"
-          ]
+          "columns": ["user_id", "channel"]
         }
       },
       "uniqueConstraints": {},
@@ -1200,12 +1130,8 @@
           "name": "notifications_user_id_users_id_fk",
           "tableFrom": "notifications",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1283,12 +1209,8 @@
           "name": "portfolios_user_id_users_id_fk",
           "tableFrom": "portfolios",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1328,12 +1250,8 @@
           "name": "price_history_asset_id_assets_id_fk",
           "tableFrom": "price_history",
           "tableTo": "assets",
-          "columnsFrom": [
-            "asset_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["asset_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1341,10 +1259,7 @@
       "compositePrimaryKeys": {
         "price_history_asset_date_pk": {
           "name": "price_history_asset_date_pk",
-          "columns": [
-            "asset_id",
-            "date"
-          ]
+          "columns": ["asset_id", "date"]
         }
       },
       "uniqueConstraints": {},
@@ -1410,12 +1325,8 @@
           "name": "share_links_conglomerate_id_conglomerates_id_fk",
           "tableFrom": "share_links",
           "tableTo": "conglomerates",
-          "columnsFrom": [
-            "conglomerate_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["conglomerate_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1493,12 +1404,8 @@
           "name": "transactions_portfolio_id_portfolios_id_fk",
           "tableFrom": "transactions",
           "tableTo": "portfolios",
-          "columnsFrom": [
-            "portfolio_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["portfolio_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1506,12 +1413,8 @@
           "name": "transactions_asset_id_assets_id_fk",
           "tableFrom": "transactions",
           "tableTo": "assets",
-          "columnsFrom": [
-            "asset_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["asset_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1725,12 +1628,8 @@
           "name": "workboard_items_user_id_users_id_fk",
           "tableFrom": "workboard_items",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1738,12 +1637,8 @@
           "name": "workboard_items_asset_id_assets_id_fk",
           "tableFrom": "workboard_items",
           "tableTo": "assets",
-          "columnsFrom": [
-            "asset_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["asset_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1771,93 +1666,52 @@
     "public.alert_status": {
       "name": "alert_status",
       "schema": "public",
-      "values": [
-        "active",
-        "triggered",
-        "disabled"
-      ]
+      "values": ["active", "triggered", "disabled"]
     },
     "public.asset_type": {
       "name": "asset_type",
       "schema": "public",
-      "values": [
-        "stock",
-        "etf",
-        "index",
-        "fx",
-        "commodity",
-        "crypto",
-        "custom"
-      ]
+      "values": ["stock", "etf", "index", "fx", "commodity", "crypto", "custom"]
     },
     "public.conglomerate_status": {
       "name": "conglomerate_status",
       "schema": "public",
-      "values": [
-        "draft",
-        "active"
-      ]
+      "values": ["draft", "active"]
     },
     "public.email_status": {
       "name": "email_status",
       "schema": "public",
-      "values": [
-        "sent",
-        "failed",
-        "suppressed"
-      ]
+      "values": ["sent", "failed", "suppressed"]
     },
     "public.friend_request_status": {
       "name": "friend_request_status",
       "schema": "public",
-      "values": [
-        "pending",
-        "accepted",
-        "declined",
-        "cancelled"
-      ]
+      "values": ["pending", "accepted", "declined", "cancelled"]
     },
     "public.notification_channel": {
       "name": "notification_channel",
       "schema": "public",
-      "values": [
-        "inapp",
-        "email",
-        "telegram",
-        "discord"
-      ]
+      "values": ["inapp", "email", "telegram", "discord"]
     },
     "public.portfolio_visibility": {
       "name": "portfolio_visibility",
       "schema": "public",
-      "values": [
-        "private",
-        "friends"
-      ]
+      "values": ["private", "friends"]
     },
     "public.transaction_side": {
       "name": "transaction_side",
       "schema": "public",
-      "values": [
-        "buy",
-        "sell"
-      ]
+      "values": ["buy", "sell"]
     },
     "public.user_role": {
       "name": "user_role",
       "schema": "public",
-      "values": [
-        "user",
-        "admin"
-      ]
+      "values": ["user", "admin"]
     },
     "public.user_status": {
       "name": "user_status",
       "schema": "public",
-      "values": [
-        "active",
-        "disabled"
-      ]
+      "values": ["active", "disabled"]
     }
   },
   "schemas": {},
