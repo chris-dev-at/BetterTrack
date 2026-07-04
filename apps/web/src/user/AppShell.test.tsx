@@ -83,10 +83,12 @@ test('the header exposes a live, enabled notification bell', async () => {
   expect(bell).not.toBeDisabled();
 });
 
-test('the footer shows the not-investment-advice disclaimer on every page', async () => {
+test('the footer shows the passion tagline on every page', async () => {
   renderAt('/portfolio');
 
-  expect(await screen.findByText('BetterTrack is not investment advice.')).toBeInTheDocument();
+  expect(
+    await screen.findByText('BetterTrack — finances under your control'),
+  ).toBeInTheDocument();
 });
 
 // ─── Profile dropdown (§6.11) ─────────────────────────────────────────────────
