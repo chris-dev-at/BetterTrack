@@ -41,6 +41,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: OpenAPI coverage gate
+        run: pnpm --filter @bettertrack/api check:openapi-coverage
+
       - name: Build
         run: pnpm build
 
