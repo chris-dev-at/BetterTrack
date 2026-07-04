@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
-import { Disclaimer } from '../../ui';
+import { Disclaimer, ErrorBoundary } from '../../ui';
 import { CmdKPalette } from './CmdKPalette';
 import { NotificationBell } from './NotificationBell';
 import { ProfileMenu } from './ProfileMenu';
@@ -24,6 +24,7 @@ const NAV_ITEMS = [
 
 export function AppLayout() {
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const location = useLocation();
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
@@ -87,7 +88,11 @@ export function AppLayout() {
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-8">
-        <Outlet />
+        {/* Keyed on the route so navigating away from a failed page always
+            resets the boundary (§7.1) rather than leaving it stuck. */}
+        <ErrorBoundary key={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
       <footer className="mx-auto max-w-6xl px-4 pb-8">
         <Disclaimer>BetterTrack is not investment advice.</Disclaimer>
