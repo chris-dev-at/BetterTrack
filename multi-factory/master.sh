@@ -333,6 +333,11 @@ tick(){
   process_acks
   stall_check
   composer_step "$mode"
+  # The composer (and merger LLM/regate paths) can block this tick for minutes;
+  # re-read the mode so a close-down/run-out issued meanwhile is honored BEFORE
+  # the scheduler hands out new work (caught live: stale 'run' assigned an issue
+  # 6 minutes into close-down).
+  mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
   scheduler "$mode"
   merger_step
   drained_check "$mode"
