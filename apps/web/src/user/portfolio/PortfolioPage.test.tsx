@@ -27,6 +27,8 @@ const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();
   const addSeries = vi.fn(() => ({ setData, applyOptions: vi.fn() }));
   return {
+    setData,
+    addSeries,
     createChart: vi.fn(() => ({
       addSeries,
       applyOptions: vi.fn(),
@@ -38,6 +40,7 @@ const chartMocks = vi.hoisted(() => {
 vi.mock('lightweight-charts', () => ({
   createChart: chartMocks.createChart,
   AreaSeries: 'AreaSeries',
+  BaselineSeries: 'BaselineSeries',
   LineSeries: 'LineSeries',
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
   ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
@@ -188,6 +191,11 @@ const HISTORY = {
     { date: '2024-05-01', valueEur: 300000 },
     { date: '2024-06-01', valueEur: 321350 },
   ],
+  // Cash-flow-neutralized TWR series (#125), re-based to 0 % at the window start.
+  performance: [
+    { date: '2024-05-01', pct: 0 },
+    { date: '2024-06-01', pct: 7.1167 },
+  ],
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -337,6 +345,54 @@ describe('PortfolioPage — asset overlay on the value chart', () => {
     await user.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     await waitFor(() => expect(within(section).queryByText('AAPL')).not.toBeInTheDocument());
+  });
+});
+
+// ─── Performance-% display mode (#125) ────────────────────────────────────────
+
+describe('PortfolioPage — performance-% display mode', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('defaults to the absolute value curve with the € segment selected', async () => {
+    renderPage();
+    const valueBtn = await screen.findByRole('button', { name: 'Value €' });
+    const perfBtn = screen.getByRole('button', { name: 'Performance %' });
+    expect(valueBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(perfBtn).toHaveAttribute('aria-pressed', 'false');
+
+    await waitFor(() =>
+      expect(chartMocks.setData).toHaveBeenCalledWith([
+        { time: '2024-05-01', value: 300000 },
+        { time: '2024-06-01', value: 321350 },
+      ]),
+    );
+  });
+
+  test('switching to Performance % feeds the TWR series to a baseline chart', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const perfBtn = await screen.findByRole('button', { name: 'Performance %' });
+
+    await user.click(perfBtn);
+    expect(perfBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Value €' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    // The chart now draws the deposit-neutralized % series (green/red baseline),
+    // not the raw EUR values — the whole point of #125.
+    await waitFor(() =>
+      expect(chartMocks.setData).toHaveBeenCalledWith([
+        { time: '2024-05-01', value: 0 },
+        { time: '2024-06-01', value: 7.1167 },
+      ]),
+    );
+    expect(chartMocks.addSeries).toHaveBeenCalledWith('BaselineSeries', expect.anything());
+    expect(screen.getByText(/Deposits and withdrawals are neutralized/i)).toBeInTheDocument();
+
+    // No refetch: both series arrive with the same history response.
+    expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledTimes(1);
   });
 });
 

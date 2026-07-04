@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => {
 vi.mock('lightweight-charts', () => ({
   createChart: mocks.createChart,
   AreaSeries: 'AreaSeries',
+  BaselineSeries: 'BaselineSeries',
   LineSeries: 'LineSeries',
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
   ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
@@ -93,6 +94,29 @@ describe('PriceChart', () => {
     expect(mocks.createChart.mock.calls[0]?.[1]).toMatchObject({
       rightPriceScale: expect.objectContaining({ mode: 0 }),
     });
+  });
+
+  test('baseline mode draws a zero-centred baseline series (#125)', () => {
+    render(<PriceChart series={samplePriceSeries} mode="baseline" />);
+
+    expect(mocks.addSeries).toHaveBeenCalledTimes(1);
+    expect(mocks.addSeries.mock.calls[0]?.[0]).toBe('BaselineSeries');
+    expect(mocks.addSeries.mock.calls[0]?.[1]).toMatchObject({
+      baseValue: { type: 'price', price: 0 },
+    });
+  });
+
+  test('percentValues formats the axis as % and keeps the scale normal even with overlays (#125)', () => {
+    render(<PriceChart series={samplePriceSeries} overlays={sampleOverlaySeries} percentValues />);
+
+    const options = mocks.createChart.mock.calls[0]?.[1] as {
+      rightPriceScale: { mode: number };
+      localization?: { priceFormatter?: (p: number) => string };
+    };
+    // The series already are % curves: re-normalizing (percentage scale mode)
+    // would divide by a first value of 0 — the scale must stay normal.
+    expect(options.rightPriceScale).toMatchObject({ mode: 0 });
+    expect(options.localization?.priceFormatter?.(7.1167)).toBe('7.12 %');
   });
 
   test('empty series renders an empty state without creating a chart', () => {

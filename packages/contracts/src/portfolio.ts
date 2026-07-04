@@ -274,12 +274,27 @@ export const portfolioHistoryOverlaySchema = z
   .strict();
 export type PortfolioHistoryOverlay = z.infer<typeof portfolioHistoryOverlaySchema>;
 
+/**
+ * One point on the cash-flow-neutralized performance series (issue #125):
+ * cumulative time-weighted return since the selected range's start, percent.
+ * Deposits cause no jump — the curve moves only when holdings move.
+ */
+export const portfolioPerformancePointSchema = z
+  .object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    pct: z.number(),
+  })
+  .strict();
+export type PortfolioPerformancePoint = z.infer<typeof portfolioPerformancePointSchema>;
+
 /** `GET /portfolios/:id/history` response. `assets` is present only when `overlay=true`. */
 export const portfolioHistoryResponseSchema = z
   .object({
     range: portfolioHistoryRangeSchema,
     baseCurrency: currencyCodeSchema,
     points: z.array(portfolioHistoryPointSchema),
+    /** Performance-% display mode data (issue #125), same daily grid as `points`. */
+    performance: z.array(portfolioPerformancePointSchema),
     assets: z.array(portfolioHistoryOverlaySchema).optional(),
   })
   .strict();

@@ -13,6 +13,10 @@
  *  3. {@link valueOverTime} — the portfolio value-over-time series, daily from
  *     the first transaction to a given `today`, summing every asset's held
  *     quantity × that day's price, converted at that day's FX rate.
+ *  4. {@link netFlowsOverTime} + {@link timeWeightedReturn} — the cash-flow-
+ *     neutralized performance series (daily time-weighted return, issue #125):
+ *     deposits/withdrawals cause no jump; the curve moves only when holdings
+ *     move. {@link rebasePerformance} re-bases a window slice to 0 %.
  *
  * **Purity (a hard requirement, §6.8/§12):** everything here is a pure
  * function of its inputs. There are no imports — no DB, no HTTP, no clock.
@@ -634,4 +638,200 @@ export async function valueOverTime(input: ValueOverTimeInput): Promise<ValuePoi
   }
 
   return series;
+}
+
+// ---------------------------------------------------------------------------
+// Performance over time — time-weighted return (issue #125)
+// ---------------------------------------------------------------------------
+
+/**
+ * EUR value comparison tolerance for the performance series: below this a
+ * day's value or return denominator is float dust (or genuinely empty), not a
+ * measurable amount, and the return for that segment is treated as flat.
+ */
+export const VALUE_EPSILON = 1e-9;
+
+/** One day's net **external** cash flow into the portfolio, EUR. */
+export interface FlowPoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /**
+   * Net flow that day in EUR: money moving *into* the portfolio is positive
+   * (a BUY costs `qty · price + fee`), money moving *out* is negative (a SELL
+   * returns `qty · price − fee`). Fees therefore stay inside the flow, so the
+   * derived performance is **net of transaction costs**.
+   */
+  flowEur: number;
+}
+
+/** Input for {@link netFlowsOverTime}. */
+export interface NetFlowsInput {
+  /** Every transaction across the portfolio (any order). */
+  transactions: readonly Transaction[];
+  /** ISO-4217 native currency per transacted asset id; a missing asset throws. */
+  currencyByAsset: ReadonlyMap<string, string>;
+  converter: CurrencyConverter;
+}
+
+/**
+ * The portfolio's daily net external cash flows in EUR (issue #125) — the
+ * companion series {@link timeWeightedReturn} needs to strip deposits and
+ * withdrawals out of the value curve.
+ *
+ * In BetterTrack there is no cash balance: transactions *are* the external
+ * flows. A BUY is money entering (cost plus fee), a SELL is money leaving
+ * (proceeds net of fee). Same-day flows aggregate per (currency, day) first —
+ * conversion is linear, so summing native amounts before converting is exact —
+ * and each distinct (currency, day) rate is fetched once, mirroring the FX
+ * coalescing in {@link valueOverTime}.
+ *
+ * Returns a **sparse** series (only days with a flow), sorted ascending.
+ */
+export async function netFlowsOverTime(input: NetFlowsInput): Promise<FlowPoint[]> {
+  const { transactions, currencyByAsset, converter } = input;
+
+  // Pass 1 (sync): signed native flow summed per (day, currency).
+  const nativeByDay = new Map<string, Map<string, number>>();
+  for (const t of transactions) {
+    const day = dayOf(t.executedAt);
+    const currency = currencyByAsset.get(t.assetId);
+    if (currency === undefined) {
+      throw new Error(
+        `netFlowsOverTime: transaction references asset ${t.assetId} with no currency input.`,
+      );
+    }
+    if (!Number.isFinite(t.quantity) || !Number.isFinite(t.price) || !Number.isFinite(t.fee)) {
+      throw new Error(`netFlowsOverTime: non-finite quantity/price/fee on ${t.executedAt}`);
+    }
+    const native =
+      t.side === 'buy' ? t.quantity * t.price + t.fee : -(t.quantity * t.price - t.fee);
+    const bucket = nativeByDay.get(day) ?? new Map<string, number>();
+    bucket.set(currency, (bucket.get(currency) ?? 0) + native);
+    nativeByDay.set(day, bucket);
+  }
+
+  // Pass 2 (async): one FX resolution per distinct (currency, day).
+  const rateCache = new Map<string, Promise<number>>();
+  const rateToBase = (currency: string, date: string): Promise<number> => {
+    const key = `${currency}|${date}`;
+    let pending = rateCache.get(key);
+    if (!pending) {
+      pending = converter.toBase(1, currency, { date });
+      rateCache.set(key, pending);
+    }
+    return pending;
+  };
+
+  const days = [...nativeByDay.keys()].sort();
+  const flows: FlowPoint[] = [];
+  for (const day of days) {
+    const bucket = nativeByDay.get(day);
+    if (bucket === undefined) continue; // unreachable
+    let flowEur = 0;
+    for (const [currency, native] of bucket) {
+      const rate = await rateToBase(currency, day);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new Error(`Invalid FX rate ${rate} for ${currency} on ${day}`);
+      }
+      flowEur += native * rate;
+    }
+    flows.push({ date: day, flowEur });
+  }
+  return flows;
+}
+
+/** One point on the performance (time-weighted return) series. */
+export interface PerformancePoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /** Cumulative time-weighted return since the series start, in percent (0 = flat). */
+  pct: number;
+}
+
+/**
+ * Cash-flow-neutralized performance of the value series: the daily
+ * **time-weighted return**, chain-linked and expressed as a cumulative
+ * percentage (issue #125). A 1 000 € deposit causes **no** jump — the curve
+ * moves only when holdings move.
+ *
+ * Daily linking uses the robust hybrid flow convention: **inflows count at the
+ * start of the day, outflows at the end** —
+ *
+ *     r_d = (V_d − min(F_d, 0)) / (V_{d−1} + max(F_d, 0))
+ *
+ * so a buy's execution→close move on the new money is genuine day-`d`
+ * performance, while a full liquidation still books its final day correctly
+ * (`V_d = 0` with the proceeds in the numerator) instead of collapsing to
+ * −100 %. Degenerate segments — a zero denominator (nothing invested yet, or a
+ * flat stretch after selling everything) or a zero numerator (a day whose value
+ * is 0 only because no price is known yet) — carry no performance information
+ * and link as flat (`r = 1`); the curve simply resumes when data does. This
+ * keeps the chained index strictly positive, so a later rebase is always
+ * well-defined.
+ *
+ * A zero-value day **without** a flow is treated as a data gap, not a
+ * liquidation, and the previous real value is kept as the next day's linking
+ * base — so the move across the gap still counts instead of being dropped from
+ * the chain. The flip side: a genuine total-loss day (true value 0, no flow)
+ * is indistinguishable from such a gap and also links flat rather than −100 %.
+ * That is a deliberate tradeoff — {@link valueOverTime} carries closes
+ * forward, so a true zero close cannot occur there; only a flow (a sell) takes
+ * the reconstructed value to 0.
+ *
+ * Flows on days outside the value series (e.g. a future-dated transaction) are
+ * ignored — that money never enters the plotted window.
+ */
+export function timeWeightedReturn(
+  values: readonly ValuePoint[],
+  flows: readonly FlowPoint[],
+): PerformancePoint[] {
+  const flowByDate = new Map<string, number>();
+  for (const f of flows) {
+    assertIsoDate(f.date, 'flow point date');
+    if (!Number.isFinite(f.flowEur)) {
+      throw new Error(`Flow on ${f.date} must be a finite number, got ${f.flowEur}`);
+    }
+    flowByDate.set(f.date, (flowByDate.get(f.date) ?? 0) + f.flowEur);
+  }
+
+  const sorted = [...values].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const series: PerformancePoint[] = [];
+  let index = 1;
+  let prevValue = 0;
+  for (const point of sorted) {
+    assertIsoDate(point.date, 'value point date');
+    if (!Number.isFinite(point.valueEur)) {
+      throw new Error(`Value on ${point.date} must be a finite number, got ${point.valueEur}`);
+    }
+    const flow = flowByDate.get(point.date) ?? 0;
+    const numerator = point.valueEur - Math.min(flow, 0);
+    const denominator = prevValue + Math.max(flow, 0);
+    const r =
+      numerator > VALUE_EPSILON && denominator > VALUE_EPSILON ? numerator / denominator : 1;
+    index *= r;
+    series.push({ date: point.date, pct: (index - 1) * 100 });
+    // A flow-less zero-value day is a data gap (see docstring): keep the last
+    // real value as the linking base so the move across the gap isn't lost.
+    // With a flow the zero is genuine (a full liquidation) and the base resets.
+    if (point.valueEur > VALUE_EPSILON || flow !== 0) prevValue = point.valueEur;
+  }
+  return series;
+}
+
+/**
+ * Re-express a performance series relative to its own first point (issue #125):
+ * the first point becomes 0 % and every later point the TWR **since that
+ * window start** — what a range-sliced (1M/6M/1Y) performance chart shows.
+ * Compounding, not subtraction: percentages don't add across time.
+ */
+export function rebasePerformance(points: readonly PerformancePoint[]): PerformancePoint[] {
+  const first = points[0];
+  if (first === undefined) return [];
+  const base = 1 + first.pct / 100;
+  // timeWeightedReturn keeps the chained index strictly positive, so a
+  // non-positive base means corrupted input — fail loud on the money path.
+  if (!Number.isFinite(base) || base <= 0) {
+    throw new Error(`rebasePerformance: non-positive base index ${base} at ${first.date}`);
+  }
+  return points.map((p) => ({ date: p.date, pct: ((1 + p.pct / 100) / base - 1) * 100 }));
 }

@@ -632,6 +632,118 @@ describe('GET /api/v1/portfolios/:id/history (value over time + cache)', () => {
   });
 });
 
+describe('GET /api/v1/portfolios/:id/history (performance-% mode, #125)', () => {
+  it('neutralizes deposits: a top-up doubles the value curve but leaves performance flat', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // Flat price through the deposit, then a +10 % move.
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-3), close: '100' },
+      { assetId: asset.id, date: dayOffset(-2), close: '100' },
+      { assetId: asset.id, date: dayOffset(-1), close: '110' },
+    ]);
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        transactions: [
+          { assetId: asset.id, side: 'buy', quantity: 10, price: 100, executedAt: tsOffset(-3) },
+          { assetId: asset.id, side: 'buy', quantity: 10, price: 100, executedAt: tsOffset(-2) },
+        ],
+      });
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+
+    // Same daily grid as the value curve.
+    expect(res.body.performance.map((p: { date: string }) => p.date)).toEqual(
+      res.body.points.map((p: { date: string }) => p.date),
+    );
+
+    // The absolute curve jumps 1 000 → 2 000 on the deposit day…
+    expect(res.body.points[0].valueEur).toBeCloseTo(1000, 6);
+    expect(res.body.points[1].valueEur).toBeCloseTo(2000, 6);
+    // …while performance stays at 0 % until the market actually moves.
+    expect(res.body.performance[0].pct).toBeCloseTo(0, 9);
+    expect(res.body.performance[1].pct).toBeCloseTo(0, 9);
+    expect(res.body.performance[2].pct).toBeCloseTo(10, 9);
+    // Carry-forward day (today, no newer close): still +10 %.
+    expect(res.body.performance.at(-1).pct).toBeCloseTo(10, 9);
+  });
+
+  it('re-bases a range slice to 0 % at the window start (1M shows that month’s TWR)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // +20 % happens well BEFORE the 1M window, +25 % (120 → 150) inside it.
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-60), close: '100' },
+      { assetId: asset.id, date: dayOffset(-45), close: '120' },
+      { assetId: asset.id, date: dayOffset(-1), close: '150' },
+    ]);
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-60) });
+
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(max.status).toBe(200);
+    // Since inception: 100 → 150.
+    expect(max.body.performance[0].pct).toBeCloseTo(0, 9);
+    expect(max.body.performance.at(-1).pct).toBeCloseTo(50, 9);
+
+    const month = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    expect(month.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(month.body).success).toBe(true);
+    // The window starts at 0 % — not at the +20 % the portfolio was already up —
+    // and ends at the move that happened inside the window (120 → 150 = +25 %).
+    expect(month.body.performance[0].pct).toBeCloseTo(0, 9);
+    expect(month.body.performance.at(-1).pct).toBeCloseTo(25, 9);
+  });
+
+  it('MAX keeps since-inception semantics: day one’s execution→close move is not re-based away', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // Bought intraday at 100/unit; that day CLOSED at 104, latest close 150.
+    // True since-inception TWR is +50 %. Re-basing MAX to its first plotted
+    // point would divide out the day-one +4 % and wrongly report +44.23 %.
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-3), close: '104' },
+      { assetId: asset.id, date: dayOffset(-1), close: '150' },
+    ]);
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 100, executedAt: tsOffset(-3) });
+
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(max.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(max.body).success).toBe(true);
+    expect(max.body.performance[0].pct).toBeCloseTo(4, 9);
+    expect(max.body.performance.at(-1).pct).toBeCloseTo(50, 9);
+
+    // A sliced window still re-bases to its first plotted point (return since
+    // that day's close) even when it happens to contain inception — only MAX
+    // carries the since-inception anchor.
+    const month = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    expect(month.status).toBe(200);
+    expect(month.body.performance[0].pct).toBeCloseTo(0, 9);
+    expect(month.body.performance.at(-1).pct).toBeCloseTo((150 / 104 - 1) * 100, 9);
+  });
+});
+
 describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', () => {
   /** Deterministic daily closes for the last 7 calendar days (−6 … today). */
   function marketCloses(): Map<string, number> {

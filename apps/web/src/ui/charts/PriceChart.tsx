@@ -1,5 +1,6 @@
 import {
   AreaSeries,
+  BaselineSeries,
   ColorType,
   createChart,
   LineSeries,
@@ -53,6 +54,13 @@ export interface PriceChartProps {
    * drop visibly lines up with the portfolio drop it caused.
    */
   overlays?: readonly BenchmarkSeries[];
+  /**
+   * The series values are already percentages (the performance-% portfolio
+   * curve, #125): the axis/crosshair format as `x.xx %` and the price scale
+   * stays in normal mode even with overlays — every series is expected to
+   * arrive pre-expressed in % (no second normalization).
+   */
+  percentValues?: boolean;
   /** Show a spinner instead of the chart (parent is fetching). */
   loading?: boolean;
   /** Chart height in px. Defaults to 320. */
@@ -69,6 +77,14 @@ const MAIN_AREA_BOTTOM = 'rgba(56, 189, 248, 0.02)';
 const BENCHMARK_LINE = '#a78bfa'; // violet-400
 const GRID = 'rgba(82, 82, 91, 0.25)'; // neutral-600 @ 25%
 const TEXT = '#a1a1aa'; // neutral-400
+
+// Baseline (performance-%) mode: gains glow emerald above 0, losses rose below.
+const BASELINE_UP_LINE = '#34d399'; // emerald-400
+const BASELINE_UP_FILL_TOP = 'rgba(52, 211, 153, 0.3)';
+const BASELINE_UP_FILL_BOTTOM = 'rgba(52, 211, 153, 0.02)';
+const BASELINE_DOWN_LINE = '#fb7185'; // rose-400
+const BASELINE_DOWN_FILL_TOP = 'rgba(251, 113, 133, 0.02)';
+const BASELINE_DOWN_FILL_BOTTOM = 'rgba(251, 113, 133, 0.3)';
 
 /** Distinguishable overlay palette for the dark shell; cycles past its length. */
 const OVERLAY_LINES = [
@@ -104,6 +120,7 @@ export function PriceChart({
   showRangeToggle = true,
   benchmark = null,
   overlays = [],
+  percentValues = false,
   loading = false,
   height = 320,
   className,
@@ -121,7 +138,9 @@ export function PriceChart({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const mainRef = useRef<ISeriesApi<'Area'> | ISeriesApi<'Line'> | null>(null);
+  const mainRef = useRef<ISeriesApi<'Area'> | ISeriesApi<'Line'> | ISeriesApi<'Baseline'> | null>(
+    null,
+  );
   const benchRef = useRef<ISeriesApi<'Line'> | null>(null);
   const overlayRefs = useRef<Array<ISeriesApi<'Line'>>>([]);
 
@@ -152,15 +171,38 @@ export function PriceChart({
         // Overlay mode compares differently-scaled series (portfolio EUR value
         // vs. single-asset prices), so the scale normalizes every series to its
         // first visible value (percentage mode) — the standard "compare" view.
-        mode: overlayCount > 0 ? PriceScaleMode.Percentage : PriceScaleMode.Normal,
+        // In percentValues mode every series already *is* a % curve, so the
+        // scale stays normal: re-normalizing a series that starts at 0 would
+        // divide by zero and distort it (#125).
+        mode:
+          overlayCount > 0 && !percentValues ? PriceScaleMode.Percentage : PriceScaleMode.Normal,
       },
+      // Values arriving pre-expressed in % render as "x.xx %" on the axis and
+      // crosshair instead of looking like absolute prices (#125).
+      ...(percentValues
+        ? { localization: { priceFormatter: (p: number) => `${p.toFixed(2)} %` } }
+        : {}),
       timeScale: { borderColor: GRID, fixLeftEdge: true, fixRightEdge: true },
       handleScale: false,
       handleScroll: false,
     });
     chartRef.current = chart;
 
-    if (mode === 'step') {
+    if (mode === 'baseline') {
+      // Performance-% curve (#125): green above 0 %, red below — the zero line
+      // is the "did I actually make money" boundary, so it gets its own mark.
+      mainRef.current = chart.addSeries(BaselineSeries, {
+        baseValue: { type: 'price', price: 0 },
+        topLineColor: BASELINE_UP_LINE,
+        topFillColor1: BASELINE_UP_FILL_TOP,
+        topFillColor2: BASELINE_UP_FILL_BOTTOM,
+        bottomLineColor: BASELINE_DOWN_LINE,
+        bottomFillColor1: BASELINE_DOWN_FILL_TOP,
+        bottomFillColor2: BASELINE_DOWN_FILL_BOTTOM,
+        lineWidth: 2,
+        priceLineVisible: false,
+      });
+    } else if (mode === 'step') {
       mainRef.current = chart.addSeries(LineSeries, {
         color: MAIN_LINE,
         lineWidth: 2,
@@ -213,7 +255,7 @@ export function PriceChart({
       benchRef.current = null;
       overlayRefs.current = [];
     };
-  }, [mode, hasBenchmark, overlayCount, height, loading, isEmpty]);
+  }, [mode, hasBenchmark, overlayCount, percentValues, height, loading, isEmpty]);
 
   // Push data into the existing series instances; refit the visible window.
   useEffect(() => {
