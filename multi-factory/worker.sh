@@ -153,6 +153,9 @@ run_cycle(){ # $1=issue $2=relocated
     log "DRY: would write/review issue #$n"
     sleep "$MF_DRY_SECS"
     gh issue edit "$n" --remove-label "in-progress,mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
+    # Record the fake completion so the master's runnable filter skips this
+    # issue — otherwise the still-open issue would be re-assigned forever.
+    echo "$n" >>"$MFSTATE/control/dry-done" 2>/dev/null || true
     wstatus done "$n"; hb_stop; return 0
   fi
 
