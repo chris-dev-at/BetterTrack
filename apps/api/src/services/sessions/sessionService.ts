@@ -10,6 +10,8 @@ export interface SessionData {
 }
 
 export interface SessionService {
+  /** The fixed 30-day window length in seconds (config.cookie.maxAgeMs / 1000). */
+  readonly ttlSeconds: number;
   create(userId: string): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
   /** Reset the session's 30-day window (login / PIN verify). False if it's already gone. */
@@ -42,6 +44,7 @@ export function createSessionService(redis: Redis, ttlSeconds: number): SessionS
   const touchIndex = (userId: string) => redis.expire(userIndexKey(userId), ttlSeconds);
 
   return {
+    ttlSeconds,
     async create(userId) {
       const sessionId = randomBytes(32).toString('base64url');
       const now = Date.now();

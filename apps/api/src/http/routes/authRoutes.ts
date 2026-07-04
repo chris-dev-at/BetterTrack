@@ -14,6 +14,7 @@ import {
   type SetPinRequest,
 } from '@bettertrack/contracts';
 
+import { unauthorized } from '../../errors';
 import { clearSessionCookie, setSessionCookie } from '../cookies';
 import { requireAuth } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
@@ -47,6 +48,15 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // mustChangePassword users here before this handler runs.
   router.get('/me', requireAuth, (req, res) => {
     res.json(toMeResponse(req.authUser!));
+  });
+
+  // Read-only view of the caller's *own* current session (§6.11 Security):
+  // when they signed in and when the fixed 30-day window lapses. No TTL/renew
+  // side effects — this only reads req.sessionId's record.
+  router.get('/session', requireAuth, async (req, res) => {
+    const info = await ctx.auth.getSessionInfo(req.sessionId!);
+    if (!info) throw unauthorized();
+    res.json(info);
   });
 
   router.post(

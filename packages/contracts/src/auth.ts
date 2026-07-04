@@ -81,6 +81,23 @@ export const meResponseSchema = z.object({
 });
 export type MeResponse = z.infer<typeof meResponseSchema>;
 
+/**
+ * `GET /auth/session` — the caller's own current session timestamps
+ * (PROJECTPLAN.md §6.11 Security). `expiresAt` is `renewedAt` plus the fixed
+ * 30-day window (§6.1).
+ */
+export const sessionInfoResponseSchema = z
+  .object({
+    /** When the session was created — i.e. the last login. */
+    signedInAt: z.string().datetime(),
+    /** Last time the 30-day window was reset (login / PIN verify). */
+    renewedAt: z.string().datetime(),
+    /** When the session lapses: `renewedAt` + the 30-day window. */
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type SessionInfoResponse = z.infer<typeof sessionInfoResponseSchema>;
+
 export const inviteValidationResponseSchema = z.object({
   valid: z.boolean(),
   email: z.string().nullable(),
