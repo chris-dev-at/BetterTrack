@@ -9932,4 +9932,24 @@ const COMMON_PASSWORD_LIST: readonly string[] = [
   'blitz',
 ];
 
-export const COMMON_PASSWORDS: ReadonlySet<string> = new Set(COMMON_PASSWORD_LIST);
+/**
+ * Owner-directed additions (issue #253, §13.2): obvious `password`/`admin`/
+ * `welcome`/`letmein`/`changeme` + digit-suffix patterns that aren't literal
+ * entries in the top-10k SecLists snapshot above but are exactly the kind of
+ * predictable password a length-only-plus-blocklist policy needs to catch.
+ */
+const COMMON_PASSWORD_ADDITIONS: readonly string[] = [
+  'password1234',
+  'admin123',
+  'welcome123',
+  'letmein123',
+  'changeme123',
+  'password2024',
+  'password2025',
+  'password2026',
+];
+
+export const COMMON_PASSWORDS: ReadonlySet<string> = new Set([
+  ...COMMON_PASSWORD_LIST,
+  ...COMMON_PASSWORD_ADDITIONS,
+]);
