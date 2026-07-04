@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
   SearchResultItem,
@@ -8,9 +8,18 @@ import type {
 } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
+import { getAssetDailyCloses } from '../../lib/assetApi';
 import { createTransactions, updateTransaction } from '../../lib/portfolioApi';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
+import {
+  dateForPrice,
+  formatSeriesPrice,
+  priceForDate,
+  toDailyPoints,
+  weekdayShort,
+  type DailyPoint,
+} from './priceDateLink';
 import { Alert, Button, cx } from './ui';
 
 /** The minimal asset identity a transaction row needs to display + post. */
@@ -267,6 +276,130 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // --- Linked date ↔ price fields (#226) ------------------------------------
+  // The assist applies only to a single-asset *create* flow: bulk prefill prices
+  // at current market by design, and edit opens on the stored values. The daily
+  // close series is fetched once per asset and both directions resolve locally.
+  const linkingEnabled = !isEdit && !props.prefill;
+  const linkAsset = linkingEnabled && rows.length === 1 ? rows[0]!.asset : null;
+  const linkAssetId = linkAsset?.id ?? null;
+
+  const [linked, setLinked] = useState(true);
+  const [series, setSeries] = useState<DailyPoint[] | null>(null);
+  const [seriesLoading, setSeriesLoading] = useState(false);
+  const [priceAuto, setPriceAuto] = useState(false);
+  const [dateAuto, setDateAuto] = useState(false);
+  const [linkNote, setLinkNote] = useState<string | null>(null);
+  /** Set once the user types a price, so the load-time auto-fill never clobbers it. */
+  const manualPrice = useRef(false);
+
+  useEffect(() => {
+    if (!linkAssetId) {
+      setSeries(null);
+      return;
+    }
+    const controller = new AbortController();
+    manualPrice.current = false;
+    setSeriesLoading(true);
+    setSeries(null);
+    setLinkNote(null);
+    setPriceAuto(false);
+    setDateAuto(false);
+    getAssetDailyCloses(linkAssetId, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        const points = toDailyPoints(res.points);
+        setSeries(points);
+        // Default-on-open: fill an empty price with the latest close (≈ current
+        // price at daily granularity), so Record with no edits books at today's
+        // price. Never overwrite a value the user already typed.
+        if (points.length > 0 && !manualPrice.current) {
+          const latest = formatSeriesPrice(points[points.length - 1]!.close);
+          setRows((rs) =>
+            rs.length === 1 && rs[0]!.price.trim() === '' ? [{ ...rs[0]!, price: latest }] : rs,
+          );
+          setPriceAuto(true);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSeries([]);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSeriesLoading(false);
+      });
+    return () => controller.abort();
+  }, [linkAssetId]);
+
+  const hasSeries = series !== null && series.length > 0;
+
+  function setSingleRow(patch: Partial<Row>) {
+    setRows((rs) => (rs.length === 1 ? [{ ...rs[0]!, ...patch }] : rs));
+  }
+
+  /** Date drives price: fill the close for the picked day (or the prior trading day). */
+  function resolveDateToPrice(date: string) {
+    if (!linked || !hasSeries) return;
+    const res = priceForDate(series!, date);
+    if (!res) {
+      setLinkNote('No price data on or before that date.');
+      return;
+    }
+    setSingleRow({ price: formatSeriesPrice(res.price) });
+    setPriceAuto(true);
+    setLinkNote(res.adjusted ? `Market closed — using ${weekdayShort(res.date)} close.` : null);
+  }
+
+  /** Price drives date: jump to the most recent day the series was at that price. */
+  function resolvePriceToDate() {
+    if (!linked || !hasSeries || rows.length !== 1) return;
+    const raw = rows[0]!.price.trim();
+    if (raw === '') return;
+    const price = Number(raw);
+    if (!Number.isFinite(price) || price <= 0) return;
+    const res = dateForPrice(series!, price);
+    if (!res) {
+      setLinkNote('Never at this price in available history.');
+      return;
+    }
+    setSingleRow({ date: res.date });
+    setDateAuto(true);
+    setLinkNote(null);
+  }
+
+  /** Change handler for the linked row: last-edited field drives its partner. */
+  function handleLinkedChange(patch: Partial<Row>) {
+    if ('date' in patch && typeof patch.date === 'string') {
+      setDateAuto(false);
+      setSingleRow(patch);
+      resolveDateToPrice(patch.date);
+      return;
+    }
+    if ('price' in patch) {
+      manualPrice.current = true;
+      setPriceAuto(false);
+      setLinkNote(null);
+      setSingleRow(patch);
+      return;
+    }
+    setSingleRow(patch);
+  }
+
+  /** Commit price → date on blur only (never per keystroke, §5.3), and only for a typed price. */
+  function handlePriceBlur() {
+    if (linked && !priceAuto) resolvePriceToDate();
+  }
+
+  function toggleLinked() {
+    const next = !linked;
+    setLinked(next);
+    if (!next) {
+      // Unlinked: both fields become fully manual — drop the auto markers/note.
+      setPriceAuto(false);
+      setDateAuto(false);
+      setLinkNote(null);
+    }
+  }
+
   function updateRow(key: string, patch: Partial<Row>) {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   }
@@ -351,15 +484,31 @@ export function TransactionDialog(props: TransactionDialogProps) {
             {title}
           </span>
 
-          {rows.map((row, index) => (
-            <RowFields
-              key={row.key}
-              row={row}
-              showAssetHeader={rows.length > 1 || isEdit || !!props.asset}
-              showDivider={index > 0}
-              onChange={(patch) => updateRow(row.key, patch)}
-            />
-          ))}
+          {rows.map((row, index) => {
+            // The link assist lives on the single-asset create row (see above).
+            const link: RowLink | undefined =
+              linkAsset && (seriesLoading || hasSeries)
+                ? {
+                    linked,
+                    loading: seriesLoading,
+                    priceAuto,
+                    dateAuto,
+                    note: linkNote,
+                    onToggle: toggleLinked,
+                    onPriceBlur: handlePriceBlur,
+                  }
+                : undefined;
+            return (
+              <RowFields
+                key={row.key}
+                row={row}
+                showAssetHeader={rows.length > 1 || isEdit || !!props.asset}
+                showDivider={index > 0}
+                onChange={link ? handleLinkedChange : (patch) => updateRow(row.key, patch)}
+                link={link}
+              />
+            );
+          })}
 
           {!isEdit && !props.asset && !props.prefill ? (
             <button
@@ -420,16 +569,73 @@ function switchEntryMode(row: Row, next: EntryMode, onChange: (patch: Partial<Ro
   onChange(patch);
 }
 
+/** Linked date ↔ price controls for the single-asset create row (#226). */
+export interface RowLink {
+  linked: boolean;
+  /** The daily close series is still loading. */
+  loading: boolean;
+  /** The price value was auto-filled from a lookup (not typed). */
+  priceAuto: boolean;
+  /** The date value was auto-filled from a lookup (not typed). */
+  dateAuto: boolean;
+  /** Inline status ("market closed — using Fri close" / "never at this price…"). */
+  note: string | null;
+  onToggle: () => void;
+  onPriceBlur: () => void;
+}
+
+/** Small "auto" marker so a fetched value is never mistaken for a typed one. */
+function AutoHint() {
+  return (
+    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide text-sky-400">
+      auto
+    </span>
+  );
+}
+
+/** A chain glyph — closed when linked, broken when not — for the link toggle. */
+function LinkGlyph({ linked }: { linked: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {linked ? (
+        <>
+          <path d="M9 12h6" />
+          <path d="M8.5 8H7a4 4 0 0 0 0 8h1.5" />
+          <path d="M15.5 8H17a4 4 0 0 1 0 8h-1.5" />
+        </>
+      ) : (
+        <>
+          <path d="M8.5 8H7a4 4 0 0 0 0 8h1.5" />
+          <path d="M15.5 8H17a4 4 0 0 1 0 8h-1.5" />
+          <path d="M4 4l16 16" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 function RowFields({
   row,
   showAssetHeader,
   showDivider,
   onChange,
+  link,
 }: {
   row: Row;
   showAssetHeader: boolean;
   showDivider: boolean;
   onChange: (patch: Partial<Row>) => void;
+  link?: RowLink;
 }) {
   const isAmountMode = row.entryMode === 'amount';
   const derived =
@@ -473,7 +679,10 @@ function RowFields({
         </label>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Date</span>
+          <span className="text-sm font-medium text-neutral-300">
+            Date
+            {link?.dateAuto ? <AutoHint /> : null}
+          </span>
           <input
             type="date"
             value={row.date}
@@ -482,6 +691,35 @@ function RowFields({
             className={inputClass}
           />
         </label>
+
+        {link ? (
+          <div className="col-span-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={link.onToggle}
+              disabled={link.loading}
+              aria-pressed={link.linked}
+              aria-label={link.linked ? 'Unlink date and price' : 'Link date and price'}
+              className={cx(
+                'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-50',
+                link.linked
+                  ? 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/40'
+                  : 'text-neutral-400 ring-1 ring-inset ring-neutral-700 hover:text-neutral-200',
+              )}
+            >
+              <LinkGlyph linked={link.linked} />
+              {link.linked ? 'Linked' : 'Unlinked'}
+            </button>
+            <span className="text-xs text-neutral-500" role="status">
+              {link.loading
+                ? 'Loading price history…'
+                : link.linked
+                  ? 'Date ↔ price auto-fill'
+                  : 'Manual — fields independent'}
+            </span>
+          </div>
+        ) : null}
 
         <div
           className="col-span-2 flex gap-1 rounded-md bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-700"
@@ -539,7 +777,9 @@ function RowFields({
         )}
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Price ({row.asset.currency})</span>
+          <span className="text-sm font-medium text-neutral-300">
+            Price ({row.asset.currency}){link?.priceAuto ? <AutoHint /> : null}
+          </span>
           <input
             type="number"
             inputMode="decimal"
@@ -547,10 +787,17 @@ function RowFields({
             min="0"
             value={row.price}
             onChange={(e) => onChange({ price: e.target.value })}
+            onBlur={link ? link.onPriceBlur : undefined}
             aria-label={`Price for ${row.asset.symbol}`}
             className={inputClass}
           />
         </label>
+
+        {link?.note ? (
+          <p className="col-span-2 text-xs text-amber-400" role="status">
+            {link.note}
+          </p>
+        ) : null}
 
         {isAmountMode ? (
           <p

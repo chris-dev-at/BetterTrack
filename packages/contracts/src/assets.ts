@@ -136,3 +136,23 @@ export const historyResponseSchema = z
   })
   .strict();
 export type HistoryResponse = z.infer<typeof historyResponseSchema>;
+
+/**
+ * `GET /assets/:id/daily-closes` response — the full available **daily** close
+ * series (§5.3), forced to a `1d` interval regardless of range. Powers the
+ * transaction form's linked date ↔ price fields (#226): the client fetches this
+ * once when the dialog opens and resolves both directions (date → price,
+ * price → date) locally, so lookups never make a synchronous provider call.
+ *
+ * Best-effort like the portfolio series: when nothing is cached and the provider
+ * is degraded, `points` is empty and `asOf` is `null` (linking simply disables)
+ * rather than surfacing a 5xx. `points` are ascending by `time`.
+ */
+export const dailyClosesResponseSchema = z
+  .object({
+    points: z.array(pricePointSchema),
+    stale: z.boolean(),
+    asOf: z.string().datetime().nullable(),
+  })
+  .strict();
+export type DailyClosesResponse = z.infer<typeof dailyClosesResponseSchema>;
