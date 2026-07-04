@@ -8,8 +8,8 @@ export const USER_STATUSES = ['active', 'disabled'] as const;
 export const userStatusSchema = z.enum(USER_STATUSES);
 export type UserStatus = z.infer<typeof userStatusSchema>;
 
-/** Password policy length floor (PROJECTPLAN.md §6.1). Blocklist enforced server-side. */
-export const MIN_PASSWORD_LENGTH = 10;
+/** Password policy length floor (PROJECTPLAN.md §6.1, owner-tunable per §13.2). Blocklist enforced server-side. */
+export const MIN_PASSWORD_LENGTH = 8;
 export const MAX_PASSWORD_LENGTH = 200;
 export const passwordSchema = z.string().min(MIN_PASSWORD_LENGTH).max(MAX_PASSWORD_LENGTH);
 

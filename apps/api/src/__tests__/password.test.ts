@@ -24,13 +24,29 @@ describe('checkPasswordPolicy', () => {
     expect(checkPasswordPolicy('a-perfectly-fine-passphrase').ok).toBe(true);
   });
 
-  it('rejects passwords shorter than 10 characters', () => {
+  it('rejects passwords shorter than 8 characters', () => {
     expect(checkPasswordPolicy('short').ok).toBe(false);
+    expect(checkPasswordPolicy('7chars!').ok).toBe(false);
+  });
+
+  it('accepts an 8-character, uncommon password (the new floor)', () => {
+    expect(checkPasswordPolicy('zqy8pfmk').ok).toBe(true);
+  });
+
+  it('accepts a long, uncommon password with no digits or special characters (no complexity rules)', () => {
+    expect(checkPasswordPolicy('thequickbrownfoxjumps').ok).toBe(true);
   });
 
   it('rejects common passwords (case-insensitive)', () => {
     expect(checkPasswordPolicy('Password1').ok).toBe(false);
     expect(checkPasswordPolicy('qwertyuiop').ok).toBe(false);
+  });
+
+  it('rejects obvious common-password variants added for issue #253', () => {
+    expect(checkPasswordPolicy('password1234').ok).toBe(false);
+    expect(checkPasswordPolicy('PASSWORD1234').ok).toBe(false);
+    expect(checkPasswordPolicy('password1').ok).toBe(false);
+    expect(checkPasswordPolicy('12345678').ok).toBe(false);
   });
 
   it('rejects entries from the full SecLists top-10k blocklist (issue #30)', () => {

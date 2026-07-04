@@ -19,6 +19,7 @@ vi.mock('../lib/portfolioApi');
 
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
+import { listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 
@@ -217,6 +218,50 @@ test('invite accept: a valid token shows the fixed email and creates the account
     username: 'newbie',
     password: 'a-brand-new-secret',
   });
+});
+
+test('logout then login as a different user shows no stale account data (#253)', async () => {
+  // AccountSettingsPage caches `GET /auth/me` under a 30s staleTime — long
+  // enough that, without an explicit cache clear on logout, a same-test
+  // relogin would still render the previous user's cached identity.
+  anonymous();
+  vi.mocked(api.login).mockResolvedValueOnce(member);
+  vi.mocked(api.logout).mockResolvedValue();
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+
+  const user = userEvent.setup();
+  renderAt('/settings/account');
+
+  await screen.findByText('Sign in to your account');
+  // The initial bootstrap `getMe` (rejected by `anonymous()` above) already
+  // ran; only now redirect it, so AccountSettingsPage's own query — which
+  // fires after login — resolves to jane.
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  await user.type(screen.getByLabelText('Email or username'), 'jane');
+  await user.type(screen.getByLabelText('Password'), 'correct horse');
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Account menu' }));
+  await user.click(screen.getByRole('menuitem', { name: 'Logout' }));
+  await screen.findByText('Sign in to your account');
+
+  const otherMember: MeResponse = {
+    ...member,
+    id: 'user-2',
+    username: 'bob',
+    email: 'bob@bettertrack.test',
+  };
+  vi.mocked(api.login).mockResolvedValueOnce(otherMember);
+  vi.mocked(api.getMe).mockResolvedValue(otherMember);
+
+  await user.type(screen.getByLabelText('Email or username'), 'bob');
+  await user.type(screen.getByLabelText('Password'), 'another correct horse');
+  await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(await screen.findByText('bob@bettertrack.test')).toBeInTheDocument();
+  expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 
 test('invite accept: an invalid token is rejected with a clear message and no form', async () => {

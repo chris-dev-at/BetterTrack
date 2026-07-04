@@ -9,6 +9,8 @@ import {
 } from 'react';
 import type { ReactNode } from 'react';
 
+import { useQueryClient } from '@tanstack/react-query';
+
 import type {
   AcceptInviteRequest,
   ChangePasswordRequest,
@@ -108,6 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<MeResponse | null>(null);
   const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   // Apply a resolved /auth/me-or-login user to local state, routing a
   // forced-change account into its trap, and a PIN-gated account whose PIN
@@ -123,11 +126,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Drops every trace of the signed-out user: the PIN-satisfied flag, the auth
+  // state itself, and the entire TanStack Query cache. Without the cache clear
+  // a subsequent login as a *different* account could briefly (or, for queries
+  // with a nonzero staleTime, not-so-briefly) render the previous user's
+  // cached name/email/portfolio/notifications before a refetch overwrote it.
   const clearSession = useCallback(() => {
     clearPinSatisfied();
     setUser(null);
     setStatus('anonymous');
-  }, []);
+    queryClient.clear();
+  }, [queryClient]);
 
   // Latest clearSession, so the (mount-once) global policy never goes stale.
   const clearSessionRef = useRef(clearSession);
