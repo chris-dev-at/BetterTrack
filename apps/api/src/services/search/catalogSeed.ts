@@ -1,4 +1,5 @@
 import type { AssetRepository, GlobalAssetUpsert } from '../../data/repositories/assetRepository';
+import { CATALOG_SEED_ENTRIES } from './catalogSeedData';
 
 /**
  * Seed-list plumbing for the shipped common-symbols catalog (PROJECTPLAN.md
@@ -11,10 +12,12 @@ import type { AssetRepository, GlobalAssetUpsert } from '../../data/repositories
 export type CatalogSeedEntry = GlobalAssetUpsert;
 
 /**
- * The shipped common-symbols list (§6.2(c)). Intentionally empty until the T2
- * seed-content slice lands — the plumbing below is exercised by tests either way.
+ * The shipped common-symbols list (§6.2(c)) — major global indices, the world/EM
+ * UCITS + flagship US ETFs, DAX 40 / ATX 20 / S&P 500 constituents, top cryptos,
+ * major FX pairs and key commodities. The content lives in {@link ./catalogSeedData}
+ * (~600+ rows); this module owns the idempotent, backfill-free upsert plumbing.
  */
-export const COMMON_SYMBOLS_SEED: readonly CatalogSeedEntry[] = [];
+export const COMMON_SYMBOLS_SEED: readonly CatalogSeedEntry[] = CATALOG_SEED_ENTRIES;
 
 export interface CatalogSeedResult {
   /** Rows this run inserted. */
