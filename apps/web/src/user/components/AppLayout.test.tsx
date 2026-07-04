@@ -64,3 +64,12 @@ test('navigating to a different route clears a stuck error boundary', async () =
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.getByText('Portfolio page')).toBeInTheDocument();
 });
+
+test('the primary nav scrolls horizontally rather than wrapping on phones', () => {
+  renderApp('/portfolio');
+
+  const nav = screen.getByRole('navigation', { name: 'Primary' });
+  expect(nav.className).toContain('overflow-x-auto');
+  expect(nav.className).toContain('no-scrollbar');
+  expect(nav.className).not.toContain('flex-wrap');
+});
