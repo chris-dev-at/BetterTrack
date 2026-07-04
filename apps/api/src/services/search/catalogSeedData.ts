@@ -631,7 +631,7 @@ const SP500: Entry[] = usStocks([
   ['EPAM', 'EPAM Systems, Inc.', 'NYSE'],
   ['JBL', 'Jabil Inc.', 'NYSE'],
   ['TRMB', 'Trimble Inc.', 'NASDAQ'],
-  ['HuBB', 'Hubbell Incorporated', 'NYSE'],
+  ['HUBB', 'Hubbell Incorporated', 'NYSE'],
   ['AWK', 'American Water Works Company, Inc.', 'NYSE'],
   ['WTRG', 'Essential Utilities, Inc.', 'NYSE'],
   ['PNW', 'Pinnacle West Capital Corporation', 'NYSE'],
