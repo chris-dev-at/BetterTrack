@@ -203,22 +203,24 @@ docker compose up -d          # rolling restart
 
 ### Environment variables
 
-| Variable                  | Required | Notes                                                                             |
-| ------------------------- | -------- | --------------------------------------------------------------------------------- |
-| `DATABASE_URL`            | yes      | Must use `db` hostname (e.g. `postgres://bt:pw@db:5432/bettertrack`)              |
-| `POSTGRES_PASSWORD`       | yes      | Password for the `db` service and `DATABASE_URL`                                  |
-| `REDIS_URL`               | yes      | `redis://redis:6379`                                                              |
-| `SESSION_SECRET`          | yes      | 64 random hex bytes (`openssl rand -hex 64`); comma-separate for rotation         |
-| `BT_MODE`                 | no       | `subdomains` (default) or `ports` — picks the deployment topology (§4.6, §11)     |
-| `BT_DOMAIN`               | yes      | Base domain/host (`track.example.at`); origins are derived from it                |
-| `BT_TLS`                  | no       | Force the derived scheme; blank = per-mode default (subdomains https, ports http) |
-| `BT_SUB_API/WEB/ADMIN`    | no       | Subdomain labels in subdomains mode (default `api`/`web`/`admin`)                 |
-| `BT_PORT_API/WEB/ADMIN`   | no       | Public service ports in ports mode (default `3000`/`8080`/`8081`)                 |
-| `BT_HTTP_PORT`            | no       | Host port the front proxy binds in subdomains mode (default `80`; TLS in front)   |
-| `BT_API/WEB/ADMIN_ORIGIN` | no       | Explicit origin overrides — win over derivation (`APP_ORIGIN` = legacy web alias) |
-| `SMTP_HOST/FROM`          | no       | Both required to enable email; app runs without them (Gmail preset in `.env`)     |
-| `ADMIN_EMAIL/PASSWORD`    | no       | Used once by the seed command; no-op thereafter                                   |
-| `BACKUP_RETENTION_DAYS`   | no       | Days of nightly dumps to keep in the `pgbackups` volume (default `14`)            |
+| Variable                      | Required | Notes                                                                                  |
+| ----------------------------- | -------- | -------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                | yes      | Must use `db` hostname (e.g. `postgres://bt:pw@db:5432/bettertrack`)                   |
+| `POSTGRES_PASSWORD`           | yes      | Password for the `db` service and `DATABASE_URL`                                       |
+| `REDIS_URL`                   | yes      | `redis://redis:6379`                                                                   |
+| `SESSION_SECRET`              | yes      | 64 random hex bytes (`openssl rand -hex 64`); comma-separate for rotation              |
+| `BT_MODE`                     | no       | `subdomains` (default) or `ports` — picks the deployment topology (§4.6, §11)          |
+| `BT_DOMAIN`                   | yes      | Base domain/host (`track.example.at`); origins are derived from it                     |
+| `BT_TLS`                      | no       | Force the derived scheme; blank = per-mode default (subdomains https, ports http)      |
+| `BT_SUB_API/WEB/ADMIN`        | no       | Subdomain labels in subdomains mode (default `api`/`web`/`admin`)                      |
+| `BT_PORT_API/WEB/ADMIN`       | no       | Public service ports in ports mode (default `3000`/`8080`/`8081`)                      |
+| `BT_HTTP_PORT`                | no       | Host port the front proxy binds in subdomains mode (default `80`; TLS in front)        |
+| `BT_API/WEB/ADMIN_ORIGIN`     | no       | Explicit origin overrides — win over derivation (`APP_ORIGIN` = legacy web alias)      |
+| `SMTP_HOST/FROM`              | no       | Both required to enable email; app runs without them (Gmail preset in `.env`)          |
+| `ADMIN_EMAIL/PASSWORD`        | no       | Used once by the seed command; no-op thereafter                                        |
+| `BACKUP_RETENTION_DAYS`       | no       | Days of nightly dumps to keep in the `pgbackups` volume (default `14`)                 |
+| `RATE_LIMIT_BURST_WINDOW_SEC` | no       | Short burst window for the general API limiter, seconds (default `10`, §10)            |
+| `RATE_LIMIT_BURST_LIMIT`      | no       | Requests allowed per burst window before it trips the escalation ladder (default `60`) |
 
 > **Deployment topology (§4.6, §11):** one env scheme drives every public origin,
 > and the CORS allowlist + session-cookie attributes are **derived** from it —

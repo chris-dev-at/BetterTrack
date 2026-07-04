@@ -178,4 +178,15 @@ describe('progressive limiter — configured schedules meet §10', () => {
     expect(cfg.general.decaySec).toBe(15 * 60);
     expect(cfg.loginAccount.decaySec).toBe(15 * 60);
   });
+
+  it('general burst window is short and tight but feeds the SAME ladder (#202)', () => {
+    // A tight short window a reload flood trips fast...
+    expect(cfg.generalBurst.windowSec).toBeLessThanOrEqual(15);
+    expect(cfg.generalBurst.limit).toBeLessThan(cfg.general.limit);
+    // ...yet generous enough to clear a multi-tab refetch burst (3 tabs × ~6
+    // endpoints = ~18), and it escalates/decays exactly like the steady state.
+    expect(cfg.generalBurst.limit).toBeGreaterThanOrEqual(60);
+    expect(cfg.generalBurst.cooldownsSec).toEqual(cfg.general.cooldownsSec);
+    expect(cfg.generalBurst.decaySec).toBe(cfg.general.decaySec);
+  });
 });
