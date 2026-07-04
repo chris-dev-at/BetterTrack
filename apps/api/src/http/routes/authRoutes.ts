@@ -5,12 +5,14 @@ import {
   changePasswordRequestSchema,
   loginRequestSchema,
   pinVerifyRequestSchema,
+  registerRequestSchema,
   setPinRequestSchema,
   tokenParamSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type LoginRequest,
   type PinVerifyRequest,
+  type RegisterRequest,
   type SetPinRequest,
 } from '@bettertrack/contracts';
 
@@ -111,6 +113,24 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     const { token } = req.valid?.params as { token: string };
     res.json(await ctx.auth.validateInvite(token));
   });
+
+  // Public self-serve registration (§4, §6.12). Enforcement plumbing: the
+  // service reads the stored registration mode and, in V1's `closed` mode,
+  // rejects with 403 REGISTRATION_CLOSED — this is the "hand-crafted register
+  // call" the P8 gate blocks. Admin-created users and invites are unaffected.
+  router.post(
+    '/register',
+    limiters.login,
+    validateBody(registerRequestSchema),
+    async (req, res) => {
+      const { user, sessionId } = await ctx.auth.register(
+        req.valid?.body as RegisterRequest,
+        req.ip,
+      );
+      setSessionCookie(res, ctx.config, sessionId);
+      res.status(201).json(toMeResponseFromRow(user));
+    },
+  );
 
   router.post('/accept-invite', validateBody(acceptInviteRequestSchema), async (req, res) => {
     const body = req.valid?.body as AcceptInviteRequest;
