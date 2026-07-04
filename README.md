@@ -352,8 +352,10 @@ allocate → add to portfolio → enable friend sharing → a second account
 accepts the request and sees the shared portfolio. `playwright.config.ts`
 boots the real api + web dev servers (migrating and seeding the api's
 database first) against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at
-(defaults match `pnpm dev:infra`). This is **not** part of `pnpm test` or the
-per-commit CI gate — it runs nightly via
+(defaults match `pnpm dev:infra`). It runs against two Playwright projects —
+`chromium` (`Desktop Chrome`) and `mobile-chromium` (`Pixel 7`, 412×839) — so
+the happy path is proven on a phone-width viewport as well as desktop. This is
+**not** part of `pnpm test` or the per-commit CI gate — it runs nightly via
 `.github/workflows/e2e-nightly.yml` (also triggerable manually).
 
 ## How the layers stay in sync
