@@ -69,9 +69,10 @@ export function SettingsPage() {
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode>('closed');
   const [betaMode, setBetaMode] = useState(false);
   // The last-known persisted values, so we can flag unsaved edits without a refetch.
-  const [baseline, setBaseline] = useState<{ registrationMode: RegistrationMode; betaMode: boolean } | null>(
-    null,
-  );
+  const [baseline, setBaseline] = useState<{
+    registrationMode: RegistrationMode;
+    betaMode: boolean;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);

@@ -145,9 +145,7 @@ export async function getSettings(signal?: AbortSignal): Promise<AppSettingsResp
   return appSettingsResponseSchema.parse(data);
 }
 
-export async function updateSettings(
-  body: UpdateAppSettingsRequest,
-): Promise<AppSettingsResponse> {
+export async function updateSettings(body: UpdateAppSettingsRequest): Promise<AppSettingsResponse> {
   const data = await apiRequest<unknown>('/admin/settings', { method: 'PATCH', body });
   return appSettingsResponseSchema.parse(data);
 }
