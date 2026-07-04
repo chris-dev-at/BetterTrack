@@ -761,6 +761,7 @@ The intentional parking lot — scoped out of V1, designed-for in V1. Roughly or
 
 **Sharing & Social**
 - Public profiles & public links (customizable: whole portfolio, selected parts, conglomerates, ideas — freeze-shot or live); shared **editable** portfolios (permission levels: read-only / edit / manage); ideas (shareable Workboard analyses + "suggest this asset" messages to friends); later: comments/reactions/groups — always gated by explicit opt-in privacy.
+- **Expandable friend rows** (owner idea, 2026-07-04 → #235): each Friends-list entry expands in place to all per-friend options plus everything that friend shared with you (portfolios, conglomerates, future shareable kinds), grouped by kind with counts visible on the collapsed row — the friend-centric complement to the item-centric Shared With Me list.
 
 **API access as a product** (§6.13)
 - API keys / personal access tokens with scopes (never expire, revoke-only), OAuth apps, per-key rate limits and audit trail; outbound user-defined webhooks. The smart-fridge dashboard becomes possible here.
