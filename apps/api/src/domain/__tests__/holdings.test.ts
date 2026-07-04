@@ -319,6 +319,59 @@ describe('reducePosition', () => {
     });
   });
 
+  describe('chronological ordering across timestamp renderings (issue #218)', () => {
+    // ISO-8601 strings with mixed sub-second precision do NOT sort
+    // lexicographically in time order ('.' < 'Z'): '…T10:00:00.500Z' sorts
+    // before the earlier '…T10:00:00Z'. Ordering must go through epoch-ms.
+
+    it('a sell 500 ms after its buy is valid even though it sorts first as a string', () => {
+      // Old string sort replayed the sell first → spurious OversellError that
+      // permanently blocked edits on the asset.
+      const pos = reducePosition([
+        tx({ side: 'sell', quantity: 5, price: 12, executedAt: '2026-01-05T10:00:00.500Z' }),
+        tx({ side: 'buy', quantity: 5, price: 10, executedAt: '2026-01-05T10:00:00Z' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.realizedPnl).toBeCloseTo(10, 10); // 5·(12−10)
+    });
+
+    it('a sell truly 500 ms before its buy oversells — regardless of string order', () => {
+      // The create-time scenario from #218: buy stored as .500Z, client sell
+      // dated the plain-second instant before it. String order accepted it and
+      // every later replay then threw; epoch order rejects it consistently.
+      expect(() =>
+        reducePosition([
+          tx({ side: 'buy', quantity: 5, price: 10, executedAt: '2026-01-05T10:00:00.500Z' }),
+          tx({ side: 'sell', quantity: 5, price: 12, executedAt: '2026-01-05T10:00:00Z' }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('compares instants across zone offsets, not string forms', () => {
+      // 12:00+02:00 IS 10:00Z; the sell 250 ms later is a valid full exit.
+      const pos = reducePosition([
+        tx({ side: 'sell', quantity: 2, price: 11, executedAt: '2026-01-05T10:00:00.250Z' }),
+        tx({ side: 'buy', quantity: 2, price: 10, executedAt: '2026-01-05T12:00:00+02:00' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.realizedPnl).toBeCloseTo(2, 10);
+    });
+
+    it('the same instant rendered two ways ties, and input order breaks the tie', () => {
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 1, price: 10, executedAt: '2026-01-05T10:00:00Z' }),
+        tx({ side: 'sell', quantity: 1, price: 10, executedAt: '2026-01-05T10:00:00.000Z' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+    });
+
+    it('rejects an unparseable executedAt instead of mis-sorting it', () => {
+      expect(() =>
+        reducePosition([tx({ side: 'buy', quantity: 1, price: 10, executedAt: 'not-a-date' })]),
+      ).toThrow(/ISO-8601/);
+    });
+  });
+
   describe('validation (money path fails loud)', () => {
     it('rejects a zero/negative quantity', () => {
       expect(() => reducePosition([tx({ side: 'buy', quantity: 0, price: 100 })])).toThrow(
@@ -1121,6 +1174,55 @@ describe('timeWeightedReturn', () => {
     expect(perf[0]?.pct).toBe(0);
     expect(perf[1]?.pct).toBe(0); // resumes flat — the gap carries no information
     expect(perf[2]?.pct).toBeCloseTo(10, 10);
+  });
+
+  it('seeds the basis from a pre-price inflow: the first real value books the true move (issue #218)', () => {
+    // Buy a custom asset on Monday (flow +1 000) before it has any value
+    // point; the first price lands Wednesday at 1 200. The +20 % is real and
+    // must not collapse to a flat 0 %.
+    const values = [
+      { date: '2026-01-05', valueEur: 0 },
+      { date: '2026-01-06', valueEur: 0 },
+      { date: '2026-01-07', valueEur: 1200 },
+    ];
+    const flows = [{ date: '2026-01-05', flowEur: 1000 }];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[0]?.pct).toBe(0); // no value info yet — flat
+    expect(perf[1]?.pct).toBe(0);
+    expect(perf[2]?.pct).toBeCloseTo(20, 10); // 1200 / 1000 − 1
+  });
+
+  it('accumulates several pre-price inflows into the basis', () => {
+    // Two buys before the first value point: the basis is everything put in.
+    const values = [
+      { date: '2026-01-05', valueEur: 0 },
+      { date: '2026-01-06', valueEur: 0 },
+      { date: '2026-01-07', valueEur: 1800 },
+    ];
+    const flows = [
+      { date: '2026-01-05', flowEur: 1000 },
+      { date: '2026-01-06', flowEur: 500 },
+    ];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[1]?.pct).toBe(0);
+    expect(perf[2]?.pct).toBeCloseTo(20, 10); // 1800 / 1500 − 1
+  });
+
+  it('books a full pre-price liquidation against the seeded basis and resets it', () => {
+    // In for 1 000 on Monday, everything sold for 450 on Tuesday — all before
+    // any value point exists. That −55 % is real money lost, not a data gap.
+    const values = [
+      { date: '2026-01-05', valueEur: 0 },
+      { date: '2026-01-06', valueEur: 0 },
+      { date: '2026-01-07', valueEur: 0 },
+    ];
+    const flows = [
+      { date: '2026-01-05', flowEur: 1000 },
+      { date: '2026-01-06', flowEur: -450 },
+    ];
+    const perf = timeWeightedReturn(values, flows);
+    expect(perf[1]?.pct).toBeCloseTo(-55, 10); // 450 / 1000 − 1
+    expect(perf[2]?.pct).toBeCloseTo(-55, 10); // base reset — flat while empty
   });
 
   it('a mid-series zero-value gap does not swallow the move across it', () => {
