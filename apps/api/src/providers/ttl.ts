@@ -18,6 +18,7 @@ const HISTORY_TTL_BY_RANGE: Record<HistoryRange, number> = {
   '1D': 60, // 1-minute candles
   '1W': 5 * 60, // 15-minute candles
   '1M': 15 * 60, // 30-minute candles
+  '3M': 60 * 60, // daily candles
   '6M': 60 * 60, // daily candles
   '1Y': 60 * 60, // daily candles
   '5Y': 6 * 60 * 60, // weekly candles

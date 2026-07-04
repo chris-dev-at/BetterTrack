@@ -343,7 +343,7 @@ function RangeToggle({
     <div
       role="group"
       aria-label="Select chart range"
-      className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+      className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
       {ranges.map((token) => {
         const selected = token === active;
@@ -354,7 +354,7 @@ function RangeToggle({
             aria-pressed={selected}
             onClick={() => onSelect(token)}
             className={cx(
-              'rounded px-2 py-1 text-xs font-medium transition-colors',
+              'rounded px-2.5 py-1 text-xs font-medium transition-colors',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
               selected
                 ? 'bg-sky-600 text-white'

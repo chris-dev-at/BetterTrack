@@ -1,12 +1,12 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, test } from 'vitest';
 
-import { Disclaimer } from './Disclaimer';
+import { Disclaimer, TAGLINE } from './Disclaimer';
 
 describe('Disclaimer', () => {
   test('renders the given copy', () => {
-    render(<Disclaimer>BetterTrack is not investment advice.</Disclaimer>);
-    expect(screen.getByText('BetterTrack is not investment advice.')).toBeInTheDocument();
+    render(<Disclaimer>{TAGLINE}</Disclaimer>);
+    expect(screen.getByText(TAGLINE)).toBeInTheDocument();
   });
 
   test('applies the muted footnote styling', () => {

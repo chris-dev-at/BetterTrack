@@ -78,6 +78,7 @@ const DEFAULT_INTERVAL_BY_RANGE: Record<HistoryRange, HistoryInterval> = {
   '1D': '1m',
   '1W': '15m',
   '1M': '30m',
+  '3M': '1d',
   '6M': '1d',
   '1Y': '1d',
   '5Y': '1wk',

@@ -58,7 +58,9 @@ function AddFriendForm() {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold text-neutral-100">Add a friend</h2>
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        Add a friend
+      </h2>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="flex-1">
           <TextField
@@ -94,7 +96,7 @@ function IncomingRequestRow({
 }) {
   const busy = pendingAction !== null;
   return (
-    <li className="flex items-center justify-between gap-3 py-3">
+    <li className="flex items-center justify-between gap-3 px-4 py-3">
       <span className="text-sm font-medium text-neutral-100">{request.user.username}</span>
       <span className="flex gap-2">
         <Button onClick={onAccept} disabled={busy}>
@@ -118,7 +120,7 @@ function OutgoingRequestRow({
   pending: boolean;
 }) {
   return (
-    <li className="flex items-center justify-between gap-3 py-3">
+    <li className="flex items-center justify-between gap-3 px-4 py-3">
       <span className="text-sm font-medium text-neutral-100">{request.user.username}</span>
       <Button variant="secondary" onClick={onCancel} disabled={pending}>
         {pending ? 'Cancelling…' : 'Cancel'}
@@ -159,7 +161,7 @@ function RequestsSection() {
   if (isLoading) {
     return (
       <section className="flex flex-col gap-3">
-        <Skeleton height="h-6" width="w-40" />
+        <Skeleton height="h-4" width="w-32" />
         <Skeleton height="h-16" />
       </section>
     );
@@ -173,15 +175,17 @@ function RequestsSection() {
 
   return (
     <div className="flex flex-col gap-8">
-      <section className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold text-neutral-100">Incoming requests</h2>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          Incoming requests
+        </h2>
         {actionFailed ? (
           <Alert tone="error">That action didn't go through. Please try again.</Alert>
         ) : null}
         {data.incoming.length === 0 ? (
           <EmptyState title="No incoming requests" description="New friend requests appear here." />
         ) : (
-          <ul className="divide-y divide-neutral-800">
+          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
             {data.incoming.map((request) => (
               <IncomingRequestRow
                 key={request.id}
@@ -201,15 +205,17 @@ function RequestsSection() {
         )}
       </section>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold text-neutral-100">Pending requests</h2>
+      <section className="flex flex-col gap-3">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+          Pending requests
+        </h2>
         {data.outgoing.length === 0 ? (
           <EmptyState
             title="No pending requests"
             description="Requests you send are listed here until they're accepted or declined."
           />
         ) : (
-          <ul className="divide-y divide-neutral-800">
+          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
             {data.outgoing.map((request) => (
               <OutgoingRequestRow
                 key={request.id}
@@ -274,7 +280,7 @@ function FriendRow({
   onRequestRemove: () => void;
 }) {
   return (
-    <li className="flex items-center justify-between gap-3 py-3">
+    <li className="flex items-center justify-between gap-3 px-4 py-3">
       <span className="text-sm font-medium text-neutral-100">{friendship.user.username}</span>
       <Button variant="secondary" onClick={onRequestRemove}>
         Remove
@@ -304,7 +310,7 @@ function FriendsListSection() {
   if (isLoading) {
     return (
       <section className="flex flex-col gap-3">
-        <Skeleton height="h-6" width="w-32" />
+        <Skeleton height="h-4" width="w-24" />
         <Skeleton height="h-16" />
       </section>
     );
@@ -315,8 +321,8 @@ function FriendsListSection() {
   }
 
   return (
-    <section className="flex flex-col gap-2">
-      <h2 className="text-lg font-semibold text-neutral-100">Friends</h2>
+    <section className="flex flex-col gap-3">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Friends</h2>
       {data.friends.length === 0 ? (
         <EmptyState
           icon="🫂"
@@ -324,7 +330,7 @@ function FriendsListSection() {
           description="Add a friend by username or email above to start sharing."
         />
       ) : (
-        <ul className="divide-y divide-neutral-800">
+        <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
           {data.friends.map((friendship) => (
             <FriendRow
               key={friendship.user.id}

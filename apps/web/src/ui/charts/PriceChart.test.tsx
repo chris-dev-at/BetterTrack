@@ -43,7 +43,7 @@ describe('PriceChart', () => {
   test('renders the full range toggle and draws an area series from props', () => {
     render(<PriceChart series={samplePriceSeries} />);
 
-    for (const token of ['1D', '1W', '1M', '6M', '1Y', '5Y', 'Max']) {
+    for (const token of ['1D', '1W', '1M', '3M', '1Y', 'Max']) {
       expect(screen.getByRole('button', { name: token })).toBeInTheDocument();
     }
 

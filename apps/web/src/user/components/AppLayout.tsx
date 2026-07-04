@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
-import { Disclaimer, ErrorBoundary } from '../../ui';
+import { Disclaimer, ErrorBoundary, TAGLINE } from '../../ui';
 import { CmdKPalette } from './CmdKPalette';
 import { NotificationBell } from './NotificationBell';
 import { ProfileMenu } from './ProfileMenu';
@@ -95,7 +95,7 @@ export function AppLayout() {
         </ErrorBoundary>
       </main>
       <footer className="mx-auto max-w-6xl px-4 pb-8">
-        <Disclaimer>BetterTrack is not investment advice.</Disclaimer>
+        <Disclaimer>{TAGLINE}</Disclaimer>
       </footer>
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>

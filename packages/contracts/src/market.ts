@@ -48,7 +48,7 @@ export type AssetRef = z.infer<typeof assetRefSchema>;
  * Chart range presets (§5.3). Each maps to a default candle interval and a
  * cache TTL; the API picks the interval, callers pick the range.
  */
-export const HISTORY_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y', 'MAX'] as const;
+export const HISTORY_RANGES = ['1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'MAX'] as const;
 export const historyRangeSchema = z.enum(HISTORY_RANGES);
 export type HistoryRange = z.infer<typeof historyRangeSchema>;
 
