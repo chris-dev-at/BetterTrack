@@ -29,6 +29,15 @@ require_env(){
   done
 }
 
+# The single factory and the multi-factory must never run at the same time.
+guard_multi_factory(){
+  if [ -n "$($DOCKER ps -q --filter label=com.docker.compose.project=bettertrack-multifactory)" ]; then
+    echo "✗ The multi-factory (bettertrack-multifactory) is running/paused."
+    echo "  Stop it first:  ./multi-factory/autorun.sh --stop"
+    exit 1
+  fi
+}
+
 stop_legacy(){
   # Remove any factory containers from earlier launches under other project names,
   # so exactly one factory runs. Volumes are kept unless --fresh is given.
@@ -44,13 +53,13 @@ stop_legacy(){
 case "${1:-up}" in
   --logs)  exec dc logs -f ;;
   --stop)  echo "→ stopping factory"; dc stop; echo "✓ stopped. Resume with: ./factory/autorun.sh"; exit 0 ;;
-  --fresh) require_env; echo "→ wiping factory state volume"; dc down -v --remove-orphans 2>/dev/null || true; stop_legacy ;;
-  --smoke) require_env; stop_legacy
+  --fresh) require_env; guard_multi_factory; echo "→ wiping factory state volume"; dc down -v --remove-orphans 2>/dev/null || true; stop_legacy ;;
+  --smoke) require_env; guard_multi_factory; stop_legacy
            echo "→ smoke run (one issue, foreground)…"
            dc build
            ONE_SHOT=1 dc run --rm factory
            exit 0 ;;
-  up|"")   require_env; stop_legacy ;;
+  up|"")   require_env; guard_multi_factory; stop_legacy ;;
   *) echo "usage: autorun.sh [--fresh|--logs|--stop|--smoke]"; exit 1 ;;
 esac
 

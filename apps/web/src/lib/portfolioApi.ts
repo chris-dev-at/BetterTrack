@@ -6,6 +6,7 @@ import {
   portfolioResponseSchema,
   transactionListResponseSchema,
   transactionSchema,
+  updatePortfolioResponseSchema,
   valuePointsResponseSchema,
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
@@ -14,10 +15,12 @@ import {
   type PortfolioHistoryResponse,
   type PortfolioListResponse,
   type PortfolioResponse,
+  type PortfolioSummary,
   type Transaction,
   type TransactionInput,
   type TransactionListResponse,
   type UpdateCustomAssetRequest,
+  type UpdatePortfolioRequest,
   type UpdateTransactionRequest,
   type ValuePoint,
   type ValuePointsResponse,
@@ -41,6 +44,18 @@ import { apiRequest } from './apiClient';
 export async function listPortfolios(signal?: AbortSignal): Promise<PortfolioListResponse> {
   const data = await apiRequest<unknown>('/portfolios', { signal });
   return portfolioListResponseSchema.parse(data);
+}
+
+/** `PATCH /portfolios/:id` — rename and/or change visibility (e.g. the Shared Items toggle-off). */
+export async function updatePortfolio(
+  portfolioId: string,
+  patch: UpdatePortfolioRequest,
+): Promise<PortfolioSummary> {
+  const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}`, {
+    method: 'PATCH',
+    body: patch,
+  });
+  return updatePortfolioResponseSchema.parse(data).portfolio;
 }
 
 // --- Holdings + totals -----------------------------------------------------

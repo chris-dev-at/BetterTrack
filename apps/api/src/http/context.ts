@@ -6,6 +6,7 @@ import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
+import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
@@ -46,6 +47,7 @@ import {
 import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createSessionService } from '../services/sessions/sessionService';
+import { createSocialService, type SocialService } from '../services/social/socialService';
 import {
   createWorkboardService,
   type WorkboardService,
@@ -73,6 +75,8 @@ export interface AppContext {
   conglomerate: ConglomerateService;
   /** Backtest preview over inline draft baskets for the Builder (§6.5, §6.6). */
   backtest: BacktestService;
+  /** Friend requests + friendships — the V1 social graph (§6.9). */
+  social: SocialService;
 }
 
 export interface BuildContextDeps {
@@ -217,6 +221,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
   });
 
+  // Friend requests + friendships (§6.9): no-enumeration request creation,
+  // accept/decline/cancel/remove, all authorization enforced at query time.
+  const friendshipRepo = createFriendshipRepository(db);
+  const social = createSocialService({ repo: friendshipRepo, portfolio });
+
   return {
     config,
     redis,
@@ -231,5 +240,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     customAssets,
     conglomerate,
     backtest: backtestPreview,
+    social,
   };
 }

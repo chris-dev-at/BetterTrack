@@ -34,14 +34,11 @@ import {
   EtfsPage,
   StocksPage,
 } from './assets/AssetsSection';
-import {
-  FriendsPage,
-  MySharedItemsPage,
-  PublicProfilePage,
-  SharedWithMePage,
-  SocialIdeasPage,
-  SocialLayout,
-} from './social/SocialSection';
+import { FriendsPage } from './social/FriendsPage';
+import { SharedWithMePage } from './social/SharedWithMePage';
+import { SharedPortfolioPage } from './social/SharedPortfolioPage';
+import { MySharedItemsPage } from './social/MySharedItemsPage';
+import { PublicProfilePage, SocialIdeasPage, SocialLayout } from './social/SocialSection';
 import {
   AccountSettingsPage,
   ApiAccessPage,
@@ -128,6 +125,7 @@ function UserShell() {
             <Route index element={<Navigate to="/social/friends" replace />} />
             <Route path="friends" element={<FriendsPage />} />
             <Route path="shared-with-me" element={<SharedWithMePage />} />
+            <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
             <Route path="my-shared" element={<MySharedItemsPage />} />
             <Route path="ideas" element={<SocialIdeasPage />} />
             <Route path="profile" element={<PublicProfilePage />} />

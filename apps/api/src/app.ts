@@ -16,6 +16,7 @@ import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
+import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
 
@@ -60,6 +61,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
+  app.use('/api/v1/social', createSocialRouter(ctx));
 
   app.use(createErrorHandler(ctx.logger));
   return app;

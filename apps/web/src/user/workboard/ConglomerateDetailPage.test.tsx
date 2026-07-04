@@ -8,10 +8,16 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('../../lib/conglomerateApi', () => ({
   getConglomerate: vi.fn(),
   deleteConglomerate: vi.fn(),
+  allocateConglomerate: vi.fn(),
 }));
 
 vi.mock('../../lib/backtestApi', () => ({
   previewBacktest: vi.fn(),
+}));
+
+vi.mock('../../lib/portfolioApi', () => ({
+  listPortfolios: vi.fn(),
+  createTransactions: vi.fn(),
 }));
 
 // Mock the canvas-backed charting lib the backtest panel's PriceChart drives;
@@ -48,6 +54,7 @@ vi.mock('recharts', async (importOriginal) => {
 
 import { previewBacktest } from '../../lib/backtestApi';
 import { deleteConglomerate, getConglomerate } from '../../lib/conglomerateApi';
+import { listPortfolios } from '../../lib/portfolioApi';
 import { ConglomerateDetailPage } from './ConglomerateDetailPage';
 
 const CONGLOMERATE_ID = 'c1';
@@ -105,6 +112,11 @@ function renderPage(id = CONGLOMERATE_ID) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listPortfolios).mockResolvedValue({
+    portfolios: [
+      { id: 'p1', name: 'Default', visibility: 'private', sortOrder: 0, isDefault: true },
+    ],
+  });
   vi.mocked(previewBacktest).mockResolvedValue({
     startDate: '2020-01-01',
     endDate: '2025-01-01',
@@ -145,7 +157,7 @@ describe('ConglomerateDetailPage', () => {
     expect(donut).toBeInTheDocument();
   });
 
-  test('renders the backtest panel and a placeholder slot for the calculator', async () => {
+  test('renders the backtest panel and the Invest Calculator', async () => {
     vi.mocked(getConglomerate).mockResolvedValue(DETAIL);
     renderPage();
 
@@ -162,7 +174,8 @@ describe('ConglomerateDetailPage', () => {
         expect.anything(),
       ),
     );
-    expect(screen.getByText(/Calculator — coming with the Invest Calculator/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Calculator' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Budget in EUR')).toBeInTheDocument();
   });
 
   test('delete confirm flow calls DELETE and navigates back to the list', async () => {
