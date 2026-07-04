@@ -459,7 +459,8 @@ async function usageAnalytics() {
   const r2 = (v) => Math.round(v * 100) / 100;
   const today = new Date().toISOString().slice(0, 10);
   const days = [];
-  for (let i = 13; i >= 0; i--) days.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  for (let i = 13; i >= 0; i--)
+    days.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
   const byDay = Object.fromEntries(days.map((d) => [d, { multi: 0, single: 0 }]));
   const byModel = {};
   const byRole = {};
@@ -483,8 +484,12 @@ async function usageAnalytics() {
   const issues = Object.keys(byIssue).filter((k) => k !== '-');
   const data = {
     days: days.map((d) => ({ date: d, multi: r2(byDay[d].multi), single: r2(byDay[d].single) })),
-    byModel: Object.entries(byModel).map(([k, v]) => ({ k, v: r2(v) })).sort((a, b) => b.v - a.v),
-    byRole: Object.entries(byRole).map(([k, v]) => ({ k, v: r2(v) })).sort((a, b) => b.v - a.v),
+    byModel: Object.entries(byModel)
+      .map(([k, v]) => ({ k, v: r2(v) }))
+      .sort((a, b) => b.v - a.v),
+    byRole: Object.entries(byRole)
+      .map(([k, v]) => ({ k, v: r2(v) }))
+      .sort((a, b) => b.v - a.v),
     topIssues: Object.entries(byIssue)
       .map(([k, v]) => ({ k: k === '-' ? 'planning' : k, v: r2(v) }))
       .sort((a, b) => b.v - a.v)
@@ -494,8 +499,14 @@ async function usageAnalytics() {
       cost: r2(total),
       records: rows.length,
       issues: issues.length,
-      avgPerIssue: issues.length ? r2(issues.reduce((a, k) => a + byIssue[k], 0) / issues.length) : 0,
-      today: r2(rows.filter((r) => (r.ts || '').startsWith(today)).reduce((a, r) => a + (r.cost_usd || 0), 0)),
+      avgPerIssue: issues.length
+        ? r2(issues.reduce((a, k) => a + byIssue[k], 0) / issues.length)
+        : 0,
+      today: r2(
+        rows
+          .filter((r) => (r.ts || '').startsWith(today))
+          .reduce((a, r) => a + (r.cost_usd || 0), 0),
+      ),
     },
   };
   analyticsCache = { at: Date.now(), data };

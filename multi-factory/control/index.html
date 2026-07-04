@@ -752,12 +752,49 @@
       section.tab.on {
         display: block;
       }
-      .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:3px}
-      .hb{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px}
-      .hb .n{width:110px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex:none}
-      .hb .track{flex:1;height:10px;background:var(--surface2);border-radius:3px;overflow:hidden}
-      .hb .track i{display:block;height:100%;background:var(--accent);border-radius:3px 2px 2px 3px}
-      .hb .v{width:64px;color:var(--ink2);font-size:12px;flex:none}
+      .sw {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+        vertical-align: -1px;
+        margin-right: 3px;
+      }
+      .hb {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 3px 0;
+        font-size: 12.5px;
+      }
+      .hb .n {
+        width: 110px;
+        color: var(--ink2);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        text-align: right;
+        flex: none;
+      }
+      .hb .track {
+        flex: 1;
+        height: 10px;
+        background: var(--surface2);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .hb .track i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+        border-radius: 3px 2px 2px 3px;
+      }
+      .hb .v {
+        width: 64px;
+        color: var(--ink2);
+        font-size: 12px;
+        flex: none;
+      }
     </style>
   </head>
   <body>
@@ -954,20 +991,43 @@
     <section class="tab" id="tab-usage">
       <div class="strip" id="ua-kpis"></div>
       <div class="grid2">
-        <div class="card" style="grid-column:1/-1">
-          <h2>Spend per day — last 14 days <span class="hint"><span class="sw" style="background:var(--accent)"></span> multi-factory&nbsp;&nbsp;<span class="sw" style="background:#8a8878"></span> single factory</span></h2>
-          <svg id="ua-days" viewBox="0 0 720 180" style="width:100%;height:auto"></svg>
+        <div class="card" style="grid-column: 1/-1">
+          <h2>
+            Spend per day — last 14 days
+            <span class="hint"
+              ><span class="sw" style="background: var(--accent)"></span>
+              multi-factory&nbsp;&nbsp;<span class="sw" style="background: #8a8878"></span> single
+              factory</span
+            >
+          </h2>
+          <svg id="ua-days" viewBox="0 0 720 180" style="width: 100%; height: auto"></svg>
         </div>
       </div>
       <div class="grid2">
-        <div class="card"><h2>Spend by model</h2><div id="ua-model"></div></div>
-        <div class="card"><h2>Spend by role</h2><div id="ua-role"></div></div>
+        <div class="card">
+          <h2>Spend by model</h2>
+          <div id="ua-model"></div>
+        </div>
+        <div class="card">
+          <h2>Spend by role</h2>
+          <div id="ua-role"></div>
+        </div>
       </div>
       <div class="grid2">
-        <div class="card"><h2>Most expensive issues</h2><div id="ua-issues"></div></div>
-        <div class="card"><h2>Tokens (all time)</h2><div class="strip" id="ua-tokens" style="margin:0"></div></div>
+        <div class="card">
+          <h2>Most expensive issues</h2>
+          <div id="ua-issues"></div>
+        </div>
+        <div class="card">
+          <h2>Tokens (all time)</h2>
+          <div class="strip" id="ua-tokens" style="margin: 0"></div>
+        </div>
       </div>
-      <div class="hint" style="margin-top:2px">Source: factory/usage/ledger.jsonl — one record per agent run (writer/reviewer/fixer/planner/composer/checker/ci-fix), cost as reported by the Claude CLI. Refreshes every 60s while this tab is open.</div>
+      <div class="hint" style="margin-top: 2px">
+        Source: factory/usage/ledger.jsonl — one record per agent run
+        (writer/reviewer/fixer/planner/composer/checker/ci-fix), cost as reported by the Claude CLI.
+        Refreshes every 60s while this tab is open.
+      </div>
     </section>
 
     <section class="tab" id="tab-detail">
@@ -1568,15 +1628,22 @@
         if (activeTab === 'usage') fetchUsage(false);
       }, 60000);
       const fmtTok = (n) =>
-        n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+        n >= 1e9
+          ? (n / 1e9).toFixed(2) + 'B'
+          : n >= 1e6
+            ? (n / 1e6).toFixed(1) + 'M'
+            : n >= 1e3
+              ? (n / 1e3).toFixed(1) + 'k'
+              : String(n);
       function hbars(el, rows, colorFor) {
         const max = Math.max(...rows.map((r) => r.v), 0.01);
-        $(el).innerHTML = rows
-          .map(
-            (r) =>
-              `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, (r.v / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${r.v}</span></div>`,
-          )
-          .join('') || '<div class="hint">no data yet</div>';
+        $(el).innerHTML =
+          rows
+            .map(
+              (r) =>
+                `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, (r.v / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${r.v}</span></div>`,
+            )
+            .join('') || '<div class="hint">no data yet</div>';
       }
       const MODEL_COLOR = { sonnet: 'var(--w1)', opus: 'var(--w2)', fable: 'var(--w3)' };
       function renderUsage(d) {
@@ -1589,14 +1656,19 @@
           `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;
         // daily stacked bars
-        const W = 720, H = 180, padL = 34, padB = 20, padT = 8;
+        const W = 720,
+          H = 180,
+          padL = 34,
+          padB = 20,
+          padT = 8;
         const days = d.days || [];
         const max = Math.max(...days.map((x) => x.multi + x.single), 1) * 1.14;
         const bw = (W - padL - 8) / days.length;
         let svg = '';
         for (const frac of [0.5, 1]) {
           const y = padT + (H - padB - padT) * (1 - frac);
-          svg += `<line x1="${padL}" y1="${y}" x2="${W - 4}" y2="${y}" stroke="var(--border)" stroke-width="1"/>` +
+          svg +=
+            `<line x1="${padL}" y1="${y}" x2="${W - 4}" y2="${y}" stroke="var(--border)" stroke-width="1"/>` +
             `<text x="${padL - 5}" y="${y + 4}" text-anchor="end" font-size="9.5" fill="var(--muted)">$${(max * frac).toFixed(0)}</text>`;
         }
         days.forEach((x, i) => {
@@ -1621,7 +1693,11 @@
             svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${x.date.slice(5)}</text>`;
         });
         $('ua-days').innerHTML = svg;
-        hbars('ua-model', (d.byModel || []).map((r) => ({ ...r, label: r.k })), (k) => MODEL_COLOR[k] || 'var(--accent)');
+        hbars(
+          'ua-model',
+          (d.byModel || []).map((r) => ({ ...r, label: r.k })),
+          (k) => MODEL_COLOR[k] || 'var(--accent)',
+        );
         hbars('ua-role', d.byRole || []);
         hbars(
           'ua-issues',
