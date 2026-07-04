@@ -5,3 +5,4 @@ export { EmptyState, type EmptyStateProps } from './EmptyState';
 export { ComingSoon, type ComingSoonProps } from './ComingSoon';
 export { Skeleton, type SkeletonProps } from './Skeleton';
 export { ErrorBoundary, type ErrorBoundaryProps } from './ErrorBoundary';
+export { Disclaimer, type DisclaimerProps } from './Disclaimer';
