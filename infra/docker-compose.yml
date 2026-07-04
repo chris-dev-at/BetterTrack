@@ -87,27 +87,48 @@ services:
       retries: 5
       start_period: 20s
 
-  # Worker (BullMQ processors) — placeholder for Phase 1+.
-  # Uncomment when apps/api/src/worker.ts exists and add it to tsup entry.
-  #
-  # worker:
-  #   build:
-  #     context: ..
-  #     dockerfile: apps/api/Dockerfile
-  #   command: ["node", "dist/worker.js"]
-  #   restart: unless-stopped
-  #   environment:
-  #     NODE_ENV: production
-  #     DATABASE_URL: "${DATABASE_URL}"
-  #     REDIS_URL: "${REDIS_URL}"
-  #     SESSION_SECRET: "${SESSION_SECRET}"
-  #     BT_MODE: "${BT_MODE:-subdomains}"
-  #     BT_DOMAIN: "${BT_DOMAIN:-localhost}"
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #     redis:
-  #       condition: service_healthy
+  # Worker (BullMQ processors) — same image as api, entry dist/scripts/worker.js
+  # (tsup entry src/scripts/worker.ts → start:worker). Runs the scheduled +
+  # event-driven jobs (§9): prices.refreshDaily, prices.backfill, fx.refreshSpot,
+  # catalog.enrich, notifications.dispatch. No HTTP surface, so no host ports.
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    command: ['node', 'dist/scripts/worker.js']
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      DATABASE_URL: '${DATABASE_URL}'
+      REDIS_URL: '${REDIS_URL}'
+      SESSION_SECRET: '${SESSION_SECRET}'
+      # Topology (§11): the worker generates the same origins/links as the api
+      # (share links, email URLs) so they must match.
+      BT_MODE: '${BT_MODE:-subdomains}'
+      BT_DOMAIN: '${BT_DOMAIN:-localhost}'
+      BT_TLS: '${BT_TLS:-}'
+      BT_SUB_API: '${BT_SUB_API:-api}'
+      BT_SUB_WEB: '${BT_SUB_WEB:-web}'
+      BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+      BT_PORT_API: '${BT_PORT_API:-3000}'
+      BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
+      BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+      BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
+      BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
+      BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
+      SMTP_HOST: '${SMTP_HOST:-}'
+      SMTP_PORT: '${SMTP_PORT:-}'
+      SMTP_USER: '${SMTP_USER:-}'
+      SMTP_PASS: '${SMTP_PASS:-}'
+      SMTP_FROM: '${SMTP_FROM:-}'
+      ADMIN_EMAIL: '${ADMIN_EMAIL:-}'
+      ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   db:
     image: postgres:17
