@@ -5,7 +5,7 @@ import { z } from 'zod';
  * `GET/PATCH /settings/notifications` surface exposes the per-channel toggles the
  * dispatcher honors. V1 ships two channels: **in-app** (always on — cannot be
  * disabled) and **email** (on by default). The other `notification_channel`
- * values (telegram, discord, push) are post-v1 and not toggleable here.
+ * values (telegram, discord) are post-v1 and not toggleable here.
  */
 
 /** The V1 user-toggleable notification channels. */

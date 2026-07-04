@@ -22,6 +22,12 @@ vi.mock('../../lib/portfolioApi', () => ({
 
 vi.mock('../../lib/searchApi', () => ({ searchAssets: vi.fn() }));
 
+// The transaction dialog fetches a daily-close series for its linked date ↔ price
+// fields (#226); keep it inert here so opening the dialog makes no real request.
+vi.mock('../../lib/assetApi', () => ({
+  getAssetDailyCloses: vi.fn().mockResolvedValue({ points: [], stale: false, asOf: null }),
+}));
+
 // Canvas-backed chart lib — jsdom can't draw it (mirrors AssetDetailPage tests).
 const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();

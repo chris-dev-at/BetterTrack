@@ -83,6 +83,7 @@ const componentSchemas = {
   AssetDetailResponse: contracts.assetDetailResponseSchema,
   QuoteResponse: contracts.quoteResponseSchema,
   HistoryResponse: contracts.historyResponseSchema,
+  DailyClosesResponse: contracts.dailyClosesResponseSchema,
 
   // Portfolios (§6.8)
   UpdatePortfolioRequest: contracts.updatePortfolioRequestSchema,
@@ -505,6 +506,15 @@ const endpoints: EndpointDef[] = [
     query: contracts.historyQuerySchema,
     status: 200,
     response: R.HistoryResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/daily-closes',
+    tag: 'Assets',
+    summary: 'Full daily close series for the linked transaction date ↔ price fields.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.DailyClosesResponse,
   },
 
   // Portfolios (§6.8)

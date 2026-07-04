@@ -1,8 +1,10 @@
 import {
   assetDetailResponseSchema,
+  dailyClosesResponseSchema,
   historyResponseSchema,
   quoteResponseSchema,
   type AssetDetailResponse,
+  type DailyClosesResponse,
   type HistoryRange,
   type HistoryResponse,
   type QuoteResponse,
@@ -40,4 +42,20 @@ export async function getAssetHistory(
     signal,
   });
   return historyResponseSchema.parse(data);
+}
+
+/**
+ * `GET /assets/:id/daily-closes` — the full available **daily** close series
+ * (§5.3), forced to a `1d` interval. Fetched once when the transaction dialog
+ * opens; the linked date ↔ price fields (#226) resolve both directions locally
+ * from it, so a lookup never triggers a synchronous provider call.
+ */
+export async function getAssetDailyCloses(
+  id: string,
+  signal?: AbortSignal,
+): Promise<DailyClosesResponse> {
+  const data = await apiRequest<unknown>(`/assets/${encodeURIComponent(id)}/daily-closes`, {
+    signal,
+  });
+  return dailyClosesResponseSchema.parse(data);
 }

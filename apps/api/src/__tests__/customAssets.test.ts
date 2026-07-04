@@ -1,9 +1,11 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { customAssetSchema, valuePointsResponseSchema } from '@bettertrack/contracts';
 
+import { assets } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -103,6 +105,32 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
     expect(res.status).toBe(200);
     expect(res.body.asset.name).toBe('Rare Coins');
     expect(res.body.asset.category).toBe('other');
+  });
+
+  it('falls back to "other" for a stored category outside the enum (#224)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Coins', category: 'collectible', currency: 'EUR' });
+    const id = created.body.asset.id;
+
+    // Simulate a row whose stored category predates/postdates the enum (seed,
+    // import, manual DB edit, future rename) — not reachable through the API.
+    await harness.db
+      .update(assets)
+      .set({ meta: { category: 'heirloom' } })
+      .where(eq(assets.id, id));
+
+    const res = await agent
+      .patch(`/api/v1/custom-assets/${id}`)
+      .set(...XRW)
+      .send({ name: 'Rare Coins' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.asset.category).toBe('other');
+    expect(customAssetSchema.safeParse(res.body.asset).success).toBe(true);
   });
 
   it('deletes a custom asset', async () => {

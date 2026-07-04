@@ -1,0 +1,15 @@
+name: bettertrack
+
+# Mode-conditional port overlay for BT_MODE=ports (§4.6, §11) — layer this on
+# top of the base file:
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.ports.yml up -d
+#
+# Publishes the three service ports directly, no front proxy port — nothing
+# binds :80, so this is safe on a host already serving something else there.
+
+services:
+  web:
+    ports:
+      - '${BT_PORT_WEB:-8080}:${BT_PORT_WEB:-8080}'
+      - '${BT_PORT_ADMIN:-8081}:${BT_PORT_ADMIN:-8081}'
+      - '${BT_PORT_API:-3000}:${BT_PORT_API:-3000}'

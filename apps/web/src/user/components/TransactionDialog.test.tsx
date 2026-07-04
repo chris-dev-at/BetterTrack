@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -7,6 +7,10 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Transaction, TransactionInput } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/assetApi');
+import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
+
+import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
 import {
   DERIVED_QUANTITY_DECIMALS,
@@ -15,6 +19,17 @@ import {
   TransactionDialog,
   type TransactionDialogAsset,
 } from './TransactionDialog';
+
+/** Wire the daily-close series the linked date ↔ price fields read from (#226). */
+function mockDailyCloses(points: PricePoint[]): void {
+  const res: DailyClosesResponse = { points, stale: false, asOf: '2026-07-02T00:00:00.000Z' };
+  vi.mocked(assetApi.getAssetDailyCloses).mockResolvedValue(res);
+}
+
+const day = (date: string, close: number): PricePoint => ({
+  time: `${date}T00:00:00.000Z`,
+  close,
+});
 
 const BTC: TransactionDialogAsset = {
   id: 'asset-btc',
@@ -46,6 +61,9 @@ function renderDialog(props: Partial<React.ComponentProps<typeof TransactionDial
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: no series → the link assist stays inert, so the existing
+  // amount/quantity specs behave exactly as before. Linking specs override this.
+  mockDailyCloses([]);
 });
 
 // --- Pure derivation --------------------------------------------------------
@@ -272,5 +290,128 @@ describe('TransactionDialog — quantity entry mode (regression)', () => {
       'aria-pressed',
       'true',
     );
+  });
+});
+
+// --- Dialog: linked date ↔ price fields (#226) ------------------------------
+
+// Ascending daily closes with a weekend gap (Fri 06-05 → next point 06-30) and a
+// clear "recent" level (120) vs an "old" level (90) for the price → date jump.
+const LINK_SERIES = [
+  day('2026-06-01', 100),
+  day('2026-06-02', 110),
+  day('2026-06-03', 90),
+  day('2026-06-05', 105), // Friday
+  day('2026-06-30', 120), // latest available close
+];
+
+describe('TransactionDialog — linked date ↔ price fields', () => {
+  test('default on open: price auto-fills the latest close and is marked "auto"', async () => {
+    mockDailyCloses(LINK_SERIES);
+    renderDialog();
+
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120));
+    expect(screen.getByLabelText(/date for btc/i)).toHaveValue('2026-07-02');
+    // The auto marker distinguishes the fetched price from a typed one.
+    expect(screen.getByText('auto')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlink date and price' })).toBeInTheDocument();
+  });
+
+  test('Record with no edits books at the auto-filled current price', async () => {
+    mockDailyCloses(LINK_SERIES);
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByLabelText(/price for btc/i)).toHaveValue(120));
+    await user.type(screen.getByLabelText(/quantity for btc/i), '3');
+    await user.click(screen.getByRole('button', { name: /^record$/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    expect(vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1][0]).toMatchObject({
+      price: 120,
+      executedAt: '2026-07-02T00:00:00.000Z',
+    });
+  });
+
+  test('date drives price: picking a trading day loads that day close', async () => {
+    mockDailyCloses(LINK_SERIES);
+    renderDialog();
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120));
+
+    fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2026-06-03' } });
+    expect(price).toHaveValue(90);
+  });
+
+  test('a non-trading day falls back to the last trading close, with an inline note', async () => {
+    mockDailyCloses(LINK_SERIES);
+    renderDialog();
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120));
+
+    // Saturday 2026-06-06 → Friday 2026-06-05 close (105).
+    fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2026-06-06' } });
+    expect(price).toHaveValue(105);
+    expect(screen.getByText(/market closed — using fri close/i)).toBeInTheDocument();
+  });
+
+  test('price drives date: a typed old price jumps the date to the last day at it', async () => {
+    mockDailyCloses(LINK_SERIES);
+    const user = userEvent.setup();
+    renderDialog();
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120));
+
+    await user.clear(price);
+    await user.type(price, '90');
+    fireEvent.blur(price);
+
+    // 90 was the 06-03 close; the date jumps back to it.
+    expect(screen.getByLabelText(/date for btc/i)).toHaveValue('2026-06-03');
+  });
+
+  test('a price never reached leaves the date unchanged and says so', async () => {
+    mockDailyCloses(LINK_SERIES);
+    const user = userEvent.setup();
+    renderDialog();
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120));
+
+    await user.clear(price);
+    await user.type(price, '5');
+    fireEvent.blur(price);
+
+    expect(screen.getByLabelText(/date for btc/i)).toHaveValue('2026-07-02');
+    expect(screen.getByText(/never at this price in available history/i)).toBeInTheDocument();
+  });
+
+  test('unlinking makes the fields independent — a date change no longer moves price', async () => {
+    mockDailyCloses(LINK_SERIES);
+    const user = userEvent.setup();
+    renderDialog();
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120));
+
+    await user.click(screen.getByRole('button', { name: 'Unlink date and price' }));
+    fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2026-06-03' } });
+
+    expect(price).toHaveValue(120); // untouched
+    expect(screen.queryByText('auto')).not.toBeInTheDocument();
+  });
+
+  test('no assist for a bulk prefill (prices at market by design)', async () => {
+    renderDialog({
+      asset: undefined,
+      prefill: [{ asset: BTC, quantity: 1, price: 42 }],
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: /Unlink date and price/i }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(assetApi.getAssetDailyCloses).not.toHaveBeenCalled();
   });
 });

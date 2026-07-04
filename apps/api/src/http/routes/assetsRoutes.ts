@@ -39,5 +39,14 @@ export function createAssetsRouter(ctx: AppContext): Router {
     },
   );
 
+  // GET /assets/:id/daily-closes — full daily close series for the linked
+  // date ↔ price transaction fields (#226). Cached-series only, no per-keystroke
+  // provider calls (§5.3); degrades to an empty series rather than erroring.
+  router.get('/:id/daily-closes', validateParams(assetIdParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    const series = await ctx.assets.getDailyCloses(req.authUser!.id, id);
+    res.json(series);
+  });
+
   return router;
 }

@@ -37,16 +37,16 @@ export function AdminLayout() {
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <header className="border-b border-neutral-800 bg-neutral-900">
         <div className="mx-auto flex max-w-5xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-center gap-6">
-            <Wordmark edition="Admin" className="text-xl" />
-            <nav className="flex gap-1">
+          <div className="flex min-w-0 items-center gap-6">
+            <Wordmark edition="Admin" className="shrink-0 text-xl" />
+            <nav aria-label="Admin" className="no-scrollbar flex min-w-0 gap-1 overflow-x-auto">
               {NAV_ITEMS.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
                   className={({ isActive }) =>
                     cx(
-                      'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                      'flex min-h-[40px] flex-none items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                       isActive
                         ? 'bg-neutral-800 text-white'
                         : 'text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200',
