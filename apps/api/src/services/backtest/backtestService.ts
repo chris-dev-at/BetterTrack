@@ -21,7 +21,7 @@ import {
 } from '../../domain/backtest';
 import { notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
-import type { CurrencyService } from '../currency/currencyService';
+import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 
 /**
  * Backtest preview service (PROJECTPLAN.md §6.5, §6.6).
@@ -210,6 +210,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       //    FX-at-date converter (§5.4). Data-state failures (no overlapping
       //    window, a benchmark whose history starts after t₀) surface as a 422
       //    with the engine's message rather than a 500.
+      //
+      //    FX unavailability is a data state too, but unlike the portfolio
+      //    series' probe-and-drop degrade (portfolioService), silently dropping
+      //    an unconvertible position would re-weight the basket and change the
+      //    result — so a backtest fails the whole preview with a 422 instead.
       let result: BacktestResult;
       try {
         result = await backtest({
@@ -223,6 +228,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       } catch (err) {
         if (err instanceof BacktestError) {
           throw unprocessable(err.message, 'BACKTEST_UNAVAILABLE');
+        }
+        if (err instanceof FxRateUnavailableError) {
+          throw unprocessable(
+            `Currency conversion required by this backtest is unavailable: ${err.message}`,
+            'FX_UNAVAILABLE',
+          );
         }
         throw err;
       }
