@@ -24,6 +24,28 @@ import { currencyCodeSchema } from '@bettertrack/contracts';
 export const DEFAULT_BASE_CURRENCY = 'EUR';
 
 /**
+ * Thrown by an {@link FxRateSource} when a rate genuinely cannot be produced —
+ * provider outage past the stale window, or no quote on/near the requested
+ * date. Typed (unlike a caller-bug `Error`) so money paths can degrade
+ * deliberately: the portfolio series drops the asset, the backtest preview
+ * maps it to a 422 — never a 500.
+ */
+export class FxRateUnavailableError extends Error {
+  readonly from: string;
+  readonly to: string;
+  /** ISO `YYYY-MM-DD` for historical lookups; null for spot. */
+  readonly date: string | null;
+
+  constructor(from: string, to: string, date: string | null, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'FxRateUnavailableError';
+    this.from = from;
+    this.to = to;
+    this.date = date;
+  }
+}
+
+/**
  * Supplies FX rates as "units of `to` per 1 unit of `from`". Implementations
  * decide how to source and cross rates; the currency service only asks.
  */

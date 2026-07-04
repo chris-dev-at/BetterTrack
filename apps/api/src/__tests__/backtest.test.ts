@@ -161,6 +161,110 @@ describe('POST /api/v1/backtest/preview', () => {
     expect(res.body.benchmark.stats.totalReturnPct).toBeCloseTo(5, 6);
   });
 
+  it('converts a mixed-currency basket (EUR + USD) through historical FX', async () => {
+    // AAA (EUR) rises 10 %. UUU is flat at 100 USD, but the dollar strengthens
+    // from 1.25 to 1.00 USD-per-EUR (EURUSD=X closes), so in EUR terms UUU goes
+    // 80 → 100 = +25 %. A 50/50 basket therefore returns (10 + 25) / 2 = 17.5 %.
+    const { h, agent } = await harnessWith((ref) => {
+      if (ref.providerRef === 'EURUSD=X') {
+        return cachedHistory([
+          { time: tsOffset(-300), close: 1.25 },
+          { time: tsOffset(-1), close: 1.0 },
+        ]);
+      }
+      return cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: ref.providerRef === 'AAA' ? 110 : 100 },
+      ]);
+    });
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const u = await seedAsset(h, {
+      providerRef: 'UUU',
+      symbol: 'UUU',
+      name: 'US Asset',
+      currency: 'USD',
+      exchange: 'NYSE',
+    });
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: a.id, weight: 50 },
+          { assetId: u.id, weight: 50 },
+        ],
+        range: 'MAX',
+      });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.series[0].value).toBeCloseTo(100, 6);
+    expect(res.body.stats.totalReturnPct).toBeCloseTo(17.5, 6);
+    const uuu = res.body.contributions.find((c: { symbol: string }) => c.symbol === 'UUU');
+    expect(uuu.returnPct).toBeCloseTo(25, 6);
+  });
+
+  it('overlays a USD benchmark (^GSPC) via historical FX', async () => {
+    // ^GSPC rises 10 % in USD (5000 → 5500) while the dollar strengthens from
+    // 1.25 to 1.00 USD-per-EUR, so the EUR-terms overlay is 4000 → 5500 = +37.5 %.
+    const { h, agent } = await harnessWith((ref) => {
+      if (ref.providerRef === 'EURUSD=X') {
+        return cachedHistory([
+          { time: tsOffset(-300), close: 1.25 },
+          { time: tsOffset(-1), close: 1.0 },
+        ]);
+      }
+      if (ref.providerRef === '^GSPC') {
+        return cachedHistory([
+          { time: tsOffset(-300), close: 5000 },
+          { time: tsOffset(-1), close: 5500 },
+        ]);
+      }
+      return cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: 110 },
+      ]);
+    });
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions: [{ assetId: a.id, weight: 100 }], range: 'MAX', benchmark: '^GSPC' });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.stats.totalReturnPct).toBeCloseTo(10, 6);
+    expect(res.body.benchmark.symbol).toBe('^GSPC');
+    expect(res.body.benchmark.series[0].value).toBeCloseTo(100, 6);
+    expect(res.body.benchmark.stats.totalReturnPct).toBeCloseTo(37.5, 6);
+  });
+
+  it('422s (FX_UNAVAILABLE) when the FX history provider is down, rather than 500ing', async () => {
+    const { h, agent } = await harnessWith((ref) => {
+      if (ref.providerRef === 'EURUSD=X') throw new Error('provider down, no cached copy');
+      return cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: 110 },
+      ]);
+    });
+    const u = await seedAsset(h, {
+      providerRef: 'UUU',
+      symbol: 'UUU',
+      currency: 'USD',
+      exchange: 'NYSE',
+    });
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions: [{ assetId: u.id, weight: 100 }], range: 'MAX' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('FX_UNAVAILABLE');
+  });
+
   it('clips a window wider than the common start and carries the notice', async () => {
     // B's history only starts 100 days ago, so a 5Y request is limited by B.
     const { h, agent } = await harnessWith((ref) =>
