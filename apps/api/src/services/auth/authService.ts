@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 
-import type { AcceptInviteRequest, ChangePasswordRequest } from '@bettertrack/contracts';
+import type {
+  AcceptInviteRequest,
+  ChangePasswordRequest,
+  SessionInfoResponse,
+} from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
@@ -76,6 +80,13 @@ export interface AuthService {
   setPin(userId: string, pin: string, ip?: string | null): Promise<UserRow>;
   /** Turn the PIN gate off (§6.1). */
   disablePin(userId: string, ip?: string | null): Promise<UserRow>;
+  /**
+   * The caller's own current session timestamps (§6.11 Security) — sign-in
+   * instant, last renewal, and the derived 30-day expiry. Read-only: it reuses
+   * the existing `get()` and never touches the TTL. Null when the session is
+   * already gone.
+   */
+  getSessionInfo(sessionId: string): Promise<SessionInfoResponse | null>;
 }
 
 // Single generic failure for every login rejection — no user enumeration (§6.1).
@@ -416,6 +427,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
       const updated = await userRepo.findById(user.id);
       return updated ?? { ...user, pinHash: null, pinEnabled: false };
+    },
+
+    async getSessionInfo(sessionId) {
+      const session = await sessions.get(sessionId);
+      if (!session) return null;
+      return {
+        signedInAt: new Date(session.createdAt).toISOString(),
+        renewedAt: new Date(session.renewedAt).toISOString(),
+        // The 30-day window is fixed from the last login / PIN verify (§6.1).
+        expiresAt: new Date(session.renewedAt + sessions.ttlSeconds * 1000).toISOString(),
+      };
     },
   };
 }

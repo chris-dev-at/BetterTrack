@@ -52,13 +52,65 @@ export interface PortfolioChangedEvent {
   occurredAt: string;
 }
 
+/**
+ * `friend.request` → someone sent the recipient a friend request (§6.10 V1
+ * notification type). `userId` is the **recipient** (the addressee); `actorId`
+ * /`actorUsername` identify the sender so a consumer can render "Bob sent you a
+ * friend request" without a follow-up lookup.
+ */
+export interface FriendRequestEvent {
+  type: 'friend.request';
+  /** Recipient — the user the request was addressed to. */
+  userId: string;
+  /** Actor — the user who sent the request. */
+  actorId: string;
+  actorUsername: string;
+  requestId: string;
+  occurredAt: string;
+}
+
+/**
+ * `friend.accepted` → a pending request the recipient sent was accepted (§6.10).
+ * `userId` is the **recipient** (the original requester); `actorId`
+ * /`actorUsername` identify the user who accepted.
+ */
+export interface FriendAcceptedEvent {
+  type: 'friend.accepted';
+  /** Recipient — the original requester, now notified their request was accepted. */
+  userId: string;
+  /** Actor — the user who accepted the request. */
+  actorId: string;
+  actorUsername: string;
+  requestId: string;
+  occurredAt: string;
+}
+
+/**
+ * `portfolio.shared` → a portfolio's visibility transitioned to `friends`, so it
+ * is now visible to the owner's friends (§6.10). Emitted once per current friend;
+ * `userId` is that **recipient** friend, `actorId`/`actorUsername` the owner.
+ */
+export interface PortfolioSharedEvent {
+  type: 'portfolio.shared';
+  /** Recipient — a friend the portfolio was just shared with. */
+  userId: string;
+  /** Actor — the portfolio owner who set visibility to `friends`. */
+  actorId: string;
+  actorUsername: string;
+  portfolioId: string;
+  occurredAt: string;
+}
+
 /** The discriminated union of every domain event (§9). */
 export type DomainEvent =
   | AlertTriggeredEvent
   | NotificationCreatedEvent
   | QuoteUpdatedEvent
   | ConglomerateUpdatedEvent
-  | PortfolioChangedEvent;
+  | PortfolioChangedEvent
+  | FriendRequestEvent
+  | FriendAcceptedEvent
+  | PortfolioSharedEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
 export type DomainEventType = DomainEvent['type'];
@@ -73,4 +125,7 @@ export const DOMAIN_EVENT_TYPES = [
   'quote.updated',
   'conglomerate.updated',
   'portfolio.changed',
+  'friend.request',
+  'friend.accepted',
+  'portfolio.shared',
 ] as const satisfies readonly DomainEventType[];
