@@ -12,6 +12,7 @@ import { createPortfolioRepository } from '../data/repositories/portfolioReposit
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
+import { createEventBus, type EventBus } from '../events';
 import {
   createBackfillScheduler,
   createQueueRegistry,
@@ -77,6 +78,12 @@ export interface AppContext {
   backtest: BacktestService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
   social: SocialService;
+  /**
+   * Typed domain event bus (§9, §4.5). Producers publish here; the notification
+   * dispatcher (worker process) subscribes. Held on the context so the process
+   * can close its Redis pub/sub connections on shutdown.
+   */
+  events: EventBus;
 }
 
 export interface BuildContextDeps {
@@ -106,6 +113,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000));
   const audit = createAuditService(auditRepo);
   const passwordHasher = createPasswordHasher();
+
+  // Typed domain event bus (§9, §4.5). Pub/sub needs a dedicated subscriber
+  // connection, so publisher and subscriber each get their own duplicated Redis
+  // connection. The API only *publishes* (producers); the notification dispatcher
+  // subscribes in the worker process.
+  const events = createEventBus({
+    publisher: redis.duplicate(),
+    subscriber: redis.duplicate(),
+    logger,
+  });
+
+  // Social graph (§6.9): shared by the social service and the portfolio service
+  // (the latter resolves the owner's friends when a portfolio is shared, §6.10).
+  const friendshipRepo = createFriendshipRepository(db);
 
   // Only open a real SMTP connection when the channel is configured (§11).
   const transport =
@@ -199,6 +220,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     currencyService: currency,
     referenceBackfill,
     redis,
+    friendshipRepo,
+    events,
+    logger,
   });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({ repo: customAssetRepo, portfolio });
@@ -223,8 +247,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
-  const friendshipRepo = createFriendshipRepository(db);
-  const social = createSocialService({ repo: friendshipRepo, portfolio });
+  // Publishes friend.request / friend.accepted for the notification dispatcher.
+  const social = createSocialService({ repo: friendshipRepo, portfolio, events, logger });
 
   return {
     config,
@@ -241,5 +265,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     conglomerate,
     backtest: backtestPreview,
     social,
+    events,
   };
 }

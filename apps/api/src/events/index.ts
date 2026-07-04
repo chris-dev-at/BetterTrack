@@ -11,6 +11,9 @@ export type {
   QuoteUpdatedEvent,
   ConglomerateUpdatedEvent,
   PortfolioChangedEvent,
+  FriendRequestEvent,
+  FriendAcceptedEvent,
+  PortfolioSharedEvent,
 } from './types';
 export { DOMAIN_EVENT_TYPES } from './types';
 export {
