@@ -29,6 +29,7 @@ async function shutdown(signal: string): Promise<void> {
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await ctx.marketData.settled();
+    await ctx.events.close();
     await redis.quit();
     await client.end();
   } catch (err) {

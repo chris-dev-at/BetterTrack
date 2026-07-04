@@ -165,8 +165,25 @@ export function createFriendshipRepository(db: Database) {
      * on `(from_user, to_user) WHERE status = 'pending'`: a duplicate in the
      * same direction is a no-op, never a duplicate-key crash (§6.9).
      */
-    async createRequest(fromUser: string, toUser: string): Promise<void> {
-      await db.insert(friendRequests).values({ fromUser, toUser }).onConflictDoNothing();
+    async createRequest(fromUser: string, toUser: string): Promise<string | null> {
+      const [row] = await db
+        .insert(friendRequests)
+        .values({ fromUser, toUser })
+        .onConflictDoNothing()
+        .returning({ id: friendRequests.id });
+      // `null` when the partial unique index made this a no-op (duplicate pending
+      // request in the same direction) — the caller must not re-notify on that.
+      return row?.id ?? null;
+    },
+
+    /** The username for a user id, or `undefined` when unknown. */
+    async getUsername(userId: string): Promise<string | undefined> {
+      const [row] = await db
+        .select({ username: users.username })
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+      return row?.username;
     },
 
     /** The caller's pending requests, split by direction, with the other party's username. */
@@ -210,10 +227,12 @@ export function createFriendshipRepository(db: Database) {
     /**
      * Accept a pending request addressed to `toUserId`. Transitions the request
      * to `accepted` and creates the canonical friendship in one transaction.
-     * Returns `false` — so the service 404s — when the request doesn't exist,
-     * isn't pending, or isn't addressed to this user (no 403, no info leak).
+     * Returns `null` — so the service 404s — when the request doesn't exist,
+     * isn't pending, or isn't addressed to this user (no 403, no info leak). On
+     * success returns the original requester (`fromUser`) so the caller can
+     * notify them their request was accepted (§6.10).
      */
-    async acceptRequest(toUserId: string, requestId: string): Promise<boolean> {
+    async acceptRequest(toUserId: string, requestId: string): Promise<{ fromUser: string } | null> {
       return db.transaction(async (tx) => {
         const updated = await tx
           .update(friendRequests)
@@ -227,10 +246,10 @@ export function createFriendshipRepository(db: Database) {
           )
           .returning({ fromUser: friendRequests.fromUser, toUser: friendRequests.toUser });
         const req = updated[0];
-        if (!req) return false;
+        if (!req) return null;
         const [lo, hi] = canonicalPair(req.fromUser, req.toUser);
         await tx.insert(friendships).values({ userA: lo, userB: hi }).onConflictDoNothing();
-        return true;
+        return { fromUser: req.fromUser };
       });
     },
 

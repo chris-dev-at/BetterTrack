@@ -11,6 +11,7 @@
  */
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
+import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createEventBus } from '../events';
 import {
   createDeadLetter,
@@ -23,6 +24,7 @@ import {
 } from '../jobs';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
+import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -69,6 +71,16 @@ const running = createJobWorkers({
   logger,
 });
 
+// Notification dispatcher (§9, §6.10): a pure bus subscriber that turns the V1
+// social domain events into in-app notification rows. It shares the worker's
+// event bus and reads/writes Postgres through the same connection as the jobs.
+const notificationDispatcher = createNotificationDispatcher({
+  bus: events,
+  repo: createNotificationRepository(db),
+  logger,
+});
+await notificationDispatcher.start();
+
 const scheduled = await registerSchedules(registry, definitions);
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
 
@@ -79,6 +91,7 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'worker shutting down');
   try {
     await running.close();
+    await notificationDispatcher.stop();
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await marketData.settled();
