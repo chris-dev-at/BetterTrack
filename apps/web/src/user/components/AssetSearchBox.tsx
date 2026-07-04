@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { SearchResultItem } from '@bettertrack/contracts';
@@ -13,6 +13,9 @@ const DEBOUNCE_MS = 300;
 const MIN_CHARS = 2;
 /** Mirror the server-side quote/search cache TTL (PROJECTPLAN.md §6.2, 60 req/min/user). */
 const SEARCH_STALE_MS = 30_000;
+/** When the API answers `enriching: true` (§6.2), poll for the enriched catalog rows. */
+const ENRICH_POLL_MS = 1_500;
+const ENRICH_TIMEOUT_MS = 10_000;
 
 const TYPE_BADGE: Record<string, string> = {
   stock: 'bg-sky-900/60 text-sky-300',
@@ -59,15 +62,28 @@ export function AssetSearchBox({
 
   const enabled = debouncedQuery.length >= MIN_CHARS;
 
+  /** Flips true once a background enrichment poll has run for `ENRICH_TIMEOUT_MS` without settling. */
+  const [enrichTimedOut, setEnrichTimedOut] = useState(false);
+
   const { data, isFetching, isError } = useQuery({
     queryKey: ['search', debouncedQuery],
     queryFn: ({ signal }) => searchAssets(debouncedQuery, signal),
     enabled,
     staleTime: SEARCH_STALE_MS,
     retry: false,
+    refetchInterval: (query) =>
+      query.state.data?.enriching === true && !enrichTimedOut ? ENRICH_POLL_MS : false,
   });
 
+  useEffect(() => {
+    setEnrichTimedOut(false);
+    if (data?.enriching !== true) return;
+    const timer = setTimeout(() => setEnrichTimedOut(true), ENRICH_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [debouncedQuery, data?.enriching]);
+
   const results: SearchResultItem[] = data?.results ?? [];
+  const isEnriching = data?.enriching === true && !enrichTimedOut;
 
   async function handleAddToWorkboard(item: SearchResultItem) {
     if (wbState[item.id] === 'pending' || wbState[item.id] === 'done') return;
@@ -93,10 +109,11 @@ export function AssetSearchBox({
     onAction?.();
   }
 
-  const showSkeleton = isFetching && results.length === 0;
-  const showEmpty = enabled && !isFetching && !isError && results.length === 0;
+  const showSkeleton = isFetching && data === undefined;
+  const showEmpty = enabled && !isFetching && !isError && results.length === 0 && !isEnriching;
   const showError = isError && !isFetching;
   const showHint = !enabled && query.length > 0;
+  const showSearching = enabled && !showSkeleton && isEnriching;
 
   return (
     <div className="flex flex-col gap-3">
@@ -147,6 +164,12 @@ export function AssetSearchBox({
           title="No results found"
           description={`Nothing matched "${debouncedQuery}". Try a different symbol or name.`}
         />
+      ) : null}
+
+      {showSearching ? (
+        <p role="status" aria-live="polite" className="px-1 text-xs text-neutral-500">
+          Searching the market for more results…
+        </p>
       ) : null}
 
       {results.length > 0 ? (
