@@ -351,7 +351,9 @@ async function doAction(action) {
 
 // ---- auto-down when drained (completes run-out / close-down) --------------------------
 let drainedSince = 0;
+let autoDownBusy = false;
 setInterval(async () => {
+  if (autoDownBusy) return; // compose down takes ~10s; don't re-fire mid-teardown
   try {
     const phase = await readText(join(CONTROL, 'phase'));
     if (phase !== 'drained') {
@@ -369,6 +371,7 @@ setInterval(async () => {
       return;
     } // debounce one interval
     if (Date.now() - drainedSince < 8000 || inflight.size) return;
+    autoDownBusy = true;
     lastAutoAction = { action: 'auto-down (phase=drained)', at: new Date().toISOString() };
     await clog('auto-down: phase=drained — downing compose project');
     await run('docker', ['compose', '-p', MF_PROJECT, 'down', '--remove-orphans'], {
@@ -377,6 +380,8 @@ setInterval(async () => {
     drainedSince = 0;
   } catch {
     /* watcher must survive transient docker/fs errors */
+  } finally {
+    autoDownBusy = false;
   }
 }, 5000);
 
