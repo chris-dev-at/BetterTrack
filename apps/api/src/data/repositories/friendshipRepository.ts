@@ -1,4 +1,4 @@
-import { and, asc, eq, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
@@ -56,6 +56,12 @@ export function createFriendshipRepository(db: Database) {
      * Resolve a target by exact username **or** email (both case-insensitive),
      * returning the `id` only — never the row — so the caller can't leak any
      * other field (§6.9 no-enumeration). `undefined` when nothing matches.
+     *
+     * Admin (`role='admin'`) and disabled (`status='disabled'`) accounts are
+     * excluded so they resolve exactly like "no account": an admin/disabled
+     * target is unrequestable and never appears in the sender's outbox, closing
+     * the enumeration oracle where a guessed admin email would otherwise leak the
+     * target's username (and where an admin could never accept a pending row).
      */
     async findUserIdByIdentifier(identifier: string): Promise<string | undefined> {
       const needle = identifier.trim().toLowerCase();
@@ -63,9 +69,39 @@ export function createFriendshipRepository(db: Database) {
       const [row] = await db
         .select({ id: users.id })
         .from(users)
-        .where(or(eq(users.email, needle), sql`lower(${users.username}) = ${needle}`))
+        .where(
+          and(
+            or(eq(users.email, needle), sql`lower(${users.username}) = ${needle}`),
+            ne(users.role, 'admin'),
+            eq(users.status, 'active'),
+          ),
+        )
         .limit(1);
       return row?.id;
+    },
+
+    /**
+     * Whether `fromUser` has a request to `toUser` that was **declined** at or
+     * after `since` — the decline-cooldown probe (§6.9 hardening). A declined
+     * request frees the pending-pair index, so without this a rejected sender
+     * could re-request (and re-notify) immediately and indefinitely; the service
+     * treats a positive result as a silent no-op, indistinguishable from any
+     * other no-enumeration branch.
+     */
+    async hasDeclinedSince(fromUser: string, toUser: string, since: Date): Promise<boolean> {
+      const [row] = await db
+        .select({ id: friendRequests.id })
+        .from(friendRequests)
+        .where(
+          and(
+            eq(friendRequests.fromUser, fromUser),
+            eq(friendRequests.toUser, toUser),
+            eq(friendRequests.status, 'declined'),
+            gte(friendRequests.respondedAt, since),
+          ),
+        )
+        .limit(1);
+      return row !== undefined;
     },
 
     /** A `pending` request in the given direction, if one exists. */
@@ -110,7 +146,9 @@ export function createFriendshipRepository(db: Database) {
             and(eq(friendships.userB, viewerId), eq(portfolios.userId, friendships.userA)),
           ),
         )
-        .innerJoin(users, eq(users.id, portfolios.userId))
+        // Owner must still be active: an admin-disabled account's shared
+        // portfolios drop out of every friend's view immediately (§6.9).
+        .innerJoin(users, and(eq(users.id, portfolios.userId), eq(users.status, 'active')))
         .where(eq(portfolios.visibility, 'friends'))
         .orderBy(asc(users.username), asc(portfolios.name));
       return rows;
@@ -136,7 +174,8 @@ export function createFriendshipRepository(db: Database) {
           ownerUsername: users.username,
         })
         .from(portfolios)
-        .innerJoin(users, eq(users.id, portfolios.userId))
+        // Owner must still be active: a disabled owner's shared portfolio 404s.
+        .innerJoin(users, and(eq(users.id, portfolios.userId), eq(users.status, 'active')))
         .innerJoin(
           friendships,
           or(

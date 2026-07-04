@@ -8,6 +8,7 @@ import {
   type CreateFriendRequestRequest,
 } from '@bettertrack/contracts';
 
+import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -23,17 +24,24 @@ import type { AppContext } from '../context';
  */
 const userIdParamSchema = z.object({ userId: z.string().uuid() }).strict();
 
-export function createSocialRouter(ctx: AppContext): Router {
+export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
 
   // POST /social/requests — request a friend by username or email (no-enumeration).
-  router.post('/requests', validateBody(createFriendRequestRequestSchema), async (req, res) => {
-    const { identifier } = req.valid?.body as CreateFriendRequestRequest;
-    await ctx.social.sendRequest(req.authUser!.id, identifier);
-    res.status(202).json({ ok: true });
-  });
+  // Rate-limited per user (§6.9, §10): sending a request creates an outbox row that
+  // reveals the target's username, so bulk email→username probing must be costly.
+  router.post(
+    '/requests',
+    limiters.social,
+    validateBody(createFriendRequestRequestSchema),
+    async (req, res) => {
+      const { identifier } = req.valid?.body as CreateFriendRequestRequest;
+      await ctx.social.sendRequest(req.authUser!.id, identifier);
+      res.status(202).json({ ok: true });
+    },
+  );
 
   // GET /social/requests — the caller's pending incoming + outgoing requests.
   router.get('/requests', async (req, res) => {
