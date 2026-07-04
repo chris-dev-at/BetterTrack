@@ -9,3 +9,4 @@ export * from './portfolio';
 export * from './conglomerate';
 export * from './backtest';
 export * from './social';
+export * from './notifications';
