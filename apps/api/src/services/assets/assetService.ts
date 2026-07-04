@@ -1,6 +1,7 @@
 import type {
   AssetDetailResponse,
   AssetSummary,
+  DailyClosesResponse,
   HistoryRange,
   HistoryResponse,
   QuoteResponse,
@@ -27,6 +28,12 @@ export interface AssetService {
   getQuote(userId: string, id: string): Promise<QuoteResponse>;
   /** Price history for a range; interval follows the §5.3 table. */
   getHistory(userId: string, id: string, range: HistoryRange): Promise<HistoryResponse>;
+  /**
+   * Full available **daily** close series (§5.3), forced to `1d` — the source
+   * for the transaction form's linked date ↔ price fields (#226). Best-effort:
+   * a degraded provider with nothing cached yields an empty series, never a 502.
+   */
+  getDailyCloses(userId: string, id: string): Promise<DailyClosesResponse>;
 }
 
 export interface AssetServiceDeps {
@@ -131,6 +138,26 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
         };
       } catch {
         throw badGateway();
+      }
+    },
+
+    async getDailyCloses(userId, id) {
+      const row = await requireAsset(userId, id);
+      try {
+        // Force the daily interval over the full window (like the backtest
+        // loader §6.6) so the client always gets calendar-day granularity — the
+        // §5.3 range→interval table would otherwise return weekly/monthly candles
+        // for the multi-year windows this form needs.
+        const cached = await marketData.getHistory(
+          { providerId: row.providerId, providerRef: row.providerRef },
+          'MAX',
+          '1d',
+        );
+        return { points: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
+      } catch {
+        // Best-effort: the transaction form degrades to fully-manual entry rather
+        // than erroring when no series is cached and the provider is down (#226).
+        return { points: [], stale: true, asOf: null };
       }
     },
   };

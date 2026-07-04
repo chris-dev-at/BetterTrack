@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assetDetailResponseSchema,
+  dailyClosesResponseSchema,
   historyResponseSchema,
   quoteResponseSchema,
   type CachedResult,
@@ -313,6 +314,92 @@ describe('GET /api/v1/assets/:id/history', () => {
     const agent = await loginAgent(h.app, user.email, user.password);
 
     const res = await agent.get(`/api/v1/assets/${NONEXISTENT}/history?range=1M`);
+    expect(res.status).toBe(404);
+    expect(marketData.calls.history).toBe(0);
+  });
+});
+
+describe('GET /api/v1/assets/:id/daily-closes', () => {
+  it('returns the full daily series, forcing the MAX range at a 1d interval (§5.3)', async () => {
+    let seenRange: HistoryRange | undefined;
+    let seenInterval: string | undefined;
+    const marketData = createStubMarketData({
+      history: (_ref, range, interval) => {
+        seenRange = range;
+        seenInterval = interval;
+        return cachedHistory();
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/${asset.id}/daily-closes`);
+    expect(res.status).toBe(200);
+    const parsed = dailyClosesResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    // Daily granularity over the whole window, regardless of the §5.3 default.
+    expect(seenRange).toBe('MAX');
+    expect(seenInterval).toBe('1d');
+    expect(parsed.data.points).toHaveLength(2);
+    expect(parsed.data.asOf).toBe('2026-06-20T10:00:00.000Z');
+  });
+
+  it('degrades to an empty series (not a 502) when the provider fails with nothing cached', async () => {
+    const marketData = createStubMarketData({
+      history: () => {
+        throw new Error('upstream down');
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/${asset.id}/daily-closes`);
+    expect(res.status).toBe(200);
+    const parsed = dailyClosesResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.points).toEqual([]);
+    expect(parsed.data.stale).toBe(true);
+    expect(parsed.data.asOf).toBeNull();
+  });
+
+  it('returns 404 for an unknown asset before calling the provider', async () => {
+    const marketData = createStubMarketData({ history: () => cachedHistory() });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/${NONEXISTENT}/daily-closes`);
+    expect(res.status).toBe(404);
+    expect(marketData.calls.history).toBe(0);
+  });
+
+  it("does not leak another user's custom asset (404, no provider call)", async () => {
+    const marketData = createStubMarketData({ history: () => cachedHistory() });
+    const h = await createTestApp({ marketData });
+    const owner = await h.seedUser({ email: 'dc-owner@a.test', username: 'dcowner' });
+    const other = await h.seedUser({ email: 'dc-other@a.test', username: 'dcother' });
+    const [custom] = await h.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'manual',
+        providerRef: 'my-house',
+        ownerId: owner.id,
+        type: 'custom',
+        symbol: 'HOUSE',
+        name: 'My House',
+        exchange: null,
+        currency: 'EUR',
+      })
+      .returning();
+    const otherAgent = await loginAgent(h.app, other.email, other.password);
+
+    const res = await otherAgent.get(`/api/v1/assets/${custom!.id}/daily-closes`);
     expect(res.status).toBe(404);
     expect(marketData.calls.history).toBe(0);
   });
