@@ -1,5 +1,14 @@
 import { z } from 'zod';
 
+import { currencyCodeSchema } from './market';
+import {
+  holdingSchema,
+  portfolioHistoryPointSchema,
+  portfolioHistoryRangeSchema,
+  portfolioSummarySchema,
+  portfolioTotalsSchema,
+} from './portfolio';
+
 /**
  * Social contracts (PROJECTPLAN.md §6.9). Friend requests + friendships.
  *
@@ -75,3 +84,63 @@ export type FriendRequestListResponse = z.infer<typeof friendRequestListResponse
 /** `GET /social/friends` response. */
 export const friendsListResponseSchema = z.object({ friends: z.array(friendshipSchema) }).strict();
 export type FriendsListResponse = z.infer<typeof friendsListResponseSchema>;
+
+// --- Shared portfolios (§6.9: "Shared With Me" + "My Shared Items") ----------
+
+/**
+ * One friend-shared portfolio as it appears in **Shared With Me** (§6.9): the
+ * owner (public-safe — id + username only), the portfolio name, and its current
+ * EUR total value. The summary carries no holdings ledger — the read-only detail
+ * view (`GET /social/shared/:portfolioId`) exposes those.
+ */
+export const sharedPortfolioSummarySchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    name: z.string(),
+    owner: friendUserSchema,
+    totalValueEur: z.number(),
+  })
+  .strict();
+export type SharedPortfolioSummary = z.infer<typeof sharedPortfolioSummarySchema>;
+
+/** `GET /social/shared` response — the portfolios of my friends set to `visibility=friends`. */
+export const sharedPortfolioListResponseSchema = z
+  .object({ portfolios: z.array(sharedPortfolioSummarySchema) })
+  .strict();
+export type SharedPortfolioListResponse = z.infer<typeof sharedPortfolioListResponseSchema>;
+
+/**
+ * `GET /social/shared/:portfolioId` response — a **read-only** mirror of the
+ * owner's overview (§6.9): totals, holdings and the performance-chart series,
+ * reusing the exact portfolio contract pieces so a friend sees the same blocks
+ * the owner does. There is no transaction ledger and no edit affordance in this
+ * shape — a friend view is strictly read-only.
+ */
+export const sharedPortfolioDetailResponseSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    name: z.string(),
+    owner: friendUserSchema,
+    baseCurrency: currencyCodeSchema,
+    totals: portfolioTotalsSchema,
+    holdings: z.array(holdingSchema),
+    history: z
+      .object({
+        range: portfolioHistoryRangeSchema,
+        points: z.array(portfolioHistoryPointSchema),
+      })
+      .strict(),
+  })
+  .strict();
+export type SharedPortfolioDetailResponse = z.infer<typeof sharedPortfolioDetailResponseSchema>;
+
+/**
+ * `GET /social/my-shared` response — the caller's *own* portfolios currently at
+ * `visibility=friends` (the **My Shared Items** toggle-off list, §6.9). Reuses
+ * the portfolio summary; toggling a portfolio off is done via the existing
+ * `PATCH /portfolios/:id` (there is no mutation on the social surface).
+ */
+export const mySharedListResponseSchema = z
+  .object({ portfolios: z.array(portfolioSummarySchema) })
+  .strict();
+export type MySharedListResponse = z.infer<typeof mySharedListResponseSchema>;

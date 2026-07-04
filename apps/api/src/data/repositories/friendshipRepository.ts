@@ -1,8 +1,8 @@
-import { and, eq, or, sql } from 'drizzle-orm';
+import { and, asc, eq, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
-import { friendRequests, friendships, users } from '../schema';
+import { friendRequests, friendships, portfolios, users } from '../schema';
 import type { FriendRequestRow } from '../schema';
 
 /**
@@ -35,6 +35,14 @@ export interface FriendRow {
   id: string;
   username: string;
   createdAt: Date;
+}
+
+/** A friend's portfolio exposed via `visibility='friends'` — owner + portfolio identity only. */
+export interface SharedPortfolioRow {
+  portfolioId: string;
+  name: string;
+  ownerId: string;
+  ownerUsername: string;
 }
 
 /** Canonical pair ordering (§6.9): a friendship row is always stored `user_a < user_b`. */
@@ -75,6 +83,68 @@ export function createFriendshipRepository(db: Database) {
             eq(friendRequests.status, 'pending'),
           ),
         )
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * Every portfolio owned by one of the viewer's friends that is currently at
+     * `visibility='friends'` — the **Shared With Me** set (§6.9). Authorization
+     * *is* the join: a row appears only while both an established friendship and
+     * the owner's friends-visibility hold, so there is nothing to cache and
+     * revoking either instantly drops it. Ordered by owner then portfolio name.
+     */
+    async listSharedWithViewer(viewerId: string): Promise<SharedPortfolioRow[]> {
+      const rows = await db
+        .select({
+          portfolioId: portfolios.id,
+          name: portfolios.name,
+          ownerId: portfolios.userId,
+          ownerUsername: users.username,
+        })
+        .from(friendships)
+        .innerJoin(
+          portfolios,
+          or(
+            and(eq(friendships.userA, viewerId), eq(portfolios.userId, friendships.userB)),
+            and(eq(friendships.userB, viewerId), eq(portfolios.userId, friendships.userA)),
+          ),
+        )
+        .innerJoin(users, eq(users.id, portfolios.userId))
+        .where(eq(portfolios.visibility, 'friends'))
+        .orderBy(asc(users.username), asc(portfolios.name));
+      return rows;
+    },
+
+    /**
+     * The single friend-shared portfolio the viewer is authorized to read, or
+     * `undefined`. One query enforces **both** an existing friendship with the
+     * owner **and** the owner's `visibility='friends'`, recomputed per call — no
+     * cached authorization (§6.9). A non-friend, a private portfolio, an unknown
+     * id, and the viewer's own portfolio (no self-friendship) all return
+     * `undefined`, so the service 404s uniformly (never 403, no info leak).
+     */
+    async findSharedPortfolioForViewer(
+      viewerId: string,
+      portfolioId: string,
+    ): Promise<SharedPortfolioRow | undefined> {
+      const [row] = await db
+        .select({
+          portfolioId: portfolios.id,
+          name: portfolios.name,
+          ownerId: portfolios.userId,
+          ownerUsername: users.username,
+        })
+        .from(portfolios)
+        .innerJoin(users, eq(users.id, portfolios.userId))
+        .innerJoin(
+          friendships,
+          or(
+            and(eq(friendships.userA, viewerId), eq(friendships.userB, portfolios.userId)),
+            and(eq(friendships.userB, viewerId), eq(friendships.userA, portfolios.userId)),
+          ),
+        )
+        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.visibility, 'friends')))
         .limit(1);
       return row;
     },

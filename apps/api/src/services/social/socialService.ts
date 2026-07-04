@@ -3,6 +3,9 @@ import type {
   FriendRequestListResponse,
   Friendship,
   FriendsListResponse,
+  MySharedListResponse,
+  SharedPortfolioDetailResponse,
+  SharedPortfolioListResponse,
 } from '@bettertrack/contracts';
 
 import type {
@@ -11,6 +14,7 @@ import type {
   PendingRequestRow,
 } from '../../data/repositories/friendshipRepository';
 import { notFound } from '../../errors';
+import type { PortfolioService } from '../portfolio/portfolioService';
 
 /**
  * Friend-request / friendship orchestration (PROJECTPLAN.md §6.9). The V1
@@ -32,6 +36,12 @@ import { notFound } from '../../errors';
 
 export interface SocialServiceDeps {
   repo: FriendshipRepository;
+  /**
+   * Reused to build the read-only shared overview from the *owner's* scope, so a
+   * friend view mirrors the owner's overview blocks exactly and never
+   * re-implements the money-math (§6.9).
+   */
+  portfolio: PortfolioService;
 }
 
 export interface SocialService {
@@ -49,10 +59,21 @@ export interface SocialService {
   listFriends(userId: string): Promise<FriendsListResponse>;
   /** Remove a friendship (either side may). */
   removeFriend(userId: string, otherUserId: string): Promise<void>;
+  /** Portfolios of the caller's friends set to `visibility=friends` (Shared With Me). */
+  listSharedWithMe(userId: string): Promise<SharedPortfolioListResponse>;
+  /**
+   * The read-only overview of a friend-shared portfolio. Asserts an existing
+   * friendship **and** the owner's `visibility=friends` at call time; a 404
+   * (never 403) otherwise, recomputed per request (§6.9).
+   */
+  getSharedPortfolio(viewerId: string, portfolioId: string): Promise<SharedPortfolioDetailResponse>;
+  /** The caller's own portfolios currently at `visibility=friends` (My Shared Items). */
+  listMyShared(userId: string): Promise<MySharedListResponse>;
 }
 
 const REQUEST_NOT_FOUND = () => notFound('Friend request not found.', 'FRIEND_REQUEST_NOT_FOUND');
 const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOUND');
+const SHARED_NOT_FOUND = () => notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
 
 function toFriendRequest(row: PendingRequestRow): FriendRequest {
   return {
@@ -73,7 +94,7 @@ function toFriendship(row: FriendRow): Friendship {
 }
 
 export function createSocialService(deps: SocialServiceDeps): SocialService {
-  const { repo } = deps;
+  const { repo, portfolio } = deps;
 
   return {
     async sendRequest(fromUserId, identifier) {
@@ -126,6 +147,53 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     async removeFriend(userId, otherUserId) {
       const removed = await repo.deleteFriendship(userId, otherUserId);
       if (!removed) throw FRIEND_NOT_FOUND();
+    },
+
+    async listSharedWithMe(userId) {
+      const rows = await repo.listSharedWithViewer(userId);
+      // The total value is the owner's own overview total — computed through the
+      // shared portfolio service (owner scope), so no money-math is duplicated.
+      const portfolios = await Promise.all(
+        rows.map(async (row) => {
+          const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId);
+          return {
+            portfolioId: row.portfolioId,
+            name: row.name,
+            owner: { id: row.ownerId, username: row.ownerUsername },
+            totalValueEur: overview.totals.marketValueEur,
+          };
+        }),
+      );
+      return { portfolios };
+    },
+
+    async getSharedPortfolio(viewerId, portfolioId) {
+      // Authorization recomputed here every call — friendship AND owner
+      // visibility='friends' in one query; revoking either 404s immediately.
+      const shared = await repo.findSharedPortfolioForViewer(viewerId, portfolioId);
+      if (!shared) throw SHARED_NOT_FOUND();
+
+      // Build the overview from the *owner's* scope so it mirrors exactly what
+      // the owner sees; the viewer never becomes the owner of any derived data.
+      const overview = await portfolio.getPortfolio(shared.ownerId, portfolioId);
+      const history = await portfolio.getHistory(shared.ownerId, portfolioId, 'MAX');
+      return {
+        portfolioId,
+        name: shared.name,
+        owner: { id: shared.ownerId, username: shared.ownerUsername },
+        baseCurrency: overview.baseCurrency,
+        totals: overview.totals,
+        holdings: overview.holdings,
+        history: { range: history.range, points: history.points },
+      };
+    },
+
+    async listMyShared(userId) {
+      // Reuse the owner-scoped list (which materialises the default) and keep
+      // only the friends-visible rows — the toggle-off list. Turning one off is
+      // the existing PATCH /portfolios/:id, so there is no mutation here.
+      const { portfolios } = await portfolio.listPortfolios(userId);
+      return { portfolios: portfolios.filter((p) => p.visibility === 'friends') };
     },
   };
 }

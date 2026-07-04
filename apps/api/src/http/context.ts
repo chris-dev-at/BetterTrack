@@ -224,7 +224,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   const friendshipRepo = createFriendshipRepository(db);
-  const social = createSocialService({ repo: friendshipRepo });
+  const social = createSocialService({ repo: friendshipRepo, portfolio });
 
   return {
     config,
