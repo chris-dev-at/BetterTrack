@@ -74,9 +74,26 @@ const ageSeconds = async (p) => {
   }
 };
 
+async function desiredWorkers() {
+  const n = parseInt((await readText(join(CONTROL, 'workers'))) || '2', 10);
+  return n >= 1 && n <= 4 ? n : 2;
+}
+
 async function readProtocolState() {
   const workers = [];
-  for (let w = 1; w <= Number(process.env.WORKERS || 2); w++) {
+  // Show every worker that has protocol files plus all configured ones — after
+  // shrinking the count, old workers disappear once autorun cleans their files.
+  let ids = new Set();
+  for (let w = 1; w <= (await desiredWorkers()); w++) ids.add(w);
+  try {
+    for (const f of await readdir(join(STATE, 'status'))) {
+      const m = /^worker-(\d+)\.json$/.exec(f);
+      if (m) ids.add(Number(m[1]));
+    }
+  } catch {
+    /* status dir may not exist yet */
+  }
+  for (const w of [...ids].sort((a, b) => a - b)) {
     workers.push({
       id: w,
       status: await readJson(join(STATE, 'status', `worker-${w}.json`)),
@@ -154,7 +171,16 @@ async function github() {
       '--limit',
       '30',
     ]),
-    gh(['pr', 'list', '--state', 'merged', '--json', 'number,title,mergedAt', '--limit', '10']),
+    gh([
+      'pr',
+      'list',
+      '--state',
+      'merged',
+      '--json',
+      'number,title,mergedAt,headRefName',
+      '--limit',
+      '25',
+    ]),
     gh([
       'issue',
       'list',
@@ -254,23 +280,174 @@ async function ledger() {
   }
 }
 
+// ---- subscription usage (5h window + weekly, via host OAuth token) --------------------
+// The token is read server-side (macOS keychain first, factory/.env as fallback)
+// and never leaves this process — the page only ever sees percentages/timestamps.
+let usageCache = { at: 0, data: null };
+async function hostOauthToken() {
+  const r = await run('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w']);
+  if (r.ok) {
+    try {
+      const j = JSON.parse(r.stdout);
+      const t = j.claudeAiOauth?.accessToken || j.accessToken;
+      if (t) return t;
+    } catch {
+      /* fall through to .env */
+    }
+  }
+  try {
+    const env = await readFile(join(REPO_ROOT, 'factory', '.env'), 'utf8');
+    const m = /^CLAUDE_CODE_OAUTH_TOKEN=(.+)$/m.exec(env);
+    if (m) return m[1].trim();
+  } catch {
+    /* no fallback token */
+  }
+  return null;
+}
+async function usage() {
+  if (Date.now() - usageCache.at < 60000 && usageCache.data) return usageCache.data;
+  let data = { error: 'no OAuth token found' };
+  const token = await hostOauthToken();
+  if (token) {
+    try {
+      const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
+        headers: { authorization: `Bearer ${token}`, 'anthropic-beta': 'oauth-2025-04-20' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        data = {
+          fiveHour: j.five_hour
+            ? { pct: j.five_hour.utilization, resetsAt: j.five_hour.resets_at }
+            : null,
+          sevenDay: j.seven_day
+            ? { pct: j.seven_day.utilization, resetsAt: j.seven_day.resets_at }
+            : null,
+          scoped: (j.limits || [])
+            .filter((l) => l.kind === 'weekly_scoped' && l.scope?.model?.display_name)
+            .map((l) => ({ name: l.scope.model.display_name, pct: l.percent })),
+        };
+      } else {
+        data = { error: `usage API ${res.status}` };
+      }
+    } catch (e) {
+      data = { error: String(e.message || e).slice(0, 80) };
+    }
+  }
+  usageCache = { at: Date.now(), data };
+  return data;
+}
+
+// ---- triggers: usage- and time-based automation ---------------------------------------
+// Persisted in state/control/triggers.json so a server restart keeps them.
+// usage rule: fire action when metric ≥ threshold; onReset==='start' waits for the
+// next window (resets_at moves / utilization collapses) and starts the factory,
+// repeat re-arms the rule for the window after that. timer rule: fire action at fireAt.
+const TRIGGERS_FILE = join(CONTROL, 'triggers.json');
+async function readTriggers() {
+  return (await readJson(TRIGGERS_FILE)) || [];
+}
+async function writeTriggers(list) {
+  await mkdir(CONTROL, { recursive: true });
+  const tmp = `${TRIGGERS_FILE}.tmp${Date.now()}`;
+  await writeFile(tmp, JSON.stringify(list, null, 1));
+  await rename(tmp, TRIGGERS_FILE);
+}
+const TRIGGER_ACTIONS = new Set(['mode-close-down', 'mode-run-out', 'stop']);
+let triggerBusy = false;
+async function evalTriggers() {
+  if (triggerBusy) return;
+  triggerBusy = true;
+  try {
+    const list = await readTriggers();
+    if (!list.length) return;
+    let changed = false;
+    const { containers } = await composePs(MF_PROJECT);
+    const running = containers.some((c) => /running|paused/i.test(c.state));
+    const needsUsage = list.some((t) => t.type === 'usage' && (t.armed || t.waitingReset));
+    const u = needsUsage ? await usage() : null;
+    for (const t of list) {
+      if (t.type === 'timer' && t.armed && Date.now() >= Date.parse(t.fireAt)) {
+        t.armed = false;
+        t.firedAt = new Date().toISOString();
+        changed = true;
+        if (running) {
+          await clog(`trigger[${t.id}] timer → ${t.action}`);
+          await doAction(t.action);
+        } else {
+          t.note = 'factory was not running at fire time';
+          await clog(`trigger[${t.id}] timer fired but factory not running`);
+        }
+      }
+      if (t.type === 'usage' && t.armed) {
+        const m = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
+        if (m && typeof m.pct === 'number' && m.pct >= t.threshold) {
+          t.armed = false;
+          t.firedAt = new Date().toISOString();
+          t.firedResetsAt = m.resetsAt;
+          changed = true;
+          await clog(
+            `trigger[${t.id}] ${t.metric} ${m.pct}% ≥ ${t.threshold}% → ${t.action}${running ? '' : ' (factory already down)'}`,
+          );
+          if (running) await doAction(t.action);
+          if (t.onReset === 'start') t.waitingReset = true;
+        }
+      } else if (t.type === 'usage' && t.waitingReset) {
+        const m = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
+        const newWindow =
+          m &&
+          (Date.parse(m.resetsAt) > Date.parse(t.firedResetsAt || 0) + 60000 ||
+            (typeof m.pct === 'number' && m.pct < Math.min(t.threshold / 2, 10)));
+        if (newWindow) {
+          t.waitingReset = false;
+          changed = true;
+          const mfNow = await composePs(MF_PROJECT);
+          const upNow = mfNow.containers.some((c) => /running|paused/i.test(c.state));
+          if (!upNow) {
+            await clog(`trigger[${t.id}] new ${t.metric} window → start`);
+            await doAction('start');
+          }
+          if (t.repeat) {
+            t.armed = true;
+            t.firedAt = null;
+            await clog(`trigger[${t.id}] re-armed (repeat)`);
+          }
+        }
+      }
+    }
+    if (changed) await writeTriggers(list);
+  } catch {
+    /* evaluator must survive transient errors */
+  } finally {
+    triggerBusy = false;
+  }
+}
+setInterval(evalTriggers, 15000);
+
 // ---- snapshot ------------------------------------------------------------------------
 let lastAutoAction = null;
 const inflight = new Map(); // action name → started_at
 async function snapshot() {
-  const [protocol, mf, sf, gh, led] = await Promise.all([
+  const [protocol, mf, sf, gh, led, usg, triggers, desired, masterActivity] = await Promise.all([
     readProtocolState(),
     composePs(MF_PROJECT),
     composePs(SF_PROJECT),
     github(),
     ledger(),
+    usage(),
+    readTriggers(),
+    desiredWorkers(),
+    readJson(join(STATE, 'status', 'master.json')),
   ]);
   return {
     now: new Date().toISOString(),
-    protocol,
+    protocol: { ...protocol, masterActivity },
     ledger: led,
     docker: { multi: mf, single: sf },
     github: gh,
+    usage: usg,
+    triggers,
+    workers: { desired, visible: protocol.workers.length },
     inflight: [...inflight.keys()],
     lastAutoAction,
   };
@@ -300,10 +477,73 @@ function spawnLogged(name, cmd, args, cwd) {
   return { ok: true, message: `${name} started (see state/logs/control.log)` };
 }
 
-async function doAction(action) {
+async function doAction(action, payload = {}) {
   switch (action) {
     case 'start':
       return spawnLogged('start', 'bash', ['autorun.sh'], MF_DIR);
+    case 'restart':
+      await clog('restart (apply settings)');
+      return spawnLogged('restart', 'bash', ['-c', './autorun.sh --down && ./autorun.sh'], MF_DIR);
+    case 'set-workers': {
+      const n = parseInt(payload.value, 10);
+      if (!(n >= 1 && n <= 4)) return { ok: false, message: 'workers must be 1–4' };
+      await mkdir(CONTROL, { recursive: true });
+      const tmp = join(CONTROL, `.workers.tmp${Date.now()}`);
+      await writeFile(tmp, `${n}\n`);
+      await rename(tmp, join(CONTROL, 'workers'));
+      await clog(`workers → ${n}`);
+      return { ok: true, message: `workers set to ${n} — applies on next start/restart` };
+    }
+    case 'trigger-add': {
+      const t = payload.trigger || {};
+      const id = Math.random().toString(36).slice(2, 8);
+      let rule = null;
+      if (t.type === 'timer') {
+        const mins = Number(t.minutes);
+        if (!(mins >= 1 && mins <= 24 * 60))
+          return { ok: false, message: 'minutes must be 1–1440' };
+        if (!TRIGGER_ACTIONS.has(t.action)) return { ok: false, message: 'bad action' };
+        rule = {
+          id,
+          type: 'timer',
+          minutes: mins,
+          fireAt: new Date(Date.now() + mins * 60000).toISOString(),
+          action: t.action,
+          armed: true,
+          created_at: new Date().toISOString(),
+        };
+      } else if (t.type === 'usage') {
+        const th = Number(t.threshold);
+        if (!(th >= 1 && th <= 100)) return { ok: false, message: 'threshold must be 1–100%' };
+        if (!TRIGGER_ACTIONS.has(t.action)) return { ok: false, message: 'bad action' };
+        rule = {
+          id,
+          type: 'usage',
+          metric: t.metric === 'seven_day' ? 'seven_day' : 'five_hour',
+          threshold: th,
+          action: t.action,
+          onReset: t.onReset === 'start' ? 'start' : 'none',
+          repeat: !!t.repeat,
+          armed: true,
+          created_at: new Date().toISOString(),
+        };
+      } else {
+        return { ok: false, message: 'bad trigger type' };
+      }
+      const list = await readTriggers();
+      list.push(rule);
+      await writeTriggers(list);
+      await clog(`trigger[${id}] added: ${JSON.stringify(rule)}`);
+      return { ok: true, message: `trigger armed (${id})` };
+    }
+    case 'trigger-remove': {
+      const list = await readTriggers();
+      const next = list.filter((t) => t.id !== payload.id);
+      if (next.length === list.length) return { ok: false, message: 'trigger not found' };
+      await writeTriggers(next);
+      await clog(`trigger[${payload.id}] removed`);
+      return { ok: true, message: 'trigger removed' };
+    }
     case 'start-dry':
       return spawnLogged('start-dry', 'bash', ['autorun.sh', '--dry'], MF_DIR);
     case 'stop':
@@ -423,8 +663,8 @@ const server = createServer(async (req, res) => {
       });
       req.on('end', async () => {
         try {
-          const { action } = JSON.parse(body || '{}');
-          const result = await doAction(String(action || ''));
+          const { action, ...payload } = JSON.parse(body || '{}');
+          const result = await doAction(String(action || ''), payload);
           res.writeHead(result.ok ? 200 : 400, { 'content-type': 'application/json' });
           res.end(
             JSON.stringify({
