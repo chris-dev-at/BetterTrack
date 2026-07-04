@@ -752,6 +752,12 @@
       section.tab.on {
         display: block;
       }
+      .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:3px}
+      .hb{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px}
+      .hb .n{width:110px;color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;flex:none}
+      .hb .track{flex:1;height:10px;background:var(--surface2);border-radius:3px;overflow:hidden}
+      .hb .track i{display:block;height:100%;background:var(--accent);border-radius:3px 2px 2px 3px}
+      .hb .v{width:64px;color:var(--ink2);font-size:12px;flex:none}
     </style>
   </head>
   <body>
@@ -765,6 +771,7 @@
         <nav class="tabs" id="tabs">
           <button data-tab="overview" class="on">Overview</button>
           <button data-tab="flow">Flow</button>
+          <button data-tab="usage">Usage</button>
           <button data-tab="detail">DetailView</button>
         </nav>
         <span class="pill"
@@ -943,6 +950,26 @@
     </section>
 
     <!-- ================= DETAIL (v1 view) ================= -->
+    <!-- ================= USAGE ================= -->
+    <section class="tab" id="tab-usage">
+      <div class="strip" id="ua-kpis"></div>
+      <div class="grid2">
+        <div class="card" style="grid-column:1/-1">
+          <h2>Spend per day — last 14 days <span class="hint"><span class="sw" style="background:var(--accent)"></span> multi-factory&nbsp;&nbsp;<span class="sw" style="background:#8a8878"></span> single factory</span></h2>
+          <svg id="ua-days" viewBox="0 0 720 180" style="width:100%;height:auto"></svg>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>Spend by model</h2><div id="ua-model"></div></div>
+        <div class="card"><h2>Spend by role</h2><div id="ua-role"></div></div>
+      </div>
+      <div class="grid2">
+        <div class="card"><h2>Most expensive issues</h2><div id="ua-issues"></div></div>
+        <div class="card"><h2>Tokens (all time)</h2><div class="strip" id="ua-tokens" style="margin:0"></div></div>
+      </div>
+      <div class="hint" style="margin-top:2px">Source: factory/usage/ledger.jsonl — one record per agent run (writer/reviewer/fixer/planner/composer/checker/ci-fix), cost as reported by the Claude CLI. Refreshes every 60s while this tab is open.</div>
+    </section>
+
     <section class="tab" id="tab-detail">
       <div class="kpis" id="kpis"></div>
       <div class="grid" id="workergrid"></div>
@@ -1034,6 +1061,7 @@
           .querySelectorAll('section.tab')
           .forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
         if (S) render(S);
+        if (t === 'usage') fetchUsage(true);
       }
 
       /* ---- actions ---- */
@@ -1242,7 +1270,7 @@
           `<div class="tile"><span class="l">Factory</span><span class="v">${running ? upCount + ' up' : paused ? 'paused' : 'stopped'}</span><span class="s">${esc(p.mode || '–')} · ${esc(p.phase || '–')} · master hb ${ago(p.masterHeartbeatAge)}</span></div>` +
           `<div class="tile"><span class="l">Cost (multi)</span><span class="v">$${led.multiToday ?? 0} today</span><span class="s">$${led.multiTotal ?? 0} total · queue ${(p.queue || []).length} · ✋ ${(gh.needsHuman || []).length}</span></div>` +
           (u5
-            ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
+            ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
             : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
           (u7
             ? `<div class="tile"><span class="l">7-day window</span><span class="v">${u7.pct}% used</span><span class="s">resets ${new Date(u7.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${scoped ? ' · ' + scoped : ''}</span><span class="meter"><i class="${mcls(u7.pct)}" style="width:${Math.min(100, u7.pct)}%"></i></span></div>`
@@ -1520,6 +1548,95 @@
             )
             .join('') ||
           '<div class="item"><span class="m">no multi-factory records yet</span></div>';
+      }
+
+      /* ---- USAGE analytics tab ---- */
+      let uaData = null,
+        uaFetchedAt = 0;
+      async function fetchUsage(force) {
+        if (!force && Date.now() - uaFetchedAt < 60000) return;
+        try {
+          const r = await fetch('/api/usage');
+          uaData = await r.json();
+          uaFetchedAt = Date.now();
+          renderUsage(uaData);
+        } catch {
+          /* keep last */
+        }
+      }
+      setInterval(() => {
+        if (activeTab === 'usage') fetchUsage(false);
+      }, 60000);
+      const fmtTok = (n) =>
+        n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n);
+      function hbars(el, rows, colorFor) {
+        const max = Math.max(...rows.map((r) => r.v), 0.01);
+        $(el).innerHTML = rows
+          .map(
+            (r) =>
+              `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, (r.v / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${r.v}</span></div>`,
+          )
+          .join('') || '<div class="hint">no data yet</div>';
+      }
+      const MODEL_COLOR = { sonnet: 'var(--w1)', opus: 'var(--w2)', fable: 'var(--w3)' };
+      function renderUsage(d) {
+        if (!d) return;
+        const t = d.totals || {};
+        $('ua-kpis').innerHTML =
+          `<div class="tile"><span class="l">Total spend</span><span class="v">$${t.cost ?? 0}</span><span class="s">${t.records ?? 0} agent runs</span></div>` +
+          `<div class="tile"><span class="l">Today</span><span class="v">$${t.today ?? 0}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
+          `<div class="tile"><span class="l">Issues built</span><span class="v">${t.issues ?? 0}</span><span class="s">avg $${t.avgPerIssue ?? 0} per issue</span></div>` +
+          `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
+          `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;
+        // daily stacked bars
+        const W = 720, H = 180, padL = 34, padB = 20, padT = 8;
+        const days = d.days || [];
+        const max = Math.max(...days.map((x) => x.multi + x.single), 1) * 1.14;
+        const bw = (W - padL - 8) / days.length;
+        let svg = '';
+        for (const frac of [0.5, 1]) {
+          const y = padT + (H - padB - padT) * (1 - frac);
+          svg += `<line x1="${padL}" y1="${y}" x2="${W - 4}" y2="${y}" stroke="var(--border)" stroke-width="1"/>` +
+            `<text x="${padL - 5}" y="${y + 4}" text-anchor="end" font-size="9.5" fill="var(--muted)">$${(max * frac).toFixed(0)}</text>`;
+        }
+        days.forEach((x, i) => {
+          const cx = padL + i * bw + bw * 0.18;
+          const w = bw * 0.64;
+          const hMulti = ((H - padB - padT) * x.multi) / max;
+          const hSingle = ((H - padB - padT) * x.single) / max;
+          let y = H - padB;
+          if (hSingle > 0.5) {
+            y -= hSingle;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hSingle}" rx="2" fill="#8a8878"><title>${x.date} single: $${x.single}</title></rect>`;
+            y -= 2;
+          }
+          if (hMulti > 0.5) {
+            y -= hMulti;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hMulti}" rx="2" fill="var(--accent)"><title>${x.date} multi: $${x.multi}</title></rect>`;
+          }
+          const tot = x.multi + x.single;
+          if (tot > 0)
+            svg += `<text x="${cx + w / 2}" y="${y - 4}" text-anchor="middle" font-size="9" fill="var(--ink2)">$${tot.toFixed(0)}</text>`;
+          if (i % 2 === (days.length - 1) % 2)
+            svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${x.date.slice(5)}</text>`;
+        });
+        $('ua-days').innerHTML = svg;
+        hbars('ua-model', (d.byModel || []).map((r) => ({ ...r, label: r.k })), (k) => MODEL_COLOR[k] || 'var(--accent)');
+        hbars('ua-role', d.byRole || []);
+        hbars(
+          'ua-issues',
+          (d.topIssues || []).map((r) => ({
+            ...r,
+            label: /^\d+$/.test(r.k) ? '#' + r.k : r.k,
+          })),
+        );
+        const tk = d.tokens || {};
+        $('ua-tokens').innerHTML = ['input', 'output', 'cacheRead', 'cacheWrite']
+          .map(
+            (k) =>
+              `<div class="tile"><span class="l">${k.replace('cache', 'cache ')}</span><span class="v">${fmtTok(tk[k] || 0)}</span></div>`,
+          )
+          .join('');
       }
 
       /* ---- live ---- */

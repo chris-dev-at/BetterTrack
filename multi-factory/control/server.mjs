@@ -283,7 +283,11 @@ async function ledger() {
 // ---- subscription usage (5h window + weekly, via host OAuth token) --------------------
 // The token is read server-side (macOS keychain first, factory/.env as fallback)
 // and never leaves this process — the page only ever sees percentages/timestamps.
-let usageCache = { at: 0, data: null };
+let usageCache = { at: 0, ttl: 0, data: null };
+let usageLastGood = null;
+// The oauth/usage endpoint rate-limits aggressively — poll at most every 5 min
+// (owner-approved drift of a few %) and serve the last good reading on errors.
+const USAGE_TTL = Number(process.env.MF_USAGE_TTL_MS || 300000);
 async function hostOauthToken() {
   const r = await run('security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w']);
   if (r.ok) {
@@ -305,8 +309,10 @@ async function hostOauthToken() {
   return null;
 }
 async function usage() {
-  if (Date.now() - usageCache.at < 60000 && usageCache.data) return usageCache.data;
+  if (Date.now() - usageCache.at < (usageCache.ttl || USAGE_TTL) && usageCache.data)
+    return usageCache.data;
   let data = { error: 'no OAuth token found' };
+  let ttl = USAGE_TTL;
   const token = await hostOauthToken();
   if (token) {
     try {
@@ -328,13 +334,19 @@ async function usage() {
             .map((l) => ({ name: l.scope.model.display_name, pct: l.percent })),
         };
       } else {
-        data = { error: `usage API ${res.status}` };
+        data = usageLastGood
+          ? { ...usageLastGood, stale: true }
+          : { error: `usage API ${res.status}` };
+        if (res.status === 429) ttl = 600000; // back off harder when rate-limited
       }
     } catch (e) {
-      data = { error: String(e.message || e).slice(0, 80) };
+      data = usageLastGood
+        ? { ...usageLastGood, stale: true }
+        : { error: String(e.message || e).slice(0, 80) };
     }
   }
-  usageCache = { at: Date.now(), data };
+  if (!data.error && !data.stale) usageLastGood = data;
+  usageCache = { at: Date.now(), ttl, data };
   return data;
 }
 
@@ -423,6 +435,72 @@ async function evalTriggers() {
   }
 }
 setInterval(evalTriggers, 15000);
+
+// ---- usage analytics (ledger aggregations for the Usage tab) --------------------------
+let analyticsCache = { at: 0, data: null };
+async function usageAnalytics() {
+  if (Date.now() - analyticsCache.at < 60000 && analyticsCache.data) return analyticsCache.data;
+  let rows = [];
+  try {
+    rows = (await readFile(LEDGER, 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => {
+        try {
+          return JSON.parse(l);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    /* no ledger yet */
+  }
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const today = new Date().toISOString().slice(0, 10);
+  const days = [];
+  for (let i = 13; i >= 0; i--) days.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+  const byDay = Object.fromEntries(days.map((d) => [d, { multi: 0, single: 0 }]));
+  const byModel = {};
+  const byRole = {};
+  const byIssue = {};
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let total = 0;
+  for (const r of rows) {
+    const c = r.cost_usd || 0;
+    total += c;
+    const d = (r.ts || '').slice(0, 10);
+    if (byDay[d]) byDay[d][r.factory === 'multi' ? 'multi' : 'single'] += c;
+    const model = (r.model || '?').replace('claude-', '').replace(/-[0-9-]+$/, '');
+    byModel[model] = (byModel[model] || 0) + c;
+    byRole[r.role || '?'] = (byRole[r.role || '?'] || 0) + c;
+    byIssue[r.issue || '-'] = (byIssue[r.issue || '-'] || 0) + c;
+    tokens.input += r.input_tokens || 0;
+    tokens.output += r.output_tokens || 0;
+    tokens.cacheRead += r.cache_read_tokens || 0;
+    tokens.cacheWrite += r.cache_creation_tokens || 0;
+  }
+  const issues = Object.keys(byIssue).filter((k) => k !== '-');
+  const data = {
+    days: days.map((d) => ({ date: d, multi: r2(byDay[d].multi), single: r2(byDay[d].single) })),
+    byModel: Object.entries(byModel).map(([k, v]) => ({ k, v: r2(v) })).sort((a, b) => b.v - a.v),
+    byRole: Object.entries(byRole).map(([k, v]) => ({ k, v: r2(v) })).sort((a, b) => b.v - a.v),
+    topIssues: Object.entries(byIssue)
+      .map(([k, v]) => ({ k: k === '-' ? 'planning' : k, v: r2(v) }))
+      .sort((a, b) => b.v - a.v)
+      .slice(0, 12),
+    tokens,
+    totals: {
+      cost: r2(total),
+      records: rows.length,
+      issues: issues.length,
+      avgPerIssue: issues.length ? r2(issues.reduce((a, k) => a + byIssue[k], 0) / issues.length) : 0,
+      today: r2(rows.filter((r) => (r.ts || '').startsWith(today)).reduce((a, r) => a + (r.cost_usd || 0), 0)),
+    },
+  };
+  analyticsCache = { at: Date.now(), data };
+  return data;
+}
 
 // ---- snapshot ------------------------------------------------------------------------
 let lastAutoAction = null;
@@ -643,6 +721,9 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(join(__dirname, 'index.html')));
+    } else if (req.method === 'GET' && url.pathname === '/api/usage') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(await usageAnalytics()));
     } else if (req.method === 'GET' && url.pathname === '/api/state') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(await snapshot()));
