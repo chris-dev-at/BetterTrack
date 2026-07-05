@@ -17,9 +17,19 @@ const STATUS_CLASS: Record<ConglomerateStatus, string> = {
   active: 'bg-emerald-950/60 text-emerald-400 ring-emerald-800',
 };
 
+/**
+ * What "Active" means (§6.5, §13.2 V2-P7): shared across Builder, Detail and
+ * List so an owner-naive user gets the same explanation everywhere.
+ */
+const STATUS_EXPLAINER: Record<ConglomerateStatus, string> = {
+  draft: 'Draft — not used by the calculator yet. Activate once weights sum to 100%.',
+  active: 'Active — your live, validated basket used by the calculator. Weights sum to 100%.',
+};
+
 export function StatusBadge({ status }: { status: ConglomerateStatus }) {
   return (
     <span
+      title={STATUS_EXPLAINER[status]}
       className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_CLASS[status]}`}
     >
       {STATUS_LABEL[status]}
