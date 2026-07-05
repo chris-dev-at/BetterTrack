@@ -10,6 +10,7 @@ import type { MeResponse } from '@bettertrack/contracts';
 vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/workboardApi', () => ({
+  WORKBOARD_QUERY_KEY: ['workboard'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),

@@ -1,6 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import type {
@@ -11,7 +11,8 @@ import type {
   QuoteResponse,
 } from '@bettertrack/contracts';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
-import { addToWorkboard } from '../../lib/workboardApi';
+import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
+import { cx } from '../../lib/cx';
 import { formatDateTime, formatSignedPercent } from '../../lib/format';
 import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart } from '../../ui/charts';
@@ -195,42 +196,157 @@ function AppearsInSection() {
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
-function ActionsSection({ assetId }: { assetId: string }) {
-  const queryClient = useQueryClient();
-  const [added, setAdded] = useState(false);
+/** Closes a popover on Escape or on a mousedown outside `containerRef`. */
+function usePopoverDismiss(
+  open: boolean,
+  onClose: () => void,
+  containerRef: React.RefObject<HTMLElement | null>,
+) {
+  useEffect(() => {
+    if (!open) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleClick);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleClick);
+    };
+  }, [open, onClose, containerRef]);
+}
 
-  const addMutation = useMutation({
-    mutationFn: () => addToWorkboard(assetId),
-    onSuccess: () => {
-      setAdded(true);
-      void queryClient.invalidateQueries({ queryKey: ['workboard'] });
-    },
-  });
+/** Filled/outline bookmark, mirroring the search-results watchlist icon (#256). */
+function BookmarkIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 4h12v16l-6-4-6 4V4Z" />
+    </svg>
+  );
+}
+
+/**
+ * Small, state-aware watchlist icon button (§13.2): filled once the asset is
+ * on the watchlist, acts in place with no redirect, and a re-click never
+ * surfaces an error (`useAddToWatchlist` swallows `ALREADY_WATCHING`). The
+ * caret is the multiple-watchlists-ready affordance (one-click add to
+ * General + a specific-list picker stub, mirroring #256's search rows).
+ */
+function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: string }) {
+  const { watchedIds } = useWatchlistMembership();
+  const addMutation = useAddToWatchlist();
+  const [listPickerOpen, setListPickerOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
+
+  const watched = watchedIds.has(assetId) || addMutation.isSuccess;
+
+  function handleAdd() {
+    if (watched || addMutation.isPending) return;
+    addMutation.mutate(assetId);
+  }
 
   return (
-    <section aria-labelledby="actions-heading" className="flex flex-col gap-3">
-      <h2 id="actions-heading" className="text-base font-semibold text-neutral-200">
-        Actions
-      </h2>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant="secondary"
-          onClick={() => addMutation.mutate()}
-          disabled={addMutation.isPending || added}
-          aria-label={added ? 'Added to Workboard' : 'Add to Workboard'}
+    <div className="relative flex flex-col items-end gap-1">
+      <div className="flex items-center rounded-md ring-1 ring-neutral-700" ref={containerRef}>
+        <button
+          type="button"
+          onClick={handleAdd}
+          disabled={addMutation.isPending}
+          aria-pressed={watched}
+          aria-label={
+            watched
+              ? `${symbol} is on your watchlist`
+              : addMutation.isError
+                ? `Retry adding ${symbol} to your watchlist`
+                : `Add ${symbol} to watchlist`
+          }
+          title={watched ? 'On your watchlist' : 'Add to watchlist'}
+          className={cx(
+            'rounded-l-md p-2 transition-colors',
+            watched
+              ? 'text-sky-400'
+              : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+            addMutation.isError && 'text-red-400',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+            'disabled:cursor-not-allowed disabled:opacity-60',
+          )}
         >
-          {added ? '✓ On Workboard' : addMutation.isPending ? 'Adding…' : '+ Workboard'}
-        </Button>
-        <Button variant="secondary" disabled title="Coming soon">
-          + Conglomerate
-        </Button>
-        <Button variant="secondary" disabled title="Coming soon">
-          Record Buy
-        </Button>
+          <BookmarkIcon filled={watched} />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setListPickerOpen((o) => !o)}
+          aria-label={`Choose a watchlist for ${symbol}`}
+          aria-haspopup="menu"
+          aria-expanded={listPickerOpen}
+          className="rounded-r-md border-l border-neutral-700 p-1.5 text-xs text-neutral-500 hover:bg-neutral-800 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        >
+          ▾
+        </button>
       </div>
-      {addMutation.isError ? (
-        <Alert tone="error">Failed to add to Workboard. Please try again.</Alert>
+
+      {listPickerOpen ? (
+        <div
+          role="menu"
+          aria-label={`Watchlists for ${symbol}`}
+          className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              handleAdd();
+              setListPickerOpen(false);
+            }}
+            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+          >
+            General
+            {watched ? <span className="text-sky-400">✓</span> : null}
+          </button>
+          <p className="mt-1 px-2 text-neutral-600">More lists coming soon.</p>
+        </div>
       ) : null}
+
+      {addMutation.isError ? (
+        <Alert tone="error">Failed to add to Watchlist. Please try again.</Alert>
+      ) : null}
+    </div>
+  );
+}
+
+/** Quick actions (§6.3): reachable near the top, right under the header. */
+function ActionBar({ assetId, symbol }: { assetId: string; symbol: string }) {
+  return (
+    <section aria-labelledby="actions-heading" className="flex flex-col gap-3">
+      <h2 id="actions-heading" className="sr-only">
+        Quick actions
+      </h2>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled title="Coming soon">
+            + Portfolio
+          </Button>
+          <Button variant="secondary" disabled title="Coming soon">
+            + Conglomerate
+          </Button>
+        </div>
+        <WatchlistIconButton assetId={assetId} symbol={symbol} />
+      </div>
     </section>
   );
 }
@@ -324,6 +440,9 @@ export function AssetDetailPage() {
       {/* Header */}
       <AssetHeader detail={detail} liveQuote={quoteQuery.data} />
 
+      {/* Quick actions — reachable near the top (§13.2), not buried below the fold */}
+      <ActionBar assetId={id} symbol={asset.symbol} />
+
       {/* Price chart */}
       <PriceChart
         series={chartPoints}
@@ -338,9 +457,8 @@ export function AssetDetailPage() {
       <StatsRow detail={detail} liveQuote={quoteQuery.data} />
 
       {/* Sections */}
-      <AlertsSection assetId={id} />
       <AppearsInSection />
-      <ActionsSection assetId={id} />
+      <AlertsSection assetId={id} />
 
       <Disclaimer>
         Market data comes from an unofficial source and may be delayed or inaccurate.

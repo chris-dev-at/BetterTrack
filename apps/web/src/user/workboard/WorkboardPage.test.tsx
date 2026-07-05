@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // ─── API mocks ────────────────────────────────────────────────────────────────
 
 vi.mock('../../lib/workboardApi', () => ({
+  WORKBOARD_QUERY_KEY: ['workboard'],
   listWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
@@ -155,6 +156,33 @@ describe('WorkboardPage — item rendering', () => {
     await waitFor(() =>
       expect(screen.getByText(/Could not load your watchlist/i)).toBeInTheDocument(),
     );
+  });
+});
+
+// ─── Refetch on mount (§13.2) ──────────────────────────────────────────────────
+
+describe('WorkboardPage — refetch on mount', () => {
+  test('refetches even when cached watchlist data is still fresh', async () => {
+    // A long staleTime means the default `refetchOnMount: true` would skip the
+    // network call and just show the cached (stale/empty) snapshot. The
+    // watchlist must always hit the network on mount so an icon-add elsewhere
+    // in the app shows up here without a manual reload.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+    });
+    client.setQueryData(['workboard'], { items: [] });
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <WorkboardPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
+    expect(vi.mocked(listWorkboard)).toHaveBeenCalled();
   });
 });
 
