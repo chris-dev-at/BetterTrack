@@ -71,6 +71,50 @@ function ModeToggle({
   );
 }
 
+/**
+ * "At least one share" opt-in (§13.2 V2-P7, default OFF): re-runs the allocate
+ * call with #279's `atLeastOneShare` flag. Whole-mode only — hidden in
+ * fractional mode, where the flag is ignored server-side.
+ */
+function AtLeastOneShareToggle({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-sm font-medium text-neutral-300">At least one share</span>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          aria-label="At least one share"
+          onClick={() => onChange(!checked)}
+          className={cx(
+            'relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
+            'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+            checked ? 'bg-sky-600' : 'bg-neutral-700',
+          )}
+        >
+          <span
+            aria-hidden="true"
+            className={cx(
+              'inline-block h-5 w-5 translate-y-0.5 rounded-full bg-white transition-transform',
+              checked ? 'translate-x-[1.375rem]' : 'translate-x-0.5',
+            )}
+          />
+        </button>
+        <span className="max-w-[14rem] text-xs text-neutral-500">
+          A position too small for one whole share still buys exactly one; the rest rebalances.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
   if (positions.length === 0) {
     return <EmptyState title="This basket has no positions to allocate yet." />;
@@ -198,6 +242,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   const [budget, setBudget] = useState('1000');
   const [mode, setMode] = useState<AllocateMode>('whole');
   const [step, setStep] = useState('');
+  const [atLeastOneShare, setAtLeastOneShare] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [lastBudgetEur, setLastBudgetEur] = useState<number | null>(null);
 
@@ -212,14 +257,15 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   }, [portfoliosQuery.data]);
 
   const mutation = useMutation({
-    mutationFn: (budgetEur: number) => {
+    mutationFn: (vars: { budgetEur: number; atLeastOneShare: boolean }) => {
       const stepValue = Number(step);
       const hasStep =
         mode === 'fractional' && step.trim() !== '' && Number.isFinite(stepValue) && stepValue > 0;
       return allocateConglomerate(conglomerateId, {
-        budgetEur,
+        budgetEur: vars.budgetEur,
         mode,
         ...(hasStep ? { step: stepValue } : {}),
+        ...(mode === 'whole' && vars.atLeastOneShare ? { atLeastOneShare: true } : {}),
       });
     },
   });
@@ -231,7 +277,15 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
     e.preventDefault();
     if (!budgetValid) return;
     setLastBudgetEur(budgetValue);
-    mutation.mutate(budgetValue);
+    mutation.mutate({ budgetEur: budgetValue, atLeastOneShare });
+  }
+
+  /** Toggling re-runs the last calculation immediately, so the buy list stays in sync. */
+  function handleAtLeastOneShareChange(next: boolean) {
+    setAtLeastOneShare(next);
+    if (mutation.data && lastBudgetEur !== null) {
+      mutation.mutate({ budgetEur: lastBudgetEur, atLeastOneShare: next });
+    }
   }
 
   const nonZeroCount = mutation.data ? mutation.data.positions.filter((p) => p.qty > 0).length : 0;
@@ -255,6 +309,10 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
         </label>
 
         <ModeToggle active={mode} onSelect={setMode} />
+
+        {mode === 'whole' ? (
+          <AtLeastOneShareToggle checked={atLeastOneShare} onChange={handleAtLeastOneShareChange} />
+        ) : null}
 
         {mode === 'fractional' ? (
           <label className="flex flex-col gap-1.5">

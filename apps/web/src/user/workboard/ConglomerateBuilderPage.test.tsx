@@ -218,11 +218,19 @@ describe('ConglomerateBuilderPage', () => {
     });
     const user = userEvent.setup();
 
-    // 90% total → Activate disabled.
+    // 90% total → Activate disabled, with a reason an owner-naive user can read.
     expect(screen.getByRole('button', { name: /^activate$/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^activate$/i })).toHaveAttribute(
+      'title',
+      expect.stringContaining('must sum to 100%'),
+    );
 
     fireEvent.change(screen.getByLabelText('Weight for MSFT'), { target: { value: '40' } });
     await waitFor(() => expect(screen.getByRole('button', { name: /^activate$/i })).toBeEnabled());
+    expect(screen.getByRole('button', { name: /^activate$/i })).toHaveAttribute(
+      'title',
+      expect.stringContaining('used by the calculator'),
+    );
 
     await user.click(screen.getByRole('button', { name: /^activate$/i }));
     await waitFor(() => expect(activateConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID));

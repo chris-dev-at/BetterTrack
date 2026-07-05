@@ -210,6 +210,64 @@ describe('BudgetCalculator', () => {
     );
   });
 
+  test('the "at least one share" toggle defaults OFF, and toggling ON re-runs allocation with the flag', async () => {
+    vi.mocked(allocateConglomerate)
+      .mockResolvedValueOnce(RESPONSE)
+      .mockResolvedValueOnce({
+        ...RESPONSE,
+        positions: RESPONSE.positions.map((p) =>
+          p.symbol === 'GOOGL'
+            ? {
+                ...p,
+                qty: 1,
+                costEur: 140,
+                actualPct: 14,
+                deltaPp: 4,
+                unbuyable: false,
+                note: undefined,
+              }
+            : p,
+        ),
+        totalCostEur: 1040,
+        leftoverEur: -40,
+      });
+    const user = userEvent.setup();
+    renderCalculator();
+
+    const toggle = screen.getByRole('switch', { name: 'At least one share' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    await calculate(user);
+    await waitFor(() =>
+      expect(allocateConglomerate).toHaveBeenLastCalledWith(CONGLOMERATE_ID, {
+        budgetEur: 1000,
+        mode: 'whole',
+      }),
+    );
+    expect(await screen.findByText('GOOGL')).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await waitFor(() =>
+      expect(allocateConglomerate).toHaveBeenLastCalledWith(CONGLOMERATE_ID, {
+        budgetEur: 1000,
+        mode: 'whole',
+        atLeastOneShare: true,
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('1.040,00 €')).toBeInTheDocument());
+  });
+
+  test('the "at least one share" toggle is hidden in fractional mode', async () => {
+    const user = userEvent.setup();
+    renderCalculator();
+
+    await user.click(screen.getByRole('button', { name: 'Fractional' }));
+
+    expect(screen.queryByRole('switch', { name: 'At least one share' })).not.toBeInTheDocument();
+  });
+
   test('Add to Portfolio is disabled when every position is unbuyable', async () => {
     vi.mocked(allocateConglomerate).mockResolvedValue({
       ...RESPONSE,
