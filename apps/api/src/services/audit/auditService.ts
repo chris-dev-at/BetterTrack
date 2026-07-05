@@ -6,6 +6,8 @@ export const AuditAction = {
   LoginFail: 'login.fail',
   AdminLogin: 'admin.login',
   PasswordChanged: 'password.changed',
+  PasswordResetRequested: 'password.reset_requested',
+  PasswordResetCompleted: 'password.reset_completed',
   PinEnabled: 'pin.enabled',
   PinDisabled: 'pin.disabled',
   PinVerified: 'pin.verified',

@@ -7,6 +7,8 @@ import {
   type InviteValidationResponse,
   type LoginRequest,
   type MeResponse,
+  type PasswordResetComplete,
+  type PasswordResetRequest,
   type PinVerifyRequest,
   type SessionInfoResponse,
   type SetPinLockRequest,
@@ -108,6 +110,33 @@ export async function validateInvite(
     suppressAuthRedirect: true,
   });
   return inviteValidationResponseSchema.parse(data);
+}
+
+/**
+ * Request a self-service password-reset email (§6.1, §14). Always resolves with
+ * a generic ack — the response never reveals whether the email has an account.
+ * `suppressAuthRedirect`: a public, unauthenticated call.
+ */
+export async function requestPasswordReset(body: PasswordResetRequest): Promise<void> {
+  await apiRequest<unknown>('/auth/password-reset/request', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+}
+
+/**
+ * Complete a password reset with the emailed token (§6.1, §14). On success the
+ * API sets a fresh session cookie and returns the signed-in user, so the reset
+ * lands them logged-in with no redundant prompt (#268).
+ */
+export async function completePasswordReset(body: PasswordResetComplete): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/password-reset/complete', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return meResponseSchema.parse(data);
 }
 
 export async function acceptInvite(body: AcceptInviteRequest): Promise<MeResponse> {

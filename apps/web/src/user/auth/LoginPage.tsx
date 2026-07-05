@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
 import { ApiError } from '../../lib/apiClient';
 import { AdminAccountError, useAuth } from '../AuthContext';
@@ -103,6 +103,12 @@ export function LoginPage() {
         <Button type="submit" disabled={submitting}>
           {submitting ? 'Signing in…' : 'Sign in'}
         </Button>
+        <Link
+          to="/forgot-password"
+          className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
+        >
+          Forgot password?
+        </Link>
       </form>
     </AuthCard>
   );
