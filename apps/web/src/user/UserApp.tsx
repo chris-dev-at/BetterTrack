@@ -6,8 +6,10 @@ import { RequireUser } from './RequireUser';
 import { AppLayout } from './components/AppLayout';
 import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
+import { ForgotPasswordPage } from './auth/ForgotPasswordPage';
 import { InvitePage } from './auth/InvitePage';
 import { LoginPage } from './auth/LoginPage';
+import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
@@ -78,6 +80,8 @@ function UserShell() {
   return (
     <Routes>
       <Route path="login" element={<LoginPage />} />
+      <Route path="forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="reset/:token" element={<ResetPasswordPage />} />
       <Route path="invite/:token" element={<InvitePage />} />
       <Route element={<RequireUser />}>
         {/* The Conglomerate Builder is a full-screen surface (§6.5) — it sits

@@ -4,6 +4,8 @@ import {
   acceptInviteRequestSchema,
   changePasswordRequestSchema,
   loginRequestSchema,
+  passwordResetCompleteSchema,
+  passwordResetRequestSchema,
   pinVerifyRequestSchema,
   registerRequestSchema,
   setPinLockRequestSchema,
@@ -12,6 +14,8 @@ import {
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type LoginRequest,
+  type PasswordResetComplete,
+  type PasswordResetRequest,
   type PinVerifyRequest,
   type RegisterRequest,
   type SetPinLockRequest,
@@ -144,6 +148,33 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       );
       setSessionCookie(res, ctx.config, sessionId);
       res.status(201).json(toMeResponseFromRow(user));
+    },
+  );
+
+  // Self-service password reset (§6.1, §14, §13.2 V2-P4). Both steps are public
+  // and rate-limited on the login schedule (per-IP). Request always returns the
+  // same generic ack — no user enumeration; complete lands the user signed in.
+  router.post(
+    '/password-reset/request',
+    limiters.login,
+    validateBody(passwordResetRequestSchema),
+    async (req, res) => {
+      await ctx.auth.requestPasswordReset(req.valid?.body as PasswordResetRequest, req.ip);
+      res.json({ ok: true });
+    },
+  );
+
+  router.post(
+    '/password-reset/complete',
+    limiters.login,
+    validateBody(passwordResetCompleteSchema),
+    async (req, res) => {
+      const { user, sessionId } = await ctx.auth.completePasswordReset(
+        req.valid?.body as PasswordResetComplete,
+        req.ip,
+      );
+      setSessionCookie(res, ctx.config, sessionId);
+      res.json(toMeResponseFromRow(user));
     },
   );
 

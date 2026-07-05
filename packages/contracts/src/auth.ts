@@ -66,6 +66,23 @@ export const registerRequestSchema = z
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
 
 /**
+ * Self-service password reset (PROJECTPLAN.md §6.1, §14, §13.2 V2-P4). Two public
+ * steps: request a reset by email, then complete it with the emailed token and a
+ * new password. The request response is always the same generic acknowledgement
+ * regardless of whether the email matches an account — no user enumeration.
+ */
+export const passwordResetRequestSchema = z.object({ email: emailSchema }).strict();
+export type PasswordResetRequest = z.infer<typeof passwordResetRequestSchema>;
+
+export const passwordResetCompleteSchema = z
+  .object({
+    token: z.string().min(1).max(256),
+    newPassword: passwordSchema,
+  })
+  .strict();
+export type PasswordResetComplete = z.infer<typeof passwordResetCompleteSchema>;
+
+/**
  * PIN gate (PROJECTPLAN.md §6.1, §5.5). A short numeric code the user enters to
  * resume an existing session; a correct PIN renews the session's 30-day window.
  * Stored argon2id-hashed server-side exactly like a password — never in the

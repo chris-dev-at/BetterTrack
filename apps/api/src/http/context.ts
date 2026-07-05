@@ -10,6 +10,7 @@ import { createCustomAssetRepository } from '../data/repositories/customAssetRep
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
+import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
@@ -123,6 +124,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const userRepo = createUserRepository(db);
   const inviteRepo = createInviteRepository(db);
+  const passwordResetRepo = createPasswordResetTokenRepository(db);
   const auditRepo = createAuditRepository(db);
   // Shared by auth/admin (default-portfolio provisioning at account creation,
   // §5.5) and the portfolio service below.
@@ -165,6 +167,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     userRepo,
     inviteRepo,
+    passwordResetRepo,
     portfolioRepo,
     sessions,
     audit,

@@ -110,6 +110,32 @@ export const invites = pgTable(
   ],
 );
 
+/**
+ * Self-service password-reset tokens (PROJECTPLAN.md §6.1, §14, §13.2 V2-P4).
+ * Follows the invite-token model: only the SHA-256 `token_hash` is stored, the
+ * raw token lives in the emailed link and is never persisted. Single-use
+ * (`used_at`), short-lived (`expires_at`, ~1 h), and revoked on use and on any
+ * password change. Cascades away with the owning user. User-kind accounts only —
+ * admin recovery stays the admin temp-password path.
+ */
+export const passwordResetTokens = pgTable(
+  'password_reset_tokens',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('password_reset_tokens_token_hash_unique').on(t.tokenHash),
+    index('password_reset_tokens_user_idx').on(t.userId),
+  ],
+);
+
 export const auditLog = pgTable(
   'audit_log',
   {
@@ -468,6 +494,7 @@ export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
+export type PasswordResetTokenRow = typeof passwordResetTokens.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
@@ -509,6 +536,7 @@ export const schema = {
   users,
   apiKeys,
   invites,
+  passwordResetTokens,
   auditLog,
   assets,
   priceHistory,

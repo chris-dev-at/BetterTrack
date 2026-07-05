@@ -6,6 +6,7 @@ import {
   friendAcceptedEmail,
   friendRequestEmail,
   inviteEmail,
+  passwordResetEmail,
   portfolioSharedEmail,
   tempPasswordEmail,
   testEmail,
@@ -55,6 +56,12 @@ export interface EmailService {
     reason: 'created' | 'reset';
     audit: EmailAuditTarget;
   }): Promise<EmailSendResult>;
+  /** Self-service reset (§6.1, §14): the tokenized link to choose a new password. */
+  sendPasswordReset(params: {
+    to: string;
+    resetUrl: string;
+    audit: EmailAuditTarget;
+  }): Promise<EmailSendResult>;
   sendWelcome(params: {
     to: string;
     username: string;
@@ -96,6 +103,7 @@ export interface EmailServiceDeps {
 type EmailTemplateKind =
   | 'invite'
   | 'temp_password'
+  | 'password_reset'
   | 'welcome'
   | 'test'
   | 'friend_request'
@@ -211,6 +219,9 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         tempPasswordEmail({ username, tempPassword, reason, loginUrl: config.appOrigin }),
         { audit: target },
       ),
+
+    sendPasswordReset: ({ to, resetUrl, audit: target }) =>
+      deliver('password_reset', to, passwordResetEmail({ resetUrl }), { audit: target }),
 
     sendWelcome: ({ to, username, audit: target }) =>
       deliver('welcome', to, welcomeEmail({ username, appUrl: config.appOrigin }), {

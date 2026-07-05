@@ -16,6 +16,7 @@ import type {
   ChangePasswordRequest,
   LoginRequest,
   MeResponse,
+  PasswordResetComplete,
   PinVerifyRequest,
 } from '@bettertrack/contracts';
 
@@ -64,6 +65,8 @@ interface AuthContextValue {
   user: MeResponse | null;
   login: (credentials: LoginRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
+  /** Complete a self-service password reset; the API signs the user straight in. */
+  completePasswordReset: (body: PasswordResetComplete) => Promise<void>;
   changePassword: (body: ChangePasswordRequest) => Promise<void>;
   /** Verify the PIN for the current session, releasing the `pin-required` trap. */
   verifyPin: (body: PinVerifyRequest) => Promise<void>;
@@ -241,6 +244,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applyUser],
   );
 
+  const completePasswordReset = useCallback(
+    async (body: PasswordResetComplete) => {
+      // The reset mints a fresh session server-side and returns the usable user,
+      // so this lands authenticated; a fresh credential outranks the PIN gate.
+      pinUnlockedRef.current = true;
+      applyUser(await api.completePasswordReset(body));
+    },
+    [applyUser],
+  );
+
   const changePassword = useCallback(
     async (body: ChangePasswordRequest) => {
       // Success rotates the session and clears the flag — the response is a
@@ -287,6 +300,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       login,
       acceptInvite,
+      completePasswordReset,
       changePassword,
       verifyPin,
       logout,
@@ -298,6 +312,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       login,
       acceptInvite,
+      completePasswordReset,
       changePassword,
       verifyPin,
       logout,
