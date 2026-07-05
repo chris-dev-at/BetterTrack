@@ -13,6 +13,8 @@ import {
   tokenParamSchema,
   twoFactorConfirmRequestSchema,
   twoFactorDisableRequestSchema,
+  twoFactorEmailCodeRequestSchema,
+  twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type LoginRequest,
@@ -24,6 +26,8 @@ import {
   type SetPinRequest,
   type TwoFactorConfirmRequest,
   type TwoFactorDisableRequest,
+  type TwoFactorEmailCodeRequest,
+  type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
 import { unauthorized } from '../../errors';
@@ -40,15 +44,54 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
 
   router.post('/login', limiters.login, validateBody(loginRequestSchema), async (req, res) => {
     const body = req.valid?.body as LoginRequest;
-    const { user, sessionId } = await ctx.auth.login({
+    const result = await ctx.auth.login({
       identifier: body.identifier,
       password: body.password,
       ip: req.ip,
       currentSessionId: req.sessionId,
     });
-    setSessionCookie(res, ctx.config, sessionId);
-    res.json(toMeResponseFromRow(user));
+    // 2FA on: no session cookie yet — hand back the challenge so the SPA can
+    // collect a second factor (§6.1, §13.2 V2-P5).
+    if (result.status === 'two_factor_required') {
+      res.json({ twoFactorRequired: true, ...result.challenge });
+      return;
+    }
+    setSessionCookie(res, ctx.config, result.sessionId);
+    res.json(toMeResponseFromRow(result.user));
   });
+
+  // ── Login 2FA challenge (§6.1, §13.2 V2-P5) ─────────────────────────────────
+  // Public, per-IP rate-limited on the login schedule: they complete the login
+  // flow for an account with 2FA on. Neither honours a session — they act only on
+  // the short-lived pending token from /login. Verify a valid factor to promote
+  // the challenge to a real session; email-code requests a one-time code.
+  router.post(
+    '/2fa/verify',
+    limiters.login,
+    validateBody(twoFactorVerifyRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorVerifyRequest;
+      const { user, sessionId } = await ctx.auth.verifyTwoFactor({
+        pendingToken: body.pendingToken,
+        code: body.code,
+        recoveryCode: body.recoveryCode,
+        ip: req.ip,
+      });
+      setSessionCookie(res, ctx.config, sessionId);
+      res.json(toMeResponseFromRow(user));
+    },
+  );
+
+  router.post(
+    '/2fa/email-code',
+    limiters.login,
+    validateBody(twoFactorEmailCodeRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorEmailCodeRequest;
+      await ctx.auth.requestTwoFactorEmailCode(body.pendingToken, req.ip);
+      res.json({ ok: true });
+    },
+  );
 
   router.post('/logout', async (req, res) => {
     if (req.sessionId) await ctx.auth.logout(req.sessionId);

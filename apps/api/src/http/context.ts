@@ -168,6 +168,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const emailLogRepo = createEmailLogRepository(db);
   const email = createEmailService({ config, logger, audit, emailLog: emailLogRepo, transport });
 
+  // TOTP two-factor (§6.1, §13.2 V2-P5): enroll/confirm/disable + recovery codes,
+  // plus the login-challenge factor checks the auth service calls. Secret
+  // encrypted at rest with the config's 2FA key; recovery codes hashed. Built
+  // before auth so the login flow can gate on it.
+  const twoFactor = createTwoFactorService({ config, userRepo, twoFactorRepo, audit });
+
   const auth = createAuthService({
     config,
     redis,
@@ -180,10 +186,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     passwordHasher,
     email,
     appSettings,
+    twoFactor,
   });
-  // TOTP two-factor (§6.1, §13.2 V2-P5): enroll/confirm/disable + recovery codes.
-  // Secret encrypted at rest with the config's 2FA key; recovery codes hashed.
-  const twoFactor = createTwoFactorService({ config, userRepo, twoFactorRepo, audit });
   const admin = createAdminService({
     config,
     redis,
