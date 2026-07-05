@@ -12,10 +12,13 @@ import { twoFactorRecoveryCodes, users } from '../schema';
  * half-off state.
  */
 export interface TwoFactorState {
-  /** Encrypted TOTP secret envelope, or null when not enrolled. */
+  /** Encrypted TOTP secret envelope, or null when the TOTP method isn't enrolled. */
   secret: string | null;
+  /** The authenticator-app (TOTP) method flag. */
   enabled: boolean;
   confirmedAt: Date | null;
+  /** The standalone email-code method flag (#298). */
+  emailEnabled: boolean;
 }
 
 export function createTwoFactorRepository(db: Database) {
@@ -27,6 +30,7 @@ export function createTwoFactorRepository(db: Database) {
           secret: users.twoFactorSecret,
           enabled: users.twoFactorEnabled,
           confirmedAt: users.twoFactorConfirmedAt,
+          emailEnabled: users.twoFactorEmailEnabled,
         })
         .from(users)
         .where(eq(users.id, userId))
@@ -47,7 +51,7 @@ export function createTwoFactorRepository(db: Database) {
         .where(eq(users.id, userId));
     },
 
-    /** Flip the enabled flag on and stamp the confirm time. */
+    /** Flip the TOTP method on and stamp the confirm time. */
     async enable(userId: string, when: Date): Promise<void> {
       await db
         .update(users)
@@ -55,8 +59,20 @@ export function createTwoFactorRepository(db: Database) {
         .where(eq(users.id, userId));
     },
 
-    /** Wipe the secret + flag AND every recovery code — the full disable. */
-    async disable(userId: string): Promise<void> {
+    /** Turn the standalone email-code method on or off (#298). */
+    async setEmailEnabled(userId: string, enabled: boolean): Promise<void> {
+      await db
+        .update(users)
+        .set({ twoFactorEmailEnabled: enabled, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+    },
+
+    /**
+     * Wipe just the TOTP secret + flag (the authenticator method), leaving the
+     * email method and recovery codes untouched. The service decides separately
+     * whether any method remains and whether to drop the recovery codes.
+     */
+    async clearTotpSecret(userId: string): Promise<void> {
       await db
         .update(users)
         .set({
@@ -66,6 +82,10 @@ export function createTwoFactorRepository(db: Database) {
           updatedAt: new Date(),
         })
         .where(eq(users.id, userId));
+    },
+
+    /** Drop every recovery code for the user — run when the last method goes off. */
+    async clearRecoveryCodes(userId: string): Promise<void> {
       await db.delete(twoFactorRecoveryCodes).where(eq(twoFactorRecoveryCodes.userId, userId));
     },
 

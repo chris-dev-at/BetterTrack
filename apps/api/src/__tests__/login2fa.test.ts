@@ -316,34 +316,62 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
   });
 });
 
-describe('login 2FA email-code channel (§6.1, §6.10, §13.2 V2-P5)', () => {
-  it('emails a code, logs email_log, and the emailed code unlocks', async () => {
+/** Latest 6-digit code delivered to the recording transport. */
+function lastEmailedCode(transport: { sent: OutgoingMail[] }): string {
+  const mail = transport.sent.at(-1)!;
+  const match = mail.text.match(/\b(\d{6})\b/);
+  expect(match).not.toBeNull();
+  return match![1]!;
+}
+
+/**
+ * Enable the standalone email-code method for `user` (#298). Runs on a single
+ * authenticated agent — enabling a factor doesn't drop the current session — so a
+ * second method can be added even after the first is on.
+ */
+async function enrollEmailMethod(user: SeededUser, transport: { sent: OutgoingMail[] }) {
+  const agent = request.agent(harness.app);
+  const first = await agent
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier: user.email, password: user.password });
+  // The initial login may itself be a 2FA challenge if TOTP is already on.
+  if (twoFactorChallengeResponseSchema.safeParse(first.body).success) {
+    throw new Error('enrollEmailMethod expects a fresh (no-2FA) session; enroll email first');
+  }
+  const enroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+  expect(enroll.status).toBe(200);
+  await agent
+    .post('/api/v1/auth/2fa/email/confirm')
+    .set(...XRW)
+    .send({ code: lastEmailedCode(transport) });
+  return agent;
+}
+
+describe('login 2FA email-code method (§6.1, §6.10, §13.2 V2-P5, #298)', () => {
+  it('email-only account: login auto-sends a code, which unlocks the session', async () => {
     const transport = recordingTransport();
-    const { user } = await setup({ env: SMTP_ENV, emailTransport: transport });
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    const user = await harness.seedUser();
 
-    const challenge = twoFactorChallengeResponseSchema.parse(
-      (await login(harness.app, user.email, user.password)).body,
-    );
+    // Turn on ONLY the email method — TOTP is never enrolled.
+    await enrollEmailMethod(user, transport);
+    transport.sent.length = 0;
 
-    const requested = await request(harness.app)
-      .post('/api/v1/auth/2fa/email-code')
-      .set(...XRW)
-      .send({ pendingToken: challenge.pendingToken });
-    expect(requested.status).toBe(200);
-    expect(requested.body).toEqual({ ok: true });
+    const loginRes = await login(harness.app, user.email, user.password);
+    const challenge = twoFactorChallengeResponseSchema.parse(loginRes.body);
+    // The challenge offers email + recovery, but not TOTP.
+    expect(challenge.channels).toContain('email');
+    expect(challenge.channels).not.toContain('totp');
+    // The session is still withheld — the challenge is not a login.
+    expect(setsSessionCookie(loginRes)).toBe(false);
 
-    // An email went out and was logged.
+    // The code was sent automatically at login — no extra request needed.
     expect(transport.sent).toHaveLength(1);
-    const mail = transport.sent[0]!;
-    expect(mail.to).toBe(user.email);
-    expect(mail.subject).toMatch(/sign-in code/i);
-    const match = mail.text.match(/\b(\d{6})\b/);
-    expect(match).not.toBeNull();
-    const emailedCode = match![1]!;
+    const emailedCode = lastEmailedCode(transport);
 
     const row = (await logRows(harness)).find((r) => r.template === 'two_factor_code');
     expect(row?.status).toBe('sent');
-    expect(row?.userId).toBe(user.id);
     // The stored log row never carries the code itself.
     expect(JSON.stringify(row)).not.toContain(emailedCode);
 
@@ -355,20 +383,71 @@ describe('login 2FA email-code channel (§6.1, §6.10, §13.2 V2-P5)', () => {
     expect(meResponseSchema.parse(verify.body).email).toBe(user.email);
   });
 
-  it('logs `suppressed` and does not crash when SMTP is unconfigured', async () => {
-    const { user } = await setup();
+  it('both methods: TOTP by default, email only on request, and the emailed code unlocks', async () => {
+    const transport = recordingTransport();
+    harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
+    const user = await harness.seedUser();
+
+    // Enroll TOTP, then add the email method on the same authenticated agent.
+    const agent = request.agent(harness.app);
+    await agent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: user.email, password: user.password });
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+    );
+    await agent
+      .post('/api/v1/auth/2fa/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    const emailEnroll = await agent.post('/api/v1/auth/2fa/email/enroll').set(...XRW);
+    expect(emailEnroll.status).toBe(200);
+    await agent
+      .post('/api/v1/auth/2fa/email/confirm')
+      .set(...XRW)
+      .send({ code: lastEmailedCode(transport) });
+    await agent.post('/api/v1/auth/logout').set(...XRW);
+    transport.sent.length = 0;
+
     const challenge = twoFactorChallengeResponseSchema.parse(
       (await login(harness.app, user.email, user.password)).body,
     );
+    expect(challenge.channels).toEqual(expect.arrayContaining(['totp', 'email', 'recovery']));
+    // TOTP is the default: nothing is emailed until the user asks.
+    expect(transport.sent).toHaveLength(0);
 
     const requested = await request(harness.app)
       .post('/api/v1/auth/2fa/email-code')
       .set(...XRW)
       .send({ pendingToken: challenge.pendingToken });
     expect(requested.status).toBe(200);
+    expect(transport.sent).toHaveLength(1);
 
+    const verify = await request(harness.app)
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: lastEmailedCode(transport) });
+    expect(verify.status).toBe(200);
+  });
+
+  it('TOTP-only account never offers or sends an email code', async () => {
+    const { user } = await setup();
+
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+    // Email is its own opt-in method now: a TOTP-only account doesn't get it.
+    expect(challenge.channels).not.toContain('email');
+
+    // Even a direct request is a no-op — no code minted, no email_log row.
+    const requested = await request(harness.app)
+      .post('/api/v1/auth/2fa/email-code')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken });
+    expect(requested.status).toBe(200);
     const row = (await logRows(harness)).find((r) => r.template === 'two_factor_code');
-    expect(row?.status).toBe('suppressed');
+    expect(row).toBeUndefined();
   });
 
   it('rejects an email-code request for an unknown pending token', async () => {

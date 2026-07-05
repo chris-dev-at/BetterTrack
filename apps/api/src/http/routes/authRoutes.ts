@@ -14,6 +14,7 @@ import {
   twoFactorConfirmRequestSchema,
   twoFactorDisableRequestSchema,
   twoFactorEmailCodeRequestSchema,
+  twoFactorEmailConfirmRequestSchema,
   twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
@@ -27,6 +28,7 @@ import {
   type TwoFactorConfirmRequest,
   type TwoFactorDisableRequest,
   type TwoFactorEmailCodeRequest,
+  type TwoFactorEmailConfirmRequest,
   type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
@@ -175,13 +177,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // ── Two-factor auth (TOTP) — backend core (§6.1, §13.2 V2-P5) ───────────────
+  // ── Two-factor auth — two methods (§6.1, §13.2 V2-P5, #298) ─────────────────
   // All 2FA endpoints are user-kind only: `requireUser` 401s the anonymous and
-  // 403s admin-kind sessions (§3, §5.5). The login-time challenge and Settings
-  // UI ship in separate V2-P5 issues; this exposes enroll/confirm/disable/status
-  // plus recovery-code regeneration.
+  // 403s admin-kind sessions (§3, §5.5). Two independently-toggleable methods:
+  // the authenticator app (TOTP: enroll/confirm/disable) and email codes
+  // (email/enroll/confirm/disable), sharing recovery codes + status.
   router.post('/2fa/enroll', requireUser, async (req, res) => {
-    res.json(await ctx.twoFactor.enroll(req.authUser!.id, req.ip));
+    res.json(await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip));
   });
 
   router.post(
@@ -190,7 +192,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorConfirmRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorConfirmRequest;
-      res.json(await ctx.twoFactor.confirm(req.authUser!.id, body.code, req.ip));
+      res.json(await ctx.twoFactor.confirmTotp(req.authUser!.id, body.code, req.ip));
     },
   );
 
@@ -200,10 +202,33 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorDisableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorDisableRequest;
-      await ctx.twoFactor.disable(req.authUser!.id, body.code, req.ip);
+      await ctx.twoFactor.disableTotp(req.authUser!.id, body.code, req.ip);
       res.json({ ok: true });
     },
   );
+
+  // Email-code method (#298): enroll sends a mailbox-proof code, confirm turns it
+  // on (blocked with TWO_FACTOR_EMAIL_UNAVAILABLE when SMTP is off), disable turns
+  // it off from the authenticated session alone.
+  router.post('/2fa/email/enroll', requireUser, async (req, res) => {
+    await ctx.twoFactor.startEmailEnrollment(req.authUser!.id, req.ip);
+    res.json({ ok: true });
+  });
+
+  router.post(
+    '/2fa/email/confirm',
+    requireUser,
+    validateBody(twoFactorEmailConfirmRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorEmailConfirmRequest;
+      res.json(await ctx.twoFactor.confirmEmail(req.authUser!.id, body.code, req.ip));
+    },
+  );
+
+  router.post('/2fa/email/disable', requireUser, async (req, res) => {
+    await ctx.twoFactor.disableEmail(req.authUser!.id, req.ip);
+    res.json({ ok: true });
+  });
 
   router.get('/2fa/status', requireUser, async (req, res) => {
     res.json(await ctx.twoFactor.status(req.authUser!.id));
