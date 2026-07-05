@@ -307,6 +307,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
           budgetEur: req.budgetEur,
           mode: req.mode,
           step: req.step,
+          atLeastOneShare: req.atLeastOneShare,
           positions,
         });
       } catch (err) {
