@@ -54,6 +54,8 @@ const componentSchemas = {
   // Admin (§6.12)
   CreateUserRequest: contracts.createUserRequestSchema,
   UpdateUserRequest: contracts.updateUserRequestSchema,
+  BulkUserActionRequest: contracts.bulkUserActionRequestSchema,
+  BulkUserActionResponse: contracts.bulkUserActionResponseSchema,
   DeleteUserRequest: contracts.deleteUserRequestSchema,
   CreateInviteRequest: contracts.createInviteRequestSchema,
   TestEmailRequest: contracts.testEmailRequestSchema,
@@ -316,6 +318,15 @@ const endpoints: EndpointDef[] = [
     response: R.CreateUserResponse,
   },
   {
+    method: 'post',
+    path: '/admin/users/bulk',
+    tag: 'Admin',
+    summary: 'Bulk user action (V1: disable) over a set of ids.',
+    body: R.BulkUserActionRequest,
+    status: 200,
+    response: R.BulkUserActionResponse,
+  },
+  {
     method: 'patch',
     path: '/admin/users/{id}',
     tag: 'Admin',
@@ -439,6 +450,16 @@ const endpoints: EndpointDef[] = [
     query: contracts.emailLogQuerySchema,
     status: 200,
     response: R.EmailLogListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/users/{id}/audit',
+    tag: 'Admin',
+    summary: 'Cursor-paged audit history for one user.',
+    params: contracts.idParamSchema,
+    query: contracts.auditQuerySchema,
+    status: 200,
+    response: R.AuditLogListResponse,
   },
 
   // Workboard (§6.4)

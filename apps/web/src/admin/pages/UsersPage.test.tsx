@@ -1,14 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type {
-  AdminStats,
-  AdminUser,
-  CreateUserResponse,
-  MeResponse,
-  ResetPasswordResponse,
-} from '@bettertrack/contracts';
+import type { AdminStats, AdminUser, CreateUserResponse, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
@@ -50,7 +45,12 @@ const stats: AdminStats = {
 function renderPage() {
   return render(
     <AuthProvider>
-      <UsersPage />
+      <MemoryRouter initialEntries={['/admin/users']}>
+        <Routes>
+          <Route path="/admin/users" element={<UsersPage />} />
+          <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
+        </Routes>
+      </MemoryRouter>
     </AuthProvider>,
   );
 }
@@ -61,13 +61,20 @@ beforeEach(() => {
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
 });
 
-test('renders the users table with account details and stats', async () => {
+test('renders the slimmed users table with essential columns and stats', async () => {
   renderPage();
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
   expect(screen.getByText('jane')).toBeInTheDocument();
-  // Stats strip surfaces the overview counts.
   expect(await screen.findByText('Pending invites')).toBeInTheDocument();
+});
+
+test('clicking a user row opens the user detail view', async () => {
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByText('jane@bettertrack.test'));
+  expect(await screen.findByText('User detail view')).toBeInTheDocument();
 });
 
 test('create-user flow shows the generated temp password exactly once', async () => {
@@ -96,37 +103,16 @@ test('create-user flow shows the generated temp password exactly once', async ()
   });
 });
 
-test('reset-password flow shows the new temp password once', async () => {
-  const result: ResetPasswordResponse = { user: jane, tempPassword: 'Reset-Pass-4242' };
-  vi.mocked(api.resetPassword).mockResolvedValue(result);
+test('bulk-select drives a bulk-disable action', async () => {
+  vi.mocked(api.bulkUserAction).mockResolvedValue({ action: 'disable', disabled: 1, skipped: 0 });
 
   const user = userEvent.setup();
   renderPage();
   await screen.findByText('jane@bettertrack.test');
 
-  await user.click(screen.getByRole('button', { name: 'Reset password' }));
-  const dialog = await screen.findByRole('dialog');
-  await user.click(within(dialog).getByRole('button', { name: 'Reset password' }));
+  await user.click(screen.getByLabelText('Select jane'));
+  await user.click(await screen.findByRole('button', { name: 'Disable selected' }));
 
-  expect(await screen.findByText('Reset-Pass-4242')).toBeInTheDocument();
-  expect(api.resetPassword).toHaveBeenCalledWith('user-1');
-});
-
-test('delete is gated behind type-username confirmation', async () => {
-  vi.mocked(api.deleteUser).mockResolvedValue();
-
-  const user = userEvent.setup();
-  renderPage();
-  await screen.findByText('jane@bettertrack.test');
-
-  await user.click(screen.getByRole('button', { name: 'Delete' }));
-  const dialog = await screen.findByRole('dialog');
-  const confirmButton = within(dialog).getByRole('button', { name: 'Delete user' });
-  expect(confirmButton).toBeDisabled();
-
-  await user.type(within(dialog).getByLabelText('Confirm username'), 'jane');
-  await waitFor(() => expect(confirmButton).toBeEnabled());
-
-  await user.click(confirmButton);
-  expect(api.deleteUser).toHaveBeenCalledWith('user-1', 'jane');
+  expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] });
+  expect(await screen.findByText(/Disabled 1 user/)).toBeInTheDocument();
 });

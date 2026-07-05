@@ -15,6 +15,8 @@ export const AuditAction = {
   UserDisabled: 'user.disabled',
   UserEnabled: 'user.enabled',
   UserRoleChanged: 'user.role_changed',
+  UserUsernameChanged: 'user.username_changed',
+  UserEmailChanged: 'user.email_changed',
   UserDeleted: 'user.deleted',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
@@ -28,11 +30,17 @@ export const AuditAction = {
 export interface AuditService {
   record(input: RecordAuditInput): Promise<void>;
   list(params: { limit: number; cursor?: string }): ReturnType<AuditRepository['list']>;
+  listForTarget(params: {
+    targetId: string;
+    limit: number;
+    cursor?: string;
+  }): ReturnType<AuditRepository['listForTarget']>;
 }
 
 export function createAuditService(auditRepo: AuditRepository): AuditService {
   return {
     record: (input) => auditRepo.record(input),
     list: (params) => auditRepo.list(params),
+    listForTarget: (params) => auditRepo.listForTarget(params),
   };
 }

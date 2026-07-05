@@ -5,6 +5,7 @@ import {
   adminUserSchema,
   appSettingsResponseSchema,
   auditLogListResponseSchema,
+  bulkUserActionResponseSchema,
   createInviteResponseSchema,
   createUserResponseSchema,
   emailLogListResponseSchema,
@@ -19,6 +20,8 @@ import {
   type AdminUserListResponse,
   type AppSettingsResponse,
   type AuditLogListResponse,
+  type BulkUserActionRequest,
+  type BulkUserActionResponse,
   type CreateInviteRequest,
   type CreateInviteResponse,
   type CreateUserRequest,
@@ -76,6 +79,11 @@ export async function createUser(body: CreateUserRequest): Promise<CreateUserRes
 export async function updateUser(id: string, body: UpdateUserRequest): Promise<AdminUser> {
   const data = await apiRequest<unknown>(`/admin/users/${id}`, { method: 'PATCH', body });
   return adminUserSchema.parse(data);
+}
+
+export async function bulkUserAction(body: BulkUserActionRequest): Promise<BulkUserActionResponse> {
+  const data = await apiRequest<unknown>('/admin/users/bulk', { method: 'POST', body });
+  return bulkUserActionResponseSchema.parse(data);
 }
 
 export async function resetPassword(id: string): Promise<ResetPasswordResponse> {
@@ -173,4 +181,16 @@ export async function listUserEmails(
     signal,
   });
   return emailLogListResponseSchema.parse(data);
+}
+
+export async function listUserAudit(
+  userId: string,
+  params: { cursor?: string; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<AuditLogListResponse> {
+  const data = await apiRequest<unknown>(`/admin/users/${userId}/audit`, {
+    query: { cursor: params.cursor, limit: params.limit },
+    signal,
+  });
+  return auditLogListResponseSchema.parse(data);
 }
