@@ -9,6 +9,7 @@ vi.mock('../../lib/conglomerateApi', () => ({
   getConglomerate: vi.fn(),
   deleteConglomerate: vi.fn(),
   allocateConglomerate: vi.fn(),
+  updateConglomerate: vi.fn(),
 }));
 
 vi.mock('../../lib/backtestApi', () => ({
@@ -53,7 +54,7 @@ vi.mock('recharts', async (importOriginal) => {
 });
 
 import { previewBacktest } from '../../lib/backtestApi';
-import { deleteConglomerate, getConglomerate } from '../../lib/conglomerateApi';
+import { deleteConglomerate, getConglomerate, updateConglomerate } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { ConglomerateDetailPage } from './ConglomerateDetailPage';
 
@@ -211,5 +212,17 @@ describe('ConglomerateDetailPage', () => {
     await waitFor(() =>
       expect(screen.getByText(/Could not load this Conglomerate/i)).toBeInTheDocument(),
     );
+  });
+
+  test('shows an inline error when toggling sharing fails', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(DETAIL);
+    vi.mocked(updateConglomerate).mockRejectedValue(new Error('server error'));
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+
+    await waitFor(() => expect(screen.getByText(/Could not update sharing/i)).toBeInTheDocument());
   });
 });

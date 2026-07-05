@@ -181,6 +181,7 @@ function WatchlistRow({
  */
 function WatchlistSharingToggle() {
   const queryClient = useQueryClient();
+  const [error, setError] = useState(false);
   const { data } = useQuery({
     queryKey: WATCHLIST_SHARING_QUERY_KEY,
     queryFn: ({ signal }) => getWatchlistSharing(signal),
@@ -189,20 +190,25 @@ function WatchlistSharingToggle() {
   const mutation = useMutation({
     mutationFn: (visibility: 'private' | 'friends') => updateWatchlistSharing(visibility),
     onSuccess: (res) => {
+      setError(false);
       queryClient.setQueryData(WATCHLIST_SHARING_QUERY_KEY, res);
       void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
     },
+    onError: () => setError(true),
   });
   const shared = data?.visibility === 'friends';
   return (
-    <Button
-      variant="secondary"
-      onClick={() => mutation.mutate(shared ? 'private' : 'friends')}
-      disabled={mutation.isPending || data === undefined}
-      aria-pressed={shared}
-    >
-      {shared ? 'Shared with friends' : 'Share with friends'}
-    </Button>
+    <div className="flex flex-col items-end gap-1.5">
+      <Button
+        variant="secondary"
+        onClick={() => mutation.mutate(shared ? 'private' : 'friends')}
+        disabled={mutation.isPending || data === undefined}
+        aria-pressed={shared}
+      >
+        {shared ? 'Shared with friends' : 'Share with friends'}
+      </Button>
+      {error ? <Alert tone="error">Could not update sharing. Please try again.</Alert> : null}
+    </div>
   );
 }
 

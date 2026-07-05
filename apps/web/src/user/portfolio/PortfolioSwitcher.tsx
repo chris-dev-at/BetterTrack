@@ -12,6 +12,7 @@ import {
   restorePortfolio,
   updatePortfolio,
 } from '../../lib/portfolioApi';
+import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 
@@ -375,7 +376,10 @@ export function PortfolioSwitcher() {
           <div className="flex flex-col gap-3">
             {actionError ? <Alert tone="error">{actionError}</Alert> : null}
             {archivedQuery.isLoading ? (
-              <p className="text-sm text-neutral-500">Loading…</p>
+              <div className="flex flex-col gap-2">
+                <Skeleton height="h-10" />
+                <Skeleton height="h-10" />
+              </div>
             ) : archived.length === 0 ? (
               <p className="text-sm text-neutral-500">No archived portfolios.</p>
             ) : (

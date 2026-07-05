@@ -136,12 +136,15 @@ export function ConglomerateDetailPage() {
   });
 
   // Friend-sharing toggle (§6.9, V2-P9): mirrors the portfolio private↔friends model.
+  const [shareError, setShareError] = useState(false);
   const shareMutation = useMutation({
     mutationFn: (visibility: 'private' | 'friends') => updateConglomerate(id!, { visibility }),
     onSuccess: () => {
+      setShareError(false);
       void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] });
       void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
     },
+    onError: () => setShareError(true),
   });
 
   if (!id) return null;
@@ -216,6 +219,9 @@ export function ConglomerateDetailPage() {
           {data.positionCount} {data.positionCount === 1 ? 'position' : 'positions'}
         </p>
         {data.description ? <p className="text-sm text-neutral-500">{data.description}</p> : null}
+        {shareError ? (
+          <Alert tone="error">Could not update sharing. Please try again.</Alert>
+        ) : null}
       </div>
 
       {/* Positions + allocation */}

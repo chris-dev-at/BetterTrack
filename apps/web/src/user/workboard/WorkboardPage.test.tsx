@@ -26,6 +26,7 @@ import {
   listWorkboard,
   removeFromWorkboard,
   reorderWorkboard,
+  updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { WorkboardPage } from './WorkboardPage';
@@ -219,6 +220,22 @@ describe('WorkboardPage — zone placeholders', () => {
     // Use role+level to target the <h2> headings, not the "Alerts" <th> column header.
     expect(screen.getByRole('heading', { name: 'Alerts', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'My Conglomerates', level: 2 })).toBeInTheDocument();
+  });
+});
+
+// ─── Watchlist sharing ────────────────────────────────────────────────────────
+
+describe('WorkboardPage — watchlist sharing', () => {
+  test('shows an inline error when toggling sharing fails', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    vi.mocked(updateWatchlistSharing).mockRejectedValue(new Error('server error'));
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+
+    await waitFor(() => expect(screen.getByText(/Could not update sharing/i)).toBeInTheDocument());
   });
 });
 
