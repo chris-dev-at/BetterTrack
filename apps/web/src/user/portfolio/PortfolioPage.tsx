@@ -24,6 +24,7 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import type { AllocationSegment, BenchmarkSeries, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
+import { CashDialog } from './CashDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 
@@ -69,9 +70,20 @@ function DeltaPct({ value }: { value: number | null }) {
   return <span className={cx('tabular-nums', cls)}>{formatSignedPercent(value)}</span>;
 }
 
-function TotalsHeader({ totals }: { totals: PortfolioTotals }) {
+function TotalsHeader({
+  totals,
+  onDeposit,
+  onWithdraw,
+}: {
+  totals: PortfolioTotals;
+  onDeposit: () => void;
+  onWithdraw: () => void;
+}) {
   return (
-    <section aria-label="Portfolio totals" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <section
+      aria-label="Portfolio totals"
+      className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
+    >
       <StatCard label="Market value" value={<MoneyText amount={totals.marketValueEur} />} />
       <StatCard label="Invested" value={<MoneyText amount={totals.investedEur} />} />
       <StatCard
@@ -83,6 +95,28 @@ function TotalsHeader({ totals }: { totals: PortfolioTotals }) {
         label="Day change"
         value={<MoneyText amount={totals.dayChangeEur} signed />}
         subValue={<DeltaPct value={totals.dayChangePct} />}
+      />
+      <StatCard
+        label="Cash"
+        value={<MoneyText amount={totals.cashEur} />}
+        subValue={
+          <span className="flex gap-2">
+            <button
+              type="button"
+              onClick={onDeposit}
+              className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              + Deposit
+            </button>
+            <button
+              type="button"
+              onClick={onWithdraw}
+              className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              − Withdraw
+            </button>
+          </span>
+        }
       />
     </section>
   );
@@ -686,6 +720,7 @@ export function PortfolioPage() {
   const [txnDialog, setTxnDialog] = useState<TxnDialogState | null>(null);
   const [valuePointAsset, setValuePointAsset] = useState<ValuePointEditorAsset | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
+  const [cashDialogKind, setCashDialogKind] = useState<'deposit' | 'withdrawal' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // The API is portfolio_id-scoped (§6.8): resolve the default portfolio first,
@@ -696,10 +731,11 @@ export function PortfolioPage() {
     staleTime: 60_000,
   });
 
-  const portfolioId = useMemo(() => {
+  const portfolio = useMemo(() => {
     const list = portfoliosQuery.data?.portfolios ?? [];
-    return (list.find((p) => p.isDefault) ?? list[0])?.id ?? null;
+    return list.find((p) => p.isDefault) ?? list[0] ?? null;
   }, [portfoliosQuery.data]);
+  const portfolioId = portfolio?.id ?? null;
 
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
@@ -745,6 +781,7 @@ export function PortfolioPage() {
 
   function refetchAll() {
     void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
+    void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
   }
 
   function toggleExpanded(assetId: string) {
@@ -847,7 +884,16 @@ export function PortfolioPage() {
             portfolioId={portfolioId}
             transaction={txnDialog.kind === 'edit' ? txnDialog.transaction : undefined}
             asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
+            defaultPayFromCash={portfolio?.defaultPayFromCash ?? false}
             onClose={() => setTxnDialog(null)}
+            onSubmitted={refetchAll}
+          />
+        ) : null}
+        {cashDialogKind && portfolioId ? (
+          <CashDialog
+            portfolioId={portfolioId}
+            initialKind={cashDialogKind}
+            onClose={() => setCashDialogKind(null)}
             onSubmitted={refetchAll}
           />
         ) : null}
@@ -894,7 +940,11 @@ export function PortfolioPage() {
         />
       ) : (
         <>
-          <TotalsHeader totals={totals} />
+          <TotalsHeader
+            totals={totals}
+            onDeposit={() => setCashDialogKind('deposit')}
+            onWithdraw={() => setCashDialogKind('withdrawal')}
+          />
 
           <section aria-label="Value over time" className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3">

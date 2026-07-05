@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
+  CashPreviewResponse,
   SearchResultItem,
   Transaction,
   TransactionInput,
@@ -9,7 +10,14 @@ import type {
 
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
-import { createTransactions, updateTransaction } from '../../lib/portfolioApi';
+import {
+  createTransactions,
+  previewCash,
+  updatePortfolio,
+  updateTransaction,
+} from '../../lib/portfolioApi';
+import { MoneyText } from '../../ui';
+import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
 import {
@@ -55,6 +63,12 @@ export interface TransactionDialogProps {
   asset?: TransactionDialogAsset | null;
   /** Create mode: prefilled rows to review and submit together (single & bulk, §7.3). */
   prefill?: TransactionPrefillRow[] | null;
+  /**
+   * The portfolio's sticky "pay from cash" default (§14, #220): preselects the
+   * cash-link checkbox on the single-asset create row. Always shown, never
+   * silently applied — the user still sees and can uncheck it before submit.
+   */
+  defaultPayFromCash?: boolean;
   /** Today as ISO `YYYY-MM-DD`, injectable for deterministic tests. */
   today?: string;
 }
@@ -80,6 +94,12 @@ interface Row {
   fee: string;
   date: string;
   note: string;
+  /**
+   * "Pay from cash balance" (buy) / "Add proceeds to cash balance" (sell), §14.
+   * One flag whose meaning follows `side` so a side switch doesn't silently
+   * drop the user's cash-link choice.
+   */
+  cashLinked: boolean;
 }
 
 /**
@@ -159,6 +179,7 @@ function makeRow(
     fee: '',
     date: today,
     note: '',
+    cashLinked: false,
     ...seed,
   };
 }
@@ -183,6 +204,7 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
         fee: String(t.fee),
         date: t.executedAt.slice(0, 10),
         note: t.note ?? '',
+        cashLinked: false,
       },
     ];
   }
@@ -199,7 +221,9 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
     );
   }
   if (props.asset) {
-    return [makeRow('locked', props.asset, today)];
+    return [
+      makeRow('locked', props.asset, today, { cashLinked: props.defaultPayFromCash ?? false }),
+    ];
   }
   return [];
 }
@@ -256,8 +280,44 @@ function validateRow(row: Row): { input?: TransactionInput; error?: string } {
       // exactly the chosen calendar day — no timezone off-by-one (§6.9 domain).
       executedAt: `${row.date}T00:00:00.000Z`,
       note: row.note.trim() === '' ? null : row.note.trim(),
+      // §14: the checkbox's meaning follows the row's own side, never a stale one.
+      payFromCash: row.cashLinked && row.side === 'buy' ? true : undefined,
+      addProceedsToCash: row.cashLinked && row.side === 'sell' ? true : undefined,
     },
   };
+}
+
+/** The row's (quantity, price) as it would be recorded, or `null` while incomplete. */
+function resolveRowQuantityPrice(row: Row): { quantity: number; price: number } | null {
+  const price = Number(row.price);
+  if (!row.price.trim() || !Number.isFinite(price) || price < 0) return null;
+  if (row.entryMode === 'amount') {
+    if (price <= 0) return null;
+    const amount = Number(row.amount);
+    if (!row.amount.trim() || !Number.isFinite(amount) || amount <= 0) return null;
+    const derived = deriveQuantityFromAmount(price, amount);
+    return derived ? { quantity: derived.quantity, price } : null;
+  }
+  const quantity = Number(row.quantity);
+  if (!row.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) return null;
+  return { quantity, price };
+}
+
+/**
+ * The EUR amount a cash-linked row would move (§14): quantity·price + fee for a
+ * buy funded from cash, quantity·price − fee for a sell's net proceeds — mirrors
+ * `portfolioService.buildCashLink`. Native-currency assets are previewed as-is;
+ * the server converts to EUR via the historical rate at submit time, so this is
+ * an estimate for non-EUR assets, good enough to block an obvious overdraw.
+ */
+function cashAmountForRow(row: Row): number | null {
+  const resolved = resolveRowQuantityPrice(row);
+  if (!resolved) return null;
+  const feeInput = Number(row.fee);
+  const fee = row.fee.trim() !== '' && Number.isFinite(feeInput) && feeInput >= 0 ? feeInput : 0;
+  const gross = resolved.quantity * resolved.price;
+  const amount = row.side === 'buy' ? gross + fee : gross - fee;
+  return amount > 0 ? amount : null;
 }
 
 /**
@@ -404,6 +464,49 @@ export function TransactionDialog(props: TransactionDialogProps) {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   }
 
+  // --- Cash-link preview (§14, #220) ----------------------------------------
+  // Eligible only for the single-asset create row (bulk prefill is out of
+  // scope — V2-P7 — and an edit doesn't carry cash flags at all).
+  const cashRow = linkingEnabled && rows.length === 1 ? rows[0]! : null;
+  const cashRowLinked = cashRow?.cashLinked ?? false;
+  const cashRowSide = cashRow?.side ?? null;
+  const cashAmount = cashRowLinked && cashRow ? cashAmountForRow(cashRow) : null;
+  const debouncedCashAmount = useDebounce(cashAmount, 400);
+
+  const [cashPreview, setCashPreview] = useState<CashPreviewResponse | null>(null);
+  const [cashPreviewLoading, setCashPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    if (!cashRowLinked || debouncedCashAmount == null) {
+      setCashPreview(null);
+      return;
+    }
+    const controller = new AbortController();
+    setCashPreviewLoading(true);
+    previewCash(
+      portfolioId,
+      { kind: cashRowSide === 'sell' ? 'sell_proceeds' : 'buy', amountEur: debouncedCashAmount },
+      controller.signal,
+    )
+      .then((res) => {
+        if (!controller.signal.aborted) setCashPreview(res);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCashPreview(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCashPreviewLoading(false);
+      });
+    return () => controller.abort();
+  }, [portfolioId, cashRowLinked, cashRowSide, debouncedCashAmount]);
+
+  const cashInsufficient = cashRowLinked && cashPreview !== null && !cashPreview.sufficient;
+
+  function toggleCashLinked() {
+    if (!cashRow) return;
+    setSingleRow({ cashLinked: !cashRow.cashLinked });
+  }
+
   function pickAsset(item: SearchResultItem) {
     const asset: TransactionDialogAsset = {
       id: item.id,
@@ -411,7 +514,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       name: item.name,
       currency: item.currency,
     };
-    setRows([makeRow('picked', asset, today)]);
+    setRows([makeRow('picked', asset, today, { cashLinked: props.defaultPayFromCash ?? false })]);
     setPicking(false);
     setError(null);
   }
@@ -433,6 +536,13 @@ export function TransactionDialog(props: TransactionDialogProps) {
       inputs.push(input!);
     }
 
+    // Never a silent negative (§14): the live preview already disables Record,
+    // but re-check here too — the same block a race or a stale preview relies on.
+    if (cashInsufficient) {
+      setError('That would take the cash balance negative.');
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     try {
@@ -448,11 +558,22 @@ export function TransactionDialog(props: TransactionDialogProps) {
         });
       } else {
         await createTransactions(portfolioId, inputs);
+        // Sticky default (§14): remember this choice for next time, but only
+        // when it actually changed — the checkbox itself is always shown, never
+        // silently pre-applied.
+        if (cashRow && cashRow.cashLinked !== (props.defaultPayFromCash ?? false)) {
+          await updatePortfolio(portfolioId, { defaultPayFromCash: cashRow.cashLinked }).catch(
+            () => undefined,
+          );
+        }
       }
       onSubmitted();
       onClose();
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'OVERSELL') {
+      if (
+        err instanceof ApiError &&
+        (err.code === 'OVERSELL' || err.code === 'INSUFFICIENT_CASH')
+      ) {
         setError(err.message);
       } else {
         setError('Could not save. Please try again.');
@@ -498,6 +619,17 @@ export function TransactionDialog(props: TransactionDialogProps) {
                     onPriceBlur: handlePriceBlur,
                   }
                 : undefined;
+            // The cash-link checkbox lives on the same eligible row (see above).
+            const cash: RowCash | undefined =
+              cashRow && cashRow.key === row.key
+                ? {
+                    checked: row.cashLinked,
+                    loading: cashPreviewLoading,
+                    preview: cashPreview,
+                    insufficient: cashInsufficient,
+                    onToggle: toggleCashLinked,
+                  }
+                : undefined;
             return (
               <RowFields
                 key={row.key}
@@ -506,6 +638,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
                 showDivider={index > 0}
                 onChange={link ? handleLinkedChange : (patch) => updateRow(row.key, patch)}
                 link={link}
+                cash={cash}
               />
             );
           })}
@@ -530,7 +663,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
             <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
               Cancel
             </Button>
-            <Button type="submit" disabled={submitting}>
+            <Button type="submit" disabled={submitting || cashInsufficient}>
               {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Record'}
             </Button>
           </div>
@@ -584,6 +717,17 @@ export interface RowLink {
   onPriceBlur: () => void;
 }
 
+/** "Pay from cash" / "add proceeds to cash" controls for the eligible row (§14). */
+export interface RowCash {
+  checked: boolean;
+  /** The live preview is still loading. */
+  loading: boolean;
+  preview: CashPreviewResponse | null;
+  /** The checked amount would take the cash balance negative — block Record. */
+  insufficient: boolean;
+  onToggle: () => void;
+}
+
 /** Small "auto" marker so a fetched value is never mistaken for a typed one. */
 function AutoHint() {
   return (
@@ -630,12 +774,14 @@ function RowFields({
   showDivider,
   onChange,
   link,
+  cash,
 }: {
   row: Row;
   showAssetHeader: boolean;
   showDivider: boolean;
   onChange: (patch: Partial<Row>) => void;
   link?: RowLink;
+  cash?: RowCash;
 }) {
   const isAmountMode = row.entryMode === 'amount';
   const derived =
@@ -841,6 +987,42 @@ function RowFields({
             className={inputClass}
           />
         </label>
+
+        {cash ? (
+          <div className="col-span-2 flex flex-col gap-1.5">
+            <label className="flex items-center gap-2 text-sm text-neutral-300">
+              <input
+                type="checkbox"
+                checked={cash.checked}
+                onChange={cash.onToggle}
+                aria-label={
+                  row.side === 'sell' ? 'Add proceeds to cash balance' : 'Pay from cash balance'
+                }
+                className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
+              />
+              {row.side === 'sell' ? 'Add proceeds to cash balance' : 'Pay from cash balance'}
+            </label>
+            {cash.checked ? (
+              <p className="text-xs text-neutral-400" role="status" aria-label="Cash-after preview">
+                {cash.loading || !cash.preview ? (
+                  'Calculating…'
+                ) : (
+                  <>
+                    Available <MoneyText amount={cash.preview.availableEur} /> &rarr;{' '}
+                    <span className={cash.insufficient ? 'text-red-400' : 'text-neutral-200'}>
+                      <MoneyText amount={cash.preview.afterEur} />
+                    </span>
+                    {cash.insufficient ? (
+                      <span className="ml-1 text-red-400">
+                        (short <MoneyText amount={cash.preview.shortfallEur} />)
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
 
         <label className="col-span-2 flex flex-col gap-1.5">
           <span className="text-sm font-medium text-neutral-300">Note (optional)</span>

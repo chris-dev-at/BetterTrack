@@ -1,4 +1,7 @@
 import {
+  cashMovementResponseSchema,
+  cashMovementsResponseSchema,
+  cashPreviewResponseSchema,
   createCustomAssetResponseSchema,
   customAssetSchema,
   portfolioHistoryResponseSchema,
@@ -8,6 +11,11 @@ import {
   transactionSchema,
   updatePortfolioResponseSchema,
   valuePointsResponseSchema,
+  type CashEntryRequest,
+  type CashMovementResponse,
+  type CashMovementsResponse,
+  type CashPreviewRequest,
+  type CashPreviewResponse,
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
   type CustomAsset,
@@ -147,6 +155,59 @@ export async function deleteTransaction(portfolioId: string, id: string): Promis
       method: 'DELETE',
     },
   );
+}
+
+// --- Cash ledger ("Bargeld") -------------------------------------------------
+
+/** `GET /portfolios/:id/cash` — cash movements + current balance (§14, #220). */
+export async function getCashMovements(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<CashMovementsResponse> {
+  const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/cash`, {
+    signal,
+  });
+  return cashMovementsResponseSchema.parse(data);
+}
+
+/** `POST /portfolios/:id/cash/deposit` — record an external deposit. */
+export async function depositCash(
+  portfolioId: string,
+  body: CashEntryRequest,
+): Promise<CashMovementResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/deposit`,
+    { method: 'POST', body },
+  );
+  return cashMovementResponseSchema.parse(data);
+}
+
+/** `POST /portfolios/:id/cash/withdraw` — record a withdrawal; rejects an overdraw. */
+export async function withdrawCash(
+  portfolioId: string,
+  body: CashEntryRequest,
+): Promise<CashMovementResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/withdraw`,
+    { method: 'POST', body },
+  );
+  return cashMovementResponseSchema.parse(data);
+}
+
+/**
+ * `POST /portfolios/:id/cash/preview` — the live "available → after" preview for
+ * a proposed movement; read-only, no movement is persisted (§14).
+ */
+export async function previewCash(
+  portfolioId: string,
+  body: CashPreviewRequest,
+  signal?: AbortSignal,
+): Promise<CashPreviewResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/preview`,
+    { method: 'POST', body, signal },
+  );
+  return cashPreviewResponseSchema.parse(data);
 }
 
 // --- Custom assets ---------------------------------------------------------
