@@ -123,6 +123,47 @@ describe('assetRepository.searchCatalog ranking', () => {
     expect(theirs.map((m) => m.symbol)).toEqual(['MOT.DE', 'SECRET', 'BAYR', 'BAYR.F']);
   });
 
+  it('answers a single-character query via the symbol prefix tier (owner override, §13.2)', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser({ email: 'onechar@s.test', username: 'onechar' });
+    await h.db.insert(schema.assets).values([
+      {
+        providerId: 'yahoo',
+        providerRef: 'V',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'V',
+        name: 'Visa Inc.',
+        exchange: 'NYSE',
+        currency: 'USD',
+      },
+      {
+        providerId: 'yahoo',
+        providerRef: 'VOD.L',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'VOD.L',
+        name: 'Vodafone Group',
+        exchange: 'LSE',
+        currency: 'GBP',
+      },
+      {
+        providerId: 'yahoo',
+        providerRef: 'AAPL',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'AAPL',
+        name: 'Apple Inc.',
+        exchange: 'NASDAQ',
+        currency: 'USD',
+      },
+    ]);
+    const repo = createAssetRepository(h.db);
+
+    const matches = await repo.searchCatalog(user.id, 'V', SEARCH_RESULT_LIMIT);
+    expect(matches.map((m) => m.symbol)).toEqual(['V', 'VOD.L']);
+  });
+
   it('honors the row limit', async () => {
     const h = await createTestApp({ marketData: createStubMarketData() });
     const { userId } = await seedFixture(h);

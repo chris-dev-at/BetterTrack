@@ -70,14 +70,33 @@ describe('GET /api/v1/search', () => {
     expect(res.status).toBe(401);
   });
 
-  it('rejects a query shorter than 2 characters', async () => {
+  it('rejects an empty (or whitespace-only) query', async () => {
     const h = await createTestApp({ marketData: createStubMarketData(), backfill });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
 
-    const res = await agent.get('/api/v1/search?q=a');
+    const res = await agent.get('/api/v1/search?q=%20%20');
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('answers a single-character query from the catalog with zero synchronous provider calls (owner override, §13.2)', async () => {
+    const marketData = createStubMarketData({
+      search: () => new Promise<never>(() => undefined),
+    });
+    const h = await createTestApp({ marketData, backfill });
+    await seedCatalogAsset(h, { symbol: 'V', name: 'Visa Inc.' });
+    await seedCatalogAsset(h, { symbol: 'AAPL', name: 'Apple Inc.' });
+
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/search?q=V');
+    expect(res.status).toBe(200);
+    const parsed = searchResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.results[0]?.symbol).toBe('V');
   });
 
   it.each(['bayer', 'bay', 'bayr', 'BAYN'])(

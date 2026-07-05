@@ -23,9 +23,13 @@ import {
 
 // --- Search (§6.2) ---------------------------------------------------------
 
-/** `GET /search?q=` query — min 2 chars after trimming (§6.2). */
+/**
+ * `GET /search?q=` query — min 1 char after trimming. §6.2 originally specified
+ * min 2, but the owner overrode this to 1 (§13.2, #248 §3) so single-character
+ * tickers like "V" (Visa) resolve.
+ */
 export const searchQuerySchema = z.object({
-  q: z.string().trim().min(2, 'query must be at least 2 characters').max(64),
+  q: z.string().trim().min(1, 'query must not be empty').max(64),
 });
 export type SearchQuery = z.infer<typeof searchQuerySchema>;
 

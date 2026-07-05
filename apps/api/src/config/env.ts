@@ -319,8 +319,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         cooldownsSec: general.cooldownsSec,
         decaySec: general.decaySec,
       },
-      // Provider search is tighter (§6.2): 60/min/user (client debounces at
-      // 300 ms + min 2 chars, so legitimate typing stays well under this).
+      // Provider search is tighter (§6.2): 60/min/user (client debounces every
+      // keystroke at 300 ms, so legitimate typing stays well under this).
       search: {
         windowSec: 60,
         limit: 60,

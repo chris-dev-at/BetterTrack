@@ -1,16 +1,31 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Route, Routes } from 'react-router-dom';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { SearchResultItem, SearchResponse } from '@bettertrack/contracts';
+import type {
+  ConglomerateDetail,
+  ConglomerateListResponse,
+  PortfolioListResponse,
+  SearchResultItem,
+  SearchResponse,
+  WorkboardListResponse,
+} from '@bettertrack/contracts';
 
 // Bypass the 300 ms debounce so tests don't need fake timers.
 vi.mock('../hooks/useDebounce', () => ({ useDebounce: (v: unknown) => v }));
 
 vi.mock('../../lib/searchApi');
 vi.mock('../../lib/workboardApi');
+vi.mock('../../lib/conglomerateApi');
+vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/assetApi');
+import { ApiError } from '../../lib/apiClient';
+import * as assetApi from '../../lib/assetApi';
+import * as conglomerateApi from '../../lib/conglomerateApi';
+import * as portfolioApi from '../../lib/portfolioApi';
 import * as searchApi from '../../lib/searchApi';
 import * as workboardApi from '../../lib/workboardApi';
 import { AssetSearchBox } from './AssetSearchBox';
@@ -43,12 +58,103 @@ function makeSearchResponse(items: SearchResultItem[], enriching?: boolean): Sea
   return enriching === undefined ? { results: items } : { results: items, enriching };
 }
 
+function emptyWorkboard(): WorkboardListResponse {
+  return { items: [] };
+}
+
+function workboardWith(assetId: string): WorkboardListResponse {
+  return {
+    items: [
+      {
+        id: 'item-1',
+        assetId,
+        sortOrder: 0,
+        note: null,
+        asset: {
+          symbol: 'NVDA',
+          name: 'NVIDIA Corporation',
+          exchange: 'NASDAQ',
+          currency: 'USD',
+          type: 'stock',
+        },
+      },
+    ],
+  };
+}
+
+function onePortfolio(): PortfolioListResponse {
+  return {
+    portfolios: [
+      { id: 'portfolio-1', name: 'Main', visibility: 'private', sortOrder: 0, isDefault: true },
+    ],
+  };
+}
+
+function conglomerateList(): ConglomerateListResponse {
+  return {
+    conglomerates: [
+      {
+        id: 'cong-1',
+        name: 'World Basket',
+        description: null,
+        status: 'draft',
+        positionCount: 0,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+  };
+}
+
+function emptyConglomerateDetail(id: string, name: string): ConglomerateDetail {
+  return {
+    id,
+    name,
+    description: null,
+    status: 'draft',
+    positionCount: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    positions: [],
+  };
+}
+
+/** A non-empty conglomerate: SPY 70 / BND 30, mirroring a live 70/30 basket. */
+function twoPositionConglomerateDetail(id: string, name: string): ConglomerateDetail {
+  return {
+    id,
+    name,
+    description: null,
+    status: 'active',
+    positionCount: 2,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    positions: [
+      {
+        assetId: 'asset-spy',
+        weightPct: 70,
+        sortOrder: 0,
+        asset: { symbol: 'SPY', name: 'SPDR S&P 500 ETF', currency: 'USD', type: 'etf' },
+      },
+      {
+        assetId: 'asset-bnd',
+        weightPct: 30,
+        sortOrder: 1,
+        asset: { symbol: 'BND', name: 'Vanguard Total Bond ETF', currency: 'USD', type: 'etf' },
+      },
+    ],
+  };
+}
+
 function renderSearchBox(props: Partial<React.ComponentProps<typeof AssetSearchBox>> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <AssetSearchBox {...props} />
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<AssetSearchBox {...props} />} />
+          <Route path="/assets/:id" element={<div>Asset detail page</div>} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -56,6 +162,12 @@ function renderSearchBox(props: Partial<React.ComponentProps<typeof AssetSearchB
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(workboardApi.listWorkboard).mockResolvedValue(emptyWorkboard());
+  vi.mocked(assetApi.getAssetDailyCloses).mockResolvedValue({
+    asOf: null,
+    stale: false,
+    points: [],
+  });
 });
 
 describe('AssetSearchBox', () => {
@@ -64,34 +176,21 @@ describe('AssetSearchBox', () => {
     expect(screen.getByRole('searchbox', { name: /search assets/i })).toBeInTheDocument();
   });
 
-  test('shows a hint when the raw query is shorter than min length', async () => {
-    const user = userEvent.setup();
-    renderSearchBox();
-
-    await user.type(screen.getByRole('searchbox'), 'N');
-
-    expect(screen.getByText(/type at least 2 characters/i)).toBeInTheDocument();
-  });
-
-  test('does not call searchAssets when query is below min length', async () => {
-    const user = userEvent.setup();
-    renderSearchBox();
-
-    await user.type(screen.getByRole('searchbox'), 'N');
-
-    expect(vi.mocked(searchApi.searchAssets)).not.toHaveBeenCalled();
-  });
-
-  test('calls searchAssets once query meets the min-length threshold', async () => {
+  test('calls searchAssets once a single character is typed (owner override, §13.2)', async () => {
     vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
     const user = userEvent.setup();
     renderSearchBox();
 
-    await user.type(screen.getByRole('searchbox'), 'NV');
+    await user.type(screen.getByRole('searchbox'), 'V');
 
     await waitFor(() =>
-      expect(searchApi.searchAssets).toHaveBeenCalledWith('NV', expect.any(AbortSignal)),
+      expect(searchApi.searchAssets).toHaveBeenCalledWith('V', expect.any(AbortSignal)),
     );
+  });
+
+  test('does not call searchAssets for an empty query', () => {
+    renderSearchBox();
+    expect(vi.mocked(searchApi.searchAssets)).not.toHaveBeenCalled();
   });
 
   test('renders result rows with symbol, name, exchange, currency, and type badge', async () => {
@@ -110,7 +209,7 @@ describe('AssetSearchBox', () => {
     expect(screen.getAllByText('stock')).toHaveLength(2);
   });
 
-  test('renders all three action buttons on each result', async () => {
+  test('renders every direct action on each result', async () => {
     vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
     const user = userEvent.setup();
     renderSearchBox();
@@ -118,38 +217,202 @@ describe('AssetSearchBox', () => {
     await user.type(screen.getByRole('searchbox'), 'NV');
     await screen.findByText('NVDA');
 
-    expect(screen.getByRole('button', { name: /workboard/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add nvda to watchlist/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /conglomerate/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /record a buy/i })).toBeInTheDocument();
   });
 
-  test('→ Workboard calls the API and shows "Watchlisted ✓" on success', async () => {
+  test('clicking a result row navigates to its asset detail page and closes the search', async () => {
     vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
-    vi.mocked(workboardApi.addToWorkboard).mockResolvedValue();
-
+    const onAction = vi.fn();
     const user = userEvent.setup();
-    renderSearchBox();
+    renderSearchBox({ onAction });
 
     await user.type(screen.getByRole('searchbox'), 'NV');
     await screen.findByText('NVDA');
-    await user.click(screen.getByRole('button', { name: /add nvda to workboard/i }));
+    await user.click(screen.getByRole('button', { name: /open nvda/i }));
 
-    expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda');
-    expect(await screen.findByText(/watchlisted/i)).toBeInTheDocument();
+    expect(await screen.findByText('Asset detail page')).toBeInTheDocument();
+    expect(onAction).toHaveBeenCalledOnce();
   });
 
-  test('→ Workboard shows retry label on API error', async () => {
-    vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
-    vi.mocked(workboardApi.addToWorkboard).mockRejectedValue(new Error('network error'));
+  describe('watchlist icon (state-aware, §13.2)', () => {
+    test('shows the already-added state from existing membership, with no click required', async () => {
+      vi.mocked(workboardApi.listWorkboard).mockResolvedValue(workboardWith(NVDA.id));
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      const user = userEvent.setup();
+      renderSearchBox();
 
-    const user = userEvent.setup();
-    renderSearchBox();
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
 
-    await user.type(screen.getByRole('searchbox'), 'NV');
-    await screen.findByText('NVDA');
-    await user.click(screen.getByRole('button', { name: /add nvda to workboard/i }));
+      expect(screen.getByRole('button', { name: /nvda is on your watchlist/i })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+    });
 
-    expect(await screen.findByText(/retry workboard/i)).toBeInTheDocument();
+    test('clicking adds to the watchlist and flips to the added state', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.addToWorkboard).mockResolvedValue();
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to watchlist/i }));
+
+      expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda');
+      expect(
+        await screen.findByRole('button', { name: /nvda is on your watchlist/i }),
+      ).toHaveAttribute('aria-pressed', 'true');
+    });
+
+    test('does not close the search after adding to the watchlist', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.addToWorkboard).mockResolvedValue();
+      const onAction = vi.fn();
+      const user = userEvent.setup();
+      renderSearchBox({ onAction });
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to watchlist/i }));
+
+      await screen.findByRole('button', { name: /nvda is on your watchlist/i });
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    test('a second click on an already-added asset never surfaces the ALREADY_WATCHING error', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.addToWorkboard).mockRejectedValue(
+        new ApiError(409, 'ALREADY_WATCHING', 'Asset is already on your workboard.'),
+      );
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to watchlist/i }));
+
+      expect(
+        await screen.findByRole('button', { name: /nvda is on your watchlist/i }),
+      ).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    test('shows a retry affordance on a genuine failure', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.addToWorkboard).mockRejectedValue(new Error('network error'));
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to watchlist/i }));
+
+      expect(await screen.findByRole('button', { name: /retry adding nvda/i })).toBeInTheDocument();
+    });
+
+    test('exposes a stub multiple-watchlists affordance', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /choose a watchlist for nvda/i }));
+
+      expect(await screen.findByText('General')).toBeInTheDocument();
+      expect(screen.getByText(/more lists coming soon/i)).toBeInTheDocument();
+    });
+  });
+
+  describe('→ Portfolio (inline Buy/Sell dialog, §13.2)', () => {
+    test('opens the dialog pre-targeted to the searched asset without navigating away', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(onePortfolio());
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /record a buy for nvda/i }));
+
+      expect(
+        await screen.findByRole('dialog', { name: /record transaction/i }),
+      ).toBeInTheDocument();
+      // The asset is locked, not re-searched: no second search box appears.
+      expect(screen.getAllByRole('searchbox')).toHaveLength(1);
+    });
+  });
+
+  describe('→ Conglomerate (picker, §13.2)', () => {
+    test('opens a picker listing the caller’s conglomerates', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+
+      expect(await screen.findByRole('menuitem', { name: 'World Basket' })).toBeInTheDocument();
+    });
+
+    test('picking a conglomerate adds the asset and confirms in place', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      vi.mocked(conglomerateApi.getConglomerate).mockResolvedValue(
+        emptyConglomerateDetail('cong-1', 'World Basket'),
+      );
+      vi.mocked(conglomerateApi.replaceConglomeratePositions).mockResolvedValue(
+        emptyConglomerateDetail('cong-1', 'World Basket'),
+      );
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+      await user.click(await screen.findByRole('menuitem', { name: 'World Basket' }));
+
+      await waitFor(() =>
+        expect(conglomerateApi.replaceConglomeratePositions).toHaveBeenCalledWith('cong-1', [
+          { assetId: 'asset-nvda', weightPct: 100 },
+        ]),
+      );
+      expect(await screen.findByText(/added to world basket/i)).toBeInTheDocument();
+    });
+
+    test('adding to a non-empty conglomerate scales existing weights down proportionally instead of equalizing them', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      vi.mocked(conglomerateApi.getConglomerate).mockResolvedValue(
+        twoPositionConglomerateDetail('cong-1', 'World Basket'),
+      );
+      vi.mocked(conglomerateApi.replaceConglomeratePositions).mockResolvedValue(
+        twoPositionConglomerateDetail('cong-1', 'World Basket'),
+      );
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+      await user.click(await screen.findByRole('menuitem', { name: 'World Basket' }));
+
+      // The existing SPY 70 / BND 30 ratio (70:30) must survive the resize —
+      // never flattened to an equal three-way split.
+      await waitFor(() =>
+        expect(conglomerateApi.replaceConglomeratePositions).toHaveBeenCalledWith('cong-1', [
+          { assetId: 'asset-spy', weightPct: 46.667 },
+          { assetId: 'asset-bnd', weightPct: 20 },
+          { assetId: 'asset-nvda', weightPct: 33.333 },
+        ]),
+      );
+    });
   });
 
   test('shows skeleton rows while loading (no prior data)', async () => {
@@ -187,21 +450,6 @@ describe('AssetSearchBox', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/search failed/i);
   });
 
-  test('calls onAction after a successful workboard add', async () => {
-    vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
-    vi.mocked(workboardApi.addToWorkboard).mockResolvedValue();
-
-    const onAction = vi.fn();
-    const user = userEvent.setup();
-    renderSearchBox({ onAction });
-
-    await user.type(screen.getByRole('searchbox'), 'NV');
-    await screen.findByText('NVDA');
-    await user.click(screen.getByRole('button', { name: /add nvda to workboard/i }));
-
-    await waitFor(() => expect(onAction).toHaveBeenCalledOnce());
-  });
-
   describe('enriching (§6.2 background provider fetch)', () => {
     test('shows a subtle inline message and polls again while enriching:true', async () => {
       vi.mocked(searchApi.searchAssets)
@@ -211,9 +459,9 @@ describe('AssetSearchBox', () => {
       const user = userEvent.setup();
       renderSearchBox();
 
-      // Two chars only: with `useDebounce` bypassed in tests, a longer string
-      // would fire one fetch per enabled intermediate query state.
-      await user.type(screen.getByRole('searchbox'), 'NV');
+      // One char only: with `useDebounce` bypassed in tests and MIN_CHARS = 1,
+      // a longer string would fire one fetch per enabled intermediate query state.
+      await user.type(screen.getByRole('searchbox'), 'N');
 
       expect(await screen.findByText(/searching the market/i)).toBeInTheDocument();
 
@@ -229,7 +477,7 @@ describe('AssetSearchBox', () => {
       const user = userEvent.setup();
       renderSearchBox();
 
-      await user.type(screen.getByRole('searchbox'), 'NV');
+      await user.type(screen.getByRole('searchbox'), 'N');
       await screen.findByText('NVDA');
 
       expect(screen.queryByText(/searching the market/i)).not.toBeInTheDocument();
@@ -248,8 +496,10 @@ describe('AssetSearchBox', () => {
       await screen.findByText('NVDA');
       expect(await screen.findByText(/searching the market/i)).toBeInTheDocument();
 
-      await user.click(screen.getByRole('button', { name: /add nvda to workboard/i }));
-      expect(await screen.findByText(/watchlisted/i)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /add nvda to watchlist/i }));
+      expect(
+        await screen.findByRole('button', { name: /nvda is on your watchlist/i }),
+      ).toHaveAttribute('aria-pressed', 'true');
     });
 
     test('stops polling once the ~10s enrichment window elapses', async () => {
