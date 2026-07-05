@@ -11,3 +11,4 @@ export * from './backtest';
 export * from './social';
 export * from './notifications';
 export * from './settings';
+export * from './apiKeys';

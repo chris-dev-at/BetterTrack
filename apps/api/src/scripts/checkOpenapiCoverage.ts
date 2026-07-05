@@ -93,6 +93,7 @@ function buildInertContext(): AppContext {
     auth: inertService('auth'),
     twoFactor: inertService('twoFactor'),
     admin: inertService('admin'),
+    apiKeys: inertService('apiKeys'),
     workboard: inertService('workboard'),
     marketData: inertService('marketData'),
     assets: inertService('assets'),

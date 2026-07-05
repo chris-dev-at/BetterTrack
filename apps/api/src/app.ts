@@ -4,6 +4,7 @@ import helmet from 'helmet';
 
 import { createErrorHandler } from './http/errorHandler';
 import { healthRouter } from './http/healthRouter';
+import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth';
 import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
@@ -51,13 +52,19 @@ export function createApp(ctx: AppContext) {
 
   const limiters = createRateLimiters(ctx);
 
-  // Order: resolve session → general rate limit (keyed by user) → CSRF guard →
-  // forced-password-change guard. The last is global with an explicit
-  // allowlist, so any future /api/v1 router is covered without opting in.
+  // Order: bearer (API-key) auth → cookie session → general rate limit (per
+  // user) → per-key rate limit (bearer only) → CSRF guard (skipped for bearer)
+  // → forced-password-change guard → API-key scope enforcement. Bearer runs
+  // first so a `Authorization: Bearer btk_…` request resolves its principal and
+  // the cookie path stands down; the scope guard runs last so it sees the
+  // resolved principal and covers every /api/v1 router by default (§6.13).
+  app.use('/api/v1', loadBearerAuth(ctx));
   app.use('/api/v1', loadSession(ctx));
   app.use('/api/v1', limiters.general);
+  app.use('/api/v1', limiters.apiKey);
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
+  app.use('/api/v1', enforceApiKeyScope(ctx));
 
   app.use('/api/v1', healthRouter);
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));

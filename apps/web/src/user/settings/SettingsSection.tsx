@@ -17,6 +17,7 @@ import { Alert, cx } from '../components/ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
 export { AccountSettingsPage } from './AccountSettingsPage';
+export { ApiAccessPage } from './ApiAccessPage';
 export { SecuritySettingsPage } from './SecuritySettingsPage';
 
 /**
@@ -32,7 +33,7 @@ const SETTINGS_SUBNAV: readonly SubNavItem[] = [
   { to: '/settings/imports', label: 'Imports & Exports', comingSoon: true },
   { to: '/settings/connections', label: 'Connections', comingSoon: true },
   { to: '/settings/backups', label: 'Backups', comingSoon: true },
-  { to: '/settings/api', label: 'API Access', comingSoon: true },
+  { to: '/settings/api', label: 'API Access' },
 ];
 
 export function SettingsLayout() {
@@ -395,14 +396,5 @@ export function ConnectionsPage() {
 export function BackupsPage() {
   return (
     <ComingSoon title="Backups" description="Automatic backups to Google Drive and elsewhere." />
-  );
-}
-
-export function ApiAccessPage() {
-  return (
-    <ComingSoon
-      title="API Access"
-      description="Mint scoped API keys and personal access tokens, and later OAuth apps. See the public API docs at /docs."
-    />
   );
 }

@@ -164,7 +164,7 @@ test.each([
   ['/settings/imports', 'Imports & Exports'],
   ['/settings/connections', 'Connections'],
   ['/settings/backups', 'Backups'],
-  ['/settings/api', 'API Access'],
+  // /settings/api is now a built page (API Access, V2-P12), no longer Coming Soon.
 ])('deep link %s resolves to a designed Coming Soon page', async (path, title) => {
   renderAt(path);
   const heading = await screen.findByRole('heading', { name: title });

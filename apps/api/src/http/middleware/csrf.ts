@@ -22,7 +22,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 export function createCsrfGuard(allowedOrigins: readonly string[]): RequestHandler {
   const allowed = new Set(allowedOrigins);
   return (req, _res, next) => {
-    if (SAFE_METHODS.has(req.method)) {
+    // Bearer (API-key) requests carry no cookies, so CSRF does not apply — the
+    // header/Origin checks guard cookie-authenticated mutations only (§6.13).
+    if (req.apiKey || SAFE_METHODS.has(req.method)) {
       next();
       return;
     }
