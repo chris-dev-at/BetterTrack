@@ -14,14 +14,17 @@ import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
 import { formatSignedPercent } from '../../lib/format';
 import {
+  WATCHLIST_SHARING_QUERY_KEY,
   WORKBOARD_QUERY_KEY,
+  getWatchlistSharing,
   listWorkboard,
   removeFromWorkboard,
   reorderWorkboard,
+  updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
-import { Alert } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 
 // ─── Watchlist row ────────────────────────────────────────────────────────────
 
@@ -169,6 +172,40 @@ function WatchlistRow({
   );
 }
 
+// ─── Watchlist friend-sharing toggle (§6.9, V2-P9) ───────────────────────────
+
+/**
+ * Whole-watchlist friend-sharing toggle (§6.9, V2-P9): mirrors the portfolio
+ * private↔friends model. Sharing exposes a read-only copy of the watchlist to
+ * the owner's friends via Shared With Me; revoking closes access immediately.
+ */
+function WatchlistSharingToggle() {
+  const queryClient = useQueryClient();
+  const { data } = useQuery({
+    queryKey: WATCHLIST_SHARING_QUERY_KEY,
+    queryFn: ({ signal }) => getWatchlistSharing(signal),
+    staleTime: 30_000,
+  });
+  const mutation = useMutation({
+    mutationFn: (visibility: 'private' | 'friends') => updateWatchlistSharing(visibility),
+    onSuccess: (res) => {
+      queryClient.setQueryData(WATCHLIST_SHARING_QUERY_KEY, res);
+      void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
+    },
+  });
+  const shared = data?.visibility === 'friends';
+  return (
+    <Button
+      variant="secondary"
+      onClick={() => mutation.mutate(shared ? 'private' : 'friends')}
+      disabled={mutation.isPending || data === undefined}
+      aria-pressed={shared}
+    >
+      {shared ? 'Shared with friends' : 'Share with friends'}
+    </Button>
+  );
+}
+
 // ─── Zone 1: Watchlist ────────────────────────────────────────────────────────
 
 function WatchlistZone() {
@@ -276,9 +313,12 @@ function WatchlistZone() {
 
   return (
     <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
-      <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
-        Watchlist
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
+          Watchlist
+        </h2>
+        <WatchlistSharingToggle />
+      </div>
 
       {removeError ? <Alert tone="error">{removeError}</Alert> : null}
       {reorderError ? <Alert tone="error">{reorderError}</Alert> : null}

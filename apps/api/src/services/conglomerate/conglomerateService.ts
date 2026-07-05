@@ -80,6 +80,7 @@ function toSummary(row: ConglomerateSummaryRow): ConglomerateSummary {
     name: row.name,
     description: row.description,
     status: row.status,
+    visibility: row.visibility,
     positionCount: row.positionCount,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+import {
+  conglomeratePositionWithAssetSchema,
+  conglomerateStatusSchema,
+  conglomerateSummarySchema,
+} from './conglomerate';
 import { currencyCodeSchema } from './market';
 import {
   holdingSchema,
@@ -7,7 +12,9 @@ import {
   portfolioHistoryRangeSchema,
   portfolioSummarySchema,
   portfolioTotalsSchema,
+  portfolioVisibilitySchema,
 } from './portfolio';
+import { workboardItemSchema } from './workboard';
 
 /**
  * Social contracts (PROJECTPLAN.md §6.9). Friend requests + friendships.
@@ -103,11 +110,88 @@ export const sharedPortfolioSummarySchema = z
   .strict();
 export type SharedPortfolioSummary = z.infer<typeof sharedPortfolioSummarySchema>;
 
-/** `GET /social/shared` response — the portfolios of my friends set to `visibility=friends`. */
-export const sharedPortfolioListResponseSchema = z
-  .object({ portfolios: z.array(sharedPortfolioSummarySchema) })
+// --- Shared conglomerates & watchlists (§13.2 V2-P9) -------------------------
+
+/**
+ * One friend-shared **conglomerate** as it appears in **Shared With Me** (§6.9,
+ * V2-P9): the owner (public-safe), the basket's name, its status and position
+ * count. The read-only detail (`GET /social/shared/conglomerates/:id`) exposes
+ * the positions themselves.
+ */
+export const sharedConglomerateSummarySchema = z
+  .object({
+    conglomerateId: z.string().uuid(),
+    name: z.string(),
+    owner: friendUserSchema,
+    status: conglomerateStatusSchema,
+    positionCount: z.number().int(),
+  })
   .strict();
-export type SharedPortfolioListResponse = z.infer<typeof sharedPortfolioListResponseSchema>;
+export type SharedConglomerateSummary = z.infer<typeof sharedConglomerateSummarySchema>;
+
+/**
+ * One friend's shared **watchlist** as it appears in **Shared With Me** (§6.9,
+ * V2-P9). A watchlist is shared all-or-nothing per owner, so the summary is just
+ * the owner (public-safe) plus how many assets they watch; the read-only detail
+ * (`GET /social/shared/watchlists/:userId`) exposes the items.
+ */
+export const sharedWatchlistSummarySchema = z
+  .object({
+    owner: friendUserSchema,
+    itemCount: z.number().int(),
+  })
+  .strict();
+export type SharedWatchlistSummary = z.infer<typeof sharedWatchlistSummarySchema>;
+
+/**
+ * `GET /social/shared` response (**Shared With Me**, §6.9 point 4, V2-P9) — every
+ * item a friend currently shares with the caller, aggregated across portfolios,
+ * conglomerates and watchlists. Each list is authorization-derived: a row is
+ * present only while both an active friendship and the owner's friends-visibility
+ * hold at query time, so revoking either instantly drops it.
+ */
+export const sharedWithMeResponseSchema = z
+  .object({
+    portfolios: z.array(sharedPortfolioSummarySchema),
+    conglomerates: z.array(sharedConglomerateSummarySchema),
+    watchlists: z.array(sharedWatchlistSummarySchema),
+  })
+  .strict();
+export type SharedWithMeResponse = z.infer<typeof sharedWithMeResponseSchema>;
+
+/**
+ * `GET /social/shared/conglomerates/:conglomerateId` response — a **read-only**
+ * mirror of a friend's conglomerate (§6.9, V2-P9): its positions with the embedded
+ * asset identity, exactly as the owner sees them, with no edit affordance. A
+ * non-friend / private / unknown id 404s (never 403), recomputed per request.
+ */
+export const sharedConglomerateDetailResponseSchema = z
+  .object({
+    conglomerateId: z.string().uuid(),
+    name: z.string(),
+    description: z.string().nullable(),
+    status: conglomerateStatusSchema,
+    owner: friendUserSchema,
+    positions: z.array(conglomeratePositionWithAssetSchema),
+  })
+  .strict();
+export type SharedConglomerateDetailResponse = z.infer<
+  typeof sharedConglomerateDetailResponseSchema
+>;
+
+/**
+ * `GET /social/shared/watchlists/:userId` response — a **read-only** mirror of a
+ * friend's watchlist (§6.9, V2-P9): the owner plus their watched items (asset
+ * identity + note), with no edit affordance. Non-friend / not-sharing / unknown
+ * owner 404s (never 403), recomputed per request.
+ */
+export const sharedWatchlistDetailResponseSchema = z
+  .object({
+    owner: friendUserSchema,
+    items: z.array(workboardItemSchema),
+  })
+  .strict();
+export type SharedWatchlistDetailResponse = z.infer<typeof sharedWatchlistDetailResponseSchema>;
 
 /**
  * `GET /social/shared/:portfolioId` response — a **read-only** mirror of the
@@ -135,12 +219,32 @@ export const sharedPortfolioDetailResponseSchema = z
 export type SharedPortfolioDetailResponse = z.infer<typeof sharedPortfolioDetailResponseSchema>;
 
 /**
- * `GET /social/my-shared` response — the caller's *own* portfolios currently at
- * `visibility=friends` (the **My Shared Items** toggle-off list, §6.9). Reuses
- * the portfolio summary; toggling a portfolio off is done via the existing
- * `PATCH /portfolios/:id` (there is no mutation on the social surface).
+ * The caller's own watchlist sharing state for **My Shared Items** (§6.9, V2-P9):
+ * whether it is currently shared with friends and how many assets it holds.
+ * Toggling it off is done via `PATCH /workboard/sharing` (no mutation on the
+ * social surface).
  */
-export const mySharedListResponseSchema = z
-  .object({ portfolios: z.array(portfolioSummarySchema) })
+export const mySharedWatchlistSchema = z
+  .object({
+    visibility: portfolioVisibilitySchema,
+    itemCount: z.number().int(),
+  })
   .strict();
-export type MySharedListResponse = z.infer<typeof mySharedListResponseSchema>;
+export type MySharedWatchlist = z.infer<typeof mySharedWatchlistSchema>;
+
+/**
+ * `GET /social/my-shared` response — everything the caller is *currently* sharing
+ * with friends (the **My Shared Items** toggle-off list, §6.9 point 5, V2-P9):
+ * their `visibility=friends` portfolios and conglomerates plus their watchlist
+ * sharing state. Each item is toggled off through its own surface's existing PATCH
+ * (`/portfolios/:id`, `/conglomerates/:id`, `/workboard/sharing`) — there is no
+ * mutation on the social surface.
+ */
+export const mySharedResponseSchema = z
+  .object({
+    portfolios: z.array(portfolioSummarySchema),
+    conglomerates: z.array(conglomerateSummarySchema),
+    watchlist: mySharedWatchlistSchema,
+  })
+  .strict();
+export type MySharedResponse = z.infer<typeof mySharedResponseSchema>;

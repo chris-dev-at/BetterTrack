@@ -22,6 +22,15 @@ import { assetTypeSchema, currencyCodeSchema } from './market';
 export const conglomerateStatusSchema = z.enum(['draft', 'active']);
 export type ConglomerateStatus = z.infer<typeof conglomerateStatusSchema>;
 
+/**
+ * Friend-sharing visibility (§6.9, §13.2 V2-P9): `private` (default) keeps a
+ * conglomerate visible only to its owner; `friends` exposes a **read-only** copy
+ * to the owner's friends via Shared With Me. Mirrors the portfolio model — no
+ * tokens, revocable, authorization re-derived per read.
+ */
+export const conglomerateVisibilitySchema = z.enum(['private', 'friends']);
+export type ConglomerateVisibility = z.infer<typeof conglomerateVisibilitySchema>;
+
 // --- Positions -------------------------------------------------------------
 
 /**
@@ -73,6 +82,8 @@ export const conglomerateSummarySchema = z
     name: z.string(),
     description: z.string().nullable(),
     status: conglomerateStatusSchema,
+    /** Friend-sharing visibility (§6.9, V2-P9): `private` (default) or `friends`. */
+    visibility: conglomerateVisibilitySchema,
     positionCount: z.number().int(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -103,11 +114,16 @@ export const createConglomerateRequestSchema = z
   .strict();
 export type CreateConglomerateRequest = z.infer<typeof createConglomerateRequestSchema>;
 
-/** `PATCH /conglomerates/:id` body — rename and/or edit the description. */
+/**
+ * `PATCH /conglomerates/:id` body — rename, edit the description, and/or toggle
+ * friend-sharing (§6.9, V2-P9). Every field is optional; `visibility=friends`
+ * shares the basket read-only with the owner's friends, `private` revokes it.
+ */
 export const updateConglomerateRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().max(2000).nullish(),
+    visibility: conglomerateVisibilitySchema.optional(),
   })
   .strict();
 export type UpdateConglomerateRequest = z.infer<typeof updateConglomerateRequestSchema>;

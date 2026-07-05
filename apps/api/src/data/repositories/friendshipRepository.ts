@@ -2,7 +2,15 @@ import { and, asc, eq, gte, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
-import { friendRequests, friendships, portfolios, users } from '../schema';
+import {
+  conglomeratePositions,
+  conglomerates,
+  friendRequests,
+  friendships,
+  portfolios,
+  users,
+  workboardItems,
+} from '../schema';
 import type { FriendRequestRow } from '../schema';
 
 /**
@@ -43,6 +51,23 @@ export interface SharedPortfolioRow {
   name: string;
   ownerId: string;
   ownerUsername: string;
+}
+
+/** A friend's conglomerate exposed via `visibility='friends'` (§13.2 V2-P9). */
+export interface SharedConglomerateRow {
+  conglomerateId: string;
+  name: string;
+  status: 'draft' | 'active';
+  ownerId: string;
+  ownerUsername: string;
+  positionCount: number;
+}
+
+/** A friend's watchlist exposed via `watchlist_visibility='friends'` (§13.2 V2-P9). */
+export interface SharedWatchlistRow {
+  ownerId: string;
+  ownerUsername: string;
+  itemCount: number;
 }
 
 /** Canonical pair ordering (§6.9): a friendship row is always stored `user_a < user_b`. */
@@ -184,6 +209,135 @@ export function createFriendshipRepository(db: Database) {
           ),
         )
         .where(and(eq(portfolios.id, portfolioId), eq(portfolios.visibility, 'friends')))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * Every conglomerate owned by one of the viewer's friends currently at
+     * `visibility='friends'` — the conglomerate half of **Shared With Me** (§6.9,
+     * V2-P9). Same authorization-is-the-join shape as {@link listSharedWithViewer}:
+     * a row appears only while both the friendship and the owner's friends-
+     * visibility hold, so revoking either instantly drops it. Ordered by owner
+     * then basket name.
+     */
+    async listSharedConglomeratesWithViewer(viewerId: string): Promise<SharedConglomerateRow[]> {
+      const rows = await db
+        .select({
+          conglomerateId: conglomerates.id,
+          name: conglomerates.name,
+          status: conglomerates.status,
+          ownerId: conglomerates.ownerId,
+          ownerUsername: users.username,
+          positionCount: sql<number>`count(${conglomeratePositions.id})`.mapWith(Number),
+        })
+        .from(friendships)
+        .innerJoin(
+          conglomerates,
+          or(
+            and(eq(friendships.userA, viewerId), eq(conglomerates.ownerId, friendships.userB)),
+            and(eq(friendships.userB, viewerId), eq(conglomerates.ownerId, friendships.userA)),
+          ),
+        )
+        .innerJoin(users, and(eq(users.id, conglomerates.ownerId), eq(users.status, 'active')))
+        .leftJoin(conglomeratePositions, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+        .where(eq(conglomerates.visibility, 'friends'))
+        .groupBy(conglomerates.id, users.id)
+        .orderBy(asc(users.username), asc(conglomerates.name));
+      return rows;
+    },
+
+    /**
+     * Authorize the viewer to read one friend-shared conglomerate, or `undefined`.
+     * One query enforces **both** an existing friendship with the owner **and**
+     * the owner's `visibility='friends'`, recomputed per call (§6.9). A non-friend,
+     * a private basket, an unknown id, the viewer's own basket (no self-friendship)
+     * and a disabled owner all return `undefined` → uniform 404 (never 403).
+     */
+    async findSharedConglomerateForViewer(
+      viewerId: string,
+      conglomerateId: string,
+    ): Promise<{ conglomerateId: string; ownerId: string; ownerUsername: string } | undefined> {
+      const [row] = await db
+        .select({
+          conglomerateId: conglomerates.id,
+          ownerId: conglomerates.ownerId,
+          ownerUsername: users.username,
+        })
+        .from(conglomerates)
+        .innerJoin(users, and(eq(users.id, conglomerates.ownerId), eq(users.status, 'active')))
+        .innerJoin(
+          friendships,
+          or(
+            and(eq(friendships.userA, viewerId), eq(friendships.userB, conglomerates.ownerId)),
+            and(eq(friendships.userB, viewerId), eq(friendships.userA, conglomerates.ownerId)),
+          ),
+        )
+        .where(and(eq(conglomerates.id, conglomerateId), eq(conglomerates.visibility, 'friends')))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * Every friend of the viewer who currently shares their watchlist
+     * (`watchlist_visibility='friends'`) — the watchlist half of **Shared With Me**
+     * (§6.9, V2-P9), with the count of watched assets. Authorization is the join;
+     * unfriending or turning sharing off drops the row immediately. Ordered by
+     * owner username.
+     */
+    async listSharedWatchlistsWithViewer(viewerId: string): Promise<SharedWatchlistRow[]> {
+      const rows = await db
+        .select({
+          ownerId: users.id,
+          ownerUsername: users.username,
+          itemCount: sql<number>`count(${workboardItems.id})`.mapWith(Number),
+        })
+        .from(friendships)
+        .innerJoin(
+          users,
+          and(
+            or(
+              and(eq(friendships.userA, viewerId), eq(users.id, friendships.userB)),
+              and(eq(friendships.userB, viewerId), eq(users.id, friendships.userA)),
+            ),
+            eq(users.status, 'active'),
+            eq(users.watchlistVisibility, 'friends'),
+          ),
+        )
+        .leftJoin(workboardItems, eq(workboardItems.userId, users.id))
+        .groupBy(users.id)
+        .orderBy(asc(users.username));
+      return rows;
+    },
+
+    /**
+     * Authorize the viewer to read one friend's shared watchlist, or `undefined`.
+     * Enforces an existing friendship **and** the owner's
+     * `watchlist_visibility='friends'` (owner active), recomputed per call (§6.9).
+     * A non-friend, a not-sharing owner, an unknown id, the viewer themself and a
+     * disabled owner all return `undefined` → uniform 404 (never 403).
+     */
+    async findSharedWatchlistOwnerForViewer(
+      viewerId: string,
+      ownerId: string,
+    ): Promise<{ ownerId: string; ownerUsername: string } | undefined> {
+      const [row] = await db
+        .select({ ownerId: users.id, ownerUsername: users.username })
+        .from(users)
+        .innerJoin(
+          friendships,
+          or(
+            and(eq(friendships.userA, viewerId), eq(friendships.userB, users.id)),
+            and(eq(friendships.userB, viewerId), eq(friendships.userA, users.id)),
+          ),
+        )
+        .where(
+          and(
+            eq(users.id, ownerId),
+            eq(users.status, 'active'),
+            eq(users.watchlistVisibility, 'friends'),
+          ),
+        )
         .limit(1);
       return row;
     },

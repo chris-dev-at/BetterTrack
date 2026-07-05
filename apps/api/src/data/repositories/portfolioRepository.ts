@@ -204,7 +204,11 @@ export function createPortfolioRepository(db: Database) {
      * `sort_order` above the user's current max, so the auto-created "Main"
      * (sort_order 0) stays the default until the user explicitly changes it.
      */
-    async createPortfolio(userId: string, name: string): Promise<PortfolioSummaryRow> {
+    async createPortfolio(
+      userId: string,
+      name: string,
+      visibility: 'private' | 'friends' = 'private',
+    ): Promise<PortfolioSummaryRow> {
       const [maxRow] = await db
         .select({ sortOrder: portfolios.sortOrder })
         .from(portfolios)
@@ -214,7 +218,7 @@ export function createPortfolioRepository(db: Database) {
       const nextSortOrder = (maxRow?.sortOrder ?? -1) + 1;
       const [row] = await db
         .insert(portfolios)
-        .values({ userId, name, sortOrder: nextSortOrder })
+        .values({ userId, name, sortOrder: nextSortOrder, visibility })
         .returning(summaryColumns);
       if (!row) throw new Error('Portfolio insert returned no row');
       // A freshly created portfolio can never be the default (Main outranks it).

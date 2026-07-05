@@ -12,12 +12,14 @@ import {
 import { ApiError } from '../../lib/apiClient';
 import { formatDate } from '../../lib/format';
 import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
+import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const PORTFOLIOS_KEY = ['portfolios'] as const;
+const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 
 /** Friendly message for the codes `POST /auth/change-password` can return. */
 function changeErrorMessage(err: unknown): string {
@@ -115,6 +117,69 @@ function ChangePasswordForm() {
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Default portfolio visibility (§6.9, §13.2 V2-P9): the private↔friends default
+ * applied to *newly created* portfolios. Existing portfolios and explicit
+ * per-item toggles are unaffected.
+ */
+function DefaultVisibilityControl() {
+  const queryClient = useQueryClient();
+  const [error, setError] = useState(false);
+  const query = useQuery({
+    queryKey: ACCOUNT_SETTINGS_KEY,
+    queryFn: ({ signal }) => getAccountSettings(signal),
+    staleTime: 30_000,
+  });
+
+  const mutation = useMutation({
+    mutationFn: (defaultPortfolioVisibility: 'private' | 'friends') =>
+      updateAccountSettings(defaultPortfolioVisibility),
+    onSuccess: (res) => {
+      queryClient.setQueryData(ACCOUNT_SETTINGS_KEY, res);
+      setError(false);
+    },
+    onError: () => setError(true),
+  });
+
+  const value = query.data?.defaultPortfolioVisibility;
+  const shared = value === 'friends';
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">Default portfolio sharing</h3>
+        <p className="text-xs text-neutral-500">
+          What sharing a *new* portfolio starts with. Changing this never affects portfolios you
+          already have.
+        </p>
+      </div>
+      {query.isPending ? (
+        <Skeleton height="h-10" width="w-40" />
+      ) : (
+        <div
+          role="radiogroup"
+          aria-label="Default portfolio sharing"
+          className="inline-flex w-fit rounded-md ring-1 ring-inset ring-neutral-700"
+        >
+          <SharingChoice
+            label="Private"
+            selected={!shared}
+            busy={mutation.isPending}
+            onSelect={() => shared && mutation.mutate('private')}
+          />
+          <SharingChoice
+            label="Friends"
+            selected={shared}
+            busy={mutation.isPending}
+            onSelect={() => !shared && mutation.mutate('friends')}
+          />
+        </div>
+      )}
+      {error ? <Alert tone="error">Couldn't save that change. Please try again.</Alert> : null}
+    </div>
   );
 }
 
@@ -247,6 +312,10 @@ export function AccountSettingsPage() {
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
         <ChangePasswordForm />
+      </section>
+
+      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <DefaultVisibilityControl />
       </section>
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">

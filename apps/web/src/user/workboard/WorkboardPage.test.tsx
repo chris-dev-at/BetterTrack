@@ -8,9 +8,12 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   listWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
+  getWatchlistSharing: vi.fn(),
+  updateWatchlistSharing: vi.fn(),
 }));
 
 vi.mock('../../lib/assetApi', () => ({
@@ -18,7 +21,12 @@ vi.mock('../../lib/assetApi', () => ({
   getAssetHistory: vi.fn(),
 }));
 
-import { listWorkboard, removeFromWorkboard, reorderWorkboard } from '../../lib/workboardApi';
+import {
+  getWatchlistSharing,
+  listWorkboard,
+  removeFromWorkboard,
+  reorderWorkboard,
+} from '../../lib/workboardApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { WorkboardPage } from './WorkboardPage';
 
@@ -102,6 +110,7 @@ beforeEach(() => {
   vi.mocked(getAssetHistory).mockResolvedValue(BASE_HISTORY);
   vi.mocked(removeFromWorkboard).mockResolvedValue(undefined);
   vi.mocked(reorderWorkboard).mockResolvedValue(undefined);
+  vi.mocked(getWatchlistSharing).mockResolvedValue({ visibility: 'private' });
 });
 
 // ─── Empty state ──────────────────────────────────────────────────────────────

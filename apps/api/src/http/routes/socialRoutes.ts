@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import {
+  conglomerateIdParamSchema,
   createFriendRequestRequestSchema,
   idParamSchema,
   portfolioIdParamSchema,
@@ -86,6 +87,29 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   // GET /social/shared — friends' portfolios shared with me (visibility=friends).
   router.get('/shared', async (req, res) => {
     const result = await ctx.social.listSharedWithMe(req.authUser!.id);
+    res.json(result);
+  });
+
+  // GET /social/shared/conglomerates/:conglomerateId — read-only view of a
+  // friend-shared conglomerate. Registered before /shared/:portfolioId so its
+  // two-segment path is never mistaken for a portfolio id. 404 (never 403) for a
+  // non-friend / private / unknown basket, recomputed per request (§6.9, V2-P9).
+  router.get(
+    '/shared/conglomerates/:conglomerateId',
+    validateParams(conglomerateIdParamSchema),
+    async (req, res) => {
+      const { conglomerateId } = req.valid?.params as { conglomerateId: string };
+      const result = await ctx.social.getSharedConglomerate(req.authUser!.id, conglomerateId);
+      res.json(result);
+    },
+  );
+
+  // GET /social/shared/watchlists/:userId — read-only view of a friend's shared
+  // watchlist. 404 (never 403) for a non-friend / not-sharing / unknown owner,
+  // recomputed per request (§6.9, V2-P9).
+  router.get('/shared/watchlists/:userId', validateParams(userIdParamSchema), async (req, res) => {
+    const { userId } = req.valid?.params as { userId: string };
+    const result = await ctx.social.getSharedWatchlist(req.authUser!.id, userId);
     res.json(result);
   });
 

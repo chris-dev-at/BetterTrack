@@ -1,3 +1,6 @@
+import type { WatchlistSharingResponse } from '@bettertrack/contracts';
+
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type {
   WorkboardRepository,
   WorkboardItemWithAsset,
@@ -8,6 +11,8 @@ import type { ReferenceBackfill } from '../assets/referenceBackfill';
 export interface WorkboardServiceDeps {
   repo: WorkboardRepository;
   referenceBackfill: ReferenceBackfill;
+  /** Watchlist friend-sharing is a per-user flag on the user row (§6.9, V2-P9). */
+  userRepo: UserRepository;
 }
 
 export interface WorkboardService {
@@ -15,10 +20,14 @@ export interface WorkboardService {
   addItem(userId: string, assetId: string): Promise<WorkboardItemWithAsset>;
   removeItem(userId: string, itemId: string): Promise<void>;
   reorder(userId: string, itemIds: string[]): Promise<void>;
+  /** The caller's watchlist friend-sharing state (§6.9, V2-P9). */
+  getSharing(userId: string): Promise<WatchlistSharingResponse>;
+  /** Turn watchlist friend-sharing on/off (§6.9, V2-P9). Returns the new state. */
+  setSharing(userId: string, visibility: 'private' | 'friends'): Promise<WatchlistSharingResponse>;
 }
 
 export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardService {
-  const { repo, referenceBackfill } = deps;
+  const { repo, referenceBackfill, userRepo } = deps;
 
   return {
     async list(userId) {
@@ -54,6 +63,15 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
 
     async reorder(userId, itemIds) {
       await repo.reorder(userId, itemIds);
+    },
+
+    async getSharing(userId) {
+      return { visibility: await userRepo.getWatchlistVisibility(userId) };
+    },
+
+    async setSharing(userId, visibility) {
+      await userRepo.setWatchlistVisibility(userId, visibility);
+      return { visibility };
     },
   };
 }

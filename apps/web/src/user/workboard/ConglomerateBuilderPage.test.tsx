@@ -50,6 +50,7 @@ function detail(positions: Array<{ id: string; symbol: string; weightPct: number
     name: 'My Basket',
     description: null,
     status: 'draft' as const,
+    visibility: 'private' as const,
     positionCount: positions.length,
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',

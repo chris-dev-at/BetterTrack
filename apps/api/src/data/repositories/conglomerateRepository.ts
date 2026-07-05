@@ -30,6 +30,8 @@ export interface ConglomerateSummaryRow {
   name: string;
   description: string | null;
   status: ConglomerateStatus;
+  /** Friend-sharing visibility (§6.9, V2-P9): `private` (default) or `friends`. */
+  visibility: 'private' | 'friends';
   positionCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -86,6 +88,7 @@ export function createConglomerateRepository(db: Database) {
           name: conglomerates.name,
           description: conglomerates.description,
           status: conglomerates.status,
+          visibility: conglomerates.visibility,
           createdAt: conglomerates.createdAt,
           updatedAt: conglomerates.updatedAt,
           positionCount: sql<number>`count(${conglomeratePositions.id})`.mapWith(Number),
@@ -110,6 +113,7 @@ export function createConglomerateRepository(db: Database) {
           name: conglomerates.name,
           description: conglomerates.description,
           status: conglomerates.status,
+          visibility: conglomerates.visibility,
           createdAt: conglomerates.createdAt,
           updatedAt: conglomerates.updatedAt,
         })
@@ -176,14 +180,20 @@ export function createConglomerateRepository(db: Database) {
     async update(
       ownerId: string,
       id: string,
-      patch: { name?: string; description?: string | null },
+      patch: { name?: string; description?: string | null; visibility?: 'private' | 'friends' },
     ): Promise<boolean> {
-      const set: Partial<{ name: string; description: string | null; updatedAt: Date }> = {};
+      const set: Partial<{
+        name: string;
+        description: string | null;
+        visibility: 'private' | 'friends';
+        updatedAt: Date;
+      }> = {};
       if (patch.name !== undefined) {
         if (await nameTaken(ownerId, patch.name, id)) throw new ConglomerateNameConflictError();
         set.name = patch.name;
       }
       if (patch.description !== undefined) set.description = patch.description;
+      if (patch.visibility !== undefined) set.visibility = patch.visibility;
 
       // A no-field PATCH shouldn't touch `updatedAt`; still confirm ownership so
       // an unknown/foreign id 404s rather than silently succeeding.

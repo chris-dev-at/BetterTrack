@@ -39,6 +39,8 @@ import {
 import { FriendsPage } from './social/FriendsPage';
 import { SharedWithMePage } from './social/SharedWithMePage';
 import { SharedPortfolioPage } from './social/SharedPortfolioPage';
+import { SharedConglomeratePage } from './social/SharedConglomeratePage';
+import { SharedWatchlistPage } from './social/SharedWatchlistPage';
 import { MySharedItemsPage } from './social/MySharedItemsPage';
 import { PublicProfilePage, SocialIdeasPage, SocialLayout } from './social/SocialSection';
 import {
@@ -129,6 +131,8 @@ function UserShell() {
             <Route index element={<Navigate to="/social/friends" replace />} />
             <Route path="friends" element={<FriendsPage />} />
             <Route path="shared-with-me" element={<SharedWithMePage />} />
+            <Route path="shared-with-me/conglomerates/:id" element={<SharedConglomeratePage />} />
+            <Route path="shared-with-me/watchlists/:userId" element={<SharedWatchlistPage />} />
             <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
             <Route path="my-shared" element={<MySharedItemsPage />} />
             <Route path="ideas" element={<SocialIdeasPage />} />
