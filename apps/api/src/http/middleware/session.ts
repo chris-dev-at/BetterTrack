@@ -13,6 +13,12 @@ import { toAuthUser } from '../serializers';
 export function loadSession(ctx: AppContext): RequestHandler {
   return async (req, res, next) => {
     try {
+      // A bearer (API-key) request already resolved its principal upstream and
+      // carries no session — never let a stray cookie override it (§6.13).
+      if (req.apiKey) {
+        next();
+        return;
+      }
       const sessionId = req.signedCookies?.[ctx.config.cookie.name] as unknown;
       if (typeof sessionId !== 'string' || sessionId.length === 0) {
         next();
@@ -96,7 +102,9 @@ export const enforcePasswordChange: RequestHandler = (req, _res, next) => {
 
 /** Admin-only. Non-admins (and anonymous) get a 404 — no route disclosure (§6.12). */
 export const requireAdmin: RequestHandler = (req, _res, next) => {
-  if (!req.authUser || req.authUser.role !== 'admin') {
+  // Personal API keys can never reach the admin surface, regardless of scopes
+  // (§6.12, §6.13) — a bare 404, like any non-admin, discloses nothing.
+  if (req.apiKey || !req.authUser || req.authUser.role !== 'admin') {
     next(notFound());
     return;
   }

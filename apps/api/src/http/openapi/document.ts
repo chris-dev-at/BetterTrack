@@ -163,6 +163,11 @@ const componentSchemas = {
   NotificationSettingsResponse: contracts.notificationSettingsResponseSchema,
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
+
+  // Personal API keys (§6.13, V2-P12)
+  CreateApiKeyRequest: contracts.createApiKeyRequestSchema,
+  ApiKeyListResponse: contracts.apiKeyListResponseSchema,
+  CreateApiKeyResponse: contracts.createApiKeyResponseSchema,
 };
 
 /** Registered component refs, keyed by component name (literal keys preserved). */
@@ -171,7 +176,8 @@ for (const name of Object.keys(componentSchemas) as (keyof typeof componentSchem
   R[name] = registry.register(name, componentSchemas[name]);
 }
 
-// The session cookie is the only auth scheme (httpOnly, opaque Redis session id).
+// Two auth schemes reach `/api/v1`: the web/admin SPA uses the httpOnly session
+// cookie; scripts/integrations use a personal API key as a bearer token.
 const SESSION_SECURITY = 'sessionCookie';
 registry.registerComponent('securitySchemes', SESSION_SECURITY, {
   type: 'apiKey',
@@ -179,6 +185,21 @@ registry.registerComponent('securitySchemes', SESSION_SECURITY, {
   name: 'bt_sid',
   description:
     'httpOnly session cookie set on login (§6.1). Opaque Redis session id; not readable by JS.',
+});
+
+// Personal API key bearer auth (§6.13, V2-P12). Mint a key in Settings → API
+// Access; send it as `Authorization: Bearer btk_…`. Access is gated by the
+// key's coarse scopes; admin endpoints are never reachable with an API key.
+const BEARER_SECURITY = 'apiKeyBearer';
+registry.registerComponent('securitySchemes', BEARER_SECURITY, {
+  type: 'http',
+  scheme: 'bearer',
+  bearerFormat: 'btk_<random>',
+  description:
+    'Personal API key as a bearer token (§6.13). Scopes: ' +
+    `${contracts.API_KEY_SCOPES.join(', ')}. Safe methods need the module's :read scope, ` +
+    'mutations its :write scope. Missing scope → 403 INSUFFICIENT_SCOPE. Bearer requests ' +
+    'skip CSRF (no cookies) and can never reach admin endpoints.',
 });
 
 // `userId` param is defined inline in socialRoutes (not exported from contracts).
@@ -1141,6 +1162,33 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.AccountSettingsResponse,
   },
+
+  // Personal API keys (§6.13, V2-P12) — session-only (never reachable by a key).
+  {
+    method: 'get',
+    path: '/settings/api-keys',
+    tag: 'Settings',
+    summary: 'List the caller’s active personal API keys.',
+    status: 200,
+    response: R.ApiKeyListResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/api-keys',
+    tag: 'Settings',
+    summary: 'Mint a personal API key; the plaintext token is returned exactly once.',
+    body: R.CreateApiKeyRequest,
+    status: 201,
+    response: R.CreateApiKeyResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/api-keys/{id}',
+    tag: 'Settings',
+    summary: 'Revoke a personal API key the caller owns.',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
 ];
 
 const jsonContent = (schema: z.ZodTypeAny) => ({ 'application/json': { schema } });
@@ -1194,11 +1242,12 @@ export function buildOpenApiDocument() {
       version: API_VERSION,
       description:
         'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
-        'envelope `{ error: { code, message, details? } }`. All routes require a ' +
-        'session cookie unless marked public.',
+        'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
+        'session cookie or a personal API key bearer token (§6.13) unless marked public.',
     },
     servers: [{ url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' }],
-    security: [{ [SESSION_SECURITY]: [] }],
+    // Either scheme authenticates a request; API-key scopes further gate access.
+    security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
   });
 }
 

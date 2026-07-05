@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
+import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
@@ -33,6 +34,7 @@ import {
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
@@ -87,6 +89,8 @@ export interface AppContext {
   /** TOTP enroll/confirm/disable + recovery codes — the Settings → Security 2FA core (§6.1). */
   twoFactor: TwoFactorService;
   admin: AdminService;
+  /** Personal API keys — issuance, listing, revocation + bearer resolution (§6.13, V2-P12). */
+  apiKeys: ApiKeyService;
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
   marketData: MarketDataService;
@@ -157,6 +161,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000));
   const audit = createAuditService(auditRepo);
+
+  // Personal API keys (§6.13, V2-P12): issuance/list/revoke + bearer-token
+  // resolution for the auth middleware. Owns only issuance + audit; scope
+  // enforcement lives in the HTTP layer.
+  const apiKeys = createApiKeyService({ repo: createApiKeyRepository(db), audit, redis });
   const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
@@ -359,6 +368,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     auth,
     twoFactor,
     admin,
+    apiKeys,
     workboard,
     marketData,
     assets,

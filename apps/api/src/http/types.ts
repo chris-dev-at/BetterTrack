@@ -21,6 +21,13 @@ declare global {
     interface Request {
       sessionId?: string;
       authUser?: AuthUser;
+      /**
+       * Set when the request authenticated via an `Authorization: Bearer btk_…`
+       * personal API key instead of the session cookie (§6.13, V2-P12). Its
+       * presence means: skip CSRF (no cookies), enforce the key's scopes, and
+       * rate-limit per key id. Mutually exclusive with cookie-session auth.
+       */
+      apiKey?: { id: string; scopes: string[] };
       /** Parsed, schema-validated inputs (Express 5 `req.query` is read-only). */
       valid?: { body?: unknown; query?: unknown; params?: unknown };
     }

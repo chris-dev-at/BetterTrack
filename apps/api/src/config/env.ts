@@ -248,6 +248,8 @@ export interface AppConfig {
     search: ProgressiveSchedule;
     /** Friend-request creation, per user — blunts bulk email→username probing (§6.9). */
     social: ProgressiveSchedule;
+    /** Personal API key request rate, per key id (bearer requests, §6.13). */
+    apiKey: ProgressiveSchedule;
     /** Login/PIN request rate, per IP. */
     loginIp: ProgressiveSchedule;
     /** Failed-login tracking, per account — independent of the per-IP counter. */
@@ -366,6 +368,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         limit: 30,
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
+      },
+      // Personal API keys, per key id (§6.13): a generous automation budget —
+      // 120/min sustained (2 req/s) so scripted polling stays clear — with the
+      // general escalation ladder for a runaway client. Bearer requests key this
+      // by key id, independent of the per-user general counter.
+      apiKey: {
+        windowSec: 60,
+        limit: 120,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
       },
       // Login is stricter and per-IP: blunts single-IP credential stuffing while
       // tolerating shared-NAT bursts. Over-limit → 30 s → 5 m → 10 m → 15 m.

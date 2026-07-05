@@ -119,6 +119,13 @@ export const apiKeys = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     name: varchar('name', { length: 80 }).notNull(),
     tokenHash: text('token_hash').notNull(),
+    // Coarse per-module read/write scopes the bearer middleware enforces
+    // (§6.13, V2-P12). A key can never carry an admin scope — account-kind
+    // separation keeps the admin surface unreachable regardless of this array.
+    scopes: text('scopes')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
     // Revoke-only lifecycle: set to end access. No expiry counterpart exists.
     revokedAt: timestamp('revoked_at', { withTimezone: true }),

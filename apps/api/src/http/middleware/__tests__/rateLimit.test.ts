@@ -29,6 +29,7 @@ const ctxWith = (limit: number, firstCooldown: number): AppContext => {
       generalBurst: schedule,
       search: schedule,
       social: schedule,
+      apiKey: schedule,
       loginIp: schedule,
       loginAccount: schedule,
     },
@@ -48,6 +49,7 @@ const burstCtx = (): AppContext => {
       generalBurst: { windowSec: 10, limit: 60, ...ladder },
       search: { windowSec: 60, limit: 60, ...ladder },
       social: { windowSec: 60 * 60, limit: 30, ...ladder },
+      apiKey: { windowSec: 60, limit: 120, ...ladder },
       loginIp: { windowSec: 60, limit: 25, ...ladder },
       loginAccount: { windowSec: 15 * 60, limit: 10, ...ladder },
     },
@@ -172,5 +174,55 @@ describe('general burst dimension — reload-flood hardening (§10, #202)', () =
 
     // The generous steady-state window never came close to its 4500 allowance.
     expect(Number(await redis.get(steadyCount))).toBeLessThan(4500);
+  });
+});
+
+describe('per-API-key limiter (§6.13, V2-P12)', () => {
+  // Drive the guard with a bearer request (req.apiKey set), keyed by key id.
+  const runKey = (
+    handler: (req: Request, res: Response, next: NextFunction) => void,
+    keyId: string,
+  ): Promise<{ headers: Record<string, string>; err: unknown }> => {
+    const headers: Record<string, string> = {};
+    const req = {
+      ip: '10.0.0.1',
+      apiKey: { id: keyId, scopes: [] },
+    } as unknown as Request;
+    const res = {
+      setHeader(name: string, value: string | number) {
+        headers[name] = String(value);
+      },
+    } as unknown as Response;
+    return new Promise((resolve) => {
+      handler(req, res, (err?: unknown) => resolve({ headers, err }));
+    });
+  };
+
+  it('trips a burst per key, recovers after the cooldown clears, and isolates other keys', async () => {
+    const { apiKey } = createRateLimiters(ctxWith(2, 1));
+
+    // Key A: two under the allowance, the third trips a 429 with its rung.
+    expect((await runKey(apiKey, 'A')).err).toBeUndefined();
+    expect((await runKey(apiKey, 'A')).err).toBeUndefined();
+    const tripped = await runKey(apiKey, 'A');
+    const err = tripped.err as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.statusCode).toBe(429);
+    expect(tripped.headers['Retry-After']).toBe('1');
+
+    // A different key id has its own independent counter.
+    expect((await runKey(apiKey, 'B')).err).toBeUndefined();
+
+    // Simulate the cooldown TTL elapsing → key A gets a fresh allowance.
+    await redis.del(progressiveKeys('api_key', 'A').cooldown);
+    expect((await runKey(apiKey, 'A')).err).toBeUndefined();
+  });
+
+  it('never counts cookie-session requests (no req.apiKey)', async () => {
+    const { apiKey } = createRateLimiters(ctxWith(1, 1));
+    for (let i = 0; i < 5; i += 1) {
+      const { err } = await runOnce(apiKey);
+      expect(err).toBeUndefined();
+    }
   });
 });

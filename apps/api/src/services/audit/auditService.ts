@@ -36,6 +36,9 @@ export const AuditAction = {
   EmailSendFailed: 'email.send_failed',
   EmailTestSent: 'email.test_sent',
   SettingsUpdated: 'settings.updated',
+  ApiKeyCreated: 'api_key.created',
+  ApiKeyRevoked: 'api_key.revoked',
+  ApiKeyScopeDenied: 'api_key.scope_denied',
 } as const;
 
 export interface AuditService {

@@ -1,14 +1,17 @@
 import { Router } from 'express';
 
 import {
+  createApiKeyRequestSchema,
+  idParamSchema,
   updateAccountSettingsRequestSchema,
   updateNotificationSettingsRequestSchema,
+  type CreateApiKeyRequest,
   type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
-import { validateBody } from '../middleware/validate';
+import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
@@ -53,6 +56,35 @@ export function createSettingsRouter(ctx: AppContext): Router {
       body.defaultPortfolioVisibility,
     );
     res.json(settings);
+  });
+
+  // ── Personal API keys (§6.13, V2-P12) ──────────────────────────────────────
+  // Session-only: the bearer scope guard blocks API-key requests from reaching
+  // `/settings/api-keys*`, so a key can never mint/list/revoke keys.
+
+  // GET /settings/api-keys — the caller's active (non-revoked) keys.
+  router.get('/api-keys', async (req, res) => {
+    const keys = await ctx.apiKeys.list(req.authUser!.id);
+    res.json({ keys });
+  });
+
+  // POST /settings/api-keys — mint a key; the plaintext token is returned once.
+  router.post('/api-keys', validateBody(createApiKeyRequestSchema), async (req, res) => {
+    const body = req.valid?.body as CreateApiKeyRequest;
+    const result = await ctx.apiKeys.create({
+      userId: req.authUser!.id,
+      name: body.name,
+      scopes: body.scopes,
+      ip: req.ip ?? null,
+    });
+    res.status(201).json(result);
+  });
+
+  // DELETE /settings/api-keys/:id — revoke a key the caller owns (404 otherwise).
+  router.delete('/api-keys/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.apiKeys.revoke({ userId: req.authUser!.id, id, ip: req.ip ?? null });
+    res.status(204).end();
   });
 
   return router;

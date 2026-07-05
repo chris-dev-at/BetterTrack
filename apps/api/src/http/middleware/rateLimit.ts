@@ -13,6 +13,8 @@ const keyByUserOrIp = (req: Request): string => req.authUser?.id ?? req.ip ?? 'u
 export interface RateLimiters {
   login: RequestHandler;
   general: RequestHandler;
+  /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
+  apiKey: RequestHandler;
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
@@ -29,7 +31,7 @@ export interface RateLimiters {
  * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const { enabled, general, generalBurst, search, social, loginIp } = ctx.config.rateLimits;
+  const { enabled, general, generalBurst, search, social, loginIp, apiKey } = ctx.config.rateLimits;
 
   /**
    * Guard a request against one or more limiters sharing a key. Each is consumed
@@ -63,6 +65,29 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     };
   };
 
+  /**
+   * Per-key guard for bearer requests: keyed by `req.apiKey.id` and skipped
+   * entirely for cookie sessions, so a personal token gets its own automation
+   * budget (§6.13) independent of the per-user `general` counter.
+   */
+  const apiKeyGuard = (limiter: ProgressiveLimiter): RequestHandler => {
+    return (req, res, next) => {
+      if (!enabled || !req.apiKey) {
+        next();
+        return;
+      }
+      void (async () => {
+        const decision = await limiter.consume(req.apiKey!.id);
+        if (!decision.allowed) {
+          res.setHeader('Retry-After', String(decision.retryAfterSec));
+          next(tooManyRequests(decision.retryAfterSec));
+          return;
+        }
+        next();
+      })().catch(next);
+    };
+  };
+
   const loginLimiter = createProgressiveLimiter(ctx.redis, 'login_ip', loginIp);
   const generalLimiter = createProgressiveLimiter(ctx.redis, 'general', general);
   // Short-window burst dimension (owner report #202): a page-reload flood fires
@@ -77,6 +102,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   return {
     login: guard([loginLimiter], keyByIp),
     general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
+    apiKey: apiKeyGuard(createProgressiveLimiter(ctx.redis, 'api_key', apiKey)),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.
     admin: guard([createProgressiveLimiter(ctx.redis, 'admin', general)], keyByUserOrIp),
