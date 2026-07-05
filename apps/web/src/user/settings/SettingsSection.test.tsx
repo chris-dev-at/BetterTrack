@@ -13,7 +13,11 @@ vi.mock('../../lib/notificationsApi', () => ({
   markNotificationsRead: vi.fn(),
 }));
 
-import type { Notification, NotificationListResponse } from '@bettertrack/contracts';
+import type {
+  Notification,
+  NotificationListResponse,
+  NotificationMatrix,
+} from '@bettertrack/contracts';
 
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
@@ -50,42 +54,80 @@ const EMPTY_LIST_RESPONSE: NotificationListResponse = {
   unreadCount: 0,
 };
 
+/** A full routing matrix (every type both-on) with optional per-type overrides. */
+function makeMatrix(overrides: Partial<NotificationMatrix> = {}): NotificationMatrix {
+  return {
+    'friend.request': { inapp: true, email: true },
+    'friend.accepted': { inapp: true, email: true },
+    'portfolio.shared': { inapp: true, email: true },
+    'account.invite': { inapp: true, email: true },
+    'account.temp_password': { inapp: true, email: true },
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getNotificationSettings).mockResolvedValue({
-    inapp: { enabled: true },
-    email: { enabled: true },
-  });
+  vi.mocked(getNotificationSettings).mockResolvedValue({ matrix: makeMatrix() });
   vi.mocked(listNotifications).mockResolvedValue(EMPTY_LIST_RESPONSE);
   vi.mocked(markNotificationsRead).mockResolvedValue(undefined);
 });
 
 describe('NotificationSettingsPage', () => {
-  test('reads the settings and renders in-app locked on', async () => {
+  test('reads the settings and renders the per-type routing matrix', async () => {
     renderPage();
 
-    const inApp = await screen.findByRole('switch', { name: 'In-app' });
-    expect(inApp).toBeChecked();
-    expect(inApp).toBeDisabled();
-
-    expect(screen.getByRole('switch', { name: 'Email' })).toBeChecked();
+    const friendRequests = await screen.findByRole('combobox', { name: 'Friend requests' });
+    expect(friendRequests).toHaveValue('both');
+    // Every V1 notification type gets its own row.
+    expect(screen.getByRole('combobox', { name: 'Shared portfolios' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Account invites' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Temporary passwords' })).toBeInTheDocument();
   });
 
-  test('toggling email off writes the setting and reflects the new state', async () => {
+  test('reflects a stored per-type override (email-only) as the selected mode', async () => {
+    vi.mocked(getNotificationSettings).mockResolvedValue({
+      matrix: makeMatrix({ 'friend.request': { inapp: false, email: true } }),
+    });
+    renderPage();
+
+    const friendRequests = await screen.findByRole('combobox', { name: 'Friend requests' });
+    expect(friendRequests).toHaveValue('email');
+  });
+
+  test('changing a type to bell-only writes the matrix and reflects the new mode', async () => {
     vi.mocked(updateNotificationSettings).mockResolvedValue({
-      inapp: { enabled: true },
-      email: { enabled: false },
+      matrix: makeMatrix({ 'friend.request': { inapp: true, email: false } }),
     });
     const user = userEvent.setup();
     renderPage();
 
-    const email = await screen.findByRole('switch', { name: 'Email' });
-    expect(email).toBeChecked();
+    const friendRequests = await screen.findByRole('combobox', { name: 'Friend requests' });
+    expect(friendRequests).toHaveValue('both');
 
-    await user.click(email);
+    await user.selectOptions(friendRequests, 'inapp');
 
-    expect(updateNotificationSettings).toHaveBeenCalledWith({ email: { enabled: false } });
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Email' })).not.toBeChecked());
+    expect(updateNotificationSettings).toHaveBeenCalledWith({
+      matrix: { 'friend.request': { inapp: true, email: false } },
+    });
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Friend requests' })).toHaveValue('inapp'),
+    );
+  });
+
+  test('muting a type writes both channels off', async () => {
+    vi.mocked(updateNotificationSettings).mockResolvedValue({
+      matrix: makeMatrix({ 'portfolio.shared': { inapp: false, email: false } }),
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const shared = await screen.findByRole('combobox', { name: 'Shared portfolios' });
+    await user.selectOptions(shared, 'muted');
+
+    expect(updateNotificationSettings).toHaveBeenCalledWith({
+      matrix: { 'portfolio.shared': { inapp: false, email: false } },
+    });
   });
 
   test('shows an error affordance when settings fail to load', async () => {
@@ -118,8 +160,8 @@ describe('NotificationSettingsPage', () => {
 
     expect(await screen.findByText('Unread item')).toBeInTheDocument();
     expect(screen.getByText('Read item')).toBeInTheDocument();
-    // The toggle panel still renders alongside the list.
-    expect(screen.getByRole('switch', { name: 'Email' })).toBeInTheDocument();
+    // The routing matrix still renders alongside the list.
+    expect(screen.getByRole('combobox', { name: 'Friend requests' })).toBeInTheDocument();
   });
 
   test('shows an empty state when there are no notifications', async () => {

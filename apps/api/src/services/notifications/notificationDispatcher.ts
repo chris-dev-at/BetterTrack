@@ -136,8 +136,10 @@ export function createNotificationDispatcher(
   /** Send the event's email on the recipient's enabled email channel (§6.10). */
   async function sendEmail(event: DispatchableEvent): Promise<void> {
     if (!email || !users) return;
-    // Email is on by default: only an explicit `false` suppresses it (§6.10).
-    if ((await repo.channelEnabled(event.userId, 'email')) === false) return;
+    // Per-type × channel matrix (§6.10): email fans out only when this type is
+    // routed to email. Defaults on; an explicit per-type override (or a
+    // channel-wide off) suppresses it.
+    if (!(await repo.typeChannelEnabled(event.userId, event.type, 'email'))) return;
     const recipient = await users.findById(event.userId);
     if (!recipient?.email) return;
 
@@ -162,8 +164,10 @@ export function createNotificationDispatcher(
     // in-app row is the dedupe marker for both channels (§6.10).
     if (await repo.existsForEventKey(event.userId, eventKey)) return;
 
-    // In-app is on by default: only an explicit `false` suppresses it (§6.10).
-    if ((await repo.channelEnabled(event.userId, 'inapp')) !== false) {
+    // Per-type × channel matrix (§6.10): the in-app bell row is written only when
+    // this type is routed to in-app. Defaults on; an explicit per-type override
+    // (bell-off / muted) suppresses it.
+    if (await repo.typeChannelEnabled(event.userId, event.type, 'inapp')) {
       await repo.insert({ userId: event.userId, type: event.type, title, body, payload });
     }
 

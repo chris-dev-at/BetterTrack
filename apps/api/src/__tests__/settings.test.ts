@@ -3,7 +3,7 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { notificationSettingsResponseSchema } from '@bettertrack/contracts';
+import { NOTIFICATION_TYPES, notificationSettingsResponseSchema } from '@bettertrack/contracts';
 
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import * as schema from '../data/schema';
@@ -43,10 +43,10 @@ function patchSettings(agent: Agent, body: Record<string, unknown>) {
     .send(body);
 }
 
-/** The `enabled` flag for a channel as the dispatcher's repo would read it. */
-async function channelRow(userId: string, channel: 'inapp' | 'email') {
+/** The stored `config` override map for a channel, as the dispatcher would read it. */
+async function channelConfig(userId: string, channel: 'inapp' | 'email') {
   const [row] = await harness.db
-    .select({ enabled: schema.notificationSettings.enabled })
+    .select({ config: schema.notificationSettings.config })
     .from(schema.notificationSettings)
     .where(
       and(
@@ -54,7 +54,7 @@ async function channelRow(userId: string, channel: 'inapp' | 'email') {
         eq(schema.notificationSettings.channel, channel),
       ),
     );
-  return row;
+  return row?.config as Record<string, boolean> | null | undefined;
 }
 
 describe('GET /api/v1/settings/notifications', () => {
@@ -63,63 +63,69 @@ describe('GET /api/v1/settings/notifications', () => {
     expect(res.status).toBe(401);
   });
 
-  it('defaults in-app on and email on when the user has no rows', async () => {
+  it('defaults every type to both channels on when the user has no rows', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
     const settings = await getSettings(agent);
-    expect(settings).toEqual({ inapp: { enabled: true }, email: { enabled: true } });
+    expect(Object.keys(settings!.matrix).sort()).toEqual([...NOTIFICATION_TYPES].sort());
+    for (const type of NOTIFICATION_TYPES) {
+      expect(settings!.matrix[type]).toEqual({ inapp: true, email: true });
+    }
   });
 });
 
 describe('PATCH /api/v1/settings/notifications', () => {
-  it('persists an email toggle; a follow-up GET reflects it', async () => {
+  it('persists a per-type routing override; a follow-up GET reflects it', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
-    const patched = await patchSettings(agent, { email: { enabled: false } });
+    // Route friend requests to email-only, leaving every other type at default.
+    const patched = await patchSettings(agent, {
+      matrix: { 'friend.request': { inapp: false, email: true } },
+    });
     expect(patched.status).toBe(200);
-    expect(patched.body).toEqual({ inapp: { enabled: true }, email: { enabled: false } });
+    expect(patched.body.matrix['friend.request']).toEqual({ inapp: false, email: true });
+    // Untouched types keep the default.
+    expect(patched.body.matrix['friend.accepted']).toEqual({ inapp: true, email: true });
 
     const settings = await getSettings(agent);
-    expect(settings?.email.enabled).toBe(false);
+    expect(settings!.matrix['friend.request']).toEqual({ inapp: false, email: true });
 
-    // Toggling back on is reflected too.
-    const reenabled = await patchSettings(agent, { email: { enabled: true } });
-    expect(reenabled.status).toBe(200);
-    expect((await getSettings(agent))?.email.enabled).toBe(true);
+    // Stored in the existing config jsonb (no new columns).
+    expect((await channelConfig(alice.id, 'inapp'))?.['friend.request']).toBe(false);
+    expect((await channelConfig(alice.id, 'email'))?.['friend.request']).toBe(true);
   });
 
-  it('disabling email is reflected in the settings row the dispatcher reads', async () => {
+  it('supports muting a type (both channels off) and merges independent updates', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
-    await patchSettings(agent, { email: { enabled: false } });
+    await patchSettings(agent, { matrix: { 'friend.request': { inapp: true, email: false } } });
+    await patchSettings(agent, { matrix: { 'portfolio.shared': { inapp: false, email: false } } });
 
-    // The dispatcher (email path) reads channelEnabled(user, 'email'): this row
-    // is exactly what makes it stop sending this user email.
-    const row = await channelRow(alice.id, 'email');
-    expect(row?.enabled).toBe(false);
+    const settings = await getSettings(agent);
+    // Both overrides persist independently; the first is not clobbered by the second.
+    expect(settings!.matrix['friend.request']).toEqual({ inapp: true, email: false });
+    expect(settings!.matrix['portfolio.shared']).toEqual({ inapp: false, email: false });
+    expect(settings!.matrix['friend.accepted']).toEqual({ inapp: true, email: true });
   });
 
-  it('cannot disable in-app — the attempt is ignored and it stays on', async () => {
+  it('rejects an empty body (no type routing)', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
-    const res = await patchSettings(agent, { inapp: { enabled: false } });
-    expect(res.status).toBe(200);
-    expect(res.body.inapp.enabled).toBe(true);
-
-    // No suppressing row is written, so the dispatcher's default (on) holds.
-    expect(await channelRow(alice.id, 'inapp')).toBeUndefined();
-    expect((await getSettings(agent))?.inapp.enabled).toBe(true);
+    expect((await patchSettings(agent, {})).status).toBe(400);
+    expect((await patchSettings(agent, { matrix: {} })).status).toBe(400);
   });
 
-  it('rejects an empty body (no channel toggle)', async () => {
+  it('rejects an unknown notification type', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
-    const res = await patchSettings(agent, {});
+    const res = await patchSettings(agent, {
+      matrix: { 'not.a.type': { inapp: true, email: true } },
+    });
     expect(res.status).toBe(400);
   });
 
@@ -128,15 +134,16 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
 
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
-    await patchSettings(bobAgent, { email: { enabled: false } });
+    await patchSettings(bobAgent, { matrix: { 'friend.request': { inapp: false, email: false } } });
 
-    // Alice's settings are untouched by Bob's write.
+    // Alice's matrix is untouched by Bob's write.
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
-    expect((await getSettings(aliceAgent))?.email.enabled).toBe(true);
-    expect(await channelRow(alice.id, 'email')).toBeUndefined();
+    const aliceSettings = await getSettings(aliceAgent);
+    expect(aliceSettings!.matrix['friend.request']).toEqual({ inapp: true, email: true });
+    expect(await channelConfig(alice.id, 'inapp')).toBeUndefined();
 
     // Bob still sees his own change.
-    expect((await getSettings(bobAgent))?.email.enabled).toBe(false);
-    expect((await channelRow(bob.id, 'email'))?.enabled).toBe(false);
+    const bobSettings = await getSettings(bobAgent);
+    expect(bobSettings!.matrix['friend.request']).toEqual({ inapp: false, email: false });
   });
 });
