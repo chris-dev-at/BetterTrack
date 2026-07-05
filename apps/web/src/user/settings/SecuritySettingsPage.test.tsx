@@ -133,34 +133,24 @@ describe('SecuritySettingsPage', () => {
     await waitFor(() => expect(disablePin).toHaveBeenCalled());
   });
 
-  test('the AFK auto-lock control only shows once a PIN is enabled', async () => {
+  test('the unlock-window control only shows once a PIN is enabled (#288)', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe(false));
     renderPage();
 
-    // With no PIN, the enable form is up but no AFK switch.
+    // With no PIN, the enable form is up but no window picker.
     expect(await screen.findByRole('button', { name: 'Enable PIN' })).toBeInTheDocument();
-    expect(screen.queryByRole('switch', { name: 'Auto-lock when idle' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Unlock window')).not.toBeInTheDocument();
   });
 
-  test('enabling AFK auto-lock sends the default idle timeout', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(true)); // pinLockIdleMinutes: null → off
-    vi.mocked(setPinLockIdleMinutes).mockResolvedValue({
-      ...makeMe(true),
-      pinLockIdleMinutes: 5,
-    });
-    const user = userEvent.setup();
+  test('the unlock window defaults to 10 minutes when unset (#288)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(true)); // pinLockIdleMinutes: null → default
     renderPage();
 
-    const toggle = await screen.findByRole('switch', { name: 'Auto-lock when idle' });
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
-    await user.click(toggle);
-
-    await waitFor(() => expect(setPinLockIdleMinutes).toHaveBeenCalledWith({ idleMinutes: 5 }));
-    // The idle-timeout picker appears once it's on.
-    expect(await screen.findByLabelText('Idle timeout')).toBeInTheDocument();
+    const select = (await screen.findByLabelText('Unlock window')) as HTMLSelectElement;
+    expect(select.value).toBe('10');
   });
 
-  test('changing the idle timeout persists the new value', async () => {
+  test('changing the unlock window persists the new value (#288)', async () => {
     vi.mocked(getMe).mockResolvedValue({ ...makeMe(true), pinLockIdleMinutes: 5 });
     vi.mocked(setPinLockIdleMinutes).mockResolvedValue({
       ...makeMe(true),
@@ -169,23 +159,11 @@ describe('SecuritySettingsPage', () => {
     const user = userEvent.setup();
     renderPage();
 
-    const select = await screen.findByLabelText('Idle timeout');
+    const select = (await screen.findByLabelText('Unlock window')) as HTMLSelectElement;
+    expect(select.value).toBe('5');
     await user.selectOptions(select, '30');
 
     await waitFor(() => expect(setPinLockIdleMinutes).toHaveBeenCalledWith({ idleMinutes: 30 }));
-  });
-
-  test('turning AFK auto-lock off clears the idle timeout', async () => {
-    vi.mocked(getMe).mockResolvedValue({ ...makeMe(true), pinLockIdleMinutes: 15 });
-    vi.mocked(setPinLockIdleMinutes).mockResolvedValue(makeMe(true));
-    const user = userEvent.setup();
-    renderPage();
-
-    const toggle = await screen.findByRole('switch', { name: 'Auto-lock when idle' });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await user.click(toggle);
-
-    await waitFor(() => expect(setPinLockIdleMinutes).toHaveBeenCalledWith({ idleMinutes: null }));
   });
 });
 

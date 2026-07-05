@@ -10,6 +10,9 @@ interface PinInputProps {
   length: number;
   value: string;
   onChange: (value: string) => void;
+  /** Fired when the last box is filled (all `length` digits present) — used by
+   *  the gate to auto-submit on the final digit (#288). */
+  onComplete?: (value: string) => void;
   autoFocus?: boolean;
   disabled?: boolean;
   hint?: string;
@@ -18,15 +21,22 @@ interface PinInputProps {
 /**
  * Segmented per-digit PIN entry (owner directive, issue #270): one box per
  * digit, auto-advance on input, backspace moves back, paste of a full PIN
- * distributes across boxes, and digits are masked to a dot shortly after
- * entry via component state — never `type="password"`, which is what makes
- * browsers offer a saved site password as autofill on a PIN field.
+ * distributes across boxes, and digits are masked shortly after entry — never
+ * `type="password"`, which is what makes browsers offer a saved site password
+ * as autofill on a PIN field.
+ *
+ * Masking is purely visual: the input `value` is ALWAYS the real digit (or
+ * empty), and a mask is drawn over it with CSS (`-webkit-text-security`). Writing
+ * a mask glyph into the value was the #288 bug — a non-digit `•` in a box whose
+ * `pattern="[0-9]*"` demands digits fails native numeric validation and blocks
+ * submit.
  */
 export function PinInput({
   label,
   length,
   value,
   onChange,
+  onComplete,
   autoFocus,
   disabled,
   hint,
@@ -75,9 +85,13 @@ export function PinInput({
   function handleChange(index: number, raw: string) {
     const digits = raw.replace(/\D/g, '');
     if (!digits) return;
-    setDigitAt(index, digits.slice(-1));
+    const next = value.split('');
+    next[index] = digits.slice(-1);
+    const joined = next.join('').slice(0, length);
+    onChange(joined);
     revealBriefly(index);
     if (index < length - 1) focusIndex(index + 1);
+    if (joined.length === length) onComplete?.(joined);
   }
 
   function handleKeyDown(index: number, e: KeyboardEvent<HTMLInputElement>) {
@@ -105,6 +119,7 @@ export function PinInput({
     onChange(digits);
     for (let i = 0; i < digits.length; i++) revealBriefly(i);
     focusIndex(Math.min(digits.length, length - 1));
+    if (digits.length === length) onComplete?.(digits);
   }
 
   return (
@@ -131,7 +146,10 @@ export function PinInput({
               maxLength={1}
               disabled={disabled}
               autoFocus={autoFocus && index === 0}
-              value={masked ? '•' : digit}
+              // The value is ALWAYS the real digit (or empty) so numeric
+              // validation never sees a mask glyph (#288); the dot is CSS-only.
+              value={digit}
+              data-masked={masked ? 'true' : undefined}
               onChange={(e) => handleChange(index, e.target.value)}
               onKeyDown={(e) => handleKeyDown(index, e)}
               onPaste={handlePaste}
@@ -141,6 +159,7 @@ export function PinInput({
                 'bg-neutral-950 ring-1 ring-inset ring-neutral-700',
                 'focus:outline-none focus:ring-2 focus:ring-sky-500',
                 'disabled:cursor-not-allowed disabled:text-neutral-500',
+                masked && '[-webkit-text-security:disc]',
               )}
             />
           );

@@ -7,9 +7,23 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { PinInput } from './PinInput';
 
 /** Thin controlled wrapper so tests can drive `value` like a real caller would. */
-function Harness({ length = 4 }: { length?: number }) {
+function Harness({
+  length = 4,
+  onComplete,
+}: {
+  length?: number;
+  onComplete?: (value: string) => void;
+}) {
   const [value, setValue] = useState('');
-  return <PinInput label="PIN" length={length} value={value} onChange={setValue} />;
+  return (
+    <PinInput
+      label="PIN"
+      length={length}
+      value={value}
+      onChange={setValue}
+      onComplete={onComplete}
+    />
+  );
 }
 
 afterEach(() => {
@@ -58,17 +72,55 @@ describe('PinInput', () => {
     expect(screen.getByLabelText('PIN digit 4')).toHaveValue('2');
   });
 
-  test('a digit shows briefly then masks to a dot', () => {
+  test('a digit shows briefly then masks — but the value stays the real digit (#288)', () => {
     vi.useFakeTimers();
     render(<Harness />);
 
-    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '4' } });
-    expect(screen.getByLabelText('PIN')).toHaveValue('4');
+    const box = screen.getByLabelText('PIN');
+    fireEvent.change(box, { target: { value: '4' } });
+    expect(box).toHaveValue('4');
+    expect(box).not.toHaveAttribute('data-masked');
 
     act(() => {
       vi.advanceTimersByTime(600);
     });
-    expect(screen.getByLabelText('PIN')).toHaveValue('•');
+    // Masking is visual only: the box carries a `data-masked` marker but its
+    // value is never a non-digit glyph, so numeric validation still passes.
+    expect(box).toHaveValue('4');
+    expect(box).toHaveAttribute('data-masked', 'true');
+  });
+
+  test('onComplete fires with the real digits once the last box is filled (#288)', () => {
+    const onComplete = vi.fn();
+    render(<Harness onComplete={onComplete} />);
+
+    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText('PIN digit 2'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('PIN digit 3'), { target: { value: '4' } });
+    expect(onComplete).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('PIN digit 4'), { target: { value: '2' } });
+
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledWith('4242');
+  });
+
+  test('every box submits a real digit — never a mask glyph — as its value (#288)', () => {
+    vi.useFakeTimers();
+    render(<Harness />);
+
+    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('PIN digit 2'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('PIN digit 3'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('PIN digit 4'), { target: { value: '4' } });
+
+    // Let every reveal timer lapse so all four boxes are in their masked state.
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    for (const box of screen.getAllByRole('textbox')) {
+      expect(box.getAttribute('value') ?? (box as HTMLInputElement).value).toMatch(/^[0-9]$/);
+    }
   });
 
   test('no box is a password field, password-ish name/id, or autofill-permissive', () => {

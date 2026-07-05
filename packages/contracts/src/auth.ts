@@ -86,33 +86,53 @@ export type PasswordResetComplete = z.infer<typeof passwordResetCompleteSchema>;
  * PIN gate (PROJECTPLAN.md §6.1, §5.5). A short numeric code the user enters to
  * resume an existing session; a correct PIN renews the session's 30-day window.
  * Stored argon2id-hashed server-side exactly like a password — never in the
- * clear. 4–10 digits: long enough to matter, short enough to type on every
- * app open.
+ * clear.
+ *
+ * New PINs are exactly {@link PIN_LENGTH} digits (owner directive, #288): the
+ * gate renders four boxes and auto-submits on the fourth digit. Verification
+ * stays deliberately length-agnostic (min {@link MIN_PIN_LENGTH}) so any PIN set
+ * before this rule still resolves against its stored hash.
  */
 export const MIN_PIN_LENGTH = 4;
 export const MAX_PIN_LENGTH = 10;
+/** New/changed PINs are exactly this many digits (#288). */
+export const PIN_LENGTH = 4;
 export const pinSchema = z
   .string()
   .regex(/^\d+$/, 'PIN must contain digits only')
   .min(MIN_PIN_LENGTH)
   .max(MAX_PIN_LENGTH);
 
-/** `POST /auth/pin/verify` — resume a session by entering the PIN. */
+/**
+ * `POST /auth/pin/verify` — resume a session by entering the PIN. Length-agnostic
+ * (4–10) so a PIN set before the exact-4-digit rule still verifies; the hash, not
+ * the contract, is the arbiter.
+ */
 export const pinVerifyRequestSchema = z.object({ pin: pinSchema }).strict();
 export type PinVerifyRequest = z.infer<typeof pinVerifyRequestSchema>;
 
-/** `PUT /auth/pin` — enable the PIN or change it to a new value. */
-export const setPinRequestSchema = z.object({ pin: pinSchema }).strict();
+/**
+ * `PUT /auth/pin` — enable the PIN or change it to a new value. New PINs are
+ * constrained to exactly {@link PIN_LENGTH} digits (#288).
+ */
+export const setPinRequestSchema = z
+  .object({ pin: z.string().regex(/^\d{4}$/, 'PIN must be exactly 4 digits') })
+  .strict();
 export type SetPinRequest = z.infer<typeof setPinRequestSchema>;
 
 /**
- * AFK auto-lock (PROJECTPLAN.md §6.1, §13.2 V2-P2). With the PIN on, the SPA can
- * re-show the lock overlay after this many minutes of inactivity. `null` = off,
- * the opt-in default: the lock is then only required on app (re)open, never on
- * idle. Bounds keep it usable — at least a minute, at most a day.
+ * PIN unlock-window duration (PROJECTPLAN.md §6.1, §13.2 V2-P2; owner directive
+ * #288). With the PIN on, every successful unlock (password login *or* PIN entry)
+ * opens a window of this many minutes during which the SPA never re-prompts —
+ * reloads, navigation and new tabs on the same session all pass freely. When the
+ * window elapses the gate re-engages (in place, or before any data on the next
+ * open). `null` means "use the default" ({@link DEFAULT_PIN_WINDOW_MINUTES},
+ * client-side). Bounds keep it usable — at least a minute, at most a day.
  */
 export const MIN_PIN_LOCK_IDLE_MINUTES = 1;
 export const MAX_PIN_LOCK_IDLE_MINUTES = 1440;
+/** Default unlock-window length when the user hasn't chosen one (#288). */
+export const DEFAULT_PIN_WINDOW_MINUTES = 10;
 export const pinLockIdleMinutesSchema = z
   .number()
   .int()
@@ -192,7 +212,7 @@ export const meResponseSchema = z.object({
   mustChangePassword: z.boolean(),
   /** Whether the account has the PIN gate turned on (§6.1). */
   pinEnabled: z.boolean(),
-  /** AFK auto-lock idle timeout in minutes; `null` = off (§6.1, §13.2 V2-P2). */
+  /** PIN unlock-window length in minutes; `null` = use the default (§6.1, #288). */
   pinLockIdleMinutes: z.number().int().nullable(),
   baseCurrency: z.string(),
   lastLoginAt: z.string().datetime().nullable(),

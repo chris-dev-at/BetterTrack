@@ -1,7 +1,6 @@
 import { useState } from 'react';
-import type { FormEvent } from 'react';
 
-import { MAX_PIN_LENGTH, MIN_PIN_LENGTH } from '@bettertrack/contracts';
+import { PIN_LENGTH } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
@@ -24,10 +23,12 @@ function pinErrorMessage(err: unknown): string {
 
 /**
  * PIN gate (PROJECTPLAN.md §6.1). While the account has the PIN enabled and the
- * current browsing session hasn't entered it yet, the app traps every route
- * here (mirroring the forced-password-change trap). A correct PIN releases the
- * trap and renews the session's 30-day window; five wrong PINs in a row drop
- * the session server-side and bounce the user to the full login screen. The
+ * current unlock window has lapsed, the app traps every route here (mirroring
+ * the forced-password-change trap). The PIN is exactly {@link PIN_LENGTH} digits
+ * and submits automatically once the fourth box is filled — no button press
+ * needed (#288). A correct PIN releases the trap and opens a fresh unlock window;
+ * a wrong PIN clears the boxes and refocuses the first; five wrong PINs in a row
+ * drop the session server-side and bounce the user to the full login screen. The
  * user can always sign out instead.
  */
 export function PinGate() {
@@ -36,17 +37,22 @@ export function PinGate() {
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Bumping this remounts the PinInput, which clears every box and refocuses the
+  // first — the reset after a wrong PIN.
+  const [attempt, setAttempt] = useState(0);
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
+  async function submit(value: string) {
+    // Guard against a double-fire (auto-complete + a stray Enter/click).
+    if (submitting) return;
     setError(null);
     setSubmitting(true);
     try {
       // Success releases the trap via the AuthContext.
-      await verifyPin({ pin });
+      await verifyPin({ pin: value });
     } catch (err) {
       setError(pinErrorMessage(err));
       setPin('');
+      setAttempt((n) => n + 1);
     } finally {
       setSubmitting(false);
     }
@@ -55,7 +61,10 @@ export function PinGate() {
   return (
     <AuthCard subtitle="Enter your PIN">
       <form
-        onSubmit={onSubmit}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (pin.length === PIN_LENGTH) void submit(pin);
+        }}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         <Alert tone="info">
@@ -64,16 +73,16 @@ export function PinGate() {
         </Alert>
         {error ? <Alert tone="error">{error}</Alert> : null}
         <PinInput
+          key={attempt}
           label="PIN"
-          length={MAX_PIN_LENGTH}
+          length={PIN_LENGTH}
           value={pin}
           onChange={setPin}
+          onComplete={(value) => void submit(value)}
+          disabled={submitting}
           autoFocus
-          hint={`${MIN_PIN_LENGTH}–${MAX_PIN_LENGTH} digits.`}
+          hint={`${PIN_LENGTH} digits.`}
         />
-        <Button type="submit" disabled={submitting || pin.length < MIN_PIN_LENGTH}>
-          {submitting ? 'Checking…' : 'Unlock'}
-        </Button>
         <Button type="button" variant="ghost" onClick={() => void logout()} disabled={submitting}>
           Sign out
         </Button>

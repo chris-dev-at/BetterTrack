@@ -46,14 +46,30 @@ function renderAt(path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // The unlock flag is in-memory per app mount; a fresh render is a fresh open.
+  // A fresh open must not inherit a prior unlock window.
   sessionStorage.clear();
+  localStorage.clear();
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  localStorage.clear();
 });
+
+/** Fill the four boxes with `pin`; the fourth digit auto-submits (no button). */
+function typeGatePin(pin: string) {
+  const labels = ['PIN', 'PIN digit 2', 'PIN digit 3', 'PIN digit 4'];
+  labels.forEach((label, i) => {
+    fireEvent.change(screen.getByLabelText(label), { target: { value: pin[i] } });
+  });
+}
+
+/** Drain queued microtasks so async auth transitions settle under fake timers. */
+const flush = () =>
+  act(async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
 
 test('a PIN-enabled account opening the app is trapped at the PIN gate', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
@@ -65,33 +81,53 @@ test('a PIN-enabled account opening the app is trapped at the PIN gate', async (
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 });
 
-test('a correct PIN releases the trap into the app', async () => {
+test('the gate renders exactly four boxes and auto-submits on the fourth digit (#288)', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
   vi.mocked(api.verifyPin).mockResolvedValue(pinUser);
 
-  const user = userEvent.setup();
   renderAt('/portfolio');
-
   await screen.findByText('Enter your PIN');
-  await user.type(screen.getByLabelText('PIN'), '4242');
-  await user.click(screen.getByRole('button', { name: 'Unlock' }));
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  // Exactly four boxes, and no separate Unlock button to press.
+  expect(screen.getAllByRole('textbox')).toHaveLength(4);
+  expect(screen.queryByRole('button', { name: 'Unlock' })).not.toBeInTheDocument();
+
+  typeGatePin('4242');
+  await flush();
+
+  // The submitted value is the real digits — never a mask glyph (#288).
   expect(api.verifyPin).toHaveBeenCalledWith({ pin: '4242' });
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 
-test('five wrong PINs fall back to the full login screen', async () => {
+test('a wrong PIN clears the boxes, refocuses the first, and shows the error (#288)', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+  vi.mocked(api.verifyPin).mockRejectedValue(new ApiError(401, 'INVALID_PIN', 'Incorrect PIN.'));
+
+  renderAt('/portfolio');
+  await screen.findByText('Enter your PIN');
+
+  typeGatePin('0000');
+  await flush();
+
+  expect(await screen.findByText(/incorrect pin/i)).toBeInTheDocument();
+  // Boxes cleared, first box focused, ready for another attempt.
+  const first = screen.getByLabelText('PIN');
+  expect(first).toHaveValue('');
+  expect(document.activeElement).toBe(first);
+});
+
+test('the fallback after too many wrong PINs returns to the full login screen', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
   vi.mocked(api.verifyPin).mockRejectedValue(
     new ApiError(401, 'PIN_FALLBACK_LOGIN', 'Too many incorrect PIN attempts.'),
   );
 
-  const user = userEvent.setup();
   renderAt('/portfolio');
-
   await screen.findByText('Enter your PIN');
-  await user.type(screen.getByLabelText('PIN'), '0000');
-  await user.click(screen.getByRole('button', { name: 'Unlock' }));
+
+  typeGatePin('0000');
+  await flush();
 
   // The session was dropped server-side → the guard routes to login.
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
@@ -111,23 +147,52 @@ test('signing out from the gate returns to login', async () => {
   expect(api.logout).toHaveBeenCalledOnce();
 });
 
-test('re-opening the app (reload) re-locks even after a correct PIN (#248 §2)', async () => {
+test('a reload inside the unlock window does not re-prompt (TTL, not per-open) (#288)', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
   vi.mocked(api.verifyPin).mockResolvedValue(pinUser);
 
-  const user = userEvent.setup();
   const { unmount } = renderAt('/portfolio');
 
   await screen.findByText('Enter your PIN');
-  await user.type(screen.getByLabelText('PIN'), '4242');
-  await user.click(screen.getByRole('button', { name: 'Unlock' }));
+  typeGatePin('4242');
+  await flush();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 
-  // Reload: the unlock state is in-memory only, so a fresh mount must show the
-  // gate again before any data renders — the bug was that it silently skipped it.
+  // Reload within the (default 10-minute) window: the persisted expiry is still
+  // in the future, so the app opens straight through — no gate.
   unmount();
   renderAt('/portfolio');
-  expect(await screen.findByText('Enter your PIN')).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
+});
+
+test('when the window expires the gate engages in place, and a reload also locks (#288)', async () => {
+  vi.useFakeTimers();
+  const windowUser = { ...pinUser, pinLockIdleMinutes: 1 };
+  vi.mocked(api.getMe).mockResolvedValue(windowUser);
+  vi.mocked(api.verifyPin).mockResolvedValue(windowUser);
+
+  const { unmount } = renderAt('/portfolio');
+  await flush();
+  expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
+
+  typeGatePin('4242');
+  await flush();
+  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+
+  // The window is absolute since unlock — after one minute the overlay engages
+  // even with the app sitting open and zero activity.
+  await act(async () => {
+    vi.advanceTimersByTime(61_000);
+  });
+  expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
+
+  // A reload past expiry likewise shows the gate before any data.
+  unmount();
+  renderAt('/portfolio');
+  await flush();
+  expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 });
 
@@ -138,38 +203,4 @@ test('with the PIN disabled the app never asks for a PIN', async () => {
 
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
-});
-
-test('AFK auto-lock re-shows the PIN after the idle timeout', async () => {
-  vi.useFakeTimers();
-  const idleUser = { ...pinUser, pinLockIdleMinutes: 1 };
-  vi.mocked(api.getMe).mockResolvedValue(idleUser);
-  vi.mocked(api.verifyPin).mockResolvedValue(idleUser);
-
-  // Fake timers don't mix with userEvent's inter-key delay, so drive the gate
-  // synchronously with fireEvent and drain microtasks between steps.
-  const flush = () =>
-    act(async () => {
-      for (let i = 0; i < 5; i++) await Promise.resolve();
-    });
-
-  renderAt('/portfolio');
-
-  await flush();
-  expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
-
-  fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '4' } });
-  fireEvent.change(screen.getByLabelText('PIN digit 2'), { target: { value: '2' } });
-  fireEvent.change(screen.getByLabelText('PIN digit 3'), { target: { value: '4' } });
-  fireEvent.change(screen.getByLabelText('PIN digit 4'), { target: { value: '2' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
-  await flush();
-  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
-
-  // One idle minute passes with zero activity → the lock returns.
-  await act(async () => {
-    vi.advanceTimersByTime(61_000);
-  });
-  expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 });

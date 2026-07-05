@@ -22,6 +22,7 @@ import type {
   TwoFactorEmailCodeRequest,
   TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
+import { DEFAULT_PIN_WINDOW_MINUTES } from '@bettertrack/contracts';
 
 import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
 import * as api from '../lib/userApi';
@@ -45,20 +46,77 @@ export type AuthStatus =
   | 'pin-required';
 
 /**
- * The WhatsApp-style app-lock (§6.1, §13.2 V2-P2): with a PIN enabled the SPA
- * must show the PIN screen every time the app is (re)opened, and optionally
- * after an idle timeout. "Unlocked" is therefore deliberately **in-memory only**
- * — it lives for the lifetime of *this* mounted `AuthProvider* and nothing else.
- * A page (re)load starts a fresh JS context in which this is `false`, so the
- * gate reappears before any data renders; a fresh password login (a stronger
- * factor) marks it satisfied so the user isn't gated twice in one breath. It is
- * never persisted to storage — persisting it is exactly the bug (#248 §2) where
- * a reload silently skipped the gate. The httpOnly session lifetime is untouched
- * by all of this: the lock gates the UI, not the session.
+ * The app-lock as an **unlock-window (TTL) model** (§6.1, §13.2 V2-P2; owner
+ * directive #288). With a PIN enabled, every successful unlock — a password login
+ * *or* entering the PIN at the gate — opens a fixed window (the user's configured
+ * minutes, default {@link DEFAULT_PIN_WINDOW_MINUTES}). Inside that window nothing
+ * ever prompts: reloads, navigation and new tabs on the same session all pass.
+ * When the window elapses the gate re-engages — in place while the app sits open,
+ * or before any data on the next open/refresh.
+ *
+ * The window is an **absolute expiry timestamp persisted in `localStorage`**,
+ * scoped to the user id. That is the whole point of the redesign and why the old
+ * timer was dead (see below): the source of truth is a timestamp read on every
+ * render/reload, not an in-memory flag (which #259 lost on reload) nor an
+ * activity-reset countdown fed by AuthContext's private `user` state (which a
+ * Settings change never refreshed, so the timer stayed disarmed all session).
+ *
+ * Persisting an *expiry* is not the #248 §2 bug (which persisted a permanent
+ * "unlocked=true" so a reload skipped the gate forever): once the timestamp is in
+ * the past the gate returns. The httpOnly session lifetime is untouched — the
+ * lock gates the UI, not the session.
  */
 
-/** Default idle events that count as "activity" and reset the AFK auto-lock timer. */
-const AFK_ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'] as const;
+/** `localStorage` key holding the current unlock window's absolute expiry. */
+const PIN_UNLOCK_STORAGE_KEY = 'bettertrack.pinUnlock';
+
+interface StoredUnlock {
+  /** User id the window belongs to — a different account never inherits it. */
+  u: string;
+  /** Absolute expiry, epoch ms. */
+  e: number;
+}
+
+/** Read the unlock-window expiry for this user, or null if none/other user. */
+function readUnlockExpiry(userId: string): number | null {
+  try {
+    const raw = localStorage.getItem(PIN_UNLOCK_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredUnlock>;
+    if (parsed.u !== userId || typeof parsed.e !== 'number') return null;
+    return parsed.e;
+  } catch {
+    // Storage unavailable/corrupt → treat as locked; the gate is the safe default.
+    return null;
+  }
+}
+
+/** Open a fresh unlock window for `me`, sized by their configured minutes. */
+function startUnlockWindow(me: MeResponse): void {
+  const minutes = me.pinLockIdleMinutes ?? DEFAULT_PIN_WINDOW_MINUTES;
+  const expiresAt = Date.now() + minutes * 60_000;
+  try {
+    localStorage.setItem(PIN_UNLOCK_STORAGE_KEY, JSON.stringify({ u: me.id, e: expiresAt }));
+  } catch {
+    // No persistence available — the app-open still succeeds; the window then
+    // simply can't outlive this JS context (a reload re-gates), which is safe.
+  }
+}
+
+/** Drop any unlock window (sign-out / session end). */
+function clearUnlockWindow(): void {
+  try {
+    localStorage.removeItem(PIN_UNLOCK_STORAGE_KEY);
+  } catch {
+    // Nothing to clear if storage is unavailable.
+  }
+}
+
+/** Whether `me` is inside a still-valid unlock window right now. */
+function isWithinUnlockWindow(me: MeResponse): boolean {
+  const expiry = readUnlockExpiry(me.id);
+  return expiry != null && expiry > Date.now();
+}
 
 /**
  * Result of a password login (§6.1, §13.2 V2-P5). A no-2FA account lands
@@ -117,31 +175,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
-  // Whether the PIN app-lock has been satisfied for this app-open (see the note
-  // above): in-memory only, reset on every fresh mount / reload and on sign-out.
-  const pinUnlockedRef = useRef(false);
-
   // Apply a resolved /auth/me-or-login user to local state, routing a
-  // forced-change account into its trap, and a PIN-gated account that hasn't
-  // been unlocked this app-open into the PIN gate.
+  // forced-change account into its trap, and a PIN-gated account whose unlock
+  // window has lapsed (or never opened) into the PIN gate. Note this only *reads*
+  // the window — a reload/refetch must never extend it; only an actual unlock
+  // (login / PIN entry) calls startUnlockWindow.
   const applyUser = useCallback((me: MeResponse) => {
     setUser(me);
     if (me.mustChangePassword) {
       setStatus('password-change-required');
-    } else if (me.pinEnabled && !pinUnlockedRef.current) {
+    } else if (me.pinEnabled && !isWithinUnlockWindow(me)) {
       setStatus('pin-required');
     } else {
       setStatus('authenticated');
     }
   }, []);
 
-  // Drops every trace of the signed-out user: the PIN-satisfied flag, the auth
-  // state itself, and the entire TanStack Query cache. Without the cache clear
-  // a subsequent login as a *different* account could briefly (or, for queries
+  // Drops every trace of the signed-out user: the unlock window, the auth state
+  // itself, and the entire TanStack Query cache. Without the cache clear a
+  // subsequent login as a *different* account could briefly (or, for queries
   // with a nonzero staleTime, not-so-briefly) render the previous user's
   // cached name/email/portfolio/notifications before a refetch overwrote it.
   const clearSession = useCallback(() => {
-    pinUnlockedRef.current = false;
+    clearUnlockWindow();
     setUser(null);
     setStatus('anonymous');
     queryClient.clear();
@@ -201,38 +257,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, [applyUser]);
 
-  // AFK auto-lock (§6.1, §13.2 V2-P2). While the app is unlocked and the account
-  // has both the PIN on and an idle timeout configured, re-arm the PIN gate
-  // after N minutes without user activity. In-memory like the unlock flag above,
-  // so it only ever gates the UI — the session is untouched. Disabled (no timer)
-  // when the PIN is off or the timeout is null (the opt-in default).
-  const idleMinutes = user?.pinLockIdleMinutes ?? null;
+  // Engage the gate the moment the unlock window expires while the app sits open
+  // (§6.1, §13.2 V2-P2; #288). The window is absolute — set once at unlock, never
+  // extended by activity — so this is a single timer to its stored expiry, not an
+  // activity-reset countdown. Entering the PIN opens a new window, flips status
+  // back to `authenticated`, and re-runs this effect to arm the next timer.
   const pinEnabled = user?.pinEnabled ?? false;
+  const userId = user?.id ?? null;
   useEffect(() => {
-    if (status !== 'authenticated' || !pinEnabled || idleMinutes == null || idleMinutes <= 0) {
+    if (status !== 'authenticated' || !pinEnabled || userId == null) return;
+    const expiry = readUnlockExpiry(userId);
+    if (expiry == null) return;
+    const lock = () => setStatus('pin-required');
+    const remaining = expiry - Date.now();
+    if (remaining <= 0) {
+      lock();
       return;
     }
-    const idleMs = idleMinutes * 60_000;
-    let timer: ReturnType<typeof setTimeout>;
-    const lock = () => {
-      pinUnlockedRef.current = false;
-      setStatus('pin-required');
-    };
-    const reset = () => {
-      clearTimeout(timer);
-      timer = setTimeout(lock, idleMs);
-    };
-    for (const event of AFK_ACTIVITY_EVENTS) {
-      window.addEventListener(event, reset, { passive: true });
-    }
-    reset();
-    return () => {
-      clearTimeout(timer);
-      for (const event of AFK_ACTIVITY_EVENTS) {
-        window.removeEventListener(event, reset);
-      }
-    };
-  }, [status, pinEnabled, idleMinutes]);
+    const timer = setTimeout(lock, remaining);
+    return () => clearTimeout(timer);
+  }, [status, pinEnabled, userId]);
 
   const login = useCallback(
     async (credentials: LoginRequest): Promise<LoginOutcome> => {
@@ -249,9 +293,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.logout().catch(() => undefined);
         throw new AdminAccountError();
       }
-      // A fresh password login is a stronger factor than the PIN — don't gate
-      // the user again in the same breath.
-      pinUnlockedRef.current = true;
+      // A fresh password login is a stronger factor than the PIN — open a fresh
+      // unlock window so the user isn't gated again in the same breath.
+      startUnlockWindow(me);
       applyUser(me);
       return { status: 'authenticated' };
     },
@@ -267,8 +311,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.logout().catch(() => undefined);
         throw new AdminAccountError();
       }
-      // Verifying a second factor completed a fresh login — outranks the PIN gate.
-      pinUnlockedRef.current = true;
+      // Verifying a second factor completed a fresh login — opens a fresh window.
+      startUnlockWindow(me);
       applyUser(me);
     },
     [applyUser],
@@ -283,8 +327,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: AcceptInviteRequest) => {
       // A fresh invite account is created active with no forced change, so this
       // lands authenticated; applyUser keeps it correct either way.
-      pinUnlockedRef.current = true;
-      applyUser(await api.acceptInvite(body));
+      const me = await api.acceptInvite(body);
+      startUnlockWindow(me);
+      applyUser(me);
     },
     [applyUser],
   );
@@ -292,9 +337,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const completePasswordReset = useCallback(
     async (body: PasswordResetComplete) => {
       // The reset mints a fresh session server-side and returns the usable user,
-      // so this lands authenticated; a fresh credential outranks the PIN gate.
-      pinUnlockedRef.current = true;
-      applyUser(await api.completePasswordReset(body));
+      // so this lands authenticated; a fresh credential opens a fresh window.
+      const me = await api.completePasswordReset(body);
+      startUnlockWindow(me);
+      applyUser(me);
     },
     [applyUser],
   );
@@ -302,9 +348,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const changePassword = useCallback(
     async (body: ChangePasswordRequest) => {
       // Success rotates the session and clears the flag — the response is a
-      // fresh, usable user, releasing the forced-change trap.
-      pinUnlockedRef.current = true;
-      applyUser(await api.changePassword(body));
+      // fresh, usable user, releasing the forced-change trap and opening a window.
+      const me = await api.changePassword(body);
+      startUnlockWindow(me);
+      applyUser(me);
     },
     [applyUser],
   );
@@ -313,7 +360,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: PinVerifyRequest) => {
       try {
         const me = await api.verifyPin(body);
-        pinUnlockedRef.current = true;
+        // A correct PIN opens the next unlock window.
+        startUnlockWindow(me);
         applyUser(me);
       } catch (err) {
         // Too many wrong PINs: the server dropped the session, so fall all the
