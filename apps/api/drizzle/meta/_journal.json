@@ -78,6 +78,13 @@
       "when": 1783252389135,
       "tag": "0010_password_reset_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783254751711,
+      "tag": "0011_fantastic_anthem",
+      "breakpoints": true
     }
   ]
 }

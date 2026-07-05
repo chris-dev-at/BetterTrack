@@ -11,6 +11,8 @@ import {
   setPinLockRequestSchema,
   setPinRequestSchema,
   tokenParamSchema,
+  twoFactorConfirmRequestSchema,
+  twoFactorDisableRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type LoginRequest,
@@ -20,11 +22,13 @@ import {
   type RegisterRequest,
   type SetPinLockRequest,
   type SetPinRequest,
+  type TwoFactorConfirmRequest,
+  type TwoFactorDisableRequest,
 } from '@bettertrack/contracts';
 
 import { unauthorized } from '../../errors';
 import { clearSessionCookie, setSessionCookie } from '../cookies';
-import { requireAuth } from '../middleware/session';
+import { requireAuth, requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
@@ -127,6 +131,44 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       res.json(toMeResponseFromRow(user));
     },
   );
+
+  // ── Two-factor auth (TOTP) — backend core (§6.1, §13.2 V2-P5) ───────────────
+  // All 2FA endpoints are user-kind only: `requireUser` 401s the anonymous and
+  // 403s admin-kind sessions (§3, §5.5). The login-time challenge and Settings
+  // UI ship in separate V2-P5 issues; this exposes enroll/confirm/disable/status
+  // plus recovery-code regeneration.
+  router.post('/2fa/enroll', requireUser, async (req, res) => {
+    res.json(await ctx.twoFactor.enroll(req.authUser!.id, req.ip));
+  });
+
+  router.post(
+    '/2fa/confirm',
+    requireUser,
+    validateBody(twoFactorConfirmRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorConfirmRequest;
+      res.json(await ctx.twoFactor.confirm(req.authUser!.id, body.code, req.ip));
+    },
+  );
+
+  router.post(
+    '/2fa/disable',
+    requireUser,
+    validateBody(twoFactorDisableRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as TwoFactorDisableRequest;
+      await ctx.twoFactor.disable(req.authUser!.id, body.code, req.ip);
+      res.json({ ok: true });
+    },
+  );
+
+  router.get('/2fa/status', requireUser, async (req, res) => {
+    res.json(await ctx.twoFactor.status(req.authUser!.id));
+  });
+
+  router.post('/2fa/recovery-codes', requireUser, async (req, res) => {
+    res.json(await ctx.twoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
+  });
 
   router.get('/invite/:token', validateParams(tokenParamSchema), async (req, res) => {
     const { token } = req.valid?.params as { token: string };

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { z } from 'zod';
 
 import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
@@ -63,6 +65,16 @@ const envSchema = z.object({
   // ladder as the steady-state limiter.
   RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(60),
+
+  // ── Two-factor auth (§6.1, §13.2 V2-P5) ────────────────────────────────────
+  // Issuer label baked into the `otpauth://` URI so the code shows up as
+  // "BetterTrack (user@…)" in an authenticator app. TOTP_ENCRYPTION_KEY is the
+  // secret that encrypts each user's TOTP secret at rest (AES-256-GCM); any
+  // length is accepted and folded to a 32-byte key. When unset it is DERIVED
+  // from SESSION_SECRET so a stock deploy still encrypts — set a dedicated value
+  // to rotate 2FA encryption independently of session signing.
+  TOTP_ISSUER: z.string().min(1).default('BetterTrack'),
+  TOTP_ENCRYPTION_KEY: z.string().min(1).optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -207,6 +219,13 @@ export interface AppConfig {
     maxConcurrency: number;
     minSpacingMs: number;
   };
+  /** Two-factor auth (§6.1, §13.2 V2-P5). */
+  twoFactor: {
+    /** Issuer label embedded in the `otpauth://` provisioning URI. */
+    issuer: string;
+    /** 32-byte AES-256-GCM key encrypting each user's TOTP secret at rest. */
+    encryptionKey: Buffer;
+  };
   /**
    * Progressive rate limiting (PROJECTPLAN.md §10). Each schedule pairs a
    * generous steady-state allowance with an escalating cooldown ladder; the
@@ -264,6 +283,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   // cookie is actually accepted by the browser.
   const cookieSecure = topology.apiOrigin.startsWith('https://');
 
+  // Fold the configured key material (or, when unset, the session secret under a
+  // domain-separated label) into a fixed 32-byte AES-256-GCM key. Deriving from
+  // SESSION_SECRET keeps a stock deploy encrypting without extra config; a
+  // dedicated TOTP_ENCRYPTION_KEY rotates 2FA encryption on its own.
+  const twoFactorKeyMaterial = e.TOTP_ENCRYPTION_KEY ?? `bt-2fa:${e.SESSION_SECRET}`;
+  const twoFactorEncryptionKey = createHash('sha256').update(twoFactorKeyMaterial).digest();
+
   return {
     nodeEnv: e.NODE_ENV,
     isProduction,
@@ -298,6 +324,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providers: {
       maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,
       minSpacingMs: e.PROVIDER_MIN_SPACING_MS,
+    },
+    twoFactor: {
+      issuer: e.TOTP_ISSUER,
+      encryptionKey: twoFactorEncryptionKey,
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far
     // under the steady-state `limit`; the first over-limit is a short cooldown

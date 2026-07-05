@@ -51,6 +51,16 @@ export const users = pgTable(
     // the PIN lock is then only required on app (re)open, never on idle. The UI
     // lock this drives never touches session lifetime — it gates the SPA only.
     pinLockIdleMinutes: integer('pin_lock_idle_minutes'),
+    // Two-factor auth (§6.1, §13.2 V2-P5). The TOTP secret is stored ENCRYPTED
+    // at rest (AES-256-GCM) — never plaintext; NULL = not enrolled. The secret
+    // and `twoFactorEnabled` move together: enrollment writes the secret with the
+    // flag still false (provisional), and a valid TOTP code confirms it — flipping
+    // the flag on and stamping `twoFactorConfirmedAt`. Recovery codes live in the
+    // `two_factor_recovery_codes` child table. All 2FA state cascades away with
+    // the user; user-kind accounts only.
+    twoFactorSecret: text('two_factor_secret'),
+    twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
+    twoFactorConfirmedAt: timestamp('two_factor_confirmed_at', { withTimezone: true }),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -133,6 +143,30 @@ export const passwordResetTokens = pgTable(
   (t) => [
     uniqueIndex('password_reset_tokens_token_hash_unique').on(t.tokenHash),
     index('password_reset_tokens_user_idx').on(t.userId),
+  ],
+);
+
+/**
+ * Single-use 2FA recovery codes (PROJECTPLAN.md §6.1, §13.2 V2-P5). Only the
+ * SHA-256 `code_hash` is stored — the plaintext codes are shown once at
+ * generation and never persisted. A code is consumed by stamping `used_at`
+ * (single-use); regenerating wipes the whole set and issues a fresh batch, and
+ * disabling 2FA clears them entirely. Cascades away with the owning user.
+ */
+export const twoFactorRecoveryCodes = pgTable(
+  'two_factor_recovery_codes',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    codeHash: text('code_hash').notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('two_factor_recovery_codes_hash_unique').on(t.codeHash),
+    index('two_factor_recovery_codes_user_idx').on(t.userId),
   ],
 );
 
@@ -495,6 +529,7 @@ export type NewUserRow = typeof users.$inferInsert;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type PasswordResetTokenRow = typeof passwordResetTokens.$inferSelect;
+export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
@@ -537,6 +572,7 @@ export const schema = {
   apiKeys,
   invites,
   passwordResetTokens,
+  twoFactorRecoveryCodes,
   auditLog,
   assets,
   priceHistory,
