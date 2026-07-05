@@ -429,6 +429,167 @@ describe('allocateBudget — validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// At-least-one-share mode (opt-in, §13.2 V2-P7)
+// ---------------------------------------------------------------------------
+
+describe('allocateBudget — atLeastOneShare (opt-in force-single mode)', () => {
+  /** The owner's €240-share-on-€1000-budget case: a 20 % slice (200 €) cannot afford one 240 € share. */
+  const case240 = (atLeastOneShare: boolean): AllocationInput => ({
+    budgetEur: 1000,
+    mode: 'whole',
+    atLeastOneShare,
+    positions: [pos('exp', 0.2, 240), pos('cheap', 0.8, 10)],
+  });
+
+  it('ON: the €240 position gets exactly 1 share and the remainder rebalances onto the rest', () => {
+    const res = allocateBudget(case240(true));
+
+    expect(line(res, 'exp').qty).toBe(1);
+    expect(line(res, 'exp').costEur).toBe(240);
+    expect(line(res, 'exp').note).toBeUndefined();
+    // Remainder 760 € re-targets CHEAP (the whole rest weight): 76 × 10 €.
+    expect(line(res, 'cheap').qty).toBe(76);
+    expect(res.totalCostEur).toBe(1000);
+    expect(res.leftoverEur).toBe(0);
+    expect(res.warnings).toEqual([]);
+  });
+
+  it('OFF: the €240 position stays at 0 with its unreachable note (unchanged behavior)', () => {
+    const res = allocateBudget(case240(false));
+
+    expect(line(res, 'exp').qty).toBe(0);
+    expect(line(res, 'exp').note).toBeTruthy();
+    expect(line(res, 'cheap').qty).toBe(80);
+    expect(res.totalCostEur).toBe(800);
+    expect(res.leftoverEur).toBe(200);
+  });
+
+  it('flag false and flag absent produce identical results (default OFF)', () => {
+    const { atLeastOneShare: _off, ...withoutFlag } = case240(false);
+    expect(allocateBudget(case240(false))).toEqual(allocateBudget(withoutFlag));
+    expect(allocateBudget({ ...workedExample('whole'), atLeastOneShare: false })).toEqual(
+      allocateBudget(workedExample('whole')),
+    );
+  });
+
+  it('is ignored in fractional mode (out of scope): results match the flag-less run', () => {
+    expect(allocateBudget({ ...workedExample('fractional'), atLeastOneShare: true })).toEqual(
+      allocateBudget(workedExample('fractional')),
+    );
+  });
+
+  it('ON: §6.7 worked example — GOOGL gets its single share, BAYN/NVDA refloor on the remainder', () => {
+    const res = allocateBudget({ ...workedExample('whole'), atLeastOneShare: true });
+
+    expect(line(res, 'googl').qty).toBe(1);
+    expect(line(res, 'googl').costEur).toBe(140);
+    // Remainder 860 € rebalances 30:60 → BAYN ~286.67 € (11 × 25 €), NVDA ~573.33 € (3 × 150 €).
+    expect(line(res, 'bayn').qty).toBe(11);
+    expect(line(res, 'nvda').qty).toBe(3);
+    expect(res.totalCostEur).toBe(865);
+    expect(res.leftoverEur).toBe(135);
+    expect(res.warnings).toEqual([]); // every position reached — nothing left to flag
+  });
+
+  it('ON: unaffordable candidates are dropped, never forced past the budget (overshoot guard)', () => {
+    // Candidates by weight: a (.4 @ 450 €), d (.3 @ 480 €), e (.05 @ 45 €); f floors normally.
+    // a fits (450 ≤ 500); d would overshoot (930 > 500) and is dropped; the
+    // cheaper, lower-weight e still fits (495 ≤ 500) — drop the least-affordable, never blow B.
+    const res = allocateBudget({
+      budgetEur: 500,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('a', 0.4, 450), pos('d', 0.3, 480), pos('e', 0.05, 45), pos('f', 0.25, 10)],
+    });
+
+    expect(line(res, 'a').qty).toBe(1);
+    expect(line(res, 'd').qty).toBe(0);
+    expect(line(res, 'd').note).toBeTruthy();
+    expect(line(res, 'd').unbuyable).toBeUndefined(); // 480 ≤ 500: unaffordable now, not unbuyable
+    expect(line(res, 'e').qty).toBe(1);
+    expect(res.totalCostEur).toBe(495);
+    expect(res.totalCostEur).toBeLessThanOrEqual(500);
+    expect(res.leftoverEur).toBe(5);
+  });
+
+  it('ON: when not all candidates fit, the larger target weight wins regardless of input order', () => {
+    // g and h cost the same 300 €; only one fits the 500 € budget after floors
+    // reserve nothing (both are under-slice). h is listed second but weighs more.
+    const res = allocateBudget({
+      budgetEur: 500,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('g', 0.2, 300), pos('h', 0.3, 300), pos('f', 0.5, 10)],
+    });
+
+    expect(line(res, 'h').qty).toBe(1);
+    expect(line(res, 'g').qty).toBe(0);
+    expect(res.totalCostEur).toBeLessThanOrEqual(500);
+  });
+
+  it('ON: a share price above the whole budget stays unbuyable — never forced', () => {
+    const res = allocateBudget({
+      budgetEur: 300,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('a', 0.3, 100), pos('z', 0.2, 400), pos('c', 0.5, 20)],
+    });
+
+    expect(line(res, 'a').qty).toBe(1); // forced: 90 € slice < 100 € share
+    const z = line(res, 'z');
+    expect(z.qty).toBe(0);
+    expect(z.unbuyable).toBe(true);
+    expect(z.note).toBeTruthy();
+    expect(line(res, 'c').qty).toBe(7); // remainder 200 € → c's rebalanced ~142.86 € slice → 7 × 20 €
+    expect(res.totalCostEur).toBe(240);
+    expect(res.leftoverEur).toBe(60);
+  });
+
+  it('ON: the remainder splits across the rest proportionally to their weights', () => {
+    const res = allocateBudget({
+      budgetEur: 1000,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('exp', 0.1, 340), pos('x', 0.6, 1), pos('y', 0.3, 1)],
+    });
+
+    expect(line(res, 'exp').qty).toBe(1);
+    // Remainder 660 € splits 0.6 : 0.3 ⇒ 440 € and 220 € at 1 € per share.
+    expect(line(res, 'x').qty).toBe(440);
+    expect(line(res, 'y').qty).toBe(220);
+    expect(res.totalCostEur).toBe(1000);
+    expect(res.leftoverEur).toBe(0);
+  });
+
+  it('ON: a forced position gets exactly one share, even with plenty of leftover', () => {
+    const res = allocateBudget({
+      budgetEur: 1000,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('exp', 0.05, 60), pos('x', 0.95, 500)],
+    });
+
+    expect(line(res, 'exp').qty).toBe(1); // never topped up from the 440 € leftover
+    expect(line(res, 'x').qty).toBe(1);
+    expect(res.totalCostEur).toBe(560);
+    expect(res.leftoverEur).toBe(440);
+  });
+
+  it('ON: a zero-weight position is never forced', () => {
+    const res = allocateBudget({
+      budgetEur: 100,
+      mode: 'whole',
+      atLeastOneShare: true,
+      positions: [pos('x', 1, 30), pos('z', 0, 80)],
+    });
+
+    expect(line(res, 'x').qty).toBe(3);
+    expect(line(res, 'z').qty).toBe(0);
+    expect(line(res, 'z').note).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Property-style: never overshoot, in both modes, across many random baskets
 // ---------------------------------------------------------------------------
 
@@ -479,6 +640,42 @@ describe('allocateBudget — never-overshoot property', () => {
         expect(l.costEur).toBeCloseTo(l.qty * positions[j]!.priceEur, 8);
         if (l.qty === 0 && positions[j]!.weight > 0) {
           expect(l.note).toBeTruthy();
+        }
+        sumCost += l.costEur;
+      }
+      expect(sumCost).toBeCloseTo(res.totalCostEur, 8);
+    }
+  });
+
+  it('holds the invariants with atLeastOneShare ON, granting singles whenever affordable (200 baskets)', () => {
+    const rnd = lcg(1337);
+
+    for (let i = 0; i < 200; i += 1) {
+      const n = 1 + Math.floor(rnd() * 6);
+      const raw = Array.from({ length: n }, () => 0.05 + rnd());
+      const rawSum = raw.reduce((a, b) => a + b, 0);
+      const positions = raw.map((w, j) => pos(`a${j}`, w / rawSum, 0.5 + rnd() * 400));
+      const budgetEur = rnd() * 2000;
+
+      const res = allocateBudget({ budgetEur, mode: 'whole', atLeastOneShare: true, positions });
+
+      // The hard invariant survives the force pass — never overshoot.
+      expect(res.totalCostEur).toBeLessThanOrEqual(budgetEur);
+      expect(res.leftoverEur).toBeGreaterThanOrEqual(0);
+      expect(res.totalCostEur + res.leftoverEur).toBeCloseTo(budgetEur, 6);
+
+      let sumCost = 0;
+      for (const [j, l] of res.positions.entries()) {
+        const p = positions[j]!;
+        expect(Number.isInteger(l.qty)).toBe(true);
+        expect(l.costEur).toBeCloseTo(l.qty * p.priceEur, 8);
+        // A clearly under-slice position left at 0 must have been unaffordable
+        // at its turn — otherwise the force pass would have granted its share
+        // (the total only grows after it, so "affordable at the end" implies
+        // "affordable then").
+        const sliceShares = (budgetEur * p.weight) / p.priceEur;
+        if (l.qty === 0 && p.weight > 0 && sliceShares < 0.999) {
+          expect(p.priceEur).toBeGreaterThan(res.leftoverEur - 1e-6);
         }
         sumCost += l.costEur;
       }

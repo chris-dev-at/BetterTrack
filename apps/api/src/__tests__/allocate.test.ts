@@ -232,6 +232,63 @@ describe('POST /api/v1/conglomerates/:id/allocate', () => {
     expect(body.positions[0]!.qty).toBe(4); // 100 € / 25 € = 4 whole shares.
   });
 
+  it('honors atLeastOneShare end-to-end: the €240-share-on-€1000 case buys 1 ON, 0 OFF/absent', async () => {
+    // EXP 20 % @ 240 €: its 200 € slice cannot afford one share; CHEAP 80 % @ 10 €.
+    const prices: Record<string, number> = { EXP: 240, CHEAP: 10 };
+    const { h, agent } = await harnessWith((ref) => cachedQuote(prices[ref.providerRef]!));
+
+    const exp = await seedAsset(h, { symbol: 'EXP', providerRef: 'EXP' });
+    const cheap = await seedAsset(h, { symbol: 'CHEAP', providerRef: 'CHEAP' });
+    const id = await seedConglomerate(agent, 'Min one share', [
+      { assetId: exp.id, weightPct: 20 },
+      { assetId: cheap.id, weightPct: 80 },
+    ]);
+
+    const on = await agent
+      .post(`/api/v1/conglomerates/${id}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole', atLeastOneShare: true });
+    expect(on.status).toBe(200);
+    expect(allocateResponseSchema.safeParse(on.body).success).toBe(true);
+    const onBody = on.body as AllocateResponse;
+    const onById = new Map(onBody.positions.map((p) => [p.assetId, p]));
+    expect(onById.get(exp.id)!.qty).toBe(1);
+    expect(onById.get(exp.id)!.costEur).toBeCloseTo(240, 9);
+    // Remainder 760 € rebalances onto CHEAP: 76 × 10 €. Never overshoot.
+    expect(onById.get(cheap.id)!.qty).toBe(76);
+    expect(onBody.totalCostEur).toBeCloseTo(1000, 9);
+    expect(onBody.totalCostEur).toBeLessThanOrEqual(1000);
+
+    const off = await agent
+      .post(`/api/v1/conglomerates/${id}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole', atLeastOneShare: false });
+    expect(off.status).toBe(200);
+    const offBody = off.body as AllocateResponse;
+    expect(offBody.positions.find((p) => p.assetId === exp.id)!.qty).toBe(0);
+    expect(offBody.totalCostEur).toBeCloseTo(800, 9);
+
+    // Absent flag = default OFF: identical to the explicit-false run.
+    const absent = await agent
+      .post(`/api/v1/conglomerates/${id}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole' });
+    expect(absent.status).toBe(200);
+    expect(absent.body).toEqual(off.body);
+  });
+
+  it('400s a non-boolean atLeastOneShare', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${MISSING_ID}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'whole', atLeastOneShare: 'yes' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
   it("404s another user's conglomerate rather than 403/500 (no IDOR)", async () => {
     const marketData = createStubMarketData({ quote: () => cachedQuote(25) });
     const h = await createTestApp({ marketData });
