@@ -64,6 +64,20 @@ beforeEach(() => {
   // Default: no series → the link assist stays inert, so the existing
   // amount/quantity specs behave exactly as before. Linking specs override this.
   mockDailyCloses([]);
+  vi.mocked(portfolioApi.previewCash).mockResolvedValue({
+    availableEur: 1000,
+    afterEur: 900,
+    sufficient: true,
+    shortfallEur: 0,
+  });
+  vi.mocked(portfolioApi.updatePortfolio).mockResolvedValue({
+    id: 'p1',
+    name: 'Main',
+    visibility: 'private',
+    sortOrder: 0,
+    isDefault: true,
+    defaultPayFromCash: false,
+  });
 });
 
 // --- Pure derivation --------------------------------------------------------
@@ -413,5 +427,123 @@ describe('TransactionDialog — linked date ↔ price fields', () => {
       ).not.toBeInTheDocument(),
     );
     expect(assetApi.getAssetDailyCloses).not.toHaveBeenCalled();
+  });
+});
+
+// --- Dialog: cash-linked buy/sell (§14, #220) --------------------------------
+
+describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
+  test('the checkbox is unchecked by default, labeled for a buy, and shows the cash-after preview', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    const checkbox = screen.getByRole('checkbox', { name: 'Pay from cash balance' });
+    expect(checkbox).not.toBeChecked();
+
+    await user.type(screen.getByLabelText(/quantity for btc/i), '1');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(checkbox);
+
+    expect(await screen.findByText(/Available/)).toBeInTheDocument();
+    expect(vi.mocked(portfolioApi.previewCash)).toHaveBeenCalledWith(
+      'p1',
+      { kind: 'buy', amountEur: 100 },
+      expect.anything(),
+    );
+  });
+
+  test('switching to sell relabels the checkbox to "Add proceeds to cash balance"', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.selectOptions(screen.getByLabelText(/side for btc/i), 'sell');
+    expect(
+      screen.getByRole('checkbox', { name: 'Add proceeds to cash balance' }),
+    ).toBeInTheDocument();
+  });
+
+  test('no cash-link option for a bulk prefill or an edit', async () => {
+    renderDialog({ asset: undefined, prefill: [{ asset: BTC, quantity: 1, price: 42 }] });
+    expect(
+      screen.queryByRole('checkbox', { name: /pay from cash|add proceeds/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('preselects the checkbox from the sticky per-portfolio default, still shown and uncheckable', async () => {
+    const user = userEvent.setup();
+    renderDialog({ defaultPayFromCash: true });
+
+    const checkbox = screen.getByRole('checkbox', { name: 'Pay from cash balance' });
+    expect(checkbox).toBeChecked();
+    await user.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+  });
+
+  test('an amount exceeding available cash blocks Record and surfaces the shortfall', async () => {
+    vi.mocked(portfolioApi.previewCash).mockResolvedValue({
+      availableEur: 50,
+      afterEur: -50,
+      sufficient: false,
+      shortfallEur: 50,
+    });
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.type(screen.getByLabelText(/quantity for btc/i), '1');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /^record$/i })).toBeDisabled());
+    expect(screen.getByText(/short/i)).toBeInTheDocument();
+    expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
+  });
+
+  test('submits payFromCash on a buy and persists the new sticky default', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog({ defaultPayFromCash: false });
+
+    await user.type(screen.getByLabelText(/quantity for btc/i), '1');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
+    await waitFor(() => expect(screen.getByText(/Available/)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /^record$/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
+    expect((inputs as TransactionInput[])[0]).toMatchObject({ payFromCash: true });
+    await waitFor(() =>
+      expect(portfolioApi.updatePortfolio).toHaveBeenCalledWith('p1', { defaultPayFromCash: true }),
+    );
+  });
+
+  test('submits addProceedsToCash on a sell', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.selectOptions(screen.getByLabelText(/side for btc/i), 'sell');
+    await user.type(screen.getByLabelText(/quantity for btc/i), '1');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('checkbox', { name: 'Add proceeds to cash balance' }));
+    await waitFor(() => expect(screen.getByText(/Available/)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /^record$/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
+    expect((inputs as TransactionInput[])[0]).toMatchObject({ addProceedsToCash: true });
+  });
+
+  test('not persisting the sticky default when the checkbox matches it already', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog({ defaultPayFromCash: false });
+
+    await user.type(screen.getByLabelText(/quantity for btc/i), '1');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('button', { name: /^record$/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    expect(portfolioApi.updatePortfolio).not.toHaveBeenCalled();
   });
 });
