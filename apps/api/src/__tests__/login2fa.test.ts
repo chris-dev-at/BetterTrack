@@ -222,6 +222,82 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
     expect(blocked.status).toBe(429);
   });
 
+  it('keeps the per-account 2FA lock across a fresh password re-login (§10)', async () => {
+    const { user, secret } = await setup();
+    const first = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+
+    // Trip the per-account 2FA cooldown on the first challenge.
+    let locked = false;
+    for (let i = 0; i < 12; i += 1) {
+      const res = await request(harness.app)
+        .post('/api/v1/auth/2fa/verify')
+        .set(...XRW)
+        .send({ pendingToken: first.pendingToken, code: '000000' });
+      if (res.status === 429) {
+        locked = true;
+        break;
+      }
+      expect(res.status).toBe(401);
+    }
+    expect(locked).toBe(true);
+
+    // Re-submit the correct password. This must NOT reset the 2FA throttle —
+    // the correct password is exactly what a code brute-forcer holds, so a
+    // fresh pending token cannot be a way to shed the escalation lock.
+    const second = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+    expect(second.pendingToken).not.toBe(first.pendingToken);
+
+    // The account is still cooling down, so even a correct TOTP code on the
+    // brand-new pending token is rejected with 429.
+    const blocked = await request(harness.app)
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: second.pendingToken, code: generateTotpCode(secret) });
+    expect(blocked.status).toBe(429);
+    expect(setsSessionCookie(blocked)).toBe(false);
+  });
+
+  it('bounces with PENDING_INVALID when 2FA is disabled mid-challenge', async () => {
+    const { user, secret } = await setup();
+    const agent = request.agent(harness.app);
+
+    // Full login (verify the challenge) so we hold a session that can disable 2FA.
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (await agent.post('/api/v1/auth/login').set(...XRW).send({
+        identifier: user.email,
+        password: user.password,
+      })).body,
+    );
+    const verified = await agent
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    expect(verified.status).toBe(200);
+
+    // Open a second pending challenge, then disable 2FA on the live session.
+    const stale = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+    const disabled = await agent
+      .post('/api/v1/auth/2fa/disable')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(disabled.status).toBe(200);
+
+    // Verifying the now-orphaned challenge bounces cleanly instead of stranding
+    // the caller on wrong-code errors.
+    const res = await request(harness.app)
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: stale.pendingToken, code: '000000' });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('TWO_FACTOR_PENDING_INVALID');
+  });
+
   it('never issues a challenge for an account without 2FA', async () => {
     const plain = await harness.seedUser({
       email: 'no2fa@test.dev',

@@ -34,12 +34,28 @@ export const pinFailCountKey = (userId: string) => `pin_fail:${userId}`;
 export const PIN_FALLBACK_THRESHOLD = 5;
 
 /**
- * Drop all per-account login-throttle and PIN-fallback state for a user so they
- * can authenticate immediately. Called on successful login, admin password reset,
- * and re-enable.
+ * Drop the per-account password-failure throttle and PIN-fallback state on a
+ * correct password, WITHOUT touching the second-factor throttle. That 2FA
+ * counter must survive a re-login so its §10 escalation lock accumulates across
+ * challenges: a correct password is exactly what a 2FA-brute-forcing attacker
+ * already holds, so if re-submitting it wiped the `two_factor_account` counter
+ * the account lock would never accrue. The 2FA throttle is reset only on a
+ * successful second-factor verify (and by {@link clearLoginThrottle} on admin
+ * reset / re-enable, where a human has vouched for the account).
+ */
+export const clearPasswordThrottle = async (redis: Redis, userId: string): Promise<void> => {
+  await resetProgressiveLimiter(redis, LOGIN_ACCOUNT_NAMESPACE, userId);
+  await redis.del(pinFailCountKey(userId));
+};
+
+/**
+ * Drop all per-account login-throttle state for a user — password-failure, PIN
+ * fallback, AND the second-factor throttle — so they can authenticate
+ * immediately. Called on a successful second-factor verify, admin password
+ * reset, and re-enable. For a bare correct password (which still faces a 2FA
+ * gate) use {@link clearPasswordThrottle} instead so the 2FA lock survives.
  */
 export const clearLoginThrottle = async (redis: Redis, userId: string): Promise<void> => {
-  await resetProgressiveLimiter(redis, LOGIN_ACCOUNT_NAMESPACE, userId);
+  await clearPasswordThrottle(redis, userId);
   await resetProgressiveLimiter(redis, TWO_FACTOR_ACCOUNT_NAMESPACE, userId);
-  await redis.del(pinFailCountKey(userId));
 };

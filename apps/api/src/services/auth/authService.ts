@@ -37,6 +37,7 @@ import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SessionService } from '../sessions/sessionService';
 import {
   clearLoginThrottle,
+  clearPasswordThrottle,
   LOGIN_ACCOUNT_NAMESPACE,
   pinFailCountKey,
   PIN_FALLBACK_THRESHOLD,
@@ -287,6 +288,11 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   };
 
   const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
+  // Correct-password clear that deliberately spares the second-factor throttle
+  // so its §10 escalation lock accumulates across re-logins (see
+  // clearPasswordThrottle). Used at the password step; the full clear above runs
+  // only once a second factor has actually verified.
+  const clearPasswordFailures = (userId: string) => clearPasswordThrottle(redis, userId);
 
   return {
     async login({ identifier, password, ip, currentSessionId }) {
@@ -343,9 +349,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw accountDisabled();
       }
 
-      // The password is correct — clear the failure throttle now, whether or not
-      // a second factor still stands between the caller and a session.
-      await clearFailures(user.id);
+      // The password is correct — clear the password-failure throttle now,
+      // whether or not a second factor still stands between the caller and a
+      // session. Crucially this does NOT clear the second-factor throttle: a
+      // correct password is precisely what a 2FA brute-forcer holds, so wiping
+      // the `two_factor_account` counter on every re-login would let them reset
+      // the account lock between guesses (§10). That throttle is cleared only
+      // once a second factor verifies (see verifyTwoFactor).
+      await clearPasswordFailures(user.id);
 
       // 2FA gate (§6.1, §13.2 V2-P5): with 2FA enabled, do NOT mint a session
       // yet. Issue a short-lived, single-purpose pending challenge (Redis) that
@@ -413,6 +424,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const user = await userRepo.findById(userId);
       if (!user || user.status !== 'active') {
         // Account vanished/suspended mid-challenge: drop the pending state.
+        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+
+      // 2FA turned off between challenge issue and verify: every factor now
+      // fails (no secret, no recovery codes), which would strand the caller on
+      // wrong-code errors until the token lapses. Bounce with PENDING_INVALID so
+      // the client falls back to a plain re-login (which will mint a session).
+      if (!(await twoFactor.isEnabled(userId))) {
         await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
         throw pendingInvalid();
       }
