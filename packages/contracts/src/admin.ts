@@ -78,12 +78,46 @@ export const updateUserRequestSchema = z
   .object({
     status: userStatusSchema.optional(),
     role: roleSchema.optional(),
+    username: usernameSchema.optional(),
+    email: emailSchema.optional(),
   })
   .strict()
-  .refine((d) => d.status !== undefined || d.role !== undefined, {
-    message: 'Provide at least one of status or role.',
-  });
+  .refine(
+    (d) =>
+      d.status !== undefined ||
+      d.role !== undefined ||
+      d.username !== undefined ||
+      d.email !== undefined,
+    { message: 'Provide at least one field to update.' },
+  );
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
+
+/**
+ * Bulk user actions from the admin user list (PROJECTPLAN.md §6.12, §13.2).
+ * V1 ships bulk-disable; the enum leaves room for more without a shape change.
+ */
+export const BULK_USER_ACTIONS = ['disable'] as const;
+export const bulkUserActionSchema = z.enum(BULK_USER_ACTIONS);
+export type BulkUserAction = z.infer<typeof bulkUserActionSchema>;
+
+export const bulkUserActionRequestSchema = z
+  .object({
+    action: bulkUserActionSchema,
+    userIds: z.array(z.string().uuid()).min(1).max(200),
+  })
+  .strict();
+export type BulkUserActionRequest = z.infer<typeof bulkUserActionRequestSchema>;
+
+/**
+ * Result of a bulk action: how many were actually changed vs. skipped (self,
+ * last active admin, or already in the target state).
+ */
+export const bulkUserActionResponseSchema = z.object({
+  action: bulkUserActionSchema,
+  disabled: z.number().int(),
+  skipped: z.number().int(),
+});
+export type BulkUserActionResponse = z.infer<typeof bulkUserActionResponseSchema>;
 
 export const resetPasswordResponseSchema = z.object({
   user: adminUserSchema,

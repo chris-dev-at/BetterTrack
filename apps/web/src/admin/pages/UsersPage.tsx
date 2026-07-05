@@ -1,19 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 
-import type {
-  AdminStats,
-  AdminUser,
-  CreateUserResponse,
-  ResetPasswordResponse,
-} from '@bettertrack/contracts';
+import type { AdminStats, CreateUserResponse } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
-import { useAuth } from '../AuthContext';
-import { formatDateTime } from '../format';
 import { useResource } from '../useResource';
-import { EmailLogTable } from '../components/EmailLogTable';
 import { Modal } from '../components/Modal';
 import {
   Alert,
@@ -26,25 +19,25 @@ import {
   TextField,
 } from '../components/ui';
 
-type Dialog =
-  | { type: 'create' }
-  | { type: 'created'; result: CreateUserResponse }
-  | { type: 'reset'; user: AdminUser }
-  | { type: 'reset-done'; user: AdminUser; result: ResetPasswordResponse }
-  | { type: 'delete'; user: AdminUser }
-  | { type: 'emails'; user: AdminUser };
+type Dialog = { type: 'create' } | { type: 'created'; result: CreateUserResponse };
 
 function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
 }
 
+/**
+ * Slimmed user list (PROJECTPLAN.md §6.12, §13.2): only the essential columns so
+ * it fits a phone without horizontal scroll. A row opens the user detail view —
+ * the home for every per-user action — while bulk select drives bulk actions.
+ */
 export function UsersPage() {
-  const { user: currentAdmin } = useAuth();
+  const navigate = useNavigate();
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [rowError, setRowError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [banner, setBanner] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // Debounce the search box so each keystroke doesn't hit the API.
   useEffect(() => {
@@ -55,19 +48,54 @@ export function UsersPage() {
   const stats = useResource((signal) => api.getStats(signal), []);
   const users = useResource((signal) => api.listUsers(search || undefined, signal), [search]);
 
-  async function toggleStatus(target: AdminUser) {
-    setRowError(null);
-    setBusyId(target.id);
+  const rows = useMemo(() => users.data?.users ?? [], [users.data]);
+  // Keep the selection in sync with what's actually on screen.
+  useEffect(() => {
+    setSelected((prev) => {
+      const ids = new Set(rows.map((u) => u.id));
+      const next = new Set<string>();
+      for (const id of prev) if (ids.has(id)) next.add(id);
+      return next;
+    });
+  }, [rows]);
+
+  const allSelected = rows.length > 0 && rows.every((u) => selected.has(u.id));
+
+  function toggleOne(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(rows.map((u) => u.id)));
+  }
+
+  async function bulkDisable() {
+    if (selected.size === 0) return;
+    setBanner(null);
+    setBulkBusy(true);
     try {
-      await api.updateUser(target.id, {
-        status: target.status === 'active' ? 'disabled' : 'active',
+      const result = await api.bulkUserAction({
+        action: 'disable',
+        userIds: [...selected],
       });
       users.reload();
       stats.reload();
+      setSelected(new Set());
+      setBanner({
+        tone: 'success',
+        text:
+          `Disabled ${result.disabled} user${result.disabled === 1 ? '' : 's'}` +
+          (result.skipped > 0 ? `; skipped ${result.skipped}.` : '.'),
+      });
     } catch (err) {
-      setRowError(errorMessage(err));
+      setBanner({ tone: 'error', text: errorMessage(err) });
     } finally {
-      setBusyId(null);
+      setBulkBusy(false);
     }
   }
 
@@ -88,7 +116,21 @@ export function UsersPage() {
         onChange={(e) => setSearchInput(e.target.value)}
       />
 
-      {rowError ? <Alert tone="error">{rowError}</Alert> : null}
+      {banner ? <Alert tone={banner.tone}>{banner.text}</Alert> : null}
+
+      {selected.size > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
+          <span className="text-sm text-neutral-300">{selected.size} selected</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
+            <Button variant="danger" disabled={bulkBusy} onClick={() => void bulkDisable()}>
+              {bulkBusy ? 'Disabling…' : 'Disable selected'}
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {users.loading ? (
         <Spinner label="Loading users…" />
@@ -99,77 +141,55 @@ export function UsersPage() {
             Retry
           </button>
         </Alert>
-      ) : !users.data || users.data.users.length === 0 ? (
+      ) : rows.length === 0 ? (
         <EmptyState>
           {search ? 'No users match your search.' : 'No users yet. Create the first one.'}
         </EmptyState>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-neutral-800">
-          <table className="w-full min-w-[44rem] text-left text-sm">
+        <div className="overflow-hidden rounded-lg border border-neutral-800">
+          <table className="w-full text-left text-sm">
             <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
               <tr>
-                <th className="px-4 py-3 font-medium">Email</th>
-                <th className="px-4 py-3 font-medium">Username</th>
+                <th className="w-10 px-3 py-3">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all users"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                  />
+                </th>
+                <th className="px-4 py-3 font-medium">User</th>
                 <th className="px-4 py-3 font-medium">Role</th>
                 <th className="px-4 py-3 font-medium">Status</th>
-                <th className="px-4 py-3 font-medium">Last login</th>
-                <th className="px-4 py-3 font-medium">Created</th>
-                <th className="px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-800">
-              {users.data.users.map((u) => {
-                const isSelf = u.id === currentAdmin?.id;
-                const busy = busyId === u.id;
-                return (
-                  <tr key={u.id} className="hover:bg-neutral-900/50">
-                    <td className="px-4 py-3 text-neutral-200">{u.email}</td>
-                    <td className="px-4 py-3 text-neutral-400">{u.username}</td>
-                    <td className="px-4 py-3">
-                      <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>{u.role}</Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge tone={u.status === 'active' ? 'green' : 'red'}>{u.status}</Badge>
-                    </td>
-                    <td className="px-4 py-3 text-neutral-400">{formatDateTime(u.lastLoginAt)}</td>
-                    <td className="px-4 py-3 text-neutral-400">{formatDateTime(u.createdAt)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="secondary"
-                          disabled={busy || isSelf}
-                          title={isSelf ? 'You cannot disable your own account.' : undefined}
-                          onClick={() => void toggleStatus(u)}
-                        >
-                          {u.status === 'active' ? 'Disable' : 'Enable'}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          disabled={busy}
-                          onClick={() => setDialog({ type: 'reset', user: u })}
-                        >
-                          Reset password
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          disabled={busy}
-                          onClick={() => setDialog({ type: 'emails', user: u })}
-                        >
-                          Emails
-                        </Button>
-                        <Button
-                          variant="danger"
-                          disabled={busy || isSelf}
-                          title={isSelf ? 'You cannot delete your own account.' : undefined}
-                          onClick={() => setDialog({ type: 'delete', user: u })}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {rows.map((u) => (
+                <tr
+                  key={u.id}
+                  className="cursor-pointer hover:bg-neutral-900/50"
+                  onClick={() => navigate(`/admin/users/${u.id}`)}
+                >
+                  <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${u.username}`}
+                      checked={selected.has(u.id)}
+                      onChange={() => toggleOne(u.id)}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-neutral-200">{u.email}</div>
+                    <div className="text-xs text-neutral-500">{u.username}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>{u.role}</Badge>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge tone={u.status === 'active' ? 'green' : 'red'}>{u.status}</Badge>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -199,44 +219,6 @@ export function UsersPage() {
           </div>
         </Modal>
       )}
-
-      {dialog?.type === 'reset' && (
-        <ResetPasswordDialog
-          user={dialog.user}
-          onClose={() => setDialog(null)}
-          onDone={(result) => setDialog({ type: 'reset-done', user: dialog.user, result })}
-        />
-      )}
-
-      {dialog?.type === 'reset-done' && (
-        <Modal title="Password reset" onClose={() => setDialog(null)}>
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-neutral-400">
-              New temporary password for{' '}
-              <span className="text-neutral-200">{dialog.user.email}</span>. Shown only once; the
-              user must change it on next login.
-            </p>
-            <CopyField label="Temporary password" value={dialog.result.tempPassword} />
-            <Button onClick={() => setDialog(null)}>Done</Button>
-          </div>
-        </Modal>
-      )}
-
-      {dialog?.type === 'emails' && (
-        <UserEmailsDialog user={dialog.user} onClose={() => setDialog(null)} />
-      )}
-
-      {dialog?.type === 'delete' && (
-        <DeleteUserDialog
-          user={dialog.user}
-          onClose={() => setDialog(null)}
-          onDeleted={() => {
-            users.reload();
-            stats.reload();
-            setDialog(null);
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -261,26 +243,6 @@ function StatsStrip({ data }: { data: AdminStats | null }) {
         </div>
       ))}
     </div>
-  );
-}
-
-/** Per-user email send log (PROJECTPLAN.md §6.10, §6.12). */
-function UserEmailsDialog({ user, onClose }: { user: AdminUser; onClose: () => void }) {
-  const load = useCallback(
-    (params: { cursor?: string }, signal?: AbortSignal) =>
-      api.listUserEmails(user.id, params, signal),
-    [user.id],
-  );
-  return (
-    <Modal title={`Emails to ${user.username}`} onClose={onClose}>
-      <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-400">
-          Every send attempt to <span className="text-neutral-200">{user.email}</span>. No bodies or
-          secrets are stored.
-        </p>
-        <EmailLogTable load={load} emptyLabel="No emails sent to this user yet." />
-      </div>
-    </Modal>
   );
 }
 
@@ -343,114 +305,6 @@ function CreateUserDialog({
           </Button>
           <Button type="submit" disabled={submitting}>
             {submitting ? 'Creating…' : 'Create user'}
-          </Button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function ResetPasswordDialog({
-  user,
-  onClose,
-  onDone,
-}: {
-  user: AdminUser;
-  onClose: () => void;
-  onDone: (result: ResetPasswordResponse) => void;
-}) {
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  async function confirm() {
-    setError(null);
-    setSubmitting(true);
-    try {
-      onDone(await api.resetPassword(user.id));
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Modal title="Reset password" onClose={onClose}>
-      <div className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
-        <p className="text-sm text-neutral-400">
-          Generate a new temporary password for{' '}
-          <span className="text-neutral-200">{user.email}</span>? Their current password stops
-          working immediately.
-        </p>
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button disabled={submitting} onClick={() => void confirm()}>
-            {submitting ? 'Resetting…' : 'Reset password'}
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function DeleteUserDialog({
-  user,
-  onClose,
-  onDeleted,
-}: {
-  user: AdminUser;
-  onClose: () => void;
-  onDeleted: () => void;
-}) {
-  const [confirmText, setConfirmText] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const matches = confirmText === user.username;
-
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!matches) return;
-    setError(null);
-    setSubmitting(true);
-    try {
-      await api.deleteUser(user.id, confirmText);
-      onDeleted();
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Modal title="Delete user" onClose={onClose}>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
-        {error ? <Alert tone="error">{error}</Alert> : null}
-        <p className="text-sm text-neutral-400">
-          This permanently deletes <span className="text-neutral-200">{user.email}</span> and all of
-          their data. This cannot be undone. Type the username{' '}
-          <code className="rounded bg-neutral-950 px-1 py-0.5 font-mono text-neutral-200">
-            {user.username}
-          </code>{' '}
-          to confirm.
-        </p>
-        <TextField
-          label="Confirm username"
-          name="confirm-username"
-          autoComplete="off"
-          autoFocus
-          value={confirmText}
-          onChange={(e) => setConfirmText(e.target.value)}
-        />
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="danger" type="submit" disabled={!matches || submitting}>
-            {submitting ? 'Deleting…' : 'Delete user'}
           </Button>
         </div>
       </form>

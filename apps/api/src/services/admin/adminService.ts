@@ -1,6 +1,8 @@
 import type { Redis } from 'ioredis';
 
 import type {
+  BulkUserActionRequest,
+  BulkUserActionResponse,
   CreateInviteRequest,
   CreateUserRequest,
   UpdateAppSettingsRequest,
@@ -72,6 +74,53 @@ export function createAdminService(deps: AdminServiceDeps) {
         throw badRequest('Cannot remove the last active administrator.', 'LAST_ADMIN');
       }
     }
+  }
+
+  /**
+   * Bulk-disable (§6.12, §13.2): best-effort over a set — an id that can't be
+   * disabled (unknown, the actor themselves, already disabled, or the last
+   * active admin) is skipped rather than failing the whole batch. Each success
+   * kills the user's sessions and is audited exactly like a single disable.
+   */
+  async function bulkDisableUsers(
+    userIds: string[],
+    actor: AdminActor,
+  ): Promise<{ disabled: number; skipped: number }> {
+    const unique = [...new Set(userIds)];
+    let activeAdmins = await userRepo.countActiveAdmins();
+    const toDisable: string[] = [];
+    let skipped = 0;
+
+    for (const id of unique) {
+      const target = await userRepo.findById(id);
+      if (!target || target.id === actor.id || target.status !== 'active') {
+        skipped += 1;
+        continue;
+      }
+      if (target.role === 'admin' && activeAdmins <= 1) {
+        skipped += 1;
+        continue;
+      }
+      toDisable.push(target.id);
+      if (target.role === 'admin') activeAdmins -= 1;
+    }
+
+    if (toDisable.length > 0) {
+      await userRepo.setStatusMany(toDisable, 'disabled');
+      for (const id of toDisable) {
+        await sessions.destroyAllForUser(id);
+        await audit.record({
+          actorId: actor.id,
+          action: AuditAction.UserDisabled,
+          targetType: 'user',
+          targetId: id,
+          ip: actor.ip,
+          meta: { via: 'bulk' },
+        });
+      }
+    }
+
+    return { disabled: toDisable.length, skipped };
   }
 
   return {
@@ -177,7 +226,58 @@ export function createAdminService(deps: AdminServiceDeps) {
         });
       }
 
+      if (input.email !== undefined) {
+        const normalized = input.email.trim().toLowerCase();
+        if (normalized !== target.email) {
+          const existing = await userRepo.findByEmail(normalized);
+          if (existing && existing.id !== target.id) {
+            throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
+          }
+          await userRepo.updateEmail(target.id, normalized);
+          await audit.record({
+            actorId: actor.id,
+            action: AuditAction.UserEmailChanged,
+            targetType: 'user',
+            targetId: target.id,
+            ip: actor.ip,
+            meta: { email: normalized },
+          });
+        }
+      }
+
+      if (input.username !== undefined) {
+        const trimmed = input.username.trim();
+        if (trimmed.toLowerCase() !== target.username.toLowerCase()) {
+          const existing = await userRepo.findByUsername(trimmed);
+          if (existing && existing.id !== target.id) {
+            throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+          }
+          await userRepo.updateUsername(target.id, trimmed);
+          await audit.record({
+            actorId: actor.id,
+            action: AuditAction.UserUsernameChanged,
+            targetType: 'user',
+            targetId: target.id,
+            ip: actor.ip,
+            meta: { username: trimmed },
+          });
+        }
+      }
+
       return loadUser(id);
+    },
+
+    /** Bulk action from the admin user list (§6.12, §13.2). V1: bulk-disable. */
+    async bulkUserAction(
+      input: BulkUserActionRequest,
+      actor: AdminActor,
+    ): Promise<BulkUserActionResponse> {
+      switch (input.action) {
+        case 'disable': {
+          const { disabled, skipped } = await bulkDisableUsers(input.userIds, actor);
+          return { action: 'disable', disabled, skipped };
+        }
+      }
     },
 
     async resetPassword(
@@ -297,6 +397,16 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     listAudit: (params: { limit: number; cursor?: string }) => deps.audit.list(params),
+
+    /** One user's audit history (§6.12) — entries whose target is this user. */
+    async listUserAudit(userId: string, params: { limit: number; cursor?: string }) {
+      await loadUser(userId); // 404 for an unknown user, like the other per-user reads.
+      return deps.audit.listForTarget({
+        targetId: userId,
+        limit: params.limit,
+        cursor: params.cursor,
+      });
+    },
 
     /** Global email send log, newest first (PROJECTPLAN.md §6.10, §6.12). */
     listEmails: (params: { limit: number; cursor?: string }): Promise<EmailLogPage> =>
