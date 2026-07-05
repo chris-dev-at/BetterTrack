@@ -22,12 +22,19 @@ vi.mock('../../lib/twoFactorApi', () => ({
   enrollTwoFactor: vi.fn(),
   confirmTwoFactor: vi.fn(),
   disableTwoFactor: vi.fn(),
+  enrollEmailTwoFactor: vi.fn(),
+  confirmEmailTwoFactor: vi.fn(),
+  disableEmailTwoFactor: vi.fn(),
   regenerateRecoveryCodes: vi.fn(),
 }));
 
+import { ApiError } from '../../lib/apiClient';
 import {
+  confirmEmailTwoFactor,
   confirmTwoFactor,
+  disableEmailTwoFactor,
   disableTwoFactor,
+  enrollEmailTwoFactor,
   enrollTwoFactor,
   getTwoFactorStatus,
   regenerateRecoveryCodes,
@@ -44,7 +51,13 @@ const SESSION: SessionInfoResponse = {
 function makeTwoFactorStatus(
   overrides: Partial<TwoFactorStatusResponse> = {},
 ): TwoFactorStatusResponse {
-  return { enabled: false, pending: false, recoveryCodesRemaining: 0, ...overrides };
+  return {
+    totpEnabled: false,
+    totpPending: false,
+    emailEnabled: false,
+    recoveryCodesRemaining: 0,
+    ...overrides,
+  };
 }
 
 function makeMe(pinEnabled: boolean): MeResponse {
@@ -79,6 +92,8 @@ beforeEach(() => {
   vi.mocked(disablePin).mockResolvedValue(makeMe(false));
   vi.mocked(setPinLockIdleMinutes).mockResolvedValue(makeMe(true));
   vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+  vi.mocked(enrollEmailTwoFactor).mockResolvedValue(undefined);
+  vi.mocked(disableEmailTwoFactor).mockResolvedValue(undefined);
 });
 
 describe('SecuritySettingsPage', () => {
@@ -167,35 +182,28 @@ describe('SecuritySettingsPage', () => {
   });
 });
 
-describe('SecuritySettingsPage — two-factor authentication', () => {
-  test('shows the disabled status with a way to start enrollment', async () => {
+describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
+  test('shows both methods disabled, each with its own setup button', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus({ enabled: false }));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
     renderPage();
 
     expect(
       await screen.findByRole('heading', { name: 'Two-factor authentication' }),
     ).toBeInTheDocument();
     expect(
-      await screen.findByRole('button', { name: 'Set up two-factor authentication' }),
+      await screen.findByRole('button', { name: 'Set up authenticator app' }),
     ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Set up email codes' })).toBeInTheDocument();
+    // No recovery-code control while nothing is enabled.
+    expect(
+      screen.queryByRole('button', { name: 'Regenerate recovery codes' }),
+    ).not.toBeInTheDocument();
   });
 
-  test('shows the enabled status with regenerate and disable actions', async () => {
+  test('authenticator enroll: renders a QR code, confirms, and shows recovery codes once', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getTwoFactorStatus).mockResolvedValue(
-      makeTwoFactorStatus({ enabled: true, recoveryCodesRemaining: 3 }),
-    );
-    renderPage();
-
-    expect(await screen.findByText(/enabled — 3 recovery codes remaining/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Regenerate recovery codes' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Disable 2FA' })).toBeInTheDocument();
-  });
-
-  test('enroll wizard: confirms a code and shows the recovery codes once', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus({ enabled: false }));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
     vi.mocked(enrollTwoFactor).mockResolvedValue({
       otpauthUri: 'otpauth://totp/BetterTrack:ada%40example.com?secret=ABCDEFGHIJKLMNOP',
       secret: 'ABCDEFGHIJKLMNOP',
@@ -206,11 +214,11 @@ describe('SecuritySettingsPage — two-factor authentication', () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(
-      await screen.findByRole('button', { name: 'Set up two-factor authentication' }),
-    );
+    await user.click(await screen.findByRole('button', { name: 'Set up authenticator app' }));
 
-    expect(await screen.findByText('ABCDEFGHIJKLMNOP')).toBeInTheDocument();
+    // A scannable QR encodes the otpauth URI; the manual key is in the fallback.
+    expect(await screen.findByLabelText('Two-factor setup QR code')).toBeInTheDocument();
+    expect(screen.getByText('ABCDEFGHIJKLMNOP')).toBeInTheDocument();
 
     await user.type(screen.getByLabelText('Confirmation code'), '123456');
     await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
@@ -223,15 +231,102 @@ describe('SecuritySettingsPage — two-factor authentication', () => {
     await user.click(screen.getByRole('button', { name: "I've saved these codes" }));
 
     expect(
-      await screen.findByRole('button', { name: 'Set up two-factor authentication' }),
+      await screen.findByRole('button', { name: 'Set up authenticator app' }),
     ).toBeInTheDocument();
-    await waitFor(() => expect(getTwoFactorStatus).toHaveBeenCalledTimes(2));
   });
 
-  test('regenerates recovery codes when already enabled', async () => {
+  test('email enroll: sends a code, confirms, and shows recovery codes (first method)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+    vi.mocked(confirmEmailTwoFactor).mockResolvedValue({
+      recoveryCodes: ['iiii-jjjj-kkkk-llll'],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+    await waitFor(() => expect(enrollEmailTwoFactor).toHaveBeenCalled());
+
+    await user.type(await screen.findByLabelText('Email code'), '654321');
+    await user.click(screen.getByRole('button', { name: 'Confirm & enable' }));
+
+    await waitFor(() => expect(confirmEmailTwoFactor).toHaveBeenCalledWith({ code: '654321' }));
+    expect(await screen.findByText('iiii-jjjj-kkkk-llll')).toBeInTheDocument();
+  });
+
+  test('email enroll blocked (no SMTP) shows the lockout-guard message', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
+    vi.mocked(enrollEmailTwoFactor).mockRejectedValue(
+      new ApiError(
+        400,
+        'TWO_FACTOR_EMAIL_UNAVAILABLE',
+        'Email delivery is not configured, so email codes can’t be sent.',
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Set up email codes' }));
+
+    expect(await screen.findByText(/email delivery is not configured/i)).toBeInTheDocument();
+    expect(confirmEmailTwoFactor).not.toHaveBeenCalled();
+  });
+
+  test('shows both methods enabled with turn-off and regenerate actions', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe(false));
     vi.mocked(getTwoFactorStatus).mockResolvedValue(
-      makeTwoFactorStatus({ enabled: true, recoveryCodesRemaining: 3 }),
+      makeTwoFactorStatus({ totpEnabled: true, emailEnabled: true, recoveryCodesRemaining: 3 }),
+    );
+    renderPage();
+
+    expect(await screen.findByText(/3 recovery codes remaining/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Regenerate recovery codes' })).toBeInTheDocument();
+    // One turn-off button per enabled method.
+    expect(screen.getAllByRole('button', { name: 'Turn off' })).toHaveLength(2);
+  });
+
+  test('disables the authenticator method with a code', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    vi.mocked(disableTwoFactor).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+    await user.type(
+      screen.getByLabelText(/authenticator code or recovery code/i),
+      'abcd-efgh-ijkl-mnop',
+    );
+    await user.click(screen.getByRole('button', { name: 'Turn off authenticator app' }));
+
+    await waitFor(() =>
+      expect(disableTwoFactor).toHaveBeenCalledWith({ code: 'abcd-efgh-ijkl-mnop' }),
+    );
+    expect(await screen.findByText(/authenticator app turned off/i)).toBeInTheDocument();
+  });
+
+  test('disables the email method directly from the authenticated session', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ emailEnabled: true, recoveryCodesRemaining: 5 }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    // Email is the only enabled method, so there is exactly one "Turn off".
+    await user.click(await screen.findByRole('button', { name: 'Turn off' }));
+
+    await waitFor(() => expect(disableEmailTwoFactor).toHaveBeenCalled());
+    expect(await screen.findByText(/email codes turned off/i)).toBeInTheDocument();
+  });
+
+  test('regenerates recovery codes when a method is enabled', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getTwoFactorStatus).mockResolvedValue(
+      makeTwoFactorStatus({ totpEnabled: true, recoveryCodesRemaining: 3 }),
     );
     vi.mocked(regenerateRecoveryCodes).mockResolvedValue({
       recoveryCodes: ['zzzz-yyyy-xxxx-wwww'],
@@ -243,29 +338,5 @@ describe('SecuritySettingsPage — two-factor authentication', () => {
 
     await waitFor(() => expect(regenerateRecoveryCodes).toHaveBeenCalled());
     expect(await screen.findByText('zzzz-yyyy-xxxx-wwww')).toBeInTheDocument();
-  });
-
-  test('disables 2FA with a code', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getTwoFactorStatus).mockResolvedValue(
-      makeTwoFactorStatus({ enabled: true, recoveryCodesRemaining: 5 }),
-    );
-    vi.mocked(disableTwoFactor).mockResolvedValue(undefined);
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.click(await screen.findByRole('button', { name: 'Disable 2FA' }));
-    await user.type(
-      screen.getByLabelText(/authenticator code or recovery code/i),
-      'abcd-efgh-ijkl-mnop',
-    );
-    await user.click(screen.getByRole('button', { name: 'Disable 2FA' }));
-
-    await waitFor(() =>
-      expect(disableTwoFactor).toHaveBeenCalledWith({ code: 'abcd-efgh-ijkl-mnop' }),
-    );
-    expect(
-      await screen.findByText(/two-factor authentication has been turned off/i),
-    ).toBeInTheDocument();
   });
 });

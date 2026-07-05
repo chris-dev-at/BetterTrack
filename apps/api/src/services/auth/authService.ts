@@ -3,7 +3,6 @@ import { randomBytes, randomInt } from 'node:crypto';
 import type { Redis } from 'ioredis';
 
 import {
-  TWO_FACTOR_CHANNELS,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type PasswordResetComplete,
@@ -287,6 +286,35 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     return dummyHashPromise;
   };
 
+  /**
+   * Mint a fresh 6-digit login code for this pending challenge, store only its
+   * hash (§6.1), and best-effort email it (§6.11: logged to `email_log`,
+   * `suppressed` with no SMTP, never throws). Shared by the up-front send for an
+   * email-only account and the on-request `requestTwoFactorEmailCode` endpoint.
+   */
+  async function issueEmailLoginCode(
+    pendingToken: string,
+    user: UserRow,
+    ip?: string | null,
+  ): Promise<void> {
+    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    await redis.set(emailCodeKey(pendingToken), hashToken(code), 'EX', EMAIL_CODE_TTL_MINUTES * 60);
+    await audit.record({
+      actorId: user.id,
+      action: AuditAction.TwoFactorEmailCodeSent,
+      targetType: 'user',
+      targetId: user.id,
+      ip,
+    });
+    await email.sendTwoFactorCode({
+      to: user.email,
+      userId: user.id,
+      code,
+      expiresInMinutes: EMAIL_CODE_TTL_MINUTES,
+      audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+    });
+  }
+
   const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
   // Correct-password clear that deliberately spares the second-factor throttle
   // so its §10 escalation lock accumulates across re-logins (see
@@ -358,13 +386,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // once a second factor verifies (see verifyTwoFactor).
       await clearPasswordFailures(user.id);
 
-      // 2FA gate (§6.1, §13.2 V2-P5): with 2FA enabled, do NOT mint a session
-      // yet. Issue a short-lived, single-purpose pending challenge (Redis) that
-      // only the verify / email-code endpoints accept; the session is withheld
-      // until a second factor verifies. The prior session id (if any) is carried
-      // so it can be rotated out on success, not destroyed on an abandoned
+      // 2FA gate (§6.1, §13.2 V2-P5): with any 2FA method on, do NOT mint a
+      // session yet. Issue a short-lived, single-purpose pending challenge (Redis)
+      // that only the verify / email-code endpoints accept; the session is
+      // withheld until a second factor verifies. The prior session id (if any) is
+      // carried so it can be rotated out on success, not destroyed on an abandoned
       // challenge.
       if (await twoFactor.isEnabled(user.id)) {
+        const methods = await twoFactor.getMethods(user.id);
         const pendingToken = randomBytes(32).toString('base64url');
         const state: Pending2faState = { userId: user.id };
         if (currentSessionId) state.priorSessionId = currentSessionId;
@@ -376,9 +405,21 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           targetId: user.id,
           ip,
         });
+        // Offer only the channels the account actually enabled (#298): TOTP and/or
+        // email, plus recovery codes (always available while any method is on).
+        const channels: TwoFactorChannel[] = [];
+        if (methods.totp) channels.push('totp');
+        if (methods.email) channels.push('email');
+        channels.push('recovery');
+        // Email is the only method ⇒ send the code up front so the user has
+        // nothing to click (§13.2 V2-P5 addendum). With TOTP also on, TOTP is the
+        // default and the code is sent on request instead.
+        if (methods.email && !methods.totp) {
+          await issueEmailLoginCode(pendingToken, user, ip);
+        }
         return {
           status: 'two_factor_required',
-          challenge: { pendingToken, channels: [...TWO_FACTOR_CHANNELS] },
+          challenge: { pendingToken, channels },
         };
       }
 
@@ -499,31 +540,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw pendingInvalid();
       }
 
+      // Email codes are their own opt-in method now (#298): only send when the
+      // account has the email method on. A TOTP-only account no longer gets an
+      // emailed fallback it never chose. The UI only surfaces this when the
+      // challenge lists the `email` channel, so a well-behaved client never lands
+      // here otherwise — treat it as a no-op rather than leaking method config.
+      const methods = await twoFactor.getMethods(user.id);
+      if (!methods.email) return;
+
       // Fresh 6-digit code each request, overwriting any prior one; only the hash
       // is stored, keyed to this challenge, expiring with the send.
-      const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
-      await redis.set(
-        emailCodeKey(pendingToken),
-        hashToken(code),
-        'EX',
-        EMAIL_CODE_TTL_MINUTES * 60,
-      );
-      await audit.record({
-        actorId: user.id,
-        action: AuditAction.TwoFactorEmailCodeSent,
-        targetType: 'user',
-        targetId: user.id,
-        ip,
-      });
-      // Best-effort send (§6.11): logs to email_log, `suppressed` with no SMTP,
-      // never throws back. The pending state is already committed above.
-      await email.sendTwoFactorCode({
-        to: user.email,
-        userId: user.id,
-        code,
-        expiresInMinutes: EMAIL_CODE_TTL_MINUTES,
-        audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
-      });
+      await issueEmailLoginCode(pendingToken, user, ip);
     },
 
     async logout(sessionId) {

@@ -146,18 +146,26 @@ export const setPinLockRequestSchema = z.object({ idleMinutes: pinLockIdleMinute
 export type SetPinLockRequest = z.infer<typeof setPinLockRequestSchema>;
 
 /**
- * Two-factor auth — TOTP (PROJECTPLAN.md §6.1, §13.2 V2-P5). Enrollment is
- * two-step: `enroll` returns a provisional secret + `otpauth://` URI (for the
- * authenticator QR) with 2FA still OFF; a valid TOTP `code` at `confirm` enables
- * it and hands back the one-time recovery codes. Disabling requires a valid
- * factor (a TOTP code or an unused recovery code) so a bare session can't quietly
- * remove the protection. This contract is the backend core; the login-time
- * challenge and Settings UI are separate V2-P5 issues.
+ * Two-factor auth (PROJECTPLAN.md §6.1, §13.2 V2-P5). Two independent methods,
+ * each with its own enable/disable toggle:
+ *
+ *  - **Authenticator app (TOTP).** Two-step: `enroll` returns a provisional
+ *    secret + `otpauth://` URI (the enrollment QR) with the method still OFF; a
+ *    valid TOTP `code` at `confirm` enables it. Disabling needs a valid factor (a
+ *    TOTP code or an unused recovery code) so a bare session can't quietly strip
+ *    it.
+ *  - **Email codes.** `email/enroll` proves mailbox access by sending a code to
+ *    the account email; a valid `email/confirm` code turns the method on. Blocked
+ *    when SMTP is unconfigured and it would be the *only* method (no lockout).
+ *
+ * Recovery codes are issued once — on the FIRST method enabled — and work
+ * regardless of the method mix. Enabling either method when 2FA is off starts the
+ * login challenge; disabling the last method turns it off again.
  */
 export const TOTP_CODE_LENGTH = 6;
 export const totpCodeSchema = z.string().regex(/^\d{6}$/, 'Enter the 6-digit code');
 
-/** `POST /auth/2fa/enroll` — provisional secret + provisioning URI (2FA not yet on). */
+/** `POST /auth/2fa/enroll` — provisional TOTP secret + provisioning URI (method not yet on). */
 export const twoFactorEnrollResponseSchema = z
   .object({
     /** The `otpauth://totp/...` URI an authenticator app scans as a QR code. */
@@ -168,40 +176,58 @@ export const twoFactorEnrollResponseSchema = z
   .strict();
 export type TwoFactorEnrollResponse = z.infer<typeof twoFactorEnrollResponseSchema>;
 
-/** `POST /auth/2fa/confirm` — enable 2FA by proving a current TOTP code. */
+/** `POST /auth/2fa/confirm` — enable the TOTP method by proving a current code. */
 export const twoFactorConfirmRequestSchema = z.object({ code: totpCodeSchema }).strict();
 export type TwoFactorConfirmRequest = z.infer<typeof twoFactorConfirmRequestSchema>;
 
+/** `POST /auth/2fa/email/confirm` — enable the email method with the emailed 6-digit code. */
+export const twoFactorEmailConfirmRequestSchema = z.object({ code: totpCodeSchema }).strict();
+export type TwoFactorEmailConfirmRequest = z.infer<typeof twoFactorEmailConfirmRequestSchema>;
+
 /**
- * `POST /auth/2fa/disable` — a valid factor authorizes the disable: either the
- * 6-digit TOTP code or one unused recovery code. Loosely bounded so both forms
- * (and their formatting) pass the contract; the service decides which it is.
+ * `POST /auth/2fa/disable` — disable the TOTP method. A valid factor authorizes
+ * it: either the 6-digit TOTP code or one unused recovery code. Loosely bounded so
+ * both forms (and their formatting) pass the contract; the service decides which
+ * it is. (The email method disables from the authenticated session alone.)
  */
 export const twoFactorDisableRequestSchema = z.object({ code: z.string().min(6).max(32) }).strict();
 export type TwoFactorDisableRequest = z.infer<typeof twoFactorDisableRequestSchema>;
 
-/** `GET /auth/2fa/status` — the caller's current 2FA state. */
+/** `GET /auth/2fa/status` — the caller's current 2FA methods (§6.1). */
 export const twoFactorStatusResponseSchema = z
   .object({
-    /** True once a TOTP code has confirmed enrollment. */
-    enabled: z.boolean(),
-    /** True when a secret is enrolled but not yet confirmed (awaiting a code). */
-    pending: z.boolean(),
-    /** Count of recovery codes still unused. */
+    /** Authenticator-app (TOTP) method: on once a code has confirmed enrollment. */
+    totpEnabled: z.boolean(),
+    /** True when a TOTP secret is enrolled but not yet confirmed (awaiting a code). */
+    totpPending: z.boolean(),
+    /** Email-code method: on once a mailed code has confirmed mailbox access. */
+    emailEnabled: z.boolean(),
+    /** Count of recovery codes still unused (shared across both methods). */
     recoveryCodesRemaining: z.number().int().nonnegative(),
   })
   .strict();
 export type TwoFactorStatusResponse = z.infer<typeof twoFactorStatusResponseSchema>;
 
 /**
- * The plaintext recovery codes — returned once by `confirm` and by
- * `POST /auth/2fa/recovery-codes` (regenerate). Never re-fetchable: only their
- * SHA-256 hashes are stored server-side.
+ * The plaintext recovery codes — returned once by `POST /auth/2fa/recovery-codes`
+ * (regenerate). Never re-fetchable: only their SHA-256 hashes are stored.
  */
 export const twoFactorRecoveryCodesResponseSchema = z
   .object({ recoveryCodes: z.array(z.string()).min(1) })
   .strict();
 export type TwoFactorRecoveryCodesResponse = z.infer<typeof twoFactorRecoveryCodesResponseSchema>;
+
+/**
+ * Result of enabling a 2FA *method* (`confirm` for TOTP, `email/confirm` for the
+ * email method). Recovery codes are issued once, on the FIRST method enabled, and
+ * shown a single time: `recoveryCodes` carries that fresh set on the first method
+ * and is `null` when another method was already active (the existing codes stay
+ * valid and are not re-shown).
+ */
+export const twoFactorMethodEnabledResponseSchema = z
+  .object({ recoveryCodes: z.array(z.string()).min(1).nullable() })
+  .strict();
+export type TwoFactorMethodEnabledResponse = z.infer<typeof twoFactorMethodEnabledResponseSchema>;
 
 /** The authenticated-user view returned by `/auth/me`, `/auth/login`, etc. */
 export const meResponseSchema = z.object({

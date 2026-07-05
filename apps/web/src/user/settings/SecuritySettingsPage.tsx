@@ -1,20 +1,25 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { QRCodeSVG } from 'qrcode.react';
 
 import {
   DEFAULT_PIN_WINDOW_MINUTES,
   PIN_LENGTH,
   TOTP_CODE_LENGTH,
   type SetPinRequest,
+  type TwoFactorStatusResponse,
 } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
 import {
+  confirmEmailTwoFactor,
   confirmTwoFactor,
+  disableEmailTwoFactor,
   disableTwoFactor,
+  enrollEmailTwoFactor,
   enrollTwoFactor,
   getTwoFactorStatus,
   regenerateRecoveryCodes,
@@ -287,7 +292,7 @@ function twoFactorErrorMessage(err: unknown): string {
   return 'Something went wrong. Please try again.';
 }
 
-/** Recovery codes, shown exactly once after `confirm` or a regenerate. */
+/** Recovery codes, shown exactly once after the first method is enabled or a regenerate. */
 function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
 
@@ -318,7 +323,7 @@ function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone
     <div className="flex flex-col gap-4">
       <Alert tone="info">
         Save these recovery codes somewhere safe. Each one can be used once to sign in if you lose
-        access to your authenticator — they won't be shown again.
+        access to your authenticator or email — they won't be shown again.
       </Alert>
       <div className="grid grid-cols-2 gap-2 rounded-md border border-neutral-800 bg-neutral-950 p-4 font-mono text-sm text-neutral-100">
         {codes.map((code) => (
@@ -340,12 +345,12 @@ function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone
   );
 }
 
-/** Enroll wizard: request a secret, then confirm it with a live TOTP code. */
+/** TOTP enroll wizard: scan the QR (or enter the key), then confirm a live code. */
 function EnrollWizard({
   onEnrolled,
   onCancel,
 }: {
-  onEnrolled: (recoveryCodes: string[]) => void;
+  onEnrolled: (recoveryCodes: string[] | null) => void;
   onCancel: () => void;
 }) {
   const [code, setCode] = useState('');
@@ -386,14 +391,29 @@ function EnrollWizard({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <p className="text-sm text-neutral-400">
-        Scan this into your authenticator app, or enter the key manually.
+        Scan this QR code with Google Authenticator (or any TOTP app), then enter the 6-digit code
+        it shows.
       </p>
-      <div className="flex flex-col gap-1.5 rounded-md border border-neutral-800 bg-neutral-950 p-4">
-        <span className="text-xs font-medium text-neutral-500">Setup key</span>
-        <code className="break-all text-sm text-neutral-100">{enroll.data.secret}</code>
-        <span className="mt-2 text-xs font-medium text-neutral-500">otpauth URI</span>
-        <code className="break-all text-xs text-neutral-400">{enroll.data.otpauthUri}</code>
+      {/* QR needs a light quiet-zone to scan reliably against the dark theme. */}
+      <div className="self-start rounded-md bg-white p-3">
+        <QRCodeSVG
+          value={enroll.data.otpauthUri}
+          size={176}
+          marginSize={0}
+          aria-label="Two-factor setup QR code"
+        />
       </div>
+      <details className="rounded-md border border-neutral-800 bg-neutral-950 p-4">
+        <summary className="cursor-pointer text-xs font-medium text-neutral-400">
+          Can’t scan? Enter this key manually
+        </summary>
+        <div className="mt-3 flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-neutral-500">Setup key</span>
+          <code className="break-all text-sm text-neutral-100">{enroll.data.secret}</code>
+          <span className="mt-2 text-xs font-medium text-neutral-500">otpauth URI</span>
+          <code className="break-all text-xs text-neutral-400">{enroll.data.otpauthUri}</code>
+        </div>
+      </details>
       <PinInput
         label="Confirmation code"
         length={TOTP_CODE_LENGTH}
@@ -414,7 +434,7 @@ function EnrollWizard({
   );
 }
 
-/** Inline code-entry form used to authorize disabling 2FA. */
+/** Inline code-entry form used to authorize disabling the authenticator method. */
 function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCancel: () => void }) {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -446,7 +466,7 @@ function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCance
       </label>
       <div className="flex flex-wrap gap-3">
         <Button type="submit" variant="secondary" disabled={disable.isPending || code.length < 6}>
-          {disable.isPending ? 'Disabling…' : 'Disable 2FA'}
+          {disable.isPending ? 'Disabling…' : 'Turn off authenticator app'}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
@@ -456,12 +476,273 @@ function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCance
   );
 }
 
-type TwoFactorView = 'status' | 'enrolling' | 'disabling';
+/** Shared shell for a single 2FA method row. */
+function MethodCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-4">
+      <div className="flex flex-col gap-0.5">
+        <h4 className="text-sm font-semibold text-neutral-100">{title}</h4>
+        <p className="text-xs text-neutral-500">{description}</p>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+type AuthenticatorView = 'status' | 'enrolling' | 'disabling';
+
+/** Authenticator-app (TOTP) method (§6.1, #298). */
+function AuthenticatorMethodCard({
+  enabled,
+  onFirstRecoveryCodes,
+  refresh,
+}: {
+  enabled: boolean;
+  onFirstRecoveryCodes: (codes: string[]) => void;
+  refresh: () => void;
+}) {
+  const [view, setView] = useState<AuthenticatorView>('status');
+  const [notice, setNotice] = useState<string | null>(null);
+
+  return (
+    <MethodCard
+      title="Authenticator app (TOTP)"
+      description="Codes from Google Authenticator, 1Password, or any TOTP app."
+    >
+      {notice ? <Alert tone="success">{notice}</Alert> : null}
+      {view === 'enrolling' ? (
+        <EnrollWizard
+          onEnrolled={(codes) => {
+            setView('status');
+            if (codes) onFirstRecoveryCodes(codes);
+            else setNotice('Authenticator app enabled.');
+            refresh();
+          }}
+          onCancel={() => setView('status')}
+        />
+      ) : !enabled ? (
+        <div>
+          <Button
+            type="button"
+            onClick={() => {
+              setNotice(null);
+              setView('enrolling');
+            }}
+          >
+            Set up authenticator app
+          </Button>
+        </div>
+      ) : view === 'disabling' ? (
+        <DisableForm
+          onDisabled={() => {
+            setView('status');
+            setNotice('Authenticator app turned off.');
+            refresh();
+          }}
+          onCancel={() => setView('status')}
+        />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-neutral-400">Enabled.</p>
+          <div>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setNotice(null);
+                setView('disabling');
+              }}
+            >
+              Turn off
+            </Button>
+          </div>
+        </div>
+      )}
+    </MethodCard>
+  );
+}
+
+type EmailMethodView = 'status' | 'confirming';
+
+/** Email-code method (§6.1, #298): prove mailbox access, then a code at each sign-in. */
+function EmailMethodCard({
+  enabled,
+  onFirstRecoveryCodes,
+  refresh,
+}: {
+  enabled: boolean;
+  onFirstRecoveryCodes: (codes: string[]) => void;
+  refresh: () => void;
+}) {
+  const [view, setView] = useState<EmailMethodView>('status');
+  const [code, setCode] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const enroll = useMutation({
+    mutationFn: enrollEmailTwoFactor,
+    onSuccess: () => {
+      setError(null);
+      setView('confirming');
+    },
+    // A missing SMTP config surfaces as a clear TWO_FACTOR_EMAIL_UNAVAILABLE message.
+    onError: (err) => setError(twoFactorErrorMessage(err)),
+  });
+
+  const confirm = useMutation({
+    mutationFn: () => confirmEmailTwoFactor({ code }),
+    onSuccess: (data) => {
+      setView('status');
+      setCode('');
+      if (data.recoveryCodes) onFirstRecoveryCodes(data.recoveryCodes);
+      else setNotice('Email codes enabled.');
+      refresh();
+    },
+    onError: (err) => setError(twoFactorErrorMessage(err)),
+  });
+
+  const disable = useMutation({
+    mutationFn: disableEmailTwoFactor,
+    onSuccess: () => {
+      setNotice('Email codes turned off.');
+      setError(null);
+      refresh();
+    },
+    onError: (err) => setError(twoFactorErrorMessage(err)),
+  });
+
+  function onConfirm(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    confirm.mutate();
+  }
+
+  return (
+    <MethodCard
+      title="Email codes"
+      description="A one-time code sent to your account email when you sign in."
+    >
+      {notice ? <Alert tone="success">{notice}</Alert> : null}
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      {enabled ? (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-neutral-400">Enabled.</p>
+          <div>
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={disable.isPending}
+              onClick={() => {
+                setNotice(null);
+                disable.mutate();
+              }}
+            >
+              {disable.isPending ? 'Turning off…' : 'Turn off'}
+            </Button>
+          </div>
+        </div>
+      ) : view === 'confirming' ? (
+        <form onSubmit={onConfirm} className="flex flex-col gap-4">
+          <p className="text-sm text-neutral-400">
+            We emailed a code to your address. Enter it to turn on email codes.
+          </p>
+          <PinInput
+            label="Email code"
+            length={TOTP_CODE_LENGTH}
+            value={code}
+            onChange={setCode}
+            hint="Enter the 6-digit code we just sent you."
+            autoFocus
+          />
+          <div className="flex flex-wrap gap-3">
+            <Button type="submit" disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH}>
+              {confirm.isPending ? 'Confirming…' : 'Confirm & enable'}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setView('status');
+                setCode('');
+                setError(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div>
+          <Button
+            type="button"
+            disabled={enroll.isPending}
+            onClick={() => {
+              setNotice(null);
+              enroll.mutate();
+            }}
+          >
+            {enroll.isPending ? 'Sending code…' : 'Set up email codes'}
+          </Button>
+        </div>
+      )}
+    </MethodCard>
+  );
+}
+
+/** Shared recovery-code control, shown while any method is on. */
+function RecoveryCodesControl({
+  remaining,
+  onRegenerated,
+}: {
+  remaining: number;
+  onRegenerated: (codes: string[]) => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const regenerate = useMutation({
+    mutationFn: regenerateRecoveryCodes,
+    onSuccess: (data) => {
+      setError(null);
+      onRegenerated(data.recoveryCodes);
+    },
+    onError: () => setError('Could not regenerate recovery codes. Please try again.'),
+  });
+
+  return (
+    <MethodCard
+      title="Recovery codes"
+      description="One-time codes to sign in if you lose access to your other factors."
+    >
+      <p className="text-sm text-neutral-400">
+        {remaining} recovery code{remaining === 1 ? '' : 's'} remaining.
+      </p>
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <div>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={regenerate.isPending}
+          onClick={() => regenerate.mutate()}
+        >
+          {regenerate.isPending ? 'Regenerating…' : 'Regenerate recovery codes'}
+        </Button>
+      </div>
+    </MethodCard>
+  );
+}
 
 /**
- * Two-factor authentication card (PROJECTPLAN.md §6.1, §13.2 V2-P5): status
- * from `GET /auth/2fa/status`, an enroll wizard (secret → confirm code →
- * recovery codes shown once), regenerate, and disable.
+ * Two-factor authentication card (PROJECTPLAN.md §6.1, §13.2 V2-P5, #298): two
+ * independently-toggleable methods (authenticator app + email codes) with shared
+ * recovery codes, driven by `GET /auth/2fa/status`. Recovery codes are shown once
+ * when the first method is enabled (or on regenerate).
  */
 function TwoFactorSection() {
   const queryClient = useQueryClient();
@@ -471,42 +752,28 @@ function TwoFactorSection() {
     staleTime: 10_000,
   });
 
-  const [view, setView] = useState<TwoFactorView>('status');
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [regenerateError, setRegenerateError] = useState<string | null>(null);
-
-  const regenerate = useMutation({
-    mutationFn: regenerateRecoveryCodes,
-    onSuccess: (data) => {
-      setRegenerateError(null);
-      setNotice(null);
-      setRecoveryCodes(data.recoveryCodes);
-    },
-    onError: () => setRegenerateError('Could not regenerate recovery codes. Please try again.'),
-  });
 
   function refresh() {
     void queryClient.invalidateQueries({ queryKey: TWO_FACTOR_KEY });
   }
+
+  const anyEnabled = (s: TwoFactorStatusResponse) => s.totpEnabled || s.emailEnabled;
 
   return (
     <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
       <div className="flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold text-neutral-100">Two-factor authentication</h3>
         <p className="text-xs text-neutral-500">
-          Require a code from an authenticator app (in addition to your password) when signing in.
+          Add a second step at sign-in. Turn on either method — or both.
         </p>
       </div>
-
-      {notice ? <Alert tone="success">{notice}</Alert> : null}
 
       {recoveryCodes ? (
         <RecoveryCodesCard
           codes={recoveryCodes}
           onDone={() => {
             setRecoveryCodes(null);
-            setView('status');
             refresh();
           }}
         />
@@ -517,48 +784,24 @@ function TwoFactorSection() {
           title="Couldn't load your two-factor status"
           description="Please try again in a moment."
         />
-      ) : view === 'enrolling' ? (
-        <EnrollWizard
-          onEnrolled={(codes) => {
-            setRecoveryCodes(codes);
-          }}
-          onCancel={() => setView('status')}
-        />
-      ) : !status.data.enabled ? (
-        <div>
-          <Button type="button" onClick={() => setView('enrolling')}>
-            Set up two-factor authentication
-          </Button>
-        </div>
-      ) : view === 'disabling' ? (
-        <DisableForm
-          onDisabled={() => {
-            setView('status');
-            setNotice('Two-factor authentication has been turned off.');
-            refresh();
-          }}
-          onCancel={() => setView('status')}
-        />
       ) : (
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">
-            Enabled — {status.data.recoveryCodesRemaining} recovery code
-            {status.data.recoveryCodesRemaining === 1 ? '' : 's'} remaining.
-          </p>
-          {regenerateError ? <Alert tone="error">{regenerateError}</Alert> : null}
-          <div className="flex flex-wrap gap-3">
-            <Button
-              type="button"
-              variant="secondary"
-              disabled={regenerate.isPending}
-              onClick={() => regenerate.mutate()}
-            >
-              {regenerate.isPending ? 'Regenerating…' : 'Regenerate recovery codes'}
-            </Button>
-            <Button type="button" variant="ghost" onClick={() => setView('disabling')}>
-              Disable 2FA
-            </Button>
-          </div>
+        <div className="flex flex-col gap-4">
+          <AuthenticatorMethodCard
+            enabled={status.data.totpEnabled}
+            onFirstRecoveryCodes={setRecoveryCodes}
+            refresh={refresh}
+          />
+          <EmailMethodCard
+            enabled={status.data.emailEnabled}
+            onFirstRecoveryCodes={setRecoveryCodes}
+            refresh={refresh}
+          />
+          {anyEnabled(status.data) ? (
+            <RecoveryCodesControl
+              remaining={status.data.recoveryCodesRemaining}
+              onRegenerated={setRecoveryCodes}
+            />
+          ) : null}
         </div>
       )}
     </section>

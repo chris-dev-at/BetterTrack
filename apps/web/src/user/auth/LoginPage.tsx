@@ -157,8 +157,16 @@ function TwoFactorStep({
   onCancel: () => void;
 }) {
   const { verifyTwoFactor, requestTwoFactorEmailCode } = useAuth();
+  const totpAvailable = challenge.channels.includes('totp');
   const emailAvailable = challenge.channels.includes('email');
   const recoveryAvailable = challenge.channels.includes('recovery');
+
+  // Tailor the prompt to the methods this account actually enabled (#298).
+  const codePrompt = totpAvailable
+    ? emailAvailable
+      ? 'Enter the 6-digit code from your authenticator app, or request an emailed code below.'
+      : 'Enter the 6-digit code from your authenticator app.'
+    : 'Enter the 6-digit code we emailed you.';
 
   const [useRecovery, setUseRecovery] = useState(false);
   const [value, setValue] = useState('');
@@ -219,9 +227,7 @@ function TwoFactorStep({
         {error ? <Alert tone="error">{error}</Alert> : null}
         {info ? <Alert tone="info">{info}</Alert> : null}
         <p className="text-sm text-neutral-400">
-          {useRecovery
-            ? 'Enter one of your recovery codes.'
-            : 'Enter the 6-digit code from your authenticator app or an emailed code.'}
+          {useRecovery ? 'Enter one of your recovery codes.' : codePrompt}
         </p>
         <TextField
           label={useRecovery ? 'Recovery code' : 'Verification code'}

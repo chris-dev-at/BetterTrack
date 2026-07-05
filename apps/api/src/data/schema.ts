@@ -69,6 +69,12 @@ export const users = pgTable(
     twoFactorSecret: text('two_factor_secret'),
     twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
     twoFactorConfirmedAt: timestamp('two_factor_confirmed_at', { withTimezone: true }),
+    // Standalone email-code 2FA method (§6.1, §13.2 V2-P5 addendum, #298).
+    // Independent of the TOTP flag above: either method being on arms the login
+    // challenge. Enabled only after an emailed code proves mailbox access; the
+    // shared recovery codes are issued on the FIRST method enabled and wiped when
+    // the last one goes off.
+    twoFactorEmailEnabled: boolean('two_factor_email_enabled').notNull().default(false),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
     // Default friend-sharing visibility applied when the user creates a *new*
     // portfolio (§6.9, §13.2 V2-P9). Only affects the default at creation time;

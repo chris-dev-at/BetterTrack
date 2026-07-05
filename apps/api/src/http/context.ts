@@ -191,7 +191,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // plus the login-challenge factor checks the auth service calls. Secret
   // encrypted at rest with the config's 2FA key; recovery codes hashed. Built
   // before auth so the login flow can gate on it.
-  const twoFactor = createTwoFactorService({ config, userRepo, twoFactorRepo, audit });
+  const twoFactor = createTwoFactorService({
+    config,
+    userRepo,
+    twoFactorRepo,
+    audit,
+    redis,
+    email,
+  });
 
   const auth = createAuthService({
     config,

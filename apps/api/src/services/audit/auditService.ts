@@ -19,6 +19,8 @@ export const AuditAction = {
   TwoFactorRecoveryRegenerated: 'two_factor.recovery_regenerated',
   TwoFactorChallengeIssued: 'two_factor.challenge_issued',
   TwoFactorEmailCodeSent: 'two_factor.email_code_sent',
+  TwoFactorEmailEnabled: 'two_factor.email_enabled',
+  TwoFactorEmailDisabled: 'two_factor.email_disabled',
   TwoFactorVerifyFail: 'two_factor.verify_fail',
   UserCreated: 'user.created',
   UserDisabled: 'user.disabled',
