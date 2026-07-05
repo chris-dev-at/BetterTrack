@@ -124,6 +124,64 @@ export const pinLockIdleMinutesSchema = z
 export const setPinLockRequestSchema = z.object({ idleMinutes: pinLockIdleMinutesSchema }).strict();
 export type SetPinLockRequest = z.infer<typeof setPinLockRequestSchema>;
 
+/**
+ * Two-factor auth — TOTP (PROJECTPLAN.md §6.1, §13.2 V2-P5). Enrollment is
+ * two-step: `enroll` returns a provisional secret + `otpauth://` URI (for the
+ * authenticator QR) with 2FA still OFF; a valid TOTP `code` at `confirm` enables
+ * it and hands back the one-time recovery codes. Disabling requires a valid
+ * factor (a TOTP code or an unused recovery code) so a bare session can't quietly
+ * remove the protection. This contract is the backend core; the login-time
+ * challenge and Settings UI are separate V2-P5 issues.
+ */
+export const TOTP_CODE_LENGTH = 6;
+export const totpCodeSchema = z.string().regex(/^\d{6}$/, 'Enter the 6-digit code');
+
+/** `POST /auth/2fa/enroll` — provisional secret + provisioning URI (2FA not yet on). */
+export const twoFactorEnrollResponseSchema = z
+  .object({
+    /** The `otpauth://totp/...` URI an authenticator app scans as a QR code. */
+    otpauthUri: z.string(),
+    /** The base32 secret, for manual entry when a QR can't be scanned. */
+    secret: z.string(),
+  })
+  .strict();
+export type TwoFactorEnrollResponse = z.infer<typeof twoFactorEnrollResponseSchema>;
+
+/** `POST /auth/2fa/confirm` — enable 2FA by proving a current TOTP code. */
+export const twoFactorConfirmRequestSchema = z.object({ code: totpCodeSchema }).strict();
+export type TwoFactorConfirmRequest = z.infer<typeof twoFactorConfirmRequestSchema>;
+
+/**
+ * `POST /auth/2fa/disable` — a valid factor authorizes the disable: either the
+ * 6-digit TOTP code or one unused recovery code. Loosely bounded so both forms
+ * (and their formatting) pass the contract; the service decides which it is.
+ */
+export const twoFactorDisableRequestSchema = z.object({ code: z.string().min(6).max(32) }).strict();
+export type TwoFactorDisableRequest = z.infer<typeof twoFactorDisableRequestSchema>;
+
+/** `GET /auth/2fa/status` — the caller's current 2FA state. */
+export const twoFactorStatusResponseSchema = z
+  .object({
+    /** True once a TOTP code has confirmed enrollment. */
+    enabled: z.boolean(),
+    /** True when a secret is enrolled but not yet confirmed (awaiting a code). */
+    pending: z.boolean(),
+    /** Count of recovery codes still unused. */
+    recoveryCodesRemaining: z.number().int().nonnegative(),
+  })
+  .strict();
+export type TwoFactorStatusResponse = z.infer<typeof twoFactorStatusResponseSchema>;
+
+/**
+ * The plaintext recovery codes — returned once by `confirm` and by
+ * `POST /auth/2fa/recovery-codes` (regenerate). Never re-fetchable: only their
+ * SHA-256 hashes are stored server-side.
+ */
+export const twoFactorRecoveryCodesResponseSchema = z
+  .object({ recoveryCodes: z.array(z.string()).min(1) })
+  .strict();
+export type TwoFactorRecoveryCodesResponse = z.infer<typeof twoFactorRecoveryCodesResponseSchema>;
+
 /** The authenticated-user view returned by `/auth/me`, `/auth/login`, etc. */
 export const meResponseSchema = z.object({
   id: z.string().uuid(),

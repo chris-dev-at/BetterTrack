@@ -91,6 +91,7 @@ function buildInertContext(): AppContext {
     logger: createLogger(config),
     events: inertService('events'),
     auth: inertService('auth'),
+    twoFactor: inertService('twoFactor'),
     admin: inertService('admin'),
     workboard: inertService('workboard'),
     marketData: inertService('marketData'),

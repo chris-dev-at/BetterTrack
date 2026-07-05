@@ -11,6 +11,7 @@ import { createEmailLogRepository } from '../data/repositories/emailLogRepositor
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
+import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
@@ -37,6 +38,7 @@ import {
   type ConglomerateService,
 } from '../services/conglomerate/conglomerateService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
+import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createCurrencyService } from '../services/currency/currencyService';
 import {
   createCustomAssetService,
@@ -73,6 +75,8 @@ export interface AppContext {
   redis: Redis;
   logger: Logger;
   auth: AuthService;
+  /** TOTP enroll/confirm/disable + recovery codes — the Settings → Security 2FA core (§6.1). */
+  twoFactor: TwoFactorService;
   admin: AdminService;
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
@@ -125,6 +129,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const userRepo = createUserRepository(db);
   const inviteRepo = createInviteRepository(db);
   const passwordResetRepo = createPasswordResetTokenRepository(db);
+  const twoFactorRepo = createTwoFactorRepository(db);
   const auditRepo = createAuditRepository(db);
   // Shared by auth/admin (default-portfolio provisioning at account creation,
   // §5.5) and the portfolio service below.
@@ -175,6 +180,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
     appSettings,
   });
+  // TOTP two-factor (§6.1, §13.2 V2-P5): enroll/confirm/disable + recovery codes.
+  // Secret encrypted at rest with the config's 2FA key; recovery codes hashed.
+  const twoFactor = createTwoFactorService({ config, userRepo, twoFactorRepo, audit });
   const admin = createAdminService({
     config,
     redis,
@@ -291,6 +299,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     logger,
     auth,
+    twoFactor,
     admin,
     workboard,
     marketData,
