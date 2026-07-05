@@ -63,6 +63,21 @@ describe('ConglomeratesListPage', () => {
     expect(screen.getByText('Draft')).toBeInTheDocument();
   });
 
+  test('the status badge explains what Active/Draft means to an owner-naive user', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: CONGLOMERATES });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Active')).toBeInTheDocument());
+    expect(screen.getByText('Active')).toHaveAttribute(
+      'title',
+      expect.stringContaining('used by the calculator'),
+    );
+    expect(screen.getByText('Draft')).toHaveAttribute(
+      'title',
+      expect.stringContaining('Activate once weights sum to 100%'),
+    );
+  });
+
   test('renders a "New Conglomerate" card linking to /workboard/conglomerates/new', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: CONGLOMERATES });
     renderPage();

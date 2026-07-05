@@ -410,7 +410,11 @@ function BuilderHeader({
             variant="primary"
             onClick={onActivate}
             disabled={!activatable || activating}
-            title={activatable ? undefined : 'Weights must sum to 100% (±0.01) before activating.'}
+            title={
+              activatable
+                ? 'Active = your live, validated basket used by the calculator; must sum to 100%.'
+                : 'Weights must sum to 100% (±0.01) before activating.'
+            }
           >
             {activating ? 'Activating…' : status === 'active' ? 'Re-activate' : 'Activate'}
           </Button>
