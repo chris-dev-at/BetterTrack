@@ -13,7 +13,12 @@ import type { WorkboardItem } from '@bettertrack/contracts';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
 import { formatSignedPercent } from '../../lib/format';
-import { listWorkboard, removeFromWorkboard, reorderWorkboard } from '../../lib/workboardApi';
+import {
+  WORKBOARD_QUERY_KEY,
+  listWorkboard,
+  removeFromWorkboard,
+  reorderWorkboard,
+} from '../../lib/workboardApi';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
 import { Alert } from '../components/ui';
@@ -174,10 +179,13 @@ function WatchlistZone() {
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [reorderError, setReorderError] = useState<string | null>(null);
 
+  // Always refetches on mount (§13.2) — landing on the watchlist right after an
+  // icon-add elsewhere in the app must never require a manual reload.
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['workboard'],
+    queryKey: WORKBOARD_QUERY_KEY,
     queryFn: ({ signal }) => listWorkboard(signal),
     staleTime: 30_000,
+    refetchOnMount: 'always',
   });
 
   // Mirror server order; resets on every successful fetch (including post-remove refetch).
@@ -189,7 +197,7 @@ function WatchlistZone() {
     mutationFn: (itemId: string) => removeFromWorkboard(itemId),
     onSuccess: () => {
       setRemoveError(null);
-      void queryClient.invalidateQueries({ queryKey: ['workboard'] });
+      void queryClient.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
     },
     onError: () => setRemoveError('Failed to remove. Please try again.'),
   });
@@ -198,7 +206,7 @@ function WatchlistZone() {
     mutationFn: (itemIds: string[]) => reorderWorkboard(itemIds),
     onSuccess: () => {
       setReorderError(null);
-      void queryClient.invalidateQueries({ queryKey: ['workboard'] });
+      void queryClient.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
     },
     onError: () => {
       // Revert optimistic order to last known server state.

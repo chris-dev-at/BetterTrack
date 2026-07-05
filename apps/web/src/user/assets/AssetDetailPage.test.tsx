@@ -13,7 +13,8 @@ vi.mock('../../lib/assetApi', () => ({
 }));
 
 vi.mock('../../lib/workboardApi', () => ({
-  addToWorkboard: vi.fn(),
+  useWatchlistMembership: vi.fn(),
+  useAddToWatchlist: vi.fn(),
 }));
 
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
@@ -43,6 +44,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { AssetDetailPage } from './AssetDetailPage';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -103,6 +105,31 @@ function renderPage(assetId = ASSET_ID) {
   );
 }
 
+// ─── Watchlist hook mocks (shared with search results, #256) ─────────────────
+
+function makeWatchlistMembership(watchedIds: string[] = []) {
+  return {
+    watchedIds: new Set(watchedIds),
+    data: undefined,
+    isLoading: false,
+    isError: false,
+  } as unknown as ReturnType<typeof useWatchlistMembership>;
+}
+
+const addToWatchlistMutate = vi.fn();
+
+function makeAddToWatchlistMutation(
+  overrides: Partial<{ isPending: boolean; isError: boolean; isSuccess: boolean }> = {},
+) {
+  return {
+    mutate: addToWatchlistMutate,
+    isPending: false,
+    isError: false,
+    isSuccess: false,
+    ...overrides,
+  } as unknown as ReturnType<typeof useAddToWatchlist>;
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
@@ -114,6 +141,8 @@ beforeEach(() => {
     asOf: '2024-06-01T12:00:00.000Z',
   });
   vi.mocked(getAssetHistory).mockResolvedValue(baseHistory);
+  vi.mocked(useWatchlistMembership).mockReturnValue(makeWatchlistMembership());
+  vi.mocked(useAddToWatchlist).mockReturnValue(makeAddToWatchlistMutation());
 });
 
 describe('AssetDetailPage — header rendering', () => {
@@ -227,5 +256,80 @@ describe('AssetDetailPage — range switching', () => {
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     // step mode uses LineSeries (not AreaSeries)
     await waitFor(() => expect(chartMocks.addSeries.mock.calls[0]?.[0]).toBe('LineSeries'));
+  });
+});
+
+describe('AssetDetailPage — quick actions (§13.2)', () => {
+  test('quick actions render above the price chart, not buried at the bottom', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    const watchlistIcon = screen.getByRole('button', { name: 'Add BAYN.DE to watchlist' });
+    const chart = screen.getByLabelText('Price chart for BAYN.DE');
+
+    // DOCUMENT_POSITION_FOLLOWING (4) on `chart` relative to `watchlistIcon`
+    // means the icon comes first in document order — i.e. above the chart.
+    expect(watchlistIcon.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  test('no label reading "Workboard" remains on the asset page', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText(/Workboard/i)).not.toBeInTheDocument();
+  });
+
+  test('watchlist icon is unfilled and idle when the asset is not yet watched', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    const icon = screen.getByRole('button', { name: 'Add BAYN.DE to watchlist' });
+    expect(icon).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  test('watchlist icon is state-aware: filled from first render when already watched', async () => {
+    vi.mocked(useWatchlistMembership).mockReturnValue(makeWatchlistMembership([ASSET_ID]));
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    const icon = screen.getByRole('button', { name: 'BAYN.DE is on your watchlist' });
+    expect(icon).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('clicking the watchlist icon adds the asset in place, no navigation', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Add BAYN.DE to watchlist' }));
+
+    expect(addToWatchlistMutate).toHaveBeenCalledWith(ASSET_ID);
+    // Still on the asset page — the click never redirects.
+    expect(screen.getByText('Bayer AG')).toBeInTheDocument();
+  });
+
+  test('a second click on an already-watched asset does not fire another add', async () => {
+    vi.mocked(useWatchlistMembership).mockReturnValue(makeWatchlistMembership([ASSET_ID]));
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'BAYN.DE is on your watchlist' }));
+    expect(addToWatchlistMutate).not.toHaveBeenCalled();
+  });
+
+  test('shows an error alert only when the add mutation genuinely fails', async () => {
+    vi.mocked(useAddToWatchlist).mockReturnValue(makeAddToWatchlistMutation({ isError: true }));
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.getByText(/Failed to add to Watchlist/i)).toBeInTheDocument();
+  });
+
+  test('renders Portfolio and Conglomerate quick actions near the top', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: '+ Portfolio' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '+ Conglomerate' })).toBeInTheDocument();
   });
 });
