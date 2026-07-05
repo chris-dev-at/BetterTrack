@@ -71,6 +71,13 @@
       "when": 1783209016256,
       "tag": "0009_pin_lock_idle_minutes",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783252389135,
+      "tag": "0010_password_reset_tokens",
+      "breakpoints": true
     }
   ]
 }

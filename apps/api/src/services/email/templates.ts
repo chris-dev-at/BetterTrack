@@ -111,6 +111,39 @@ export function tempPasswordEmail(params: {
 }
 
 /**
+ * Self-service password-reset email (PROJECTPLAN.md §6.1, §14). Carries the
+ * single-use, short-lived tokenized link — no credential, no account data. The
+ * user follows it to choose a new password; the link expires within the hour.
+ */
+export function passwordResetEmail(params: { resetUrl: string }): EmailContent {
+  const { resetUrl } = params;
+  return {
+    subject: `Reset your ${BRAND} password`,
+    html: layout(
+      'Reset your password',
+      [
+        '<p>We received a request to reset the password for your BetterTrack account. ',
+        'Use the link below to choose a new one.</p>',
+        `<p style="padding:8px 0 16px;">${button(resetUrl, 'Reset password')}</p>`,
+        '<p>This link expires in 1 hour and can be used once. If you did not request this, ',
+        'you can safely ignore this email — your password will not change.</p>',
+        `<p style="word-break:break-all;color:#5b6470;">${escapeHtml(resetUrl)}</p>`,
+      ].join(''),
+    ),
+    text: [
+      `Reset your ${BRAND} password.`,
+      '',
+      'We received a request to reset the password for your BetterTrack account.',
+      'Open this link to choose a new one (expires in 1 hour, single use):',
+      '',
+      resetUrl,
+      '',
+      'If you did not request this, you can safely ignore this email.',
+    ].join('\n'),
+  };
+}
+
+/**
  * Diagnostic email triggered from the admin console (PROJECTPLAN.md §6.12) to
  * confirm SMTP is wired. Carries no account data — it just has to arrive.
  */

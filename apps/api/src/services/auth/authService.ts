@@ -5,19 +5,22 @@ import type { Redis } from 'ioredis';
 import type {
   AcceptInviteRequest,
   ChangePasswordRequest,
+  PasswordResetComplete,
+  PasswordResetRequest,
   RegisterRequest,
   SessionInfoResponse,
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
+import type { PasswordResetTokenRepository } from '../../data/repositories/passwordResetTokenRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, forbidden, unauthorized } from '../../errors';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { hashToken } from '../crypto/tokens';
+import { generateToken, hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
@@ -35,6 +38,7 @@ export interface AuthServiceDeps {
   redis: Redis;
   userRepo: UserRepository;
   inviteRepo: InviteRepository;
+  passwordResetRepo: PasswordResetTokenRepository;
   portfolioRepo: PortfolioRepository;
   sessions: SessionService;
   audit: AuditService;
@@ -74,6 +78,20 @@ export interface AuthService {
   validateInvite(token: string): Promise<{ valid: boolean; email: string | null }>;
   acceptInvite(input: AcceptInviteRequest, ip?: string | null): Promise<SessionResult>;
   /**
+   * Self-service password reset — step 1 (§6.1, §14). Issues a single-use,
+   * short-lived tokenized link for a user-kind account and emails it. Always
+   * resolves the same way whether or not the email matches an account: no user
+   * enumeration.
+   */
+  requestPasswordReset(input: PasswordResetRequest, ip?: string | null): Promise<void>;
+  /**
+   * Self-service password reset — step 2 (§6.1, §14). Validates and consumes the
+   * token, sets the new password (enforcing the §6.1 policy), kills all of the
+   * user's sessions and mints a fresh one so the reset lands them signed in with
+   * no redundant prompt (#268). Rejects a used/expired/unknown token.
+   */
+  completePasswordReset(input: PasswordResetComplete, ip?: string | null): Promise<SessionResult>;
+  /**
    * Public self-serve registration (§4, §6.12). Reads the stored registration
    * mode and rejects with 403 `REGISTRATION_CLOSED` unless the mode permits
    * self-registration. V1 runs `closed`, so this always rejects; it exists as
@@ -109,6 +127,9 @@ export interface AuthService {
   getSessionInfo(sessionId: string): Promise<SessionInfoResponse | null>;
 }
 
+// Self-service reset links are short-lived (§6.1, §14): valid for one hour.
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
 // Single generic failure for every login rejection — no user enumeration (§6.1).
 const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
@@ -135,6 +156,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     redis,
     userRepo,
     inviteRepo,
+    passwordResetRepo,
     portfolioRepo,
     sessions,
     audit,
@@ -372,6 +394,86 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const sessionId = await sessions.create(user.id);
       return { user, sessionId };
+    },
+
+    async requestPasswordReset({ email: address }, ip) {
+      const user = await userRepo.findByEmail(address);
+      // Only active, user-kind accounts get a self-service link. Admin recovery
+      // is the admin temp-password path (#268); disabled accounts stay closed.
+      // Everything below is skipped for a non-match, but the caller always sees
+      // the same generic acknowledgement — no user enumeration (§6.1).
+      if (user && user.role === 'user' && user.status === 'active') {
+        // One outstanding link per account: drop any prior token before issuing.
+        await passwordResetRepo.deleteForUser(user.id);
+        const { token, tokenHash } = generateToken();
+        await passwordResetRepo.create({
+          userId: user.id,
+          tokenHash,
+          expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        });
+        await audit.record({
+          action: AuditAction.PasswordResetRequested,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+        });
+        // Best-effort send after the token is committed — a mail failure never
+        // throws back (§6.11). The email_log row is written either way (§6.10).
+        const resetUrl = `${config.appOrigin}/reset/${token}`;
+        await email.sendPasswordReset({
+          to: user.email,
+          resetUrl,
+          audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+        });
+      }
+    },
+
+    async completePasswordReset({ token, newPassword }, ip) {
+      const invalid = () =>
+        badRequest('This reset link is invalid or has expired.', 'INVALID_RESET');
+
+      const record = await passwordResetRepo.findByTokenHash(hashToken(token));
+      if (!record || record.usedAt || new Date(record.expiresAt).getTime() <= Date.now()) {
+        throw invalid();
+      }
+
+      const user = await userRepo.findById(record.userId);
+      // The token was only ever issued to an active user-kind account; re-check
+      // in case the account was disabled or its role changed after issue.
+      if (!user || user.role !== 'user' || user.status !== 'active') throw invalid();
+
+      const policy = checkPasswordPolicy(newPassword);
+      if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
+
+      const passwordHash = await passwordHasher.hash(newPassword);
+      await userRepo.updatePassword(user.id, passwordHash, false);
+
+      // Consume this token and revoke every other outstanding one for the user.
+      await passwordResetRepo.markUsed(record.id, new Date());
+      await passwordResetRepo.deleteForUser(user.id);
+
+      // A password change kills all sessions (§6.1); re-establish one for this
+      // device so the reset lands the user signed in — no redundant prompt (#268).
+      await sessions.destroyAllForUser(user.id);
+      const sessionId = await sessions.create(user.id);
+
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PasswordChanged,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PasswordResetCompleted,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+
+      const updated = await userRepo.findById(user.id);
+      return { user: updated ?? { ...user, passwordHash, mustChangePassword: false }, sessionId };
     },
 
     async register(_input, _ip) {
