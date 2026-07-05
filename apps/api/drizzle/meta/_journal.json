@@ -92,6 +92,13 @@
       "when": 1783259136018,
       "tag": "0012_cash_movements",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783262831597,
+      "tag": "0013_portfolio_archive",
+      "breakpoints": true
     }
   ]
 }

@@ -39,6 +39,7 @@ const DEFAULT_PORTFOLIO: PortfolioSummary = {
   sortOrder: 0,
   isDefault: true,
   defaultPayFromCash: false,
+  archivedAt: null,
 };
 
 function renderPage() {

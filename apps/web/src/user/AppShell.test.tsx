@@ -112,11 +112,11 @@ test('the profile dropdown lists the §6.11 items and Logout works', async () =>
 
 // ─── Redirects (§7.2) ─────────────────────────────────────────────────────────
 
-test('`/` redirects to `/portfolio` and shows the portfolio switcher placeholder', async () => {
+test('`/` redirects to `/portfolio` and shows the portfolio switcher', async () => {
   renderAt('/');
 
-  // Portfolio section chrome: switcher placeholder + section subnav.
-  expect(await screen.findByRole('button', { name: /New portfolio/i })).toBeDisabled();
+  // Portfolio section chrome: the multi-portfolio switcher + section subnav.
+  expect(await screen.findByRole('button', { name: 'Switch portfolio' })).toBeInTheDocument();
   const sectionNav = screen.getByRole('navigation', { name: 'Section' });
   expect(within(sectionNav).getByRole('link', { name: 'Transactions' })).toBeInTheDocument();
 });

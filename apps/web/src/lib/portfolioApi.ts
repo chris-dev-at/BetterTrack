@@ -6,6 +6,7 @@ import {
   customAssetSchema,
   portfolioHistoryResponseSchema,
   portfolioListResponseSchema,
+  portfolioMutationResponseSchema,
   portfolioResponseSchema,
   transactionListResponseSchema,
   transactionSchema,
@@ -48,10 +49,41 @@ import { apiRequest } from './apiClient';
 
 // --- Portfolios (the list) -------------------------------------------------
 
-/** `GET /portfolios` — the user's portfolios (V1: the single auto-created default). */
-export async function listPortfolios(signal?: AbortSignal): Promise<PortfolioListResponse> {
-  const data = await apiRequest<unknown>('/portfolios', { signal });
+/**
+ * `GET /portfolios` — the user's portfolios. Active only by default; pass
+ * `includeArchived` to also return soft-archived portfolios (§13.2 V2-P8).
+ */
+export async function listPortfolios(
+  signal?: AbortSignal,
+  includeArchived = false,
+): Promise<PortfolioListResponse> {
+  const data = await apiRequest<unknown>('/portfolios', {
+    query: includeArchived ? { includeArchived: 'true' } : {},
+    signal,
+  });
   return portfolioListResponseSchema.parse(data);
+}
+
+/** `POST /portfolios` — create a named portfolio (§13.2 V2-P8). */
+export async function createPortfolio(name: string): Promise<PortfolioSummary> {
+  const data = await apiRequest<unknown>('/portfolios', { method: 'POST', body: { name } });
+  return portfolioMutationResponseSchema.parse(data).portfolio;
+}
+
+/** `POST /portfolios/:id/archive` — soft-archive a portfolio (§13.2 V2-P8). */
+export async function archivePortfolio(portfolioId: string): Promise<PortfolioSummary> {
+  const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/archive`, {
+    method: 'POST',
+  });
+  return portfolioMutationResponseSchema.parse(data).portfolio;
+}
+
+/** `POST /portfolios/:id/restore` — restore an archived portfolio (§13.2 V2-P8). */
+export async function restorePortfolio(portfolioId: string): Promise<PortfolioSummary> {
+  const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/restore`, {
+    method: 'POST',
+  });
+  return portfolioMutationResponseSchema.parse(data).portfolio;
 }
 
 /** `PATCH /portfolios/:id` — rename and/or change visibility (e.g. the Shared Items toggle-off). */
