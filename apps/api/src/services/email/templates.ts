@@ -249,6 +249,33 @@ export function portfolioSharedEmail(params: {
   };
 }
 
+/**
+ * Login 2FA email-code (PROJECTPLAN.md §6.1, §13.2 V2-P5). One of the two second-
+ * factor channels: a short-lived, single-use numeric code the user enters at the
+ * login challenge. Carries no link and no account data beyond the code itself.
+ */
+export function twoFactorCodeEmail(params: { code: string; minutes: number }): EmailContent {
+  const { code, minutes } = params;
+  return {
+    subject: `Your ${BRAND} sign-in code`,
+    html: layout(
+      'Your sign-in code',
+      [
+        '<p>Use this code to finish signing in to your BetterTrack account:</p>',
+        `<p style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:28px;font-weight:700;background:#f5f6f8;border-radius:8px;padding:12px 16px;letter-spacing:4px;text-align:center;">${escapeHtml(code)}</p>`,
+        `<p>This code expires in ${minutes} minutes and can be used once. `,
+        'If you did not try to sign in, you can safely ignore this email.</p>',
+      ].join(''),
+    ),
+    text: [
+      `Your ${BRAND} sign-in code: ${code}`,
+      '',
+      `This code expires in ${minutes} minutes and can be used once.`,
+      'If you did not try to sign in, you can safely ignore this email.',
+    ].join('\n'),
+  };
+}
+
 export function welcomeEmail(params: { username: string; appUrl: string }): EmailContent {
   const { username, appUrl } = params;
   return {

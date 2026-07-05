@@ -1,11 +1,13 @@
 import {
   inviteValidationResponseSchema,
+  loginResponseSchema,
   meResponseSchema,
   sessionInfoResponseSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type InviteValidationResponse,
   type LoginRequest,
+  type LoginResponse,
   type MeResponse,
   type PasswordResetComplete,
   type PasswordResetRequest,
@@ -13,6 +15,8 @@ import {
   type SessionInfoResponse,
   type SetPinLockRequest,
   type SetPinRequest,
+  type TwoFactorEmailCodeRequest,
+  type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -28,13 +32,41 @@ import { apiRequest } from './apiClient';
  * policy and eject the user from the login or forced-change screen.
  */
 
-export async function login(body: LoginRequest): Promise<MeResponse> {
+/**
+ * Password login (§6.1). Resolves to either the signed-in user (no 2FA, session
+ * set) or a 2FA challenge (`twoFactorRequired`), which the caller completes via
+ * {@link verifyTwoFactor}. `suppressAuthRedirect`: this is the auth surface.
+ */
+export async function login(body: LoginRequest): Promise<LoginResponse> {
   const data = await apiRequest<unknown>('/auth/login', {
     method: 'POST',
     body,
     suppressAuthRedirect: true,
   });
+  return loginResponseSchema.parse(data);
+}
+
+/**
+ * Complete a login 2FA challenge (§6.1, §13.2 V2-P5) with a TOTP/email code or a
+ * recovery code. On success the API sets the session cookie and returns the
+ * signed-in user. `suppressAuthRedirect`: a 401 here is an in-form error.
+ */
+export async function verifyTwoFactor(body: TwoFactorVerifyRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/2fa/verify', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
   return meResponseSchema.parse(data);
+}
+
+/** Request a one-time email login code for a pending 2FA challenge (§6.1). */
+export async function requestTwoFactorEmailCode(body: TwoFactorEmailCodeRequest): Promise<void> {
+  await apiRequest<unknown>('/auth/2fa/email-code', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
 }
 
 export async function logout(): Promise<void> {
