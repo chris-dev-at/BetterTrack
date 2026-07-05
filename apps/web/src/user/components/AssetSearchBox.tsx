@@ -16,10 +16,12 @@ import { addToWorkboard, listWorkboard } from '../../lib/workboardApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import {
-  autoBalance,
+  ACTIVE_SUM,
   canAddPosition,
+  normalize,
   persistablePositions,
   positionFromSearchResult,
+  roundWeight,
   type BuilderPosition,
 } from '../workboard/conglomerateBuilder';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
@@ -195,9 +197,21 @@ export function AssetSearchBox({
         }));
         return;
       }
-      // Auto-balance so every position keeps a valid (`0 < w ≤ 100`) weight —
-      // matching the Builder's own "click adds a position" behaviour (§6.5).
-      const balanced = autoBalance([...positions, positionFromSearchResult(item)]);
+      // Give the new position a fair share of the pie, then normalize (§6.5)
+      // the existing positions to fill the remainder — preserving their
+      // relative weights instead of flattening everything to an equal split.
+      const newPosition: BuilderPosition = {
+        ...positionFromSearchResult(item),
+        weightPct: roundWeight(ACTIVE_SUM / (positions.length + 1)),
+        locked: true,
+      };
+      let balanced: BuilderPosition[];
+      if (positions.length === 0) {
+        balanced = [{ ...newPosition, locked: false, weightPct: ACTIVE_SUM }];
+      } else {
+        const result = normalize([...positions, newPosition]);
+        balanced = result.ok ? result.positions : [...positions, newPosition];
+      }
       await replaceConglomeratePositions(
         target.id,
         persistablePositions(balanced).map((p) => ({ assetId: p.assetId, weightPct: p.weightPct })),
@@ -222,6 +236,11 @@ export function AssetSearchBox({
 
   function handleOpenAsset(item: SearchResultItem) {
     navigate(`/assets/${item.id}`);
+    onAction?.();
+  }
+
+  function handleCreateConglomerate() {
+    navigate('/workboard/conglomerates/new');
     onAction?.();
   }
 
@@ -300,6 +319,7 @@ export function AssetSearchBox({
                 conglomerateAddState={conglomerateAddState[item.id]}
                 onPickConglomerate={(target) => void handleAddToConglomerate(item, target)}
                 onCloseConglomeratePicker={() => setConglomeratePickerFor(null)}
+                onCreateConglomerate={handleCreateConglomerate}
                 onPortfolio={() => handlePortfolio(item)}
               />
             ),
@@ -335,6 +355,7 @@ interface ResultRowProps {
   conglomerateAddState: { status: 'pending' | 'done' | 'error'; message?: string } | undefined;
   onPickConglomerate: (target: ConglomerateSummary) => void;
   onCloseConglomeratePicker: () => void;
+  onCreateConglomerate: () => void;
   onPortfolio: () => void;
 }
 
@@ -350,9 +371,12 @@ function ResultRow({
   conglomerateAddState,
   onPickConglomerate,
   onCloseConglomeratePicker,
+  onCreateConglomerate,
   onPortfolio,
 }: ResultRowProps) {
   const badgeClass = TYPE_BADGE[item.type] ?? 'bg-neutral-800 text-neutral-400';
+  const conglomerateRef = useRef<HTMLDivElement>(null);
+  usePopoverDismiss(conglomeratePickerOpen, onCloseConglomeratePicker, conglomerateRef);
 
   return (
     <li className="group relative flex flex-col gap-2 rounded-md bg-neutral-900 px-3 py-2.5 hover:bg-neutral-800/80 sm:flex-row sm:items-center">
@@ -379,27 +403,53 @@ function ResultRow({
       <div className="flex shrink-0 items-center gap-1.5">
         <WatchlistControl item={item} status={wbStatus} onAdd={onWorkboard} />
 
-        <ActionButton onClick={onConglomerate} aria-label={`Add ${item.symbol} to a Conglomerate`}>
-          → Conglomerate
-        </ActionButton>
+        <div className="relative" ref={conglomerateRef}>
+          <ActionButton onClick={onConglomerate} aria-label={`Add ${item.symbol} to a Conglomerate`}>
+            → Conglomerate
+          </ActionButton>
+
+          {conglomeratePickerOpen ? (
+            <ConglomeratePicker
+              item={item}
+              conglomerates={conglomerates}
+              isLoading={conglomeratesLoading}
+              addState={conglomerateAddState}
+              onPick={onPickConglomerate}
+              onClose={onCloseConglomeratePicker}
+              onCreateNew={onCreateConglomerate}
+            />
+          ) : null}
+        </div>
 
         <ActionButton onClick={onPortfolio} aria-label={`Record a buy for ${item.symbol}`}>
           → Portfolio
         </ActionButton>
-
-        {conglomeratePickerOpen ? (
-          <ConglomeratePicker
-            item={item}
-            conglomerates={conglomerates}
-            isLoading={conglomeratesLoading}
-            addState={conglomerateAddState}
-            onPick={onPickConglomerate}
-            onClose={onCloseConglomeratePicker}
-          />
-        ) : null}
       </div>
     </li>
   );
+}
+
+/** Closes a popover on Escape or on a mousedown outside `containerRef`. */
+function usePopoverDismiss(
+  open: boolean,
+  onClose: () => void,
+  containerRef: React.RefObject<HTMLElement | null>,
+) {
+  useEffect(() => {
+    if (!open) return;
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    function handleClick(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('keydown', handleKey);
+    document.addEventListener('mousedown', handleClick);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('mousedown', handleClick);
+    };
+  }, [open, onClose, containerRef]);
 }
 
 /**
@@ -419,9 +469,11 @@ function WatchlistControl({
 }) {
   const [listPickerOpen, setListPickerOpen] = useState(false);
   const added = status === 'done';
+  const containerRef = useRef<HTMLDivElement>(null);
+  usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
 
   return (
-    <div className="relative flex items-center">
+    <div className="relative flex items-center" ref={containerRef}>
       <button
         type="button"
         onClick={onAdd}
@@ -509,6 +561,7 @@ function ConglomeratePicker({
   addState,
   onPick,
   onClose,
+  onCreateNew,
 }: {
   item: SearchResultItem;
   conglomerates: ConglomerateSummary[];
@@ -516,8 +569,8 @@ function ConglomeratePicker({
   addState: { status: 'pending' | 'done' | 'error'; message?: string } | undefined;
   onPick: (target: ConglomerateSummary) => void;
   onClose: () => void;
+  onCreateNew: () => void;
 }) {
-  const navigate = useNavigate();
   const pending = addState?.status === 'pending';
 
   return (
@@ -569,7 +622,7 @@ function ConglomeratePicker({
 
       <button
         type="button"
-        onClick={() => navigate('/workboard/conglomerates/new')}
+        onClick={onCreateNew}
         className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs text-sky-400 hover:bg-neutral-800"
       >
         + Create new conglomerate

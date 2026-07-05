@@ -119,6 +119,33 @@ function emptyConglomerateDetail(id: string, name: string): ConglomerateDetail {
   };
 }
 
+/** A non-empty conglomerate: SPY 70 / BND 30, mirroring a live 70/30 basket. */
+function twoPositionConglomerateDetail(id: string, name: string): ConglomerateDetail {
+  return {
+    id,
+    name,
+    description: null,
+    status: 'active',
+    positionCount: 2,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    positions: [
+      {
+        assetId: 'asset-spy',
+        weightPct: 70,
+        sortOrder: 0,
+        asset: { symbol: 'SPY', name: 'SPDR S&P 500 ETF', currency: 'USD', type: 'etf' },
+      },
+      {
+        assetId: 'asset-bnd',
+        weightPct: 30,
+        sortOrder: 1,
+        asset: { symbol: 'BND', name: 'Vanguard Total Bond ETF', currency: 'USD', type: 'etf' },
+      },
+    ],
+  };
+}
+
 function renderSearchBox(props: Partial<React.ComponentProps<typeof AssetSearchBox>> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -357,6 +384,34 @@ describe('AssetSearchBox', () => {
         ]),
       );
       expect(await screen.findByText(/added to world basket/i)).toBeInTheDocument();
+    });
+
+    test('adding to a non-empty conglomerate scales existing weights down proportionally instead of equalizing them', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(conglomerateApi.listConglomerates).mockResolvedValue(conglomerateList());
+      vi.mocked(conglomerateApi.getConglomerate).mockResolvedValue(
+        twoPositionConglomerateDetail('cong-1', 'World Basket'),
+      );
+      vi.mocked(conglomerateApi.replaceConglomeratePositions).mockResolvedValue(
+        twoPositionConglomerateDetail('cong-1', 'World Basket'),
+      );
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /add nvda to a conglomerate/i }));
+      await user.click(await screen.findByRole('menuitem', { name: 'World Basket' }));
+
+      // The existing SPY 70 / BND 30 ratio (70:30) must survive the resize —
+      // never flattened to an equal three-way split.
+      await waitFor(() =>
+        expect(conglomerateApi.replaceConglomeratePositions).toHaveBeenCalledWith('cong-1', [
+          { assetId: 'asset-spy', weightPct: 46.667 },
+          { assetId: 'asset-bnd', weightPct: 20 },
+          { assetId: 'asset-nvda', weightPct: 33.333 },
+        ]),
+      );
     });
   });
 
