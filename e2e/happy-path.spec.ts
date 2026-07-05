@@ -2,16 +2,18 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { createInvite, loginAsAdmin } from './support/adminApi';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
-import { acceptInvite, watchAsset } from './support/flows';
+import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
 /**
  * PROJECTPLAN §12 thin e2e happy path (nightly, not per-commit): invite/login
  * → local search → watch → build conglomerate → allocate → add to portfolio
  * → enable friend sharing → a second account accepts the request and sees
- * the shared portfolio.
+ * the shared portfolio — extended with the new V2 flows (§13.2 V2-P11): a
+ * 1-char search watched from the asset detail page, a cash-funded buy, a
+ * second portfolio, and friend-shared watchlist.
  */
 test('happy path: invite through friend sharing', async ({ browser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
 
   const runId = Date.now();
   const ownerEmail = `e2e-owner-${runId}@bettertrack.local`;
@@ -35,6 +37,15 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
 
   // search (local) → watch
   await watchAsset(owner, 'Apple', 'AAPL');
+
+  // V2-P11: a 1-char ticker search, watched from the asset detail page's icon
+  // button, must show up on the watchlist page via SPA navigation (no reload).
+  await openAssetAndWatchFromDetail(owner, 'V', 'V');
+  const primaryNav = owner.getByRole('navigation', { name: 'Primary' });
+  await primaryNav.getByRole('link', { name: 'Workboard' }).click();
+  await expect(owner).toHaveURL(/\/workboard$/);
+  const watchlistTable = owner.getByRole('table');
+  await expect(watchlistTable.getByRole('link', { name: 'V' })).toBeVisible({ timeout: 15_000 });
 
   // build conglomerate
   await owner.goto('/workboard/conglomerates/new');
@@ -69,6 +80,55 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
     timeout: 15_000,
   });
 
+  // V2-P11: deposit cash, then buy an EUR-native asset (SAP, no FX conversion)
+  // paid from the cash balance — the cash-after preview shown before Record,
+  // and the overview cash line reconciling to deposit minus cost afterward.
+  await owner.getByRole('button', { name: '+ Deposit' }).click();
+  const cashDialog = owner.getByRole('dialog', { name: 'Cash balance' });
+  await cashDialog.getByLabel('Amount').fill('800');
+  await cashDialog.getByRole('button', { name: 'Deposit cash' }).click();
+  await expect(cashDialog).toBeHidden();
+
+  await owner.getByRole('button', { name: '+ Transaction' }).click();
+  const buyDialog = owner.getByRole('dialog', { name: /record transaction/i });
+  await buyDialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
+  await buyDialog.getByRole('button', { name: 'Select SAP.DE' }).click();
+  await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
+  await buyDialog.getByLabel('Price for SAP.DE').fill('50');
+  await buyDialog.getByLabel('Pay from cash balance').check();
+  await expect(buyDialog.getByRole('status', { name: 'Cash-after preview' })).toContainText('→', {
+    timeout: 15_000,
+  });
+  await buyDialog.getByRole('button', { name: 'Record' }).click();
+  await expect(buyDialog).toBeHidden();
+
+  await owner.goto('/portfolio');
+  const cashLabel = owner
+    .getByRole('region', { name: 'Portfolio totals' })
+    .getByText('Cash', { exact: true });
+  await expect(cashLabel.locator('xpath=following-sibling::p[1]')).toContainText('600,00', {
+    timeout: 15_000,
+  });
+
+  // V2-P11: create and switch to a second portfolio — scoped views (holdings)
+  // follow the active portfolio, then switch back to the default.
+  const switcher = owner.getByRole('button', { name: 'Switch portfolio' });
+  await switcher.click();
+  await owner.getByRole('menuitem', { name: '+ New portfolio' }).click();
+  const newPortfolioDialog = owner.getByRole('dialog', { name: 'New portfolio' });
+  await newPortfolioDialog.getByLabel('Portfolio name').fill('Growth');
+  await newPortfolioDialog.getByRole('button', { name: 'Create' }).click();
+  await expect(newPortfolioDialog).toBeHidden();
+  await expect(switcher).toContainText('Growth');
+  await expect(owner.getByText('Your portfolio is empty')).toBeVisible({ timeout: 15_000 });
+
+  await switcher.click();
+  await owner.getByRole('menuitemradio', { name: 'Main' }).click();
+  await expect(switcher).toContainText('Main');
+  await expect(ownerHoldings.getByRole('link', { name: 'AAPL' })).toBeVisible({
+    timeout: 15_000,
+  });
+
   // enable friend sharing on the (default "Main") portfolio
   await owner.goto('/settings/account');
   await owner.getByRole('radio', { name: 'Yes' }).click();
@@ -96,4 +156,23 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(friendHoldings.getByRole('link', { name: 'AAPL' })).toBeVisible({
     timeout: 15_000,
   });
+
+  // V2-P11: owner shares the watchlist to friends; the already-accepted friend
+  // sees it read-only under Shared With Me.
+  await owner.goto('/workboard');
+  await owner.getByRole('button', { name: 'Share with friends' }).click();
+  await expect(owner.getByRole('button', { name: 'Shared with friends' })).toBeVisible();
+
+  await friend.goto('/social/shared-with-me');
+  const watchlistLink = friend.getByRole('link', {
+    name: new RegExp(`${ownerUsername}.s watchlist`),
+  });
+  await expect(watchlistLink).toBeVisible({ timeout: 15_000 });
+  await watchlistLink.click();
+
+  await expect(
+    friend.getByRole('heading', { name: new RegExp(`${ownerUsername}.s watchlist`) }),
+  ).toBeVisible();
+  await expect(friend.getByText('AAPL')).toBeVisible();
+  await expect(friend.getByText('V', { exact: true })).toBeVisible();
 });
