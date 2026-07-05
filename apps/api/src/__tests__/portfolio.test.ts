@@ -195,6 +195,55 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
       .send({ visibility: 'friends' });
     expect(res.status).toBe(404);
   });
+
+  it('rejects a rename that collides with another portfolio (409, not 500)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent); // "Main"
+
+    // A second portfolio to rename.
+    const created = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(created.status).toBe(201);
+    const tradingPid = created.body.portfolio.id;
+
+    // Renaming "Trading" → "Main" collides with the existing default: clean 409.
+    const dup = await agent
+      .patch(`/api/v1/portfolios/${tradingPid}`)
+      .set(...XRW)
+      .send({ name: 'Main' });
+    expect(dup.status).toBe(409);
+    expect(dup.body.error.code).toBe('PORTFOLIO_NAME_TAKEN');
+
+    // The colliding rename left the row untouched.
+    const list = await agent.get('/api/v1/portfolios');
+    const trading = list.body.portfolios.find((p: { id: string }) => p.id === tradingPid);
+    expect(trading.name).toBe('Trading');
+
+    // Renaming the default to a fresh name still works.
+    const ok = await agent
+      .patch(`/api/v1/portfolios/${mainPid}`)
+      .set(...XRW)
+      .send({ name: 'Primary' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.portfolio.name).toBe('Primary');
+  });
+
+  it('allows a no-op re-save of the same name (not a self-collision)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const res = await agent
+      .patch(`/api/v1/portfolios/${pid}`)
+      .set(...XRW)
+      .send({ name: 'Main', visibility: 'friends' });
+    expect(res.status).toBe(200);
+    expect(res.body.portfolio.name).toBe('Main');
+    expect(res.body.portfolio.visibility).toBe('friends');
+  });
 });
 
 // ─── Multi-portfolio: create / archive / restore (§13.2 V2-P8) ───────────────

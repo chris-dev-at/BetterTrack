@@ -720,6 +720,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Capture the prior visibility so we only fire `portfolio.shared` on an
       // actual transition *to* friends — not on a no-op re-save or a toggle-off.
       const before = await portfolioRepo.findByIdForUser(userId, portfolioId);
+      if (!before) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      // Reject a rename that collides with another of the user's portfolios up
+      // front (the unique index spans archived rows) with the same clean 409 the
+      // create path emits — otherwise the `portfolios_user_name_unique` violation
+      // would surface as a raw 500 on a routine rename. Only check when the name
+      // actually changes; excluding this row lets a no-op re-save through.
+      if (patch.name !== undefined && patch.name !== before.name) {
+        if (await portfolioRepo.nameExists(userId, patch.name, portfolioId)) {
+          throw conflict('A portfolio with that name already exists.', 'PORTFOLIO_NAME_TAKEN');
+        }
+      }
       const updated = await portfolioRepo.updatePortfolio(userId, portfolioId, {
         name: patch.name,
         visibility: patch.visibility,

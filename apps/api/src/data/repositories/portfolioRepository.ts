@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, portfolios, priceHistory } from '../schema';
@@ -178,16 +178,23 @@ export function createPortfolioRepository(db: Database) {
     },
 
     /**
-     * Whether the user already owns a portfolio with this exact name (§13.2
-     * V2-P8). Checks *all* rows — the `portfolios_user_name_unique` index spans
-     * archived rows too — so create can 4xx cleanly before hitting the DB
-     * constraint.
+     * Whether the user already owns a *different* portfolio with this exact name
+     * (§13.2 V2-P8). Checks *all* rows — the `portfolios_user_name_unique` index
+     * spans archived rows too — so create/rename can 4xx cleanly before hitting
+     * the DB constraint. Pass `excludeId` when renaming so a portfolio keeping its
+     * own name (or a no-op re-save) is not treated as a collision with itself.
      */
-    async nameExists(userId: string, name: string): Promise<boolean> {
+    async nameExists(userId: string, name: string, excludeId?: string): Promise<boolean> {
       const rows = await db
         .select({ id: portfolios.id })
         .from(portfolios)
-        .where(and(eq(portfolios.userId, userId), eq(portfolios.name, name)))
+        .where(
+          and(
+            eq(portfolios.userId, userId),
+            eq(portfolios.name, name),
+            ...(excludeId ? [ne(portfolios.id, excludeId)] : []),
+          ),
+        )
         .limit(1);
       return rows.length > 0;
     },
