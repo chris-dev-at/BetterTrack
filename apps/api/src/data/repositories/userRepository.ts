@@ -134,6 +134,49 @@ export function createUserRepository(db: Database) {
       await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, id));
     },
 
+    /**
+     * The user's default portfolio visibility (§6.9, §13.2 V2-P9) — applied when
+     * a new portfolio is created. Defaults to `private` (also the column default,
+     * so an unknown id reads `private`).
+     */
+    async getDefaultPortfolioVisibility(id: string): Promise<'private' | 'friends'> {
+      const [row] = await db
+        .select({ v: users.defaultPortfolioVisibility })
+        .from(users)
+        .where(eq(users.id, id))
+        .limit(1);
+      return row?.v ?? 'private';
+    },
+
+    /** Set the default portfolio visibility (§6.9, §13.2 V2-P9). */
+    async setDefaultPortfolioVisibility(
+      id: string,
+      visibility: 'private' | 'friends',
+    ): Promise<void> {
+      await db
+        .update(users)
+        .set({ defaultPortfolioVisibility: visibility, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
+    /** Whether the user shares their whole watchlist with friends (§6.9, §13.2 V2-P9). */
+    async getWatchlistVisibility(id: string): Promise<'private' | 'friends'> {
+      const [row] = await db
+        .select({ v: users.watchlistVisibility })
+        .from(users)
+        .where(eq(users.id, id))
+        .limit(1);
+      return row?.v ?? 'private';
+    },
+
+    /** Turn watchlist friend-sharing on/off (§6.9, §13.2 V2-P9). */
+    async setWatchlistVisibility(id: string, visibility: 'private' | 'friends'): Promise<void> {
+      await db
+        .update(users)
+        .set({ watchlistVisibility: visibility, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
     async setLastLogin(id: string, when: Date): Promise<void> {
       await db
         .update(users)

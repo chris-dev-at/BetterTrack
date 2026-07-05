@@ -11,9 +11,22 @@ vi.mock('../../lib/portfolioApi', () => ({
   updatePortfolio: vi.fn(),
 }));
 
+vi.mock('../../lib/conglomerateApi', () => ({
+  updateConglomerate: vi.fn(),
+}));
+
+vi.mock('../../lib/workboardApi', () => ({
+  updateWatchlistSharing: vi.fn(),
+}));
+
+import { updateConglomerate } from '../../lib/conglomerateApi';
 import { updatePortfolio } from '../../lib/portfolioApi';
 import { listMyShared } from '../../lib/socialApi';
+import { updateWatchlistSharing } from '../../lib/workboardApi';
 import { MySharedItemsPage } from './MySharedItemsPage';
+
+/** No watchlist sharing, no items — the default My-Shared watchlist state. */
+const WATCHLIST_OFF = { visibility: 'private', itemCount: 0 } as const;
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -32,7 +45,11 @@ beforeEach(() => {
 
 describe('MySharedItemsPage', () => {
   test('shows an empty state when nothing is shared', async () => {
-    vi.mocked(listMyShared).mockResolvedValue({ portfolios: [] });
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [],
+      watchlist: WATCHLIST_OFF,
+    });
     renderPage();
 
     await waitFor(() =>
@@ -54,8 +71,10 @@ describe('MySharedItemsPage', () => {
             archivedAt: null,
           },
         ],
+        conglomerates: [],
+        watchlist: WATCHLIST_OFF,
       })
-      .mockResolvedValueOnce({ portfolios: [] });
+      .mockResolvedValueOnce({ portfolios: [], conglomerates: [], watchlist: WATCHLIST_OFF });
     vi.mocked(updatePortfolio).mockResolvedValue({
       id: PORTFOLIO_ID,
       name: 'Main',
@@ -76,6 +95,69 @@ describe('MySharedItemsPage', () => {
     await waitFor(() =>
       expect(screen.getByText("You're not sharing anything")).toBeInTheDocument(),
     );
+  });
+
+  test('lists a shared conglomerate and toggles it off via updateConglomerate', async () => {
+    const CID = '00000000-0000-0000-0000-0000000000c1';
+    vi.mocked(listMyShared)
+      .mockResolvedValueOnce({
+        portfolios: [],
+        conglomerates: [
+          {
+            id: CID,
+            name: 'Tech basket',
+            description: null,
+            status: 'active',
+            visibility: 'friends',
+            positionCount: 2,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        watchlist: WATCHLIST_OFF,
+      })
+      .mockResolvedValueOnce({ portfolios: [], conglomerates: [], watchlist: WATCHLIST_OFF });
+    vi.mocked(updateConglomerate).mockResolvedValue({
+      id: CID,
+      name: 'Tech basket',
+      description: null,
+      status: 'active',
+      visibility: 'private',
+      positionCount: 2,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      positions: [],
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Tech basket')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Stop sharing' }));
+
+    expect(updateConglomerate).toHaveBeenCalledWith(CID, { visibility: 'private' });
+    await waitFor(() =>
+      expect(screen.getByText("You're not sharing anything")).toBeInTheDocument(),
+    );
+  });
+
+  test('watchlist sharing toggle-off is wired to updateWatchlistSharing', async () => {
+    vi.mocked(listMyShared)
+      .mockResolvedValueOnce({
+        portfolios: [],
+        conglomerates: [],
+        watchlist: { visibility: 'friends', itemCount: 3 },
+      })
+      .mockResolvedValueOnce({ portfolios: [], conglomerates: [], watchlist: WATCHLIST_OFF });
+    vi.mocked(updateWatchlistSharing).mockResolvedValue(WATCHLIST_OFF);
+
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText(/My watchlist/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Stop sharing' }));
+
+    expect(updateWatchlistSharing).toHaveBeenCalledWith('private');
   });
 
   test('shows an error affordance when the fetch fails', async () => {

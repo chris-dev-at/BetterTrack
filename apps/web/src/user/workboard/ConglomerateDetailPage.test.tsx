@@ -64,6 +64,7 @@ const DETAIL = {
   name: 'Core Growth',
   description: 'My steady basket',
   status: 'active' as const,
+  visibility: 'private' as const,
   positionCount: 2,
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
@@ -117,7 +118,7 @@ beforeEach(() => {
       {
         id: 'p1',
         name: 'Default',
-        visibility: 'private',
+        visibility: 'private' as const,
         sortOrder: 0,
         isDefault: true,
         defaultPayFromCash: false,

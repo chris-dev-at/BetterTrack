@@ -31,6 +31,7 @@ import type {
 } from '../../data/repositories/cashMovementRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type {
   LinkedCashMovement,
   NewTransaction,
@@ -91,6 +92,8 @@ export interface PortfolioServiceDeps {
   portfolioRepo: PortfolioRepository;
   transactionRepo: TransactionRepository;
   cashMovementRepo: CashMovementRepository;
+  /** Reads the owner's default portfolio visibility, applied at create (§6.9, V2-P9). */
+  userRepo: UserRepository;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -223,6 +226,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     portfolioRepo,
     transactionRepo,
     cashMovementRepo,
+    userRepo,
     marketData,
     currencyService,
     referenceBackfill,
@@ -680,7 +684,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (await portfolioRepo.nameExists(userId, name)) {
         throw conflict('A portfolio with that name already exists.', 'PORTFOLIO_NAME_TAKEN');
       }
-      return portfolioRepo.createPortfolio(userId, name);
+      // A newly created portfolio adopts the owner's default visibility (§6.9,
+      // V2-P9). The auto-created "Main" is provisioned before any preference
+      // exists (getOrCreateMain above), so it always stays `private`; only an
+      // explicit create honours the default. Existing portfolios are untouched.
+      const visibility = await userRepo.getDefaultPortfolioVisibility(userId);
+      return portfolioRepo.createPortfolio(userId, name, visibility);
     },
 
     async archivePortfolio(userId, portfolioId) {

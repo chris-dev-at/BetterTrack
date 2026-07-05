@@ -28,6 +28,10 @@ import {
 import type { Logger } from '../logger';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
+import {
+  createAccountSettingsService,
+  type AccountSettingsService,
+} from '../services/account/accountSettingsService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
@@ -104,6 +108,8 @@ export interface AppContext {
   notifications: NotificationService;
   /** Per-user notification type × channel matrix — Settings → Notifications (§6.10, §6.11). */
   notificationSettings: NotificationSettingsService;
+  /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
+  accountSettings: AccountSettingsService;
   /**
    * Notification dispatcher (§6.10, §9): the bus subscriber that turns the social
    * domain events into in-app rows + emails. Built here and started by the API
@@ -257,7 +263,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const referenceBackfill = createReferenceBackfill({ assetRepo, backfill, logger });
 
   const workboardRepo = createWorkboardRepository(db);
-  const workboard = createWorkboardService({ repo: workboardRepo, referenceBackfill });
+  const workboard = createWorkboardService({ repo: workboardRepo, referenceBackfill, userRepo });
 
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
@@ -273,6 +279,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolioRepo,
     transactionRepo,
     cashMovementRepo,
+    userRepo,
     marketData,
     currencyService: currency,
     referenceBackfill,
@@ -305,7 +312,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Publishes friend.request / friend.accepted for the notification dispatcher.
-  const social = createSocialService({ repo: friendshipRepo, portfolio, events, logger });
+  const social = createSocialService({
+    repo: friendshipRepo,
+    portfolio,
+    conglomerate,
+    workboard,
+    events,
+    logger,
+  });
 
   // Notification read/mark-read (§6.10): user-scoped over the dispatcher's rows.
   const notificationRepo = createNotificationRepository(db);
@@ -313,6 +327,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Notification channel toggles (§6.10, §6.11): in-app always on, email on by
   // default; writes the settings rows the dispatcher reads.
   const notificationSettings = createNotificationSettingsService({ repo: notificationRepo });
+
+  // Account defaults (§6.9, V2-P9): Settings → Account default portfolio
+  // visibility, applied by the portfolio service at create time.
+  const accountSettings = createAccountSettingsService({ userRepo });
 
   // Notification dispatcher (§6.10, §9): fans the V1 social events out to the
   // recipient's in-app + email channels, consulting the per-type × channel
@@ -345,6 +363,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     social,
     notifications,
     notificationSettings,
+    accountSettings,
     notificationDispatcher,
     events,
   };

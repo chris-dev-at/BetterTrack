@@ -1,12 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 
-import { workboardListResponseSchema, type WorkboardListResponse } from '@bettertrack/contracts';
+import {
+  watchlistSharingResponseSchema,
+  workboardListResponseSchema,
+  type WatchlistSharingResponse,
+  type WatchlistVisibility,
+  type WorkboardListResponse,
+} from '@bettertrack/contracts';
 
 import { ApiError, apiRequest } from './apiClient';
 
 /** Shared TanStack Query key for watchlist membership — one source of truth for invalidation. */
 export const WORKBOARD_QUERY_KEY = ['workboard'] as const;
+
+/** Query key for the watchlist friend-sharing state (§6.9, V2-P9). */
+export const WATCHLIST_SHARING_QUERY_KEY = ['workboard', 'sharing'] as const;
+
+/** `GET /workboard/sharing` — the caller's watchlist friend-sharing state (§6.9, V2-P9). */
+export async function getWatchlistSharing(signal?: AbortSignal): Promise<WatchlistSharingResponse> {
+  const data = await apiRequest<unknown>('/workboard/sharing', { signal });
+  return watchlistSharingResponseSchema.parse(data);
+}
+
+/** `PATCH /workboard/sharing` — turn watchlist friend-sharing on/off (§6.9, V2-P9). */
+export async function updateWatchlistSharing(
+  visibility: WatchlistVisibility,
+): Promise<WatchlistSharingResponse> {
+  const data = await apiRequest<unknown>('/workboard/sharing', {
+    method: 'PATCH',
+    body: { visibility },
+  });
+  return watchlistSharingResponseSchema.parse(data);
+}
 
 /** `GET /workboard` — user's watchlist in sort_order (PROJECTPLAN.md §6.4, §8). */
 export async function listWorkboard(signal?: AbortSignal): Promise<WorkboardListResponse> {

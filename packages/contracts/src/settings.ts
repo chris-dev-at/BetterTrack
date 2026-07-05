@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { NOTIFICATION_TYPES, type NotificationType } from './notifications';
+import { portfolioVisibilitySchema } from './portfolio';
 
 /**
  * User-facing notification settings (PROJECTPLAN.md §6.10, §6.11, §8). The
@@ -69,3 +70,24 @@ export const updateNotificationSettingsRequestSchema = z
 export type UpdateNotificationSettingsRequest = z.infer<
   typeof updateNotificationSettingsRequestSchema
 >;
+
+// --- Account settings (§6.9, §6.11, §13.2 V2-P9) ---------------------------
+
+/**
+ * Settings → Account defaults (§6.9, V2-P9). Currently one field: the
+ * **default portfolio visibility** applied when a new portfolio is created —
+ * `private` (default) or `friends` (all of my friends). "Selected friends" is
+ * future work; the enum is the shared two-value visibility so it can extend
+ * later. Changing this only affects the *default* at creation time: existing
+ * portfolios and explicit per-item toggles are untouched.
+ */
+export const accountSettingsResponseSchema = z
+  .object({ defaultPortfolioVisibility: portfolioVisibilitySchema })
+  .strict();
+export type AccountSettingsResponse = z.infer<typeof accountSettingsResponseSchema>;
+
+/** `PATCH /settings/account` body — update the default portfolio visibility. */
+export const updateAccountSettingsRequestSchema = z
+  .object({ defaultPortfolioVisibility: portfolioVisibilitySchema })
+  .strict();
+export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;

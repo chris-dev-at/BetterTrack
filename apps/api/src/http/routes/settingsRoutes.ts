@@ -1,7 +1,9 @@
 import { Router } from 'express';
 
 import {
+  updateAccountSettingsRequestSchema,
   updateNotificationSettingsRequestSchema,
+  type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -35,6 +37,23 @@ export function createSettingsRouter(ctx: AppContext): Router {
       res.json(settings);
     },
   );
+
+  // GET /settings/account — the caller's account defaults (default portfolio
+  // visibility, §6.9, V2-P9).
+  router.get('/account', async (req, res) => {
+    const settings = await ctx.accountSettings.get(req.authUser!.id);
+    res.json(settings);
+  });
+
+  // PATCH /settings/account — update the default portfolio visibility (§6.9, V2-P9).
+  router.patch('/account', validateBody(updateAccountSettingsRequestSchema), async (req, res) => {
+    const body = req.valid?.body as UpdateAccountSettingsRequest;
+    const settings = await ctx.accountSettings.update(
+      req.authUser!.id,
+      body.defaultPortfolioVisibility,
+    );
+    res.json(settings);
+  });
 
   return router;
 }

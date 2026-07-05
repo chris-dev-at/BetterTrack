@@ -83,11 +83,13 @@ const componentSchemas = {
   AuditLogListResponse: contracts.auditLogListResponseSchema,
   EmailLogListResponse: contracts.emailLogListResponseSchema,
 
-  // Workboard (§6.4)
+  // Workboard (§6.4, §13.2 V2-P9)
   AddToWorkboardRequest: contracts.addToWorkboardRequestSchema,
   ReorderWorkboardRequest: contracts.reorderWorkboardRequestSchema,
   WorkboardItem: contracts.workboardItemSchema,
   WorkboardListResponse: contracts.workboardListResponseSchema,
+  WatchlistSharingResponse: contracts.watchlistSharingResponseSchema,
+  UpdateWatchlistSharingRequest: contracts.updateWatchlistSharingRequestSchema,
 
   // Search (§6.2)
   SearchResponse: contracts.searchResponseSchema,
@@ -142,19 +144,23 @@ const componentSchemas = {
   BacktestPreviewRequest: contracts.backtestPreviewRequestSchema,
   BacktestResponse: contracts.backtestResponseSchema,
 
-  // Social (§6.9)
+  // Social (§6.9, §13.2 V2-P9)
   CreateFriendRequestRequest: contracts.createFriendRequestRequestSchema,
   FriendRequestListResponse: contracts.friendRequestListResponseSchema,
   FriendsListResponse: contracts.friendsListResponseSchema,
-  SharedPortfolioListResponse: contracts.sharedPortfolioListResponseSchema,
+  SharedWithMeResponse: contracts.sharedWithMeResponseSchema,
   SharedPortfolioDetailResponse: contracts.sharedPortfolioDetailResponseSchema,
-  MySharedListResponse: contracts.mySharedListResponseSchema,
+  SharedConglomerateDetailResponse: contracts.sharedConglomerateDetailResponseSchema,
+  SharedWatchlistDetailResponse: contracts.sharedWatchlistDetailResponseSchema,
+  MySharedResponse: contracts.mySharedResponseSchema,
 
-  // Notifications & settings (§6.10, §6.11)
+  // Notifications & settings (§6.10, §6.11, §13.2 V2-P9)
   MarkReadRequest: contracts.markReadRequestSchema,
   NotificationListResponse: contracts.notificationListResponseSchema,
   UpdateNotificationSettingsRequest: contracts.updateNotificationSettingsRequestSchema,
   NotificationSettingsResponse: contracts.notificationSettingsResponseSchema,
+  AccountSettingsResponse: contracts.accountSettingsResponseSchema,
+  UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
 };
 
 /** Registered component refs, keyed by component name (literal keys preserved). */
@@ -599,6 +605,23 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.OkResponse,
   },
+  {
+    method: 'get',
+    path: '/workboard/sharing',
+    tag: 'Workboard',
+    summary: 'The caller’s watchlist friend-sharing state.',
+    status: 200,
+    response: R.WatchlistSharingResponse,
+  },
+  {
+    method: 'patch',
+    path: '/workboard/sharing',
+    tag: 'Workboard',
+    summary: 'Turn watchlist friend-sharing on/off.',
+    body: R.UpdateWatchlistSharingRequest,
+    status: 200,
+    response: R.WatchlistSharingResponse,
+  },
 
   // Search (§6.2)
   {
@@ -993,9 +1016,27 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/social/shared',
     tag: 'Social',
-    summary: 'Friends’ portfolios shared with me.',
+    summary: 'Everything my friends share with me — portfolios, conglomerates, watchlists.',
     status: 200,
-    response: R.SharedPortfolioListResponse,
+    response: R.SharedWithMeResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/shared/conglomerates/{conglomerateId}',
+    tag: 'Social',
+    summary: 'Read-only view of a friend-shared conglomerate.',
+    params: contracts.conglomerateIdParamSchema,
+    status: 200,
+    response: R.SharedConglomerateDetailResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/shared/watchlists/{userId}',
+    tag: 'Social',
+    summary: 'Read-only view of a friend’s shared watchlist.',
+    params: userIdParamSchema,
+    status: 200,
+    response: R.SharedWatchlistDetailResponse,
   },
   {
     method: 'get',
@@ -1010,9 +1051,9 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/social/my-shared',
     tag: 'Social',
-    summary: 'My own portfolios currently shared with friends.',
+    summary: 'Everything I currently share with friends — portfolios, conglomerates, watchlist.',
     status: 200,
-    response: R.MySharedListResponse,
+    response: R.MySharedResponse,
   },
 
   // Notifications (§6.10)
@@ -1052,6 +1093,23 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateNotificationSettingsRequest,
     status: 200,
     response: R.NotificationSettingsResponse,
+  },
+  {
+    method: 'get',
+    path: '/settings/account',
+    tag: 'Settings',
+    summary: 'The caller’s account defaults (default portfolio visibility).',
+    status: 200,
+    response: R.AccountSettingsResponse,
+  },
+  {
+    method: 'patch',
+    path: '/settings/account',
+    tag: 'Settings',
+    summary: 'Update the default portfolio visibility.',
+    body: R.UpdateAccountSettingsRequest,
+    status: 200,
+    response: R.AccountSettingsResponse,
   },
 ];
 

@@ -3,9 +3,11 @@ import type {
   FriendRequestListResponse,
   Friendship,
   FriendsListResponse,
-  MySharedListResponse,
+  MySharedResponse,
+  SharedConglomerateDetailResponse,
   SharedPortfolioDetailResponse,
-  SharedPortfolioListResponse,
+  SharedWatchlistDetailResponse,
+  SharedWithMeResponse,
 } from '@bettertrack/contracts';
 
 import type {
@@ -16,7 +18,9 @@ import type {
 import { notFound } from '../../errors';
 import type { EventBus } from '../../events';
 import type { Logger } from '../../logger';
+import type { ConglomerateService } from '../conglomerate/conglomerateService';
 import type { PortfolioService } from '../portfolio/portfolioService';
+import type { WorkboardService } from '../workboard/workboardService';
 
 /**
  * Friend-request / friendship orchestration (PROJECTPLAN.md §6.9). The V1
@@ -45,6 +49,17 @@ export interface SocialServiceDeps {
    * re-implements the money-math (§6.9).
    */
   portfolio: PortfolioService;
+  /**
+   * Reused to read the *owner's* conglomerate for a read-only friend view (§6.9,
+   * V2-P9) and to list the caller's own shared baskets for My Shared Items — so
+   * the friend view mirrors the owner's data and never re-implements it.
+   */
+  conglomerate: ConglomerateService;
+  /**
+   * Reused to read the *owner's* watchlist for a read-only friend view (§6.9,
+   * V2-P9) and to read the caller's own watchlist sharing state + item count.
+   */
+  workboard: WorkboardService;
   /** Domain event bus — `friend.request` / `friend.accepted` are published here (§6.10). */
   events: EventBus;
   logger?: Logger;
@@ -65,16 +80,37 @@ export interface SocialService {
   listFriends(userId: string): Promise<FriendsListResponse>;
   /** Remove a friendship (either side may). */
   removeFriend(userId: string, otherUserId: string): Promise<void>;
-  /** Portfolios of the caller's friends set to `visibility=friends` (Shared With Me). */
-  listSharedWithMe(userId: string): Promise<SharedPortfolioListResponse>;
+  /**
+   * Everything the caller's friends share with them — portfolios, conglomerates
+   * and watchlists — aggregated (Shared With Me, §6.9, V2-P9).
+   */
+  listSharedWithMe(userId: string): Promise<SharedWithMeResponse>;
   /**
    * The read-only overview of a friend-shared portfolio. Asserts an existing
    * friendship **and** the owner's `visibility=friends` at call time; a 404
    * (never 403) otherwise, recomputed per request (§6.9).
    */
   getSharedPortfolio(viewerId: string, portfolioId: string): Promise<SharedPortfolioDetailResponse>;
-  /** The caller's own portfolios currently at `visibility=friends` (My Shared Items). */
-  listMyShared(userId: string): Promise<MySharedListResponse>;
+  /**
+   * The read-only view of a friend-shared conglomerate — positions with asset
+   * identity. Asserts friendship **and** the owner's `visibility=friends` at call
+   * time; 404 (never 403) otherwise, recomputed per request (§6.9, V2-P9).
+   */
+  getSharedConglomerate(
+    viewerId: string,
+    conglomerateId: string,
+  ): Promise<SharedConglomerateDetailResponse>;
+  /**
+   * The read-only view of a friend's shared watchlist — the watched items.
+   * Asserts friendship **and** the owner's `watchlist_visibility=friends` at call
+   * time; 404 (never 403) otherwise, recomputed per request (§6.9, V2-P9).
+   */
+  getSharedWatchlist(viewerId: string, ownerId: string): Promise<SharedWatchlistDetailResponse>;
+  /**
+   * Everything the caller is currently sharing with friends — portfolios,
+   * conglomerates and their watchlist state (My Shared Items, §6.9, V2-P9).
+   */
+  listMyShared(userId: string): Promise<MySharedResponse>;
 }
 
 /**
@@ -89,6 +125,9 @@ export const DECLINE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const REQUEST_NOT_FOUND = () => notFound('Friend request not found.', 'FRIEND_REQUEST_NOT_FOUND');
 const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOUND');
 const SHARED_NOT_FOUND = () => notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+const SHARED_CONGLOMERATE_NOT_FOUND = () =>
+  notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+const SHARED_WATCHLIST_NOT_FOUND = () => notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
 
 function toFriendRequest(row: PendingRequestRow): FriendRequest {
   return {
@@ -109,7 +148,7 @@ function toFriendship(row: FriendRow): Friendship {
 }
 
 export function createSocialService(deps: SocialServiceDeps): SocialService {
-  const { repo, portfolio, events, logger } = deps;
+  const { repo, portfolio, conglomerate, workboard, events, logger } = deps;
 
   /** Publish a domain event best-effort — a bus failure never fails the request. */
   async function emit(event: Parameters<EventBus['publish']>[0]): Promise<void> {
@@ -201,11 +240,17 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async listSharedWithMe(userId) {
-      const rows = await repo.listSharedWithViewer(userId);
-      // The total value is the owner's own overview total — computed through the
-      // shared portfolio service (owner scope), so no money-math is duplicated.
+      // Each list is authorization-derived (friendship AND owner grant, resolved
+      // in the repository join), so revoking either instantly drops the row.
+      const [portfolioRows, conglomerateRows, watchlistRows] = await Promise.all([
+        repo.listSharedWithViewer(userId),
+        repo.listSharedConglomeratesWithViewer(userId),
+        repo.listSharedWatchlistsWithViewer(userId),
+      ]);
+      // A portfolio's total value is the owner's own overview total — computed
+      // through the portfolio service (owner scope), so no money-math is duplicated.
       const portfolios = await Promise.all(
-        rows.map(async (row) => {
+        portfolioRows.map(async (row) => {
           const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId);
           return {
             portfolioId: row.portfolioId,
@@ -215,7 +260,18 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           };
         }),
       );
-      return { portfolios };
+      const conglomerates = conglomerateRows.map((row) => ({
+        conglomerateId: row.conglomerateId,
+        name: row.name,
+        owner: { id: row.ownerId, username: row.ownerUsername },
+        status: row.status,
+        positionCount: row.positionCount,
+      }));
+      const watchlists = watchlistRows.map((row) => ({
+        owner: { id: row.ownerId, username: row.ownerUsername },
+        itemCount: row.itemCount,
+      }));
+      return { portfolios, conglomerates, watchlists };
     },
 
     async getSharedPortfolio(viewerId, portfolioId) {
@@ -239,12 +295,67 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       };
     },
 
+    async getSharedConglomerate(viewerId, conglomerateId) {
+      // Authorization recomputed per call — friendship AND owner
+      // visibility='friends' in one query; revoking either 404s immediately.
+      const shared = await repo.findSharedConglomerateForViewer(viewerId, conglomerateId);
+      if (!shared) throw SHARED_CONGLOMERATE_NOT_FOUND();
+
+      // Build the view from the *owner's* scope (owner-scoped get, which the
+      // join above guarantees resolves) so the friend sees exactly the owner's
+      // basket; the viewer never becomes owner of any derived data.
+      const detail = await conglomerate.get(shared.ownerId, conglomerateId);
+      return {
+        conglomerateId,
+        name: detail.name,
+        description: detail.description,
+        status: detail.status,
+        owner: { id: shared.ownerId, username: shared.ownerUsername },
+        positions: detail.positions,
+      };
+    },
+
+    async getSharedWatchlist(viewerId, ownerId) {
+      // Authorization recomputed per call — friendship AND owner
+      // watchlist_visibility='friends'; revoking either 404s immediately.
+      const shared = await repo.findSharedWatchlistOwnerForViewer(viewerId, ownerId);
+      if (!shared) throw SHARED_WATCHLIST_NOT_FOUND();
+
+      const items = await workboard.list(shared.ownerId);
+      return {
+        owner: { id: shared.ownerId, username: shared.ownerUsername },
+        items: items.map((item) => ({
+          id: item.id,
+          assetId: item.assetId,
+          sortOrder: item.sortOrder,
+          note: item.note ?? null,
+          asset: {
+            symbol: item.asset.symbol,
+            name: item.asset.name,
+            exchange: item.asset.exchange ?? null,
+            currency: item.asset.currency,
+            type: item.asset.type,
+          },
+        })),
+      };
+    },
+
     async listMyShared(userId) {
-      // Reuse the owner-scoped list (which materialises the default) and keep
-      // only the friends-visible rows — the toggle-off list. Turning one off is
-      // the existing PATCH /portfolios/:id, so there is no mutation here.
-      const { portfolios } = await portfolio.listPortfolios(userId);
-      return { portfolios: portfolios.filter((p) => p.visibility === 'friends') };
+      // Reuse each owner-scoped list and keep only the friends-visible rows — the
+      // toggle-off lists. Turning one off is the existing PATCH on that surface
+      // (`/portfolios/:id`, `/conglomerates/:id`, `/workboard/sharing`), so there
+      // is no mutation here.
+      const [portfolioList, conglomerateList, sharing, items] = await Promise.all([
+        portfolio.listPortfolios(userId),
+        conglomerate.list(userId),
+        workboard.getSharing(userId),
+        workboard.list(userId),
+      ]);
+      return {
+        portfolios: portfolioList.portfolios.filter((p) => p.visibility === 'friends'),
+        conglomerates: conglomerateList.conglomerates.filter((c) => c.visibility === 'friends'),
+        watchlist: { visibility: sharing.visibility, itemCount: items.length },
+      };
     },
   };
 }

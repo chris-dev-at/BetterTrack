@@ -13,8 +13,13 @@ vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
   updatePortfolio: vi.fn(),
 }));
+vi.mock('../../lib/settingsApi', () => ({
+  getAccountSettings: vi.fn(),
+  updateAccountSettings: vi.fn(),
+}));
 
 import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
+import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
 import { AccountSettingsPage } from './AccountSettingsPage';
 
@@ -57,6 +62,8 @@ beforeEach(() => {
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [DEFAULT_PORTFOLIO] });
   vi.mocked(changePassword).mockResolvedValue(ME);
   vi.mocked(updatePortfolio).mockResolvedValue({ ...DEFAULT_PORTFOLIO, visibility: 'friends' });
+  vi.mocked(getAccountSettings).mockResolvedValue({ defaultPortfolioVisibility: 'private' });
+  vi.mocked(updateAccountSettings).mockResolvedValue({ defaultPortfolioVisibility: 'friends' });
 });
 
 describe('AccountSettingsPage', () => {
@@ -98,6 +105,18 @@ describe('AccountSettingsPage', () => {
 
     expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
     expect(changePassword).not.toHaveBeenCalled();
+  });
+
+  test('setting the default portfolio sharing to Friends PATCHes account settings', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    const friends = await screen.findByRole('radio', { name: 'Friends' });
+    expect(screen.getByRole('radio', { name: 'Private' })).toHaveAttribute('aria-checked', 'true');
+
+    await user.click(friends);
+
+    await waitFor(() => expect(updateAccountSettings).toHaveBeenCalledWith('friends'));
   });
 
   test('turning sharing on PATCHes the default portfolio to friends', async () => {

@@ -4,8 +4,10 @@ import {
   addToWorkboardRequestSchema,
   itemIdParamSchema,
   reorderWorkboardRequestSchema,
+  updateWatchlistSharingRequestSchema,
   type AddToWorkboardRequest,
   type ReorderWorkboardRequest,
+  type UpdateWatchlistSharingRequest,
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
@@ -40,6 +42,19 @@ export function createWorkboardRouter(ctx: AppContext): Router {
     const { itemIds } = req.valid?.body as ReorderWorkboardRequest;
     await ctx.workboard.reorder(req.authUser!.id, itemIds);
     res.json({ ok: true });
+  });
+
+  // GET /workboard/sharing — the caller's watchlist friend-sharing state (§6.9, V2-P9).
+  router.get('/sharing', async (req, res) => {
+    const result = await ctx.workboard.getSharing(req.authUser!.id);
+    res.json(result);
+  });
+
+  // PATCH /workboard/sharing — turn watchlist friend-sharing on/off (§6.9, V2-P9).
+  router.patch('/sharing', validateBody(updateWatchlistSharingRequestSchema), async (req, res) => {
+    const { visibility } = req.valid?.body as UpdateWatchlistSharingRequest;
+    const result = await ctx.workboard.setSharing(req.authUser!.id, visibility);
+    res.json(result);
   });
 
   return router;

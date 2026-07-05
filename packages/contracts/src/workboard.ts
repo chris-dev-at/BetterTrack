@@ -44,3 +44,27 @@ export type ReorderWorkboardRequest = z.infer<typeof reorderWorkboardRequestSche
 
 /** Route param for workboard item operations. */
 export const itemIdParamSchema = z.object({ itemId: z.string().uuid() }).strict();
+
+// --- Watchlist sharing (§6.9, §13.2 V2-P9) ---------------------------------
+
+/**
+ * Friend-sharing visibility for the caller's whole watchlist (§6.9, V2-P9):
+ * `private` (default) keeps it visible only to the owner; `friends` exposes a
+ * **read-only** copy to the owner's friends via Shared With Me. All-or-nothing
+ * per user — there is no per-item sharing. Mirrors the portfolio model — no
+ * tokens, revocable, authorization re-derived per read.
+ */
+export const watchlistVisibilitySchema = z.enum(['private', 'friends']);
+export type WatchlistVisibility = z.infer<typeof watchlistVisibilitySchema>;
+
+/** `GET /workboard/sharing` response — the caller's current watchlist sharing state. */
+export const watchlistSharingResponseSchema = z
+  .object({ visibility: watchlistVisibilitySchema })
+  .strict();
+export type WatchlistSharingResponse = z.infer<typeof watchlistSharingResponseSchema>;
+
+/** `PATCH /workboard/sharing` body — turn watchlist friend-sharing on/off. */
+export const updateWatchlistSharingRequestSchema = z
+  .object({ visibility: watchlistVisibilitySchema })
+  .strict();
+export type UpdateWatchlistSharingRequest = z.infer<typeof updateWatchlistSharingRequestSchema>;

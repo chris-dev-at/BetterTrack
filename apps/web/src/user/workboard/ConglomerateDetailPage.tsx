@@ -7,7 +7,7 @@ import type {
   ConglomeratePositionWithAsset,
 } from '@bettertrack/contracts';
 
-import { deleteConglomerate, getConglomerate } from '../../lib/conglomerateApi';
+import { deleteConglomerate, getConglomerate, updateConglomerate } from '../../lib/conglomerateApi';
 import { formatWeight } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
@@ -135,6 +135,15 @@ export function ConglomerateDetailPage() {
     },
   });
 
+  // Friend-sharing toggle (§6.9, V2-P9): mirrors the portfolio private↔friends model.
+  const shareMutation = useMutation({
+    mutationFn: (visibility: 'private' | 'friends') => updateConglomerate(id!, { visibility }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] });
+      void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
+    },
+  });
+
   if (!id) return null;
 
   if (isLoading) {
@@ -185,6 +194,16 @@ export function ConglomerateDetailPage() {
             <StatusBadge status={data.status} />
           </div>
           <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              onClick={() =>
+                shareMutation.mutate(data.visibility === 'friends' ? 'private' : 'friends')
+              }
+              disabled={shareMutation.isPending}
+              aria-pressed={data.visibility === 'friends'}
+            >
+              {data.visibility === 'friends' ? 'Shared with friends' : 'Share with friends'}
+            </Button>
             <Link to={`/workboard/conglomerates/${id}/edit`}>
               <Button variant="secondary">Edit</Button>
             </Link>

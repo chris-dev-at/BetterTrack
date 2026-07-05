@@ -32,6 +32,14 @@ import { newId } from './ids';
 export const userRoleEnum = pgEnum('user_role', ['user', 'admin']);
 export const userStatusEnum = pgEnum('user_status', ['active', 'disabled']);
 
+/**
+ * Friend-sharing visibility (§6.8/§6.9): `private` (default) or `friends`. Shared
+ * across the surfaces that can be friend-shared — portfolios, conglomerates, and
+ * a user's watchlist + their default-visibility preference (§13.2 V2-P9). Defined
+ * here so the `users` columns below can reference it.
+ */
+export const portfolioVisibilityEnum = pgEnum('portfolio_visibility', ['private', 'friends']);
+
 export const users = pgTable(
   'users',
   {
@@ -62,6 +70,20 @@ export const users = pgTable(
     twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
     twoFactorConfirmedAt: timestamp('two_factor_confirmed_at', { withTimezone: true }),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
+    // Default friend-sharing visibility applied when the user creates a *new*
+    // portfolio (§6.9, §13.2 V2-P9). Only affects the default at creation time;
+    // existing portfolios and explicit per-item toggles are untouched. The
+    // auto-created "Main" is provisioned before any preference exists, so it keeps
+    // the column default (`private`).
+    defaultPortfolioVisibility: portfolioVisibilityEnum('default_portfolio_visibility')
+      .notNull()
+      .default('private'),
+    // Whether the user shares their *whole* watchlist with friends (§6.9, §13.2
+    // V2-P9). All-or-nothing per user — there is no per-item sharing; a friend
+    // sees a read-only copy while this is `friends` and they remain friends.
+    watchlistVisibility: portfolioVisibilityEnum('watchlist_visibility')
+      .notNull()
+      .default('private'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -383,6 +405,10 @@ export const conglomerates = pgTable('conglomerates', {
   name: text('name').notNull(),
   description: text('description'),
   status: conglomerateStatusEnum('status').notNull(),
+  // Friend-sharing visibility (§6.9, §13.2 V2-P9): `private` (default) or
+  // `friends` — a read-only copy exposed to the owner's friends via Shared With
+  // Me. Mirrors the portfolio model; revocable, no tokens.
+  visibility: portfolioVisibilityEnum('visibility').notNull().default('private'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -418,12 +444,6 @@ export const shareLinks = pgTable(
 );
 
 // --- Portfolio -------------------------------------------------------------
-
-/**
- * Per-portfolio visibility (§6.8/§6.9): `private` (default) or `friends`. V1
- * only *stores + exposes* this flag; social consumption of it is P5 (§6.9).
- */
-export const portfolioVisibilityEnum = pgEnum('portfolio_visibility', ['private', 'friends']);
 
 export const portfolios = pgTable(
   'portfolios',

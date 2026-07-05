@@ -4,9 +4,11 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  mySharedListResponseSchema,
+  mySharedResponseSchema,
+  sharedConglomerateDetailResponseSchema,
   sharedPortfolioDetailResponseSchema,
-  sharedPortfolioListResponseSchema,
+  sharedWatchlistDetailResponseSchema,
+  sharedWithMeResponseSchema,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -133,7 +135,50 @@ async function scenario() {
     });
   await setVisibility(aliceAgent, pid, 'friends');
 
-  return { alice, bob, carol, aliceAgent, bobAgent, carolAgent, pid };
+  return { alice, bob, carol, aliceAgent, bobAgent, carolAgent, pid, assetId: asset!.id };
+}
+
+/** Create an active conglomerate owned by `agent` holding one asset at 100%. */
+async function seedConglomerate(agent: Agent, assetId: string): Promise<string> {
+  const create = await agent
+    .post('/api/v1/conglomerates')
+    .set(...XRW)
+    .send({ name: 'Tech basket' });
+  expect(create.status).toBe(201);
+  const id = create.body.id as string;
+  const positions = await agent
+    .put(`/api/v1/conglomerates/${id}/positions`)
+    .set(...XRW)
+    .send({ positions: [{ assetId, weightPct: 100 }] });
+  expect(positions.status).toBe(200);
+  return id;
+}
+
+/** Toggle a conglomerate's friend-sharing on/off. */
+async function setConglomerateVisibility(
+  agent: Agent,
+  id: string,
+  visibility: 'private' | 'friends',
+): Promise<void> {
+  const res = await agent
+    .patch(`/api/v1/conglomerates/${id}`)
+    .set(...XRW)
+    .send({ visibility });
+  expect(res.status).toBe(200);
+  expect(res.body.visibility).toBe(visibility);
+}
+
+/** Toggle the caller's whole-watchlist friend-sharing on/off. */
+async function setWatchlistVisibility(
+  agent: Agent,
+  visibility: 'private' | 'friends',
+): Promise<void> {
+  const res = await agent
+    .patch('/api/v1/workboard/sharing')
+    .set(...XRW)
+    .send({ visibility });
+  expect(res.status).toBe(200);
+  expect(res.body.visibility).toBe(visibility);
 }
 
 describe('GET /api/v1/social/shared (Shared With Me)', () => {
@@ -147,7 +192,7 @@ describe('GET /api/v1/social/shared (Shared With Me)', () => {
 
     const res = await bobAgent.get('/api/v1/social/shared');
     expect(res.status).toBe(200);
-    expect(sharedPortfolioListResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(sharedWithMeResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.portfolios).toHaveLength(1);
     const [item] = res.body.portfolios;
     expect(item.owner).toEqual({ id: expect.any(String), username: 'alice' });
@@ -278,7 +323,7 @@ describe('GET /api/v1/social/my-shared (My Shared Items)', () => {
 
     const res = await aliceAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
-    expect(mySharedListResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(mySharedResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.portfolios).toHaveLength(1);
     expect(res.body.portfolios[0].id).toBe(pid);
     expect(res.body.portfolios[0].visibility).toBe('friends');
@@ -298,5 +343,230 @@ describe('GET /api/v1/social/my-shared (My Shared Items)', () => {
     const res = await bobAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
     expect(res.body.portfolios).toHaveLength(0);
+    expect(res.body.conglomerates).toHaveLength(0);
+    expect(res.body.watchlist).toEqual({ visibility: 'private', itemCount: 0 });
+  });
+});
+
+// --- Conglomerate sharing (§13.2 V2-P9) ------------------------------------
+
+describe('conglomerate friend-sharing', () => {
+  it('lists a friend’s shared conglomerate in Shared With Me, not a non-friend’s', async () => {
+    const { aliceAgent, bobAgent, carolAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    await setConglomerateVisibility(aliceAgent, cid, 'friends');
+
+    const bobRes = await bobAgent.get('/api/v1/social/shared');
+    expect(bobRes.status).toBe(200);
+    expect(sharedWithMeResponseSchema.safeParse(bobRes.body).success).toBe(true);
+    expect(bobRes.body.conglomerates).toHaveLength(1);
+    const [item] = bobRes.body.conglomerates;
+    expect(item.conglomerateId).toBe(cid);
+    expect(item.owner).toEqual({ id: expect.any(String), username: 'alice' });
+    expect(item.owner).not.toHaveProperty('email');
+    expect(item.positionCount).toBe(1);
+
+    // A non-friend never sees it.
+    expect((await carolAgent.get('/api/v1/social/shared')).body.conglomerates).toHaveLength(0);
+  });
+
+  it('serves the read-only detail to a friend and 404s everyone else', async () => {
+    const { aliceAgent, bobAgent, carolAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    await setConglomerateVisibility(aliceAgent, cid, 'friends');
+
+    const res = await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`);
+    expect(res.status).toBe(200);
+    expect(sharedConglomerateDetailResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.conglomerateId).toBe(cid);
+    expect(res.body.owner.username).toBe('alice');
+    expect(res.body.positions).toHaveLength(1);
+    expect(res.body.positions[0].asset.symbol).toBe('BAYN.DE');
+
+    // Non-friend, unknown id, and the owner’s own basket all 404 (never 403).
+    expect((await carolAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(404);
+    expect((await bobAgent.get(`/api/v1/social/shared/conglomerates/${MISSING_ID}`)).status).toBe(
+      404,
+    );
+    expect((await aliceAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(404);
+  });
+
+  it('closes access instantly when sharing is turned off', async () => {
+    const { aliceAgent, bobAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    await setConglomerateVisibility(aliceAgent, cid, 'friends');
+    expect((await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(200);
+
+    await setConglomerateVisibility(aliceAgent, cid, 'private');
+    expect((await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(404);
+    expect((await bobAgent.get('/api/v1/social/shared')).body.conglomerates).toHaveLength(0);
+  });
+
+  it('closes access instantly on unfriend', async () => {
+    const { alice, aliceAgent, bobAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    await setConglomerateVisibility(aliceAgent, cid, 'friends');
+    expect((await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(200);
+
+    await bobAgent
+      .delete(`/api/v1/social/friends/${alice.id}`)
+      .set(...XRW)
+      .send();
+    expect((await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(404);
+  });
+
+  it('lists the owner’s shared basket in My Shared Items with a toggle-off', async () => {
+    const { aliceAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    await setConglomerateVisibility(aliceAgent, cid, 'friends');
+
+    let res = await aliceAgent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    expect(res.body.conglomerates).toHaveLength(1);
+    expect(res.body.conglomerates[0].id).toBe(cid);
+
+    await setConglomerateVisibility(aliceAgent, cid, 'private');
+    res = await aliceAgent.get('/api/v1/social/my-shared');
+    expect(res.body.conglomerates).toHaveLength(0);
+  });
+
+  it('cannot be mutated by a friend (read-only) — no write path exists', async () => {
+    const { aliceAgent, bobAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    await setConglomerateVisibility(aliceAgent, cid, 'friends');
+
+    // The only conglomerate write paths are owner-scoped; a friend’s attempt is a
+    // 404 (never 403), so the shared view stays strictly read-only.
+    const patch = await bobAgent
+      .patch(`/api/v1/conglomerates/${cid}`)
+      .set(...XRW)
+      .send({ name: 'hijacked' });
+    expect(patch.status).toBe(404);
+  });
+});
+
+// --- Watchlist sharing (§13.2 V2-P9) ---------------------------------------
+
+describe('watchlist friend-sharing', () => {
+  /** Add `assetId` to `agent`'s watchlist. */
+  async function watch(agent: Agent, assetId: string): Promise<void> {
+    const res = await agent
+      .post('/api/v1/workboard')
+      .set(...XRW)
+      .send({ assetId });
+    expect(res.status).toBe(201);
+  }
+
+  it('lists a friend’s shared watchlist in Shared With Me, not a non-friend’s', async () => {
+    const { aliceAgent, bobAgent, carolAgent, assetId } = await scenario();
+    await watch(aliceAgent, assetId);
+    await setWatchlistVisibility(aliceAgent, 'friends');
+
+    const bobRes = await bobAgent.get('/api/v1/social/shared');
+    expect(bobRes.status).toBe(200);
+    expect(bobRes.body.watchlists).toHaveLength(1);
+    expect(bobRes.body.watchlists[0].owner).toEqual({ id: expect.any(String), username: 'alice' });
+    expect(bobRes.body.watchlists[0].itemCount).toBe(1);
+
+    expect((await carolAgent.get('/api/v1/social/shared')).body.watchlists).toHaveLength(0);
+  });
+
+  it('serves the read-only detail to a friend and 404s everyone else', async () => {
+    const { alice, aliceAgent, bobAgent, carolAgent, assetId } = await scenario();
+    await watch(aliceAgent, assetId);
+    await setWatchlistVisibility(aliceAgent, 'friends');
+
+    const res = await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`);
+    expect(res.status).toBe(200);
+    expect(sharedWatchlistDetailResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.owner.username).toBe('alice');
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].asset.symbol).toBe('BAYN.DE');
+
+    expect((await carolAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${MISSING_ID}`)).status).toBe(404);
+    // The owner’s own id 404s: the shared surface is for friends.
+    expect((await aliceAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+  });
+
+  it('closes access instantly when sharing is turned off, and on unfriend', async () => {
+    const { alice, aliceAgent, bobAgent, assetId } = await scenario();
+    await watch(aliceAgent, assetId);
+    await setWatchlistVisibility(aliceAgent, 'friends');
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(200);
+
+    await setWatchlistVisibility(aliceAgent, 'private');
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+    expect((await bobAgent.get('/api/v1/social/shared')).body.watchlists).toHaveLength(0);
+
+    // Re-share, then unfriend — access closes again.
+    await setWatchlistVisibility(aliceAgent, 'friends');
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(200);
+    await bobAgent
+      .delete(`/api/v1/social/friends/${alice.id}`)
+      .set(...XRW)
+      .send();
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+  });
+
+  it('reflects the owner’s state in My Shared Items', async () => {
+    const { aliceAgent, assetId } = await scenario();
+    await watch(aliceAgent, assetId);
+    await setWatchlistVisibility(aliceAgent, 'friends');
+
+    const res = await aliceAgent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    expect(res.body.watchlist).toEqual({ visibility: 'friends', itemCount: 1 });
+  });
+});
+
+// --- Default portfolio visibility (§13.2 V2-P9) ----------------------------
+
+describe('default portfolio visibility (Settings → Account)', () => {
+  it('defaults to private and a new portfolio adopts it', async () => {
+    const { aliceAgent } = await scenario();
+
+    const get = await aliceAgent.get('/api/v1/settings/account');
+    expect(get.status).toBe(200);
+    expect(get.body).toEqual({ defaultPortfolioVisibility: 'private' });
+
+    const created = await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Side pot' });
+    expect(created.status).toBe(201);
+    expect(created.body.portfolio.visibility).toBe('private');
+  });
+
+  it('applies friends default to newly created portfolios only', async () => {
+    const { aliceAgent, pid } = await scenario();
+
+    const patch = await aliceAgent
+      .patch('/api/v1/settings/account')
+      .set(...XRW)
+      .send({ defaultPortfolioVisibility: 'friends' });
+    expect(patch.status).toBe(200);
+    expect(patch.body).toEqual({ defaultPortfolioVisibility: 'friends' });
+
+    // A newly created portfolio adopts the friends default.
+    const created = await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Growth' });
+    expect(created.status).toBe(201);
+    expect(created.body.portfolio.visibility).toBe('friends');
+
+    // The existing "Main" portfolio is untouched by the default change: it was
+    // explicitly set to friends in the scenario, so it stays friends — but the
+    // point is the default never rewrites existing rows. Flip it private and
+    // confirm changing the default again does not touch it.
+    await setVisibility(aliceAgent, pid, 'private');
+    await aliceAgent
+      .patch('/api/v1/settings/account')
+      .set(...XRW)
+      .send({ defaultPortfolioVisibility: 'friends' });
+    const list = await aliceAgent.get('/api/v1/portfolios');
+    const main = list.body.portfolios.find((p: { id: string }) => p.id === pid);
+    expect(main.visibility).toBe('private');
   });
 });

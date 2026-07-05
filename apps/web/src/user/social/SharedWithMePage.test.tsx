@@ -27,7 +27,11 @@ beforeEach(() => {
 
 describe('SharedWithMePage', () => {
   test('shows an empty state when no friend has shared a portfolio', async () => {
-    vi.mocked(listSharedWithMe).mockResolvedValue({ portfolios: [] });
+    vi.mocked(listSharedWithMe).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [],
+      watchlists: [],
+    });
     renderPage();
 
     await waitFor(() =>
@@ -45,6 +49,8 @@ describe('SharedWithMePage', () => {
           totalValueEur: 1234.56,
         },
       ],
+      conglomerates: [],
+      watchlists: [],
     });
     renderPage();
 
@@ -57,12 +63,44 @@ describe('SharedWithMePage', () => {
     );
   });
 
+  test('lists a shared conglomerate and a shared watchlist with links', async () => {
+    vi.mocked(listSharedWithMe).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [
+        {
+          conglomerateId: '00000000-0000-0000-0000-0000000000c1',
+          name: 'Tech basket',
+          owner: { id: '00000000-0000-0000-0000-000000000002', username: 'jane' },
+          status: 'active',
+          positionCount: 3,
+        },
+      ],
+      watchlists: [
+        {
+          owner: { id: '00000000-0000-0000-0000-000000000003', username: 'bob' },
+          itemCount: 2,
+        },
+      ],
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Tech basket')).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: /Tech basket/i })).toHaveAttribute(
+      'href',
+      '/social/shared-with-me/conglomerates/00000000-0000-0000-0000-0000000000c1',
+    );
+    expect(screen.getByRole('link', { name: /bob.s watchlist/i })).toHaveAttribute(
+      'href',
+      '/social/shared-with-me/watchlists/00000000-0000-0000-0000-000000000003',
+    );
+  });
+
   test('shows an error affordance when the fetch fails', async () => {
     vi.mocked(listSharedWithMe).mockRejectedValue(new Error('boom'));
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText(/Could not load shared portfolios/i)).toBeInTheDocument(),
+      expect(screen.getByText(/Could not load shared items/i)).toBeInTheDocument(),
     );
   });
 });
