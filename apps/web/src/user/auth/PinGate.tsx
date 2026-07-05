@@ -5,7 +5,8 @@ import { MAX_PIN_LENGTH, MIN_PIN_LENGTH } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
-import { Alert, AuthCard, Button, TextField } from '../components/ui';
+import { PinInput } from '../components/PinInput';
+import { Alert, AuthCard, Button } from '../components/ui';
 
 /** Friendly message for the codes `POST /auth/pin/verify` can return. */
 function pinErrorMessage(err: unknown): string {
@@ -62,18 +63,12 @@ export function PinGate() {
           Enter your PIN to continue.
         </Alert>
         {error ? <Alert tone="error">{error}</Alert> : null}
-        <TextField
+        <PinInput
           label="PIN"
-          name="pin"
-          type="password"
-          inputMode="numeric"
-          autoComplete="off"
-          autoFocus
+          length={MAX_PIN_LENGTH}
           value={pin}
-          onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
-          minLength={MIN_PIN_LENGTH}
-          maxLength={MAX_PIN_LENGTH}
-          required
+          onChange={setPin}
+          autoFocus
           hint={`${MIN_PIN_LENGTH}–${MAX_PIN_LENGTH} digits.`}
         />
         <Button type="submit" disabled={submitting || pin.length < MIN_PIN_LENGTH}>
