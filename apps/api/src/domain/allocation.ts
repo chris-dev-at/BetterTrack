@@ -25,6 +25,21 @@
  *     buying past target when it only worsens the deviation is not a fill.
  *  5. Emit per-position qty, cost, actual % vs target %, Δpp; totals + leftover.
  *
+ * **At-least-one-share mode (opt-in, default OFF; whole mode only).** With
+ * `atLeastOneShare` set, positions whose slice `B·wᵢ` cannot afford one whole
+ * share (`floor(targetᵢ/pᵢ) = 0`, `wᵢ > 0`) and whose price fits the budget are
+ * each granted exactly **one** share *before* the floor step — admitted largest
+ * target weight first (ties: input order) by the same exact `Σ cost ≤ budget`
+ * comparison, so forcing can never overshoot. A candidate that no longer fits
+ * is skipped, never forced — dropping the least-affordable rather than blowing
+ * B — while cheaper lower-weight candidates may still fit. A price above the
+ * whole budget stays flagged unbuyable, never forced. The remainder
+ * `B′ = B − Σ forced` then rebalances across the non-forced positions by their
+ * weights (`targetⱼ = B′·wⱼ/Σ_rest w`) through the normal floor + greedy fill;
+ * forced positions keep exactly their one share (the greedy fill and the FP
+ * backstop never touch them). With the flag OFF — or in fractional mode, where
+ * it is ignored — the engine behaves bit-for-bit as without it.
+ *
  * **Fractional mode.** `qtyᵢ = (B·wᵢ)/pᵢ` rounded **down** to the step
  * ({@link DEFAULT_FRACTIONAL_STEP} when omitted) ⇒ spend ≈ B minus dust. There
  * is no greedy pass — rounding down already lands each position within one
@@ -123,6 +138,15 @@ export interface AllocationInput {
    * when given. Ignored in whole mode.
    */
   step?: number;
+  /**
+   * Opt-in "at least one share" mode (default OFF; whole mode only, ignored in
+   * fractional mode). When true, a positive-weight position whose slice `B·wᵢ`
+   * cannot afford one whole share — but whose price fits the budget — gets
+   * exactly one share (largest target weight first, never overshooting B), and
+   * the remainder rebalances across the rest by their weights. A share price
+   * above the whole budget stays flagged unbuyable, never forced.
+   */
+  atLeastOneShare?: boolean;
   /** Basket positions; at least one. */
   positions: readonly AllocationPositionInput[];
 }
@@ -194,10 +218,19 @@ interface PositionState {
   assetId: string;
   symbol: string;
   priceEur: number;
-  /** Normalised weight (the basket sums to exactly 1). */
+  /** Normalised weight (the basket sums to exactly 1). Reporting always uses this. */
   weight: number;
-  /** `targetᵢ = B · wᵢ`, EUR. */
+  /**
+   * Fill target in EUR: `B · wᵢ`, or — for non-forced positions in
+   * at-least-one-share mode — the rebalanced remainder slice `B′·wᵢ/Σ_rest w`.
+   */
   targetEur: number;
+  /**
+   * Granted its single share by the at-least-one-share force pass. Exactly one
+   * share, structurally: the floor step, FP backstop, and greedy fill all skip
+   * forced positions.
+   */
+  forced: boolean;
   /** Bought increments; `qty = k · step` (step = 1 in whole mode). */
   k: number;
   /** `(k · step) · priceEur` — always the exact FP product for the current `k`. */
@@ -274,32 +307,75 @@ export function allocateBudget(input: AllocationInput): AllocationResult {
   // In whole mode the increment is exactly 1 share, so `qty = k · step` is exact.
   const step = mode === 'fractional' ? (input.step ?? DEFAULT_FRACTIONAL_STEP) : 1;
 
-  // --- Steps 1–2: targets and floored quantities (never above target).
+  const forceSingles = mode === 'whole' && input.atLeastOneShare === true;
+
+  // --- Step 1: targets (weights normalised to sum to exactly 1). Floors are
+  // deferred until after the optional force pass, which must see the whole
+  // budget — not the floors' leftover — so an under-slice position's single
+  // share is budgeted first and the *remainder* rebalances across the rest.
   const states: PositionState[] = positions.map((pos) => {
     const weight = pos.weight / weightSum;
-    const targetEur = budgetEur * weight;
-    const k = epsilonFloor(targetEur / pos.priceEur / step);
     return {
       assetId: pos.assetId,
       symbol: pos.symbol,
       priceEur: pos.priceEur,
       weight,
-      targetEur,
-      k,
-      costEur: k * step * pos.priceEur,
+      targetEur: budgetEur * weight,
+      forced: false,
+      k: 0,
+      costEur: 0,
     };
   });
 
-  // FP backstop: mathematically Σ qtyᵢ·pᵢ ≤ Σ targetᵢ = B, but the epsilon
+  // --- At-least-one-share force pass (opt-in, whole mode only).
+  if (forceSingles) {
+    // Candidates: positive weight, slice too small for one whole share, price
+    // within the whole budget (a price > B stays unbuyable, never forced).
+    const candidates = states
+      .filter(
+        (s) =>
+          s.weight > 0 && s.priceEur <= budgetEur && epsilonFloor(s.targetEur / s.priceEur) === 0,
+      )
+      .sort((a, b) => b.weight - a.weight); // stable sort ⇒ ties keep input order
+    for (const s of candidates) {
+      // Exact admission — never overshoot. A candidate that no longer fits is
+      // skipped (dropped, never forced); a cheaper lower-weight one may still fit.
+      if (totalCostOf(states, s, s.priceEur) > budgetEur) continue;
+      s.forced = true;
+      s.k = 1;
+      s.costEur = s.priceEur;
+    }
+    // The remainder rebalances across the non-forced positions by their weights.
+    const remainder = budgetEur - totalCostOf(states);
+    let restWeight = 0;
+    for (const s of states) {
+      if (!s.forced) restWeight += s.weight;
+    }
+    for (const s of states) {
+      if (!s.forced) s.targetEur = restWeight > 0 ? (remainder * s.weight) / restWeight : 0;
+    }
+  }
+
+  // --- Step 2: floored quantities (never above target) for non-forced positions.
+  for (const s of states) {
+    if (s.forced) continue;
+    s.k = epsilonFloor(s.targetEur / s.priceEur / step);
+    s.costEur = s.k * step * s.priceEur;
+  }
+
+  // FP backstop: mathematically Σ qtyᵢ·pᵢ ≤ Σ targetᵢ ≤ B, but the epsilon
   // floor / normalisation can nudge the FP sum a hair over B. Shave the
-  // cheapest increment until the exact check passes (in practice: never runs).
+  // cheapest non-forced increment until the exact check passes (in practice:
+  // never runs). Forced singles are exempt — each was admitted by an exact
+  // `Σ ≤ budget` check, so shaving the floors alone always suffices.
   let total = totalCostOf(states);
   while (total > budgetEur) {
     let cheapest: PositionState | null = null;
     for (const s of states) {
+      if (s.forced) continue;
       if (s.k > 0 && (cheapest === null || s.priceEur < cheapest.priceEur)) cheapest = s;
     }
-    if (cheapest === null) break; // unreachable: total is 0 ≤ budget once everything is at 0
+    if (cheapest === null) break; // unreachable: forced-only totals passed the exact admission check
     cheapest.k -= 1;
     cheapest.costEur = cheapest.k * step * cheapest.priceEur;
     total = totalCostOf(states);
@@ -312,6 +388,9 @@ export function allocateBudget(input: AllocationInput): AllocationResult {
       let bestReduction = 0;
       let bestCost = 0;
       for (const s of states) {
+        // A forced position gets exactly its one share — never topped up. (It
+        // could never win anyway: its cost p already exceeds its B·wᵢ target.)
+        if (s.forced) continue;
         const nextCost = (s.k + 1) * s.priceEur;
         // Affordability is the exact reported-sum comparison — never overshoot.
         if (totalCostOf(states, s, nextCost) > budgetEur) continue;
