@@ -97,6 +97,7 @@ const PORTFOLIO_LIST = {
       sortOrder: 0,
       isDefault: true,
       defaultPayFromCash: false,
+      archivedAt: null,
     },
   ],
 };

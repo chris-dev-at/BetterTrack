@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { assets, portfolios, priceHistory } from '../schema';
@@ -34,6 +34,8 @@ export interface PortfolioSummaryRow {
   isDefault: boolean;
   /** Sticky default funding source for transaction entry (§14, #220). */
   defaultPayFromCash: boolean;
+  /** ISO-8601 archive timestamp, or null while active (§13.2 V2-P8). */
+  archivedAt: string | null;
 }
 
 /** The default portfolio's canonical name (§5.5). */
@@ -46,6 +48,7 @@ function toSummary(
     visibility: 'private' | 'friends';
     sortOrder: number;
     defaultPayFromCash: boolean;
+    archivedAt: Date | string | null;
   },
   isDefault: boolean,
 ): PortfolioSummaryRow {
@@ -56,6 +59,7 @@ function toSummary(
     sortOrder: row.sortOrder,
     isDefault,
     defaultPayFromCash: row.defaultPayFromCash,
+    archivedAt: row.archivedAt ? new Date(row.archivedAt).toISOString() : null,
   };
 }
 
@@ -66,17 +70,23 @@ const summaryColumns = {
   visibility: portfolios.visibility,
   sortOrder: portfolios.sortOrder,
   defaultPayFromCash: portfolios.defaultPayFromCash,
+  archivedAt: portfolios.archivedAt,
 } as const;
 
 /**
  * The default portfolio among a user's rows: the lowest `sort_order`, breaking
  * ties on the oldest row (ascending UUIDv7 id ⇒ creation order). Derived from a
  * stable key rather than the name, so renaming the default never changes which
- * row is default (§6.8). Returns null for an empty set.
+ * row is default (§6.8). Only *active* (non-archived) rows are eligible — an
+ * archived portfolio is never the default (§13.2 V2-P8). Returns null when the
+ * user has no active rows.
  */
-function pickDefaultId(rows: readonly { id: string; sortOrder: number }[]): string | null {
+function pickDefaultId(
+  rows: readonly { id: string; sortOrder: number; archivedAt: Date | string | null }[],
+): string | null {
   let best: { id: string; sortOrder: number } | null = null;
   for (const row of rows) {
+    if (row.archivedAt) continue;
     if (
       best === null ||
       row.sortOrder < best.sortOrder ||
@@ -91,14 +101,15 @@ function pickDefaultId(rows: readonly { id: string; sortOrder: number }[]): stri
 export function createPortfolioRepository(db: Database) {
   /**
    * The user's default portfolio id — resolved from a stable key (lowest
-   * `sort_order`, then oldest row by UUIDv7 id), or null when the user has no
-   * portfolios yet. Never keys on the name, so a renamed default is still found.
+   * `sort_order`, then oldest row by UUIDv7 id) among *active* rows, or null
+   * when the user has no active portfolios yet. Never keys on the name, so a
+   * renamed default is still found; never returns an archived row (§13.2 V2-P8).
    */
   async function selectDefaultId(userId: string): Promise<string | null> {
     const rows = await db
       .select({ id: portfolios.id })
       .from(portfolios)
-      .where(eq(portfolios.userId, userId))
+      .where(and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt)))
       .orderBy(asc(portfolios.sortOrder), asc(portfolios.id))
       .limit(1);
     return rows[0]?.id ?? null;
@@ -137,17 +148,123 @@ export function createPortfolioRepository(db: Database) {
 
     /**
      * Every portfolio a user owns, ordered `sort_order` then name (§6.8, §7.2).
-     * V1 returns just the default; additional rows appear here with no code
-     * change, which is the whole point of the `portfolio_id`-scoped model.
+     * Archived portfolios are excluded unless `includeArchived` is set (§13.2
+     * V2-P8). `isDefault` is always computed from the *active* set, so an
+     * archived row (when included) is never marked default.
      */
-    async listForUser(userId: string): Promise<PortfolioSummaryRow[]> {
+    async listForUser(
+      userId: string,
+      opts: { includeArchived?: boolean } = {},
+    ): Promise<PortfolioSummaryRow[]> {
+      const where = opts.includeArchived
+        ? eq(portfolios.userId, userId)
+        : and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt));
       const rows = await db
         .select(summaryColumns)
         .from(portfolios)
-        .where(eq(portfolios.userId, userId))
+        .where(where)
         .orderBy(asc(portfolios.sortOrder), asc(portfolios.name));
       const defaultId = pickDefaultId(rows);
       return rows.map((row) => toSummary(row, row.id === defaultId));
+    },
+
+    /** Count of the user's *active* (non-archived) portfolios (§13.2 V2-P8). */
+    async countActive(userId: string): Promise<number> {
+      const rows = await db
+        .select({ n: count() })
+        .from(portfolios)
+        .where(and(eq(portfolios.userId, userId), isNull(portfolios.archivedAt)));
+      return Number(rows[0]?.n ?? 0);
+    },
+
+    /**
+     * Whether the user already owns a portfolio with this exact name (§13.2
+     * V2-P8). Checks *all* rows — the `portfolios_user_name_unique` index spans
+     * archived rows too — so create can 4xx cleanly before hitting the DB
+     * constraint.
+     */
+    async nameExists(userId: string, name: string): Promise<boolean> {
+      const rows = await db
+        .select({ id: portfolios.id })
+        .from(portfolios)
+        .where(and(eq(portfolios.userId, userId), eq(portfolios.name, name)))
+        .limit(1);
+      return rows.length > 0;
+    },
+
+    /**
+     * Create a named portfolio (§13.2 V2-P8). New rows take the next
+     * `sort_order` above the user's current max, so the auto-created "Main"
+     * (sort_order 0) stays the default until the user explicitly changes it.
+     */
+    async createPortfolio(userId: string, name: string): Promise<PortfolioSummaryRow> {
+      const [maxRow] = await db
+        .select({ sortOrder: portfolios.sortOrder })
+        .from(portfolios)
+        .where(eq(portfolios.userId, userId))
+        .orderBy(desc(portfolios.sortOrder))
+        .limit(1);
+      const nextSortOrder = (maxRow?.sortOrder ?? -1) + 1;
+      const [row] = await db
+        .insert(portfolios)
+        .values({ userId, name, sortOrder: nextSortOrder })
+        .returning(summaryColumns);
+      if (!row) throw new Error('Portfolio insert returned no row');
+      // A freshly created portfolio can never be the default (Main outranks it).
+      return toSummary(row, false);
+    },
+
+    /**
+     * Soft-archive an owned, currently-active portfolio (§13.2 V2-P8). Scoped to
+     * the owner at the DB layer (§8); the `IS NULL` guard makes re-archiving a
+     * no-op that returns null. Returns null when the id is unknown, another
+     * user's, or already archived.
+     */
+    async archivePortfolio(
+      userId: string,
+      portfolioId: string,
+      archivedAt: Date,
+    ): Promise<PortfolioSummaryRow | null> {
+      const rows = await db
+        .update(portfolios)
+        .set({ archivedAt })
+        .where(
+          and(
+            eq(portfolios.id, portfolioId),
+            eq(portfolios.userId, userId),
+            isNull(portfolios.archivedAt),
+          ),
+        )
+        .returning(summaryColumns);
+      const row = rows[0];
+      if (!row) return null;
+      // Archived → never the default.
+      return toSummary(row, false);
+    },
+
+    /**
+     * Restore an owned, currently-archived portfolio (§13.2 V2-P8). Returns null
+     * when the id is unknown, another user's, or already active.
+     */
+    async restorePortfolio(
+      userId: string,
+      portfolioId: string,
+    ): Promise<PortfolioSummaryRow | null> {
+      const rows = await db
+        .update(portfolios)
+        .set({ archivedAt: null })
+        .where(
+          and(
+            eq(portfolios.id, portfolioId),
+            eq(portfolios.userId, userId),
+            isNotNull(portfolios.archivedAt), // archived only
+          ),
+        )
+        .returning(summaryColumns);
+      const row = rows[0];
+      if (!row) return null;
+      const defaultId = await selectDefaultId(userId);
+      return toSummary(row, row.id === defaultId);
     },
 
     /**

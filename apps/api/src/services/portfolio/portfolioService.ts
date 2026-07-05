@@ -5,6 +5,7 @@ import type {
   CashMovementsResponse,
   CashPreviewRequest,
   CashPreviewResponse,
+  CreatePortfolioRequest,
   Holding as HoldingDto,
   HistoryRange,
   PortfolioHistoryOverlay,
@@ -59,7 +60,7 @@ import {
   type Transaction as DomainTransaction,
   type ValueOverTimeAsset,
 } from '../../domain/holdings';
-import { badRequest, notFound } from '../../errors';
+import { badRequest, conflict, notFound } from '../../errors';
 import type { EventBus } from '../../events';
 import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
@@ -104,8 +105,25 @@ export interface PortfolioServiceDeps {
 }
 
 export interface PortfolioService {
-  /** The user's portfolios (§6.8/§7.2). V1 auto-materialises the single default. */
-  listPortfolios(userId: string): Promise<PortfolioListResponse>;
+  /**
+   * The user's portfolios (§6.8/§7.2), auto-materialising the single default so
+   * the list is never empty. Archived portfolios are excluded unless
+   * `includeArchived` is set (§13.2 V2-P8).
+   */
+  listPortfolios(
+    userId: string,
+    opts?: { includeArchived?: boolean },
+  ): Promise<PortfolioListResponse>;
+  /** Create a named portfolio; 409 on a duplicate name (§13.2 V2-P8). */
+  createPortfolio(userId: string, input: CreatePortfolioRequest): Promise<PortfolioSummary>;
+  /**
+   * Archive an owned portfolio (§13.2 V2-P8). Rejects (400) archiving the last
+   * active portfolio so a user can never be left with zero usable portfolios;
+   * 404 when the id is unknown or not the caller's; 400 when already archived.
+   */
+  archivePortfolio(userId: string, portfolioId: string): Promise<PortfolioSummary>;
+  /** Restore an archived portfolio; 404/400 otherwise (§13.2 V2-P8). */
+  restorePortfolio(userId: string, portfolioId: string): Promise<PortfolioSummary>;
   /** Rename / change visibility of an owned portfolio; 404 otherwise (§8). */
   updatePortfolio(
     userId: string,
@@ -642,12 +660,60 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   return {
-    async listPortfolios(userId) {
+    async listPortfolios(userId, opts) {
       // Materialise the guaranteed default so the list is never empty (§6.8):
       // seeded/invited users alike always have exactly one auto-created row.
       await portfolioRepo.getOrCreateMain(userId);
-      const portfolios = await portfolioRepo.listForUser(userId);
+      const portfolios = await portfolioRepo.listForUser(userId, {
+        includeArchived: opts?.includeArchived ?? false,
+      });
       return { portfolios };
+    },
+
+    async createPortfolio(userId, input) {
+      // Materialise the default first so the very first extra portfolio never
+      // outranks a not-yet-created "Main" (which owns sort_order 0, §6.8).
+      await portfolioRepo.getOrCreateMain(userId);
+      const name = input.name.trim();
+      // Reject a duplicate name up-front (the unique index spans archived rows)
+      // with a clean 409 rather than surfacing a raw DB constraint error.
+      if (await portfolioRepo.nameExists(userId, name)) {
+        throw conflict('A portfolio with that name already exists.', 'PORTFOLIO_NAME_TAKEN');
+      }
+      return portfolioRepo.createPortfolio(userId, name);
+    },
+
+    async archivePortfolio(userId, portfolioId) {
+      const portfolio = await portfolioRepo.findByIdForUser(userId, portfolioId);
+      if (!portfolio) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      if (portfolio.archivedAt) {
+        throw badRequest('Portfolio is already archived.', 'PORTFOLIO_ALREADY_ARCHIVED');
+      }
+      // The default-portfolio invariant: never leave the user with zero active
+      // portfolios (§13.2 V2-P8). Archiving the last active one — or the current
+      // default with no other active row to take over — is rejected. When
+      // another active row exists, the default recomputes to it automatically
+      // (the default is derived from the active set, §6.8).
+      const activeCount = await portfolioRepo.countActive(userId);
+      if (activeCount <= 1) {
+        throw badRequest('You cannot archive your only active portfolio.', 'LAST_ACTIVE_PORTFOLIO');
+      }
+      const archived = await portfolioRepo.archivePortfolio(userId, portfolioId, new Date(now()));
+      // Concurrent archive raced us to null → treat as already archived.
+      if (!archived)
+        throw badRequest('Portfolio is already archived.', 'PORTFOLIO_ALREADY_ARCHIVED');
+      return archived;
+    },
+
+    async restorePortfolio(userId, portfolioId) {
+      const portfolio = await portfolioRepo.findByIdForUser(userId, portfolioId);
+      if (!portfolio) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      if (!portfolio.archivedAt) {
+        throw badRequest('Portfolio is not archived.', 'PORTFOLIO_NOT_ARCHIVED');
+      }
+      const restored = await portfolioRepo.restorePortfolio(userId, portfolioId);
+      if (!restored) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      return restored;
     },
 
     async updatePortfolio(userId, portfolioId, patch) {

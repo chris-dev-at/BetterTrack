@@ -442,6 +442,12 @@ export const portfolios = pgTable(
     // one click. Persisted + returned only — the backend never *applies* it
     // silently; the client reads it to preselect and always sends explicit flags.
     defaultPayFromCash: boolean('default_pay_from_cash').notNull().default(false),
+    // Soft-archive (§13.2 V2-P8): a non-null timestamp hides the portfolio from
+    // the default list while keeping its history restorable. The default-
+    // portfolio invariant only ever considers *active* (archived_at IS NULL)
+    // rows, and archiving the last active portfolio is rejected upstream so a
+    // user can never be left with zero usable portfolios.
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
   },
   (t) => [uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name)],
 );
