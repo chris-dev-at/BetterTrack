@@ -195,6 +195,227 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
       .send({ visibility: 'friends' });
     expect(res.status).toBe(404);
   });
+
+  it('rejects a rename that collides with another portfolio (409, not 500)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent); // "Main"
+
+    // A second portfolio to rename.
+    const created = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(created.status).toBe(201);
+    const tradingPid = created.body.portfolio.id;
+
+    // Renaming "Trading" → "Main" collides with the existing default: clean 409.
+    const dup = await agent
+      .patch(`/api/v1/portfolios/${tradingPid}`)
+      .set(...XRW)
+      .send({ name: 'Main' });
+    expect(dup.status).toBe(409);
+    expect(dup.body.error.code).toBe('PORTFOLIO_NAME_TAKEN');
+
+    // The colliding rename left the row untouched.
+    const list = await agent.get('/api/v1/portfolios');
+    const trading = list.body.portfolios.find((p: { id: string }) => p.id === tradingPid);
+    expect(trading.name).toBe('Trading');
+
+    // Renaming the default to a fresh name still works.
+    const ok = await agent
+      .patch(`/api/v1/portfolios/${mainPid}`)
+      .set(...XRW)
+      .send({ name: 'Primary' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.portfolio.name).toBe('Primary');
+  });
+
+  it('allows a no-op re-save of the same name (not a self-collision)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const res = await agent
+      .patch(`/api/v1/portfolios/${pid}`)
+      .set(...XRW)
+      .send({ name: 'Main', visibility: 'friends' });
+    expect(res.status).toBe(200);
+    expect(res.body.portfolio.name).toBe('Main');
+    expect(res.body.portfolio.visibility).toBe('friends');
+  });
+});
+
+// ─── Multi-portfolio: create / archive / restore (§13.2 V2-P8) ───────────────
+
+describe('POST /api/v1/portfolios (create)', () => {
+  it('creates a named portfolio: not default, higher sort_order, contract-valid', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent); // materialise "Main"
+
+    const res = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(res.status).toBe(201);
+    expect(portfolioSummarySchema.safeParse(res.body.portfolio).success).toBe(true);
+    expect(res.body.portfolio.name).toBe('Trading');
+    expect(res.body.portfolio.isDefault).toBe(false);
+    expect(res.body.portfolio.archivedAt).toBeNull();
+    expect(res.body.portfolio.sortOrder).toBeGreaterThan(0);
+
+    // Both appear in the list; Main stays the default.
+    const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios).toHaveLength(2);
+    const main = list.body.portfolios.find((p: { name: string }) => p.name === 'Main');
+    expect(main.isDefault).toBe(true);
+  });
+
+  it('rejects a duplicate name (409)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent);
+
+    // "Main" already exists (the auto-created default).
+    const dup = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Main' });
+    expect(dup.status).toBe(409);
+    expect(dup.body.error.code).toBe('PORTFOLIO_NAME_TAKEN');
+  });
+
+  it('rejects a blank name (400)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const res = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('keeps two portfolios scoped: a transaction in one does not appear in the other', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    const created = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    const tradingPid = created.body.portfolio.id as string;
+
+    await agent
+      .post(`/api/v1/portfolios/${tradingPid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 3, price: 50, executedAt: tsOffset(-1) });
+
+    const tradingTxns = await agent.get(`/api/v1/portfolios/${tradingPid}/transactions`);
+    expect(tradingTxns.body.items).toHaveLength(1);
+    const mainTxns = await agent.get(`/api/v1/portfolios/${mainPid}/transactions`);
+    expect(mainTxns.body.items).toHaveLength(0);
+  });
+});
+
+describe('POST /api/v1/portfolios/:id/archive + /restore', () => {
+  /** Create an extra portfolio and return its id. */
+  async function createPortfolio(agent: ReturnType<typeof request.agent>, name: string) {
+    const res = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name });
+    expect(res.status).toBe(201);
+    return res.body.portfolio.id as string;
+  }
+
+  it('archives a portfolio: hidden by default, returned with includeArchived, restorable', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent);
+    const tradingPid = await createPortfolio(agent, 'Trading');
+
+    const archived = await agent.post(`/api/v1/portfolios/${tradingPid}/archive`).set(...XRW);
+    expect(archived.status).toBe(200);
+    expect(portfolioSummarySchema.safeParse(archived.body.portfolio).success).toBe(true);
+    expect(archived.body.portfolio.archivedAt).not.toBeNull();
+    expect(archived.body.portfolio.isDefault).toBe(false);
+
+    // Hidden from the default list…
+    const active = await agent.get('/api/v1/portfolios');
+    expect(active.body.portfolios.map((p: { name: string }) => p.name)).toEqual(['Main']);
+    // …but present when explicitly requested.
+    const all = await agent.get('/api/v1/portfolios?includeArchived=true');
+    expect(all.body.portfolios).toHaveLength(2);
+    const archivedRow = all.body.portfolios.find((p: { name: string }) => p.name === 'Trading');
+    expect(archivedRow.archivedAt).not.toBeNull();
+
+    // Restore → active again.
+    const restored = await agent.post(`/api/v1/portfolios/${tradingPid}/restore`).set(...XRW);
+    expect(restored.status).toBe(200);
+    expect(restored.body.portfolio.archivedAt).toBeNull();
+    const afterRestore = await agent.get('/api/v1/portfolios');
+    expect(afterRestore.body.portfolios).toHaveLength(2);
+  });
+
+  it('rejects archiving the only active portfolio (default invariant)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent);
+
+    const res = await agent.post(`/api/v1/portfolios/${mainPid}/archive`).set(...XRW);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('LAST_ACTIVE_PORTFOLIO');
+  });
+
+  it('archiving the default hands the default to the remaining active portfolio', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent);
+    const tradingPid = await createPortfolio(agent, 'Trading');
+
+    // Main is the default; archiving it is allowed because Trading remains.
+    const res = await agent.post(`/api/v1/portfolios/${mainPid}/archive`).set(...XRW);
+    expect(res.status).toBe(200);
+
+    const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios).toHaveLength(1);
+    const [remaining] = list.body.portfolios;
+    expect(remaining.id).toBe(tradingPid);
+    expect(remaining.isDefault).toBe(true); // default recomputed to the active row
+  });
+
+  it('rejects archiving an already-archived portfolio and restoring an active one', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent);
+    const tradingPid = await createPortfolio(agent, 'Trading');
+
+    await agent.post(`/api/v1/portfolios/${tradingPid}/archive`).set(...XRW);
+    const twice = await agent.post(`/api/v1/portfolios/${tradingPid}/archive`).set(...XRW);
+    expect(twice.status).toBe(400);
+    expect(twice.body.error.code).toBe('PORTFOLIO_ALREADY_ARCHIVED');
+
+    await agent.post(`/api/v1/portfolios/${tradingPid}/restore`).set(...XRW);
+    const restoreAgain = await agent.post(`/api/v1/portfolios/${tradingPid}/restore`).set(...XRW);
+    expect(restoreAgain.status).toBe(400);
+    expect(restoreAgain.body.error.code).toBe('PORTFOLIO_NOT_ARCHIVED');
+  });
+
+  it('404s archive scoped to another user (no IDOR)', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    await defaultPortfolioId(ownerAgent);
+    const ownerPid = await createPortfolio(ownerAgent, 'Trading');
+
+    const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
+    const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+
+    const res = await intruderAgent.post(`/api/v1/portfolios/${ownerPid}/archive`).set(...XRW);
+    expect(res.status).toBe(404);
+  });
 });
 
 // ─── Transactions (scoped under a portfolio) ──────────────────────────────────

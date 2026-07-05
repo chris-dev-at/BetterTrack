@@ -1,0 +1,1 @@
+ALTER TABLE "portfolios" ADD COLUMN "archived_at" timestamp with time zone;

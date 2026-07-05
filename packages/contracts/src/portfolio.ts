@@ -41,15 +41,57 @@ export const portfolioSummarySchema = z
      * applies it silently.
      */
     defaultPayFromCash: z.boolean(),
+    /**
+     * Soft-archive timestamp (§13.2 V2-P8): ISO-8601 when the portfolio was
+     * archived, or `null` while active. Archived portfolios are hidden from the
+     * default list (returned only via `?includeArchived=true`) but restorable;
+     * they are never the default. The default-portfolio invariant considers
+     * only active rows, so archive/restore can never leave a user with zero
+     * usable portfolios.
+     */
+    archivedAt: z.string().datetime().nullable(),
   })
   .strict();
 export type PortfolioSummary = z.infer<typeof portfolioSummarySchema>;
+
+/**
+ * `GET /portfolios?includeArchived=` query (§13.2 V2-P8). Archived portfolios
+ * are hidden by default; `includeArchived=true` returns them too. Arrives as a
+ * query-string token, so it is an explicit `'true' | 'false'` enum rather than
+ * a boolean coercion (`z.coerce.boolean()` would turn the literal `"false"`
+ * into `true`).
+ */
+export const portfolioListQuerySchema = z
+  .object({
+    includeArchived: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  })
+  .strict();
+export type PortfolioListQuery = z.infer<typeof portfolioListQuerySchema>;
 
 /** `GET /portfolios` response — the user's portfolios (V1: the single default). */
 export const portfolioListResponseSchema = z
   .object({ portfolios: z.array(portfolioSummarySchema) })
   .strict();
 export type PortfolioListResponse = z.infer<typeof portfolioListResponseSchema>;
+
+/** `POST /portfolios` body — create a named portfolio (§13.2 V2-P8). */
+export const createPortfolioRequestSchema = z
+  .object({ name: z.string().trim().min(1).max(120) })
+  .strict();
+export type CreatePortfolioRequest = z.infer<typeof createPortfolioRequestSchema>;
+
+/**
+ * `POST /portfolios`, `POST /portfolios/:id/archive` and `.../restore` response
+ * — the affected portfolio summary. One shape for the whole create/archive/
+ * restore family so the client parses every mutation the same way.
+ */
+export const portfolioMutationResponseSchema = z
+  .object({ portfolio: portfolioSummarySchema })
+  .strict();
+export type PortfolioMutationResponse = z.infer<typeof portfolioMutationResponseSchema>;
 
 /** `PATCH /portfolios/:id` body — rename, change visibility, set sticky cash default (§6.8, §14). */
 export const updatePortfolioRequestSchema = z

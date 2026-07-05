@@ -51,6 +51,7 @@ describe('MySharedItemsPage', () => {
             sortOrder: 0,
             isDefault: true,
             defaultPayFromCash: false,
+            archivedAt: null,
           },
         ],
       })
@@ -62,6 +63,7 @@ describe('MySharedItemsPage', () => {
       sortOrder: 0,
       isDefault: true,
       defaultPayFromCash: false,
+      archivedAt: null,
     });
 
     const user = userEvent.setup();

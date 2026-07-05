@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
 
@@ -18,6 +18,7 @@ import {
   listTransactions,
 } from '../../lib/portfolioApi';
 import { cx } from '../../lib/cx';
+import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 import { EM_DASH, formatDate, formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
@@ -723,18 +724,22 @@ export function PortfolioPage() {
   const [cashDialogKind, setCashDialogKind] = useState<'deposit' | 'withdrawal' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // The API is portfolio_id-scoped (§6.8): resolve the default portfolio first,
-  // then thread its id through every scoped read/write. V1 has exactly one.
+  // The API is portfolio_id-scoped (§6.8): resolve the active portfolio, then
+  // thread its id through every scoped read/write. The active one is named by
+  // the `?portfolio=` routing param the switcher sets (§13.2 V2-P8), falling
+  // back to the default — so switching in the header re-scopes this whole page.
+  const [searchParams] = useSearchParams();
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
     staleTime: 60_000,
   });
 
-  const portfolio = useMemo(() => {
-    const list = portfoliosQuery.data?.portfolios ?? [];
-    return list.find((p) => p.isDefault) ?? list[0] ?? null;
-  }, [portfoliosQuery.data]);
+  const activeParam = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
+  const portfolio = useMemo(
+    () => resolveActivePortfolio(portfoliosQuery.data?.portfolios ?? [], activeParam),
+    [portfoliosQuery.data, activeParam],
+  );
   const portfolioId = portfolio?.id ?? null;
 
   const portfolioQuery = useQuery({

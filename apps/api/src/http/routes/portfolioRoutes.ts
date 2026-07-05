@@ -3,17 +3,22 @@ import { Router } from 'express';
 import {
   cashEntryRequestSchema,
   cashPreviewRequestSchema,
+  createPortfolioRequestSchema,
   createTransactionsRequestSchema,
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
+  portfolioListQuerySchema,
   portfolioTransactionParamsSchema,
   transactionListQuerySchema,
   updatePortfolioRequestSchema,
   updateTransactionRequestSchema,
   type CashEntryRequest,
   type CashPreviewRequest,
+  type CreatePortfolioRequest,
   type CreateTransactionsRequest,
   type PortfolioHistoryQuery,
+  type PortfolioListQuery,
+  type PortfolioMutationResponse,
   type TransactionInput,
   type TransactionListQuery,
   type UpdatePortfolioRequest,
@@ -36,10 +41,36 @@ export function createPortfolioRouter(ctx: AppContext): Router {
 
   router.use(requireUser);
 
-  // GET /portfolios — the user's portfolios (V1: the single auto-created default).
-  router.get('/', async (req, res) => {
-    const list = await ctx.portfolio.listPortfolios(req.authUser!.id);
+  // GET /portfolios?includeArchived= — the user's portfolios (active by default,
+  // §6.8; archived rows included only when asked, §13.2 V2-P8).
+  router.get('/', validateQuery(portfolioListQuerySchema), async (req, res) => {
+    const { includeArchived } = req.valid?.query as PortfolioListQuery;
+    const list = await ctx.portfolio.listPortfolios(req.authUser!.id, { includeArchived });
     res.json(list);
+  });
+
+  // POST /portfolios — create a named portfolio (§13.2 V2-P8).
+  router.post('/', validateBody(createPortfolioRequestSchema), async (req, res) => {
+    const body = req.valid?.body as CreatePortfolioRequest;
+    const portfolio = await ctx.portfolio.createPortfolio(req.authUser!.id, body);
+    const response: PortfolioMutationResponse = { portfolio };
+    res.status(201).json(response);
+  });
+
+  // POST /portfolios/:portfolioId/archive — soft-archive; rejects the last active one (§13.2 V2-P8).
+  router.post('/:portfolioId/archive', validateParams(portfolioIdParamSchema), async (req, res) => {
+    const { portfolioId } = req.valid?.params as { portfolioId: string };
+    const portfolio = await ctx.portfolio.archivePortfolio(req.authUser!.id, portfolioId);
+    const response: PortfolioMutationResponse = { portfolio };
+    res.json(response);
+  });
+
+  // POST /portfolios/:portfolioId/restore — restore an archived portfolio (§13.2 V2-P8).
+  router.post('/:portfolioId/restore', validateParams(portfolioIdParamSchema), async (req, res) => {
+    const { portfolioId } = req.valid?.params as { portfolioId: string };
+    const portfolio = await ctx.portfolio.restorePortfolio(req.authUser!.id, portfolioId);
+    const response: PortfolioMutationResponse = { portfolio };
+    res.json(response);
   });
 
   // GET /portfolios/:portfolioId — holdings + totals (§6.8).

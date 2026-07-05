@@ -105,6 +105,7 @@ beforeEach(() => {
         sortOrder: 0,
         isDefault: true,
         defaultPayFromCash: false,
+        archivedAt: null,
       },
     ],
   });
