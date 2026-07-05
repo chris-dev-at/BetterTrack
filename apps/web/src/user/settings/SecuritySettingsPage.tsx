@@ -1,12 +1,24 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { MAX_PIN_LENGTH, MIN_PIN_LENGTH, type SetPinRequest } from '@bettertrack/contracts';
+import {
+  MAX_PIN_LENGTH,
+  MIN_PIN_LENGTH,
+  TOTP_CODE_LENGTH,
+  type SetPinRequest,
+} from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
+import {
+  confirmTwoFactor,
+  disableTwoFactor,
+  enrollTwoFactor,
+  getTwoFactorStatus,
+  regenerateRecoveryCodes,
+} from '../../lib/twoFactorApi';
 import { disablePin, getMe, getSession, setPin, setPinLockIdleMinutes } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { PinInput } from '../components/PinInput';
@@ -14,6 +26,7 @@ import { Alert, Button, cx } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
+const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
 
 function pinErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
@@ -293,9 +306,294 @@ function PinSection({
   );
 }
 
+function twoFactorErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status < 500) return err.message;
+  }
+  return 'Something went wrong. Please try again.';
+}
+
+/** Recovery codes, shown exactly once after `confirm` or a regenerate. */
+function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(codes.join('\n'));
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  function handleDownload() {
+    try {
+      const blob = new Blob([codes.join('\n') + '\n'], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'bettertrack-recovery-codes.txt';
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // Download is a convenience affordance; copy still works if it's unavailable.
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Alert tone="info">
+        Save these recovery codes somewhere safe. Each one can be used once to sign in if you lose
+        access to your authenticator — they won't be shown again.
+      </Alert>
+      <div className="grid grid-cols-2 gap-2 rounded-md border border-neutral-800 bg-neutral-950 p-4 font-mono text-sm text-neutral-100">
+        {codes.map((code) => (
+          <span key={code}>{code}</span>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <Button type="button" variant="secondary" onClick={handleCopy}>
+          {copied ? 'Copied!' : 'Copy codes'}
+        </Button>
+        <Button type="button" variant="secondary" onClick={handleDownload}>
+          Download codes
+        </Button>
+        <Button type="button" onClick={onDone}>
+          I've saved these codes
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Enroll wizard: request a secret, then confirm it with a live TOTP code. */
+function EnrollWizard({
+  onEnrolled,
+  onCancel,
+}: {
+  onEnrolled: (recoveryCodes: string[]) => void;
+  onCancel: () => void;
+}) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const enroll = useMutation({
+    mutationFn: enrollTwoFactor,
+    onError: () => setError('Could not start enrollment. Please try again.'),
+  });
+  const enrollStart = enroll.mutate;
+
+  // Kick off enrollment once, when the wizard first mounts.
+  useEffect(() => {
+    enrollStart();
+  }, [enrollStart]);
+
+  const confirm = useMutation({
+    mutationFn: () => confirmTwoFactor({ code }),
+    onSuccess: (data) => onEnrolled(data.recoveryCodes),
+    onError: (err) => setError(twoFactorErrorMessage(err)),
+  });
+
+  if (!enroll.data) {
+    return (
+      <div className="flex flex-col gap-3">
+        {enroll.isError ? <Alert tone="error">{error}</Alert> : <Skeleton height="h-24" />}
+      </div>
+    );
+  }
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    confirm.mutate();
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <p className="text-sm text-neutral-400">
+        Scan this into your authenticator app, or enter the key manually.
+      </p>
+      <div className="flex flex-col gap-1.5 rounded-md border border-neutral-800 bg-neutral-950 p-4">
+        <span className="text-xs font-medium text-neutral-500">Setup key</span>
+        <code className="break-all text-sm text-neutral-100">{enroll.data.secret}</code>
+        <span className="mt-2 text-xs font-medium text-neutral-500">otpauth URI</span>
+        <code className="break-all text-xs text-neutral-400">{enroll.data.otpauthUri}</code>
+      </div>
+      <PinInput
+        label="Confirmation code"
+        length={TOTP_CODE_LENGTH}
+        value={code}
+        onChange={setCode}
+        hint="Enter the current 6-digit code from your authenticator app."
+        autoFocus
+      />
+      <div className="flex flex-wrap gap-3">
+        <Button type="submit" disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH}>
+          {confirm.isPending ? 'Confirming…' : 'Confirm & enable'}
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** Inline code-entry form used to authorize disabling 2FA. */
+function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCancel: () => void }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const disable = useMutation({
+    mutationFn: () => disableTwoFactor({ code }),
+    onSuccess: onDisabled,
+    onError: (err) => setError(twoFactorErrorMessage(err)),
+  });
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    disable.mutate();
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="flex flex-col gap-3">
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+        Authenticator code or recovery code
+        <input
+          type="text"
+          autoComplete="off"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+        />
+      </label>
+      <div className="flex flex-wrap gap-3">
+        <Button type="submit" variant="secondary" disabled={disable.isPending || code.length < 6}>
+          {disable.isPending ? 'Disabling…' : 'Disable 2FA'}
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+type TwoFactorView = 'status' | 'enrolling' | 'disabling';
+
+/**
+ * Two-factor authentication card (PROJECTPLAN.md §6.1, §13.2 V2-P5): status
+ * from `GET /auth/2fa/status`, an enroll wizard (secret → confirm code →
+ * recovery codes shown once), regenerate, and disable.
+ */
+function TwoFactorSection() {
+  const queryClient = useQueryClient();
+  const status = useQuery({
+    queryKey: TWO_FACTOR_KEY,
+    queryFn: ({ signal }) => getTwoFactorStatus(signal),
+    staleTime: 10_000,
+  });
+
+  const [view, setView] = useState<TwoFactorView>('status');
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [regenerateError, setRegenerateError] = useState<string | null>(null);
+
+  const regenerate = useMutation({
+    mutationFn: regenerateRecoveryCodes,
+    onSuccess: (data) => {
+      setRegenerateError(null);
+      setNotice(null);
+      setRecoveryCodes(data.recoveryCodes);
+    },
+    onError: () => setRegenerateError('Could not regenerate recovery codes. Please try again.'),
+  });
+
+  function refresh() {
+    void queryClient.invalidateQueries({ queryKey: TWO_FACTOR_KEY });
+  }
+
+  return (
+    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">Two-factor authentication</h3>
+        <p className="text-xs text-neutral-500">
+          Require a code from an authenticator app (in addition to your password) when signing in.
+        </p>
+      </div>
+
+      {notice ? <Alert tone="success">{notice}</Alert> : null}
+
+      {recoveryCodes ? (
+        <RecoveryCodesCard
+          codes={recoveryCodes}
+          onDone={() => {
+            setRecoveryCodes(null);
+            setView('status');
+            refresh();
+          }}
+        />
+      ) : status.isPending ? (
+        <Skeleton height="h-16" />
+      ) : status.isError ? (
+        <EmptyState
+          title="Couldn't load your two-factor status"
+          description="Please try again in a moment."
+        />
+      ) : view === 'enrolling' ? (
+        <EnrollWizard
+          onEnrolled={(codes) => {
+            setRecoveryCodes(codes);
+          }}
+          onCancel={() => setView('status')}
+        />
+      ) : !status.data.enabled ? (
+        <div>
+          <Button type="button" onClick={() => setView('enrolling')}>
+            Set up two-factor authentication
+          </Button>
+        </div>
+      ) : view === 'disabling' ? (
+        <DisableForm
+          onDisabled={() => {
+            setView('status');
+            setNotice('Two-factor authentication has been turned off.');
+            refresh();
+          }}
+          onCancel={() => setView('status')}
+        />
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-neutral-400">
+            Enabled — {status.data.recoveryCodesRemaining} recovery code
+            {status.data.recoveryCodesRemaining === 1 ? '' : 's'} remaining.
+          </p>
+          {regenerateError ? <Alert tone="error">{regenerateError}</Alert> : null}
+          <div className="flex flex-wrap gap-3">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={regenerate.isPending}
+              onClick={() => regenerate.mutate()}
+            >
+              {regenerate.isPending ? 'Regenerating…' : 'Regenerate recovery codes'}
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setView('disabling')}>
+              Disable 2FA
+            </Button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /**
  * Settings → Security (PROJECTPLAN.md §6.11). Session info, PIN
- * enable/change/disable (§6.1), and a planned two-factor section. All shapes
+ * enable/change/disable (§6.1), and two-factor auth (§13.2 V2-P5). All shapes
  * derive from `@bettertrack/contracts` via the web api-client.
  */
 export function SecuritySettingsPage() {
@@ -325,17 +623,7 @@ export function SecuritySettingsPage() {
         <PinSection pinEnabled={me.data.pinEnabled} idleMinutes={me.data.pinLockIdleMinutes} />
       )}
 
-      <section className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-neutral-100">Two-factor authentication</h3>
-          <span className="rounded-full bg-neutral-800 px-2 py-0.5 text-xs font-medium text-neutral-400">
-            Planned
-          </span>
-        </div>
-        <p className="text-sm text-neutral-500">
-          Time-based one-time passwords (TOTP) and hardware keys are coming soon.
-        </p>
-      </section>
+      <TwoFactorSection />
     </div>
   );
 }
