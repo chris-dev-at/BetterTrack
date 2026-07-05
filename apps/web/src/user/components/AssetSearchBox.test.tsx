@@ -85,7 +85,14 @@ function workboardWith(assetId: string): WorkboardListResponse {
 function onePortfolio(): PortfolioListResponse {
   return {
     portfolios: [
-      { id: 'portfolio-1', name: 'Main', visibility: 'private', sortOrder: 0, isDefault: true },
+      {
+        id: 'portfolio-1',
+        name: 'Main',
+        visibility: 'private',
+        sortOrder: 0,
+        isDefault: true,
+        defaultPayFromCash: false,
+      },
     ],
   };
 }

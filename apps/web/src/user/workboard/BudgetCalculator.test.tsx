@@ -98,7 +98,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listPortfolios).mockResolvedValue({
     portfolios: [
-      { id: 'p1', name: 'Default', visibility: 'private', sortOrder: 0, isDefault: true },
+      {
+        id: 'p1',
+        name: 'Default',
+        visibility: 'private',
+        sortOrder: 0,
+        isDefault: true,
+        defaultPayFromCash: false,
+      },
     ],
   });
 });

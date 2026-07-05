@@ -38,6 +38,7 @@ const DEFAULT_PORTFOLIO: PortfolioSummary = {
   visibility: 'private',
   sortOrder: 0,
   isDefault: true,
+  defaultPayFromCash: false,
 };
 
 function renderPage() {

@@ -88,6 +88,7 @@ const PORTFOLIO_LIST = {
       visibility: 'private' as const,
       sortOrder: 0,
       isDefault: true,
+      defaultPayFromCash: false,
     },
   ],
 };
@@ -145,6 +146,7 @@ const TOTALS = {
   unrealizedPnlPct: 6.8,
   dayChangeEur: 9,
   dayChangePct: 0.003,
+  cashEur: 0,
 };
 
 const PORTFOLIO = { baseCurrency: 'EUR' as const, holdings: [STOCK, HOUSE], totals: TOTALS };
@@ -159,6 +161,7 @@ const EMPTY_PORTFOLIO = {
     unrealizedPnlPct: null,
     dayChangeEur: 0,
     dayChangePct: null,
+    cashEur: 0,
   },
 };
 

@@ -1,4 +1,10 @@
 import type {
+  CashEntryRequest,
+  CashMovement as CashMovementDto,
+  CashMovementResponse,
+  CashMovementsResponse,
+  CashPreviewRequest,
+  CashPreviewResponse,
   Holding as HoldingDto,
   HistoryRange,
   PortfolioHistoryOverlay,
@@ -18,12 +24,26 @@ import type {
 import type { Redis } from 'ioredis';
 
 import type { AssetRow } from '../../data/schema';
+import type {
+  CashMovementRecord,
+  CashMovementRepository,
+} from '../../data/repositories/cashMovementRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type {
+  LinkedCashMovement,
+  NewTransaction,
   TransactionRecord,
   TransactionRepository,
 } from '../../data/repositories/transactionRepository';
+import {
+  CASH_EPSILON,
+  CASH_MOVEMENT_SIGN,
+  cashBalance,
+  InsufficientCashError,
+  projectCashLedger,
+  type CashMovement as DomainCashMovement,
+} from '../../domain/cashLedger';
 import {
   dailyCloseSeries,
   deriveHoldings,
@@ -69,6 +89,7 @@ import type { CurrencyService } from '../currency/currencyService';
 export interface PortfolioServiceDeps {
   portfolioRepo: PortfolioRepository;
   transactionRepo: TransactionRepository;
+  cashMovementRepo: CashMovementRepository;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -111,6 +132,26 @@ export interface PortfolioService {
   ): Promise<TransactionDto>;
   deleteTransaction(userId: string, portfolioId: string, id: string): Promise<void>;
   getPortfolio(userId: string, portfolioId: string): Promise<PortfolioResponse>;
+  /** The portfolio's cash movements + current balance (§14, #220). */
+  getCashMovements(userId: string, portfolioId: string): Promise<CashMovementsResponse>;
+  /** Record an external cash deposit (§14). */
+  depositCash(
+    userId: string,
+    portfolioId: string,
+    input: CashEntryRequest,
+  ): Promise<CashMovementResponse>;
+  /** Record an external cash withdrawal; rejects an overdraw (§14, no silent negatives). */
+  withdrawCash(
+    userId: string,
+    portfolioId: string,
+    input: CashEntryRequest,
+  ): Promise<CashMovementResponse>;
+  /** Live "available → after" preview for a proposed cash movement (§14). */
+  previewCash(
+    userId: string,
+    portfolioId: string,
+    input: CashPreviewRequest,
+  ): Promise<CashPreviewResponse>;
   getHistory(
     userId: string,
     portfolioId: string,
@@ -163,6 +204,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   const {
     portfolioRepo,
     transactionRepo,
+    cashMovementRepo,
     marketData,
     currencyService,
     referenceBackfill,
@@ -308,6 +350,111 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     return portfolio;
   }
 
+  // --- Cash ledger (§14, #220) ---------------------------------------------
+
+  /** Map a stored cash-movement row into the pure-domain movement shape. */
+  function toDomainMovement(r: CashMovementRecord): DomainCashMovement {
+    return { kind: r.kind, amountEur: r.amountEur, occurredAt: r.executedAt.toISOString() };
+  }
+
+  function movementToDto(r: CashMovementRecord): CashMovementDto {
+    return {
+      id: r.id,
+      kind: r.kind,
+      amountEur: r.amountEur,
+      transactionId: r.transactionId,
+      executedAt: r.executedAt.toISOString(),
+      note: r.note,
+      createdAt: r.createdAt.toISOString(),
+    };
+  }
+
+  /** Current EUR cash balance = sum of signed movements (§14 reconciliation invariant). */
+  async function cashBalanceFor(portfolioId: string): Promise<number> {
+    const records = await cashMovementRepo.listForPortfolio(portfolioId);
+    return cashBalance(records.map(toDomainMovement));
+  }
+
+  /**
+   * Replay the existing ledger with the proposed movements appended and reject
+   * (400 `INSUFFICIENT_CASH`) if any point would dip negative — the single
+   * no-silent-negative gate, driven entirely by `domain/cashLedger`.
+   */
+  function assertCashSolvent(
+    existing: readonly CashMovementRecord[],
+    proposed: readonly DomainCashMovement[],
+  ): void {
+    try {
+      projectCashLedger([...existing.map(toDomainMovement), ...proposed]);
+    } catch (err) {
+      if (err instanceof InsufficientCashError) {
+        throw badRequest('Insufficient cash balance.', 'INSUFFICIENT_CASH', {
+          availableEur: err.balanceEur,
+          shortfallEur: err.shortfallEur,
+          kind: err.movement.kind,
+        });
+      }
+      throw err;
+    }
+  }
+
+  /** Convert a native-currency amount to EUR at the movement date, or 400 if no FX. */
+  async function toCashEur(amountNative: number, currency: string, day: string): Promise<number> {
+    try {
+      return await currencyService.toBase(amountNative, currency, { date: day });
+    } catch {
+      throw badRequest(
+        'Cash-linked transactions need a EUR conversion that is currently unavailable for this asset.',
+        'CASH_FX_UNAVAILABLE',
+        { currency },
+      );
+    }
+  }
+
+  /**
+   * Build the linked cash movement for a cash-flagged buy/sell (§14), or null
+   * when the flag is off or the net EUR amount rounds to nothing. A buy funded
+   * from cash books an internal `buy` (cash↓, TWR-neutral) for its total cost
+   * (quantity·price + fee); a sell adds `sell_proceeds` (cash↑) for its net
+   * proceeds (quantity·price − fee). A flag that contradicts the side is a 400.
+   */
+  async function buildCashLink(
+    input: TransactionInput,
+    asset: AssetRow,
+  ): Promise<LinkedCashMovement | null> {
+    if (input.payFromCash && input.side !== 'buy') {
+      throw badRequest('"Pay from cash" applies only to buys.', 'CASH_FLAG_MISMATCH');
+    }
+    if (input.addProceedsToCash && input.side !== 'sell') {
+      throw badRequest('"Add proceeds to cash" applies only to sells.', 'CASH_FLAG_MISMATCH');
+    }
+    const day = new Date(input.executedAt).toISOString().slice(0, 10);
+
+    if (input.payFromCash && input.side === 'buy') {
+      const costEur = await toCashEur(
+        input.quantity * input.price + input.fee,
+        asset.currency,
+        day,
+      );
+      if (costEur <= CASH_EPSILON) return null;
+      return { kind: 'buy', amountEur: -costEur, note: 'Paid from cash balance' };
+    }
+    if (input.addProceedsToCash && input.side === 'sell') {
+      const proceedsEur = await toCashEur(
+        input.quantity * input.price - input.fee,
+        asset.currency,
+        day,
+      );
+      if (proceedsEur <= CASH_EPSILON) return null;
+      return {
+        kind: 'sell_proceeds',
+        amountEur: proceedsEur,
+        note: 'Proceeds added to cash balance',
+      };
+    }
+    return null;
+  }
+
   /** The empty graph payload (no transactions / nothing convertible to plot). */
   const emptyHistory = (): HistoryPayload => ({ points: [], performance: [], assets: [] });
 
@@ -451,6 +598,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // neutralized — daily time-weighted return, chain-linked. Flows reuse the
     // exact transaction set and currencies the value curve was built from, so
     // both series describe the same portfolio slice.
+    //
+    // NOTE (§14, #220 cash ledger — deliberately deferred here): this curve is
+    // still built purely from transactions and does not yet fold the EUR cash
+    // balance into the value series or swap transaction flows for
+    // `domain/cashLedger.externalCashFlowsForTwr`. The classifier already
+    // guarantees a cash-funded buy is internal (not an external flow) — see the
+    // #278 tests — but wiring cash into the *value curve* so a cash→stock
+    // conversion is genuinely value-neutral is a money-math series rework that
+    // belongs in `domain/` (fable, per the #278 scope: "flag and split rather
+    // than writing money-math in the service"). Tracked as follow-up fable work.
     const flows = await netFlowsOverTime({
       transactions: usableTxns,
       currencyByAsset: new Map(valueAssets.map((a) => [a.assetId, a.currency])),
@@ -500,6 +657,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const updated = await portfolioRepo.updatePortfolio(userId, portfolioId, {
         name: patch.name,
         visibility: patch.visibility,
+        defaultPayFromCash: patch.defaultPayFromCash,
       });
       if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
 
@@ -559,17 +717,48 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         assertNoOversell([...existing.map(recordToDomain), ...pending]);
       }
 
+      // Cash-ledger linkage (§14, #220): resolve each cash-flagged buy/sell into
+      // a linked EUR movement, then reject up-front if the batch — replayed over
+      // the existing ledger — would ever overdraw (no silent negative balances).
+      // The transactions and their movements are then written atomically.
+      const cashLinks = await Promise.all(
+        inputs.map((input) => {
+          if (!input.payFromCash && !input.addProceedsToCash) return null;
+          const asset = assetsById.get(input.assetId);
+          if (!asset) throw new Error(`Asset ${input.assetId} missing while linking cash`);
+          return buildCashLink(input, asset);
+        }),
+      );
+      if (cashLinks.some((link) => link)) {
+        const existing = await cashMovementRepo.listForPortfolio(portfolioId);
+        const proposed: DomainCashMovement[] = cashLinks
+          .map((link, i): DomainCashMovement | null =>
+            link
+              ? {
+                  kind: link.kind,
+                  amountEur: link.amountEur,
+                  occurredAt: new Date(inputs[i]!.executedAt).toISOString(),
+                }
+              : null,
+          )
+          .filter((m): m is DomainCashMovement => m !== null);
+        assertCashSolvent(existing, proposed);
+      }
+
       const inserted = await transactionRepo.insertMany(
         portfolioId,
-        inputs.map((i) => ({
-          assetId: i.assetId,
-          side: i.side,
-          quantity: i.quantity,
-          price: i.price,
-          fee: i.fee,
-          executedAt: new Date(i.executedAt),
-          note: i.note ?? null,
-        })),
+        inputs.map(
+          (i, idx): NewTransaction => ({
+            assetId: i.assetId,
+            side: i.side,
+            quantity: i.quantity,
+            price: i.price,
+            fee: i.fee,
+            executedAt: new Date(i.executedAt),
+            note: i.note ?? null,
+            cashMovement: cashLinks[idx],
+          }),
+        ),
       );
 
       await invalidateHistory(portfolioId);
@@ -648,10 +837,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
     async getPortfolio(userId, portfolioId) {
       await requireOwnedPortfolio(userId, portfolioId);
+      // Cash is a first-class overview line (§14): loaded up-front so it shows
+      // even for a portfolio that holds only cash (no transactions yet).
+      const cashEur = await cashBalanceFor(portfolioId);
       const empty: PortfolioResponse = {
         baseCurrency,
         holdings: [],
-        totals: emptyTotals(),
+        totals: emptyTotals(cashEur),
       };
 
       const txns = await transactionRepo.listForPortfolio(portfolioId);
@@ -706,7 +898,63 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         };
       });
 
-      return { baseCurrency, holdings: holdingDtos, totals: computeTotals(holdings) };
+      return { baseCurrency, holdings: holdingDtos, totals: computeTotals(holdings, cashEur) };
+    },
+
+    async getCashMovements(userId, portfolioId) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const records = await cashMovementRepo.listForPortfolio(portfolioId);
+      return {
+        balanceEur: cashBalance(records.map(toDomainMovement)),
+        movements: records.map(movementToDto),
+      };
+    },
+
+    async depositCash(userId, portfolioId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      // A deposit only ever raises the balance, so it needs no solvency gate.
+      const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      const movement = await cashMovementRepo.insert(portfolioId, {
+        kind: 'deposit',
+        amountEur: input.amountEur,
+        executedAt,
+        note: input.note ?? null,
+      });
+      return { movement: movementToDto(movement), balanceEur: await cashBalanceFor(portfolioId) };
+    },
+
+    async withdrawCash(userId, portfolioId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      const existing = await cashMovementRepo.listForPortfolio(portfolioId);
+      // Guard against an overdraw at *any* point once this (possibly back-dated)
+      // withdrawal is replayed into the ledger — no silent negative balance.
+      assertCashSolvent(existing, [
+        { kind: 'withdrawal', amountEur: -input.amountEur, occurredAt: executedAt.toISOString() },
+      ]);
+      const movement = await cashMovementRepo.insert(portfolioId, {
+        kind: 'withdrawal',
+        amountEur: -input.amountEur,
+        executedAt,
+        note: input.note ?? null,
+      });
+      return { movement: movementToDto(movement), balanceEur: await cashBalanceFor(portfolioId) };
+    },
+
+    async previewCash(userId, portfolioId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const availableEur = await cashBalanceFor(portfolioId);
+      // Signed by kind (deposit/sell_proceeds add, withdrawal/buy subtract), then
+      // report the resulting balance — never applied, so an overdraw surfaces as
+      // `sufficient: false` for the "available → after" preview rather than error.
+      const afterEur = availableEur + input.amountEur * CASH_MOVEMENT_SIGN[input.kind];
+      const sufficient = afterEur >= -CASH_EPSILON;
+      return {
+        availableEur,
+        afterEur,
+        sufficient,
+        shortfallEur: sufficient ? 0 : -afterEur,
+      };
     },
 
     async getHistory(userId, portfolioId, range, opts) {
@@ -746,7 +994,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 // Totals + range helpers
 // ---------------------------------------------------------------------------
 
-function emptyTotals(): PortfolioTotals {
+function emptyTotals(cashEur = 0): PortfolioTotals {
   return {
     marketValueEur: 0,
     investedEur: 0,
@@ -754,11 +1002,12 @@ function emptyTotals(): PortfolioTotals {
     unrealizedPnlPct: null,
     dayChangeEur: 0,
     dayChangePct: null,
+    cashEur,
   };
 }
 
-/** Aggregate the holdings into the totals header (§6.9). */
-function computeTotals(holdings: readonly Holding[]): PortfolioTotals {
+/** Aggregate the holdings into the totals header (§6.9), plus the cash line (§14). */
+function computeTotals(holdings: readonly Holding[], cashEur: number): PortfolioTotals {
   let marketValueEur = 0;
   let investedEur = 0;
   let dayChangeEur = 0;
@@ -781,6 +1030,7 @@ function computeTotals(holdings: readonly Holding[]): PortfolioTotals {
     unrealizedPnlPct: investedEur > 0 ? (unrealizedPnlEur / investedEur) * 100 : null,
     dayChangeEur,
     dayChangePct: dayPrevValueEur > 0 ? (dayChangeEur / dayPrevValueEur) * 100 : null,
+    cashEur,
   };
 }
 

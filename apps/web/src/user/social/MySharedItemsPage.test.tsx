@@ -50,6 +50,7 @@ describe('MySharedItemsPage', () => {
             visibility: 'friends',
             sortOrder: 0,
             isDefault: true,
+            defaultPayFromCash: false,
           },
         ],
       })
@@ -60,6 +61,7 @@ describe('MySharedItemsPage', () => {
       visibility: 'private',
       sortOrder: 0,
       isDefault: true,
+      defaultPayFromCash: false,
     });
 
     const user = userEvent.setup();

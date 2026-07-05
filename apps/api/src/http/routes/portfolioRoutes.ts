@@ -1,6 +1,8 @@
 import { Router } from 'express';
 
 import {
+  cashEntryRequestSchema,
+  cashPreviewRequestSchema,
   createTransactionsRequestSchema,
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
@@ -8,6 +10,8 @@ import {
   transactionListQuerySchema,
   updatePortfolioRequestSchema,
   updateTransactionRequestSchema,
+  type CashEntryRequest,
+  type CashPreviewRequest,
   type CreateTransactionsRequest,
   type PortfolioHistoryQuery,
   type TransactionInput,
@@ -72,6 +76,52 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         overlay,
       });
       res.json(history);
+    },
+  );
+
+  // GET /portfolios/:portfolioId/cash — cash movements + current balance (§14, #220).
+  router.get('/:portfolioId/cash', validateParams(portfolioIdParamSchema), async (req, res) => {
+    const { portfolioId } = req.valid?.params as { portfolioId: string };
+    const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId);
+    res.json(cash);
+  });
+
+  // POST /portfolios/:portfolioId/cash/deposit — record an external deposit (§14).
+  router.post(
+    '/:portfolioId/cash/deposit',
+    validateParams(portfolioIdParamSchema),
+    validateBody(cashEntryRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CashEntryRequest;
+      const result = await ctx.portfolio.depositCash(req.authUser!.id, portfolioId, body);
+      res.status(201).json(result);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/withdraw — record a withdrawal; 400 on overdraw (§14).
+  router.post(
+    '/:portfolioId/cash/withdraw',
+    validateParams(portfolioIdParamSchema),
+    validateBody(cashEntryRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CashEntryRequest;
+      const result = await ctx.portfolio.withdrawCash(req.authUser!.id, portfolioId, body);
+      res.status(201).json(result);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/preview — live "available → after" preview (§14).
+  router.post(
+    '/:portfolioId/cash/preview',
+    validateParams(portfolioIdParamSchema),
+    validateBody(cashPreviewRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CashPreviewRequest;
+      const preview = await ctx.portfolio.previewCash(req.authUser!.id, portfolioId, body);
+      res.json(preview);
     },
   );
 

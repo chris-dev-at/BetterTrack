@@ -3,6 +3,9 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  cashMovementResponseSchema,
+  cashMovementsResponseSchema,
+  cashPreviewResponseSchema,
   portfolioHistoryResponseSchema,
   portfolioListResponseSchema,
   portfolioResponseSchema,
@@ -11,6 +14,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { cashBalance, externalCashFlowsForTwr } from '../domain/cashLedger';
 import { createRecordingBackfill, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -1153,5 +1157,297 @@ describe('first-reference history backfill (§6.2/§9)', () => {
 
     expect(res.status).toBe(201);
     expect(backfill.enqueued).toEqual([]);
+  });
+});
+
+// ─── Cash ledger ("Bargeld", §14 / #220) ───────────────────────────────────
+
+describe('Portfolio cash ledger', () => {
+  /** GET the cash balance for a portfolio via the scoped endpoint. */
+  async function cashState(agent: ReturnType<typeof request.agent>, pid: string) {
+    const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+    expect(res.status).toBe(200);
+    expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
+    return res.body as {
+      balanceEur: number;
+      movements: Array<{ kind: string; amountEur: number }>;
+    };
+  }
+
+  it('requires authentication', async () => {
+    const res = await request(harness.app).get(
+      '/api/v1/portfolios/11111111-1111-7111-8111-111111111111/cash',
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('deposit → buy-from-cash → overview reconciles (cash == sum of signed movements)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness); // EUR asset — no FX conversion needed
+
+    const dep = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-10) });
+    expect(dep.status).toBe(201);
+    expect(cashMovementResponseSchema.safeParse(dep.body).success).toBe(true);
+    expect(dep.body.balanceEur).toBe(1000);
+
+    // Buy 4 shares @ 100 (+0 fee) = 400 EUR, paid from cash.
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 100,
+        executedAt: tsOffset(-1),
+        payFromCash: true,
+      });
+    expect(buy.status).toBe(201);
+
+    const state = await cashState(agent, pid);
+    const sumOfSigned = state.movements.reduce((s, m) => s + m.amountEur, 0);
+    expect(state.balanceEur).toBeCloseTo(600, 6);
+    expect(state.balanceEur).toBeCloseTo(sumOfSigned, 6); // reconciles
+    // The buy is a linked internal movement of −400 (cash ↓).
+    const buyMovement = state.movements.find((m) => m.kind === 'buy');
+    expect(buyMovement?.amountEur).toBeCloseTo(-400, 6);
+
+    // Cash is a first-class line in the overview totals.
+    const overview = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(overview.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(overview.body).success).toBe(true);
+    expect(overview.body.totals.cashEur).toBeCloseTo(600, 6);
+  });
+
+  it('rejects an overdrawing withdrawal / pay-from-cash and accepts a solvent sequence', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500, executedAt: tsOffset(-10) });
+
+    // A withdrawal beyond the balance is rejected — no silent negative balance.
+    const overdraw = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/withdraw`)
+      .set(...XRW)
+      .send({ amountEur: 900 });
+    expect(overdraw.status).toBe(400);
+    expect(overdraw.body.error.code).toBe('INSUFFICIENT_CASH');
+    expect(overdraw.body.error.details.shortfallEur).toBeCloseTo(400, 6);
+
+    // A buy that would overdraw cash is likewise rejected, and persists nothing.
+    const overBuy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 10,
+        price: 100,
+        executedAt: tsOffset(-1),
+        payFromCash: true,
+      });
+    expect(overBuy.status).toBe(400);
+    expect(overBuy.body.error.code).toBe('INSUFFICIENT_CASH');
+    const afterReject = await cashState(agent, pid);
+    expect(afterReject.balanceEur).toBe(500); // unchanged — atomic rejection
+    expect(afterReject.movements).toHaveLength(1);
+
+    // A sequence that stays ≥ 0 succeeds: withdraw 200 (→300), buy 300 (→0).
+    const w = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/withdraw`)
+      .set(...XRW)
+      .send({ amountEur: 200, executedAt: tsOffset(-5) });
+    expect(w.status).toBe(201);
+    expect(w.body.balanceEur).toBeCloseTo(300, 6);
+
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 3,
+        price: 100,
+        executedAt: tsOffset(-1),
+        payFromCash: true,
+      });
+    expect(buy.status).toBe(201);
+    const end = await cashState(agent, pid);
+    expect(end.balanceEur).toBeCloseTo(0, 6);
+  });
+
+  it('classifies a cash-funded buy as internal (not a TWR flow) while a deposit is external', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-5) });
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 100,
+        executedAt: tsOffset(-3),
+        payFromCash: true,
+      });
+
+    const state = await cashState(agent, pid);
+    // Value-neutral: the cash → shares conversion drops cash by exactly the cost;
+    // money already inside the portfolio merely changed form.
+    expect(state.balanceEur).toBeCloseTo(600, 6);
+
+    // Run the ledger through the domain classifier the performance-% curve uses.
+    const domainMovements = state.movements.map((m) => ({
+      kind: m.kind as 'deposit' | 'withdrawal' | 'buy' | 'sell_proceeds',
+      amountEur: m.amountEur,
+      occurredAt: tsOffset(-4), // any valid ISO day; only kind matters for classification
+    }));
+    const external = externalCashFlowsForTwr(domainMovements);
+    // Only the deposit is an external flow — the cash-funded buy is excluded,
+    // so the performance-% curve is unaffected by the internal conversion.
+    const totalExternal = external.reduce((s, f) => s + f.flowEur, 0);
+    expect(totalExternal).toBeCloseTo(1000, 6);
+    expect(cashBalance(domainMovements)).toBeCloseTo(600, 6);
+  });
+
+  it('persists + returns the sticky default funding source', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    // Defaults off on a fresh portfolio.
+    const before = await agent.get('/api/v1/portfolios');
+    expect(before.body.portfolios[0].defaultPayFromCash).toBe(false);
+
+    const patch = await agent
+      .patch(`/api/v1/portfolios/${pid}`)
+      .set(...XRW)
+      .send({ defaultPayFromCash: true });
+    expect(patch.status).toBe(200);
+    expect(patch.body.portfolio.defaultPayFromCash).toBe(true);
+
+    // Sticky: it survives a fresh read.
+    const after = await agent.get('/api/v1/portfolios');
+    expect(after.body.portfolios[0].defaultPayFromCash).toBe(true);
+  });
+
+  it('previews the balance after a proposed movement without persisting it', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 300 });
+
+    const ok = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/preview`)
+      .set(...XRW)
+      .send({ kind: 'buy', amountEur: 200 });
+    expect(ok.status).toBe(200);
+    expect(cashPreviewResponseSchema.safeParse(ok.body).success).toBe(true);
+    expect(ok.body).toMatchObject({
+      availableEur: 300,
+      afterEur: 100,
+      sufficient: true,
+      shortfallEur: 0,
+    });
+
+    const short = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/preview`)
+      .set(...XRW)
+      .send({ kind: 'withdrawal', amountEur: 500 });
+    expect(short.body).toMatchObject({ afterEur: -200, sufficient: false, shortfallEur: 200 });
+
+    // Preview persisted nothing.
+    const state = await cashState(agent, pid);
+    expect(state.balanceEur).toBe(300);
+    expect(state.movements).toHaveLength(1);
+  });
+
+  it('scopes every cash endpoint to the owning portfolio (no cross-portfolio access)', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const ownerPid = await defaultPortfolioId(ownerAgent);
+    await ownerAgent
+      .post(`/api/v1/portfolios/${ownerPid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 100 });
+
+    const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
+    const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+
+    // Reading, depositing, withdrawing and previewing another user's portfolio all 404.
+    expect((await intruderAgent.get(`/api/v1/portfolios/${ownerPid}/cash`)).status).toBe(404);
+    const dep = await intruderAgent
+      .post(`/api/v1/portfolios/${ownerPid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 50 });
+    expect(dep.status).toBe(404);
+    const wd = await intruderAgent
+      .post(`/api/v1/portfolios/${ownerPid}/cash/withdraw`)
+      .set(...XRW)
+      .send({ amountEur: 50 });
+    expect(wd.status).toBe(404);
+    const pv = await intruderAgent
+      .post(`/api/v1/portfolios/${ownerPid}/cash/preview`)
+      .set(...XRW)
+      .send({ kind: 'deposit', amountEur: 50 });
+    expect(pv.status).toBe(404);
+
+    // The owner's balance is untouched by the intruder's attempts.
+    const state = await ownerAgent.get(`/api/v1/portfolios/${ownerPid}/cash`);
+    expect(state.body.balanceEur).toBe(100);
+    expect(state.body.movements).toHaveLength(1);
+  });
+
+  it('cascades cash movements when the linked transaction is deleted', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-10) });
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 2,
+        price: 100,
+        executedAt: tsOffset(-1),
+        payFromCash: true,
+      });
+    const txId = buy.body.transactions[0].id as string;
+    expect((await cashState(agent, pid)).balanceEur).toBeCloseTo(800, 6);
+
+    // Deleting the buy restores the cash it spent (FK cascade removes its movement).
+    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${txId}`).set(...XRW);
+    expect(del.status).toBe(204);
+    const after = await cashState(agent, pid);
+    expect(after.balanceEur).toBeCloseTo(1000, 6);
+    expect(after.movements).toHaveLength(1); // only the deposit remains
   });
 });

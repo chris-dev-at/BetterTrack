@@ -65,6 +65,7 @@ const detail = {
     unrealizedPnlPct: 11.1,
     dayChangeEur: 5,
     dayChangePct: 0.5,
+    cashEur: 0,
   },
   holdings: [
     {
