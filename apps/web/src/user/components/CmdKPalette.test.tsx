@@ -1,19 +1,42 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { Route, Routes } from 'react-router-dom';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+// Bypass the 300 ms debounce so tests don't need fake timers.
+vi.mock('../hooks/useDebounce', () => ({ useDebounce: (v: unknown) => v }));
+
 vi.mock('../../lib/searchApi');
+vi.mock('../../lib/workboardApi');
+import type { SearchResultItem } from '@bettertrack/contracts';
+import * as searchApi from '../../lib/searchApi';
+import * as workboardApi from '../../lib/workboardApi';
 import { CmdKPalette } from './CmdKPalette';
+
+const NVDA: SearchResultItem = {
+  id: 'asset-nvda',
+  providerId: 'yahoo',
+  providerRef: 'NVDA',
+  symbol: 'NVDA',
+  name: 'NVIDIA Corporation',
+  exchange: 'NASDAQ',
+  type: 'stock',
+  currency: 'USD',
+  isCustom: false,
+};
 
 function renderPalette(props: { isOpen: boolean; onClose?: () => void }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onClose = props.onClose ?? vi.fn();
   const utils = render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <CmdKPalette isOpen={props.isOpen} onClose={onClose} />
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<CmdKPalette isOpen={props.isOpen} onClose={onClose} />} />
+          <Route path="/assets/:id" element={<div>Asset detail page</div>} />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -22,6 +45,7 @@ function renderPalette(props: { isOpen: boolean; onClose?: () => void }) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(workboardApi.listWorkboard).mockResolvedValue({ items: [] });
 });
 
 describe('CmdKPalette', () => {
@@ -79,5 +103,33 @@ describe('⌘K / Ctrl-K shortcut (AppLayout integration)', () => {
   test('the palette component does not self-open (open state is owned by the parent)', () => {
     renderPalette({ isOpen: false });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+describe('direct actions parity (§13.2 — reuses AssetSearchBox)', () => {
+  test('clicking a result opens its asset detail page and closes the palette', async () => {
+    vi.mocked(searchApi.searchAssets).mockResolvedValue({ results: [NVDA] });
+    const user = userEvent.setup();
+    const { onClose } = renderPalette({ isOpen: true });
+
+    await user.type(screen.getByRole('searchbox'), 'NV');
+    await screen.findByText('NVDA');
+    await user.click(screen.getByRole('button', { name: /open nvda/i }));
+
+    expect(await screen.findByText('Asset detail page')).toBeInTheDocument();
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('every direct action from AssetSearchBox is available inside the palette', async () => {
+    vi.mocked(searchApi.searchAssets).mockResolvedValue({ results: [NVDA] });
+    const user = userEvent.setup();
+    renderPalette({ isOpen: true });
+
+    await user.type(screen.getByRole('searchbox'), 'NV');
+    await screen.findByText('NVDA');
+
+    expect(screen.getByRole('button', { name: /add nvda to watchlist/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /add nvda to a conglomerate/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /record a buy for nvda/i })).toBeInTheDocument();
   });
 });
