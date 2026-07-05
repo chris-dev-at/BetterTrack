@@ -131,6 +131,28 @@ describe('PortfolioSwitcher', () => {
     await waitFor(() => expect(archivePortfolio).toHaveBeenCalledWith('p2'));
   });
 
+  test('shows loading skeletons while the Archived dialog fetches', async () => {
+    let resolveArchived!: (value: { portfolios: Summary[] }) => void;
+    vi.mocked(listPortfolios).mockImplementation((_signal, includeArchived) => {
+      if (includeArchived) {
+        return new Promise((resolve) => {
+          resolveArchived = resolve;
+        });
+      }
+      return Promise.resolve({ portfolios: [MAIN] });
+    });
+    renderSwitcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Archived…' }));
+
+    expect(await screen.findAllByRole('status', { name: 'Loading' })).toHaveLength(2);
+    expect(screen.queryByText('No archived portfolios.')).not.toBeInTheDocument();
+
+    resolveArchived({ portfolios: [MAIN] });
+    await waitFor(() => expect(screen.getByText('No archived portfolios.')).toBeInTheDocument());
+  });
+
   test('restores an archived portfolio from the Archived dialog', async () => {
     vi.mocked(listPortfolios).mockImplementation((_signal, includeArchived) =>
       Promise.resolve({
