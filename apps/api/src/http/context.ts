@@ -13,6 +13,7 @@ import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -254,9 +255,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // optional initial purchase through the portfolio service and shares its
   // value-series cache invalidation.
   const transactionRepo = createTransactionRepository(db);
+  const cashMovementRepo = createCashMovementRepository(db);
   const portfolio = createPortfolioService({
     portfolioRepo,
     transactionRepo,
+    cashMovementRepo,
     marketData,
     currencyService: currency,
     referenceBackfill,

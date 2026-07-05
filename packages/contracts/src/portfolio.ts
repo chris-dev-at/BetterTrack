@@ -34,6 +34,13 @@ export const portfolioSummarySchema = z
     visibility: portfolioVisibilitySchema,
     sortOrder: z.number().int(),
     isDefault: z.boolean(),
+    /**
+     * Sticky default funding source for transaction entry (§14, #220): whether
+     * "pay from cash" is preselected. Persisted + returned only — the client
+     * preselects from it and always sends explicit flags; the backend never
+     * applies it silently.
+     */
+    defaultPayFromCash: z.boolean(),
   })
   .strict();
 export type PortfolioSummary = z.infer<typeof portfolioSummarySchema>;
@@ -44,11 +51,12 @@ export const portfolioListResponseSchema = z
   .strict();
 export type PortfolioListResponse = z.infer<typeof portfolioListResponseSchema>;
 
-/** `PATCH /portfolios/:id` body — rename and/or change visibility (§6.8). */
+/** `PATCH /portfolios/:id` body — rename, change visibility, set sticky cash default (§6.8, §14). */
 export const updatePortfolioRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     visibility: portfolioVisibilitySchema.optional(),
+    defaultPayFromCash: z.boolean().optional(),
   })
   .strict();
 export type UpdatePortfolioRequest = z.infer<typeof updatePortfolioRequestSchema>;
@@ -88,6 +96,15 @@ export const transactionInputSchema = z
     fee: z.number().nonnegative().default(0),
     executedAt: z.string().datetime(),
     note: z.string().max(1000).nullish(),
+    /**
+     * Cash-ledger linkage (§14, #220). On a BUY, `payFromCash` funds the buy
+     * from the portfolio's EUR cash balance (a linked internal `buy` movement,
+     * rejected if it would overdraw); on a SELL, `addProceedsToCash` books the
+     * net proceeds into cash (a `sell_proceeds` movement). A flag that does not
+     * match the side is rejected. Both default to off.
+     */
+    payFromCash: z.boolean().optional(),
+    addProceedsToCash: z.boolean().optional(),
   })
   .strict();
 export type TransactionInput = z.infer<typeof transactionInputSchema>;
@@ -199,6 +216,13 @@ export const portfolioTotalsSchema = z
     unrealizedPnlPct: z.number().nullable(),
     dayChangeEur: z.number(),
     dayChangePct: z.number().nullable(),
+    /**
+     * Cash balance line (§14, #220): EUR cash held in the portfolio, a
+     * first-class overview figure = sum of signed cash movements
+     * (`domain/cashLedger.cashBalance`). Held separately from `marketValueEur`
+     * (holdings only) so the UI can show both and their sum.
+     */
+    cashEur: z.number(),
   })
   .strict();
 export type PortfolioTotals = z.infer<typeof portfolioTotalsSchema>;
@@ -299,6 +323,97 @@ export const portfolioHistoryResponseSchema = z
   })
   .strict();
 export type PortfolioHistoryResponse = z.infer<typeof portfolioHistoryResponseSchema>;
+
+// --- Cash ledger ("Bargeld") -----------------------------------------------
+
+/**
+ * Cash-movement kind (§14, #220). `deposit` / `withdrawal` are external (money
+ * crossing the portfolio boundary — TWR cash flows); `buy` / `sell_proceeds`
+ * are internal (cash ↔ shares form change, TWR-neutral). Mirrors
+ * `domain/cashLedger.CASH_MOVEMENT_KINDS`.
+ */
+export const cashMovementKindSchema = z.enum(['deposit', 'withdrawal', 'buy', 'sell_proceeds']);
+export type CashMovementKind = z.infer<typeof cashMovementKindSchema>;
+
+/**
+ * One cash movement as returned to the owner (§14). `amountEur` is **signed**
+ * (inflows positive, outflows negative), full precision; `transactionId` links
+ * an internal `buy` / `sell_proceeds` movement to the transaction it funded and
+ * is null for external deposits/withdrawals.
+ */
+export const cashMovementSchema = z
+  .object({
+    id: z.string().uuid(),
+    kind: cashMovementKindSchema,
+    amountEur: z.number(),
+    transactionId: z.string().uuid().nullable(),
+    executedAt: z.string().datetime(),
+    note: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type CashMovement = z.infer<typeof cashMovementSchema>;
+
+/** `GET /portfolios/:id/cash` response — the movements plus the current balance. */
+export const cashMovementsResponseSchema = z
+  .object({
+    balanceEur: z.number(),
+    movements: z.array(cashMovementSchema),
+  })
+  .strict();
+export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
+
+/**
+ * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
+ * **magnitude**; the service assigns the sign by kind. `executedAt` defaults to
+ * now (server-side) when omitted.
+ */
+export const cashEntryRequestSchema = z
+  .object({
+    amountEur: z.number().positive(),
+    executedAt: z.string().datetime().optional(),
+    note: z.string().max(1000).nullish(),
+  })
+  .strict();
+export type CashEntryRequest = z.infer<typeof cashEntryRequestSchema>;
+
+/** `POST /portfolios/:id/cash/deposit|withdraw` response — the new movement + balance. */
+export const cashMovementResponseSchema = z
+  .object({
+    movement: cashMovementSchema,
+    balanceEur: z.number(),
+  })
+  .strict();
+export type CashMovementResponse = z.infer<typeof cashMovementResponseSchema>;
+
+/**
+ * `POST /portfolios/:id/cash/preview` body — a proposed movement of `kind` and
+ * positive EUR magnitude, for the live "available → after" preview. Read-only:
+ * no movement is persisted.
+ */
+export const cashPreviewRequestSchema = z
+  .object({
+    kind: cashMovementKindSchema,
+    amountEur: z.number().positive(),
+  })
+  .strict();
+export type CashPreviewRequest = z.infer<typeof cashPreviewRequestSchema>;
+
+/**
+ * `POST /portfolios/:id/cash/preview` response — the balance before and after
+ * the proposed movement, whether cash suffices, and the shortfall (0 when it
+ * does). No silent negative balances: an outflow beyond the balance is reported
+ * as `sufficient: false` rather than applied.
+ */
+export const cashPreviewResponseSchema = z
+  .object({
+    availableEur: z.number(),
+    afterEur: z.number(),
+    sufficient: z.boolean(),
+    shortfallEur: z.number(),
+  })
+  .strict();
+export type CashPreviewResponse = z.infer<typeof cashPreviewResponseSchema>;
 
 // --- Custom assets ---------------------------------------------------------
 

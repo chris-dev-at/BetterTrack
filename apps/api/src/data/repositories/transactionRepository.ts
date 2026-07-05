@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { assets, portfolios, transactions } from '../schema';
+import { assets, portfolioCashMovements, portfolios, transactions } from '../schema';
 import type { AssetRow, TransactionRow } from '../schema';
 
 /**
@@ -42,6 +42,18 @@ export interface TransactionWithAsset extends TransactionRecord {
   };
 }
 
+/**
+ * A linked EUR cash movement created atomically with its transaction (§14,
+ * #220): a `buy` funded from cash (negative `amountEur`) or `sell_proceeds`
+ * booked into cash (positive). The sign/kind invariant is enforced by the
+ * domain engine + a DB check; the caller passes the already-signed EUR amount.
+ */
+export interface LinkedCashMovement {
+  kind: 'buy' | 'sell_proceeds';
+  amountEur: number;
+  note: string | null;
+}
+
 /** Fields for a single insert; money values arrive as `number`s. */
 export interface NewTransaction {
   assetId: string;
@@ -51,6 +63,8 @@ export interface NewTransaction {
   fee: number;
   executedAt: Date;
   note: string | null;
+  /** Optional cash movement written in the same DB transaction as this row. */
+  cashMovement?: LinkedCashMovement | null;
 }
 
 function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
@@ -69,28 +83,64 @@ function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
 
 export function createTransactionRepository(db: Database) {
   return {
-    /** Bulk insert (the buy flow, §6.9). Returns the inserted rows in input order. */
+    /**
+     * Bulk insert (the buy flow, §6.9). Returns the inserted rows in input order.
+     * When any row carries a {@link LinkedCashMovement} (pay-from-cash /
+     * add-proceeds, §14), the transactions *and* their linked cash movements are
+     * written in one DB transaction so the ledger is never half-applied — a cash
+     * movement can never reference a transaction that failed to persist, and the
+     * cash balance reconciles atomically.
+     */
     async insertMany(
       portfolioId: string,
       rows: readonly NewTransaction[],
     ): Promise<TransactionRecord[]> {
       if (rows.length === 0) return [];
-      const inserted = await db
-        .insert(transactions)
-        .values(
-          rows.map((r) => ({
-            portfolioId,
-            assetId: r.assetId,
-            side: r.side,
-            quantity: String(r.quantity),
-            price: String(r.price),
-            fee: String(r.fee),
-            executedAt: r.executedAt,
-            note: r.note,
-          })),
-        )
-        .returning();
-      return inserted.map(toRecord);
+
+      const insertTxns = (executor: Database) =>
+        executor
+          .insert(transactions)
+          .values(
+            rows.map((r) => ({
+              portfolioId,
+              assetId: r.assetId,
+              side: r.side,
+              quantity: String(r.quantity),
+              price: String(r.price),
+              fee: String(r.fee),
+              executedAt: r.executedAt,
+              note: r.note,
+            })),
+          )
+          .returning();
+
+      const hasCashLink = rows.some((r) => r.cashMovement);
+      if (!hasCashLink) {
+        const inserted = await insertTxns(db);
+        return inserted.map(toRecord);
+      }
+
+      return db.transaction(async (tx) => {
+        const inserted = await insertTxns(tx as unknown as Database);
+        const cashRows = inserted
+          .map((row, i) => {
+            const link = rows[i]?.cashMovement;
+            if (!link) return null;
+            return {
+              portfolioId,
+              kind: link.kind,
+              amountEur: String(link.amountEur),
+              transactionId: row.id,
+              executedAt: row.executedAt,
+              note: link.note,
+            };
+          })
+          .filter((v): v is NonNullable<typeof v> => v !== null);
+        if (cashRows.length > 0) {
+          await tx.insert(portfolioCashMovements).values(cashRows);
+        }
+        return inserted.map(toRecord);
+      });
     },
 
     /** Every transaction for one asset in a portfolio (for oversell checks + holdings). */

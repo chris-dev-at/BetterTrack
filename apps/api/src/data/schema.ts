@@ -437,6 +437,11 @@ export const portfolios = pgTable(
     // portfolio_id-scoped so multi-portfolio is purely additive (§6.8).
     visibility: portfolioVisibilityEnum('visibility').notNull().default('private'),
     sortOrder: integer('sort_order').notNull().default(0),
+    // Sticky per-portfolio default funding source for transaction entry (§14,
+    // #220): remembers whether "pay from cash" is preselected so repeat entry is
+    // one click. Persisted + returned only — the backend never *applies* it
+    // silently; the client reads it to preselect and always sends explicit flags.
+    defaultPayFromCash: boolean('default_pay_from_cash').notNull().default(false),
   },
   (t) => [uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name)],
 );
@@ -463,6 +468,57 @@ export const transactions = pgTable(
   (t) => [
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
     check('transactions_price_nonneg', sql`${t.price} >= 0`),
+  ],
+);
+
+/**
+ * Per-portfolio cash ledger ("Bargeld", PROJECTPLAN.md §14, #220/#278). Every
+ * movement is a *reconciling* row — signed EUR amount — so **current cash = sum
+ * of signed movements** (the #220 invariant, computed via
+ * `domain/cashLedger.cashBalance`). `deposit` / `withdrawal` are external
+ * (money crossing the portfolio boundary, TWR cash flows); `buy` /
+ * `sell_proceeds` are internal (cash ↔ shares form change, TWR-neutral) and
+ * carry `transaction_id` linking the movement to the buy/sell it funded. Cash
+ * is EUR-only in V1 (multi-currency cash is out of scope). Deleting the linked
+ * transaction cascades its movement away, restoring the balance.
+ */
+export const cashMovementKindEnum = pgEnum('cash_movement_kind', [
+  'deposit',
+  'withdrawal',
+  'buy',
+  'sell_proceeds',
+]);
+
+export const portfolioCashMovements = pgTable(
+  'portfolio_cash_movements',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    kind: cashMovementKindEnum('kind').notNull(),
+    // Signed EUR amount, full precision: inflows (deposit/sell_proceeds) > 0,
+    // outflows (withdrawal/buy) < 0. The sign is part of the data, not derived.
+    amountEur: numeric('amount_eur', { precision: 20, scale: 6 }).notNull(),
+    // Set for internal (buy/sell_proceeds) movements: the transaction they
+    // funded. Null for external deposits/withdrawals. Cascade so removing the
+    // buy/sell removes its cash movement.
+    transactionId: uuid('transaction_id').references(() => transactions.id, {
+      onDelete: 'cascade',
+    }),
+    executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('portfolio_cash_movements_portfolio_idx').on(t.portfolioId, t.executedAt),
+    // Defense-in-depth mirror of domain/cashLedger's CASH_MOVEMENT_SIGN: the
+    // amount's sign must match the kind, and never zero (the ledger never guesses).
+    check(
+      'portfolio_cash_movements_sign',
+      sql`(${t.kind} in ('deposit','sell_proceeds') and ${t.amountEur} > 0)
+          or (${t.kind} in ('withdrawal','buy') and ${t.amountEur} < 0)`,
+    ),
   ],
 );
 
@@ -544,6 +600,8 @@ export type ConglomeratePositionRow = typeof conglomeratePositions.$inferSelect;
 export type ShareLinkRow = typeof shareLinks.$inferSelect;
 export type PortfolioRow = typeof portfolios.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
+export type CashMovementRow = typeof portfolioCashMovements.$inferSelect;
+export type NewCashMovementRow = typeof portfolioCashMovements.$inferInsert;
 export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
@@ -586,6 +644,7 @@ export const schema = {
   shareLinks,
   portfolios,
   transactions,
+  portfolioCashMovements,
   friendRequests,
   friendships,
   appSettings,
@@ -599,5 +658,6 @@ export const schema = {
   conglomerateStatusEnum,
   transactionSideEnum,
   portfolioVisibilityEnum,
+  cashMovementKindEnum,
   friendRequestStatusEnum,
 };

@@ -32,6 +32,8 @@ export interface PortfolioSummaryRow {
   sortOrder: number;
   /** True for the auto-created "Main" portfolio (§6.8). */
   isDefault: boolean;
+  /** Sticky default funding source for transaction entry (§14, #220). */
+  defaultPayFromCash: boolean;
 }
 
 /** The default portfolio's canonical name (§5.5). */
@@ -43,6 +45,7 @@ function toSummary(
     name: string;
     visibility: 'private' | 'friends';
     sortOrder: number;
+    defaultPayFromCash: boolean;
   },
   isDefault: boolean,
 ): PortfolioSummaryRow {
@@ -52,8 +55,18 @@ function toSummary(
     visibility: row.visibility,
     sortOrder: row.sortOrder,
     isDefault,
+    defaultPayFromCash: row.defaultPayFromCash,
   };
 }
+
+/** The summary column projection reused by every read below. */
+const summaryColumns = {
+  id: portfolios.id,
+  name: portfolios.name,
+  visibility: portfolios.visibility,
+  sortOrder: portfolios.sortOrder,
+  defaultPayFromCash: portfolios.defaultPayFromCash,
+} as const;
 
 /**
  * The default portfolio among a user's rows: the lowest `sort_order`, breaking
@@ -129,12 +142,7 @@ export function createPortfolioRepository(db: Database) {
      */
     async listForUser(userId: string): Promise<PortfolioSummaryRow[]> {
       const rows = await db
-        .select({
-          id: portfolios.id,
-          name: portfolios.name,
-          visibility: portfolios.visibility,
-          sortOrder: portfolios.sortOrder,
-        })
+        .select(summaryColumns)
         .from(portfolios)
         .where(eq(portfolios.userId, userId))
         .orderBy(asc(portfolios.sortOrder), asc(portfolios.name));
@@ -152,12 +160,7 @@ export function createPortfolioRepository(db: Database) {
       portfolioId: string,
     ): Promise<PortfolioSummaryRow | null> {
       const rows = await db
-        .select({
-          id: portfolios.id,
-          name: portfolios.name,
-          visibility: portfolios.visibility,
-          sortOrder: portfolios.sortOrder,
-        })
+        .select(summaryColumns)
         .from(portfolios)
         .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
         .limit(1);
@@ -175,21 +178,21 @@ export function createPortfolioRepository(db: Database) {
     async updatePortfolio(
       userId: string,
       portfolioId: string,
-      patch: { name?: string; visibility?: 'private' | 'friends' },
+      patch: { name?: string; visibility?: 'private' | 'friends'; defaultPayFromCash?: boolean },
     ): Promise<PortfolioSummaryRow | null> {
-      const set: Partial<{ name: string; visibility: 'private' | 'friends' }> = {};
+      const set: Partial<{
+        name: string;
+        visibility: 'private' | 'friends';
+        defaultPayFromCash: boolean;
+      }> = {};
       if (patch.name !== undefined) set.name = patch.name;
       if (patch.visibility !== undefined) set.visibility = patch.visibility;
+      if (patch.defaultPayFromCash !== undefined) set.defaultPayFromCash = patch.defaultPayFromCash;
 
       // Nothing to change — return the current row (still ownership-scoped).
       if (Object.keys(set).length === 0) {
         const rows = await db
-          .select({
-            id: portfolios.id,
-            name: portfolios.name,
-            visibility: portfolios.visibility,
-            sortOrder: portfolios.sortOrder,
-          })
+          .select(summaryColumns)
           .from(portfolios)
           .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
           .limit(1);
@@ -203,12 +206,7 @@ export function createPortfolioRepository(db: Database) {
         .update(portfolios)
         .set(set)
         .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
-        .returning({
-          id: portfolios.id,
-          name: portfolios.name,
-          visibility: portfolios.visibility,
-          sortOrder: portfolios.sortOrder,
-        });
+        .returning(summaryColumns);
       const row = rows[0];
       if (!row) return null;
       const defaultId = await selectDefaultId(userId);
