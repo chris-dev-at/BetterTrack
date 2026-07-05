@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -75,4 +76,32 @@ test('authenticated admins reach the guarded users page', async () => {
   renderAt('/admin/users');
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+});
+
+test('a reset admin is trapped into the forced change, then recovers into the console (#248 item 6)', async () => {
+  // A reset admin session: /auth/me responds 403 (the forced-change guard blocks
+  // it), so the admin area traps into its own change screen rather than bricking.
+  vi.mocked(api.getMe).mockRejectedValue(
+    new ApiError(403, 'PASSWORD_CHANGE_REQUIRED', 'Password change required.'),
+  );
+  vi.mocked(api.changePassword).mockResolvedValue(admin);
+
+  const user = userEvent.setup();
+  renderAt('/admin/users');
+
+  // Trapped: the forced-change screen is up; the guarded users page is unreachable.
+  expect(
+    await screen.findByText('Set a new password before continuing to the admin console.'),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
+  // No current-password re-entry (#248 item 7).
+  expect(screen.queryByLabelText('Current password')).not.toBeInTheDocument();
+
+  await user.type(screen.getByLabelText('New password'), 'ops-recovered-strong-9');
+  await user.type(screen.getByLabelText('Confirm new password'), 'ops-recovered-strong-9');
+  await user.click(screen.getByRole('button', { name: 'Update password' }));
+
+  // Recovered on the same session — the console opens up.
+  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+  expect(api.changePassword).toHaveBeenCalledWith({ newPassword: 'ops-recovered-strong-9' });
 });

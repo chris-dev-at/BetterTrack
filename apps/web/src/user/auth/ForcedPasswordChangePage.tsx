@@ -10,7 +10,6 @@ import { Alert, AuthCard, Button, TextField } from '../components/ui';
 /** Friendly message for the codes `POST /auth/change-password` can return. */
 function changeErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.code === 'INVALID_CREDENTIALS') return 'Your current password is incorrect.';
     if (err.code === 'WEAK_PASSWORD') return err.message;
     if (err.status >= 500) return 'Something went wrong. Please try again.';
   }
@@ -20,13 +19,14 @@ function changeErrorMessage(err: unknown): string {
 /**
  * Forced password change (PROJECTPLAN.md §6.1). The app traps every route here
  * while the session carries `mustChangePassword`; the screen is escapable only
- * by a successful change (which clears the flag) or by signing out. The new
+ * by a successful change (which clears the flag) or by signing out. Because the
+ * user just proved the temp password by signing in, the session itself is the
+ * proof — the current password is never asked for again (#248 item 7). The new
  * password is confirmed client-side; the policy/blocklist is enforced server-side.
  */
 export function ForcedPasswordChangePage() {
   const { user, changePassword, logout } = useAuth();
 
-  const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +42,7 @@ export function ForcedPasswordChangePage() {
     setSubmitting(true);
     try {
       // Success rotates the session and releases the trap via the AuthContext.
-      await changePassword({ currentPassword, newPassword });
+      await changePassword({ newPassword });
     } catch (err) {
       setError(changeErrorMessage(err));
     } finally {
@@ -62,20 +62,11 @@ export function ForcedPasswordChangePage() {
         </Alert>
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
-          label="Current password"
-          name="currentPassword"
-          type="password"
-          autoComplete="current-password"
-          autoFocus
-          value={currentPassword}
-          onChange={(e) => setCurrentPassword(e.target.value)}
-          required
-        />
-        <TextField
           label="New password"
           name="newPassword"
           type="password"
           autoComplete="new-password"
+          autoFocus
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           minLength={MIN_PASSWORD_LENGTH}

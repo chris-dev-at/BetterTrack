@@ -22,6 +22,7 @@ import {
   type AuditLogListResponse,
   type BulkUserActionRequest,
   type BulkUserActionResponse,
+  type ChangePasswordRequest,
   type CreateInviteRequest,
   type CreateInviteResponse,
   type CreateUserRequest,
@@ -54,6 +55,17 @@ export async function login(body: LoginRequest): Promise<MeResponse> {
 
 export async function logout(): Promise<void> {
   await apiRequest<unknown>('/auth/logout', { method: 'POST' });
+}
+
+/**
+ * Complete a forced password change for the current session (§6.1). Used to let
+ * an admin whose password was reset recover the account from the admin area
+ * itself — the session established by the temp-password login is the proof, so
+ * no current password is sent (#248 items 6/7).
+ */
+export async function changePassword(body: ChangePasswordRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/change-password', { method: 'POST', body });
+  return meResponseSchema.parse(data);
 }
 
 export async function getMe(signal?: AbortSignal): Promise<MeResponse> {

@@ -27,7 +27,15 @@ export type LoginRequest = z.infer<typeof loginRequestSchema>;
 
 export const changePasswordRequestSchema = z
   .object({
-    currentPassword: z.string().min(1).max(MAX_PASSWORD_LENGTH),
+    /**
+     * The account's current password. Required for a voluntary change from
+     * Settings; omitted for a forced change after an admin reset, where the
+     * session just minted by logging in with the temp password is itself proof
+     * of the current credential — so it is never asked for twice (§6.1, #248
+     * items 6/7). The server enforces it for voluntary changes and ignores it
+     * for forced ones.
+     */
+    currentPassword: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
     newPassword: passwordSchema,
   })
   .strict();

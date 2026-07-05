@@ -280,6 +280,14 @@ export function createAdminService(deps: AdminServiceDeps) {
       }
     },
 
+    /**
+     * Admin password reset (§6.1). Idempotent by design: every call mints a
+     * fresh temp password, overwrites the stored hash, and re-arms
+     * `must_change_password`, so a re-reset after a lost token issues a new,
+     * immediately-usable credential and never bricks the account (#248 item 6).
+     * Works for admin-kind targets too — the reset a management account recovers
+     * with is completed against its own session on login, not the user app.
+     */
     async resetPassword(
       id: string,
       actor: AdminActor,
