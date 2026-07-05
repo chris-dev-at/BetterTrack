@@ -4,8 +4,8 @@ import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
-  MAX_PIN_LENGTH,
-  MIN_PIN_LENGTH,
+  DEFAULT_PIN_WINDOW_MINUTES,
+  PIN_LENGTH,
   TOTP_CODE_LENGTH,
   type SetPinRequest,
 } from '@bettertrack/contracts';
@@ -22,7 +22,7 @@ import {
 import { disablePin, getMe, getSession, setPin, setPinLockIdleMinutes } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { PinInput } from '../components/PinInput';
-import { Alert, Button, cx } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
@@ -98,19 +98,19 @@ function PinForm({
     mutation.mutate({ pin });
   }
 
-  const tooShort = pin.length < MIN_PIN_LENGTH || confirm.length < MIN_PIN_LENGTH;
+  const tooShort = pin.length !== PIN_LENGTH || confirm.length !== PIN_LENGTH;
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <PinInput
         label="PIN"
-        length={MAX_PIN_LENGTH}
+        length={PIN_LENGTH}
         value={pin}
         onChange={setPinValue}
-        hint={`${MIN_PIN_LENGTH}–${MAX_PIN_LENGTH} digits.`}
+        hint={`Exactly ${PIN_LENGTH} digits.`}
       />
-      <PinInput label="Confirm PIN" length={MAX_PIN_LENGTH} value={confirm} onChange={setConfirm} />
+      <PinInput label="Confirm PIN" length={PIN_LENGTH} value={confirm} onChange={setConfirm} />
       <div>
         <Button type="submit" disabled={mutation.isPending || tooShort}>
           {mutation.isPending ? 'Saving…' : submitLabel}
@@ -120,90 +120,64 @@ function PinForm({
   );
 }
 
-/** Preset idle timeouts (minutes) offered for the AFK auto-lock. */
-const IDLE_MINUTE_OPTIONS = [1, 5, 15, 30, 60] as const;
-const DEFAULT_IDLE_MINUTES = 5;
+/** Preset unlock-window lengths (minutes) offered for the PIN. */
+const WINDOW_MINUTE_OPTIONS = [1, 5, 10, 15, 30, 60] as const;
 
-function idleOptionLabel(minutes: number): string {
+function windowOptionLabel(minutes: number): string {
   if (minutes === 60) return '1 hour';
   return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
 /**
- * AFK auto-lock control (§6.1, §13.2 V2-P2). Toggles the per-user idle timeout
- * that re-shows the PIN lock after inactivity; off (null) is the default. Only
- * meaningful — and only rendered — while the PIN is on.
+ * PIN unlock-window control (§6.1, §13.2 V2-P2; #288). Picks how long a successful
+ * unlock (login or PIN entry) stays valid before the gate returns. `null` means
+ * the default ({@link DEFAULT_PIN_WINDOW_MINUTES}). Only rendered while the PIN is
+ * on.
  */
-function AfkAutoLockSection({ idleMinutes }: { idleMinutes: number | null }) {
+function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useMutation({
-    mutationFn: (minutes: number | null) => setPinLockIdleMinutes({ idleMinutes: minutes }),
+    mutationFn: (minutes: number) => setPinLockIdleMinutes({ idleMinutes: minutes }),
     onSuccess: (data) => {
       queryClient.setQueryData(ME_KEY, data);
       setError(null);
     },
-    onError: () => setError('Could not update auto-lock. Please try again.'),
+    onError: () => setError('Could not update the unlock window. Please try again.'),
   });
 
-  const enabled = idleMinutes != null;
+  const selected = windowMinutes ?? DEFAULT_PIN_WINDOW_MINUTES;
 
   return (
     <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-neutral-100">Auto-lock when idle</span>
-          <span className="text-xs text-neutral-500">
-            Ask for your PIN again after a stretch of inactivity, even without a reload.
-          </span>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={enabled}
-          aria-label="Auto-lock when idle"
-          disabled={mutation.isPending}
-          onClick={() => mutation.mutate(enabled ? null : DEFAULT_IDLE_MINUTES)}
-          className={cx(
-            'relative mt-0.5 inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
-            'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            'disabled:cursor-not-allowed',
-            enabled ? 'bg-sky-600' : 'bg-neutral-700',
-          )}
-        >
-          <span
-            aria-hidden="true"
-            className={cx(
-              'inline-block h-5 w-5 translate-y-0.5 rounded-full bg-white transition-transform',
-              enabled ? 'translate-x-[1.375rem]' : 'translate-x-0.5',
-            )}
-          />
-        </button>
+      <div className="flex flex-col gap-0.5">
+        <span className="text-sm font-medium text-neutral-100">Ask for the PIN again after</span>
+        <span className="text-xs text-neutral-500">
+          Once you unlock, you can reload and keep using BetterTrack without the PIN for this long.
+          When it lapses, the PIN is asked again.
+        </span>
       </div>
 
-      {enabled ? (
-        <label className="flex items-center gap-2 text-sm text-neutral-400">
-          Lock after
-          <select
-            aria-label="Idle timeout"
-            value={idleMinutes}
-            disabled={mutation.isPending}
-            onChange={(e) => mutation.mutate(Number(e.target.value))}
-            className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          >
-            {(IDLE_MINUTE_OPTIONS as readonly number[]).includes(idleMinutes) ? null : (
-              <option value={idleMinutes}>{idleOptionLabel(idleMinutes)}</option>
-            )}
-            {IDLE_MINUTE_OPTIONS.map((m) => (
-              <option key={m} value={m}>
-                {idleOptionLabel(m)}
-              </option>
-            ))}
-          </select>
-          of inactivity.
-        </label>
-      ) : null}
+      <label className="flex items-center gap-2 text-sm text-neutral-400">
+        Stay unlocked for
+        <select
+          aria-label="Unlock window"
+          value={selected}
+          disabled={mutation.isPending}
+          onChange={(e) => mutation.mutate(Number(e.target.value))}
+          className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+        >
+          {(WINDOW_MINUTE_OPTIONS as readonly number[]).includes(selected) ? null : (
+            <option value={selected}>{windowOptionLabel(selected)}</option>
+          )}
+          {WINDOW_MINUTE_OPTIONS.map((m) => (
+            <option key={m} value={m}>
+              {windowOptionLabel(m)}
+            </option>
+          ))}
+        </select>
+      </label>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
     </div>
@@ -239,7 +213,7 @@ function PinSection({
       <div className="flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold text-neutral-100">PIN</h3>
         <p className="text-xs text-neutral-500">
-          A PIN is asked each time you re-open BetterTrack. It's a convenience re-confirmation on
+          A 4-digit PIN re-confirms it's you when your unlock window lapses. It's a convenience on
           top of your session, not a second factor.
         </p>
       </div>
@@ -299,7 +273,7 @@ function PinSection({
               </div>
             </div>
           )}
-          <AfkAutoLockSection idleMinutes={idleMinutes} />
+          <PinWindowSection windowMinutes={idleMinutes} />
         </>
       )}
     </section>

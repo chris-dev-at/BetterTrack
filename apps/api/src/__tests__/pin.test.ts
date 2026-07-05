@@ -40,7 +40,7 @@ describe('PIN gate (PROJECTPLAN.md §6.1, §8)', () => {
     const set = await agent
       .put('/api/v1/auth/pin')
       .set(...XRW)
-      .send({ pin: '135790' });
+      .send({ pin: '1357' });
     expect(set.status).toBe(200);
     expect(meResponseSchema.parse(set.body).pinEnabled).toBe(true);
 
@@ -48,7 +48,7 @@ describe('PIN gate (PROJECTPLAN.md §6.1, §8)', () => {
     expect(after.body.pinEnabled).toBe(true);
   });
 
-  it('rejects a non-numeric or too-short PIN at the contract boundary', async () => {
+  it('accepts only exactly-4-digit PINs at the contract boundary (#288)', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(user.email, user.password);
 
@@ -63,6 +63,39 @@ describe('PIN gate (PROJECTPLAN.md §6.1, §8)', () => {
       .set(...XRW)
       .send({ pin: '12' });
     expect(tooShort.status).toBe(400);
+
+    // New PINs are constrained to exactly 4 digits — 5+ is now rejected too.
+    const tooLong = await agent
+      .put('/api/v1/auth/pin')
+      .set(...XRW)
+      .send({ pin: '12345' });
+    expect(tooLong.status).toBe(400);
+
+    // ...and the four-digit boundary passes.
+    const ok = await agent
+      .put('/api/v1/auth/pin')
+      .set(...XRW)
+      .send({ pin: '4242' });
+    expect(ok.status).toBe(200);
+  });
+
+  it('verify stays length-agnostic so a pre-existing longer PIN still resolves (#288)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(user.email, user.password);
+    await agent
+      .put('/api/v1/auth/pin')
+      .set(...XRW)
+      .send({ pin: '4242' });
+
+    // A 6-digit entry passes the verify contract (min 4) rather than being
+    // rejected at 400 — the stored hash, not the length, decides. It just
+    // doesn't match, so it's a clean 401 INVALID_PIN.
+    const longer = await agent
+      .post('/api/v1/auth/pin/verify')
+      .set(...XRW)
+      .send({ pin: '424242' });
+    expect(longer.status).toBe(401);
+    expect(longer.body.error.code).toBe('INVALID_PIN');
   });
 
   it('verifies a correct PIN and rejects a wrong one', async () => {
