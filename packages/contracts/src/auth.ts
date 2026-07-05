@@ -201,6 +201,68 @@ export const meResponseSchema = z.object({
 export type MeResponse = z.infer<typeof meResponseSchema>;
 
 /**
+ * Login-time 2FA challenge (PROJECTPLAN.md §6.1, §13.2 V2-P5). When an account
+ * has 2FA enabled, a correct password does **not** mint a session: the API
+ * returns this challenge carrying a short-lived, single-purpose `pendingToken`
+ * that only the 2FA verify / email-code endpoints accept — no protected route
+ * honours it. The client presents a second factor to promote it to a real
+ * session. `channels` tells the UI which factors to offer.
+ */
+export const TWO_FACTOR_CHANNELS = ['totp', 'email', 'recovery'] as const;
+export const twoFactorChannelSchema = z.enum(TWO_FACTOR_CHANNELS);
+export type TwoFactorChannel = z.infer<typeof twoFactorChannelSchema>;
+
+export const twoFactorChallengeResponseSchema = z
+  .object({
+    /** Discriminant: always true on the challenge branch of the login response. */
+    twoFactorRequired: z.literal(true),
+    /** Opaque bearer for the pending challenge; only verify/email-code accept it. */
+    pendingToken: z.string(),
+    /** Which second-factor channels the client may offer. */
+    channels: z.array(twoFactorChannelSchema).min(1),
+  })
+  .strict();
+export type TwoFactorChallengeResponse = z.infer<typeof twoFactorChallengeResponseSchema>;
+
+/**
+ * `POST /auth/login` response. Either the signed-in user (no 2FA — a session
+ * cookie is set exactly as before) or a {@link twoFactorChallengeResponseSchema}
+ * (session withheld until a second factor verifies). The two branches are
+ * disjoint: only the challenge carries `twoFactorRequired`.
+ */
+export const loginResponseSchema = z.union([meResponseSchema, twoFactorChallengeResponseSchema]);
+export type LoginResponse = z.infer<typeof loginResponseSchema>;
+
+/**
+ * `POST /auth/2fa/verify` — present a second factor for a pending challenge.
+ * Exactly one of `code` (a 6-digit TOTP or emailed login code) or `recoveryCode`
+ * (a dashed recovery code). `pendingToken` came from the login challenge; a valid
+ * factor promotes it to a full session.
+ */
+export const twoFactorVerifyRequestSchema = z
+  .object({
+    pendingToken: z.string().min(1).max(256),
+    code: z.string().min(6).max(10).optional(),
+    recoveryCode: z.string().min(8).max(64).optional(),
+  })
+  .strict()
+  .refine((v) => Boolean(v.code) !== Boolean(v.recoveryCode), {
+    message: 'Provide either a code or a recovery code.',
+  });
+export type TwoFactorVerifyRequest = z.infer<typeof twoFactorVerifyRequestSchema>;
+
+/**
+ * `POST /auth/2fa/email-code` — send a one-time, short-lived login code to the
+ * account's email for a pending challenge. Best-effort: with no SMTP the send is
+ * logged `suppressed` and the request still succeeds (the code is unusable, but
+ * the caller can fall back to TOTP or a recovery code).
+ */
+export const twoFactorEmailCodeRequestSchema = z
+  .object({ pendingToken: z.string().min(1).max(256) })
+  .strict();
+export type TwoFactorEmailCodeRequest = z.infer<typeof twoFactorEmailCodeRequestSchema>;
+
+/**
  * `GET /auth/session` — the caller's own current session timestamps
  * (PROJECTPLAN.md §6.11 Security). `expiresAt` is `renewedAt` plus the fixed
  * 30-day window (§6.1).

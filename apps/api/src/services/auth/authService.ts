@@ -1,14 +1,16 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 
-import type {
-  AcceptInviteRequest,
-  ChangePasswordRequest,
-  PasswordResetComplete,
-  PasswordResetRequest,
-  RegisterRequest,
-  SessionInfoResponse,
+import {
+  TWO_FACTOR_CHANNELS,
+  type AcceptInviteRequest,
+  type ChangePasswordRequest,
+  type PasswordResetComplete,
+  type PasswordResetRequest,
+  type RegisterRequest,
+  type SessionInfoResponse,
+  type TwoFactorChannel,
 } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
@@ -17,7 +19,14 @@ import type { PasswordResetTokenRepository } from '../../data/repositories/passw
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
-import { accountDisabled, badRequest, conflict, forbidden, unauthorized } from '../../errors';
+import {
+  accountDisabled,
+  badRequest,
+  conflict,
+  forbidden,
+  tooManyRequests,
+  unauthorized,
+} from '../../errors';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { generateToken, hashToken } from '../crypto/tokens';
@@ -31,7 +40,9 @@ import {
   LOGIN_ACCOUNT_NAMESPACE,
   pinFailCountKey,
   PIN_FALLBACK_THRESHOLD,
+  TWO_FACTOR_ACCOUNT_NAMESPACE,
 } from './loginThrottle';
+import type { TwoFactorService } from './twoFactorService';
 
 export interface AuthServiceDeps {
   config: AppConfig;
@@ -45,6 +56,8 @@ export interface AuthServiceDeps {
   passwordHasher: PasswordHasher;
   email: EmailService;
   appSettings: AppSettingsService;
+  /** Login-challenge factor verification + recovery-code consumption (#273, §6.1). */
+  twoFactor: TwoFactorService;
 }
 
 export interface LoginInput {
@@ -59,6 +72,32 @@ export interface SessionResult {
   sessionId: string;
 }
 
+/** The login-time 2FA challenge handed back when an account has 2FA enabled (§6.1). */
+export interface TwoFactorChallenge {
+  /** Opaque bearer accepted only by the verify / email-code endpoints. */
+  pendingToken: string;
+  /** Which second-factor channels the client may offer. */
+  channels: TwoFactorChannel[];
+}
+
+/**
+ * Result of a password login. A no-2FA account lands `authenticated` with a
+ * session; a 2FA-enabled account lands `two_factor_required` with a pending
+ * challenge and NO session — the caller must verify a second factor first.
+ */
+export type LoginResult =
+  | ({ status: 'authenticated' } & SessionResult)
+  | { status: 'two_factor_required'; challenge: TwoFactorChallenge };
+
+export interface VerifyTwoFactorInput {
+  pendingToken: string;
+  /** A 6-digit TOTP or emailed login code. Mutually exclusive with `recoveryCode`. */
+  code?: string;
+  /** A dashed recovery code. Mutually exclusive with `code`. */
+  recoveryCode?: string;
+  ip?: string | null;
+}
+
 export interface VerifyPinInput {
   userId: string;
   sessionId: string;
@@ -67,7 +106,26 @@ export interface VerifyPinInput {
 }
 
 export interface AuthService {
-  login(input: LoginInput): Promise<SessionResult>;
+  /**
+   * Password login (§6.1). Returns a full session for a no-2FA account, or a
+   * pending 2FA challenge (session withheld) when the account has 2FA enabled.
+   */
+  login(input: LoginInput): Promise<LoginResult>;
+  /**
+   * Complete a login 2FA challenge (§6.1, §13.2 V2-P5): verify a TOTP / emailed
+   * code / recovery code against the pending state and, on success, mint the real
+   * session (rotate any prior id, 30-day window, `last_login_at`, audit-log).
+   * Wrong attempts are throttled per account (§10); a valid recovery code is
+   * consumed single-use.
+   */
+  verifyTwoFactor(input: VerifyTwoFactorInput): Promise<SessionResult>;
+  /**
+   * Send a one-time email login code for a pending 2FA challenge (§6.1). The code
+   * is short-lived, single-use and dispatched through the email channel (logged to
+   * `email_log`; `suppressed` with no SMTP). A bad/expired pending token is
+   * rejected without sending.
+   */
+  requestTwoFactorEmailCode(pendingToken: string, ip?: string | null): Promise<void>;
   logout(sessionId: string): Promise<void>;
   resolveSession(sessionId: string): Promise<UserRow | null>;
   changePassword(
@@ -130,25 +188,38 @@ export interface AuthService {
 // Self-service reset links are short-lived (§6.1, §14): valid for one hour.
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
-// Single generic failure for every login rejection — no user enumeration (§6.1).
+// The login 2FA challenge window (§6.1, §13.2 V2-P5): the pending state — and any
+// emailed code minted under it — live at most this long before the user must
+// re-enter their password. Tight enough to bound a stolen pending token, long
+// enough to receive an email code and type it.
+const PENDING_2FA_TTL_SEC = 10 * 60;
+const EMAIL_CODE_TTL_MINUTES = 10;
+
+const pendingKey = (token: string) => `pending2fa:${token}`;
+const emailCodeKey = (token: string) => `2fa_email_code:${token}`;
+
+/** The Redis-side pending-2FA state — never a session, so no route honours it. */
+interface Pending2faState {
+  userId: string;
+  /** A pre-login session id to rotate out on successful verify, if any. */
+  priorSessionId?: string;
+}
+
+/** Single generic failure for every login rejection — no user enumeration (§6.1). */
 const invalidCredentials = () =>
   unauthorized('Invalid email/username or password.', 'INVALID_CREDENTIALS');
 
 /**
- * Two-factor authentication hook (PROJECTPLAN.md §6.1, §6.3 — planned, post-v1).
- *
- * ── 2FA INSERTION POINT ──────────────────────────────────────────────────────
- * This is the single place a second verification step will plug into the login
- * flow. It runs after the password (and account-status) checks pass but BEFORE a
- * session is minted, so an unverified second factor can block session creation
- * without ever exposing a usable cookie. Today it is intentionally a no-op: the
- * TOTP/WebAuthn implementation is out of scope for P2 (§14). When 2FA lands, the
- * real check goes here (e.g. throw a `second-factor-required` challenge, or
- * verify a supplied code) — nothing else in `login` needs to move.
+ * A pending 2FA challenge that no longer exists (expired, already consumed, or a
+ * forged token). Distinct code so the SPA can bounce the user back to the
+ * password step. The pending token already implies a correct password, so this
+ * leaks no account-existence signal.
  */
-async function verifySecondFactor(_user: UserRow): Promise<void> {
-  // No-op until 2FA is implemented (§6.1/§6.3, §14).
-}
+const pendingInvalid = () =>
+  unauthorized(
+    'Your verification session has expired. Please sign in again.',
+    'TWO_FACTOR_PENDING_INVALID',
+  );
 
 export function createAuthService(deps: AuthServiceDeps): AuthService {
   const {
@@ -163,6 +234,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     passwordHasher,
     email,
     appSettings,
+    twoFactor,
   } = deps;
   // Per-account failed-login throttle (§6.1, §10): ~10 failures → a short
   // cooldown, escalating on repeat batches and decaying after a quiet period.
@@ -172,6 +244,39 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     LOGIN_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+  // Per-account wrong-second-factor throttle (§6.1, §10): a correct password that
+  // lands on the 2FA step still gates code brute-forcing per account, on the same
+  // escalation ladder as failed passwords and independent of the per-IP limiter.
+  const twoFactorThrottle = createProgressiveLimiter(
+    redis,
+    TWO_FACTOR_ACCOUNT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
+
+  /** Load and parse a pending-2FA state; null when missing/expired/corrupt. */
+  async function loadPending(token: string): Promise<Pending2faState | null> {
+    const raw = await redis.get(pendingKey(token));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as Pending2faState;
+    } catch {
+      await redis.del(pendingKey(token));
+      return null;
+    }
+  }
+
+  /**
+   * Match `code` against the emailed login code for this pending challenge,
+   * consuming it single-use on success. Only the hash is stored (§6.1). A
+   * non-match leaves the stored code intact so a wrong guess doesn't burn it.
+   */
+  async function consumeEmailCode(token: string, code: string): Promise<boolean> {
+    const stored = await redis.get(emailCodeKey(token));
+    if (!stored) return false;
+    if (hashToken(code.trim()) !== stored) return false;
+    await redis.del(emailCodeKey(token));
+    return true;
+  }
 
   // Computed once, lazily — verified against on unknown-user logins so response
   // timing doesn't reveal whether an account exists.
@@ -238,11 +343,34 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw accountDisabled();
       }
 
-      // 2FA hook (§6.1/§6.3): the insertion point for a second verification
-      // step, gating session creation. No-op until 2FA ships (see above).
-      await verifySecondFactor(user);
-
+      // The password is correct — clear the failure throttle now, whether or not
+      // a second factor still stands between the caller and a session.
       await clearFailures(user.id);
+
+      // 2FA gate (§6.1, §13.2 V2-P5): with 2FA enabled, do NOT mint a session
+      // yet. Issue a short-lived, single-purpose pending challenge (Redis) that
+      // only the verify / email-code endpoints accept; the session is withheld
+      // until a second factor verifies. The prior session id (if any) is carried
+      // so it can be rotated out on success, not destroyed on an abandoned
+      // challenge.
+      if (await twoFactor.isEnabled(user.id)) {
+        const pendingToken = randomBytes(32).toString('base64url');
+        const state: Pending2faState = { userId: user.id };
+        if (currentSessionId) state.priorSessionId = currentSessionId;
+        await redis.set(pendingKey(pendingToken), JSON.stringify(state), 'EX', PENDING_2FA_TTL_SEC);
+        await audit.record({
+          actorId: user.id,
+          action: AuditAction.TwoFactorChallengeIssued,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+        });
+        return {
+          status: 'two_factor_required',
+          challenge: { pendingToken, channels: [...TWO_FACTOR_CHANNELS] },
+        };
+      }
+
       // Session rotation: drop any pre-login session before minting a new id.
       if (currentSessionId) await sessions.destroy(currentSessionId);
       const sessionId = await sessions.create(user.id);
@@ -266,7 +394,116 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         });
       }
 
+      return { status: 'authenticated', user: { ...user, lastLoginAt: now }, sessionId };
+    },
+
+    async verifyTwoFactor({ pendingToken, code, recoveryCode, ip }) {
+      const state = await loadPending(pendingToken);
+      if (!state) throw pendingInvalid();
+      const { userId } = state;
+
+      // Already cooling down from prior wrong factors: reject before verifying so
+      // blocked retries — even a correct code — cannot brute-force through the
+      // cooldown (§10). Mirrors the password limiter's peek-before-check.
+      const cooling = await twoFactorThrottle.peek(userId);
+      if (cooling > 0) {
+        throw tooManyRequests(cooling, 'Too many incorrect codes. Please wait and try again.');
+      }
+
+      const user = await userRepo.findById(userId);
+      if (!user || user.status !== 'active') {
+        // Account vanished/suspended mid-challenge: drop the pending state.
+        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+
+      // Resolve the factor. A recovery code is consumed only on the recovery
+      // branch; a 6-digit `code` is tried as an emailed code first (single-use)
+      // then as a TOTP — the two are disjoint, so order only affects which state
+      // a match burns.
+      let ok = false;
+      if (recoveryCode) {
+        ok = await twoFactor.consumeRecoveryCode(userId, recoveryCode);
+      } else if (code) {
+        ok =
+          (await consumeEmailCode(pendingToken, code)) ||
+          (await twoFactor.verifyTotpCode(userId, code));
+      }
+
+      if (!ok) {
+        const decision = await twoFactorThrottle.consume(userId);
+        await audit.record({
+          action: AuditAction.TwoFactorVerifyFail,
+          targetType: 'user',
+          targetId: userId,
+          ip,
+          meta: { locked: !decision.allowed },
+        });
+        if (!decision.allowed) {
+          throw tooManyRequests(
+            decision.retryAfterSec,
+            'Too many incorrect codes. Please wait and try again.',
+          );
+        }
+        throw unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+      }
+
+      // Verified: burn the pending state + email code, clear the throttles, and
+      // mint the real session (rotating out any pre-login id).
+      await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+      await twoFactorThrottle.reset(userId);
+      await clearFailures(userId);
+      if (state.priorSessionId) await sessions.destroy(state.priorSessionId);
+      const sessionId = await sessions.create(userId);
+
+      const now = new Date();
+      await userRepo.setLastLogin(userId, now);
+      await audit.record({
+        actorId: userId,
+        action: AuditAction.LoginSuccess,
+        targetType: 'user',
+        targetId: userId,
+        ip,
+        meta: { via: '2fa' },
+      });
+
       return { user: { ...user, lastLoginAt: now }, sessionId };
+    },
+
+    async requestTwoFactorEmailCode(pendingToken, ip) {
+      const state = await loadPending(pendingToken);
+      if (!state) throw pendingInvalid();
+      const user = await userRepo.findById(state.userId);
+      if (!user || user.status !== 'active') {
+        await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+
+      // Fresh 6-digit code each request, overwriting any prior one; only the hash
+      // is stored, keyed to this challenge, expiring with the send.
+      const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+      await redis.set(
+        emailCodeKey(pendingToken),
+        hashToken(code),
+        'EX',
+        EMAIL_CODE_TTL_MINUTES * 60,
+      );
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.TwoFactorEmailCodeSent,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+      // Best-effort send (§6.11): logs to email_log, `suppressed` with no SMTP,
+      // never throws back. The pending state is already committed above.
+      await email.sendTwoFactorCode({
+        to: user.email,
+        userId: user.id,
+        code,
+        expiresInMinutes: EMAIL_CODE_TTL_MINUTES,
+        audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+      });
     },
 
     async logout(sessionId) {

@@ -18,6 +18,9 @@ import type {
   MeResponse,
   PasswordResetComplete,
   PinVerifyRequest,
+  TwoFactorChallengeResponse,
+  TwoFactorEmailCodeRequest,
+  TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
 import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
@@ -57,13 +60,27 @@ export type AuthStatus =
 /** Default idle events that count as "activity" and reset the AFK auto-lock timer. */
 const AFK_ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'] as const;
 
+/**
+ * Result of a password login (§6.1, §13.2 V2-P5). A no-2FA account lands
+ * `authenticated` (the context is already updated); a 2FA account lands
+ * `two_factor_required` with the challenge the caller must complete via
+ * {@link AuthContextValue.verifyTwoFactor} before a session exists.
+ */
+export type LoginOutcome =
+  | { status: 'authenticated' }
+  | { status: 'two_factor_required'; challenge: TwoFactorChallengeResponse };
+
 interface AuthContextValue {
   status: AuthStatus;
   /** The current user. Null while anonymous/loading, and may be null in the
    *  forced-change state when we only learned of the lock from a `403` (the
    *  identity isn't disclosed until the password is changed). */
   user: MeResponse | null;
-  login: (credentials: LoginRequest) => Promise<void>;
+  login: (credentials: LoginRequest) => Promise<LoginOutcome>;
+  /** Complete a login 2FA challenge; on success the app lands authenticated. */
+  verifyTwoFactor: (body: TwoFactorVerifyRequest) => Promise<void>;
+  /** Request a one-time email login code for a pending 2FA challenge. */
+  requestTwoFactorEmailCode: (body: TwoFactorEmailCodeRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
   /** Complete a self-service password reset; the API signs the user straight in. */
   completePasswordReset: (body: PasswordResetComplete) => Promise<void>;
@@ -218,8 +235,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [status, pinEnabled, idleMinutes]);
 
   const login = useCallback(
-    async (credentials: LoginRequest) => {
-      const me = await api.login(credentials);
+    async (credentials: LoginRequest): Promise<LoginOutcome> => {
+      const result = await api.login(credentials);
+      // 2FA on: no session was minted — hand the challenge back so the login
+      // screen can collect a second factor (§6.1, §13.2 V2-P5).
+      if ('twoFactorRequired' in result) {
+        return { status: 'two_factor_required', challenge: result };
+      }
+      const me = result;
       if (me.role === 'admin') {
         // A valid admin login still minted a session cookie — drop it so no
         // half-authenticated admin session lingers on the user origin.
@@ -230,8 +253,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // the user again in the same breath.
       pinUnlockedRef.current = true;
       applyUser(me);
+      return { status: 'authenticated' };
     },
     [applyUser],
+  );
+
+  const verifyTwoFactor = useCallback(
+    async (body: TwoFactorVerifyRequest) => {
+      const me = await api.verifyTwoFactor(body);
+      if (me.role === 'admin') {
+        // Defensive: admin-kind 2FA is out of scope, but never admit an admin
+        // to the user app if one ever reaches here.
+        await api.logout().catch(() => undefined);
+        throw new AdminAccountError();
+      }
+      // Verifying a second factor completed a fresh login — outranks the PIN gate.
+      pinUnlockedRef.current = true;
+      applyUser(me);
+    },
+    [applyUser],
+  );
+
+  const requestTwoFactorEmailCode = useCallback(
+    (body: TwoFactorEmailCodeRequest) => api.requestTwoFactorEmailCode(body),
+    [],
   );
 
   const acceptInvite = useCallback(
@@ -299,6 +344,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       user,
       login,
+      verifyTwoFactor,
+      requestTwoFactorEmailCode,
       acceptInvite,
       completePasswordReset,
       changePassword,
@@ -311,6 +358,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       user,
       login,
+      verifyTwoFactor,
+      requestTwoFactorEmailCode,
       acceptInvite,
       completePasswordReset,
       changePassword,

@@ -10,6 +10,7 @@ import {
   portfolioSharedEmail,
   tempPasswordEmail,
   testEmail,
+  twoFactorCodeEmail,
   welcomeEmail,
   type EmailContent,
 } from './templates';
@@ -62,6 +63,18 @@ export interface EmailService {
     resetUrl: string;
     audit: EmailAuditTarget;
   }): Promise<EmailSendResult>;
+  /**
+   * Login 2FA email-code channel (§6.1, §13.2 V2-P5): a short-lived numeric code
+   * the user enters at the login challenge. Best-effort like every send — with no
+   * SMTP it logs `suppressed` and never throws.
+   */
+  sendTwoFactorCode(params: {
+    to: string;
+    userId: string;
+    code: string;
+    expiresInMinutes: number;
+    audit: EmailAuditTarget;
+  }): Promise<EmailSendResult>;
   sendWelcome(params: {
     to: string;
     username: string;
@@ -104,6 +117,7 @@ type EmailTemplateKind =
   | 'invite'
   | 'temp_password'
   | 'password_reset'
+  | 'two_factor_code'
   | 'welcome'
   | 'test'
   | 'friend_request'
@@ -222,6 +236,12 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
 
     sendPasswordReset: ({ to, resetUrl, audit: target }) =>
       deliver('password_reset', to, passwordResetEmail({ resetUrl }), { audit: target }),
+
+    sendTwoFactorCode: ({ to, userId, code, expiresInMinutes, audit: target }) =>
+      deliver('two_factor_code', to, twoFactorCodeEmail({ code, minutes: expiresInMinutes }), {
+        userId,
+        audit: target,
+      }),
 
     sendWelcome: ({ to, username, audit: target }) =>
       deliver('welcome', to, welcomeEmail({ username, appUrl: config.appOrigin }), {

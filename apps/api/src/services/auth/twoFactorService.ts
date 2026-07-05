@@ -54,6 +54,20 @@ export interface TwoFactorService {
     userId: string,
     ip?: string | null,
   ): Promise<TwoFactorRecoveryCodesResponse>;
+  /** Whether the account has 2FA enabled — the login flow's challenge gate (§6.1). */
+  isEnabled(userId: string): Promise<boolean>;
+  /**
+   * Login-challenge factor check (§6.1, §13.2 V2-P5): true when `code` is the
+   * account's current TOTP code. Enabled accounts only; a malformed/undecryptable
+   * secret verifies as false. Does not touch recovery codes — the emailed-code
+   * channel and rate limiting live in the auth service.
+   */
+  verifyTotpCode(userId: string, code: string): Promise<boolean>;
+  /**
+   * Login-challenge factor check (§6.1): consume one unused recovery code
+   * single-use, returning whether a match was found. Enabled accounts only.
+   */
+  consumeRecoveryCode(userId: string, code: string): Promise<boolean>;
 }
 
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
@@ -204,6 +218,30 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         ip,
       });
       return { recoveryCodes };
+    },
+
+    async isEnabled(userId) {
+      const state = await twoFactorRepo.getState(userId);
+      return Boolean(state?.enabled);
+    },
+
+    async verifyTotpCode(userId, code) {
+      const state = await twoFactorRepo.getState(userId);
+      if (!state?.enabled || !state.secret) return false;
+      let secret: string;
+      try {
+        secret = decryptSecret(state.secret, encryptionKey);
+      } catch {
+        return false;
+      }
+      return verifyTotp(secret, code);
+    },
+
+    async consumeRecoveryCode(userId, code) {
+      const state = await twoFactorRepo.getState(userId);
+      if (!state?.enabled) return false;
+      const hash = hashToken(normalizeRecoveryCode(code));
+      return twoFactorRepo.consumeRecoveryCode(userId, hash, new Date());
     },
   };
 }
