@@ -264,11 +264,22 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async changePassword(userId, input, ip) {
+      // The target is always THIS session's account (`userId` came from the
+      // session cookie), so the outcome never depends on any admin session
+      // elsewhere — no context leakage (§6.1, #248 item 6).
       const user = await userRepo.findById(userId);
       if (!user) throw unauthorized();
 
-      const currentOk = await passwordHasher.verify(user.passwordHash, input.currentPassword);
-      if (!currentOk) throw unauthorized('Current password is incorrect.', 'INVALID_CREDENTIALS');
+      // A forced change after an admin reset: the session was just minted by
+      // logging in with the temp password, so it is itself proof of the current
+      // credential — don't ask for it again (#248 item 7). A voluntary change
+      // from Settings still re-verifies the current password.
+      if (!user.mustChangePassword) {
+        const currentOk =
+          input.currentPassword !== undefined &&
+          (await passwordHasher.verify(user.passwordHash, input.currentPassword));
+        if (!currentOk) throw unauthorized('Current password is incorrect.', 'INVALID_CREDENTIALS');
+      }
 
       const policy = checkPasswordPolicy(input.newPassword);
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');

@@ -160,7 +160,9 @@ test('a must-change session is trapped, then released by a successful change', a
   expect(await screen.findByText('Choose a new password')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 
-  await user.type(screen.getByLabelText('Current password'), 'temp-password-123');
+  // No "Current password" field: the temp-password login is the proof, so it is
+  // never asked for a second time (#248 item 7).
+  expect(screen.queryByLabelText('Current password')).not.toBeInTheDocument();
   await user.type(screen.getByLabelText('New password'), 'a-brand-new-secret');
   await user.type(screen.getByLabelText('Confirm new password'), 'a-brand-new-secret');
   await user.click(screen.getByRole('button', { name: 'Update password' }));
@@ -168,7 +170,6 @@ test('a must-change session is trapped, then released by a successful change', a
   // Released into the app shell (lands on /portfolio via the `/` redirect).
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(api.changePassword).toHaveBeenCalledWith({
-    currentPassword: 'temp-password-123',
     newPassword: 'a-brand-new-secret',
   });
 });

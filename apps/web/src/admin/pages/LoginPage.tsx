@@ -4,7 +4,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
 import { ApiError } from '../../lib/apiClient';
-import { NotAdminError, PasswordChangeRequiredError, useAuth } from '../AuthContext';
+import { NotAdminError, useAuth } from '../AuthContext';
 import { Alert, Button, Spinner, TextField } from '../components/ui';
 
 /**
@@ -34,9 +34,11 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login({ identifier, password });
+      // A reset admin lands in the forced-change trap instead (status becomes
+      // `password-change-required`); this navigation is a no-op for them.
       navigate('/admin/users', { replace: true });
     } catch (err) {
-      if (err instanceof NotAdminError || err instanceof PasswordChangeRequiredError) {
+      if (err instanceof NotAdminError) {
         setError(err.message);
       } else if (err instanceof ApiError) {
         // The API returns a deliberately generic, non-enumerating message.
