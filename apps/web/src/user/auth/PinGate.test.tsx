@@ -100,21 +100,38 @@ test('the gate renders exactly four boxes and auto-submits on the fourth digit (
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 });
 
-test('a wrong PIN clears the boxes, refocuses the first, and shows the error (#288)', async () => {
+test('a wrong PIN shakes the card, clears the boxes, refocuses the first (#288, #304)', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
   vi.mocked(api.verifyPin).mockRejectedValue(new ApiError(401, 'INVALID_PIN', 'Incorrect PIN.'));
 
   renderAt('/portfolio');
   await screen.findByText('Enter your PIN');
 
+  const form = screen.getByLabelText('PIN').closest('form') as HTMLFormElement;
+  expect(form).not.toHaveClass('pin-shake');
+
   typeGatePin('0000');
   await flush();
 
   expect(await screen.findByText(/incorrect pin/i)).toBeInTheDocument();
+  // Wrong PIN → the card shakes (cleared when the animation ends).
+  expect(form).toHaveClass('pin-shake');
   // Boxes cleared, first box focused, ready for another attempt.
   const first = screen.getByLabelText('PIN');
   expect(first).toHaveValue('');
   expect(document.activeElement).toBe(first);
+});
+
+test('the lock screen is a deliberate, branded card (Part B polish, #304)', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+
+  renderAt('/portfolio');
+  await screen.findByText('Enter your PIN');
+
+  // Wordmark present, "Enter your PIN" as the heading, and the four boxes.
+  expect(screen.getByText('Better')).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Enter your PIN' })).toBeInTheDocument();
+  expect(screen.getAllByRole('textbox')).toHaveLength(4);
 });
 
 test('the fallback after too many wrong PINs returns to the full login screen', async () => {
@@ -147,7 +164,7 @@ test('signing out from the gate returns to login', async () => {
   expect(api.logout).toHaveBeenCalledOnce();
 });
 
-test('a reload inside the unlock window does not re-prompt (TTL, not per-open) (#288)', async () => {
+test('a reload during active use does not re-prompt (idle, not per-open) (#304)', async () => {
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
   vi.mocked(api.verifyPin).mockResolvedValue(pinUser);
 
@@ -158,21 +175,21 @@ test('a reload inside the unlock window does not re-prompt (TTL, not per-open) (
   await flush();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 
-  // Reload within the (default 10-minute) window: the persisted expiry is still
-  // in the future, so the app opens straight through — no gate.
+  // Reload right after unlocking: `lastActivityAt` is fresh (well inside the
+  // default 10-minute window), so the app opens straight through — no gate.
   unmount();
   renderAt('/portfolio');
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
 });
 
-test('when the window expires the gate engages in place, and a reload also locks (#288)', async () => {
+test('continuous activity never locks; the gate engages only after N idle minutes (#304)', async () => {
   vi.useFakeTimers();
   const windowUser = { ...pinUser, pinLockIdleMinutes: 1 };
   vi.mocked(api.getMe).mockResolvedValue(windowUser);
   vi.mocked(api.verifyPin).mockResolvedValue(windowUser);
 
-  const { unmount } = renderAt('/portfolio');
+  renderAt('/portfolio');
   await flush();
   expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
 
@@ -180,20 +197,103 @@ test('when the window expires the gate engages in place, and a reload also locks
   await flush();
   expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
 
-  // The window is absolute since unlock — after one minute the overlay engages
-  // even with the app sitting open and zero activity.
+  // Active use: a pointer move every 30s for 3 minutes — 3× the 1-minute window.
+  // The deadline keeps resetting, so the app never locks.
+  for (let i = 0; i < 6; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      window.dispatchEvent(new Event('pointermove'));
+    });
+  }
+  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
+
+  // Activity stops: just under a minute is still fine…
   await act(async () => {
-    vi.advanceTimersByTime(61_000);
+    vi.advanceTimersByTime(59_000);
+  });
+  expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
+  // …and crossing one idle minute engages the gate in place.
+  await act(async () => {
+    vi.advanceTimersByTime(2_000);
   });
   expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
+});
 
-  // A reload past expiry likewise shows the gate before any data.
+test('a reload after the idle window has lapsed shows the gate before any data (#304)', async () => {
+  vi.useFakeTimers();
+  const windowUser = { ...pinUser, pinLockIdleMinutes: 1 };
+  vi.mocked(api.getMe).mockResolvedValue(windowUser);
+  vi.mocked(api.verifyPin).mockResolvedValue(windowUser);
+
+  const { unmount } = renderAt('/portfolio');
+  await flush();
+  typeGatePin('4242');
+  await flush();
+  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+
+  // Idle out, then reopen: `now − lastActivityAt` exceeds the window, so the gate
+  // is up immediately — before the shell renders.
+  await act(async () => {
+    vi.advanceTimersByTime(61_000);
+  });
   unmount();
   renderAt('/portfolio');
   await flush();
   expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
+});
+
+test('activity in another tab (a storage event) keeps this tab unlocked (#304)', async () => {
+  vi.useFakeTimers();
+  const windowUser = { ...pinUser, pinLockIdleMinutes: 1 };
+  vi.mocked(api.getMe).mockResolvedValue(windowUser);
+  vi.mocked(api.verifyPin).mockResolvedValue(windowUser);
+
+  renderAt('/portfolio');
+  await flush();
+  typeGatePin('4242');
+  await flush();
+  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+
+  // No local activity — but another tab of the same account keeps recording it,
+  // broadcasting a storage event every 40s past the 1-minute window. This tab
+  // must treat that as activity and never lock.
+  for (let i = 0; i < 4; i++) {
+    await act(async () => {
+      vi.advanceTimersByTime(40_000);
+      localStorage.setItem(
+        'bettertrack.pinActivity',
+        JSON.stringify({ u: 'user-1', t: Date.now() }),
+      );
+      window.dispatchEvent(new StorageEvent('storage', { key: 'bettertrack.pinActivity' }));
+    });
+  }
+  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
+});
+
+test('lock timing uses no network — only the PIN verify call hits the API (#304)', async () => {
+  vi.useFakeTimers();
+  const windowUser = { ...pinUser, pinLockIdleMinutes: 1 };
+  vi.mocked(api.getMe).mockResolvedValue(windowUser);
+  vi.mocked(api.verifyPin).mockResolvedValue(windowUser);
+
+  renderAt('/portfolio');
+  await flush();
+  typeGatePin('4242');
+  await flush();
+  expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+
+  // From here the lock is driven purely by the client idle timer: no further
+  // `getMe`/refetch participates in it.
+  vi.mocked(api.getMe).mockClear();
+  await act(async () => {
+    vi.advanceTimersByTime(61_000);
+  });
+  expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
+  expect(api.getMe).not.toHaveBeenCalled();
 });
 
 test('with the PIN disabled the app never asks for a PIN', async () => {

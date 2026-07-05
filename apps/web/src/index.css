@@ -13,3 +13,34 @@
     display: none;
   }
 }
+
+/**
+ * Wrong-PIN feedback (issue #304, PIN gate polish): a brief horizontal shake of
+ * the lock card when a PIN is rejected, paired with clearing the boxes. Honours
+ * reduced-motion — the card just stays put and the boxes still clear.
+ */
+@keyframes pin-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-6px);
+  }
+  40% {
+    transform: translateX(6px);
+  }
+  60% {
+    transform: translateX(-4px);
+  }
+  80% {
+    transform: translateX(4px);
+  }
+}
+
+@utility pin-shake {
+  animation: pin-shake 0.4s ease-in-out;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}

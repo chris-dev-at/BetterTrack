@@ -46,76 +46,100 @@ export type AuthStatus =
   | 'pin-required';
 
 /**
- * The app-lock as an **unlock-window (TTL) model** (§6.1, §13.2 V2-P2; owner
- * directive #288). With a PIN enabled, every successful unlock — a password login
- * *or* entering the PIN at the gate — opens a fixed window (the user's configured
- * minutes, default {@link DEFAULT_PIN_WINDOW_MINUTES}). Inside that window nothing
- * ever prompts: reloads, navigation and new tabs on the same session all pass.
- * When the window elapses the gate re-engages — in place while the app sits open,
- * or before any data on the next open/refresh.
+ * The app-lock as a **client-side idle model** (§6.1, §13.2 V2-P2; owner
+ * directive #304). The PIN gate is a privacy curtain against shoulder-surfing —
+ * it keeps a passer-by from reading your balances on a screen you walked away
+ * from — not a security boundary. The session (httpOnly cookie, §6.1) is the
+ * boundary and is untouched here; there is deliberately **no** server-timed
+ * deauth and no API-level PIN challenge. It can be chill and live entirely on the
+ * client.
  *
- * The window is an **absolute expiry timestamp persisted in `localStorage`**,
- * scoped to the user id. That is the whole point of the redesign and why the old
- * timer was dead (see below): the source of truth is a timestamp read on every
- * render/reload, not an in-memory flag (which #259 lost on reload) nor an
- * activity-reset countdown fed by AuthContext's private `user` state (which a
- * Settings change never refreshed, so the timer stayed disarmed all session).
+ * So the lock is driven purely by **user inactivity**. With the PIN on, real
+ * activity in the tab — pointer moves/presses, keys, scrolls, touches, and a tab
+ * regaining visibility — continually pushes back a deadline; the gate engages
+ * only after the configured minutes ({@link DEFAULT_PIN_WINDOW_MINUTES} by
+ * default) with **zero** activity. An app in active use therefore never locks, no
+ * matter how long the session runs. Background auto-refetches are not activity —
+ * only DOM interaction is — so polling never keeps the gate open or drives it.
  *
- * Persisting an *expiry* is not the #248 §2 bug (which persisted a permanent
- * "unlocked=true" so a reload skipped the gate forever): once the timestamp is in
- * the past the gate returns. The httpOnly session lifetime is untouched — the
- * lock gates the UI, not the session.
+ * The source of truth is a single **`lastActivityAt` timestamp persisted in
+ * `localStorage`**, scoped to the user id. A reload/reopen reads it and re-gates
+ * only when `now − lastActivityAt` exceeds the window, so a reload mid-use never
+ * prompts while a reopen after a long idle gates before any data renders. Because
+ * it lives in `localStorage`, activity in one tab (via storage events) keeps
+ * every other tab of the same account unlocked too.
  */
 
-/** `localStorage` key holding the current unlock window's absolute expiry. */
-const PIN_UNLOCK_STORAGE_KEY = 'bettertrack.pinUnlock';
+/** `localStorage` key holding this user's most-recent activity timestamp. */
+const PIN_ACTIVITY_STORAGE_KEY = 'bettertrack.pinActivity';
 
-interface StoredUnlock {
-  /** User id the window belongs to — a different account never inherits it. */
+/**
+ * Persisting `lastActivityAt` on every pointer move would thrash storage (and
+ * spam other tabs with storage events), so writes are throttled to at most once
+ * per this interval. The in-tab deadline still resets on *every* event — this
+ * only bounds how stale the persisted value (used by reloads/other tabs) can be,
+ * which is negligible against a minutes-long window.
+ */
+const ACTIVITY_PERSIST_THROTTLE_MS = 10_000;
+
+/** DOM events that count as the user actively using the app. */
+const ACTIVITY_EVENTS = ['pointermove', 'pointerdown', 'keydown', 'scroll', 'touchstart'] as const;
+
+interface StoredActivity {
+  /** User id the timestamp belongs to — a different account never inherits it. */
   u: string;
-  /** Absolute expiry, epoch ms. */
-  e: number;
+  /** Last activity, epoch ms. */
+  t: number;
 }
 
-/** Read the unlock-window expiry for this user, or null if none/other user. */
-function readUnlockExpiry(userId: string): number | null {
+/** The idle window for `me`, in ms — their configured minutes or the default. */
+function idleWindowMs(me: Pick<MeResponse, 'pinLockIdleMinutes'>): number {
+  return (me.pinLockIdleMinutes ?? DEFAULT_PIN_WINDOW_MINUTES) * 60_000;
+}
+
+/** Read this user's last-activity timestamp, or null if none/other user. */
+function readLastActivity(userId: string): number | null {
   try {
-    const raw = localStorage.getItem(PIN_UNLOCK_STORAGE_KEY);
+    const raw = localStorage.getItem(PIN_ACTIVITY_STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<StoredUnlock>;
-    if (parsed.u !== userId || typeof parsed.e !== 'number') return null;
-    return parsed.e;
+    const parsed = JSON.parse(raw) as Partial<StoredActivity>;
+    if (parsed.u !== userId || typeof parsed.t !== 'number') return null;
+    return parsed.t;
   } catch {
-    // Storage unavailable/corrupt → treat as locked; the gate is the safe default.
+    // Storage unavailable/corrupt → treat as idle; the gate is the safe default.
     return null;
   }
 }
 
-/** Open a fresh unlock window for `me`, sized by their configured minutes. */
-function startUnlockWindow(me: MeResponse): void {
-  const minutes = me.pinLockIdleMinutes ?? DEFAULT_PIN_WINDOW_MINUTES;
-  const expiresAt = Date.now() + minutes * 60_000;
+/** Record activity for `userId` now — the fresh idle window after any unlock. */
+function recordActivity(userId: string, at: number = Date.now()): void {
   try {
-    localStorage.setItem(PIN_UNLOCK_STORAGE_KEY, JSON.stringify({ u: me.id, e: expiresAt }));
+    localStorage.setItem(PIN_ACTIVITY_STORAGE_KEY, JSON.stringify({ u: userId, t: at }));
   } catch {
-    // No persistence available — the app-open still succeeds; the window then
+    // No persistence available — the app-open still succeeds; the deadline then
     // simply can't outlive this JS context (a reload re-gates), which is safe.
   }
 }
 
-/** Drop any unlock window (sign-out / session end). */
-function clearUnlockWindow(): void {
+/** Drop any recorded activity (sign-out / session end). */
+function clearActivity(): void {
   try {
-    localStorage.removeItem(PIN_UNLOCK_STORAGE_KEY);
+    localStorage.removeItem(PIN_ACTIVITY_STORAGE_KEY);
   } catch {
     // Nothing to clear if storage is unavailable.
   }
 }
 
-/** Whether `me` is inside a still-valid unlock window right now. */
-function isWithinUnlockWindow(me: MeResponse): boolean {
-  const expiry = readUnlockExpiry(me.id);
-  return expiry != null && expiry > Date.now();
+/**
+ * Whether `me`'s PIN gate should be up right now: the PIN is on and the app has
+ * been idle past the window (or never recorded activity — a first open). A
+ * missing timestamp is treated as expired, so a fresh open always gates.
+ */
+function isPinLocked(me: MeResponse): boolean {
+  if (!me.pinEnabled) return false;
+  const last = readLastActivity(me.id);
+  if (last == null) return true;
+  return Date.now() - last > idleWindowMs(me);
 }
 
 /**
@@ -176,28 +200,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
 
   // Apply a resolved /auth/me-or-login user to local state, routing a
-  // forced-change account into its trap, and a PIN-gated account whose unlock
-  // window has lapsed (or never opened) into the PIN gate. Note this only *reads*
-  // the window — a reload/refetch must never extend it; only an actual unlock
-  // (login / PIN entry) calls startUnlockWindow.
+  // forced-change account into its trap, and a PIN account that has sat idle past
+  // its window (or never recorded activity) into the PIN gate. Note this only
+  // *reads* the activity timestamp — a reload/refetch must never count as
+  // activity; only real DOM interaction or an actual unlock records it.
   const applyUser = useCallback((me: MeResponse) => {
     setUser(me);
     if (me.mustChangePassword) {
       setStatus('password-change-required');
-    } else if (me.pinEnabled && !isWithinUnlockWindow(me)) {
+    } else if (isPinLocked(me)) {
       setStatus('pin-required');
     } else {
       setStatus('authenticated');
     }
   }, []);
 
-  // Drops every trace of the signed-out user: the unlock window, the auth state
-  // itself, and the entire TanStack Query cache. Without the cache clear a
+  // Drops every trace of the signed-out user: the recorded activity, the auth
+  // state itself, and the entire TanStack Query cache. Without the cache clear a
   // subsequent login as a *different* account could briefly (or, for queries
   // with a nonzero staleTime, not-so-briefly) render the previous user's
   // cached name/email/portfolio/notifications before a refetch overwrote it.
   const clearSession = useCallback(() => {
-    clearUnlockWindow();
+    clearActivity();
     setUser(null);
     setStatus('anonymous');
     queryClient.clear();
@@ -257,26 +281,77 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, [applyUser]);
 
-  // Engage the gate the moment the unlock window expires while the app sits open
-  // (§6.1, §13.2 V2-P2; #288). The window is absolute — set once at unlock, never
-  // extended by activity — so this is a single timer to its stored expiry, not an
-  // activity-reset countdown. Entering the PIN opens a new window, flips status
-  // back to `authenticated`, and re-runs this effect to arm the next timer.
+  // Idle-lock timing (§6.1, §13.2 V2-P2; owner directive #304). While a PIN
+  // account is authenticated, watch for real DOM activity and engage the gate
+  // only after `idleMinutes` with none. Every activity event resets an in-tab
+  // deadline (precise) and, throttled, persists `lastActivityAt` so reloads and
+  // other tabs stay in sync. Storage events (another tab's activity) reset our
+  // deadline too, without re-persisting — so activity anywhere keeps us unlocked.
+  // Entering the PIN records activity and flips status back to `authenticated`,
+  // re-running this effect to arm a fresh window.
   const pinEnabled = user?.pinEnabled ?? false;
   const userId = user?.id ?? null;
+  const idleMinutes = user?.pinLockIdleMinutes ?? null;
   useEffect(() => {
     if (status !== 'authenticated' || !pinEnabled || userId == null) return;
-    const expiry = readUnlockExpiry(userId);
-    if (expiry == null) return;
+
+    const windowMs = (idleMinutes ?? DEFAULT_PIN_WINDOW_MINUTES) * 60_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let lastPersistAt = 0;
+
     const lock = () => setStatus('pin-required');
-    const remaining = expiry - Date.now();
-    if (remaining <= 0) {
-      lock();
-      return;
+
+    // Re-arm the deadline from the persisted timestamp (used on mount and when
+    // another tab records activity) — locks immediately if it's already stale.
+    const arm = () => {
+      if (timer) clearTimeout(timer);
+      const last = readLastActivity(userId) ?? Date.now();
+      const remaining = windowMs - (Date.now() - last);
+      if (remaining <= 0) {
+        lock();
+        return;
+      }
+      timer = setTimeout(lock, remaining);
+    };
+
+    // Real activity in this tab: reset the deadline to a full window and, at most
+    // once per throttle interval, persist it for reloads and other tabs.
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - lastPersistAt >= ACTIVITY_PERSIST_THROTTLE_MS) {
+        lastPersistAt = now;
+        recordActivity(userId, now);
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(lock, windowMs);
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onActivity();
+    };
+
+    // Another tab recorded activity: re-arm from the freshly-written timestamp.
+    // Never re-persist here or two tabs would echo storage events forever.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === PIN_ACTIVITY_STORAGE_KEY) arm();
+    };
+
+    for (const type of ACTIVITY_EVENTS) {
+      window.addEventListener(type, onActivity, { capture: true, passive: true });
     }
-    const timer = setTimeout(lock, remaining);
-    return () => clearTimeout(timer);
-  }, [status, pinEnabled, userId]);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('storage', onStorage);
+    arm();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      for (const type of ACTIVITY_EVENTS) {
+        window.removeEventListener(type, onActivity, { capture: true });
+      }
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [status, pinEnabled, userId, idleMinutes]);
 
   const login = useCallback(
     async (credentials: LoginRequest): Promise<LoginOutcome> => {
@@ -295,7 +370,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       // A fresh password login is a stronger factor than the PIN — open a fresh
       // unlock window so the user isn't gated again in the same breath.
-      startUnlockWindow(me);
+      recordActivity(me.id);
       applyUser(me);
       return { status: 'authenticated' };
     },
@@ -312,7 +387,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new AdminAccountError();
       }
       // Verifying a second factor completed a fresh login — opens a fresh window.
-      startUnlockWindow(me);
+      recordActivity(me.id);
       applyUser(me);
     },
     [applyUser],
@@ -328,7 +403,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // A fresh invite account is created active with no forced change, so this
       // lands authenticated; applyUser keeps it correct either way.
       const me = await api.acceptInvite(body);
-      startUnlockWindow(me);
+      recordActivity(me.id);
       applyUser(me);
     },
     [applyUser],
@@ -339,7 +414,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // The reset mints a fresh session server-side and returns the usable user,
       // so this lands authenticated; a fresh credential opens a fresh window.
       const me = await api.completePasswordReset(body);
-      startUnlockWindow(me);
+      recordActivity(me.id);
       applyUser(me);
     },
     [applyUser],
@@ -350,7 +425,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Success rotates the session and clears the flag — the response is a
       // fresh, usable user, releasing the forced-change trap and opening a window.
       const me = await api.changePassword(body);
-      startUnlockWindow(me);
+      recordActivity(me.id);
       applyUser(me);
     },
     [applyUser],
@@ -361,7 +436,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const me = await api.verifyPin(body);
         // A correct PIN opens the next unlock window.
-        startUnlockWindow(me);
+        recordActivity(me.id);
         applyUser(me);
       } catch (err) {
         // Too many wrong PINs: the server dropped the session, so fall all the

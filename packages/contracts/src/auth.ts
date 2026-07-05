@@ -121,17 +121,18 @@ export const setPinRequestSchema = z
 export type SetPinRequest = z.infer<typeof setPinRequestSchema>;
 
 /**
- * PIN unlock-window duration (PROJECTPLAN.md §6.1, §13.2 V2-P2; owner directive
- * #288). With the PIN on, every successful unlock (password login *or* PIN entry)
- * opens a window of this many minutes during which the SPA never re-prompts —
- * reloads, navigation and new tabs on the same session all pass freely. When the
- * window elapses the gate re-engages (in place, or before any data on the next
- * open). `null` means "use the default" ({@link DEFAULT_PIN_WINDOW_MINUTES},
- * client-side). Bounds keep it usable — at least a minute, at most a day.
+ * PIN idle-lock duration (PROJECTPLAN.md §6.1, §13.2 V2-P2; owner directive #304).
+ * With the PIN on, the SPA re-asks for it only after the app has sat idle this
+ * many minutes — active use (pointer/keys/scroll/touch, a tab regaining focus)
+ * continually resets the deadline, so a busy app never locks and reloads/new tabs
+ * mid-use pass freely. This is purely client-side timing; the server just stores
+ * the preference (no server-timed deauth, no API-level PIN challenge). `null`
+ * means "use the default" ({@link DEFAULT_PIN_WINDOW_MINUTES}, client-side).
+ * Bounds keep it usable — at least a minute, at most a day.
  */
 export const MIN_PIN_LOCK_IDLE_MINUTES = 1;
 export const MAX_PIN_LOCK_IDLE_MINUTES = 1440;
-/** Default unlock-window length when the user hasn't chosen one (#288). */
+/** Default idle-lock length when the user hasn't chosen one (#304). */
 export const DEFAULT_PIN_WINDOW_MINUTES = 10;
 export const pinLockIdleMinutesSchema = z
   .number()

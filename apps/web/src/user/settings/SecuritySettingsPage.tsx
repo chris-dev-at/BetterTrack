@@ -129,10 +129,10 @@ function windowOptionLabel(minutes: number): string {
 }
 
 /**
- * PIN unlock-window control (§6.1, §13.2 V2-P2; #288). Picks how long a successful
- * unlock (login or PIN entry) stays valid before the gate returns. `null` means
- * the default ({@link DEFAULT_PIN_WINDOW_MINUTES}). Only rendered while the PIN is
- * on.
+ * PIN idle-lock control (§6.1, §13.2 V2-P2; owner directive #304). Picks how long
+ * the app may sit idle before the PIN is asked again. Active use never locks; only
+ * inactivity does. `null` means the default ({@link DEFAULT_PIN_WINDOW_MINUTES}).
+ * Only rendered while the PIN is on.
  */
 function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
   const queryClient = useQueryClient();
@@ -152,15 +152,15 @@ function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
   return (
     <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-100">Ask for the PIN again after</span>
+        <span className="text-sm font-medium text-neutral-100">Lock after inactivity</span>
         <span className="text-xs text-neutral-500">
-          Once you unlock, you can reload and keep using BetterTrack without the PIN for this long.
-          When it lapses, the PIN is asked again.
+          While you're actively using BetterTrack it stays unlocked — reloads and new tabs included.
+          The PIN is asked again only after this long with no activity.
         </span>
       </div>
 
       <label className="flex items-center gap-2 text-sm text-neutral-400">
-        Stay unlocked for
+        Lock after being idle for
         <select
           aria-label="Unlock window"
           value={selected}
@@ -213,8 +213,8 @@ function PinSection({
       <div className="flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold text-neutral-100">PIN</h3>
         <p className="text-xs text-neutral-500">
-          A 4-digit PIN re-confirms it's you when your unlock window lapses. It's a convenience on
-          top of your session, not a second factor.
+          A 4-digit PIN re-confirms it's you after the app has been left idle. It's a privacy
+          curtain on top of your session, not a second factor.
         </p>
       </div>
 
