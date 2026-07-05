@@ -1,10 +1,13 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Outlet } from 'react-router-dom';
 
-import type {
-  MarkReadRequest,
-  Notification,
-  NotificationSettingsResponse,
+import {
+  NOTIFICATION_TYPES,
+  type MarkReadRequest,
+  type Notification,
+  type NotificationSettingsResponse,
+  type NotificationType,
+  type NotificationTypeRouting,
 } from '@bettertrack/contracts';
 
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
@@ -49,21 +52,64 @@ export function SettingsLayout() {
 
 const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
 
-/** A minimal on/off switch. Locked (disabled) rows always render as on. */
-function Toggle({
+/** Human labels + descriptions for each routable notification type (§6.10). */
+const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; description: string }> = {
+  'friend.request': {
+    label: 'Friend requests',
+    description: 'When someone sends you a friend request.',
+  },
+  'friend.accepted': {
+    label: 'Accepted friend requests',
+    description: 'When someone accepts your friend request.',
+  },
+  'portfolio.shared': {
+    label: 'Shared portfolios',
+    description: 'When a friend shares a portfolio with you.',
+  },
+  'account.invite': {
+    label: 'Account invites',
+    description: "When you're invited to BetterTrack.",
+  },
+  'account.temp_password': {
+    label: 'Temporary passwords',
+    description: 'When an admin issues you a temporary password.',
+  },
+};
+
+/** The four routing choices a type offers — the two channels collapsed to a mode. */
+type RoutingMode = 'both' | 'inapp' | 'email' | 'muted';
+
+const ROUTING_MODE_OPTIONS: readonly { value: RoutingMode; label: string }[] = [
+  { value: 'both', label: 'In-app + email' },
+  { value: 'inapp', label: 'In-app only' },
+  { value: 'email', label: 'Email only' },
+  { value: 'muted', label: 'Muted' },
+];
+
+function routingToMode(routing: NotificationTypeRouting): RoutingMode {
+  if (routing.inapp && routing.email) return 'both';
+  if (routing.inapp) return 'inapp';
+  if (routing.email) return 'email';
+  return 'muted';
+}
+
+function modeToRouting(mode: RoutingMode): NotificationTypeRouting {
+  return { inapp: mode === 'both' || mode === 'inapp', email: mode === 'both' || mode === 'email' };
+}
+
+/** One notification type's row in the settings matrix: label + a mode selector. */
+function NotificationMatrixRow({
   label,
   description,
-  checked,
-  disabled,
+  mode,
   busy,
   onChange,
 }: {
   label: string;
   description: string;
-  checked: boolean;
-  disabled?: boolean;
+  mode: RoutingMode;
   busy?: boolean;
-  onChange?: (next: boolean) => void;
+  onChange: (next: RoutingMode) => void;
 }) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
@@ -71,28 +117,23 @@ function Toggle({
         <span className="text-sm font-medium text-neutral-100">{label}</span>
         <span className="text-xs text-neutral-500">{description}</span>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
+      <select
         aria-label={label}
-        disabled={disabled || busy}
-        onClick={() => onChange?.(!checked)}
+        value={mode}
+        disabled={busy}
+        onChange={(event) => onChange(event.target.value as RoutingMode)}
         className={cx(
-          'relative mt-0.5 inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
+          'mt-0.5 shrink-0 rounded-md border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100',
           'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-          'disabled:cursor-not-allowed',
-          checked ? 'bg-sky-600' : 'bg-neutral-700',
+          'disabled:cursor-not-allowed disabled:opacity-60',
         )}
       >
-        <span
-          aria-hidden="true"
-          className={cx(
-            'inline-block h-5 w-5 translate-y-0.5 rounded-full bg-white transition-transform',
-            checked ? 'translate-x-[1.375rem]' : 'translate-x-0.5',
-          )}
-        />
-      </button>
+        {ROUTING_MODE_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -266,8 +307,9 @@ function NotificationList() {
 
 /**
  * Settings → Notifications page (PROJECTPLAN.md §6.10, §6.11). Composes the
- * per-channel toggle panel (in-app locked on, email wired to
- * `GET/PATCH /settings/notifications`) with the full, paged notification list.
+ * per-type × channel routing matrix (each notification type → in-app bell /
+ * email / both / muted, wired to `GET/PATCH /settings/notifications`) with the
+ * full, paged notification list.
  */
 export function NotificationSettingsPage() {
   const queryClient = useQueryClient();
@@ -278,18 +320,22 @@ export function NotificationSettingsPage() {
   });
 
   const mutation = useMutation({
-    mutationFn: (enabled: boolean) => updateNotificationSettings({ email: { enabled } }),
+    mutationFn: (vars: { type: NotificationType; routing: NotificationTypeRouting }) =>
+      updateNotificationSettings({ matrix: { [vars.type]: vars.routing } }),
     onSuccess: (data: NotificationSettingsResponse) => {
       queryClient.setQueryData(NOTIFICATION_SETTINGS_KEY, data);
     },
   });
+
+  const pendingType = mutation.isPending ? mutation.variables?.type : undefined;
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
         <h2 className="text-lg font-semibold text-neutral-100">Notifications</h2>
         <p className="text-sm text-neutral-500">
-          Choose how BetterTrack notifies you. In-app notifications are always on.
+          Choose how BetterTrack notifies you for each kind of activity — the in-app bell, email,
+          both, or muted.
         </p>
       </div>
 
@@ -305,19 +351,19 @@ export function NotificationSettingsPage() {
         />
       ) : (
         <div className="flex flex-col gap-3">
-          <Toggle
-            label="In-app"
-            description="Notifications in the bell menu. Always on."
-            checked
-            disabled
-          />
-          <Toggle
-            label="Email"
-            description="Get an email for friend requests and shared portfolios."
-            checked={query.data.email.enabled}
-            busy={mutation.isPending}
-            onChange={(next) => mutation.mutate(next)}
-          />
+          {NOTIFICATION_TYPES.map((type) => {
+            const meta = NOTIFICATION_TYPE_META[type];
+            return (
+              <NotificationMatrixRow
+                key={type}
+                label={meta.label}
+                description={meta.description}
+                mode={routingToMode(query.data.matrix[type])}
+                busy={pendingType === type}
+                onChange={(mode) => mutation.mutate({ type, routing: modeToRouting(mode) })}
+              />
+            );
+          })}
           {mutation.isError ? (
             <Alert tone="error">Couldn't save that change. Please try again.</Alert>
           ) : null}

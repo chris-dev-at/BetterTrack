@@ -140,6 +140,34 @@ describe('notificationDispatcher.dispatch', () => {
     expect(await notificationsFor(recipient.id)).toHaveLength(0);
   });
 
+  it('suppresses the in-app row when the type is muted via the matrix config', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+    // Channel stays on globally, but friend.request is routed away from in-app.
+    await db.insert(notificationSettings).values({
+      userId: recipient.id,
+      channel: 'inapp',
+      enabled: true,
+      config: { 'friend.request': false },
+    });
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
+    expect(await notificationsFor(recipient.id, 'friend.request')).toHaveLength(0);
+  });
+
+  it('keeps the in-app row for a type whose in-app override is on, ignoring other types', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+    // Only friend.accepted is muted in-app; friend.request has no override.
+    await db.insert(notificationSettings).values({
+      userId: recipient.id,
+      channel: 'inapp',
+      enabled: true,
+      config: { 'friend.accepted': false },
+    });
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
+    expect(await notificationsFor(recipient.id, 'friend.request')).toHaveLength(1);
+  });
+
   it('start() subscribes so a published event is dispatched end-to-end', async () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
     await dispatcher.start();

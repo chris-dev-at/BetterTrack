@@ -144,6 +144,71 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
     expect(await logFor(recipient.email)).toHaveLength(0);
   });
 
+  it('bell-only: a type muted for email produces only the in-app row, no email', async () => {
+    const recipient = await harness.seedUser({ email: 'bell@bt.test', username: 'bell' });
+    await db.insert(notificationSettings).values({
+      userId: recipient.id,
+      channel: 'email',
+      enabled: true,
+      config: { 'friend.request': false },
+    });
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
+
+    expect(await logFor(recipient.email)).toHaveLength(0);
+    const inapp = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, recipient.id));
+    expect(inapp).toHaveLength(1);
+  });
+
+  it('email-only: a type muted for in-app sends email but writes no in-app row', async () => {
+    const recipient = await harness.seedUser({ email: 'mailonly@bt.test', username: 'mailonly' });
+    await db.insert(notificationSettings).values({
+      userId: recipient.id,
+      channel: 'inapp',
+      enabled: true,
+      config: { 'friend.request': false },
+    });
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
+
+    expect(await logFor(recipient.email)).toHaveLength(1);
+    const inapp = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, recipient.id));
+    expect(inapp).toHaveLength(0);
+  });
+
+  it('muted: a type off on both channels produces neither an in-app row nor an email', async () => {
+    const recipient = await harness.seedUser({ email: 'muted@bt.test', username: 'muted' });
+    await db.insert(notificationSettings).values([
+      {
+        userId: recipient.id,
+        channel: 'inapp',
+        enabled: true,
+        config: { 'friend.request': false },
+      },
+      {
+        userId: recipient.id,
+        channel: 'email',
+        enabled: true,
+        config: { 'friend.request': false },
+      },
+    ]);
+
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
+
+    expect(await logFor(recipient.email)).toHaveLength(0);
+    const inapp = await db
+      .select()
+      .from(notifications)
+      .where(eq(notifications.userId, recipient.id));
+    expect(inapp).toHaveLength(0);
+  });
+
   it('does not re-email a redelivered event (deduped via the in-app row)', async () => {
     const recipient = await harness.seedUser({ email: 'once@bt.test', username: 'once' });
     const event = friendRequestEvent({ userId: recipient.id });

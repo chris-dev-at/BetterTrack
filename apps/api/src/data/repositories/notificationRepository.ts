@@ -82,55 +82,94 @@ export function createNotificationRepository(db: Database) {
     },
 
     /**
-     * The user's `enabled` flag for a channel, or `undefined` when the user has no
-     * row for it — the caller applies the channel's default (in-app is on by
-     * default, §6.10) so dispatch works before the settings write API ships.
+     * Whether a single notification `type` is enabled on a `channel` for the
+     * user — the dispatcher's per-(type, channel) fan-out gate (§6.10 matrix).
+     *
+     * Precedence, in order:
+     *  1. an explicit per-type override in `config` (the matrix cell) wins;
+     *  2. otherwise the row's channel-wide `enabled` flag (legacy/global toggle);
+     *  3. otherwise, with no row at all, the channel default — in-app on, email on.
      */
-    async channelEnabled(
+    async typeChannelEnabled(
       userId: string,
+      type: string,
       channel: NotificationChannel,
-    ): Promise<boolean | undefined> {
+    ): Promise<boolean> {
       const [row] = await db
-        .select({ enabled: notificationSettings.enabled })
+        .select({ enabled: notificationSettings.enabled, config: notificationSettings.config })
         .from(notificationSettings)
         .where(
           and(eq(notificationSettings.userId, userId), eq(notificationSettings.channel, channel)),
         )
         .limit(1);
-      return row?.enabled;
+      // No row → the channel default (both in-app and email default on, §6.10).
+      if (!row) return true;
+      const override = (row.config as Record<string, boolean> | null)?.[type];
+      if (typeof override === 'boolean') return override;
+      return row.enabled;
     },
 
     /**
-     * Every `notification_settings` row for the user as a `channel → enabled`
-     * map. Absent channels fall back to their default in the caller (§6.10) —
-     * this only surfaces explicit rows and is strictly `user_id`-scoped.
+     * The user's per-channel state for building the settings matrix (§6.10): each
+     * channel's `enabled` flag and its per-type `config` override map, or
+     * `undefined` for a channel with no row. Strictly `user_id`-scoped.
      */
-    async settingsForUser(userId: string): Promise<Partial<Record<NotificationChannel, boolean>>> {
+    async channelStatesForUser(
+      userId: string,
+    ): Promise<
+      Partial<Record<NotificationChannel, { enabled: boolean; overrides: Record<string, boolean> }>>
+    > {
       const rows = await db
-        .select({ channel: notificationSettings.channel, enabled: notificationSettings.enabled })
+        .select({
+          channel: notificationSettings.channel,
+          enabled: notificationSettings.enabled,
+          config: notificationSettings.config,
+        })
         .from(notificationSettings)
         .where(eq(notificationSettings.userId, userId));
-      const settings: Partial<Record<NotificationChannel, boolean>> = {};
-      for (const row of rows) settings[row.channel] = row.enabled;
-      return settings;
+      const states: Partial<
+        Record<NotificationChannel, { enabled: boolean; overrides: Record<string, boolean> }>
+      > = {};
+      for (const row of rows) {
+        states[row.channel] = {
+          enabled: row.enabled,
+          overrides: (row.config as Record<string, boolean> | null) ?? {},
+        };
+      }
+      return states;
     },
 
     /**
-     * Set the user's `enabled` flag for a channel, inserting or updating the
-     * `(user_id, channel)` row (composite PK). Scoped to the given user, so it
-     * can never touch another user's settings.
+     * Merge per-type overrides into a channel's `config` jsonb, inserting or
+     * updating the `(user_id, channel)` row (composite PK). Existing overrides for
+     * other types and the row's `enabled` flag are preserved — only the supplied
+     * cells change. Scoped to the given user, so it can never touch another
+     * user's settings. No schema migration: the overrides live in the existing
+     * `config` column.
      */
-    async upsertChannelEnabled(
+    async upsertChannelConfig(
       userId: string,
       channel: NotificationChannel,
-      enabled: boolean,
+      overrides: Record<string, boolean>,
     ): Promise<void> {
+      const [existing] = await db
+        .select({ enabled: notificationSettings.enabled, config: notificationSettings.config })
+        .from(notificationSettings)
+        .where(
+          and(eq(notificationSettings.userId, userId), eq(notificationSettings.channel, channel)),
+        )
+        .limit(1);
+      const enabled = existing?.enabled ?? true;
+      const config = {
+        ...((existing?.config as Record<string, boolean> | null) ?? {}),
+        ...overrides,
+      };
       await db
         .insert(notificationSettings)
-        .values({ userId, channel, enabled })
+        .values({ userId, channel, enabled, config })
         .onConflictDoUpdate({
           target: [notificationSettings.userId, notificationSettings.channel],
-          set: { enabled },
+          set: { enabled, config },
         });
     },
 

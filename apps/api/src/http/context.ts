@@ -48,6 +48,10 @@ import {
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
 import {
+  createNotificationDispatcher,
+  type NotificationDispatcher,
+} from '../services/notifications/notificationDispatcher';
+import {
   createNotificationService,
   type NotificationService,
 } from '../services/notifications/notificationService';
@@ -98,12 +102,21 @@ export interface AppContext {
   social: SocialService;
   /** User-scoped notification read/mark-read — the bell + Settings list (§6.10). */
   notifications: NotificationService;
-  /** Per-user notification channel toggles — Settings → Notifications (§6.10, §6.11). */
+  /** Per-user notification type × channel matrix — Settings → Notifications (§6.10, §6.11). */
   notificationSettings: NotificationSettingsService;
   /**
+   * Notification dispatcher (§6.10, §9): the bus subscriber that turns the social
+   * domain events into in-app rows + emails. Built here and started by the API
+   * bootstrap (`server.ts`) so notifications are produced **in the API process**
+   * that handles the request, rather than depending on the separate worker being
+   * healthy — the #248 fix. Not started by `buildContext` itself, so tests that
+   * only need the HTTP surface don't accrue bus subscriptions.
+   */
+  notificationDispatcher: NotificationDispatcher;
+  /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
-   * dispatcher (worker process) subscribes. Held on the context so the process
-   * can close its Redis pub/sub connections on shutdown.
+   * dispatcher subscribes. Held on the context so the process can close its Redis
+   * pub/sub connections on shutdown.
    */
   events: EventBus;
 }
@@ -301,6 +314,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // default; writes the settings rows the dispatcher reads.
   const notificationSettings = createNotificationSettingsService({ repo: notificationRepo });
 
+  // Notification dispatcher (§6.10, §9): fans the V1 social events out to the
+  // recipient's in-app + email channels, consulting the per-type × channel
+  // matrix. Built with the API's own email + user deps and started by the API
+  // bootstrap so notifications are delivered in-process (the #248 fix — the API
+  // no longer relies on the worker to persist friend-request notifications).
+  const notificationDispatcher = createNotificationDispatcher({
+    bus: events,
+    repo: notificationRepo,
+    email,
+    users: userRepo,
+    logger,
+  });
+
   return {
     config,
     redis,
@@ -319,6 +345,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     social,
     notifications,
     notificationSettings,
+    notificationDispatcher,
     events,
   };
 }

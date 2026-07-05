@@ -11,10 +11,6 @@
  */
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
-import { createAuditRepository } from '../data/repositories/auditRepository';
-import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
-import { createNotificationRepository } from '../data/repositories/notificationRepository';
-import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
   createDeadLetter,
@@ -27,10 +23,6 @@ import {
 } from '../jobs';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
-import { createAuditService } from '../services/audit/auditService';
-import { createEmailService } from '../services/email/emailService';
-import { createSmtpTransport } from '../services/email/transport';
-import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -77,28 +69,9 @@ const running = createJobWorkers({
   logger,
 });
 
-// Email channel (§6.10): the worker owns its own SMTP transport + email service
-// so the dispatcher can send notification emails and write `email_log` rows.
-const emailTransport = config.email.enabled ? createSmtpTransport(config.email) : null;
-const email = createEmailService({
-  config,
-  logger,
-  audit: createAuditService(createAuditRepository(db)),
-  emailLog: createEmailLogRepository(db),
-  transport: emailTransport,
-});
-
-// Notification dispatcher (§9, §6.10): a pure bus subscriber that fans the V1
-// social domain events out to the recipient's in-app + email channels. It shares
-// the worker's event bus and reads/writes Postgres through the same connection.
-const notificationDispatcher = createNotificationDispatcher({
-  bus: events,
-  repo: createNotificationRepository(db),
-  email,
-  users: createUserRepository(db),
-  logger,
-});
-await notificationDispatcher.start();
+// Notification fan-out (§9, §6.10) is owned by the API process — its dispatcher
+// subscribes to the same Redis pub/sub bus, so the worker no longer runs one (a
+// single owner avoids double-dispatch; see server.ts / http/context.ts).
 
 const scheduled = await registerSchedules(registry, definitions);
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
@@ -110,7 +83,6 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'worker shutting down');
   try {
     await running.close();
-    await notificationDispatcher.stop();
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await marketData.settled();
