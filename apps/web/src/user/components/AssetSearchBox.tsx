@@ -404,7 +404,10 @@ function ResultRow({
         <WatchlistControl item={item} status={wbStatus} onAdd={onWorkboard} />
 
         <div className="relative" ref={conglomerateRef}>
-          <ActionButton onClick={onConglomerate} aria-label={`Add ${item.symbol} to a Conglomerate`}>
+          <ActionButton
+            onClick={onConglomerate}
+            aria-label={`Add ${item.symbol} to a Conglomerate`}
+          >
             → Conglomerate
           </ActionButton>
 
