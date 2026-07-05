@@ -15,9 +15,14 @@ vi.mock('../../lib/portfolioApi', () => ({
   deleteTransaction: vi.fn(),
   createTransactions: vi.fn(),
   updateTransaction: vi.fn(),
+  updatePortfolio: vi.fn(),
   createCustomAsset: vi.fn(),
   getValuePoints: vi.fn(),
   putValuePoints: vi.fn(),
+  getCashMovements: vi.fn(),
+  depositCash: vi.fn(),
+  withdrawCash: vi.fn(),
+  previewCash: vi.fn(),
 }));
 
 vi.mock('../../lib/searchApi', () => ({ searchAssets: vi.fn() }));
@@ -70,11 +75,14 @@ vi.mock('recharts', async (importOriginal) => {
 
 import {
   deleteTransaction,
+  depositCash,
   getPortfolio,
   getPortfolioHistory,
   getValuePoints,
   listPortfolios,
   listTransactions,
+  previewCash,
+  withdrawCash,
 } from '../../lib/portfolioApi';
 import { PortfolioPage } from './PortfolioPage';
 
@@ -146,7 +154,7 @@ const TOTALS = {
   unrealizedPnlPct: 6.8,
   dayChangeEur: 9,
   dayChangePct: 0.003,
-  cashEur: 0,
+  cashEur: 5000,
 };
 
 const PORTFOLIO = { baseCurrency: 'EUR' as const, holdings: [STOCK, HOUSE], totals: TOTALS };
@@ -227,6 +235,12 @@ beforeEach(() => {
   vi.mocked(listTransactions).mockResolvedValue(TXNS);
   vi.mocked(deleteTransaction).mockResolvedValue(undefined);
   vi.mocked(getValuePoints).mockResolvedValue({ points: [] });
+  vi.mocked(previewCash).mockResolvedValue({
+    availableEur: 5000,
+    afterEur: 4000,
+    sufficient: true,
+    shortfallEur: 0,
+  });
 });
 
 // ─── Empty / error ──────────────────────────────────────────────────────────
@@ -294,6 +308,71 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
     // The by-type donut groups the custom asset under "Custom".
     expect(screen.getByText('Custom')).toBeInTheDocument();
     expect(screen.getByText('Stocks')).toBeInTheDocument();
+  });
+});
+
+// ─── Cash balance ("Bargeld", §14, #220) ───────────────────────────────────────
+
+describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('shows cash as a first-class line in the totals', async () => {
+    renderPage();
+    const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
+    expect(within(totals).getByText('Cash')).toBeInTheDocument();
+    expect(within(totals).getByText('5.000,00 €')).toBeInTheDocument();
+  });
+
+  test('depositing cash calls the API and refreshes the totals', async () => {
+    vi.mocked(depositCash).mockResolvedValue({
+      movement: {
+        id: 'm1',
+        kind: 'deposit',
+        amountEur: 1000,
+        transactionId: null,
+        executedAt: '2024-06-01T00:00:00.000Z',
+        note: null,
+        createdAt: '2024-06-01T00:00:00.000Z',
+      },
+      balanceEur: 6000,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
+
+    await user.click(within(totals).getByRole('button', { name: '+ Deposit' }));
+    const dialog = screen.getByRole('dialog', { name: 'Cash balance' });
+    await user.type(within(dialog).getByLabelText('Amount'), '1000');
+    await user.click(within(dialog).getByRole('button', { name: 'Deposit cash' }));
+
+    await waitFor(() =>
+      expect(vi.mocked(depositCash)).toHaveBeenCalledWith(
+        DEFAULT_PORTFOLIO_ID,
+        expect.objectContaining({ amountEur: 1000 }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  test('withdrawing more than available is blocked with the insufficient-cash message', async () => {
+    vi.mocked(previewCash).mockResolvedValue({
+      availableEur: 5000,
+      afterEur: -1000,
+      sufficient: false,
+      shortfallEur: 1000,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
+
+    await user.click(within(totals).getByRole('button', { name: '− Withdraw' }));
+    const dialog = screen.getByRole('dialog', { name: 'Cash balance' });
+    await user.type(within(dialog).getByLabelText('Amount'), '6000');
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Withdraw cash' })).toBeDisabled(),
+    );
+    expect(vi.mocked(withdrawCash)).not.toHaveBeenCalled();
   });
 });
 
