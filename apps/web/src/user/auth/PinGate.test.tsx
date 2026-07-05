@@ -158,7 +158,10 @@ test('AFK auto-lock re-shows the PIN after the idle timeout', async () => {
   await flush();
   expect(screen.getByText('Enter your PIN')).toBeInTheDocument();
 
-  fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '4242' } });
+  fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '4' } });
+  fireEvent.change(screen.getByLabelText('PIN digit 2'), { target: { value: '2' } });
+  fireEvent.change(screen.getByLabelText('PIN digit 3'), { target: { value: '4' } });
+  fireEvent.change(screen.getByLabelText('PIN digit 4'), { target: { value: '2' } });
   fireEvent.click(screen.getByRole('button', { name: 'Unlock' }));
   await flush();
   expect(screen.getByRole('button', { name: 'Account menu' })).toBeInTheDocument();

@@ -9,7 +9,8 @@ import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
 import { disablePin, getMe, getSession, setPin, setPinLockIdleMinutes } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, cx, TextField } from '../components/ui';
+import { PinInput } from '../components/PinInput';
+import { Alert, Button, cx } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
@@ -84,36 +85,21 @@ function PinForm({
     mutation.mutate({ pin });
   }
 
+  const tooShort = pin.length < MIN_PIN_LENGTH || confirm.length < MIN_PIN_LENGTH;
+
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {error ? <Alert tone="error">{error}</Alert> : null}
-      <TextField
+      <PinInput
         label="PIN"
-        name="pin"
-        type="password"
-        inputMode="numeric"
-        autoComplete="off"
+        length={MAX_PIN_LENGTH}
         value={pin}
-        onChange={(e) => setPinValue(e.target.value)}
-        minLength={MIN_PIN_LENGTH}
-        maxLength={MAX_PIN_LENGTH}
-        required
+        onChange={setPinValue}
         hint={`${MIN_PIN_LENGTH}–${MAX_PIN_LENGTH} digits.`}
       />
-      <TextField
-        label="Confirm PIN"
-        name="confirmPin"
-        type="password"
-        inputMode="numeric"
-        autoComplete="off"
-        value={confirm}
-        onChange={(e) => setConfirm(e.target.value)}
-        minLength={MIN_PIN_LENGTH}
-        maxLength={MAX_PIN_LENGTH}
-        required
-      />
+      <PinInput label="Confirm PIN" length={MAX_PIN_LENGTH} value={confirm} onChange={setConfirm} />
       <div>
-        <Button type="submit" disabled={mutation.isPending}>
+        <Button type="submit" disabled={mutation.isPending || tooShort}>
           {mutation.isPending ? 'Saving…' : submitLabel}
         </Button>
       </div>
