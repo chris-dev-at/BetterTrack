@@ -1,4 +1,4 @@
-import { count, eq, gte, ilike, or, sql } from 'drizzle-orm';
+import { count, eq, gte, ilike, inArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { users, type UserRow } from '../schema';
@@ -82,6 +82,28 @@ export function createUserRepository(db: Database) {
 
     async setStatus(id: string, status: 'active' | 'disabled'): Promise<void> {
       await db.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, id));
+    },
+
+    /** Bulk status change for the admin list's bulk actions (§6.12, §13.2). */
+    async setStatusMany(ids: string[], status: 'active' | 'disabled'): Promise<void> {
+      if (ids.length === 0) return;
+      await db.update(users).set({ status, updatedAt: new Date() }).where(inArray(users.id, ids));
+    },
+
+    /** Change the email (normalised to lowercase); caller enforces uniqueness. */
+    async updateEmail(id: string, email: string): Promise<void> {
+      await db
+        .update(users)
+        .set({ email: email.trim().toLowerCase(), updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
+    /** Change the username (trimmed, case preserved); caller enforces uniqueness. */
+    async updateUsername(id: string, username: string): Promise<void> {
+      await db
+        .update(users)
+        .set({ username: username.trim(), updatedAt: new Date() })
+        .where(eq(users.id, id));
     },
 
     /** Enable or change the PIN (§6.1): store the argon2id hash and flip on the flag. */

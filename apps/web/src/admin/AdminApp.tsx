@@ -7,6 +7,7 @@ import { EmailPage } from './pages/EmailPage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { UserDetailPage } from './pages/UserDetailPage';
 import { UsersPage } from './pages/UsersPage';
 
 /**
@@ -22,6 +23,7 @@ export function AdminApp() {
         <Route element={<AdminLayout />}>
           <Route index element={<Navigate to="users" replace />} />
           <Route path="users" element={<UsersPage />} />
+          <Route path="users/:userId" element={<UserDetailPage />} />
           <Route path="invites" element={<InvitesPage />} />
           <Route path="email" element={<EmailPage />} />
           <Route path="audit" element={<AuditPage />} />

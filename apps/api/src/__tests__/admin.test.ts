@@ -366,3 +366,124 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
     expect(demote.body.role).toBe('user');
   });
 });
+
+describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
+  async function seedUser(
+    adminAgent: ReturnType<typeof request.agent>,
+    email: string,
+    username: string,
+  ) {
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email, username });
+    return created.body.user.id as string;
+  }
+
+  it('persists a username change and writes an audit entry', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const userId = await seedUser(adminAgent, 'rename@test.dev', 'rename_me');
+
+    const patched = await adminAgent
+      .patch(`/api/v1/admin/users/${userId}`)
+      .set(...XRW)
+      .send({ username: 'renamed_user' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.username).toBe('renamed_user');
+
+    const audit = await adminAgent.get(`/api/v1/admin/users/${userId}/audit`);
+    expect(audit.status).toBe(200);
+    const actions = (audit.body.entries as Array<{ action: string }>).map((e) => e.action);
+    expect(actions).toContain('user.username_changed');
+  });
+
+  it('persists an email change (normalised) and writes an audit entry', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const userId = await seedUser(adminAgent, 'oldmail@test.dev', 'mail_user');
+
+    const patched = await adminAgent
+      .patch(`/api/v1/admin/users/${userId}`)
+      .set(...XRW)
+      .send({ email: 'NewMail@Test.dev' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.email).toBe('newmail@test.dev');
+
+    const audit = await adminAgent.get(`/api/v1/admin/users/${userId}/audit`);
+    const actions = (audit.body.entries as Array<{ action: string }>).map((e) => e.action);
+    expect(actions).toContain('user.email_changed');
+  });
+
+  it('rejects a duplicate username or email cleanly (409)', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    await seedUser(adminAgent, 'first@test.dev', 'first_user');
+    const secondId = await seedUser(adminAgent, 'second@test.dev', 'second_user');
+
+    const dupUsername = await adminAgent
+      .patch(`/api/v1/admin/users/${secondId}`)
+      .set(...XRW)
+      .send({ username: 'first_user' });
+    expect(dupUsername.status).toBe(409);
+    expect(dupUsername.body.error.code).toBe('USERNAME_TAKEN');
+
+    const dupEmail = await adminAgent
+      .patch(`/api/v1/admin/users/${secondId}`)
+      .set(...XRW)
+      .send({ email: 'first@test.dev' });
+    expect(dupEmail.status).toBe(409);
+    expect(dupEmail.body.error.code).toBe('EMAIL_TAKEN');
+  });
+});
+
+describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
+  it('bulk-disables a set of users and kills their sessions', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+
+    const a = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'bulk-a@test.dev', username: 'bulk_a' });
+    const b = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'bulk-b@test.dev', username: 'bulk_b' });
+    const idA = a.body.user.id as string;
+    const idB = b.body.user.id as string;
+
+    const bulk = await adminAgent
+      .post('/api/v1/admin/users/bulk')
+      .set(...XRW)
+      .send({ action: 'disable', userIds: [idA, idB] });
+    expect(bulk.status).toBe(200);
+    expect(bulk.body).toEqual({ action: 'disable', disabled: 2, skipped: 0 });
+
+    const users = await adminAgent.get('/api/v1/admin/users');
+    const byId = new Map(
+      (users.body.users as Array<{ id: string; status: string }>).map((u) => [u.id, u.status]),
+    );
+    expect(byId.get(idA)).toBe('disabled');
+    expect(byId.get(idB)).toBe('disabled');
+  });
+
+  it('skips the actor and already-disabled users instead of failing the batch', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'skip@test.dev', username: 'skip_user' });
+    const userId = created.body.user.id as string;
+
+    const bulk = await adminAgent
+      .post('/api/v1/admin/users/bulk')
+      .set(...XRW)
+      .send({ action: 'disable', userIds: [userId, admin.id, userId] });
+    expect(bulk.status).toBe(200);
+    // The user disabled once; the actor and the duplicate id skipped.
+    expect(bulk.body.disabled).toBe(1);
+    expect(bulk.body.skipped).toBe(1);
+  });
+});

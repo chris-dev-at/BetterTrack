@@ -1,4 +1,4 @@
-import { desc, lt } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { auditLog, type AuditLogRow } from '../schema';
@@ -34,6 +34,28 @@ export function createAuditRepository(db: Database) {
         .select()
         .from(auditLog)
         .where(params.cursor ? lt(auditLog.id, params.cursor) : undefined)
+        .orderBy(desc(auditLog.id))
+        .limit(params.limit + 1);
+
+      const hasMore = rows.length > params.limit;
+      const entries = hasMore ? rows.slice(0, params.limit) : rows;
+      return { entries, nextCursor: hasMore ? (entries.at(-1)?.id ?? null) : null };
+    },
+
+    /** Entries whose target is a given id (e.g. one user's history), newest-first. */
+    async listForTarget(params: { targetId: string; limit: number; cursor?: string }): Promise<{
+      entries: AuditLogRow[];
+      nextCursor: string | null;
+    }> {
+      const conditions = [
+        eq(auditLog.targetId, params.targetId),
+        params.cursor ? lt(auditLog.id, params.cursor) : undefined,
+      ].filter(Boolean);
+
+      const rows = await db
+        .select()
+        .from(auditLog)
+        .where(and(...conditions))
         .orderBy(desc(auditLog.id))
         .limit(params.limit + 1);
 

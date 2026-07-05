@@ -3,6 +3,7 @@ import { Router, type Request } from 'express';
 import {
   adminUserListQuerySchema,
   auditQuerySchema,
+  bulkUserActionRequestSchema,
   createInviteRequestSchema,
   createUserRequestSchema,
   deleteUserRequestSchema,
@@ -12,6 +13,7 @@ import {
   updateAppSettingsRequestSchema,
   updateUserRequestSchema,
   type AuditQuery,
+  type BulkUserActionRequest,
   type CreateInviteRequest,
   type CreateUserRequest,
   type DeleteUserRequest,
@@ -51,6 +53,16 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     const { search } = (req.valid?.query ?? {}) as { search?: string };
     const users = await ctx.admin.listUsers(search);
     res.json({ users: users.map(toAdminUser) });
+  });
+
+  // Bulk actions from the slimmed user list (§6.12, §13.2). Registered before
+  // the `/users/:id` routes so `bulk` is never read as an id.
+  router.post('/users/bulk', validateBody(bulkUserActionRequestSchema), async (req, res) => {
+    const result = await ctx.admin.bulkUserAction(
+      req.valid?.body as BulkUserActionRequest,
+      actorOf(req),
+    );
+    res.json(result);
   });
 
   router.post('/users', validateBody(createUserRequestSchema), async (req, res) => {
@@ -173,6 +185,23 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
         cursor: query.cursor,
       });
       res.json({ entries: entries.map(toEmailLogEntry), nextCursor });
+    },
+  );
+
+  // Per-user audit history (§6.12): the same shape as the global audit log,
+  // scoped to entries targeting this user.
+  router.get(
+    '/users/:id/audit',
+    validateParams(idParamSchema),
+    validateQuery(auditQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const query = req.valid?.query as AuditQuery;
+      const { entries, nextCursor } = await ctx.admin.listUserAudit(id, {
+        limit: query.limit,
+        cursor: query.cursor,
+      });
+      res.json({ entries: entries.map(toAuditEntry), nextCursor });
     },
   );
 
