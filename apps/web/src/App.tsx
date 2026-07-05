@@ -5,21 +5,34 @@ import { getRuntimeConfig } from './lib/runtimeConfig';
 import { UserApp } from './user/UserApp';
 
 /**
- * Top-level routing: the separate admin world under `/admin/*` (its own auth +
- * layout, §6.12) and the normal app everywhere else (§7.2). Each subtree mounts
- * its own AuthProvider, so only one auth-response policy is ever active.
+ * Top-level routing: admin and user are two fully separate systems (§3, §4.6),
+ * and which one mounts is decided **only** by the per-origin runtime config
+ * (`app: "admin"` is injected by the admin origin's nginx block, §7.1) — never
+ * by URL. Each app mounts its own AuthProvider, so only one auth-response policy
+ * is ever active.
  *
- * When served from the admin origin (runtime config `app: "admin"`, §7.1), the
- * root path redirects into `/admin` so that origin lands on the admin world;
- * every other origin defaults to the user app.
+ * On the admin origin the admin world is served under `/admin/*` and the root
+ * redirects into it; the user app is never referenced, so it cannot be reached.
+ * On every other (user) origin the admin app is not part of the route tree at
+ * all — `/admin/*` resolves through the user app's own not-found handling, so
+ * navigating to `/admin` can never mount the admin world by URL alone (#248).
+ * The API's kind-disjoint session guards back this at the endpoint layer.
  */
 export default function App() {
-  const isAdminOrigin = getRuntimeConfig().app === 'admin';
+  if (getRuntimeConfig().app === 'admin') {
+    return (
+      <BrowserRouter>
+        <Routes>
+          <Route path="/admin/*" element={<AdminApp />} />
+          <Route path="/*" element={<Navigate to="/admin" replace />} />
+        </Routes>
+      </BrowserRouter>
+    );
+  }
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/admin/*" element={<AdminApp />} />
-        <Route path="/*" element={isAdminOrigin ? <Navigate to="/admin" replace /> : <UserApp />} />
+        <Route path="/*" element={<UserApp />} />
       </Routes>
     </BrowserRouter>
   );
