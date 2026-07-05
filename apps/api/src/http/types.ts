@@ -22,12 +22,15 @@ declare global {
       sessionId?: string;
       authUser?: AuthUser;
       /**
-       * Set when the request authenticated via an `Authorization: Bearer btk_…`
-       * personal API key instead of the session cookie (§6.13, V2-P12). Its
-       * presence means: skip CSRF (no cookies), enforce the key's scopes, and
-       * rate-limit per key id. Mutually exclusive with cookie-session auth.
+       * Set when the request authenticated via an `Authorization: Bearer` token
+       * instead of the session cookie (§6.13, V2-P12) — either a personal API
+       * key (`btk_…`, `kind: 'personal'`) or a delegated OAuth access token
+       * (`bto_…`, `kind: 'oauth'`, `id` is the grant id). Its presence means:
+       * skip CSRF (no cookies), enforce the token's scopes, and rate-limit per
+       * token/grant id. Mutually exclusive with cookie-session auth. Both kinds
+       * ride the exact same scope-enforcement rail.
        */
-      apiKey?: { id: string; scopes: string[] };
+      apiKey?: { id: string; scopes: string[]; kind: 'personal' | 'oauth' };
       /** Parsed, schema-validated inputs (Express 5 `req.query` is read-only). */
       valid?: { body?: unknown; query?: unknown; params?: unknown };
     }

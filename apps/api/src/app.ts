@@ -17,6 +17,7 @@ import { createBacktestRouter } from './http/routes/backtestRoutes';
 import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
 import { createNotificationsRouter } from './http/routes/notificationsRoutes';
+import { createOAuthPublicRouter, createOAuthRouter } from './http/routes/oauthRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
@@ -62,6 +63,11 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', loadSession(ctx));
   app.use('/api/v1', limiters.general);
   app.use('/api/v1', limiters.apiKey);
+  // The OAuth token endpoint is machine-to-machine (a partner backend, no cookie
+  // and no bearer): mount it BEFORE the CSRF guard so it stays public, but AFTER
+  // the general limiter so it is still rate-limited (by IP for anonymous callers).
+  // Non-`/token` paths fall through to the session chain + the consent router.
+  app.use('/api/v1/oauth', createOAuthPublicRouter(ctx));
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
   app.use('/api/v1', enforceApiKeyScope(ctx));
@@ -79,6 +85,9 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
   app.use('/api/v1/settings', createSettingsRouter(ctx));
+  // Session-authenticated OAuth consent endpoints (authorize + authorization-
+  // details). The public /oauth/token router above already handled its path.
+  app.use('/api/v1/oauth', createOAuthRouter(ctx));
 
   app.use(createErrorHandler(ctx.logger));
   return app;

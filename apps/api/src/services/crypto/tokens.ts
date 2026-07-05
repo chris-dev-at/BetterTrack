@@ -12,3 +12,11 @@ export function generateToken(): { token: string; tokenHash: string } {
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
+
+/**
+ * SHA-256 of a value, base64url-encoded — the PKCE `S256` transform (RFC 7636):
+ * `code_challenge == base64url(sha256(code_verifier))`.
+ */
+export function sha256Base64Url(value: string): string {
+  return createHash('sha256').update(value).digest('base64url');
+}

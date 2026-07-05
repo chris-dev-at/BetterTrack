@@ -25,6 +25,7 @@ import {
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
 import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
+import { ConsentPage } from './oauth/ConsentPage';
 import { SearchPage } from './assets/SearchPage';
 import { AssetDetailPage } from './assets/AssetDetailPage';
 import {
@@ -86,6 +87,12 @@ function UserShell() {
       <Route path="reset/:token" element={<ResetPasswordPage />} />
       <Route path="invite/:token" element={<InvitePage />} />
       <Route element={<RequireUser />}>
+        {/* OAuth consent (§6.13 part 2) — a full-screen, standalone card outside
+            the AppLayout chrome. Sitting under RequireUser gives login-then-
+            consent for free: an anonymous visit is bounced to /login with the
+            full `/oauth/authorize?…` URL (path + query) preserved, so the user
+            lands back here with state + PKCE intact after signing in. */}
+        <Route path="oauth/authorize" element={<ConsentPage />} />
         {/* The Conglomerate Builder is a full-screen surface (§6.5) — it sits
             outside the AppLayout chrome/subnav rather than inside the Workboard
             section. Both `/new` and `/:id/edit` render the same Builder. */}

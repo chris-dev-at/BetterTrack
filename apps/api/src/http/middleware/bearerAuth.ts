@@ -8,13 +8,15 @@ const BEARER_PREFIX = 'Bearer ';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
- * Personal API key bearer auth (PROJECTPLAN.md §6.13, §14, V2-P12). Mounted
- * first in the `/api/v1` chain: when the request carries an
- * `Authorization: Bearer btk_…` header it authenticates the key's owner and
- * attaches `req.authUser` + `req.apiKey`, so cookie-session middleware
- * downstream stands down (it early-returns when `req.apiKey` is set). A
- * malformed / unknown / **revoked** key is a hard `401` — no fallthrough to
- * anonymous, since the caller clearly intended to authenticate.
+ * Bearer auth for personal API keys AND delegated OAuth access tokens
+ * (PROJECTPLAN.md §6.13, §14, V2-P12). Mounted first in the `/api/v1` chain:
+ * when the request carries an `Authorization: Bearer …` header it resolves the
+ * token — a personal key (`btk_…`) or an OAuth access token (`bto_…`) — to its
+ * owning user and attaches `req.authUser` + `req.apiKey`, so cookie-session
+ * middleware downstream stands down (it early-returns when `req.apiKey` is set).
+ * A malformed / unknown / **revoked** token is a hard `401` — no fallthrough to
+ * anonymous, since the caller clearly intended to authenticate. Both token kinds
+ * enforce the same coarse scopes and are equally barred from admin endpoints.
  *
  * Requests with no bearer header pass straight through untouched, leaving the
  * session cookie path unchanged.
@@ -28,14 +30,21 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
         return;
       }
       const token = header.slice(BEARER_PREFIX.length).trim();
-      const principal = await ctx.apiKeys.authenticate(token);
-      if (!principal) {
-        next(unauthorized('Invalid or revoked API key.', 'API_KEY_INVALID'));
+      const keyPrincipal = await ctx.apiKeys.authenticate(token);
+      if (keyPrincipal) {
+        req.authUser = toAuthUser(keyPrincipal.user);
+        req.apiKey = { id: keyPrincipal.keyId, scopes: keyPrincipal.scopes, kind: 'personal' };
+        next();
         return;
       }
-      req.authUser = toAuthUser(principal.user);
-      req.apiKey = { id: principal.keyId, scopes: principal.scopes };
-      next();
+      const oauthPrincipal = await ctx.oauth.authenticateToken(token);
+      if (oauthPrincipal) {
+        req.authUser = toAuthUser(oauthPrincipal.user);
+        req.apiKey = { id: oauthPrincipal.grantId, scopes: oauthPrincipal.scopes, kind: 'oauth' };
+        next();
+        return;
+      }
+      next(unauthorized('Invalid or revoked access token.', 'API_KEY_INVALID'));
     } catch (err) {
       next(err);
     }
@@ -73,11 +82,22 @@ function resolvePolicy(path: string): PathPolicy {
   // Admin is never reachable by API key regardless of scopes (account-kind
   // separation, §6.12) — 404 to disclose nothing.
   if (path === '/admin' || path.startsWith('/admin/')) return { kind: 'admin' };
-  // Key management + session lifecycle are cookie-session only: an API key must
-  // not mint/list/revoke keys or touch the session (no privilege escalation).
+  // Key management + session lifecycle are cookie-session only: a delegated
+  // token must not mint/list/revoke keys, register OAuth apps, manage grants, or
+  // touch the session (no privilege escalation). Checked before the `/settings`
+  // module policy below, which would otherwise grant these to a social scope.
   if (path === '/settings/api-keys' || path.startsWith('/settings/api-keys/')) {
     return { kind: 'session-only' };
   }
+  if (path === '/settings/oauth-clients' || path.startsWith('/settings/oauth-clients/')) {
+    return { kind: 'session-only' };
+  }
+  if (path === '/settings/oauth-grants' || path.startsWith('/settings/oauth-grants/')) {
+    return { kind: 'session-only' };
+  }
+  // The OAuth authorize/consent + token endpoints are never reachable with a
+  // bearer token — consent is a cookie-session page, token exchange is public.
+  if (path === '/oauth' || path.startsWith('/oauth/')) return { kind: 'session-only' };
   if (path === '/auth' || path.startsWith('/auth/')) return { kind: 'session-only' };
   if (path === '/health' || path.startsWith('/health')) return { kind: 'allow' };
   for (const p of MODULE_POLICIES) {
@@ -130,12 +150,15 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
 }
 
 function denyScope(ctx: AppContext, req: Request, requiredScope: string): Promise<void> {
-  return ctx.apiKeys.recordScopeDenied({
+  const common = {
     userId: req.authUser!.id,
-    keyId: req.apiKey!.id,
     requiredScope,
     method: req.method,
     path: req.path,
     ip: req.ip ?? null,
-  });
+  };
+  if (req.apiKey!.kind === 'oauth') {
+    return ctx.oauth.recordScopeDenied({ ...common, grantId: req.apiKey!.id });
+  }
+  return ctx.apiKeys.recordScopeDenied({ ...common, keyId: req.apiKey!.id });
 }

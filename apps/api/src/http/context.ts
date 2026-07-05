@@ -4,6 +4,7 @@ import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
+import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
@@ -35,6 +36,7 @@ import {
 } from '../services/account/accountSettingsService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
+import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
@@ -91,6 +93,8 @@ export interface AppContext {
   admin: AdminService;
   /** Personal API keys — issuance, listing, revocation + bearer resolution (§6.13, V2-P12). */
   apiKeys: ApiKeyService;
+  /** OAuth 2.0 provider — app registration, authorize/consent, token exchange, grants (§6.13, V2-P12). */
+  oauth: OAuthService;
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
   marketData: MarketDataService;
@@ -166,6 +170,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // resolution for the auth middleware. Owns only issuance + audit; scope
   // enforcement lives in the HTTP layer.
   const apiKeys = createApiKeyService({ repo: createApiKeyRepository(db), audit, redis });
+
+  // OAuth 2.0 provider (§6.13, V2-P12): app registration, authorize/consent +
+  // token exchange, grant management, and access-token resolution for the bearer
+  // middleware. Reuses the personal-key scope taxonomy + audit patterns.
+  const oauth = createOAuthService({ repo: createOAuthRepository(db), audit, redis });
   const passwordHasher = deps.passwordHasher ?? createPasswordHasher();
 
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
@@ -369,6 +378,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     twoFactor,
     admin,
     apiKeys,
+    oauth,
     workboard,
     marketData,
     assets,
