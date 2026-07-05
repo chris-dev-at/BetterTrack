@@ -364,13 +364,18 @@ pnpm test:e2e
 One spec (`e2e/happy-path.spec.ts`) drives the real app in two browser
 contexts: invite → login → local search → watch → build a conglomerate →
 allocate → add to portfolio → enable friend sharing → a second account
-accepts the request and sees the shared portfolio. `playwright.config.ts`
-boots the real api + web dev servers (migrating and seeding the api's
-database first) against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at
-(defaults match `pnpm dev:infra`). It runs against two Playwright projects —
-`chromium` (`Desktop Chrome`) and `mobile-chromium` (`Pixel 7`, 412×839) — so
-the happy path is proven on a phone-width viewport as well as desktop. This is
-**not** part of `pnpm test` or the per-commit CI gate — it runs nightly via
+accepts the request and sees the shared portfolio — extended with the V2
+flows (§13.2 V2-P11): a 1-char ticker search watched from the asset detail
+page (appearing on the watchlist with no manual reload), a cash-funded buy
+(deposit → pay-from-cash preview → reconciled cash line), creating and
+switching to a second portfolio, and sharing a watchlist to a friend who sees
+it read-only under Shared With Me. `playwright.config.ts` boots the real
+api + web dev servers (migrating and seeding the api's database first)
+against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at (defaults match
+`pnpm dev:infra`). It runs against two Playwright projects — `chromium`
+(`Desktop Chrome`) and `mobile-chromium` (`Pixel 7`, 412×839) — so the happy
+path is proven on a phone-width viewport as well as desktop. This is **not**
+part of `pnpm test` or the per-commit CI gate — it runs nightly via
 `.github/workflows/e2e-nightly.yml` (also triggerable manually).
 
 ## How the layers stay in sync
