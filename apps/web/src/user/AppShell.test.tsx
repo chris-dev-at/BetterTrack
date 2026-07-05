@@ -33,6 +33,7 @@ const member: MeResponse = {
   status: 'active',
   mustChangePassword: false,
   pinEnabled: false,
+  pinLockIdleMinutes: null,
   baseCurrency: 'EUR',
   lastLoginAt: null,
   createdAt: '2026-01-01T00:00:00.000Z',

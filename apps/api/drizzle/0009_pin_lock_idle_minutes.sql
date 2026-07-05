@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "pin_lock_idle_minutes" integer;

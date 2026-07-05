@@ -100,6 +100,14 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
+    /** Set the AFK auto-lock idle timeout in minutes; `null` = off (§6.1, §13.2). */
+    async setPinLockIdleMinutes(id: string, minutes: number | null): Promise<void> {
+      await db
+        .update(users)
+        .set({ pinLockIdleMinutes: minutes, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
     async setRole(id: string, role: 'user' | 'admin'): Promise<void> {
       await db.update(users).set({ role, updatedAt: new Date() }).where(eq(users.id, id));
     },

@@ -196,6 +196,51 @@ describe('PIN gate (PROJECTPLAN.md §6.1, §8)', () => {
     expect(verify.body.error.code).toBe('PIN_NOT_ENABLED');
   });
 
+  it('sets and clears the AFK auto-lock idle timeout, reflected in /auth/me', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(user.email, user.password);
+
+    // Default: off.
+    const before = await agent.get('/api/v1/auth/me');
+    expect(meResponseSchema.parse(before.body).pinLockIdleMinutes).toBeNull();
+
+    const set = await agent
+      .put('/api/v1/auth/pin/idle-timeout')
+      .set(...XRW)
+      .send({ idleMinutes: 15 });
+    expect(set.status).toBe(200);
+    expect(meResponseSchema.parse(set.body).pinLockIdleMinutes).toBe(15);
+
+    // Persisted: a fresh /auth/me still reports it.
+    const after = await agent.get('/api/v1/auth/me');
+    expect(meResponseSchema.parse(after.body).pinLockIdleMinutes).toBe(15);
+
+    // Null turns it back off.
+    const cleared = await agent
+      .put('/api/v1/auth/pin/idle-timeout')
+      .set(...XRW)
+      .send({ idleMinutes: null });
+    expect(cleared.status).toBe(200);
+    expect(meResponseSchema.parse(cleared.body).pinLockIdleMinutes).toBeNull();
+  });
+
+  it('rejects an out-of-range AFK idle timeout at the contract boundary', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(user.email, user.password);
+
+    const zero = await agent
+      .put('/api/v1/auth/pin/idle-timeout')
+      .set(...XRW)
+      .send({ idleMinutes: 0 });
+    expect(zero.status).toBe(400);
+
+    const tooLong = await agent
+      .put('/api/v1/auth/pin/idle-timeout')
+      .set(...XRW)
+      .send({ idleMinutes: 100_000 });
+    expect(tooLong.status).toBe(400);
+  });
+
   it('requires a session to touch any PIN endpoint', async () => {
     const anon = request(harness.app);
     expect(
@@ -215,6 +260,14 @@ describe('PIN gate (PROJECTPLAN.md §6.1, §8)', () => {
       ).status,
     ).toBe(401);
     expect((await anon.delete('/api/v1/auth/pin').set(...XRW)).status).toBe(401);
+    expect(
+      (
+        await anon
+          .put('/api/v1/auth/pin/idle-timeout')
+          .set(...XRW)
+          .send({ idleMinutes: 5 })
+      ).status,
+    ).toBe(401);
   });
 });
 

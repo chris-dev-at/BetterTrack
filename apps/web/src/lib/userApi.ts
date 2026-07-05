@@ -9,6 +9,7 @@ import {
   type MeResponse,
   type PinVerifyRequest,
   type SessionInfoResponse,
+  type SetPinLockRequest,
   type SetPinRequest,
 } from '@bettertrack/contracts';
 
@@ -85,6 +86,16 @@ export async function setPin(body: SetPinRequest): Promise<MeResponse> {
 /** Disable the PIN (§6.1). */
 export async function disablePin(): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/pin', { method: 'DELETE' });
+  return meResponseSchema.parse(data);
+}
+
+/**
+ * Set (or clear with `null`) the AFK auto-lock idle timeout in minutes (§6.1,
+ * §13.2 V2-P2). A UI-lock preference layered on the PIN — never touches the
+ * session lifetime.
+ */
+export async function setPinLockIdleMinutes(body: SetPinLockRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/pin/idle-timeout', { method: 'PUT', body });
   return meResponseSchema.parse(data);
 }
 

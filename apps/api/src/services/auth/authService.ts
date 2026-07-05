@@ -91,6 +91,16 @@ export interface AuthService {
   /** Turn the PIN gate off (§6.1). */
   disablePin(userId: string, ip?: string | null): Promise<UserRow>;
   /**
+   * Set the AFK auto-lock idle timeout in minutes; `null` turns it off (§6.1,
+   * §13.2 V2-P2). This is a per-user UI preference only — it never touches the
+   * session, whose 30-day lifetime is unchanged.
+   */
+  setPinLockIdleMinutes(
+    userId: string,
+    minutes: number | null,
+    ip?: string | null,
+  ): Promise<UserRow>;
+  /**
    * The caller's own current session timestamps (§6.11 Security) — sign-in
    * instant, last renewal, and the derived 30-day expiry. Read-only: it reuses
    * the existing `get()` and never touches the TTL. Null when the session is
@@ -447,6 +457,22 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
       const updated = await userRepo.findById(user.id);
       return updated ?? { ...user, pinHash: null, pinEnabled: false };
+    },
+
+    async setPinLockIdleMinutes(userId, minutes, ip) {
+      const user = await userRepo.findById(userId);
+      if (!user) throw unauthorized();
+      await userRepo.setPinLockIdleMinutes(user.id, minutes);
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PinLockIdleChanged,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+        meta: { idleMinutes: minutes },
+      });
+      const updated = await userRepo.findById(user.id);
+      return updated ?? { ...user, pinLockIdleMinutes: minutes };
     },
 
     async getSessionInfo(sessionId) {

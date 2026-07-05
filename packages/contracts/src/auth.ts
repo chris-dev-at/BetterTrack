@@ -80,6 +80,25 @@ export type PinVerifyRequest = z.infer<typeof pinVerifyRequestSchema>;
 export const setPinRequestSchema = z.object({ pin: pinSchema }).strict();
 export type SetPinRequest = z.infer<typeof setPinRequestSchema>;
 
+/**
+ * AFK auto-lock (PROJECTPLAN.md §6.1, §13.2 V2-P2). With the PIN on, the SPA can
+ * re-show the lock overlay after this many minutes of inactivity. `null` = off,
+ * the opt-in default: the lock is then only required on app (re)open, never on
+ * idle. Bounds keep it usable — at least a minute, at most a day.
+ */
+export const MIN_PIN_LOCK_IDLE_MINUTES = 1;
+export const MAX_PIN_LOCK_IDLE_MINUTES = 1440;
+export const pinLockIdleMinutesSchema = z
+  .number()
+  .int()
+  .min(MIN_PIN_LOCK_IDLE_MINUTES)
+  .max(MAX_PIN_LOCK_IDLE_MINUTES)
+  .nullable();
+
+/** `PUT /auth/pin/idle-timeout` — set (or clear with `null`) the AFK auto-lock. */
+export const setPinLockRequestSchema = z.object({ idleMinutes: pinLockIdleMinutesSchema }).strict();
+export type SetPinLockRequest = z.infer<typeof setPinLockRequestSchema>;
+
 /** The authenticated-user view returned by `/auth/me`, `/auth/login`, etc. */
 export const meResponseSchema = z.object({
   id: z.string().uuid(),
@@ -90,6 +109,8 @@ export const meResponseSchema = z.object({
   mustChangePassword: z.boolean(),
   /** Whether the account has the PIN gate turned on (§6.1). */
   pinEnabled: z.boolean(),
+  /** AFK auto-lock idle timeout in minutes; `null` = off (§6.1, §13.2 V2-P2). */
+  pinLockIdleMinutes: z.number().int().nullable(),
   baseCurrency: z.string(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
