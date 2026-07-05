@@ -9,6 +9,8 @@ import {
 } from 'react';
 import type { ReactNode } from 'react';
 
+import { useQueryClient } from '@tanstack/react-query';
+
 import type {
   AcceptInviteRequest,
   ChangePasswordRequest,
@@ -39,35 +41,20 @@ export type AuthStatus =
   | 'pin-required';
 
 /**
- * Whether the PIN has been satisfied for *this* browser session (tab/window).
- * Kept in `sessionStorage`, which is cleared when the tab closes — so the gate
- * reappears every time the user re-opens the website, exactly as the owner
- * directive requires, while a fresh password login is treated as already
- * satisfied (you just proved a stronger factor). httpOnly session lifetime
- * still lives in the server cookie; this is only the per-open gate flag.
+ * The WhatsApp-style app-lock (§6.1, §13.2 V2-P2): with a PIN enabled the SPA
+ * must show the PIN screen every time the app is (re)opened, and optionally
+ * after an idle timeout. "Unlocked" is therefore deliberately **in-memory only**
+ * — it lives for the lifetime of *this* mounted `AuthProvider* and nothing else.
+ * A page (re)load starts a fresh JS context in which this is `false`, so the
+ * gate reappears before any data renders; a fresh password login (a stronger
+ * factor) marks it satisfied so the user isn't gated twice in one breath. It is
+ * never persisted to storage — persisting it is exactly the bug (#248 §2) where
+ * a reload silently skipped the gate. The httpOnly session lifetime is untouched
+ * by all of this: the lock gates the UI, not the session.
  */
-const PIN_OK_KEY = 'bt_pin_ok';
-const isPinSatisfied = (): boolean => {
-  try {
-    return sessionStorage.getItem(PIN_OK_KEY) === '1';
-  } catch {
-    return false;
-  }
-};
-const markPinSatisfied = (): void => {
-  try {
-    sessionStorage.setItem(PIN_OK_KEY, '1');
-  } catch {
-    // Non-fatal: without sessionStorage the gate simply shows once more.
-  }
-};
-const clearPinSatisfied = (): void => {
-  try {
-    sessionStorage.removeItem(PIN_OK_KEY);
-  } catch {
-    // Non-fatal.
-  }
-};
+
+/** Default idle events that count as "activity" and reset the AFK auto-lock timer. */
+const AFK_ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'] as const;
 
 interface AuthContextValue {
   status: AuthStatus;
@@ -108,26 +95,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<MeResponse | null>(null);
   const [rateLimitBanner, setRateLimitBanner] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  // Whether the PIN app-lock has been satisfied for this app-open (see the note
+  // above): in-memory only, reset on every fresh mount / reload and on sign-out.
+  const pinUnlockedRef = useRef(false);
 
   // Apply a resolved /auth/me-or-login user to local state, routing a
-  // forced-change account into its trap, and a PIN-gated account whose PIN
-  // hasn't been entered this browser session into the PIN gate.
+  // forced-change account into its trap, and a PIN-gated account that hasn't
+  // been unlocked this app-open into the PIN gate.
   const applyUser = useCallback((me: MeResponse) => {
     setUser(me);
     if (me.mustChangePassword) {
       setStatus('password-change-required');
-    } else if (me.pinEnabled && !isPinSatisfied()) {
+    } else if (me.pinEnabled && !pinUnlockedRef.current) {
       setStatus('pin-required');
     } else {
       setStatus('authenticated');
     }
   }, []);
 
+  // Drops every trace of the signed-out user: the PIN-satisfied flag, the auth
+  // state itself, and the entire TanStack Query cache. Without the cache clear
+  // a subsequent login as a *different* account could briefly (or, for queries
+  // with a nonzero staleTime, not-so-briefly) render the previous user's
+  // cached name/email/portfolio/notifications before a refetch overwrote it.
   const clearSession = useCallback(() => {
-    clearPinSatisfied();
+    pinUnlockedRef.current = false;
     setUser(null);
     setStatus('anonymous');
-  }, []);
+    queryClient.clear();
+  }, [queryClient]);
 
   // Latest clearSession, so the (mount-once) global policy never goes stale.
   const clearSessionRef = useRef(clearSession);
@@ -183,6 +181,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, [applyUser]);
 
+  // AFK auto-lock (§6.1, §13.2 V2-P2). While the app is unlocked and the account
+  // has both the PIN on and an idle timeout configured, re-arm the PIN gate
+  // after N minutes without user activity. In-memory like the unlock flag above,
+  // so it only ever gates the UI — the session is untouched. Disabled (no timer)
+  // when the PIN is off or the timeout is null (the opt-in default).
+  const idleMinutes = user?.pinLockIdleMinutes ?? null;
+  const pinEnabled = user?.pinEnabled ?? false;
+  useEffect(() => {
+    if (status !== 'authenticated' || !pinEnabled || idleMinutes == null || idleMinutes <= 0) {
+      return;
+    }
+    const idleMs = idleMinutes * 60_000;
+    let timer: ReturnType<typeof setTimeout>;
+    const lock = () => {
+      pinUnlockedRef.current = false;
+      setStatus('pin-required');
+    };
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(lock, idleMs);
+    };
+    for (const event of AFK_ACTIVITY_EVENTS) {
+      window.addEventListener(event, reset, { passive: true });
+    }
+    reset();
+    return () => {
+      clearTimeout(timer);
+      for (const event of AFK_ACTIVITY_EVENTS) {
+        window.removeEventListener(event, reset);
+      }
+    };
+  }, [status, pinEnabled, idleMinutes]);
+
   const login = useCallback(
     async (credentials: LoginRequest) => {
       const me = await api.login(credentials);
@@ -194,7 +225,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       // A fresh password login is a stronger factor than the PIN — don't gate
       // the user again in the same breath.
-      markPinSatisfied();
+      pinUnlockedRef.current = true;
       applyUser(me);
     },
     [applyUser],
@@ -204,7 +235,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: AcceptInviteRequest) => {
       // A fresh invite account is created active with no forced change, so this
       // lands authenticated; applyUser keeps it correct either way.
-      markPinSatisfied();
+      pinUnlockedRef.current = true;
       applyUser(await api.acceptInvite(body));
     },
     [applyUser],
@@ -214,7 +245,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: ChangePasswordRequest) => {
       // Success rotates the session and clears the flag — the response is a
       // fresh, usable user, releasing the forced-change trap.
-      markPinSatisfied();
+      pinUnlockedRef.current = true;
       applyUser(await api.changePassword(body));
     },
     [applyUser],
@@ -224,7 +255,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (body: PinVerifyRequest) => {
       try {
         const me = await api.verifyPin(body);
-        markPinSatisfied();
+        pinUnlockedRef.current = true;
         applyUser(me);
       } catch (err) {
         // Too many wrong PINs: the server dropped the session, so fall all the

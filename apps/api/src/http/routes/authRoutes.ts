@@ -6,6 +6,7 @@ import {
   loginRequestSchema,
   pinVerifyRequestSchema,
   registerRequestSchema,
+  setPinLockRequestSchema,
   setPinRequestSchema,
   tokenParamSchema,
   type AcceptInviteRequest,
@@ -13,6 +14,7 @@ import {
   type LoginRequest,
   type PinVerifyRequest,
   type RegisterRequest,
+  type SetPinLockRequest,
   type SetPinRequest,
 } from '@bettertrack/contracts';
 
@@ -108,6 +110,19 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     const user = await ctx.auth.disablePin(req.authUser!.id, req.ip);
     res.json(toMeResponseFromRow(user));
   });
+
+  // Set (or clear with null) the AFK auto-lock idle timeout (§6.1, §13.2 V2-P2).
+  // A UI preference only — it never renews or shortens the session.
+  router.put(
+    '/pin/idle-timeout',
+    requireAuth,
+    validateBody(setPinLockRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as SetPinLockRequest;
+      const user = await ctx.auth.setPinLockIdleMinutes(req.authUser!.id, body.idleMinutes, req.ip);
+      res.json(toMeResponseFromRow(user));
+    },
+  );
 
   router.get('/invite/:token', validateParams(tokenParamSchema), async (req, res) => {
     const { token } = req.valid?.params as { token: string };

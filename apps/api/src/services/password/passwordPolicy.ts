@@ -5,8 +5,8 @@ import { COMMON_PASSWORDS } from './commonPasswords';
 export type PasswordPolicyResult = { ok: true } | { ok: false; reason: string };
 
 /**
- * Password policy (PROJECTPLAN.md §6.1): ≥ 10 chars, no composition rules,
- * common-password blocklist.
+ * Password policy (PROJECTPLAN.md §6.1, §13.2): ≥ 8 chars, no composition
+ * rules, common-password blocklist.
  */
 export function checkPasswordPolicy(password: string): PasswordPolicyResult {
   if (password.length < MIN_PASSWORD_LENGTH) {

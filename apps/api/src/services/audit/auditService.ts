@@ -10,6 +10,7 @@ export const AuditAction = {
   PinDisabled: 'pin.disabled',
   PinVerified: 'pin.verified',
   PinVerifyFail: 'pin.verify_fail',
+  PinLockIdleChanged: 'pin.lock_idle_changed',
   UserCreated: 'user.created',
   UserDisabled: 'user.disabled',
   UserEnabled: 'user.enabled',

@@ -8,8 +8,8 @@ export const USER_STATUSES = ['active', 'disabled'] as const;
 export const userStatusSchema = z.enum(USER_STATUSES);
 export type UserStatus = z.infer<typeof userStatusSchema>;
 
-/** Password policy length floor (PROJECTPLAN.md §6.1). Blocklist enforced server-side. */
-export const MIN_PASSWORD_LENGTH = 10;
+/** Password policy length floor (PROJECTPLAN.md §6.1, owner-tunable per §13.2). Blocklist enforced server-side. */
+export const MIN_PASSWORD_LENGTH = 8;
 export const MAX_PASSWORD_LENGTH = 200;
 export const passwordSchema = z.string().min(MIN_PASSWORD_LENGTH).max(MAX_PASSWORD_LENGTH);
 
@@ -80,6 +80,25 @@ export type PinVerifyRequest = z.infer<typeof pinVerifyRequestSchema>;
 export const setPinRequestSchema = z.object({ pin: pinSchema }).strict();
 export type SetPinRequest = z.infer<typeof setPinRequestSchema>;
 
+/**
+ * AFK auto-lock (PROJECTPLAN.md §6.1, §13.2 V2-P2). With the PIN on, the SPA can
+ * re-show the lock overlay after this many minutes of inactivity. `null` = off,
+ * the opt-in default: the lock is then only required on app (re)open, never on
+ * idle. Bounds keep it usable — at least a minute, at most a day.
+ */
+export const MIN_PIN_LOCK_IDLE_MINUTES = 1;
+export const MAX_PIN_LOCK_IDLE_MINUTES = 1440;
+export const pinLockIdleMinutesSchema = z
+  .number()
+  .int()
+  .min(MIN_PIN_LOCK_IDLE_MINUTES)
+  .max(MAX_PIN_LOCK_IDLE_MINUTES)
+  .nullable();
+
+/** `PUT /auth/pin/idle-timeout` — set (or clear with `null`) the AFK auto-lock. */
+export const setPinLockRequestSchema = z.object({ idleMinutes: pinLockIdleMinutesSchema }).strict();
+export type SetPinLockRequest = z.infer<typeof setPinLockRequestSchema>;
+
 /** The authenticated-user view returned by `/auth/me`, `/auth/login`, etc. */
 export const meResponseSchema = z.object({
   id: z.string().uuid(),
@@ -90,6 +109,8 @@ export const meResponseSchema = z.object({
   mustChangePassword: z.boolean(),
   /** Whether the account has the PIN gate turned on (§6.1). */
   pinEnabled: z.boolean(),
+  /** AFK auto-lock idle timeout in minutes; `null` = off (§6.1, §13.2 V2-P2). */
+  pinLockIdleMinutes: z.number().int().nullable(),
   baseCurrency: z.string(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),

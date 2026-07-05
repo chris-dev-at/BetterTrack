@@ -47,6 +47,10 @@ export const users = pgTable(
     // NULL hash = no PIN set; the enabled flag and hash always move together.
     pinHash: text('pin_hash'),
     pinEnabled: boolean('pin_enabled').notNull().default(false),
+    // AFK auto-lock idle timeout in minutes (§6.1, §13.2 V2-P2). NULL = off:
+    // the PIN lock is then only required on app (re)open, never on idle. The UI
+    // lock this drives never touches session lifetime — it gates the SPA only.
+    pinLockIdleMinutes: integer('pin_lock_idle_minutes'),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
