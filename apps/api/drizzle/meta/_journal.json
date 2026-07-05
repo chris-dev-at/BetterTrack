@@ -64,6 +64,13 @@
       "when": 1783149527921,
       "tag": "0008_app_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783209016256,
+      "tag": "0009_pin_lock_idle_minutes",
+      "breakpoints": true
     }
   ]
 }

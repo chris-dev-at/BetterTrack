@@ -26,6 +26,7 @@ const ME: MeResponse = {
   status: 'active',
   mustChangePassword: false,
   pinEnabled: false,
+  pinLockIdleMinutes: null,
   baseCurrency: 'EUR',
   lastLoginAt: '2026-07-01T10:00:00.000Z',
   createdAt: '2026-01-15T09:00:00.000Z',

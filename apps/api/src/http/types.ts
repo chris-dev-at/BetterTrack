@@ -9,6 +9,7 @@ export interface AuthUser {
   status: UserStatus;
   mustChangePassword: boolean;
   pinEnabled: boolean;
+  pinLockIdleMinutes: number | null;
   baseCurrency: string;
   lastLoginAt: Date | string | null;
   createdAt: Date | string;
