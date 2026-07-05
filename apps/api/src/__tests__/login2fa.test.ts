@@ -267,10 +267,15 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
 
     // Full login (verify the challenge) so we hold a session that can disable 2FA.
     const challenge = twoFactorChallengeResponseSchema.parse(
-      (await agent.post('/api/v1/auth/login').set(...XRW).send({
-        identifier: user.email,
-        password: user.password,
-      })).body,
+      (
+        await agent
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({
+            identifier: user.email,
+            password: user.password,
+          })
+      ).body,
     );
     const verified = await agent
       .post('/api/v1/auth/2fa/verify')
