@@ -186,3 +186,37 @@ describe('POST /api/v1/notifications/mark-read', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('friend-request notification regression (#248)', () => {
+  /** Poll the recipient's notification list until an item lands, or time out. */
+  async function waitForBellItem(agent: Agent) {
+    let page = await listNotifications(agent);
+    for (let attempt = 0; attempt < 60 && page.items.length === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      page = await listNotifications(agent);
+    }
+    return page;
+  }
+
+  it('a friend request produces the recipient in-app bell item via the API dispatcher', async () => {
+    // The dispatcher subscribes in the API process (server.ts) — start it here to
+    // exercise that same in-process fan-out the API bootstrap relies on.
+    await harness.ctx.notificationDispatcher.start();
+    try {
+      const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+      const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+      const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+
+      // Alice sends Bob a friend request → publishes `friend.request` on the bus.
+      await harness.ctx.social.sendRequest(alice.id, 'bob');
+
+      const page = await waitForBellItem(bobAgent);
+      expect(page.unreadCount).toBe(1);
+      expect(page.items[0]?.type).toBe('friend.request');
+      expect(page.items[0]?.body).toBe('alice sent you a friend request.');
+    } finally {
+      await harness.ctx.notificationDispatcher.stop();
+      await harness.ctx.events.close();
+    }
+  });
+});

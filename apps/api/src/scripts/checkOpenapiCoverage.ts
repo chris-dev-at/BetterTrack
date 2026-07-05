@@ -104,6 +104,7 @@ function buildInertContext(): AppContext {
     social: inertService('social'),
     notifications: inertService('notifications'),
     notificationSettings: inertService('notificationSettings'),
+    notificationDispatcher: inertService('notificationDispatcher'),
   };
 }
 

@@ -6,6 +6,23 @@ import { z } from 'zod';
  * covers the user-scoped read/mark-read surface the bell UI and Settings →
  * Notifications page consume.
  */
+
+/**
+ * The V1 notification types (PROJECTPLAN.md §6.10). Each is a distinct row a
+ * user can independently route to in-app / email / both / muted through the
+ * Settings → Notifications matrix (`settings.ts`). `alert.triggered` arrives with
+ * alerts, post-v1.
+ */
+export const NOTIFICATION_TYPES = [
+  'friend.request',
+  'friend.accepted',
+  'portfolio.shared',
+  'account.invite',
+  'account.temp_password',
+] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
+
 export const notificationSchema = z
   .object({
     id: z.string().uuid(),
