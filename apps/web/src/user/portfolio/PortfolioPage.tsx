@@ -17,6 +17,7 @@ import {
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
+import { ApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 import {
@@ -835,7 +836,15 @@ export function PortfolioPage() {
       setActionError(null);
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
     },
-    onError: () => setActionError('Could not delete the transaction. Please try again.'),
+    // The solvency gate's rejection is deliberate and permanent — surface its
+    // guidance ("add cash or remove the dependent movements") instead of a
+    // transient-sounding "try again" the user would retry forever.
+    onError: (err) =>
+      setActionError(
+        err instanceof ApiError && err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE'
+          ? err.message
+          : 'Could not delete the transaction. Please try again.',
+      ),
   });
 
   const txnsByAsset = useMemo(() => {

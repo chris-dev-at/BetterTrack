@@ -10,6 +10,7 @@ vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/assetApi');
 import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
 
+import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
 import {
@@ -305,6 +306,77 @@ describe('TransactionDialog — quantity entry mode (regression)', () => {
       'aria-pressed',
       'true',
     );
+  });
+});
+
+// --- Dialog: edit mode — diff patch + cash-linked rejection (#300) -----------
+
+describe('TransactionDialog — edit mode patches only what changed', () => {
+  const EDIT_TXN: Transaction = {
+    id: 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa',
+    assetId: 'asset-btc',
+    asset: {
+      id: 'asset-btc',
+      symbol: 'BTC',
+      name: 'Bitcoin',
+      exchange: null,
+      currency: 'EUR',
+      type: 'crypto',
+      isCustom: false,
+    },
+    side: 'buy',
+    quantity: 0.5,
+    price: 42000,
+    fee: 1,
+    // A stored time-of-day: an untouched date must not clobber it to midnight.
+    executedAt: '2026-06-01T14:30:00.000Z',
+    note: null,
+  };
+
+  test('a note-only edit sends just the note — the server allows it on cash-linked txns', async () => {
+    vi.mocked(portfolioApi.updateTransaction).mockResolvedValue({ ...EDIT_TXN, note: 'DCA' });
+    const user = userEvent.setup();
+    const { onSubmitted } = renderDialog({ transaction: EDIT_TXN, asset: undefined });
+
+    await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(portfolioApi.updateTransaction).toHaveBeenCalledOnce());
+    expect(vi.mocked(portfolioApi.updateTransaction).mock.calls[0]![2]).toEqual({ note: 'DCA' });
+    expect(onSubmitted).toHaveBeenCalled();
+  });
+
+  test('saving with nothing changed skips the PATCH entirely and just closes', async () => {
+    const user = userEvent.setup();
+    const { onSubmitted, onClose } = renderDialog({ transaction: EDIT_TXN, asset: undefined });
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(portfolioApi.updateTransaction).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  test('a cash-linked rejection shows the server guidance, not a generic retry', async () => {
+    vi.mocked(portfolioApi.updateTransaction).mockRejectedValue(
+      new ApiError(
+        400,
+        'TRANSACTION_CASH_LINKED',
+        'This transaction is funded from (or pays into) your cash balance. Delete and re-add it to change the amount.',
+      ),
+    );
+    const user = userEvent.setup();
+    renderDialog({ transaction: EDIT_TXN, asset: undefined });
+
+    const quantity = screen.getByLabelText(/quantity for btc/i);
+    await user.clear(quantity);
+    await user.type(quantity, '0.75');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    expect(
+      await screen.findByText(/funded from \(or pays into\) your cash balance/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not save/i)).not.toBeInTheDocument();
   });
 });
 

@@ -73,6 +73,7 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
+import { ApiError } from '../../lib/apiClient';
 import {
   deleteTransaction,
   depositCash,
@@ -577,6 +578,32 @@ describe('PortfolioPage — expandable rows', () => {
     await waitFor(() =>
       expect(vi.mocked(deleteTransaction)).toHaveBeenCalledWith(DEFAULT_PORTFOLIO_ID, 't2'),
     );
+  });
+
+  test('a solvency-gate rejection surfaces the server guidance, not a generic retry (#300)', async () => {
+    vi.mocked(deleteTransaction).mockRejectedValue(
+      new ApiError(
+        400,
+        'CASH_LEDGER_WOULD_GO_NEGATIVE',
+        'Deleting this transaction would overdraw your cash balance on a later date. Add cash or remove the dependent movements first.',
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const holdingsRegion = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(holdingsRegion).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole('button', { name: /Expand HOUSE transactions/i }));
+    const region = screen.getByText('Down payment').closest('tr')!;
+    await user.click(within(region).getByRole('button', { name: /Delete transaction from/i }));
+    await user.click(screen.getByRole('button', { name: 'Yes' }));
+
+    expect(
+      await screen.findByText(/would overdraw your cash balance/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Could not delete the transaction/i)).not.toBeInTheDocument();
   });
 });
 
