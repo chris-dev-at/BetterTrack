@@ -39,6 +39,12 @@ export const AuditAction = {
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',
+  OAuthClientRegistered: 'oauth.client_registered',
+  OAuthClientDeleted: 'oauth.client_deleted',
+  OAuthGrantAuthorized: 'oauth.grant_authorized',
+  OAuthGrantRevoked: 'oauth.grant_revoked',
+  OAuthTokenIssued: 'oauth.token_issued',
+  OAuthTokenRefreshed: 'oauth.token_refreshed',
 } as const;
 
 export interface AuditService {

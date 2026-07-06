@@ -1,0 +1,212 @@
+import { useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+
+import { useMutation, useQuery } from '@tanstack/react-query';
+
+import { Wordmark } from '../../components/Wordmark';
+import { ApiError } from '../../lib/apiClient';
+import {
+  approveAuthorization,
+  getAuthorizationDetails,
+  type OAuthAuthorizeParams,
+} from '../../lib/oauthApi';
+import { Alert, Button, Spinner } from '../components/ui';
+
+/**
+ * OAuth consent screen (PROJECTPLAN.md §6.13 part 2). A third-party app sends the
+ * browser here with a standard authorization-code request; the user reviews the
+ * app and the requested scopes in plain language and Approves or Cancels.
+ *
+ * This route sits inside `RequireUser`, so the login-then-consent flow is free:
+ * an anonymous visitor is bounced to `/login` with the full `/oauth/authorize?…`
+ * URL (path **and** query) stashed in `state.from`, and after signing in the
+ * login page returns them here with `state` + PKCE (`code_challenge`) intact. The
+ * PIN gate (above routing) also applies with no special-casing.
+ *
+ * Security posture (§10): we NEVER navigate to `redirect_uri` on our own. An
+ * invalid/unknown client or a bad redirect URI is a 400 from the details
+ * endpoint and is rendered as an inline error — the browser only ever reaches
+ * the redirect URI via the service-signed `redirectTo` returned by an explicit
+ * Approve.
+ */
+
+/** Pull the OAuth authorize params off the URL, or null if a required one is absent. */
+function readParams(sp: URLSearchParams): OAuthAuthorizeParams | null {
+  const clientId = sp.get('client_id');
+  const redirectUri = sp.get('redirect_uri');
+  const scope = sp.get('scope');
+  if (!clientId || !redirectUri || !scope) return null;
+
+  const params: OAuthAuthorizeParams = {
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope,
+  };
+  const responseType = sp.get('response_type');
+  if (responseType) params.response_type = responseType;
+  const state = sp.get('state');
+  if (state !== null) params.state = state;
+  const codeChallenge = sp.get('code_challenge');
+  if (codeChallenge) params.code_challenge = codeChallenge;
+  const codeChallengeMethod = sp.get('code_challenge_method');
+  if (codeChallengeMethod) params.code_challenge_method = codeChallengeMethod;
+  return params;
+}
+
+/** Centered, standalone card scaffold (this screen sits outside the app chrome). */
+function ConsentShell({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-screen bg-[#0b0e14] px-4 pb-12 pt-[10vh] sm:pt-[14vh]">
+      <div className="mx-auto w-full max-w-md">
+        <div className="mb-8 text-center">
+          <Wordmark edition="Web" className="text-2xl" />
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+export function ConsentPage() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [cancelled, setCancelled] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
+
+  // Memoized on the raw query string so PKCE/state are carried verbatim and the
+  // details query isn't refetched on unrelated re-renders.
+  const search = searchParams.toString();
+  const params = useMemo(() => readParams(new URLSearchParams(search)), [search]);
+
+  const query = useQuery({
+    queryKey: ['oauth', 'authorization-details', search],
+    queryFn: ({ signal }) => getAuthorizationDetails(params as OAuthAuthorizeParams, signal),
+    enabled: params != null && !cancelled,
+    retry: false,
+  });
+
+  const approve = useMutation({
+    mutationFn: () => approveAuthorization(params as OAuthAuthorizeParams),
+    onSuccess: (result) => {
+      // Works for https and custom-scheme deep links (myapp://callback). The
+      // service validated and signed this destination — never a raw redirect_uri.
+      window.location.href = result.redirectTo;
+    },
+    onError: () => setApproveError('Could not complete authorization. Please try again.'),
+  });
+
+  // ── Malformed request: missing a required param, so we can't even ask. ──
+  if (params == null) {
+    return (
+      <ConsentShell>
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+          <Alert tone="error">
+            This authorization request is invalid or incomplete. Return to the app and try again.
+          </Alert>
+        </div>
+      </ConsentShell>
+    );
+  }
+
+  // ── User declined: no code is issued; we do NOT touch redirect_uri. ──
+  if (cancelled) {
+    return (
+      <ConsentShell>
+        <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+          <h1 className="text-lg font-semibold text-neutral-100">Authorization cancelled</h1>
+          <p className="text-sm text-neutral-400">
+            No access was granted. You can safely close this window or return to BetterTrack.
+          </p>
+          <Button onClick={() => navigate('/', { replace: true })}>Go to BetterTrack</Button>
+        </div>
+      </ConsentShell>
+    );
+  }
+
+  if (query.isPending) {
+    return (
+      <ConsentShell>
+        <div className="grid place-items-center rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+          <Spinner label="Loading authorization request…" />
+        </div>
+      </ConsentShell>
+    );
+  }
+
+  // ── Bad request (unknown client / bad redirect_uri) or transient failure. ──
+  if (query.isError) {
+    const err = query.error;
+    const message =
+      err instanceof ApiError && err.status === 400
+        ? "This app's authorization request is invalid. For your security we won't continue. Contact the app's developer."
+        : 'Could not load the authorization request. Please try again in a moment.';
+    return (
+      <ConsentShell>
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+          <Alert tone="error">{message}</Alert>
+        </div>
+      </ConsentShell>
+    );
+  }
+
+  const details = query.data;
+
+  return (
+    <ConsentShell>
+      <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        {approveError ? <Alert tone="error">{approveError}</Alert> : null}
+        <div className="flex flex-col gap-1">
+          <h1 className="text-lg font-semibold text-neutral-100">
+            Authorize {details.client.name}
+          </h1>
+          <p className="text-sm text-neutral-400">
+            <span className="font-medium text-neutral-200">{details.client.name}</span> wants access
+            to your BetterTrack account. If you approve, it will be able to:
+          </p>
+        </div>
+
+        <ul className="flex flex-col gap-2">
+          {details.scopes.map(({ scope, label }) => (
+            <li
+              key={scope}
+              className="flex items-start gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-200"
+            >
+              <span aria-hidden="true" className="mt-0.5 text-sky-400">
+                ✓
+              </span>
+              <span>{label}</span>
+            </li>
+          ))}
+        </ul>
+
+        <p className="break-all text-xs text-neutral-500">
+          You'll be returned to{' '}
+          <code className="font-mono text-neutral-400">{details.redirectUri}</code>. You can revoke
+          this access anytime in Settings → API Access.
+        </p>
+
+        <div className="flex flex-col gap-2 sm:flex-row-reverse">
+          <Button
+            className="sm:flex-1"
+            disabled={approve.isPending}
+            onClick={() => {
+              setApproveError(null);
+              approve.mutate();
+            }}
+          >
+            {approve.isPending ? 'Authorizing…' : 'Approve'}
+          </Button>
+          <Button
+            variant="secondary"
+            className="sm:flex-1"
+            disabled={approve.isPending}
+            onClick={() => setCancelled(true)}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </ConsentShell>
+  );
+}
