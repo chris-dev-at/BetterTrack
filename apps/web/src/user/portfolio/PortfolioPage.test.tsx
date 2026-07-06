@@ -600,9 +600,7 @@ describe('PortfolioPage — expandable rows', () => {
     await user.click(within(region).getByRole('button', { name: /Delete transaction from/i }));
     await user.click(screen.getByRole('button', { name: 'Yes' }));
 
-    expect(
-      await screen.findByText(/would overdraw your cash balance/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/would overdraw your cash balance/i)).toBeInTheDocument();
     expect(screen.queryByText(/Could not delete the transaction/i)).not.toBeInTheDocument();
   });
 });
