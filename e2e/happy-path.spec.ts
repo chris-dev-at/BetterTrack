@@ -51,10 +51,12 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await owner.goto('/workboard/conglomerates/new');
   await owner.getByLabel('Conglomerate name').fill('E2E Basket');
   const builderSearch = owner.getByRole('searchbox', { name: 'Search assets' });
+  // exact: role-name matching is substring-based, and background catalog
+  // enrichment can add sibling listings (AAPL.SW, MSFT.MX, …) to the results.
   await builderSearch.fill('Apple');
-  await owner.getByRole('button', { name: 'Select AAPL' }).click();
+  await owner.getByRole('button', { name: 'Select AAPL', exact: true }).click();
   await builderSearch.fill('Microsoft');
-  await owner.getByRole('button', { name: 'Select MSFT' }).click();
+  await owner.getByRole('button', { name: 'Select MSFT', exact: true }).click();
   await owner.getByRole('button', { name: 'Auto-balance' }).click();
   const positionsRegion = owner.getByRole('region', { name: 'Positions' });
   await expect(positionsRegion.getByRole('status')).toHaveText('100.0%');
@@ -92,7 +94,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await owner.getByRole('button', { name: '+ Transaction' }).click();
   const buyDialog = owner.getByRole('dialog', { name: /record transaction/i });
   await buyDialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
-  await buyDialog.getByRole('button', { name: 'Select SAP.DE' }).click();
+  await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
   await buyDialog.getByLabel('Pay from cash balance').check();

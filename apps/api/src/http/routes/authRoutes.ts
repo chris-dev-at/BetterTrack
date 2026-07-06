@@ -279,12 +279,18 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     limiters.login,
     validateBody(passwordResetCompleteSchema),
     async (req, res) => {
-      const { user, sessionId } = await ctx.auth.completePasswordReset(
+      const result = await ctx.auth.completePasswordReset(
         req.valid?.body as PasswordResetComplete,
         req.ip,
       );
-      setSessionCookie(res, ctx.config, sessionId);
-      res.json(toMeResponseFromRow(user));
+      // A 2FA-enabled account gets a pending challenge instead of a session —
+      // the emailed link alone must not defeat the second factor (§6.1).
+      if (result.status === 'two_factor_required') {
+        res.json({ twoFactorRequired: true, ...result.challenge });
+        return;
+      }
+      setSessionCookie(res, ctx.config, result.sessionId);
+      res.json(toMeResponseFromRow(result.user));
     },
   );
 

@@ -248,7 +248,9 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         repo.listSharedWatchlistsWithViewer(userId),
       ]);
       // A portfolio's total value is the owner's own overview total — computed
-      // through the portfolio service (owner scope), so no money-math is duplicated.
+      // through the portfolio service (owner scope), so no money-math is
+      // duplicated. Report net worth (holdings + cash, #311) so the list card
+      // agrees with the total shown on the shared-portfolio detail view below.
       const portfolios = await Promise.all(
         portfolioRows.map(async (row) => {
           const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId);
@@ -256,7 +258,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             portfolioId: row.portfolioId,
             name: row.name,
             owner: { id: row.ownerId, username: row.ownerUsername },
-            totalValueEur: overview.totals.marketValueEur,
+            totalValueEur: overview.totals.totalValueEur,
           };
         }),
       );

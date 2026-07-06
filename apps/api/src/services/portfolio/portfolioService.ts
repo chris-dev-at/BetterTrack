@@ -911,6 +911,28 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
       }
 
+      // A cash-linked buy/sell (§14) carries an internal cash movement whose EUR
+      // amount and date mirror the trade. The patch cannot restate the linkage
+      // flags or re-derive the native→EUR amount, so editing a financial field
+      // would desync the movement — inflating net worth and faking TWR
+      // performance with no external flow. Reject such edits (the note stays
+      // editable); to change the numbers, delete and re-add the transaction.
+      const financialEdit =
+        patch.side !== undefined ||
+        patch.quantity !== undefined ||
+        patch.price !== undefined ||
+        patch.fee !== undefined ||
+        patch.executedAt !== undefined;
+      if (financialEdit) {
+        const movements = await cashMovementRepo.listForPortfolio(portfolioId);
+        if (movements.some((m) => m.transactionId === id)) {
+          throw badRequest(
+            'This transaction is funded from (or pays into) your cash balance. Delete and re-add it to change the amount.',
+            'TRANSACTION_CASH_LINKED',
+          );
+        }
+      }
+
       // Build the asset's set with the edited row swapped in, then re-validate.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
       const merged: TransactionRecord = {
@@ -953,6 +975,30 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
       const replayed = siblings.filter((s) => s.id !== id).map(recordToDomain);
       assertNoOversell(replayed);
+
+      // Deleting a cash-linked buy/sell cascades away its cash movement (§14,
+      // schema onDelete: 'cascade'). If a later withdrawal/purchase relied on
+      // that cash, the *remaining* ledger would dip negative — and the solvency
+      // gate replays the whole history, so from then on every cash write is
+      // rejected. Enforce the no-negative invariant at the delete boundary too:
+      // replay the ledger without this txn's linked movement and refuse the
+      // delete if any point would go negative.
+      const cashMovements = await cashMovementRepo.listForPortfolio(portfolioId);
+      if (cashMovements.some((m) => m.transactionId === id)) {
+        const remaining = cashMovements.filter((m) => m.transactionId !== id).map(toDomainMovement);
+        try {
+          projectCashLedger(remaining);
+        } catch (err) {
+          if (err instanceof InsufficientCashError) {
+            throw badRequest(
+              'Deleting this transaction would overdraw your cash balance on a later date. Add cash or remove the dependent movements first.',
+              'CASH_LEDGER_WOULD_GO_NEGATIVE',
+              { availableEur: err.balanceEur, shortfallEur: err.shortfallEur },
+            );
+          }
+          throw err;
+        }
+      }
 
       const deleted = await transactionRepo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');

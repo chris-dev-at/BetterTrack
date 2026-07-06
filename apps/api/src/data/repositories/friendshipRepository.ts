@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, ne, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, isNull, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type { Database } from '../db';
@@ -174,7 +174,10 @@ export function createFriendshipRepository(db: Database) {
         // Owner must still be active: an admin-disabled account's shared
         // portfolios drop out of every friend's view immediately (§6.9).
         .innerJoin(users, and(eq(users.id, portfolios.userId), eq(users.status, 'active')))
-        .where(eq(portfolios.visibility, 'friends'))
+        // Archiving a shared portfolio must stop sharing it: an archived
+        // portfolio is invisible to its own owner's list, so it must not linger
+        // in any friend's Shared With Me (§6.9).
+        .where(and(eq(portfolios.visibility, 'friends'), isNull(portfolios.archivedAt)))
         .orderBy(asc(users.username), asc(portfolios.name));
       return rows;
     },
@@ -208,7 +211,15 @@ export function createFriendshipRepository(db: Database) {
             and(eq(friendships.userB, viewerId), eq(friendships.userA, portfolios.userId)),
           ),
         )
-        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.visibility, 'friends')))
+        // Archived ⇒ treated as private for sharing: a friend can no longer open
+        // an archived portfolio even with a live share (§6.9).
+        .where(
+          and(
+            eq(portfolios.id, portfolioId),
+            eq(portfolios.visibility, 'friends'),
+            isNull(portfolios.archivedAt),
+          ),
+        )
         .limit(1);
       return row;
     },

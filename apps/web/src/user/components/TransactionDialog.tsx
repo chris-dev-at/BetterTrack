@@ -6,6 +6,7 @@ import type {
   Transaction,
   TransactionInput,
   TransactionSide,
+  UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
@@ -548,14 +549,22 @@ export function TransactionDialog(props: TransactionDialogProps) {
     try {
       if (isEdit) {
         const input = inputs[0]!;
-        await updateTransaction(portfolioId, transaction.id, {
-          side: input.side,
-          quantity: input.quantity,
-          price: input.price,
-          fee: input.fee,
-          executedAt: input.executedAt,
-          note: input.note ?? null,
-        });
+        // Patch only what changed: the server rejects any financial-field edit
+        // on a cash-linked transaction, so a note-only edit must not restate
+        // the numbers. The date compares by calendar day — the form only edits
+        // the day, and resending it would clobber a stored time-of-day.
+        const patch: UpdateTransactionRequest = {};
+        if (input.side !== transaction.side) patch.side = input.side;
+        if (input.quantity !== transaction.quantity) patch.quantity = input.quantity;
+        if (input.price !== transaction.price) patch.price = input.price;
+        if (input.fee !== transaction.fee) patch.fee = input.fee;
+        if (input.executedAt.slice(0, 10) !== transaction.executedAt.slice(0, 10)) {
+          patch.executedAt = input.executedAt;
+        }
+        if ((input.note ?? null) !== (transaction.note ?? null)) patch.note = input.note ?? null;
+        if (Object.keys(patch).length > 0) {
+          await updateTransaction(portfolioId, transaction.id, patch);
+        }
       } else {
         await createTransactions(portfolioId, inputs);
         // Sticky default (§14): remember this choice for next time, but only
@@ -572,7 +581,9 @@ export function TransactionDialog(props: TransactionDialogProps) {
     } catch (err) {
       if (
         err instanceof ApiError &&
-        (err.code === 'OVERSELL' || err.code === 'INSUFFICIENT_CASH')
+        (err.code === 'OVERSELL' ||
+          err.code === 'INSUFFICIENT_CASH' ||
+          err.code === 'TRANSACTION_CASH_LINKED')
       ) {
         setError(err.message);
       } else {
