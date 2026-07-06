@@ -168,6 +168,17 @@ const componentSchemas = {
   CreateApiKeyRequest: contracts.createApiKeyRequestSchema,
   ApiKeyListResponse: contracts.apiKeyListResponseSchema,
   CreateApiKeyResponse: contracts.createApiKeyResponseSchema,
+
+  // OAuth apps (§6.13, V2-P12)
+  CreateOAuthClientRequest: contracts.createOAuthClientRequestSchema,
+  OAuthClientListResponse: contracts.oauthClientListResponseSchema,
+  CreateOAuthClientResponse: contracts.createOAuthClientResponseSchema,
+  OAuthGrantListResponse: contracts.oauthGrantListResponseSchema,
+  OAuthAuthorizationDetailsResponse: contracts.oauthAuthorizationDetailsResponseSchema,
+  OAuthApproveRequest: contracts.oauthApproveRequestSchema,
+  OAuthApproveResponse: contracts.oauthApproveResponseSchema,
+  OAuthTokenRequest: contracts.oauthTokenRequestSchema,
+  OAuthTokenResponse: contracts.oauthTokenResponseSchema,
 };
 
 /** Registered component refs, keyed by component name (literal keys preserved). */
@@ -1189,6 +1200,82 @@ const endpoints: EndpointDef[] = [
     params: contracts.idParamSchema,
     status: 204,
   },
+
+  // OAuth apps + grants (§6.13, V2-P12) — session-only management surface.
+  {
+    method: 'get',
+    path: '/settings/oauth-clients',
+    tag: 'Settings',
+    summary: 'List the caller’s registered OAuth apps.',
+    status: 200,
+    response: R.OAuthClientListResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/oauth-clients',
+    tag: 'Settings',
+    summary:
+      'Register an OAuth app; the client_secret is returned exactly once (null for public clients).',
+    body: R.CreateOAuthClientRequest,
+    status: 201,
+    response: R.CreateOAuthClientResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/oauth-clients/{id}',
+    tag: 'Settings',
+    summary: 'Delete an OAuth app (cascades its grants and tokens).',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
+  {
+    method: 'get',
+    path: '/settings/oauth-grants',
+    tag: 'Settings',
+    summary: 'List the apps the caller has authorized (active grants).',
+    status: 200,
+    response: R.OAuthGrantListResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/oauth-grants/{id}',
+    tag: 'Settings',
+    summary: 'Revoke an authorized app; kills its access + refresh tokens instantly.',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
+
+  // OAuth 2.0 flow (§6.13, V2-P12).
+  {
+    method: 'get',
+    path: '/oauth/authorization-details',
+    tag: 'OAuth',
+    summary: 'Consent-screen data for an authorize request (app + plain-language scopes).',
+    query: contracts.oauthAuthorizationDetailsQuerySchema,
+    status: 200,
+    response: R.OAuthAuthorizationDetailsResponse,
+  },
+  {
+    method: 'post',
+    path: '/oauth/authorize',
+    tag: 'OAuth',
+    summary:
+      'Approve consent: mint a single-use authorization code and return the redirect target.',
+    body: R.OAuthApproveRequest,
+    status: 200,
+    response: R.OAuthApproveResponse,
+  },
+  {
+    method: 'post',
+    path: '/oauth/token',
+    tag: 'OAuth',
+    summary:
+      'Public token endpoint: exchange an authorization code (+ PKCE / client secret) or rotate a refresh token.',
+    public: true,
+    body: R.OAuthTokenRequest,
+    status: 200,
+    response: R.OAuthTokenResponse,
+  },
 ];
 
 const jsonContent = (schema: z.ZodTypeAny) => ({ 'application/json': { schema } });
@@ -1230,6 +1317,103 @@ for (const ep of endpoints) {
 export const OPENAPI_ENDPOINT_COUNT = endpoints.length;
 
 /**
+ * "Integrate with BetterTrack" — the human-readable OAuth quickstart carried on
+ * `/docs` alongside the endpoint reference (§6.13, V2-P12, owner requirement).
+ * Rendered as markdown by Scalar from the OpenAPI `info.description`, so an
+ * external developer can wire up delegated access from the docs alone. Walks the
+ * five steps (register → authorize → exchange → call → refresh/revoke) with a
+ * copy-pasteable example at each, then the simpler personal-token alternative.
+ */
+export const INTEGRATION_GUIDE = [
+  '## Integrate with BetterTrack',
+  '',
+  'Third-party apps get delegated, scoped, **revocable** access to a user’s',
+  'BetterTrack workspace via OAuth 2.0 (authorization code + PKCE) — the user',
+  'never hands your app their password or a personal key. Access tokens are',
+  'bearer tokens gated by coarse scopes: `' + contracts.API_KEY_SCOPES.join('`, `') + '`.',
+  '',
+  '### 1. Register your app',
+  '',
+  'In BetterTrack, open **Settings → API Access → OAuth apps** and register your',
+  'app with its name, one or more exact **redirect URIs** (https, http-loopback,',
+  'or a custom-scheme deep link like `myapp://callback` for mobile), and the',
+  'scopes it needs. You receive a `client_id` (`btc_…`) and, for confidential',
+  '(server-side) apps, a `client_secret` (`bts_…`) **shown once**. Native/mobile',
+  'and SPA apps register as **public** clients — no secret, PKCE required.',
+  '',
+  '### 2. Send the user to the authorize URL',
+  '',
+  'Generate a PKCE `code_verifier` (43–128 chars) and its',
+  '`code_challenge = base64url(sha256(verifier))`, a random `state`, then open',
+  'the consent screen on the BetterTrack **web origin**:',
+  '',
+  '```',
+  'https://app.bettertrack.example/oauth/authorize' +
+    '?response_type=code&client_id=btc_XXXX' +
+    '&redirect_uri=myapp%3A%2F%2Fcallback&scope=portfolio%3Aread%20workboard%3Aread' +
+    '&state=RANDOM&code_challenge=CHALLENGE&code_challenge_method=S256',
+  '```',
+  '',
+  'An unauthenticated user is taken through the normal BetterTrack sign-in first,',
+  'then lands directly on the consent screen with your request intact. On approve',
+  'the browser is redirected to your `redirect_uri` with `?code=…&state=…`.',
+  '(Always check the returned `state` matches the one you sent.)',
+  '',
+  '### 3. Exchange the code for tokens',
+  '',
+  'From your backend (or app), POST the code to the token endpoint. Confidential',
+  'clients send `client_secret`; public clients send the PKCE `code_verifier`:',
+  '',
+  '```bash',
+  'curl -X POST https://api.bettertrack.example/api/v1/oauth/token \\',
+  '  -H "Content-Type: application/json" \\',
+  '  -d \'{"grant_type":"authorization_code","code":"bta_…",' +
+    '"redirect_uri":"myapp://callback","client_id":"btc_XXXX",' +
+    '"code_verifier":"THE_VERIFIER"}\'',
+  '```',
+  '',
+  'Response (`Cache-Control: no-store`):',
+  '',
+  '```json',
+  '{"access_token":"bto_…","token_type":"Bearer","expires_in":3600,' +
+    '"refresh_token":"btr_…","scope":"portfolio:read workboard:read"}',
+  '```',
+  '',
+  'The authorization code is **single-use** and expires in ~60s.',
+  '',
+  '### 4. Call the API with the bearer token',
+  '',
+  '```bash',
+  'curl https://api.bettertrack.example/api/v1/portfolios \\',
+  '  -H "Authorization: Bearer bto_…"',
+  '```',
+  '',
+  'A call outside the granted scopes returns `403 INSUFFICIENT_SCOPE`. OAuth',
+  'tokens can never reach admin endpoints.',
+  '',
+  '### 5. Refresh and revoke',
+  '',
+  'Access tokens are short-lived. Rotate them with the refresh token — each',
+  'refresh returns a **new** refresh token and invalidates the old one:',
+  '',
+  '```bash',
+  'curl -X POST https://api.bettertrack.example/api/v1/oauth/token \\',
+  '  -H "Content-Type: application/json" \\',
+  '  -d \'{"grant_type":"refresh_token","refresh_token":"btr_…",' + '"client_id":"btc_XXXX"}\'',
+  '```',
+  '',
+  'The user can revoke your app at any time under **Settings → API Access →',
+  'Authorized apps**; that **immediately** invalidates its access and refresh',
+  'tokens (the next call gets `401`).',
+  '',
+  '### Just scripting something? Use a personal token',
+  '',
+  'If you only need to automate **your own** account, skip OAuth entirely: mint a',
+  'scoped **personal API key** under **Settings → API Access** and send it as',
+  '`Authorization: Bearer btk_…`. Same scopes, same endpoints — no authorize flow.',
+].join('\n');
+
+/**
  * Builds the OpenAPI 3.0 document from the registered contract schemas + paths.
  * Cached at module scope by {@link getOpenApiDocument}.
  */
@@ -1243,7 +1427,9 @@ export function buildOpenApiDocument() {
       description:
         'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
         'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
-        'session cookie or a personal API key bearer token (§6.13) unless marked public.',
+        'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
+        'access token (§6.13) — unless marked public.\n\n' +
+        INTEGRATION_GUIDE,
     },
     servers: [{ url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' }],
     // Either scheme authenticates a request; API-key scopes further gate access.

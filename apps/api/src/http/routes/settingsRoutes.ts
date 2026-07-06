@@ -2,10 +2,12 @@ import { Router } from 'express';
 
 import {
   createApiKeyRequestSchema,
+  createOAuthClientRequestSchema,
   idParamSchema,
   updateAccountSettingsRequestSchema,
   updateNotificationSettingsRequestSchema,
   type CreateApiKeyRequest,
+  type CreateOAuthClientRequest,
   type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
@@ -84,6 +86,52 @@ export function createSettingsRouter(ctx: AppContext): Router {
   router.delete('/api-keys/:id', validateParams(idParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };
     await ctx.apiKeys.revoke({ userId: req.authUser!.id, id, ip: req.ip ?? null });
+    res.status(204).end();
+  });
+
+  // ── OAuth apps + grants (§6.13, V2-P12) ─────────────────────────────────────
+  // Also session-only (the bearer scope guard blocks API-key/OAuth-token
+  // requests from `/settings/oauth-*`), so a delegated token can never register
+  // an app or manage grants — no privilege escalation.
+
+  // GET /settings/oauth-clients — the caller's registered OAuth apps.
+  router.get('/oauth-clients', async (req, res) => {
+    const clients = await ctx.oauth.listClients(req.authUser!.id);
+    res.json({ clients });
+  });
+
+  // POST /settings/oauth-clients — register an app; client_secret returned once
+  // (null for public/PKCE clients).
+  router.post('/oauth-clients', validateBody(createOAuthClientRequestSchema), async (req, res) => {
+    const body = req.valid?.body as CreateOAuthClientRequest;
+    const result = await ctx.oauth.registerClient({
+      userId: req.authUser!.id,
+      name: body.name,
+      redirectUris: body.redirectUris,
+      scopes: body.scopes,
+      public: body.public,
+      ip: req.ip ?? null,
+    });
+    res.status(201).json(result);
+  });
+
+  // DELETE /settings/oauth-clients/:id — delete an app (cascades its grants/tokens).
+  router.delete('/oauth-clients/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.oauth.deleteClient({ userId: req.authUser!.id, id, ip: req.ip ?? null });
+    res.status(204).end();
+  });
+
+  // GET /settings/oauth-grants — apps the caller has authorized (active grants).
+  router.get('/oauth-grants', async (req, res) => {
+    const grants = await ctx.oauth.listGrants(req.authUser!.id);
+    res.json({ grants });
+  });
+
+  // DELETE /settings/oauth-grants/:id — revoke a grant; kills its tokens instantly.
+  router.delete('/oauth-grants/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.oauth.revokeGrant({ userId: req.authUser!.id, id, ip: req.ip ?? null });
     res.status(204).end();
   });
 

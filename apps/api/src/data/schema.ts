@@ -619,9 +619,139 @@ export const friendships = pgTable(
   (t) => [primaryKey({ name: 'friendships_pk', columns: [t.userA, t.userB] })],
 );
 
+/**
+ * OAuth 2.0 provider — "API access as a product" part 2 (PROJECTPLAN.md §6.13,
+ * §14, V2-P12). Authorization-code + PKCE, built on the personal-API-key model:
+ * only token/secret *hashes* are ever stored, scopes are the coarse #302
+ * taxonomy, and delegated access is revocable. A registered app
+ * (`oauth_clients`) — public (PKCE-only, no secret) or confidential — issues
+ * short-lived single-use `oauth_auth_codes`, exchanged for an access token +
+ * rotating refresh token that hang off an `oauth_grants` row. Revoking the grant
+ * (or deleting the client) instantly kills every token, because the bearer
+ * lookup joins through the grant and rejects a `revoked_at` one.
+ */
+export const oauthClients = pgTable(
+  'oauth_clients',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // The public, non-secret client identifier (`btc_…`) partners put in their
+    // authorize URL. Distinct from the internal uuid PK the tables reference.
+    clientId: text('client_id').notNull(),
+    name: varchar('name', { length: 80 }).notNull(),
+    // Null for public clients (no secret, PKCE required). Only the SHA-256 hash
+    // is stored; the raw secret is shown once at registration and never again.
+    clientSecretHash: text('client_secret_hash'),
+    // Exact-match redirect targets (https / http-loopback / custom scheme).
+    redirectUris: text('redirect_uris').array().notNull(),
+    scopes: text('scopes')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    isPublic: boolean('is_public').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('oauth_clients_client_id_unique').on(t.clientId),
+    index('oauth_clients_user_idx').on(t.userId),
+  ],
+);
+
+export const oauthGrants = pgTable(
+  'oauth_grants',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => oauthClients.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    scopes: text('scopes')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    // Revoke to instantly cut off the app: the token lookup joins here.
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('oauth_grants_user_idx').on(t.userId),
+    index('oauth_grants_client_idx').on(t.clientId),
+  ],
+);
+
+export const oauthAuthCodes = pgTable(
+  'oauth_auth_codes',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    codeHash: text('code_hash').notNull(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => oauthClients.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    redirectUri: text('redirect_uri').notNull(),
+    scopes: text('scopes')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    codeChallenge: text('code_challenge'),
+    codeChallengeMethod: text('code_challenge_method'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    // Single-use: stamped at first exchange; a second exchange is rejected.
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('oauth_auth_codes_code_hash_unique').on(t.codeHash)],
+);
+
+export const oauthAccessTokens = pgTable(
+  'oauth_access_tokens',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    scopes: text('scopes')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('oauth_access_tokens_token_hash_unique').on(t.tokenHash)],
+);
+
+export const oauthRefreshTokens = pgTable(
+  'oauth_refresh_tokens',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => oauthGrants.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    // Rotation: stamped when this token is exchanged for a fresh pair.
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('oauth_refresh_tokens_token_hash_unique').on(t.tokenHash)],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type OAuthClientRow = typeof oauthClients.$inferSelect;
+export type OAuthGrantRow = typeof oauthGrants.$inferSelect;
+export type OAuthAuthCodeRow = typeof oauthAuthCodes.$inferSelect;
+export type OAuthAccessTokenRow = typeof oauthAccessTokens.$inferSelect;
+export type OAuthRefreshTokenRow = typeof oauthRefreshTokens.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type PasswordResetTokenRow = typeof passwordResetTokens.$inferSelect;
 export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelect;
@@ -667,6 +797,11 @@ export type NewAppSettingRow = typeof appSettings.$inferInsert;
 export const schema = {
   users,
   apiKeys,
+  oauthClients,
+  oauthGrants,
+  oauthAuthCodes,
+  oauthAccessTokens,
+  oauthRefreshTokens,
   invites,
   passwordResetTokens,
   twoFactorRecoveryCodes,

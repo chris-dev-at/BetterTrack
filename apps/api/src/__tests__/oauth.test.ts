@@ -1,0 +1,515 @@
+import { createHash, randomBytes } from 'node:crypto';
+
+import { eq } from 'drizzle-orm';
+import request from 'supertest';
+import type { Application } from 'express';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import {
+  OAUTH_ACCESS_TOKEN_PREFIX,
+  OAUTH_CLIENT_ID_PREFIX,
+  OAUTH_CLIENT_SECRET_PREFIX,
+  OAUTH_REFRESH_TOKEN_PREFIX,
+  createOAuthClientResponseSchema,
+  oauthAuthorizationDetailsResponseSchema,
+  oauthGrantListResponseSchema,
+  oauthTokenResponseSchema,
+} from '@bettertrack/contracts';
+
+import * as schema from '../data/schema';
+import { hashToken } from '../services/crypto/tokens';
+import { createTestApp, type TestHarness } from '../testing/createTestApp';
+
+const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const HTTPS_REDIRECT = 'https://app.example/callback';
+const NATIVE_REDIRECT = 'myapp://callback';
+
+let harness: TestHarness;
+
+beforeEach(async () => {
+  harness = await createTestApp();
+});
+
+type Agent = ReturnType<typeof request.agent>;
+
+async function loginAgent(app: Application, identifier: string, password: string): Promise<Agent> {
+  const agent = request.agent(app);
+  const res = await agent
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier, password });
+  expect(res.status).toBe(200);
+  return agent;
+}
+
+function pkce(): { verifier: string; challenge: string } {
+  const verifier = randomBytes(32).toString('base64url');
+  const challenge = createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
+interface RegisteredClient {
+  agent: Agent;
+  clientId: string;
+  clientSecret: string | null;
+}
+
+async function registerClient(opts: {
+  scopes?: string[];
+  redirectUris?: string[];
+  public?: boolean;
+}): Promise<RegisteredClient> {
+  const user = await harness.seedUser({
+    email: `owner-${randomBytes(4).toString('hex')}@bettertrack.test`,
+    username: `owner${randomBytes(4).toString('hex')}`,
+  });
+  const agent = await loginAgent(harness.app, user.email, user.password);
+  const res = await agent
+    .post('/api/v1/settings/oauth-clients')
+    .set(...XRW)
+    .send({
+      name: 'Partner App',
+      redirectUris: opts.redirectUris ?? [HTTPS_REDIRECT],
+      scopes: opts.scopes ?? ['portfolio:read'],
+      public: opts.public ?? false,
+    });
+  expect(res.status).toBe(201);
+  const parsed = createOAuthClientResponseSchema.parse(res.body);
+  return { agent, clientId: parsed.client.clientId, clientSecret: parsed.clientSecret };
+}
+
+/** Approve consent as the session user and return the delivered authorization code. */
+async function approveAndGetCode(
+  agent: Agent,
+  params: Record<string, string>,
+): Promise<{ code: string; redirectTo: string }> {
+  const res = await agent
+    .post('/api/v1/oauth/authorize')
+    .set(...XRW)
+    .send(params);
+  expect(res.status).toBe(200);
+  const redirectTo = res.body.redirectTo as string;
+  const url = new URL(redirectTo);
+  const code = url.searchParams.get('code');
+  expect(code).toBeTruthy();
+  return { code: code!, redirectTo };
+}
+
+function tokenRequest(body: Record<string, unknown>) {
+  return request(harness.app).post('/api/v1/oauth/token').send(body);
+}
+
+async function auditActions(): Promise<string[]> {
+  const rows = await harness.db.select({ action: schema.auditLog.action }).from(schema.auditLog);
+  return rows.map((r) => r.action);
+}
+
+describe('OAuth client registration', () => {
+  it('mints a client_id + one-time client_secret and stores only the hash', async () => {
+    const { clientId, clientSecret } = await registerClient({});
+    expect(clientId.startsWith(OAUTH_CLIENT_ID_PREFIX)).toBe(true);
+    expect(clientSecret).toBeTruthy();
+    expect(clientSecret!.startsWith(OAUTH_CLIENT_SECRET_PREFIX)).toBe(true);
+
+    const [row] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, clientId));
+    expect(row!.clientSecretHash).toBe(hashToken(clientSecret!));
+    expect(row!.clientSecretHash).not.toBe(clientSecret);
+    expect(await auditActions()).toContain('oauth.client_registered');
+  });
+
+  it('registers a public client with no secret', async () => {
+    const { clientSecret } = await registerClient({ public: true });
+    expect(clientSecret).toBeNull();
+  });
+
+  it('rejects a plain-http (non-loopback) redirect URI', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const res = await agent
+      .post('/api/v1/settings/oauth-clients')
+      .set(...XRW)
+      .send({ name: 'x', redirectUris: ['http://evil.example/cb'], scopes: ['portfolio:read'] });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('OAuth authorization-code + PKCE round-trip', () => {
+  it('register → consent → exchange → scoped bearer call succeeds, out-of-scope 403s', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+      state: 'st-123',
+    });
+
+    const tokenRes = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(tokenRes.status).toBe(200);
+    expect(tokenRes.headers['cache-control']).toBe('no-store');
+    const tokens = oauthTokenResponseSchema.parse(tokenRes.body);
+    expect(tokens.access_token.startsWith(OAUTH_ACCESS_TOKEN_PREFIX)).toBe(true);
+    expect(tokens.refresh_token.startsWith(OAUTH_REFRESH_TOKEN_PREFIX)).toBe(true);
+    expect(tokens.scope).toBe('portfolio:read');
+
+    const auth = `Bearer ${tokens.access_token}`;
+    const ok = await request(harness.app).get('/api/v1/portfolios').set('Authorization', auth);
+    expect(ok.status).toBe(200);
+
+    // portfolio:write is outside the grant → audited 403.
+    const denied = await request(harness.app)
+      .post('/api/v1/portfolios')
+      .set('Authorization', auth)
+      .send({ name: 'From OAuth' });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    // Module the grant has no scope for at all.
+    const other = await request(harness.app).get('/api/v1/workboard').set('Authorization', auth);
+    expect(other.status).toBe(403);
+
+    const actions = await auditActions();
+    expect(actions).toContain('oauth.grant_authorized');
+    expect(actions).toContain('oauth.token_issued');
+  });
+
+  it('mobile-style: unauthenticated authorize-details 401s, public client + PKCE + custom scheme works', async () => {
+    const { agent, clientId } = await registerClient({
+      public: true,
+      scopes: ['portfolio:read', 'workboard:read'],
+      redirectUris: [NATIVE_REDIRECT],
+    });
+    const { verifier, challenge } = pkce();
+    const authorizeParams = {
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: NATIVE_REDIRECT,
+      scope: 'portfolio:read workboard:read',
+      state: 'mobile-state',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    };
+
+    // Before login the consent data is unauthenticated → 401 (SPA sends to login).
+    const anon = await request(harness.app)
+      .get('/api/v1/oauth/authorization-details')
+      .query(authorizeParams);
+    expect(anon.status).toBe(401);
+
+    // After sign-in the original request (incl. state) drives the consent screen.
+    const details = await agent.get('/api/v1/oauth/authorization-details').query(authorizeParams);
+    expect(details.status).toBe(200);
+    const parsed = oauthAuthorizationDetailsResponseSchema.parse(details.body);
+    expect(parsed.state).toBe('mobile-state');
+    expect(parsed.client.clientId).toBe(clientId);
+    expect(parsed.scopes.map((s) => s.scope)).toEqual(['portfolio:read', 'workboard:read']);
+    expect(parsed.scopes[0]!.label.length).toBeGreaterThan(0);
+
+    const { code, redirectTo } = await approveAndGetCode(agent, authorizeParams);
+    expect(redirectTo.startsWith('myapp://callback?')).toBe(true);
+    expect(redirectTo).toContain('state=mobile-state');
+
+    // Public client: no secret, PKCE verifier proves possession.
+    const tokenRes = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: NATIVE_REDIRECT,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(tokenRes.status).toBe(200);
+    oauthTokenResponseSchema.parse(tokenRes.body);
+  });
+});
+
+describe('authorization code — single-use and short-lived', () => {
+  async function freshCode(): Promise<{ clientId: string; clientSecret: string; code: string }> {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    return { clientId, clientSecret: clientSecret!, code };
+  }
+
+  it('rejects a second exchange of the same code', async () => {
+    const { clientId, clientSecret, code } = await freshCode();
+    const body = {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      client_secret: clientSecret,
+    };
+    expect((await tokenRequest(body)).status).toBe(200);
+    const replay = await tokenRequest(body);
+    expect(replay.status).toBe(400);
+    expect(replay.body.error.code).toBe('INVALID_GRANT');
+  });
+
+  it('rejects an expired code', async () => {
+    const { clientId, clientSecret, code } = await freshCode();
+    await harness.db
+      .update(schema.oauthAuthCodes)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.oauthAuthCodes.codeHash, hashToken(code)));
+    const res = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_GRANT');
+  });
+});
+
+describe('grant revocation', () => {
+  it('immediately invalidates access + refresh tokens', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const tokens = oauthTokenResponseSchema.parse(
+      (
+        await tokenRequest({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: HTTPS_REDIRECT,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).body,
+    );
+    const auth = `Bearer ${tokens.access_token}`;
+    expect(
+      (await request(harness.app).get('/api/v1/portfolios').set('Authorization', auth)).status,
+    ).toBe(200);
+
+    const grants = oauthGrantListResponseSchema.parse(
+      (await agent.get('/api/v1/settings/oauth-grants')).body,
+    );
+    expect(grants.grants).toHaveLength(1);
+    const del = await agent
+      .delete(`/api/v1/settings/oauth-grants/${grants.grants[0]!.id}`)
+      .set(...XRW);
+    expect(del.status).toBe(204);
+
+    // Access token now rejected.
+    const after = await request(harness.app).get('/api/v1/portfolios').set('Authorization', auth);
+    expect(after.status).toBe(401);
+    // Refresh token now rejected too.
+    const refresh = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: tokens.refresh_token,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(refresh.status).toBe(400);
+    expect(await auditActions()).toContain('oauth.grant_revoked');
+  });
+});
+
+describe('refresh-token rotation', () => {
+  it('rotates the refresh token and rejects reuse of the old one', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const first = oauthTokenResponseSchema.parse(
+      (
+        await tokenRequest({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: HTTPS_REDIRECT,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).body,
+    );
+    const rotated = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: first.refresh_token,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(rotated.status).toBe(200);
+    const next = oauthTokenResponseSchema.parse(rotated.body);
+    expect(next.refresh_token).not.toBe(first.refresh_token);
+
+    // Replay of the consumed refresh token is rejected (and revokes the grant).
+    const replay = await tokenRequest({
+      grant_type: 'refresh_token',
+      refresh_token: first.refresh_token,
+      client_id: clientId,
+      client_secret: clientSecret,
+    });
+    expect(replay.status).toBe(400);
+    expect(await auditActions()).toContain('oauth.token_refreshed');
+  });
+});
+
+describe('OAuth request validation', () => {
+  it('rejects an unregistered redirect_uri at consent time', async () => {
+    const { agent, clientId } = await registerClient({ scopes: ['portfolio:read'] });
+    const res = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({
+        client_id: clientId,
+        redirect_uri: 'https://evil.example/cb',
+        scope: 'portfolio:read',
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_REDIRECT_URI');
+  });
+
+  it('rejects a public client that omits PKCE', async () => {
+    const { agent, clientId } = await registerClient({ public: true, scopes: ['portfolio:read'] });
+    const res = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send({ client_id: clientId, redirect_uri: HTTPS_REDIRECT, scope: 'portfolio:read' });
+    // Registered redirect defaults to HTTPS_REDIRECT for this client.
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_REQUEST');
+  });
+
+  it('rejects a token exchange whose client_id does not own the code', async () => {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes: ['portfolio:read'] });
+    const other = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const res = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: other.clientId,
+      client_secret: other.clientSecret,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_GRANT');
+    // Sanity: the original (correct) client still works afterwards is not asserted —
+    // the code stays unconsumed, but validation failing first is the point.
+    void clientSecret;
+  });
+
+  it('rejects a public-client exchange with a wrong PKCE verifier', async () => {
+    const { agent, clientId } = await registerClient({
+      public: true,
+      scopes: ['portfolio:read'],
+      redirectUris: [NATIVE_REDIRECT],
+    });
+    const { challenge } = pkce();
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: NATIVE_REDIRECT,
+      scope: 'portfolio:read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    const res = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: NATIVE_REDIRECT,
+      client_id: clientId,
+      code_verifier: randomBytes(32).toString('base64url'),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_GRANT');
+  });
+
+  it('rejects a confidential-client exchange with a wrong secret', async () => {
+    const { agent, clientId } = await registerClient({ scopes: ['portfolio:read'] });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+    });
+    const res = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      client_secret: 'bts_wrong',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_CLIENT');
+  });
+});
+
+describe('OAuth token boundaries', () => {
+  async function accessToken(scopes: string[]): Promise<string> {
+    const { agent, clientId, clientSecret } = await registerClient({ scopes });
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: scopes.join(' '),
+    });
+    const tokens = oauthTokenResponseSchema.parse(
+      (
+        await tokenRequest({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri: HTTPS_REDIRECT,
+          client_id: clientId,
+          client_secret: clientSecret,
+        })
+      ).body,
+    );
+    return tokens.access_token;
+  }
+
+  it('can never reach an admin endpoint (404)', async () => {
+    const token = await accessToken(['portfolio:read']);
+    const res = await request(harness.app)
+      .get('/api/v1/admin/users')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('cannot register OAuth apps or manage grants with a token (session-only)', async () => {
+    const token = await accessToken(['portfolio:read', 'social:read']);
+    const auth = `Bearer ${token}`;
+    const clients = await request(harness.app)
+      .get('/api/v1/settings/oauth-clients')
+      .set('Authorization', auth);
+    expect(clients.status).toBe(403);
+    expect(clients.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    const consent = await request(harness.app)
+      .get('/api/v1/oauth/authorization-details')
+      .set('Authorization', auth)
+      .query({ client_id: 'btc_x', redirect_uri: HTTPS_REDIRECT, scope: 'portfolio:read' });
+    expect(consent.status).toBe(403);
+  });
+
+  it('401s an expired access token', async () => {
+    const token = await accessToken(['portfolio:read']);
+    await harness.db
+      .update(schema.oauthAccessTokens)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.oauthAccessTokens.tokenHash, hashToken(token)));
+    const res = await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(401);
+  });
+});
