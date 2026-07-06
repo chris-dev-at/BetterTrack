@@ -19,7 +19,13 @@ import {
 } from '../../lib/portfolioApi';
 import { cx } from '../../lib/cx';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
-import { EM_DASH, formatDate, formatQuantity, formatSignedPercent } from '../../lib/format';
+import {
+  EM_DASH,
+  formatDate,
+  formatPercent,
+  formatQuantity,
+  formatSignedPercent,
+} from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
 import type { AllocationSegment, BenchmarkSeries, PriceRange } from '../../ui/charts';
@@ -71,6 +77,57 @@ function DeltaPct({ value }: { value: number | null }) {
   return <span className={cx('tabular-nums', cls)}>{formatSignedPercent(value)}</span>;
 }
 
+/**
+ * Net-worth headline (#311): the primary figure is the portfolio's total worth
+ * — holdings + cash — with the invested/cash composition spelled out and a
+ * slim liquidity ratio bar answering "how liquid am I?" at a glance.
+ */
+function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
+  // Clamp the invested share to [0, 100] and derive the cash share as its
+  // complement, so the two always sum to exactly 100 % of the headline total.
+  const investedPct =
+    totals.totalValueEur > 0
+      ? Math.min(100, Math.max(0, (totals.marketValueEur / totals.totalValueEur) * 100))
+      : null;
+  const cashPct = investedPct == null ? null : 100 - investedPct;
+
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Total value</p>
+        <p className="mt-1 text-3xl font-semibold tracking-tight text-neutral-100">
+          <MoneyText amount={totals.totalValueEur} />
+        </p>
+        <p className="mt-1 text-sm text-neutral-400">
+          <MoneyText amount={totals.marketValueEur} /> invested &middot;{' '}
+          <MoneyText amount={totals.cashEur} /> cash
+        </p>
+      </div>
+      {investedPct != null && cashPct != null ? (
+        <div className="w-full sm:max-w-xs sm:flex-1" aria-label="Liquidity">
+          <div className="flex items-center justify-between gap-3 text-xs text-neutral-400">
+            <span>
+              <span className="font-medium text-neutral-200">{formatPercent(investedPct)}</span>{' '}
+              invested
+            </span>
+            <span>
+              <span className="font-medium text-neutral-200">{formatPercent(cashPct)}</span> liquid
+            </span>
+          </div>
+          <div
+            role="img"
+            aria-label={`${formatPercent(investedPct)} invested, ${formatPercent(cashPct)} liquid`}
+            className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-neutral-800"
+          >
+            <div className="bg-sky-500" style={{ width: `${investedPct}%` }} />
+            <div className="bg-emerald-500" style={{ width: `${cashPct}%` }} />
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TotalsHeader({
   totals,
   onDeposit,
@@ -81,51 +138,51 @@ function TotalsHeader({
   onWithdraw: () => void;
 }) {
   return (
-    <section
-      aria-label="Portfolio totals"
-      className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5"
-    >
-      <StatCard label="Market value" value={<MoneyText amount={totals.marketValueEur} />} />
-      <StatCard label="Invested" value={<MoneyText amount={totals.investedEur} />} />
-      <StatCard
-        label="Unrealized P/L"
-        value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
-        subValue={<DeltaPct value={totals.unrealizedPnlPct} />}
-      />
-      <StatCard
-        label="Day change"
-        value={<MoneyText amount={totals.dayChangeEur} signed />}
-        subValue={<DeltaPct value={totals.dayChangePct} />}
-      />
-      <StatCard
-        label="Cash"
-        value={<MoneyText amount={totals.cashEur} />}
-        subValue={
-          <span className="flex gap-2">
-            <button
-              type="button"
-              onClick={onDeposit}
-              className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
-              + Deposit
-            </button>
-            <button
-              type="button"
-              onClick={onWithdraw}
-              className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
-              − Withdraw
-            </button>
-          </span>
-        }
-      />
+    <section aria-label="Portfolio totals" className="flex flex-col gap-3">
+      <NetWorthHeadline totals={totals} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <StatCard label="Market value" value={<MoneyText amount={totals.marketValueEur} />} />
+        <StatCard label="Invested" value={<MoneyText amount={totals.investedEur} />} />
+        <StatCard
+          label="Unrealized P/L"
+          value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
+          subValue={<DeltaPct value={totals.unrealizedPnlPct} />}
+        />
+        <StatCard
+          label="Day change"
+          value={<MoneyText amount={totals.dayChangeEur} signed />}
+          subValue={<DeltaPct value={totals.dayChangePct} />}
+        />
+        <StatCard
+          label="Cash"
+          value={<MoneyText amount={totals.cashEur} />}
+          subValue={
+            <span className="flex gap-2">
+              <button
+                type="button"
+                onClick={onDeposit}
+                className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              >
+                + Deposit
+              </button>
+              <button
+                type="button"
+                onClick={onWithdraw}
+                className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              >
+                − Withdraw
+              </button>
+            </span>
+          }
+        />
+      </div>
     </section>
   );
 }
 
 // ─── Allocation donuts ──────────────────────────────────────────────────────
 
-function AllocationSection({ holdings }: { holdings: Holding[] }) {
+function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur: number }) {
   const byAsset: AllocationSegment[] = holdings
     .filter((h) => h.marketValueEur != null && h.marketValueEur > 0)
     .map((h) => ({ label: h.asset.symbol, value: h.marketValueEur! }));
@@ -139,6 +196,13 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
     label: TYPE_LABELS[type] ?? type,
     value,
   }));
+
+  // Cash is part of the portfolio's worth (#311) — the composition view gets
+  // a cash slice in both donuts so the shares describe the headline total.
+  if (cashEur > 0) {
+    byAsset.push({ label: 'Cash', value: cashEur });
+    byType.push({ label: 'Cash', value: cashEur });
+  }
 
   if (byAsset.length === 0) return null;
 
@@ -1002,7 +1066,7 @@ export function PortfolioPage() {
             />
           </section>
 
-          <AllocationSection holdings={holdings} />
+          <AllocationSection holdings={holdings} cashEur={totals.cashEur} />
 
           <section aria-label="Holdings" className="flex flex-col gap-3">
             <h2 className="text-lg font-semibold text-neutral-200">Holdings</h2>

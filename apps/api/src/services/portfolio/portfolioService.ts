@@ -42,7 +42,9 @@ import {
   CASH_EPSILON,
   CASH_MOVEMENT_SIGN,
   cashBalance,
+  externalCashFlowsForTwr,
   InsufficientCashError,
+  netWorthSeries,
   projectCashLedger,
   type CashMovement as DomainCashMovement,
 } from '../../domain/cashLedger';
@@ -55,6 +57,7 @@ import {
   reducePosition,
   timeWeightedReturn,
   valueOverTime,
+  type FlowPoint,
   type Holding,
   type HoldingAssetInput,
   type PricePoint,
@@ -195,16 +198,17 @@ const HISTORY_TTL_SECONDS = 3600; // 1 h (§6.9).
 /**
  * Redis key for the cached, full value-over-time payload of a portfolio.
  *
- * Versioned (`v3`): the cached shape changed with #125 (the performance/TWR
- * series joined the payload; `v2` added the #122 overlay series), and bumping
- * the version also wholesale-invalidates every series a *previous* deployment
- * computed. The 1 h TTL is only refreshed by writes, so without the bump a
- * pre-deploy entry — possibly computed by older, buggier code — would keep
- * being served for up to an hour after a fix ships (exactly the stale
- * single-point graph reported in #122).
+ * Versioned (`v4`): the cached *semantics* changed with #311 (the value curve
+ * became the net-worth curve — holdings + cash — and the TWR flows moved to
+ * the external-flow classification; `v3` added the #125 performance series,
+ * `v2` the #122 overlays), and bumping the version also wholesale-invalidates
+ * every series a *previous* deployment computed. The 1 h TTL is only refreshed
+ * by writes, so without the bump a pre-deploy entry — possibly computed by
+ * older, buggier code — would keep being served for up to an hour after a fix
+ * ships (exactly the stale single-point graph reported in #122).
  */
 export function portfolioHistoryCacheKey(portfolioId: string): string {
-  return `portfolio:history:v3:${portfolioId}`;
+  return `portfolio:history:v4:${portfolioId}`;
 }
 
 /** The full cached graph payload: EUR value curve + TWR performance curve + per-asset overlay series. */
@@ -481,11 +485,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   const emptyHistory = (): HistoryPayload => ({ points: [], performance: [], assets: [] });
 
   /**
-   * The full value-over-time payload for a portfolio (first transaction →
-   * today), cached 1 h: the EUR value curve plus each held asset's own daily
-   * price series (the #122 overlay). Recomputed on a cache miss and re-stored;
-   * the range slice is applied by the caller. Invalidated wholesale on any
-   * write (§6.9), so a back-dated transaction reshapes the history immediately.
+   * The full value-over-time payload for a portfolio (first transaction or
+   * cash movement → today), cached 1 h: the EUR **net-worth** curve (holdings
+   * value + EOD cash balance, #311), its TWR performance series, and each held
+   * asset's own daily price series (the #122 overlay). Recomputed on a cache
+   * miss and re-stored; the range slice is applied by the caller. Invalidated
+   * wholesale on any write — transactions, value points *and* cash movements —
+   * so a back-dated entry reshapes the history immediately (§6.9).
    *
    * Per-asset daily prices come from the provider layer (`marketData.getHistory`
    * at `1d`, §5.2/§5.3 — cached, coalesced, budgeted), merged over the stored
@@ -513,13 +519,62 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
     }
 
-    const txns = await transactionRepo.listForPortfolio(portfolioId);
-    if (txns.length === 0) {
+    const [txns, cashRecords] = await Promise.all([
+      transactionRepo.listForPortfolio(portfolioId),
+      cashMovementRepo.listForPortfolio(portfolioId),
+    ]);
+    if (txns.length === 0 && cashRecords.length === 0) {
       const empty = emptyHistory();
       await redis.set(key, JSON.stringify(empty), 'EX', HISTORY_TTL_SECONDS);
       return empty;
     }
 
+    const today = todayIso();
+    const movements = cashRecords.map(toDomainMovement);
+    // Transactions with a linked cash movement (§14): internal cash↔holdings
+    // conversions, excluded from the external TWR flows below (their external
+    // flow was booked when the cash was deposited — cashLedger wiring rule 2).
+    const linkedTxnIds = new Set(
+      cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
+    );
+    const legs =
+      txns.length > 0
+        ? await buildHoldingsLegs(txns, linkedTxnIds, today)
+        : { points: [], flows: [], overlays: [] };
+
+    // The absolute curve is the NET-WORTH curve (#311): holdings value plus
+    // the end-of-day cash balance — a deposit moves it by exactly its amount,
+    // a cash-funded buy leaves it flat at the trade moment (money changes
+    // form). Performance mode (#125) links the same curve against EXTERNAL
+    // flows only: ledger deposits/withdrawals plus transactions not funded
+    // from cash. timeWeightedReturn aggregates same-day flows, so the two
+    // sparse flow series concatenate safely.
+    const points = netWorthSeries({ holdingsValues: legs.points, movements, today });
+    const performance = timeWeightedReturn(points, [
+      ...legs.flows,
+      ...externalCashFlowsForTwr(movements),
+    ]);
+
+    const payload: HistoryPayload = { points, performance, assets: legs.overlays };
+    await redis.set(key, JSON.stringify(payload), 'EX', HISTORY_TTL_SECONDS);
+    return payload;
+  }
+
+  /**
+   * The holdings-only legs of the graph payload: the daily holdings value
+   * curve, the external transaction flows (cash-funded transactions excluded,
+   * see {@link loadSeries}), and the #122 overlay series. Degrades to empty
+   * legs when no holding is EUR-convertible.
+   */
+  async function buildHoldingsLegs(
+    txns: TransactionRecord[],
+    linkedTxnIds: ReadonlySet<string>,
+    today: string,
+  ): Promise<{
+    points: Array<{ date: string; valueEur: number }>;
+    flows: FlowPoint[];
+    overlays: PortfolioHistoryOverlay[];
+  }> {
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
     const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
 
@@ -529,7 +584,6 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // degrade exactly like getPortfolio drops an unconvertible quote: probe each
     // distinct non-base currency once and exclude assets we can't convert from the
     // series. When historical FX lands this path starts including them automatically.
-    const today = todayIso();
     const convertible = new Map<string, boolean>();
     for (const asset of assetsById.values()) {
       const ccy = asset.currency;
@@ -549,13 +603,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return asset !== undefined && isConvertible(asset.currency);
     });
 
-    // No EUR-convertible holding has any history to plot — degrade to an empty
-    // series instead of throwing mid-conversion.
-    if (usableAssetIds.length === 0) {
-      const empty = emptyHistory();
-      await redis.set(key, JSON.stringify(empty), 'EX', HISTORY_TTL_SECONDS);
-      return empty;
-    }
+    // No EUR-convertible holding has any history to plot — degrade to empty
+    // legs instead of throwing mid-conversion (the cash leg still renders).
+    if (usableAssetIds.length === 0) return { points: [], flows: [], overlays: [] };
 
     const usableIdSet = new Set(usableAssetIds);
 
@@ -608,7 +658,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     });
 
-    const usableTxns = txns.filter((t) => usableIdSet.has(t.assetId)).map(recordToDomain);
+    const usableRecords = txns.filter((t) => usableIdSet.has(t.assetId));
+    const usableTxns = usableRecords.map(recordToDomain);
     const points = await valueOverTime({
       transactions: usableTxns,
       assets: valueAssets,
@@ -616,26 +667,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       converter: currencyService,
     });
 
-    // Performance mode (#125): the same value curve with deposits/withdrawals
-    // neutralized — daily time-weighted return, chain-linked. Flows reuse the
-    // exact transaction set and currencies the value curve was built from, so
-    // both series describe the same portfolio slice.
-    //
-    // NOTE (§14, #220 cash ledger — deliberately deferred here): this curve is
-    // still built purely from transactions and does not yet fold the EUR cash
-    // balance into the value series or swap transaction flows for
-    // `domain/cashLedger.externalCashFlowsForTwr`. The classifier already
-    // guarantees a cash-funded buy is internal (not an external flow) — see the
-    // #278 tests — but wiring cash into the *value curve* so a cash→stock
-    // conversion is genuinely value-neutral is a money-math series rework that
-    // belongs in `domain/` (fable, per the #278 scope: "flag and split rather
-    // than writing money-math in the service"). Tracked as follow-up fable work.
+    // External transaction flows (#125): a buy/sell settled *outside* the
+    // portfolio is money crossing the boundary. Cash-funded transactions are
+    // internal conversions and are excluded here (#311, cashLedger wiring
+    // rule 2) — their external flow was already booked when the cash entered
+    // the ledger; counting them again would double the flow.
     const flows = await netFlowsOverTime({
-      transactions: usableTxns,
+      transactions: usableRecords.filter((t) => !linkedTxnIds.has(t.id)).map(recordToDomain),
       currencyByAsset: new Map(valueAssets.map((a) => [a.assetId, a.currency])),
       converter: currencyService,
     });
-    const performance = timeWeightedReturn(points, flows);
 
     // Overlay series (#122): each held asset's own daily closes over the same
     // window, expanded to the portfolio curve's daily grid (weekends/holidays
@@ -658,9 +699,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
     }
 
-    const payload: HistoryPayload = { points, performance, assets: overlays };
-    await redis.set(key, JSON.stringify(payload), 'EX', HISTORY_TTL_SECONDS);
-    return payload;
+    return { points, flows, overlays };
   }
 
   return {
@@ -1006,6 +1045,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         executedAt,
         note: input.note ?? null,
       });
+      // Cash is part of the net-worth curve (#311) — drop the cached series.
+      await invalidateHistory(portfolioId);
       return { movement: movementToDto(movement), balanceEur: await cashBalanceFor(portfolioId) };
     },
 
@@ -1024,6 +1065,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         executedAt,
         note: input.note ?? null,
       });
+      // Cash is part of the net-worth curve (#311) — drop the cached series.
+      await invalidateHistory(portfolioId);
       return { movement: movementToDto(movement), balanceEur: await cashBalanceFor(portfolioId) };
     },
 
@@ -1089,6 +1132,7 @@ function emptyTotals(cashEur = 0): PortfolioTotals {
     dayChangeEur: 0,
     dayChangePct: null,
     cashEur,
+    totalValueEur: cashEur,
   };
 }
 
@@ -1117,6 +1161,9 @@ function computeTotals(holdings: readonly Holding[], cashEur: number): Portfolio
     dayChangeEur,
     dayChangePct: dayPrevValueEur > 0 ? (dayChangeEur / dayPrevValueEur) * 100 : null,
     cashEur,
+    // The headline number (#311): net worth = holdings value + cash. A deposit
+    // raises it by exactly its amount; a cash-funded buy leaves it unchanged.
+    totalValueEur: marketValueEur + cashEur,
   };
 }
 
