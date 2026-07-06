@@ -148,6 +148,35 @@ date -Is >"$MFSTATE/status/worker-2.hb" 2>/dev/null || date >"$MFSTATE/status/wo
 MF_STALL_SECS=3600 stall_check
 check "fresh heartbeat NOT treated as stall" "1" "$(ls "$MFSTATE"/assignments/*.json 2>/dev/null | wc -l | tr -d ' ')"
 
+echo "— composer idle back-off (unchanged snapshot doubles, changed snapshot resets)"
+rm -f "$MFSTATE"/assignments/*.json "$MFSTATE"/merge-queue/*.json 2>/dev/null || true
+rm -f "$MFSTATE"/control/.composer-last "$MFSTATE"/control/.composer-backoff "$MFSTATE"/control/.composer-snapshot
+rm -rf "$TICK_DEPS"; mkdir -p "$TICK_DEPS"
+echo '[]' >"$TICK_ISSUES"
+
+composer_step run
+check "first run: backoff stays at base cooldown (900)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+composer_step run
+check "re-eval before cooldown elapses is skipped (no change)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+touch -d "@$(( $(date +%s) - 901 ))" "$MFSTATE/control/.composer-last"
+composer_step run
+check "empty run after cooldown doubles backoff (900→1800)" "1800" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+touch -d "@$(( $(date +%s) - 901 ))" "$MFSTATE/control/.composer-last"
+composer_step run
+check "eval before the backed-off (1800s) cooldown expires is skipped" "1800" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+touch -d "@$(( $(date +%s) - 1801 ))" "$MFSTATE/control/.composer-last"
+composer_step run
+check "still-unchanged snapshot doubles again (1800→3600)" "3600" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+touch -d "@$(( $(date +%s) - 3601 ))" "$MFSTATE/control/.composer-last"
+echo '[{"number":260,"title":"new issue appeared","body":"x","labels":["autopilot"]}]' >"$TICK_ISSUES"
+composer_step run
+check "open-issue set change resets backoff to base (900)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
+
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
