@@ -10,7 +10,13 @@ Do, in order:
    - Title: "[P<phase>] <verb> <thing>" — one coherent work package a single agent run can finish.
    - Body: ## Context · ## Scope (exact files/dirs) · ## Acceptance criteria (testable checkboxes — these are what the reviewer grades against) · ## Out of scope.
    - **## Context MUST QUOTE VERBATIM the exact PROJECTPLAN spec excerpt(s) the writer needs to implement** — the precise subsections, each with its § number — so the writer never has to open PROJECTPLAN.md. Open only those specific subsections to copy them (that is content extraction, not re-orientation); if a spec detail is not quoted, the writer cannot use it.
-   - Labels: autopilot + exactly one tier label (tier:fable for domain core code, the provider/caching/coalescing core, and the local search-index core; tier:opus for auth/sessions/PIN/rate-limits/admin/registration-modes/schema/jobs/realtime/Builder/sharing-privacy; tier:sonnet for CRUD/UI/placeholders/config/docs; unsure → higher tier).
+   - Labels: autopilot + exactly one DIFFICULTY label. Difficulty describes how demanding the work is — the owner maps each difficulty to a concrete model/provider in the dashboard, so never think in models, only in difficulty:
+     - `diff:easy` — trivial/mechanical: docs, config/CI, copy tweaks, Coming-Soon placeholders, tiny isolated CRUD.
+     - `diff:normal` — standard well-scoped feature work: plain UI pages, simple endpoints, templates, e2e specs.
+     - `diff:intermediate` — cross-cutting or stateful: auth/sessions/PIN/rate-limits, admin/registration modes, DB schema/migrations, BullMQ jobs, realtime gateway, import/export, sharing-privacy boundaries.
+     - `diff:hard` — complex engine/architecture work: domain core (allocation/backtest/holdings), provider/caching/request-coalescing core, local search-index core, deployment-topology config.
+     - `diff:max` — keystone/critical-path work where a subtle bug poisons everything downstream, and plan-deviation design decisions.
+     - Unsure → the HIGHER difficulty.
    - **The body MUST END with a machine-readable mf-meta block** (HTML comment, exactly this shape):
 
      ```

@@ -8,6 +8,13 @@
 # /work/mfstate carries the master↔worker protocol, control files and the shared
 # event log. Never run this at the same time as the single factory — autorun.sh
 # guards both directions.
+#
+# Provider auth (codex + antigravity/gemini): autorun.sh syncs the host CLI
+# credentials into gitignored per-container copies under ./auth/<service>/ and
+# they are bind-mounted read-write over the container HOME dirs (rw so token
+# refreshes persist; per-container copies so containers never race each other
+# on the same file). Claude auth stays the CLAUDE_CODE_OAUTH_TOKEN env from
+# factory/.env. Nothing under ./auth or ./state is ever committed.
 name: bettertrack-multifactory
 
 x-common: &common
@@ -27,10 +34,13 @@ services:
       - mf-master-work:/work/state
       - ./state:/work/mfstate
       - ./master.sh:/work/mf/master.sh:ro
+      - ./mflib.sh:/work/mf/mflib.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
+      - ./auth/master/codex:/home/factory/.codex
+      - ./auth/master/gemini:/home/factory/.gemini
 
   worker-1:
     <<: *common
@@ -42,10 +52,13 @@ services:
       - mf-w1-work:/work/state
       - ./state:/work/mfstate
       - ./worker.sh:/work/mf/worker.sh:ro
+      - ./mflib.sh:/work/mf/mflib.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
+      - ./auth/worker-1/codex:/home/factory/.codex
+      - ./auth/worker-1/gemini:/home/factory/.gemini
 
   worker-2:
     <<: *common
@@ -57,10 +70,13 @@ services:
       - mf-w2-work:/work/state
       - ./state:/work/mfstate
       - ./worker.sh:/work/mf/worker.sh:ro
+      - ./mflib.sh:/work/mf/mflib.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
+      - ./auth/worker-2/codex:/home/factory/.codex
+      - ./auth/worker-2/gemini:/home/factory/.gemini
 
 volumes:
   mf-master-work:

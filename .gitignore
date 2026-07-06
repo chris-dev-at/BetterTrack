@@ -34,3 +34,7 @@ factory/usage/*.json
 # multi-factory runtime state — protocol files, never committed
 multi-factory/state/
 compose.extra.yml
+
+# multi-factory provider auth — synced host CLI credentials (codex/antigravity),
+# bind-mounted into the containers. NEVER commit anything under this dir.
+multi-factory/auth/

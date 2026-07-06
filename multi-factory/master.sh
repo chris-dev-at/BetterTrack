@@ -37,6 +37,7 @@ export MF_EVENTLOG=$LOGS/events.log
 # boot + main loop skipped).
 if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
   . /work/mf/lib.sh
+  . /work/mf/mflib.sh
 fi
 
 # ---- small utils ---------------------------------------------------------------
@@ -242,7 +243,7 @@ composer_step(){ # $1=mode
   ( cd "$REPO_DIR" \
     && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
     && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "composer pre-sync failed (non-fatal)"
-  CC_ISSUE=- CC_ROLE=composer cc "$MO" "$(with_pack "$(sed "s/{{BATCH}}/$COMPOSER_BATCH/g" "$MF_PROMPTS/composer.md")")" || true
+  CC_ISSUE=- mf_cc composer "$(role_diff composer)" "$(with_pack "$(sed "s/{{BATCH}}/$COMPOSER_BATCH/g" "$MF_PROMPTS/composer.md")")" || true
 }
 
 scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle workers
@@ -308,7 +309,7 @@ merger_step(){
     if [ ! -f "$marker" ]; then
       touch "$marker"; log "merger: CI red on PR #$pr — one fix attempt"
       mstatus ci-fix "$pr"
-      CC_ISSUE=$n CC_ROLE=ci-fix cc "$(tier_model "$n")" "CI failed on PR #$pr of $REPO. cd into the repo, check out the PR branch, run 'gh pr checks $pr' and 'gh run view --log-failed' to see why, fix it properly (no test-deletion, no skips), run the tests locally, push." || true
+      CC_ISSUE=$n mf_cc ci-fix "$(issue_difficulty "$n")" "CI failed on PR #$pr of $REPO. cd into the repo, check out the PR branch, run 'gh pr checks $pr' and 'gh run view --log-failed' to see why, fix it properly (no test-deletion, no skips), run the tests locally, push." || true
       return 0
     fi
     mark_human "$n" "CI red on PR #$pr after fix attempt"; rm -f "$f" "$marker"; return 0
@@ -395,8 +396,11 @@ for w in $(seq 1 "$WORKERS"); do
   gh label create "mf:worker-$w" --color 5319E7 --description "multi-factory: assigned to worker $w" >/dev/null 2>&1 || true
 done
 gh label create "mf:relocated" --color BFD4F2 --description "multi-factory: issue spawned by checker RELOCATE (triage chain cap 1)" >/dev/null 2>&1 || true
+mf_labels_boot
 notify "multi-factory master started (workers=$WORKERS, mode=$(cat "$CONTROL/mode"), dry=$MF_DRY_RUN)"
-[ "$MF_DRY_RUN" = 1 ] || wait_for_capacity "startup"
+# Claude capacity gates startup only while some difficulty actually routes to the
+# claude provider — a codex/gemini-only configuration must start during a claude outage.
+if [ "$MF_DRY_RUN" != 1 ] && mf_uses_claude; then wait_for_capacity "startup"; fi
 
 while true; do
   tick

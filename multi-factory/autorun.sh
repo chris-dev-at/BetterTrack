@@ -44,10 +44,13 @@ if [ "$WORKERS" -gt 2 ]; then
       - mf-w$w-work:/work/state
       - ./state:/work/mfstate
       - ./worker.sh:/work/mf/worker.sh:ro
+      - ./mflib.sh:/work/mf/mflib.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
+      - ./auth/worker-$w/codex:/home/factory/.codex
+      - ./auth/worker-$w/gemini:/home/factory/.gemini
 EXTRA
       w=$((w+1))
     done
@@ -75,9 +78,87 @@ guard_single_factory(){
   fi
 }
 
+# Copy provider CLI credentials from the host into gitignored PER-CONTAINER dirs
+# (multi-factory/auth/<service>/…) that compose bind-mounts over the container
+# HOME. Per-container copies keep token-refresh writes from racing across
+# containers; a copy is only overwritten when the host file is NEWER (so a
+# container-refreshed token survives restarts while a fresh host login wins).
+# Missing host auth is a warning, not an error — that provider simply reports
+# unavailable until the owner logs in on the host and restarts.
+sync_file(){ # $1=src $2=dst
+  [ -f "$1" ] || return 0
+  if [ ! -f "$2" ] || [ "$1" -nt "$2" ]; then cp -f "$1" "$2" && chmod 600 "$2"; fi
+}
+# The Antigravity (agy) OAuth token: a plain file on Linux hosts, but the macOS
+# keychain ("Antigravity Safe Storage") on a Mac — where no copyable file exists.
+# So the container gemini credential comes from a ONE-TIME in-container login
+# (./autorun.sh --login-gemini) that writes the token into auth/<primary>/gemini,
+# which this function then fans out to every other container. GEMINI_PRIMARY is
+# the dir the login writes to.
+GEMINI_PRIMARY=master
+AGY_TOKEN_REL=antigravity-cli/antigravity-oauth-token
+gemini_container_authed(){ [ -s "auth/$GEMINI_PRIMARY/gemini/$AGY_TOKEN_REL" ]; }
+
+sync_provider_auth(){
+  local services="master" w c
+  for w in $(seq 1 "$WORKERS"); do services="$services worker-$w"; done
+  for c in $services; do
+    mkdir -p "auth/$c/codex" "auth/$c/gemini/antigravity-cli" "auth/$c/gemini/config"
+    # codex (ChatGPT subscription): auth.json is the credential; config.toml is
+    # GENERATED for the container (trust the factory clone), never copied.
+    sync_file "$HOME/.codex/auth.json" "auth/$c/codex/auth.json"
+    printf '[projects."/work/state/repo"]\ntrust_level = "trusted"\n' > "auth/$c/codex/config.toml"
+    # antigravity/gemini (Google subscription): account/install ids + generated
+    # trust/settings; the actual OAuth TOKEN comes from --login-gemini (below).
+    sync_file "$HOME/.gemini/google_accounts.json" "auth/$c/gemini/google_accounts.json"
+    sync_file "$HOME/.gemini/installation_id"      "auth/$c/gemini/installation_id"
+    sync_file "$HOME/.gemini/antigravity-cli/installation_id" "auth/$c/gemini/antigravity-cli/installation_id"
+    # Linux hosts keep the token in a plain file — copy it straight through.
+    sync_file "$HOME/.gemini/$AGY_TOKEN_REL" "auth/$c/gemini/$AGY_TOKEN_REL"
+    printf '{\n  "security": { "auth": { "selectedType": "oauth-personal" } }\n}\n' > "auth/$c/gemini/settings.json"
+    printf '{\n  "/work/state/repo": "TRUST_FOLDER"\n}\n' > "auth/$c/gemini/trustedFolders.json"
+    printf '{\n  "enableTelemetry": false,\n  "trustedWorkspaces": ["/work/state/repo"]\n}\n' > "auth/$c/gemini/antigravity-cli/settings.json"
+  done
+  # Fan the in-container login token out from the primary to every other container.
+  if gemini_container_authed; then
+    for c in $services; do
+      [ "$c" = "$GEMINI_PRIMARY" ] && continue
+      sync_file "auth/$GEMINI_PRIMARY/gemini/$AGY_TOKEN_REL" "auth/$c/gemini/$AGY_TOKEN_REL"
+    done
+  fi
+  chmod -R go-rwx auth 2>/dev/null || true
+  [ -f "$HOME/.codex/auth.json" ] || echo "! codex auth not found (~/.codex/auth.json) — codex provider unavailable until 'codex login' on the host"
+  if [ ! -f "$HOME/.gemini/$AGY_TOKEN_REL" ] && ! gemini_container_authed; then
+    echo "! antigravity/gemini not authorized for the containers yet."
+    echo "  On macOS the agy token lives in the keychain and can't be copied — run ONE-TIME:"
+    echo "    ./multi-factory/autorun.sh --login-gemini"
+  fi
+}
+
+# One-time interactive Antigravity login INSIDE a container: agy writes its OAuth
+# token into the bind-mounted auth/master/gemini, which sync_provider_auth then
+# fans out to the workers. Owner runs this once; the token persists on the host.
+login_gemini(){
+  require_env
+  echo "→ building image (ensures agy is present)…"; dc build master >/dev/null
+  mkdir -p "auth/$GEMINI_PRIMARY/gemini/antigravity-cli"
+  printf '{\n  "enableTelemetry": false,\n  "trustedWorkspaces": ["/work/state/repo"]\n}\n' \
+    > "auth/$GEMINI_PRIMARY/gemini/antigravity-cli/settings.json"
+  echo "→ launching interactive 'agy' login (complete the Google sign-in, then /quit)…"
+  $DOCKER run --rm -it \
+    -v "$PWD/auth/$GEMINI_PRIMARY/gemini:/home/factory/.gemini" \
+    --entrypoint agy "$($DOCKER compose $COMPOSE_FILES config --images master | head -1)" || true
+  if gemini_container_authed; then
+    echo "✓ antigravity token captured — it will sync to all workers on the next start."
+  else
+    echo "✗ no token was written. Re-run and finish the sign-in, or check 'agy' login output."
+  fi
+}
+
 prepare_state(){
   mkdir -p state/assignments state/status state/merge-queue state/control state/logs prompts
   rm -f state/STOP state/control/dry-done
+  sync_provider_auth
   # Drop protocol files of workers beyond the configured count so the master
   # never assigns to a container that will not start.
   for f in state/assignments/worker-*.json state/status/worker-*.json state/status/worker-*.hb; do
@@ -91,6 +172,7 @@ prepare_state(){
 
 case "${1:-up}" in
   --logs)  exec dcp logs -f ;;
+  --login-gemini) login_gemini; exit 0 ;;
   --stop)  echo "→ stopping multi-factory"; dcp stop; echo "✓ stopped. Resume with: ./multi-factory/autorun.sh"; exit 0 ;;
   --down)  echo "→ downing multi-factory"; dcp down --remove-orphans; echo "✓ removed (state/ and clone volumes kept)"; exit 0 ;;
   --fresh) require_env; guard_single_factory

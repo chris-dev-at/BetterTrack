@@ -16,6 +16,10 @@ bad(){ FAIL=$((FAIL+1)); printf '  ✗ %s\n' "$1"; }
 check(){ # $1=description $2=expected $3=actual
   if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (expected [$2], got [$3])"; fi
 }
+backdate(){ # $1=file $2=seconds-ago — portable mtime rewind (GNU + BSD/macOS touch)
+  local ts=$(( $(date +%s) - $2 ))
+  touch -d "@$ts" "$1" 2>/dev/null || touch -t "$(date -r "$ts" +%Y%m%d%H%M.%S)" "$1"
+}
 
 # ---- environment + stubs --------------------------------------------------------
 export MFSTATE=$T/state
@@ -160,22 +164,64 @@ check "first run: backoff stays at base cooldown (900)" "900" "$(cat "$MFSTATE/c
 composer_step run
 check "re-eval before cooldown elapses is skipped (no change)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
 
-touch -d "@$(( $(date +%s) - 901 ))" "$MFSTATE/control/.composer-last"
+backdate "$MFSTATE/control/.composer-last" 901
 composer_step run
 check "empty run after cooldown doubles backoff (900→1800)" "1800" "$(cat "$MFSTATE/control/.composer-backoff")"
 
-touch -d "@$(( $(date +%s) - 901 ))" "$MFSTATE/control/.composer-last"
+backdate "$MFSTATE/control/.composer-last" 901
 composer_step run
 check "eval before the backed-off (1800s) cooldown expires is skipped" "1800" "$(cat "$MFSTATE/control/.composer-backoff")"
 
-touch -d "@$(( $(date +%s) - 1801 ))" "$MFSTATE/control/.composer-last"
+backdate "$MFSTATE/control/.composer-last" 1801
 composer_step run
 check "still-unchanged snapshot doubles again (1800→3600)" "3600" "$(cat "$MFSTATE/control/.composer-backoff")"
 
-touch -d "@$(( $(date +%s) - 3601 ))" "$MFSTATE/control/.composer-last"
+backdate "$MFSTATE/control/.composer-last" 3601
 echo '[{"number":260,"title":"new issue appeared","body":"x","labels":["autopilot"]}]' >"$TICK_ISSUES"
 composer_step run
 check "open-issue set change resets backoff to base (900)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+echo "— difficulty routing (mflib.sh pure helpers)"
+. ./mflib.sh
+check "diff_next easy→normal" "normal" "$(diff_next easy)"
+check "diff_next intermediate→hard" "hard" "$(diff_next intermediate)"
+check "diff_next max stays max" "max" "$(diff_next max)"
+check "diff_at_least applies review floor" "intermediate" "$(diff_at_least easy intermediate)"
+check "diff_at_least keeps harder issue difficulty" "max" "$(diff_at_least max intermediate)"
+check "labels: diff:* wins over tier:*" "hard" "$(diff_from_labels "$(printf 'autopilot\ndiff:hard\ntier:sonnet')")"
+check "labels: legacy tier:fable → max" "max" "$(diff_from_labels "$(printf 'tier:fable\nautopilot')")"
+check "labels: legacy tier:sonnet → easy" "easy" "$(diff_from_labels 'tier:sonnet')"
+check "labels: legacy tier:opus → intermediate" "intermediate" "$(diff_from_labels 'tier:opus')"
+check "labels: unlabeled → intermediate" "intermediate" "$(diff_from_labels 'autopilot')"
+check "labels: invalid diff value falls back" "intermediate" "$(diff_from_labels 'diff:banana')"
+
+echo "— difficulty → model config (state/control/models.json)"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"difficulties":{
+  "easy":{"provider":"gemini","model":"Gemini 3.5 Flash (Low)"},
+  "hard":{"provider":"codex","model":"gpt-5.5","effort":"xhigh"},
+  "max":{"provider":"pigeon","model":"carrier"}},
+ "roles":{"composer":"intermediate","checker":"max","reviewFloor":"hard"}}
+JSON
+check "cfg: owner-set gemini entry (no effort)" "gemini|Gemini 3.5 Flash (Low)|" "$(diff_cfg easy)"
+check "cfg: owner-set codex entry with effort" "codex|gpt-5.5|xhigh" "$(diff_cfg hard)"
+check "cfg: invalid provider falls back to builtin" "claude|claude-fable-5|max" "$(diff_cfg max)"
+check "cfg: unset difficulty uses builtin default" "claude|claude-opus-4-8|medium" "$(diff_cfg normal)"
+check "cfg: composer role slot honored" "intermediate" "$(role_diff composer)"
+check "cfg: checker role slot honored" "max" "$(role_diff checker)"
+check "cfg: review floor honored" "hard" "$(review_floor)"
+mf_uses_claude && ok "mixed config still detects claude" || bad "mixed config should detect claude"
+cat >"$MFSTATE/control/models.json" <<'JSON'
+{"difficulties":{
+  "easy":{"provider":"gemini","model":"g"},"normal":{"provider":"gemini","model":"g"},
+  "intermediate":{"provider":"codex","model":"c"},"hard":{"provider":"codex","model":"c"},
+  "max":{"provider":"codex","model":"c","effort":"xhigh"}}}
+JSON
+mf_uses_claude && bad "claude-free config should report false" || ok "claude-free config → mf_uses_claude false"
+rm -f "$MFSTATE/control/models.json"
+check "cfg: missing file → builtin default" "claude|claude-sonnet-5|high" "$(diff_cfg easy)"
+check "cfg: missing file → role default hard" "hard" "$(role_diff checker)"
+check "cfg: missing file → floor default intermediate" "intermediate" "$(review_floor)"
 
 echo
 echo "passed: $PASS, failed: $FAIL"
