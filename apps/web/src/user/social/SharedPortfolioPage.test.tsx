@@ -66,6 +66,7 @@ const detail = {
     dayChangeEur: 5,
     dayChangePct: 0.5,
     cashEur: 0,
+    totalValueEur: 1000,
   },
   holdings: [
     {
