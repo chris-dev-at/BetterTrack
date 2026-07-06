@@ -114,8 +114,10 @@ warning on public / light confirm on all-friends / none on specific friends).
 
 - **V3-P0 — v2-feedback quick wins (S bundle, diff:normal):** portfolio-selection
   reset BUG (Transactions/Custom-Assets nav reverts to default — regression
-  test); "Total Value"→"Net Worth" app-wide (grep gate); liquidity bar →
-  integrated redesign; calculator stepper → decimal precision (1/0.1/0.01/0.001).
+  test); withdraw-all cash BUG (full withdrawal leaves €0.01 — must land at
+  exactly €0.00, regression test); "Total Value"→"Net Worth" app-wide (grep
+  gate); liquidity bar → integrated redesign; calculator stepper → decimal
+  precision (1/0.1/0.01/0.001).
 - **V3-P1 — i18n foundation (L, diff:intermediate):** EN source-of-truth + DE
   first translation; per-user language picker in Settings; all strings extracted;
   locale-aware dates/numbers; localized emails; a new language = one locale file plus
@@ -126,8 +128,10 @@ warning on public / light confirm on all-friends / none on specific friends).
   mark-day values stay exact).
 - **V3-P3 — Cash sources (L, diff:max):** V2 cash ledger becomes **Main** + named
   sources (bank/retirement/cash/custom), each with balance + history; atomic
-  paired transfers; source picker on deposit/withdraw/buy/sell; Net Worth +
-  liquidity roll-up; internal transfers are NEVER TWR external flows.
+  paired transfers; source picker on deposit/withdraw/buy/sell; "set balance to
+  X" op on every source (app computes the signed delta, records it as a normal
+  movement); Net Worth + liquidity roll-up; internal transfers are NEVER TWR
+  external flows.
 - **V3-P4 — Realized P/L, tax, dividends (L, diff:max; needs P3):**
   moving-average cost basis; per-calendar-year realized P/L; tax modes None /
   Manual-per-trade / Country-specific (AT only: 27.5 % on gains + dividends,
