@@ -406,8 +406,9 @@ async function providerStatus() {
   // the host token is in the keychain, so host presence alone doesn't mean the
   // containers can use it (they get it via `autorun.sh --login-gemini`).
   const gemini =
-    existsSync(join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token')) ||
-    existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
+    existsSync(
+      join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+    ) || existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
   const hostGemini = existsSync(join(home, '.gemini', 'oauth_creds.json')) || gemini;
   let agyModels = provCache.data?.agyModels || [];
   if (hostGemini) {
@@ -761,8 +762,19 @@ async function doAction(action, payload = {}) {
       else if (p === 'codex')
         r = await run(
           'codex',
-          ['exec', '--skip-git-repo-check', '-s', 'read-only', '-C', MF_DIR,
-           '-m', 'gpt-5.4-mini', '-c', 'model_reasoning_effort=low', 'Reply with exactly: ok'],
+          [
+            'exec',
+            '--skip-git-repo-check',
+            '-s',
+            'read-only',
+            '-C',
+            MF_DIR,
+            '-m',
+            'gpt-5.4-mini',
+            '-c',
+            'model_reasoning_effort=low',
+            'Reply with exactly: ok',
+          ],
           { timeout: 90000 },
         );
       else if (p === 'gemini')
@@ -776,7 +788,10 @@ async function doAction(action, payload = {}) {
       const last = (r.stdout || '').trim().split('\n').filter(Boolean).pop() || '';
       return r.ok
         ? { ok: true, message: `${p} works — replied: ${last.slice(0, 60)}` }
-        : { ok: false, message: `${p} test failed: ${(r.stderr || r.err || 'no output').slice(0, 160)}` };
+        : {
+            ok: false,
+            message: `${p} test failed: ${(r.stderr || r.err || 'no output').slice(0, 160)}`,
+          };
     }
     case 'start-dry':
       return spawnLogged('start-dry', 'bash', ['autorun.sh', '--dry'], MF_DIR);

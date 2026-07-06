@@ -1025,7 +1025,10 @@
           Providers
           <span class="hint">subscription CLIs — auth synced from this Mac on every start</span>
         </h2>
-        <div id="provs" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center"></div>
+        <div
+          id="provs"
+          style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center"
+        ></div>
         <div class="hint" style="margin-top: 8px">
           <b>Test</b> runs one tiny prompt through the host CLI — the exact credentials the
           containers get. Claude auth = factory token (factory/.env / keychain) · Codex =
@@ -1065,14 +1068,14 @@
           <summary class="hint" style="cursor: pointer">how difficulty routing works</summary>
           <div class="hint" style="margin-top: 6px; line-height: 1.55">
             The composer labels every issue with exactly one of
-            <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer,
-            fixer and ci-fix run on the model you map to the issue's difficulty; reviews run at
-            the issue's difficulty but never below the <b>review floor</b>; the composer and
-            checker master-roles use the difficulty slots above. A rejected issue escalates ONE
-            difficulty higher on its triage retry (max stays max). Legacy tier labels still
-            resolve: sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude =
-            --effort (low…max) · Codex = reasoning effort (low…xhigh) · Antigravity bakes the
-            level into the model name, e.g. “Gemini 3.1 Pro (High)”.
+            <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer, fixer
+            and ci-fix run on the model you map to the issue's difficulty; reviews run at the
+            issue's difficulty but never below the <b>review floor</b>; the composer and checker
+            master-roles use the difficulty slots above. A rejected issue escalates ONE difficulty
+            higher on its triage retry (max stays max). Legacy tier labels still resolve:
+            sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max)
+            · Codex = reasoning effort (low…xhigh) · Antigravity bakes the level into the model
+            name, e.g. “Gemini 3.1 Pro (High)”.
           </div>
         </details>
       </div>
@@ -1352,7 +1355,11 @@
           'Gemini 3.5 Flash (Low)',
         ],
       };
-      const PROV_DEFAULT = { claude: 'claude-opus-4-8', codex: 'gpt-5.5', gemini: 'Gemini 3.1 Pro (High)' };
+      const PROV_DEFAULT = {
+        claude: 'claude-opus-4-8',
+        codex: 'gpt-5.5',
+        gemini: 'Gemini 3.1 Pro (High)',
+      };
       let mDirty = false,
         mLast = '',
         pLast = '';
