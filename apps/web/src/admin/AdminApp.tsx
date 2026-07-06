@@ -7,6 +7,7 @@ import { EmailPage } from './pages/EmailPage';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
+import { OAuthAppsPage } from './pages/OAuthAppsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { UserDetailPage } from './pages/UserDetailPage';
 import { UsersPage } from './pages/UsersPage';
@@ -29,6 +30,7 @@ function AdminShell() {
         <Route path="users" element={<UsersPage />} />
         <Route path="users/:userId" element={<UserDetailPage />} />
         <Route path="invites" element={<InvitesPage />} />
+        <Route path="oauth-apps" element={<OAuthAppsPage />} />
         <Route path="email" element={<EmailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="settings" element={<SettingsPage />} />

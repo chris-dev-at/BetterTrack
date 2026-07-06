@@ -5,6 +5,7 @@ import {
   auditQuerySchema,
   bulkUserActionRequestSchema,
   createInviteRequestSchema,
+  createOAuthClientRequestSchema,
   createUserRequestSchema,
   deleteUserRequestSchema,
   emailLogQuerySchema,
@@ -15,6 +16,7 @@ import {
   type AuditQuery,
   type BulkUserActionRequest,
   type CreateInviteRequest,
+  type CreateOAuthClientRequest,
   type CreateUserRequest,
   type DeleteUserRequest,
   type EmailLogQuery,
@@ -204,6 +206,34 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       res.json({ entries: entries.map(toAuditEntry), nextCursor });
     },
   );
+
+  // First-party OAuth apps (§6.13 + admin, V2-P12 follow-up): the official
+  // BetterTrack apps (mobile/web) register here as system-owned trusted clients,
+  // not under any user account. Trusted ⇒ the consent screen is BetterTrack-branded
+  // and auto-approved. Registration returns the client secret exactly once.
+  router.get('/oauth-clients', async (_req, res) => {
+    res.json({ clients: await ctx.oauth.listFirstPartyClients() });
+  });
+
+  router.post('/oauth-clients', validateBody(createOAuthClientRequestSchema), async (req, res) => {
+    const body = req.valid?.body as CreateOAuthClientRequest;
+    const result = await ctx.oauth.registerFirstPartyClient({
+      adminId: req.authUser!.id,
+      name: body.name,
+      redirectUris: body.redirectUris,
+      scopes: body.scopes,
+      public: body.public,
+      logoUrl: body.logoUrl ?? null,
+      ip: req.ip ?? null,
+    });
+    res.status(201).json(result);
+  });
+
+  router.delete('/oauth-clients/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.oauth.deleteFirstPartyClient({ adminId: req.authUser!.id, id, ip: req.ip ?? null });
+    res.json({ ok: true });
+  });
 
   return router;
 }

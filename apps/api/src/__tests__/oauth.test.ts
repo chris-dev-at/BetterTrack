@@ -78,6 +78,30 @@ async function registerClient(opts: {
   return { agent, clientId: parsed.client.clientId, clientSecret: parsed.clientSecret };
 }
 
+/** Register a first-party (admin-managed) client via the admin endpoint. */
+async function registerFirstPartyClient(
+  opts: { scopes?: string[]; public?: boolean } = {},
+): Promise<{ clientId: string; clientSecret: string | null }> {
+  const admin = await harness.seedAdmin({
+    email: `fp-admin-${randomBytes(4).toString('hex')}@bettertrack.test`,
+    username: `fpadmin${randomBytes(4).toString('hex')}`,
+  });
+  const agent = await loginAgent(harness.app, admin.email, admin.password);
+  const res = await agent
+    .post('/api/v1/admin/oauth-clients')
+    .set(...XRW)
+    .send({
+      name: 'BetterTrack Mobile',
+      redirectUris: [HTTPS_REDIRECT],
+      scopes: opts.scopes ?? ['portfolio:read'],
+      public: opts.public ?? true,
+    });
+  expect(res.status).toBe(201);
+  const parsed = createOAuthClientResponseSchema.parse(res.body);
+  expect(parsed.client.firstParty).toBe(true);
+  return { clientId: parsed.client.clientId, clientSecret: parsed.clientSecret };
+}
+
 /** Approve consent as the session user and return the delivered authorization code. */
 async function approveAndGetCode(
   agent: Agent,
@@ -133,6 +157,75 @@ describe('OAuth client registration', () => {
       .set(...XRW)
       .send({ name: 'x', redirectUris: ['http://evil.example/cb'], scopes: ['portfolio:read'] });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('first-party (admin-managed) OAuth apps', () => {
+  it('admin registers one; authorize-details flags firstParty and the flow round-trips', async () => {
+    const { clientId } = await registerFirstPartyClient({
+      scopes: ['portfolio:read'],
+      public: true,
+    });
+
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const { verifier, challenge } = pkce();
+    const detailsRes = await agent.get('/api/v1/oauth/authorization-details').query({
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    expect(detailsRes.status).toBe(200);
+    const details = oauthAuthorizationDetailsResponseSchema.parse(detailsRes.body);
+    expect(details.client.firstParty).toBe(true);
+    expect(details.client.logoUrl).toBeNull();
+
+    const { code } = await approveAndGetCode(agent, {
+      client_id: clientId,
+      redirect_uri: HTTPS_REDIRECT,
+      scope: 'portfolio:read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    const tokenRes = await tokenRequest({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: HTTPS_REDIRECT,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokens = oauthTokenResponseSchema.parse(tokenRes.body);
+    const ok = await request(harness.app)
+      .get('/api/v1/portfolios')
+      .set('Authorization', `Bearer ${tokens.access_token}`);
+    expect(ok.status).toBe(200);
+  });
+
+  it('is not in any user’s own app list, and a non-admin cannot register one', async () => {
+    const { clientId } = await registerFirstPartyClient({});
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const mine = await agent.get('/api/v1/settings/oauth-clients');
+    expect(mine.status).toBe(200);
+    expect((mine.body.clients as { clientId: string }[]).some((c) => c.clientId === clientId)).toBe(
+      false,
+    );
+
+    // Account-kind separation: the admin route is invisible to a user (404, not 403).
+    const forbidden = await agent
+      .post('/api/v1/admin/oauth-clients')
+      .set(...XRW)
+      .send({
+        name: 'Sneaky',
+        redirectUris: [HTTPS_REDIRECT],
+        scopes: ['portfolio:read'],
+        public: true,
+      });
+    expect(forbidden.status).toBe(404);
   });
 });
 

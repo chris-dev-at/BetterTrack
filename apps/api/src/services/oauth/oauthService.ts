@@ -53,10 +53,23 @@ export interface OAuthService {
     redirectUris: string[];
     scopes: ApiKeyScope[];
     public: boolean;
+    logoUrl?: string | null;
     ip?: string | null;
   }): Promise<CreateOAuthClientResponse>;
   listClients(userId: string): Promise<OAuthClientSummary[]>;
   deleteClient(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
+  /** Admin panel: register an official FIRST-PARTY app (system-owned, no user). */
+  registerFirstPartyClient(input: {
+    adminId: string;
+    name: string;
+    redirectUris: string[];
+    scopes: ApiKeyScope[];
+    public: boolean;
+    logoUrl?: string | null;
+    ip?: string | null;
+  }): Promise<CreateOAuthClientResponse>;
+  listFirstPartyClients(): Promise<OAuthClientSummary[]>;
+  deleteFirstPartyClient(input: { adminId: string; id: string; ip?: string | null }): Promise<void>;
   listGrants(userId: string): Promise<OAuthGrantSummary[]>;
   revokeGrant(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
   /** Consent-screen data: validates the authorize request, plain-language scopes. */
@@ -111,6 +124,8 @@ function toClientSummary(row: OAuthClientRow): OAuthClientSummary {
     redirectUris: row.redirectUris,
     scopes: row.scopes as ApiKeyScope[],
     public: row.isPublic,
+    firstParty: row.isFirstParty,
+    logoUrl: row.logoUrl ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -229,41 +244,78 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     return client;
   }
 
+  /**
+   * Shared client-row creation for both user-registered and admin first-party
+   * apps: validates the redirect URIs, mints the `btc_…` id (+ a secret for a
+   * confidential client), inserts, and audits under `actorId`.
+   */
+  async function createClientRow(input: {
+    actorId: string;
+    userId: string | null;
+    name: string;
+    redirectUris: string[];
+    scopes: ApiKeyScope[];
+    isPublic: boolean;
+    isFirstParty: boolean;
+    logoUrl?: string | null;
+    ip?: string | null;
+  }): Promise<CreateOAuthClientResponse> {
+    // Defense in depth: the contract already gates URI shape, re-check here so
+    // the service never trusts a caller that skipped validation.
+    for (const uri of input.redirectUris) {
+      if (!isValidRedirectUri(uri)) {
+        throw badRequest(`Invalid redirect URI "${uri}".`, 'INVALID_REDIRECT_URI');
+      }
+    }
+    const clientId = `${OAUTH_CLIENT_ID_PREFIX}${randomBytes(16).toString('base64url')}`;
+    let clientSecret: string | null = null;
+    let clientSecretHash: string | null = null;
+    if (!input.isPublic) {
+      const secret = mint(OAUTH_CLIENT_SECRET_PREFIX);
+      clientSecret = secret.token;
+      clientSecretHash = secret.tokenHash;
+    }
+    const row = await repo.createClient({
+      userId: input.userId,
+      clientId,
+      name: input.name,
+      clientSecretHash,
+      redirectUris: input.redirectUris,
+      scopes: input.scopes,
+      isPublic: input.isPublic,
+      isFirstParty: input.isFirstParty,
+      // First-party apps render the BetterTrack mark, so a logo is never stored.
+      logoUrl: input.isFirstParty ? null : (input.logoUrl ?? null),
+    });
+    await audit.record({
+      actorId: input.actorId,
+      action: AuditAction.OAuthClientRegistered,
+      targetType: 'oauth_client',
+      targetId: row.id,
+      ip: input.ip ?? null,
+      meta: {
+        public: input.isPublic,
+        firstParty: input.isFirstParty,
+        scopes: input.scopes,
+        redirectUris: input.redirectUris,
+      },
+    });
+    return { client: toClientSummary(row), clientSecret };
+  }
+
   return {
-    async registerClient({ userId, name, redirectUris, scopes, public: isPublic, ip }) {
-      // Defense in depth: the contract already gates URI shape, re-check here so
-      // the service never trusts a caller that skipped validation.
-      for (const uri of redirectUris) {
-        if (!isValidRedirectUri(uri)) {
-          throw badRequest(`Invalid redirect URI "${uri}".`, 'INVALID_REDIRECT_URI');
-        }
-      }
-      const clientId = `${OAUTH_CLIENT_ID_PREFIX}${randomBytes(16).toString('base64url')}`;
-      let clientSecret: string | null = null;
-      let clientSecretHash: string | null = null;
-      if (!isPublic) {
-        const secret = mint(OAUTH_CLIENT_SECRET_PREFIX);
-        clientSecret = secret.token;
-        clientSecretHash = secret.tokenHash;
-      }
-      const row = await repo.createClient({
+    registerClient({ userId, name, redirectUris, scopes, public: isPublic, logoUrl, ip }) {
+      return createClientRow({
+        actorId: userId,
         userId,
-        clientId,
         name,
-        clientSecretHash,
         redirectUris,
         scopes,
         isPublic,
+        isFirstParty: false,
+        logoUrl,
+        ip,
       });
-      await audit.record({
-        actorId: userId,
-        action: AuditAction.OAuthClientRegistered,
-        targetType: 'oauth_client',
-        targetId: row.id,
-        ip: ip ?? null,
-        meta: { public: isPublic, scopes, redirectUris },
-      });
-      return { client: toClientSummary(row), clientSecret };
     },
 
     async listClients(userId) {
@@ -278,6 +330,48 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       }
       await audit.record({
         actorId: userId,
+        action: AuditAction.OAuthClientDeleted,
+        targetType: 'oauth_client',
+        targetId: row.id,
+        ip: ip ?? null,
+      });
+    },
+
+    // ── Admin: first-party (official) apps ──────────────────────────────────
+    registerFirstPartyClient({
+      adminId,
+      name,
+      redirectUris,
+      scopes,
+      public: isPublic,
+      logoUrl,
+      ip,
+    }) {
+      return createClientRow({
+        actorId: adminId,
+        userId: null, // system-owned, not tied to any user account
+        name,
+        redirectUris,
+        scopes,
+        isPublic,
+        isFirstParty: true,
+        logoUrl,
+        ip,
+      });
+    },
+
+    async listFirstPartyClients() {
+      const rows = await repo.listFirstPartyClients();
+      return rows.map(toClientSummary);
+    },
+
+    async deleteFirstPartyClient({ adminId, id, ip }) {
+      const row = await repo.deleteFirstPartyClient(id);
+      if (!row) {
+        throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
+      }
+      await audit.record({
+        actorId: adminId,
         action: AuditAction.OAuthClientDeleted,
         targetType: 'oauth_client',
         targetId: row.id,
@@ -320,7 +414,12 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         codeChallengeMethod: query.code_challenge_method,
       });
       return {
-        client: { clientId: client.clientId, name: client.name },
+        client: {
+          clientId: client.clientId,
+          name: client.name,
+          firstParty: client.isFirstParty,
+          logoUrl: client.isFirstParty ? null : (client.logoUrl ?? null),
+        },
         scopes: scopes.map((scope) => ({ scope, label: OAUTH_SCOPE_LABELS[scope] })),
         redirectUri: query.redirect_uri,
         state: query.state ?? null,
