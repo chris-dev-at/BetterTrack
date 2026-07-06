@@ -477,6 +477,37 @@
         border-radius: 8px;
         font-size: 16px;
       }
+      /* models tab */
+      .mrow {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .mrow:last-of-type {
+        border-bottom: none;
+      }
+      .dchip {
+        width: 106px;
+        text-align: center;
+        font-size: 11.5px;
+        font-weight: 650;
+        border-radius: 6px;
+        padding: 3px 0;
+        color: #fff;
+        flex: none;
+      }
+      .mrow input[type='text'] {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink);
+        border-radius: 7px;
+        padding: 5px 7px;
+        font-size: 12.5px;
+        width: 250px;
+      }
 
       /* ---- flow view ---- */
       #flowwrap {
@@ -808,6 +839,7 @@
         <nav class="tabs" id="tabs">
           <button data-tab="overview" class="on">Overview</button>
           <button data-tab="flow">Flow</button>
+          <button data-tab="models">Models</button>
           <button data-tab="usage">Usage</button>
           <button data-tab="detail">DetailView</button>
         </nav>
@@ -986,6 +1018,66 @@
       </div>
     </section>
 
+    <!-- ================= MODELS ================= -->
+    <section class="tab" id="tab-models">
+      <div class="card" style="margin-bottom: 10px">
+        <h2>
+          Providers
+          <span class="hint">subscription CLIs — auth synced from this Mac on every start</span>
+        </h2>
+        <div id="provs" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center"></div>
+        <div class="hint" style="margin-top: 8px">
+          <b>Test</b> runs one tiny prompt through the host CLI — the exact credentials the
+          containers get. Claude auth = factory token (factory/.env / keychain) · Codex =
+          ~/.codex/auth.json (ChatGPT login) · Antigravity (agy) = ~/.gemini Google login. Auth
+          files are copied per-container into multi-factory/auth/ (gitignored) by autorun.sh —
+          nothing ever reaches GitHub.
+        </div>
+      </div>
+      <div class="card">
+        <h2>
+          Difficulty → model routing
+          <span class="hint">saves apply from the NEXT agent run — no restart needed</span>
+        </h2>
+        <div id="mrows"></div>
+        <div class="addrow" style="margin-top: 12px">
+          <span class="hint">composer</span>
+          <select id="m-composer" onchange="mMark()"></select>
+          <span class="hint">checker</span>
+          <select id="m-checker" onchange="mMark()"></select>
+          <span class="hint">review floor</span>
+          <select id="m-floor" onchange="mMark()"></select>
+        </div>
+        <div class="addrow" style="margin-top: 12px">
+          <button class="primary" onclick="mSave(this)">💾 Save routing</button>
+          <button
+            onclick="
+              mDirty = false;
+              mLast = '';
+              renderModels(S);
+            "
+          >
+            ↺ Discard edits
+          </button>
+          <span class="hint" id="mnote"></span>
+        </div>
+        <details style="margin-top: 10px">
+          <summary class="hint" style="cursor: pointer">how difficulty routing works</summary>
+          <div class="hint" style="margin-top: 6px; line-height: 1.55">
+            The composer labels every issue with exactly one of
+            <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer,
+            fixer and ci-fix run on the model you map to the issue's difficulty; reviews run at
+            the issue's difficulty but never below the <b>review floor</b>; the composer and
+            checker master-roles use the difficulty slots above. A rejected issue escalates ONE
+            difficulty higher on its triage retry (max stays max). Legacy tier labels still
+            resolve: sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude =
+            --effort (low…max) · Codex = reasoning effort (low…xhigh) · Antigravity bakes the
+            level into the model name, e.g. “Gemini 3.1 Pro (High)”.
+          </div>
+        </details>
+      </div>
+    </section>
+
     <!-- ================= DETAIL (v1 view) ================= -->
     <!-- ================= USAGE ================= -->
     <section class="tab" id="tab-usage">
@@ -1122,6 +1214,7 @@
           .forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
         if (S) render(S);
         if (t === 'usage') fetchUsage(true);
+        if (t === 'models' && S) renderModels(S);
       }
 
       /* ---- actions ---- */
@@ -1149,8 +1242,10 @@
           });
           const j = await r.json();
           toast(j.message || action, j.ok);
+          return j;
         } catch (e) {
           toast(String(e), false);
+          return { ok: false };
         }
       }
       function toast(msg, ok) {
@@ -1224,6 +1319,149 @@
         wkDesired = n;
         $('wk-n').textContent = n;
         act('set-workers', btn, false, { value: n });
+      }
+
+      /* ---- models (difficulty → provider/model/effort) UI ---- */
+      const DIFF_LIST = ['easy', 'normal', 'intermediate', 'hard', 'max'];
+      const DIFF_COLOR = {
+        easy: '#1d76db',
+        normal: '#7ce38b',
+        intermediate: '#0e8a16',
+        hard: '#8250df',
+        max: '#b60205',
+      };
+      const DIFF_TEXT = { normal: '#0b2e12' }; // dark text on the light-green chip
+      const PROV_LABEL = {
+        claude: 'Claude Code',
+        codex: 'Codex (OpenAI)',
+        gemini: 'Antigravity (Google)',
+      };
+      const PROV_EFFORTS = {
+        claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+        codex: ['low', 'medium', 'high', 'xhigh'],
+        gemini: [],
+      };
+      const PROV_MODELS = {
+        claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
+        codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+        gemini: [
+          'Gemini 3.1 Pro (High)',
+          'Gemini 3.1 Pro (Low)',
+          'Gemini 3.5 Flash (High)',
+          'Gemini 3.5 Flash (Medium)',
+          'Gemini 3.5 Flash (Low)',
+        ],
+      };
+      const PROV_DEFAULT = { claude: 'claude-opus-4-8', codex: 'gpt-5.5', gemini: 'Gemini 3.1 Pro (High)' };
+      let mDirty = false,
+        mLast = '',
+        pLast = '';
+      function mMark() {
+        mDirty = true;
+        $('mnote').textContent = 'unsaved changes — Save to apply';
+      }
+      const mOpt = (list, sel, labels) =>
+        list
+          .map(
+            (v) =>
+              `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(labels?.[v] || v)}</option>`,
+          )
+          .join('');
+      function mRenderRows(m) {
+        const df = m.difficulties || {};
+        $('mrows').innerHTML =
+          DIFF_LIST.map((d) => {
+            const e = df[d] || {};
+            const p = PROV_LABEL[e.provider] ? e.provider : 'claude';
+            const efforts = PROV_EFFORTS[p];
+            const effortSel = efforts.length
+              ? `<select data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, e.effort || 'high')}</select>`
+              : `<span class="hint">effort is part of the model name</span>`;
+            return `<div class="mrow">
+              <span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span>
+              <select data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(Object.keys(PROV_LABEL), p, PROV_LABEL)}</select>
+              <input type="text" data-d="${d}" data-k="model" list="dl-${p}" value="${esc(e.model || PROV_DEFAULT[p])}" oninput="mMark()" spellcheck="false" />
+              ${effortSel}
+            </div>`;
+          }).join('') +
+          Object.keys(PROV_MODELS)
+            .map(
+              (p) =>
+                `<datalist id="dl-${p}">${PROV_MODELS[p].map((v) => `<option value="${esc(v)}">`).join('')}</datalist>`,
+            )
+            .join('');
+        $('m-composer').innerHTML = mOpt(DIFF_LIST, m.roles?.composer || 'hard');
+        $('m-checker').innerHTML = mOpt(DIFF_LIST, m.roles?.checker || 'hard');
+        $('m-floor').innerHTML = mOpt(DIFF_LIST, m.roles?.reviewFloor || 'intermediate');
+      }
+      function mCollect() {
+        const models = {
+          difficulties: {},
+          roles: {
+            composer: $('m-composer').value,
+            checker: $('m-checker').value,
+            reviewFloor: $('m-floor').value,
+          },
+        };
+        for (const d of DIFF_LIST) {
+          const g = (k) => document.querySelector(`[data-d="${d}"][data-k="${k}"]`);
+          const provider = g('provider').value;
+          const effortEl = g('effort');
+          models.difficulties[d] = {
+            provider,
+            model: g('model').value.trim(),
+            ...(effortEl ? { effort: effortEl.value } : {}),
+          };
+        }
+        return models;
+      }
+      function mProvChange(d, p) {
+        const draft = mCollect();
+        draft.difficulties[d] = {
+          provider: p,
+          model: PROV_DEFAULT[p],
+          ...(PROV_EFFORTS[p].length ? { effort: 'high' } : {}),
+        };
+        mMark();
+        mRenderRows(draft);
+      }
+      async function mSave(btn) {
+        const j = await act('set-models', btn, false, { models: mCollect() });
+        if (j && j.ok) {
+          mDirty = false;
+          mLast = '';
+          $('mnote').textContent = '';
+        }
+      }
+      function renderModels(s) {
+        if (activeTab !== 'models' || !s) return;
+        const pv = s.providers || {};
+        if (pv.agyModels?.length) PROV_MODELS.gemini = pv.agyModels;
+        const pj = JSON.stringify(pv);
+        if (pj !== pLast) {
+          pLast = pj;
+          $('provs').innerHTML = Object.keys(PROV_LABEL)
+            .map((p) => {
+              const ok = pv[p]?.connected;
+              return `<span class="pill"><span class="dot" style="background:${ok ? 'var(--good)' : 'var(--crit)'}"></span> ${PROV_LABEL[p]} <b>${ok ? 'connected' : 'not connected'}</b> <button style="font-size:11px;padding:1px 8px" onclick="act('test-provider',this,false,{provider:'${p}'})">test</button></span>`;
+            })
+            .join('');
+        }
+        if (mDirty) return; // never clobber unsaved edits
+        const mj = JSON.stringify(s.models || {});
+        if (mj === mLast) return; // keep focus while nothing changed server-side
+        mLast = mj;
+        mRenderRows(s.models || {});
+      }
+
+      /* ---- issue difficulty chips ---- */
+      function diffChip(labels, extra = '', title = '') {
+        const d = (labels || []).find((l) => l.startsWith('diff:'))?.slice(5);
+        const t = title ? ` title="${esc(title)}"` : '';
+        if (d && DIFF_COLOR[d])
+          return `<span class="chip"${t} style="border-color:${DIFF_COLOR[d]};color:${DIFF_COLOR[d]}">${esc(d)}${extra}</span>`;
+        const tier = (labels || []).find((l) => l.startsWith('tier:'))?.slice(5);
+        return `<span class="chip"${t}>${esc(d || tier || '?')}${extra}</span>`;
       }
 
       /* ---- data joins ---- */
@@ -1360,7 +1598,6 @@
         $('ilist').innerHTML =
           joined
             .map((i) => {
-              const tier = (i.labels || []).find((l) => l.startsWith('tier:'))?.slice(5) || '?';
               const chips = [];
               if (i.w)
                 chips.push(
@@ -1380,7 +1617,7 @@
                 chips.push(`<span class="st hold">⏸ waits for #${i.conflict}</span>`);
               if ((i.labels || []).includes('mf:relocated'))
                 chips.push('<span class="chip">relocated</span>');
-              chips.push(`<span class="chip">${esc(tier)}</span>`);
+              chips.push(diffChip(i.labels));
               const dim = !i.w && !i.queuePos && (i.deps.length || i.conflict);
               return `<div class="irow${dim ? ' dim' : ''}"><span class="num"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a></span><span class="title" title="${esc(i.title)}">${esc(i.title)}</span><span class="chips">${chips.join('')}</span></div>`;
             })
@@ -1418,6 +1655,7 @@
 
         if (activeTab === 'flow') renderFlow(s, running || paused);
         if (activeTab === 'detail') renderDetail(s, multiC);
+        if (activeTab === 'models') renderModels(s);
       }
 
       /* ---- FLOW view ---- */
@@ -1572,7 +1810,6 @@
         $('issues').innerHTML =
           (gh.issues || [])
             .map((i) => {
-              const tier = (i.labels || []).find((l) => l.startsWith('tier:')) || '';
               const inprog = (i.labels || []).includes('in-progress');
               const touches = i.meta?.touches?.length
                 ? i.meta.touches.join(' ')
@@ -1580,7 +1817,7 @@
               const deps = i.meta?.dependsOn?.length
                 ? ' · deps: ' + i.meta.dependsOn.map((d) => '#' + d).join(',')
                 : '';
-              return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span><span class="chip" title="${esc(touches + deps)}">${esc(tier.replace('tier:', '') || '?')}${inprog ? ' · wip' : ''}</span></div>`;
+              return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span>${diffChip(i.labels, inprog ? ' · wip' : '', touches + deps)}</div>`;
             })
             .join('') || '<div class="item"><span class="m">none</span></div>';
         $('merged').innerHTML =

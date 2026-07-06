@@ -28,7 +28,7 @@ const SF_PROJECT = 'bettertrack-factory';
 
 const run = (cmd, args, opts = {}) =>
   new Promise((res) => {
-    execFile(
+    const child = execFile(
       cmd,
       args,
       { timeout: 30000, maxBuffer: 8 * 1024 * 1024, ...opts },
@@ -40,6 +40,9 @@ const run = (cmd, args, opts = {}) =>
           err: err?.message,
         }),
     );
+    // Close stdin so CLIs that append piped stdin (codex exec, agy) don't block
+    // waiting for EOF — none of these calls feed data in.
+    child.stdin?.end();
   });
 
 const clog = async (line) => {
@@ -350,6 +353,85 @@ async function usage() {
   return data;
 }
 
+// ---- difficulty → model routing (state/control/models.json) ---------------------------
+// Read fresh by mflib.sh before every agent run, so saving here applies from the
+// NEXT role run without restarting containers. Defaults mirror mflib.sh.
+const MODELS_FILE = join(CONTROL, 'models.json');
+const DIFFS = ['easy', 'normal', 'intermediate', 'hard', 'max'];
+const PROVIDER_EFFORTS = {
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  codex: ['low', 'medium', 'high', 'xhigh'],
+  gemini: [], // effort is baked into the agy model name, e.g. "Gemini 3.1 Pro (High)"
+};
+const MODEL_DEFAULTS = {
+  version: 1,
+  difficulties: {
+    easy: { provider: 'claude', model: 'claude-sonnet-5', effort: 'high' },
+    normal: { provider: 'claude', model: 'claude-opus-4-8', effort: 'medium' },
+    intermediate: { provider: 'claude', model: 'claude-opus-4-8', effort: 'high' },
+    hard: { provider: 'claude', model: 'claude-opus-4-8', effort: 'max' },
+    max: { provider: 'claude', model: 'claude-fable-5', effort: 'max' },
+  },
+  roles: { composer: 'hard', checker: 'hard', reviewFloor: 'intermediate' },
+};
+const validEntry = (e) =>
+  e &&
+  Object.hasOwn(PROVIDER_EFFORTS, e.provider) &&
+  typeof e.model === 'string' &&
+  e.model.trim().length > 0 &&
+  e.model.length <= 120 &&
+  (!e.effort || PROVIDER_EFFORTS[e.provider].includes(e.effort));
+async function readModels() {
+  const raw = (await readJson(MODELS_FILE)) || {};
+  const out = { version: 1, difficulties: {}, roles: { ...MODEL_DEFAULTS.roles } };
+  for (const d of DIFFS) {
+    const e = raw.difficulties?.[d];
+    out.difficulties[d] = validEntry(e)
+      ? { provider: e.provider, model: e.model.trim(), ...(e.effort ? { effort: e.effort } : {}) }
+      : { ...MODEL_DEFAULTS.difficulties[d] };
+  }
+  for (const r of ['composer', 'checker', 'reviewFloor'])
+    if (DIFFS.includes(raw.roles?.[r])) out.roles[r] = raw.roles[r];
+  return out;
+}
+
+// ---- provider connection status (host-side — this is what the auth sync copies) --------
+let provCache = { at: 0, data: null };
+async function providerStatus() {
+  if (Date.now() - provCache.at < 600000 && provCache.data) return provCache.data;
+  const home = process.env.HOME || '';
+  const claude = !!(await hostOauthToken());
+  const codex = existsSync(join(home, '.codex', 'auth.json'));
+  // gemini is factory-ready only once the CONTAINER has the agy token — on macOS
+  // the host token is in the keychain, so host presence alone doesn't mean the
+  // containers can use it (they get it via `autorun.sh --login-gemini`).
+  const gemini =
+    existsSync(join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token')) ||
+    existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
+  const hostGemini = existsSync(join(home, '.gemini', 'oauth_creds.json')) || gemini;
+  let agyModels = provCache.data?.agyModels || [];
+  if (hostGemini) {
+    const r = await run('agy', ['models'], { timeout: 20000 });
+    if (r.ok) {
+      const list = r.stdout
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (list.length) agyModels = list;
+    }
+  }
+  provCache = {
+    at: Date.now(),
+    data: {
+      claude: { connected: claude },
+      codex: { connected: codex },
+      gemini: { connected: gemini },
+      agyModels,
+    },
+  };
+  return provCache.data;
+}
+
 // ---- triggers: usage- and time-based automation ---------------------------------------
 // Persisted in state/control/triggers.json so a server restart keeps them.
 // usage rule: fire action when metric ≥ threshold; onReset==='start' waits for the
@@ -517,17 +599,20 @@ async function usageAnalytics() {
 let lastAutoAction = null;
 const inflight = new Map(); // action name → started_at
 async function snapshot() {
-  const [protocol, mf, sf, gh, led, usg, triggers, desired, masterActivity] = await Promise.all([
-    readProtocolState(),
-    composePs(MF_PROJECT),
-    composePs(SF_PROJECT),
-    github(),
-    ledger(),
-    usage(),
-    readTriggers(),
-    desiredWorkers(),
-    readJson(join(STATE, 'status', 'master.json')),
-  ]);
+  const [protocol, mf, sf, gh, led, usg, triggers, desired, masterActivity, models, providers] =
+    await Promise.all([
+      readProtocolState(),
+      composePs(MF_PROJECT),
+      composePs(SF_PROJECT),
+      github(),
+      ledger(),
+      usage(),
+      readTriggers(),
+      desiredWorkers(),
+      readJson(join(STATE, 'status', 'master.json')),
+      readModels(),
+      providerStatus(),
+    ]);
   return {
     now: new Date().toISOString(),
     protocol: { ...protocol, masterActivity },
@@ -539,6 +624,8 @@ async function snapshot() {
     workers: { desired, visible: protocol.workers.length },
     inflight: [...inflight.keys()],
     lastAutoAction,
+    models,
+    providers,
   };
 }
 
@@ -632,6 +719,64 @@ async function doAction(action, payload = {}) {
       await writeTriggers(next);
       await clog(`trigger[${payload.id}] removed`);
       return { ok: true, message: 'trigger removed' };
+    }
+    case 'set-models': {
+      const m = payload.models || {};
+      const out = { version: 1, difficulties: {}, roles: {} };
+      for (const d of DIFFS) {
+        const e = m.difficulties?.[d];
+        if (!validEntry(e))
+          return { ok: false, message: `invalid provider/model/effort for '${d}'` };
+        out.difficulties[d] = {
+          provider: e.provider,
+          model: e.model.trim(),
+          ...(e.effort ? { effort: e.effort } : {}),
+        };
+      }
+      const roles = m.roles || {};
+      out.roles = {
+        composer: DIFFS.includes(roles.composer) ? roles.composer : 'hard',
+        checker: DIFFS.includes(roles.checker) ? roles.checker : 'hard',
+        reviewFloor: DIFFS.includes(roles.reviewFloor) ? roles.reviewFloor : 'intermediate',
+      };
+      await mkdir(CONTROL, { recursive: true });
+      const tmp = `${MODELS_FILE}.tmp${Date.now()}`;
+      await writeFile(tmp, JSON.stringify(out, null, 2));
+      await rename(tmp, MODELS_FILE);
+      await clog(
+        `models → ${DIFFS.map((d) => `${d}:${out.difficulties[d].provider}/${out.difficulties[d].model}${out.difficulties[d].effort ? '@' + out.difficulties[d].effort : ''}`).join(' ')}`,
+      );
+      return { ok: true, message: 'model routing saved — applies from the next agent run' };
+    }
+    case 'test-provider': {
+      // One tiny prompt through the HOST CLI — the same auth the containers get.
+      const p = String(payload.provider || '');
+      let r;
+      if (p === 'claude')
+        r = await run(
+          'claude',
+          ['-p', 'Reply with exactly: ok', '--model', 'claude-haiku-4-5', '--effort', 'low'],
+          { timeout: 90000, cwd: MF_DIR },
+        );
+      else if (p === 'codex')
+        r = await run(
+          'codex',
+          ['exec', '--skip-git-repo-check', '-s', 'read-only', '-C', MF_DIR,
+           '-m', 'gpt-5.4-mini', '-c', 'model_reasoning_effort=low', 'Reply with exactly: ok'],
+          { timeout: 90000 },
+        );
+      else if (p === 'gemini')
+        r = await run(
+          'agy',
+          ['-p', 'Reply with exactly: ok', '--model', 'Gemini 3.5 Flash (Low)'],
+          { timeout: 120000, cwd: MF_DIR },
+        );
+      else return { ok: false, message: 'unknown provider' };
+      await clog(`test-provider ${p} → ${r.ok ? 'ok' : 'FAILED'}`);
+      const last = (r.stdout || '').trim().split('\n').filter(Boolean).pop() || '';
+      return r.ok
+        ? { ok: true, message: `${p} works — replied: ${last.slice(0, 60)}` }
+        : { ok: false, message: `${p} test failed: ${(r.stderr || r.err || 'no output').slice(0, 160)}` };
     }
     case 'start-dry':
       return spawnLogged('start-dry', 'bash', ['autorun.sh', '--dry'], MF_DIR);

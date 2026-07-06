@@ -21,6 +21,7 @@ export MF_EVENTLOG=$LOGS/events.log
 export WORKER_ID
 
 . /work/mf/lib.sh
+. /work/mf/mflib.sh
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"; }
@@ -50,7 +51,8 @@ enqueue_merge(){ # $1=pr $2=issue — claims copied from the assignment file
   log "merge-queue ← PR #$1 (issue #$2)"
 }
 
-esc_model(){ case "$1" in "$MS") echo "$MO";; *) echo "$MF";; esac; }
+# Difficulty of the current cycle — resolved once per assignment (mflib.sh).
+CYCLE_DIFF=intermediate
 
 # Append a dependency into an issue's mf-meta block (RELOCATE/BLOCKED path) so the
 # scheduler's existing depends-on gating un-blocks it automatically when the new
@@ -91,7 +93,7 @@ triage(){ # $1=issue $2=pr $3=relocated("true"/"false") — returns 0 if PR was 
     echo; echo "## Last fixer replies"
     gh pr view "$pr" --json comments -q '[.comments[].body|select(test("FACTORY-VERDICT:")|not)][-2:]|join("\n---\n")' 2>/dev/null
   )
-  CC_ROLE=checker cc "$MO" "$(with_pack "$(sed "s/{{N}}/$n/g; s/{{PR}}/$pr/g" "$MF_PROMPTS/checker.md")
+  mf_cc checker "$(role_diff checker)" "$(with_pack "$(sed "s/{{N}}/$n/g; s/{{PR}}/$pr/g" "$MF_PROMPTS/checker.md")
 
 $materials")" || true
   local tcomment verdict
@@ -99,17 +101,17 @@ $materials")" || true
   verdict=$(grep -oE 'FACTORY-TRIAGE: (RETRY_ESCALATED|RELOCATE|NEEDS_HUMAN)' <<<"$tcomment" | tail -1)
   case "$verdict" in
     "FACTORY-TRIAGE: RETRY_ESCALATED")
-      local base esc rmodel
-      base=$(tier_model "$n"); esc=$(esc_model "$base")
-      log "triage: escalated retry at $esc (was $base)"
+      local esc
+      esc=$(diff_next "$CYCLE_DIFF")
+      log "triage: escalated retry at diff:$esc (was diff:$CYCLE_DIFF)"
       wstatus fixing "$n" "$pr"
-      CC_ROLE=fixer cc "$esc" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
+      mf_cc fixer "$esc" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $tcomment
 
 $(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
       wstatus reviewing "$n" "$pr"
-      rmodel=$MO; [ "$esc" = "$MF" ] && rmodel=$MF
-      CC_ROLE=reviewer cc "$rmodel" "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
+      mf_cc reviewer "$(diff_at_least "$esc" "$(review_floor)")" \
+        "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
       local v2
       v2=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
       if [ "$v2" = "FACTORY-VERDICT: APPROVE" ]; then enqueue_merge "$pr" "$n"; return 0; fi
@@ -145,9 +147,10 @@ $(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
 run_cycle(){ # $1=issue $2=relocated
   local n=$1 reloc=$2 pr
   CC_ISSUE=$n
+  CYCLE_DIFF=$(issue_difficulty "$n")
   hb_start
   wstatus writing "$n"
-  log "=== issue #$n ==="
+  log "=== issue #$n [diff:$CYCLE_DIFF] ==="
 
   if [ "$MF_DRY_RUN" = 1 ]; then
     log "DRY: would write/review issue #$n"
@@ -166,7 +169,7 @@ run_cycle(){ # $1=issue $2=relocated
   # WRITER — cc() already waits out token limits, so a failure here is genuine.
   local writer_ok=0 w_try
   for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
-    if CC_ROLE=writer cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
+    if mf_cc writer "$CYCLE_DIFF" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
       writer_ok=1; break
     fi
     log "writer attempt $w_try/${WRITER_RETRIES:-2} failed"
@@ -206,16 +209,16 @@ run_cycle(){ # $1=issue $2=relocated
   fi
 
   # REVIEW → FIX rounds (same rules as run.sh)
-  local approved=0 round rmodel verdict
+  local approved=0 round verdict
   for round in $(seq 1 "${MAX_FIX_ROUNDS:-2}"); do
     wstatus reviewing "$n" "$pr"
-    rmodel=$MO; [ "$(tier_model "$n")" = "$MF" ] && rmodel=$MF
-    CC_ROLE=reviewer cc "$rmodel" "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
+    mf_cc reviewer "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")" \
+      "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
     verdict=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
     [ "$verdict" = "FACTORY-VERDICT: APPROVE" ] && { approved=1; break; }
     log "round $round: changes requested"
     wstatus fixing "$n" "$pr"
-    CC_ROLE=fixer cc "$(tier_model "$n")" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
+    mf_cc fixer "$CYCLE_DIFF" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
   done
 
   if [ "$approved" -eq 1 ]; then

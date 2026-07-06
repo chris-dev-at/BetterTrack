@@ -125,7 +125,10 @@ cc(){ local model=$1; shift; local prompt="$*"
   while true; do
     local out rc res err start dur
     start=$(date +%s)
-    out=$(claude -p "$prompt" --model "$model" --output-format stream-json --verbose \
+    # CC_EFFORT (optional, multi-factory difficulty routing): adds --effort; when
+    # unset the command line is byte-identical to the original single-factory call.
+    out=$(claude -p "$prompt" --model "$model" ${CC_EFFORT:+--effort "$CC_EFFORT"} \
+          --output-format stream-json --verbose \
           --dangerously-skip-permissions 2>&1 | tee -a "$LOG"); rc=${PIPESTATUS[0]}
     dur=$(( $(date +%s) - start ))
     res=$(grep '"type":"result"' <<<"$out" | tail -1)
