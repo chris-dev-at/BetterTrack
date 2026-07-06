@@ -26,7 +26,8 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs
 : "${MF_TICK:=15}"                # seconds between master loop ticks
 : "${MF_STALL_SECS:=3600}"        # heartbeat silence that counts as a worker stall
 : "${COMPOSER_BATCH:=4}"          # issues per composer run
-: "${MF_COMPOSER_COOLDOWN:=900}"  # min seconds between composer runs
+: "${MF_COMPOSER_COOLDOWN:=900}"  # min seconds between composer runs (base; also the floor after a reset)
+: "${MF_COMPOSER_BACKOFF_MAX:=14400}"  # cap on the idle-backoff cooldown (empty composer runs)
 : "${MF_DRY_RUN:=0}"
 export LOG_TAG="[master]"
 export MF_EVENTLOG=$LOGS/events.log
@@ -203,12 +204,38 @@ stall_check(){
   done
 }
 
+# Idle back-off (BRIEF: composer re-runs every MF_COMPOSER_COOLDOWN forever even
+# when nothing is composable). $CONTROL/.composer-backoff holds the effective
+# cooldown for the NEXT run; it starts at/resets to MF_COMPOSER_COOLDOWN and
+# doubles (capped at MF_COMPOSER_BACKOFF_MAX) each time a run's outcome — the
+# open-autopilot-issue set, mode and phase — is unchanged from the snapshot
+# taken at the previous run. Any change resets it to base.
+composer_snapshot(){ # $1=mode — state the backoff should be sensitive to
+  local phase=""; [ -f "$CONTROL/phase" ] && phase=$(cat "$CONTROL/phase")
+  { printf 'mode=%s\nphase=%s\n' "$1" "$phase"; jq -r '[.[].number]|sort|.[]' "$TICK_ISSUES" 2>/dev/null; }
+}
+
 composer_step(){ # $1=mode
   [ "$1" = run ] || return 0
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
-  [ "$(file_age "$CONTROL/.composer-last")" -ge "$MF_COMPOSER_COOLDOWN" ] || return 0
+  local backoff; backoff=$(cat "$CONTROL/.composer-backoff" 2>/dev/null)
+  case "$backoff" in ''|*[!0-9]*) backoff=$MF_COMPOSER_COOLDOWN;; esac
+  [ "$(file_age "$CONTROL/.composer-last")" -ge "$backoff" ] || return 0
+
+  local snap; snap=$(composer_snapshot "$1")
+  local prev=""; [ -f "$CONTROL/.composer-snapshot" ] && prev=$(cat "$CONTROL/.composer-snapshot")
+  local next=$MF_COMPOSER_COOLDOWN
+  if [ -f "$CONTROL/.composer-snapshot" ] && [ "$snap" = "$prev" ]; then
+    next=$(( backoff * 2 )); [ "$next" -le "$MF_COMPOSER_BACKOFF_MAX" ] || next=$MF_COMPOSER_BACKOFF_MAX
+    log "composer idle-backoff: last run empty, next in ${next}s"
+  elif [ -f "$CONTROL/.composer-snapshot" ] && [ "$backoff" != "$MF_COMPOSER_COOLDOWN" ]; then
+    log "composer idle-backoff reset to ${MF_COMPOSER_COOLDOWN}s (issue set/mode/phase changed)"
+  fi
+  atomic_write "$CONTROL/.composer-backoff" "$next"
+  atomic_write "$CONTROL/.composer-snapshot" "$snap"
   touch "$CONTROL/.composer-last"
+
   if [ "$MF_DRY_RUN" = 1 ]; then log "DRY: composer would run (runnable=$count)"; return 0; fi
   log "runnable=$count < $((WORKERS+1)) → running composer"
   mstatus composing
