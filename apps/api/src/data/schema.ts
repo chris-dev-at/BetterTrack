@@ -634,9 +634,11 @@ export const oauthClients = pgTable(
   'oauth_clients',
   {
     id: uuid('id').primaryKey().$defaultFn(newId),
-    userId: uuid('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // The owning user for a user-registered app (Settings → API Access). NULL for
+    // an admin-managed FIRST-PARTY app (`is_first_party`), which belongs to the
+    // system, not a person, so it survives any single account and is managed only
+    // from the admin panel.
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
     // The public, non-secret client identifier (`btc_…`) partners put in their
     // authorize URL. Distinct from the internal uuid PK the tables reference.
     clientId: text('client_id').notNull(),
@@ -651,6 +653,13 @@ export const oauthClients = pgTable(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     isPublic: boolean('is_public').notNull().default(false),
+    // Admin-registered official app. Trusted: the consent screen shows BetterTrack
+    // branding and is auto-approved (no scope-approval prompt), and it is managed
+    // only from the admin panel (never listed under a user's API Access).
+    isFirstParty: boolean('is_first_party').notNull().default(false),
+    // Optional app icon shown on the consent screen for THIRD-party apps (a
+    // developer/app avatar). First-party apps render the BetterTrack mark instead.
+    logoUrl: text('logo_url'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

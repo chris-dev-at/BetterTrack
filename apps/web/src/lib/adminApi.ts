@@ -7,10 +7,12 @@ import {
   auditLogListResponseSchema,
   bulkUserActionResponseSchema,
   createInviteResponseSchema,
+  createOAuthClientResponseSchema,
   createUserResponseSchema,
   emailLogListResponseSchema,
   emailStatusResponseSchema,
   meResponseSchema,
+  oauthClientListResponseSchema,
   okResponseSchema,
   resetPasswordResponseSchema,
   testEmailResponseSchema,
@@ -25,12 +27,15 @@ import {
   type ChangePasswordRequest,
   type CreateInviteRequest,
   type CreateInviteResponse,
+  type CreateOAuthClientRequest,
+  type CreateOAuthClientResponse,
   type CreateUserRequest,
   type CreateUserResponse,
   type EmailLogListResponse,
   type EmailStatusResponse,
   type LoginRequest,
   type MeResponse,
+  type OAuthClientListResponse,
   type ResetPasswordResponse,
   type TestEmailRequest,
   type TestEmailResponse,
@@ -125,6 +130,25 @@ export async function createInvite(body: CreateInviteRequest): Promise<CreateInv
 
 export async function revokeInvite(id: string): Promise<void> {
   const data = await apiRequest<unknown>(`/admin/invites/${id}/revoke`, { method: 'POST' });
+  okResponseSchema.parse(data);
+}
+
+// --- Admin: first-party OAuth apps ----------------------------------------
+
+export async function listFirstPartyApps(signal?: AbortSignal): Promise<OAuthClientListResponse> {
+  const data = await apiRequest<unknown>('/admin/oauth-clients', { signal });
+  return oauthClientListResponseSchema.parse(data);
+}
+
+export async function createFirstPartyApp(
+  body: CreateOAuthClientRequest,
+): Promise<CreateOAuthClientResponse> {
+  const data = await apiRequest<unknown>('/admin/oauth-clients', { method: 'POST', body });
+  return createOAuthClientResponseSchema.parse(data);
+}
+
+export async function deleteFirstPartyApp(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/oauth-clients/${id}`, { method: 'DELETE' });
   okResponseSchema.parse(data);
 }
 

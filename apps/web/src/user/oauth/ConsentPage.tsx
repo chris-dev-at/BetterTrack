@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -68,6 +68,49 @@ function ConsentShell({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * The requesting app's identity on the consent screen: a first-party (official)
+ * app shows the BetterTrack mark + an "Official app" badge; a third-party app
+ * shows its own logo (when set) or a lettered placeholder.
+ */
+function AppIdentity({
+  name,
+  logoUrl,
+  firstParty,
+}: {
+  name: string;
+  logoUrl: string | null;
+  firstParty: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      {firstParty ? (
+        <div className="grid h-12 w-12 place-items-center rounded-xl bg-sky-500/15 text-base font-bold text-sky-300 ring-1 ring-sky-500/40">
+          BT
+        </div>
+      ) : logoUrl ? (
+        <img
+          src={logoUrl}
+          alt=""
+          className="h-12 w-12 rounded-xl object-cover ring-1 ring-neutral-700"
+        />
+      ) : (
+        <div className="grid h-12 w-12 place-items-center rounded-xl bg-neutral-800 text-lg font-semibold text-neutral-300 ring-1 ring-neutral-700">
+          {name.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="min-w-0">
+        <div className="truncate font-semibold text-neutral-100">{name}</div>
+        {firstParty ? (
+          <div className="text-xs font-medium text-sky-400">Official BetterTrack app</div>
+        ) : (
+          <div className="text-xs text-neutral-500">Third-party app</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ConsentPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -95,6 +138,19 @@ export function ConsentPage() {
     },
     onError: () => setApproveError('Could not complete authorization. Please try again.'),
   });
+
+  // A trusted first-party (official) app skips the scope-approval prompt: as soon
+  // as the (validated) details load, auto-approve exactly once and redirect back.
+  // The user is already authenticated here (RequireUser), so this is just the
+  // "Login with BetterTrack" moment — no consent to click.
+  const autoApproved = useRef(false);
+  const isFirstParty = query.data?.client.firstParty ?? false;
+  useEffect(() => {
+    if (isFirstParty && !autoApproved.current && !cancelled && !approveError) {
+      autoApproved.current = true;
+      approve.mutate();
+    }
+  }, [isFirstParty, cancelled, approveError, approve]);
 
   // ── Malformed request: missing a required param, so we can't even ask. ──
   if (params == null) {
@@ -152,19 +208,47 @@ export function ConsentPage() {
 
   const details = query.data;
 
+  // ── First-party (official) app: trusted, no scope prompt — just sign in. ──
+  if (details.client.firstParty) {
+    return (
+      <ConsentShell>
+        <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+          {approveError ? <Alert tone="error">{approveError}</Alert> : null}
+          <AppIdentity name={details.client.name} logoUrl={null} firstParty />
+          {approveError ? (
+            <Button
+              onClick={() => {
+                setApproveError(null);
+                autoApproved.current = true;
+                approve.mutate();
+              }}
+            >
+              Continue
+            </Button>
+          ) : (
+            <div className="flex items-center gap-3 text-sm text-neutral-400">
+              <Spinner label={`Signing you in to ${details.client.name}…`} />
+            </div>
+          )}
+        </div>
+      </ConsentShell>
+    );
+  }
+
+  // ── Third-party app: show who's asking + the scopes, and ask to approve. ──
   return (
     <ConsentShell>
       <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
         {approveError ? <Alert tone="error">{approveError}</Alert> : null}
-        <div className="flex flex-col gap-1">
-          <h1 className="text-lg font-semibold text-neutral-100">
-            Authorize {details.client.name}
-          </h1>
-          <p className="text-sm text-neutral-400">
-            <span className="font-medium text-neutral-200">{details.client.name}</span> wants access
-            to your BetterTrack account. If you approve, it will be able to:
-          </p>
-        </div>
+        <AppIdentity
+          name={details.client.name}
+          logoUrl={details.client.logoUrl}
+          firstParty={false}
+        />
+        <p className="text-sm text-neutral-400">
+          <span className="font-medium text-neutral-200">{details.client.name}</span> wants access
+          to your BetterTrack account. If you approve, it will be able to:
+        </p>
 
         <ul className="flex flex-col gap-2">
           {details.scopes.map(({ scope, label }) => (

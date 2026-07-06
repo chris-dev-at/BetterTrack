@@ -51,7 +51,12 @@ const AUTHORIZE_QUERY = new URLSearchParams({
 const AUTHORIZE_PATH = `/oauth/authorize?${AUTHORIZE_QUERY}`;
 
 const DETAILS: OAuthAuthorizationDetailsResponse = {
-  client: { clientId: 'btc_charting_buddy', name: 'Charting Buddy' },
+  client: {
+    clientId: 'btc_charting_buddy',
+    name: 'Charting Buddy',
+    firstParty: false,
+    logoUrl: null,
+  },
   scopes: [
     {
       scope: 'portfolio:read',
@@ -122,7 +127,7 @@ test('renders the requested scopes in plain language and approving navigates to 
   renderConsent();
 
   // App name + plain-language scopes (not the raw scope tokens).
-  expect(await screen.findByText('Authorize Charting Buddy')).toBeInTheDocument();
+  expect(await screen.findByText('Third-party app')).toBeInTheDocument();
   expect(
     screen.getByText('View your portfolios, holdings, transactions and cash balances'),
   ).toBeInTheDocument();
@@ -145,12 +150,28 @@ test('renders the requested scopes in plain language and approving navigates to 
   );
 });
 
+test('a first-party (official) app skips the prompt and auto-approves', async () => {
+  vi.mocked(getAuthorizationDetails).mockResolvedValue({
+    ...DETAILS,
+    client: { ...DETAILS.client, name: 'BetterTrack Mobile', firstParty: true },
+  });
+  vi.mocked(approveAuthorization).mockResolvedValue(APPROVED);
+  renderConsent();
+
+  // Branded as the official app, no scope-approval button, and it authorizes on
+  // its own — the "Login with BetterTrack" moment, no consent to click.
+  expect(await screen.findByText('Official BetterTrack app')).toBeInTheDocument();
+  await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
+  expect(approveAuthorization).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+});
+
 test('cancelling does not issue a code or navigate to the redirect URI', async () => {
   vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
   const user = userEvent.setup();
   renderConsent();
 
-  await screen.findByText('Authorize Charting Buddy');
+  await screen.findByText('Third-party app');
   await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
   expect(await screen.findByText('Authorization cancelled')).toBeInTheDocument();
@@ -186,7 +207,7 @@ test('an unauthenticated visit is redirected to login preserving the authorize q
 
   // Not the consent screen — the login screen, because we were anonymous.
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
-  expect(screen.queryByText('Authorize Charting Buddy')).not.toBeInTheDocument();
+  expect(screen.queryByText('Third-party app')).not.toBeInTheDocument();
 
   // Signing in returns us to the consent screen with the request intact — proven
   // by the details call carrying the original state + PKCE from the URL.
@@ -194,7 +215,7 @@ test('an unauthenticated visit is redirected to login preserving the authorize q
   await user.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-  expect(await screen.findByText('Authorize Charting Buddy')).toBeInTheDocument();
+  expect(await screen.findByText('Third-party app')).toBeInTheDocument();
   await waitFor(() =>
     expect(getAuthorizationDetails).toHaveBeenCalledWith(
       expect.objectContaining({

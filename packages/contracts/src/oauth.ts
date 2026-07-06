@@ -90,6 +90,18 @@ export const oauthRedirectUriSchema = z
   });
 
 // ── Client registration (Settings → API Access, "OAuth apps") ───────────────
+/**
+ * Optional app icon shown on the consent screen for a THIRD-party app (an
+ * https image URL). First-party apps render the BetterTrack mark instead, so it
+ * is ignored for them.
+ */
+export const oauthLogoUrlSchema = z
+  .string()
+  .trim()
+  .max(2000)
+  .url()
+  .refine((u) => u.toLowerCase().startsWith('https://'), 'Logo URL must be https.');
+
 export const createOAuthClientRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(80),
@@ -97,6 +109,8 @@ export const createOAuthClientRequestSchema = z
     scopes: z.array(apiKeyScopeSchema).min(1).max(API_KEY_SCOPES.length),
     /** Public clients hold no secret and MUST use PKCE (native/mobile/SPA apps). */
     public: z.boolean().optional().default(false),
+    /** Optional consent-screen icon (third-party apps). */
+    logoUrl: oauthLogoUrlSchema.nullish(),
   })
   .strict();
 export type CreateOAuthClientRequest = z.infer<typeof createOAuthClientRequestSchema>;
@@ -110,6 +124,10 @@ export const oauthClientSummarySchema = z
     redirectUris: z.array(z.string()),
     scopes: z.array(apiKeyScopeSchema),
     public: z.boolean(),
+    /** Admin-managed official app (trusted; consent auto-approved, BT-branded). */
+    firstParty: z.boolean(),
+    /** Consent-screen icon for third-party apps; null for first-party. */
+    logoUrl: z.string().nullable(),
     createdAt: z.string(),
   })
   .strict();
@@ -173,7 +191,17 @@ export type OAuthAuthorizationDetailsQuery = z.infer<typeof oauthAuthorizationDe
 /** Consent-screen payload: the app + the requested scopes in plain language. */
 export const oauthAuthorizationDetailsResponseSchema = z
   .object({
-    client: z.object({ clientId: z.string(), name: z.string() }).strict(),
+    client: z
+      .object({
+        clientId: z.string(),
+        name: z.string(),
+        /** Trusted official app: the consent screen shows BetterTrack branding
+         * and auto-approves (no scope-approval prompt). */
+        firstParty: z.boolean(),
+        /** Third-party app icon for the consent screen; null for first-party. */
+        logoUrl: z.string().nullable(),
+      })
+      .strict(),
     scopes: z.array(z.object({ scope: apiKeyScopeSchema, label: z.string() }).strict()).min(1),
     redirectUri: z.string(),
     state: z.string().nullable(),

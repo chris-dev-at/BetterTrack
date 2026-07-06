@@ -25,13 +25,16 @@ import {
  * revocation cut off access and refresh tokens instantly.
  */
 export interface CreateOAuthClientInput {
-  userId: string;
+  /** Null for an admin-managed first-party app (owned by the system, not a user). */
+  userId: string | null;
   clientId: string;
   name: string;
   clientSecretHash: string | null;
   redirectUris: string[];
   scopes: string[];
   isPublic: boolean;
+  isFirstParty?: boolean;
+  logoUrl?: string | null;
 }
 
 export interface CreateOAuthAuthCodeInput {
@@ -59,6 +62,8 @@ export function createOAuthRepository(db: Database) {
           redirectUris: input.redirectUris,
           scopes: input.scopes,
           isPublic: input.isPublic,
+          isFirstParty: input.isFirstParty ?? false,
+          logoUrl: input.logoUrl ?? null,
         })
         .returning();
       if (!row) throw new Error('Failed to insert OAuth client');
@@ -71,6 +76,28 @@ export function createOAuthRepository(db: Database) {
         .from(oauthClients)
         .where(eq(oauthClients.userId, userId))
         .orderBy(desc(oauthClients.createdAt));
+    },
+
+    // ── First-party (admin-managed) clients ─────────────────────────────────
+    /** Every admin-registered first-party app (owned by the system, not a user). */
+    async listFirstPartyClients(): Promise<OAuthClientRow[]> {
+      return db
+        .select()
+        .from(oauthClients)
+        .where(eq(oauthClients.isFirstParty, true))
+        .orderBy(desc(oauthClients.createdAt));
+    },
+
+    /**
+     * Delete a first-party client by id (admin panel; cascades grants/tokens).
+     * Scoped to `is_first_party` so this path can never touch a user-owned app.
+     */
+    async deleteFirstPartyClient(id: string): Promise<OAuthClientRow | undefined> {
+      const [row] = await db
+        .delete(oauthClients)
+        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+        .returning();
+      return row;
     },
 
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
