@@ -2,11 +2,12 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 
-import { MIN_PASSWORD_LENGTH } from '@bettertrack/contracts';
+import { MIN_PASSWORD_LENGTH, type TwoFactorChallengeResponse } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
+import { TwoFactorStep } from './LoginPage';
 
 /** Friendly message for the failure codes `POST /auth/password-reset/complete` returns. */
 function completeErrorMessage(err: unknown): string {
@@ -43,6 +44,9 @@ export function ResetPasswordPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Non-null once the reset returns a 2FA challenge: the password was changed but
+  // the session is withheld until a second factor verifies (§6.1).
+  const [challenge, setChallenge] = useState<TwoFactorChallengeResponse | null>(null);
 
   if (status === 'loading') {
     return (
@@ -58,13 +62,29 @@ export function ResetPasswordPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await completePasswordReset({ token, newPassword: password });
+      const outcome = await completePasswordReset({ token, newPassword: password });
+      if (outcome.status === 'two_factor_required') {
+        // Password reset, but 2FA is on — collect the second factor next.
+        setChallenge(outcome.challenge);
+        return;
+      }
       navigate('/', { replace: true });
     } catch (err) {
       setError(completeErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (challenge) {
+    return (
+      <TwoFactorStep
+        challenge={challenge}
+        onVerified={() => navigate('/', { replace: true })}
+        onCancel={() => navigate('/login', { replace: true })}
+        cancelLabel="Sign in instead"
+      />
+    );
   }
 
   return (

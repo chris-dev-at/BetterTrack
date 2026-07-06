@@ -216,6 +216,47 @@ describe('GET /api/v1/social/shared (Shared With Me)', () => {
     expect(res.status).toBe(200);
     expect(res.body.portfolios).toHaveLength(0);
   });
+
+  it('reports net worth incl. cash on the card, matching the detail total (#311)', async () => {
+    const { aliceAgent, bobAgent, pid } = await scenario();
+    // 120 EUR of holdings + a 50 EUR cash deposit → net worth 170.
+    const dep = await aliceAgent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 50 });
+    expect(dep.status).toBe(201);
+
+    const list = await bobAgent.get('/api/v1/social/shared');
+    expect(list.status).toBe(200);
+    expect(list.body.portfolios[0].totalValueEur).toBe(170);
+
+    // The card total agrees with the detail view's net-worth total (no drift).
+    const detail = await bobAgent.get(`/api/v1/social/shared/${pid}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.totals.totalValueEur).toBe(170);
+  });
+
+  it('drops a shared portfolio once the owner archives it (§6.9)', async () => {
+    const { aliceAgent, bobAgent, pid } = await scenario();
+
+    // A second active portfolio so the shared one is no longer the last active
+    // (archiving the only active portfolio is refused).
+    await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    const archived = await aliceAgent.post(`/api/v1/portfolios/${pid}/archive`).set(...XRW);
+    expect(archived.status).toBe(200);
+
+    // Archiving hides the portfolio from its own owner's lists, so it must not
+    // linger in a friend's Shared With Me nor stay openable.
+    const list = await bobAgent.get('/api/v1/social/shared');
+    expect(list.status).toBe(200);
+    expect(list.body.portfolios).toHaveLength(0);
+
+    const detail = await bobAgent.get(`/api/v1/social/shared/${pid}`);
+    expect(detail.status).toBe(404);
+  });
 });
 
 describe('GET /api/v1/social/shared/:portfolioId (read-only friend view)', () => {

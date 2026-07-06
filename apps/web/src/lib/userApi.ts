@@ -158,17 +158,20 @@ export async function requestPasswordReset(body: PasswordResetRequest): Promise<
 }
 
 /**
- * Complete a password reset with the emailed token (§6.1, §14). On success the
- * API sets a fresh session cookie and returns the signed-in user, so the reset
- * lands them logged-in with no redundant prompt (#268).
+ * Complete a password reset with the emailed token (§6.1, §14). Resolves to
+ * either the signed-in user — the API set a fresh session cookie, so the reset
+ * lands them logged-in with no redundant prompt (#268) — or a 2FA challenge
+ * (`twoFactorRequired`) when the account has a second factor on, which the caller
+ * completes via {@link verifyTwoFactor} before a session exists. A mailbox alone
+ * must not defeat the second factor (§6.1).
  */
-export async function completePasswordReset(body: PasswordResetComplete): Promise<MeResponse> {
+export async function completePasswordReset(body: PasswordResetComplete): Promise<LoginResponse> {
   const data = await apiRequest<unknown>('/auth/password-reset/complete', {
     method: 'POST',
     body,
     suppressAuthRedirect: true,
   });
-  return meResponseSchema.parse(data);
+  return loginResponseSchema.parse(data);
 }
 
 export async function acceptInvite(body: AcceptInviteRequest): Promise<MeResponse> {

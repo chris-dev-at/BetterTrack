@@ -144,11 +144,13 @@ export interface AuthService {
   requestPasswordReset(input: PasswordResetRequest, ip?: string | null): Promise<void>;
   /**
    * Self-service password reset — step 2 (§6.1, §14). Validates and consumes the
-   * token, sets the new password (enforcing the §6.1 policy), kills all of the
-   * user's sessions and mints a fresh one so the reset lands them signed in with
-   * no redundant prompt (#268). Rejects a used/expired/unknown token.
+   * token, sets the new password (enforcing the §6.1 policy) and kills all of the
+   * user's sessions. A no-2FA account is then signed straight in on a fresh
+   * session (no redundant prompt, #268); a 2FA-enabled account instead lands a
+   * pending challenge and NO session — a mailbox alone must not defeat the second
+   * factor. Rejects a used/expired/unknown token.
    */
-  completePasswordReset(input: PasswordResetComplete, ip?: string | null): Promise<SessionResult>;
+  completePasswordReset(input: PasswordResetComplete, ip?: string | null): Promise<LoginResult>;
   /**
    * Public self-serve registration (§4, §6.12). Reads the stored registration
    * mode and rejects with 403 `REGISTRATION_CLOSED` unless the mode permits
@@ -315,6 +317,42 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     });
   }
 
+  /**
+   * Issue a pending 2FA challenge for a user whose identity has already been
+   * proven by a first factor (a correct password on login, a valid reset token).
+   * Mints a single-purpose pending token (Redis), audits the issue, offers only
+   * the channels the account enabled, and — for an email-only account — sends the
+   * code up front so there is nothing to click. `priorSessionId`, if given, is
+   * carried so it can be rotated out on success. The session is withheld until a
+   * second factor verifies (§6.1, §13.2 V2-P5).
+   */
+  async function issueTwoFactorChallenge(
+    user: UserRow,
+    ip?: string | null,
+    priorSessionId?: string,
+  ): Promise<TwoFactorChallenge> {
+    const methods = await twoFactor.getMethods(user.id);
+    const pendingToken = randomBytes(32).toString('base64url');
+    const state: Pending2faState = { userId: user.id };
+    if (priorSessionId) state.priorSessionId = priorSessionId;
+    await redis.set(pendingKey(pendingToken), JSON.stringify(state), 'EX', PENDING_2FA_TTL_SEC);
+    await audit.record({
+      actorId: user.id,
+      action: AuditAction.TwoFactorChallengeIssued,
+      targetType: 'user',
+      targetId: user.id,
+      ip,
+    });
+    const channels: TwoFactorChannel[] = [];
+    if (methods.totp) channels.push('totp');
+    if (methods.email) channels.push('email');
+    channels.push('recovery');
+    if (methods.email && !methods.totp) {
+      await issueEmailLoginCode(pendingToken, user, ip);
+    }
+    return { pendingToken, channels };
+  }
+
   const clearFailures = (userId: string) => clearLoginThrottle(redis, userId);
   // Correct-password clear that deliberately spares the second-factor throttle
   // so its §10 escalation lock accumulates across re-logins (see
@@ -393,34 +431,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // carried so it can be rotated out on success, not destroyed on an abandoned
       // challenge.
       if (await twoFactor.isEnabled(user.id)) {
-        const methods = await twoFactor.getMethods(user.id);
-        const pendingToken = randomBytes(32).toString('base64url');
-        const state: Pending2faState = { userId: user.id };
-        if (currentSessionId) state.priorSessionId = currentSessionId;
-        await redis.set(pendingKey(pendingToken), JSON.stringify(state), 'EX', PENDING_2FA_TTL_SEC);
-        await audit.record({
-          actorId: user.id,
-          action: AuditAction.TwoFactorChallengeIssued,
-          targetType: 'user',
-          targetId: user.id,
-          ip,
-        });
-        // Offer only the channels the account actually enabled (#298): TOTP and/or
-        // email, plus recovery codes (always available while any method is on).
-        const channels: TwoFactorChannel[] = [];
-        if (methods.totp) channels.push('totp');
-        if (methods.email) channels.push('email');
-        channels.push('recovery');
-        // Email is the only method ⇒ send the code up front so the user has
-        // nothing to click (§13.2 V2-P5 addendum). With TOTP also on, TOTP is the
-        // default and the code is sent on request instead.
-        if (methods.email && !methods.totp) {
-          await issueEmailLoginCode(pendingToken, user, ip);
-        }
-        return {
-          status: 'two_factor_required',
-          challenge: { pendingToken, channels },
-        };
+        const challenge = await issueTwoFactorChallenge(user, ip, currentSessionId ?? undefined);
+        return { status: 'two_factor_required', challenge };
       }
 
       // Session rotation: drop any pre-login session before minting a new id.
@@ -736,10 +748,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       await passwordResetRepo.markUsed(record.id, new Date());
       await passwordResetRepo.deleteForUser(user.id);
 
-      // A password change kills all sessions (§6.1); re-establish one for this
-      // device so the reset lands the user signed in — no redundant prompt (#268).
+      // A password change kills all sessions (§6.1).
       await sessions.destroyAllForUser(user.id);
-      const sessionId = await sessions.create(user.id);
 
       await audit.record({
         actorId: user.id,
@@ -756,8 +766,22 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         ip,
       });
 
+      // 2FA gate (§6.1): the reset link proves control of the mailbox — exactly
+      // the factor an authenticator app is meant to survive. With any 2FA method
+      // on, withhold the session and require a second factor, mirroring login;
+      // otherwise the reset lands the user signed in with no redundant prompt.
+      if (await twoFactor.isEnabled(user.id)) {
+        const challenge = await issueTwoFactorChallenge(user, ip);
+        return { status: 'two_factor_required', challenge };
+      }
+
+      const sessionId = await sessions.create(user.id);
       const updated = await userRepo.findById(user.id);
-      return { user: updated ?? { ...user, passwordHash, mustChangePassword: false }, sessionId };
+      return {
+        status: 'authenticated',
+        user: updated ?? { ...user, passwordHash, mustChangePassword: false },
+        sessionId,
+      };
     },
 
     async register(_input, _ip) {

@@ -413,13 +413,25 @@ export const cashMovementsResponseSchema = z
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
 
 /**
+ * Upper bound on a single cash movement's EUR magnitude. The ledger column is
+ * `numeric(20,6)`, so an unbounded amount (or a non-finite `Infinity`, which zod
+ * `.number()` otherwise admits) would reach Postgres as an overflow/`Infinity`
+ * and surface as a 500 instead of a clean 400. A trillion-euro cap keeps every
+ * realistic entry while making the input fail loud and early.
+ */
+export const MAX_CASH_AMOUNT_EUR = 1_000_000_000_000;
+
+/** A positive, finite EUR magnitude within the ledger's representable range. */
+const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_EUR);
+
+/**
  * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
  * **magnitude**; the service assigns the sign by kind. `executedAt` defaults to
  * now (server-side) when omitted.
  */
 export const cashEntryRequestSchema = z
   .object({
-    amountEur: z.number().positive(),
+    amountEur: cashAmountEurSchema,
     executedAt: z.string().datetime().optional(),
     note: z.string().max(1000).nullish(),
   })
@@ -443,7 +455,7 @@ export type CashMovementResponse = z.infer<typeof cashMovementResponseSchema>;
 export const cashPreviewRequestSchema = z
   .object({
     kind: cashMovementKindSchema,
-    amountEur: z.number().positive(),
+    amountEur: cashAmountEurSchema,
   })
   .strict();
 export type CashPreviewRequest = z.infer<typeof cashPreviewRequestSchema>;

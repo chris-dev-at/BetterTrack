@@ -2,14 +2,20 @@ import { desc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 
-import { meResponseSchema } from '@bettertrack/contracts';
+import {
+  meResponseSchema,
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import { emailLog, passwordResetTokens, type EmailLogRow } from '../data/schema';
+import { generateTotpCode } from '../services/auth/totp';
 import { hashToken } from '../services/crypto/tokens';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import {
   createTestApp,
   type CreateTestAppOptions,
+  type SeededUser,
   type TestHarness,
 } from '../testing/createTestApp';
 
@@ -80,6 +86,30 @@ function tokenFromMail(mail: OutgoingMail): string {
 
 function logRows(harness: TestHarness): Promise<EmailLogRow[]> {
   return harness.db.select().from(emailLog).orderBy(desc(emailLog.id));
+}
+
+/** Log in, enroll + confirm TOTP 2FA for a user, then sign the enroll agent out. */
+async function enrollTotp(harness: TestHarness, user: SeededUser): Promise<{ secret: string }> {
+  const agent = request.agent(harness.app);
+  await agent
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier: user.email, password: user.password });
+  const { secret } = twoFactorEnrollResponseSchema.parse(
+    (await agent.post('/api/v1/auth/2fa/enroll').set(...XRW)).body,
+  );
+  await agent
+    .post('/api/v1/auth/2fa/confirm')
+    .set(...XRW)
+    .send({ code: generateTotpCode(secret) });
+  await agent.post('/api/v1/auth/logout').set(...XRW);
+  return { secret };
+}
+
+/** Whether the response set a `bt_sid` session cookie. */
+function setsSessionCookie(res: request.Response): boolean {
+  const setCookie = (res.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
+  return setCookie.some((c) => c.startsWith('bt_sid='));
 }
 
 describe('self-service reset — end-to-end (§6.1, §14)', () => {
@@ -254,6 +284,44 @@ describe('self-service reset — SMTP-less deploys and account kinds', () => {
       .from(passwordResetTokens)
       .where(eq(passwordResetTokens.userId, user.id));
     expect(tokenRow).toBeDefined();
+  });
+
+  it('a 2FA-enabled account gets a challenge — not a session — after completing the reset', async () => {
+    const { harness, transport } = await enabledHarness();
+    const user = await harness.seedUser();
+    const { secret } = await enrollTotp(harness, user);
+
+    await requestReset(harness, user.email);
+    const token = tokenFromMail(transport.sent.at(-1)!);
+
+    // Completing the reset changes the password but withholds the session: a
+    // mailbox alone must not defeat the second factor (§6.1).
+    const agent = request.agent(harness.app);
+    const done = await agent
+      .post('/api/v1/auth/password-reset/complete')
+      .set(...XRW)
+      .send({ token, newPassword: 'reset-with-2fa-secret-1' });
+    expect(done.status).toBe(200);
+    const challenge = twoFactorChallengeResponseSchema.parse(done.body);
+    expect(challenge.twoFactorRequired).toBe(true);
+    expect(challenge.channels).toContain('totp');
+    expect(setsSessionCookie(done)).toBe(false);
+    // No session yet — the completing agent cannot reach a protected route.
+    expect((await agent.get('/api/v1/auth/me')).status).toBe(401);
+
+    // Presenting the second factor promotes the pending challenge to a session.
+    const verify = await agent
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    expect(verify.status).toBe(200);
+    expect(setsSessionCookie(verify)).toBe(true);
+    expect((await agent.get('/api/v1/auth/me')).status).toBe(200);
+
+    // The new password is in effect (though login now also requires 2FA).
+    const relogin = await login(harness, user.email, 'reset-with-2fa-secret-1');
+    expect(relogin.status).toBe(200);
+    expect(twoFactorChallengeResponseSchema.safeParse(relogin.body).success).toBe(true);
   });
 
   it('does not issue a self-service reset for an admin-kind account', async () => {

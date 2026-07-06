@@ -147,14 +147,16 @@ export function LoginPage() {
  * code. A valid factor promotes the pending challenge to a full session and the
  * app opens.
  */
-function TwoFactorStep({
+export function TwoFactorStep({
   challenge,
   onVerified,
   onCancel,
+  cancelLabel = 'Back to sign in',
 }: {
   challenge: TwoFactorChallengeResponse;
   onVerified: () => void;
   onCancel: () => void;
+  cancelLabel?: string;
 }) {
   const { verifyTwoFactor, requestTwoFactorEmailCode } = useAuth();
   const totpAvailable = challenge.channels.includes('totp');
@@ -266,7 +268,7 @@ function TwoFactorStep({
           className="text-center text-sm font-medium text-neutral-400 hover:text-neutral-200"
           onClick={onCancel}
         >
-          Back to sign in
+          {cancelLabel}
         </button>
       </form>
     </AuthCard>

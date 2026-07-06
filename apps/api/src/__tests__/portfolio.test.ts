@@ -1552,6 +1552,104 @@ describe('Portfolio cash ledger', () => {
     expect(cashBalance(domainMovements)).toBeCloseTo(600, 6);
   });
 
+  it('refuses to edit the financial fields of a cash-linked transaction (would desync the ledger)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-10) });
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 100,
+        executedAt: tsOffset(-2),
+        payFromCash: true,
+      });
+    const id = buy.body.transactions[0].id;
+
+    // Editing a financial field would leave the linked −400 movement stale,
+    // inflating net worth with no external flow → rejected.
+    const bad = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${id}`)
+      .set(...XRW)
+      .send({ quantity: 8 });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.code).toBe('TRANSACTION_CASH_LINKED');
+
+    // The ledger is untouched by the rejected edit.
+    const state = await cashState(agent, pid);
+    expect(state.balanceEur).toBeCloseTo(600, 6);
+
+    // A note-only edit is still allowed — it cannot desync the ledger.
+    const noteOnly = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${id}`)
+      .set(...XRW)
+      .send({ note: 'annotated' });
+    expect(noteOnly.status).toBe(200);
+    expect(noteOnly.body.transaction.note).toBe('annotated');
+  });
+
+  it('refuses to delete a cash-linked transaction when the remaining ledger would go negative', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    // Hold shares, sell them adding 1000 proceeds to cash, then withdraw all of it.
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 10, price: 50, executedAt: tsOffset(-10) });
+    const sell = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 10,
+        price: 100,
+        executedAt: tsOffset(-5),
+        addProceedsToCash: true,
+      });
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/withdraw`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-3) });
+
+    // Deleting the sell would cascade its +1000 proceeds away, leaving the
+    // −1000 withdrawal stranding the ledger negative → rejected.
+    const blocked = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${sell.body.transactions[0].id}`)
+      .set(...XRW);
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.error.code).toBe('CASH_LEDGER_WOULD_GO_NEGATIVE');
+
+    // Ledger is untouched by the rejected delete.
+    const state = await cashState(agent, pid);
+    expect(state.balanceEur).toBeCloseTo(0, 6);
+
+    // Depositing enough to cover the withdrawal makes the delete solvent → allowed.
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-4) });
+    const ok = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${sell.body.transactions[0].id}`)
+      .set(...XRW);
+    expect(ok.status).toBe(204);
+    // The +1000 proceeds are gone; the ledger is deposit(1000) − withdrawal(1000) = 0.
+    const after = await cashState(agent, pid);
+    expect(after.balanceEur).toBeCloseTo(0, 6);
+  });
+
   it('persists + returns the sticky default funding source', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

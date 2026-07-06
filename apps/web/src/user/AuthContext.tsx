@@ -164,8 +164,12 @@ interface AuthContextValue {
   /** Request a one-time email login code for a pending 2FA challenge. */
   requestTwoFactorEmailCode: (body: TwoFactorEmailCodeRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
-  /** Complete a self-service password reset; the API signs the user straight in. */
-  completePasswordReset: (body: PasswordResetComplete) => Promise<void>;
+  /**
+   * Complete a self-service password reset. A no-2FA account is signed straight
+   * in (lands `authenticated`); a 2FA account lands `two_factor_required` with a
+   * challenge the caller completes via {@link verifyTwoFactor} first (§6.1).
+   */
+  completePasswordReset: (body: PasswordResetComplete) => Promise<LoginOutcome>;
   changePassword: (body: ChangePasswordRequest) => Promise<void>;
   /** Verify the PIN for the current session, releasing the `pin-required` trap. */
   verifyPin: (body: PinVerifyRequest) => Promise<void>;
@@ -410,12 +414,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const completePasswordReset = useCallback(
-    async (body: PasswordResetComplete) => {
-      // The reset mints a fresh session server-side and returns the usable user,
-      // so this lands authenticated; a fresh credential opens a fresh window.
-      const me = await api.completePasswordReset(body);
-      recordActivity(me.id);
-      applyUser(me);
+    async (body: PasswordResetComplete): Promise<LoginOutcome> => {
+      const result = await api.completePasswordReset(body);
+      // 2FA on: the reset changed the password but withheld the session — a
+      // mailbox alone must not defeat the second factor (§6.1). Hand the
+      // challenge back so the reset screen can collect it before the app opens.
+      if ('twoFactorRequired' in result) {
+        return { status: 'two_factor_required', challenge: result };
+      }
+      // No 2FA: the API minted a fresh session and returned the usable user, so
+      // this lands authenticated; a fresh credential opens a fresh window.
+      recordActivity(result.id);
+      applyUser(result);
+      return { status: 'authenticated' };
     },
     [applyUser],
   );
