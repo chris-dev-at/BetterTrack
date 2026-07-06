@@ -24,13 +24,13 @@ same `factory/lib.sh` internals, and **the two must never run at the same time**
 
 Issues are classified by **difficulty**, not by model — exactly one label:
 
-| Label               | Color       | Meant for                                                              |
-| ------------------- | ----------- | ---------------------------------------------------------------------- |
-| `diff:easy`         | blue        | trivial/mechanical: docs, config/CI, placeholders, tiny CRUD           |
-| `diff:normal`       | light green | standard well-scoped features: plain UI pages, simple endpoints, e2e   |
-| `diff:intermediate` | dark green  | cross-cutting/stateful: auth/PIN, schema/migrations, jobs, realtime    |
-| `diff:hard`         | purple      | complex engine/architecture: domain core, provider/caching, search     |
-| `diff:max`          | red         | keystone/critical path + plan-deviation design decisions               |
+| Label               | Color       | Meant for                                                            |
+| ------------------- | ----------- | -------------------------------------------------------------------- |
+| `diff:easy`         | blue        | trivial/mechanical: docs, config/CI, placeholders, tiny CRUD         |
+| `diff:normal`       | light green | standard well-scoped features: plain UI pages, simple endpoints, e2e |
+| `diff:intermediate` | dark green  | cross-cutting/stateful: auth/PIN, schema/migrations, jobs, realtime  |
+| `diff:hard`         | purple      | complex engine/architecture: domain core, provider/caching, search   |
+| `diff:max`          | red         | keystone/critical path + plan-deviation design decisions             |
 
 The owner maps each difficulty to a **provider + model + effort** in the
 dashboard's **Models** tab, persisted to `state/control/models.json` and read
