@@ -398,39 +398,42 @@ async function readModels() {
 // ---- provider connection status (host-side — this is what the auth sync copies) --------
 let provCache = { at: 0, data: null };
 async function providerStatus() {
-  if (Date.now() - provCache.at < 600000 && provCache.data) return provCache.data;
   const home = process.env.HOME || '';
-  const claude = !!(await hostOauthToken());
+  // Connection status is cheap (file existence) — always fresh, so logging in a
+  // provider flips it to connected on the very next snapshot instead of after the
+  // cache TTL. codex = ~/.codex/auth.json; gemini is factory-ready only once the
+  // CONTAINER has the agy token (on macOS the host token lives in the keychain,
+  // so host presence alone doesn't mean the containers can use it — they get it
+  // via `autorun.sh --login-gemini`).
   const codex = existsSync(join(home, '.codex', 'auth.json'));
-  // gemini is factory-ready only once the CONTAINER has the agy token — on macOS
-  // the host token is in the keychain, so host presence alone doesn't mean the
-  // containers can use it (they get it via `autorun.sh --login-gemini`).
   const gemini =
     existsSync(
       join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token'),
     ) || existsSync(join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
-  const hostGemini = existsSync(join(home, '.gemini', 'oauth_creds.json')) || gemini;
-  let agyModels = provCache.data?.agyModels || [];
-  if (hostGemini) {
-    const r = await run('agy', ['models'], { timeout: 20000 });
-    if (r.ok) {
-      const list = r.stdout
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (list.length) agyModels = list;
+  // The expensive probes (keychain read for claude, `agy models` list) stay
+  // cached at 10 min.
+  if (Date.now() - provCache.at >= 600000 || !provCache.data) {
+    const claude = !!(await hostOauthToken());
+    let agyModels = provCache.data?.agyModels || [];
+    const hostGemini = gemini || existsSync(join(home, '.gemini', 'oauth_creds.json'));
+    if (hostGemini) {
+      const r = await run('agy', ['models'], { timeout: 20000 });
+      if (r.ok) {
+        const list = r.stdout
+          .split('\n')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (list.length) agyModels = list;
+      }
     }
+    provCache = { at: Date.now(), data: { claudeConnected: claude, agyModels } };
   }
-  provCache = {
-    at: Date.now(),
-    data: {
-      claude: { connected: claude },
-      codex: { connected: codex },
-      gemini: { connected: gemini },
-      agyModels,
-    },
+  return {
+    claude: { connected: provCache.data.claudeConnected },
+    codex: { connected: codex },
+    gemini: { connected: gemini },
+    agyModels: provCache.data.agyModels,
   };
-  return provCache.data;
 }
 
 // ---- triggers: usage- and time-based automation ---------------------------------------
