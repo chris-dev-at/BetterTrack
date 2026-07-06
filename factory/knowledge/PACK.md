@@ -13,7 +13,14 @@ unlisted stock) — browse assets via a local search index, build & backtest
 **Conglomerates** (user-defined ETF-style weighted baskets), turn a budget into a
 buy list, and share portfolios with friends. Five-tab product:
 **Portfolio | Workboard | Assets | Social | Profile Menu**. Future surfaces ship
-as visible "Coming soon" pages. **V1 = BetterTrack Core + Tiny Friend Sharing.**
+as visible "Coming soon" pages. **V1 (core + tiny friend sharing) and V2
+(multi-portfolio UI, cash balance, PIN lock, 2FA, admin rework, sharing
+expansion, notification matrix, personal API keys + OAuth apps) are SHIPPED.
+Current milestone: V3 (§13.3)** — Net Worth & cash sources, tax engine (AT),
+analytics deep-dive, sharing audiences everywhere + multiple watchlists, friend
+rows/public profiles/chat, realtime + Live Mode, price alerts, late-listing
+backtest modes, i18n EN/DE, PWA + web-push + FCM prep, bettertrack.at go-live
+surfaces.
 
 ## Architecture
 
@@ -45,7 +52,8 @@ flow backward, and `domain/` imports nothing but types.
 rate-limit state; auth = httpOnly session cookies + argon2id; market data via
 `yahoo-finance2` behind the provider interface (cached/coalesced/swappable); email
 via Nodemailer/SMTP (Gmail app-password preset, optional); IDs = UUIDv7. Realtime
-(Socket.IO) is designed-for but **post-v1** — V1 relies on TanStack Query refetch.
+(Socket.IO) is designed-for and **lands in V3-P7** — until that merges, surfaces
+rely on TanStack Query refetch (which stays as the fallback afterwards).
 
 ## Conventions
 
@@ -68,81 +76,109 @@ via Nodemailer/SMTP (Gmail app-password preset, optional); IDs = UUIDv7. Realtim
   before merge.
 - **Labels:** `autopilot` (queued for the factory) · `in-progress` · `needs-human`
   (stuck/ambiguous — factory stops) · `awaiting-owner` (planned, needs owner OK,
-  NOT autopilot) · exactly one tier label (`tier:fable|tier:opus|tier:sonnet`).
+  NOT autopilot) · exactly one difficulty label
+  (`diff:easy|diff:normal|diff:intermediate|diff:hard|diff:max`); legacy `tier:*`
+  labels still resolve (sonnet→easy, opus→intermediate, fable→max).
 
-## Model-tier routing (digest of MODELUSE.md)
+## Difficulty routing (digest of MODELUSE.md + docs/multi-factory.md)
 
-Floor is **Sonnet at high effort** — nothing runs below it. When unsure, take the
-higher tier. Each issue gets exactly one tier label:
+Every issue gets exactly one `diff:*` label; `state/control/models.json`
+(dashboard Models tab) resolves each difficulty to a provider/model/effort —
+defaults are all-Claude. When unsure, take the higher difficulty. Escalate
+instead of looping: a bug surviving two fix attempts moves up one difficulty.
 
-- **tier:fable** (T1, Claude Fable 5) — correctness-critical / architectural
+- **diff:max / diff:hard** (old T1 Fable) — correctness-critical / architectural
   keystones: everything under `apps/api/src/domain/**` (holdings, backtest,
-  allocation; later alertEval), the provider **caching/coalescing/serve-stale/
-  currency** keystone (§5.3), the **local search-index core** (§6.2), and
-  plan-deviation design decisions. First money-math implementations at `max`.
-- **tier:opus** (T2, Claude Opus 4.8) — security & subtlety: auth/sessions/PIN/
+  allocation, the V3 realized-P/L + tax engine, alert evaluator), the provider
+  **caching/coalescing/serve-stale/currency** keystone (§5.3), the **local
+  search-index core** (§6.2), and plan-deviation design decisions.
+- **diff:intermediate** (old T2 Opus) — security & subtlety: auth/sessions/PIN/
   rate-limiting, account kinds, admin routes, registration modes (§6.12),
-  friendship/sharing **privacy boundaries** (§6.9), tokens, import/export, DB
-  schema/migrations, BullMQ jobs, realtime/event bus, the **Builder** UI,
-  deployment-topology config (§11), design-polish pass. Security floor never drops
-  below Opus.
-- **tier:sonnet** (T3, Claude Sonnet 5, high) — CRUD, plain UI pages, Coming-Soon
-  placeholders, config/CI/compose, templates, e2e, docs.
+  friendship/sharing **privacy boundaries** (§6.9 and the V3-P5 audience model),
+  tokens, import/export, DB schema/migrations, BullMQ jobs, realtime/event bus,
+  the **Builder** UI, deployment-topology config (§11), design-polish pass.
+  The security floor never drops below this.
+- **diff:easy / diff:normal** (old T3 Sonnet floor) — CRUD, plain UI pages,
+  Coming-Soon placeholders, config/CI/compose, templates, e2e, docs, i18n string
+  sweeps.
 
-Escalate instead of looping: a bug surviving two fix attempts moves up one tier.
+## V3 phases (PROJECTPLAN §13.3) — one line each, "done when" essence
 
-## V1 phases (PROJECTPLAN §13) — one line each, "done when" essence
+V1 (§13) and V2 (§13.2) are fully shipped. The earliest §13.3 phase whose
+acceptance criteria the code doesn't meet is the current phase; disjoint arcs run
+in parallel via `mf-meta` claims. Binding rules: S-items only in surface bundles
+(3–6 items, one surface, one difficulty); **after V3-P1 every PR ships its
+user-facing strings through i18n with EN + DE keys** (hardcoded string = blocking
+review finding); audience controls carry the privacy friction ladder (strong
+warning on public / light confirm on all-friends / none on specific friends).
 
-Order is pragmatic; earliest phase whose acceptance criteria the code doesn't yet
-meet is the current phase. Already built: auth, admin, providers/caching v1,
-search v1, asset page, workboard watchlist, portfolio, backtest engine, jobs;
-P0 v2 app shell (5-tab nav + placeholders) merged.
+- **V3-P0 — v2-feedback quick wins (S bundle, diff:normal):** portfolio-selection
+  reset BUG (Transactions/Custom-Assets nav reverts to default — regression
+  test); "Total Value"→"Net Worth" app-wide (grep gate); liquidity bar →
+  integrated redesign; calculator stepper → decimal precision (1/0.1/0.01/0.001).
+- **V3-P1 — i18n foundation (L, diff:intermediate):** EN source-of-truth + DE
+  first translation; per-user language picker in Settings; all strings extracted;
+  locale-aware dates/numbers; localized emails; a new language = one locale file
+  + registry entry (zero code); CI gate on hardcoded strings.
+- **V3-P2 — Custom assets v2 (M, diff:intermediate):** real category on custom
+  assets (catalog taxonomy — the CUSTOM slice dies; migration → `other` +
+  re-categorize banner); per-asset value-smoothing toggle (linear between marks,
+  mark-day values stay exact).
+- **V3-P3 — Cash sources (L, diff:max):** V2 cash ledger becomes **Main** + named
+  sources (bank/retirement/cash/custom), each with balance + history; atomic
+  paired transfers; source picker on deposit/withdraw/buy/sell; Net Worth +
+  liquidity roll-up; internal transfers are NEVER TWR external flows.
+- **V3-P4 — Realized P/L, tax, dividends (L, diff:max; needs P3):**
+  moving-average cost basis; per-calendar-year realized P/L; tax modes None /
+  Manual-per-trade / Country-specific (AT only: 27.5 % on gains + dividends,
+  same-year loss offset with refund, hard Jan-1 reset, NO cross-year carry);
+  dividend transactions land in a chosen cash source; per-year P/L + dividends +
+  taxes report. Owner's required test: +450 € taxed, then −100 € loss ⇒ year
+  total tax = 27.5 % × 350 €.
+- **V3-P5 — Sharing audiences (L, diff:intermediate):** ONE picker + enforcement
+  layer for EVERY portfolio/conglomerate/watchlist — private / specific friends /
+  all friends / public link (≥128-bit, revocable); friction ladder lives in the
+  picker; multiple named watchlists (General default) with per-list audience;
+  V2-P9-grade privacy tests per kind × audience.
+- **V3-P6 — Friend rows + public profiles (M/L, diff:intermediate; needs P5):**
+  friend rows expand in place (their shares to me by kind + my shares to them +
+  actions; kind counts collapsed); opt-in public profile (slug URL) composing
+  public items, strong warning, instant unpublish.
+- **V3-P7 — Realtime + Live Mode (L, diff:hard):** authed WebSocket bridged to
+  the event bus (bell/quote push, poll fallback, flagged rollout); Live Mode per
+  §6.3 (shared poll loop → Redis ring → `asset:{id}` fan-out, 1 m–12 h,
+  auto-stop).
+- **V3-P8 — Friend chat (L, diff:intermediate; needs P7a):** 1:1 DMs, unread
+  badges, realtime + poll fallback, `chat.message` in the notification matrix;
+  share-in-chat chips NEVER widen access.
+- **V3-P9 — Analytics page (L, diff:hard; needs P2):** Portfolio → Analytics:
+  per-asset hide/show, category/type filters, free ranges, value/perf-% modes,
+  contribution table; overlay-assets mode MOVES here from the overview; compare
+  vs index/asset/other portfolio/conglomerate with side-by-side stats (total %,
+  CAGR, max drawdown); inflation real-terms mode (HICP/CPI/custom flat rate).
+- **V3-P10 — Backtest modes, alerts, market data (4 disjoint arcs):**
+  late-listing modes clip/cash-until-listing/redistribute + entry markers +
+  entry-day rebalance primitive (diff:max); §14 price-alert spec verbatim with
+  minute evaluator + idempotency (diff:intermediate); gold + crypto symbols
+  (diff:easy); per-user base currency through the §5.3 core (diff:hard).
+- **V3-P11 — Platform & security (M/L, diff:intermediate):** session manager
+  (list + revoke one/all-others); PWA (manifest/SW/offline shell) + web-push
+  channel (VAPID, opt-in from settings only, matrix column); FCM prep:
+  `device_tokens` + authed register endpoints + env-gated FCM channel
+  (server-only — the phone app is a separate future project).
+- **V3-P12 — bettertrack.at surfaces (M, diff:normal):** static product landing
+  page (root origin, own tiny compose site); `mobile.` placeholder page;
+  5-origin topology config (product/web/admin/api/mobile) behind Cloudflare +
+  always-on-Mac deploy guide.
+- **V3-P13 — DE sweep, polish, e2e, v3 gate:** human-eye DE pass (du-Form,
+  consistent finance vocabulary); empty/error-state + responsive sweeps;
+  Playwright extended (cash transfer, AT-tax sell w/ refund, analytics compare,
+  share-to-one-friend, second watchlist, chat, alert fire); pre-release Fable
+  review; file **check v3**.
 
-- **P0 — v2 shell & restructure:** 5-tab nav + profile dropdown + subnavs + route
-  tree with ComingSoon placeholders; §7.3 file moves; docs→`docs/`. Done: every
-  tab/subnav opens, placeholders say Coming soon, tests green. (merged)
-- **P1 — Asset catalog, local search & cache rework:** catalog indexes (tsvector +
-  pg_trgm) + seed; local-first `/search` + background `catalog.enrich`; caching
-  hardening (coalescing, negative cache, serve-stale, per-provider budgets). Done:
-  "bay"/"bayr" → BAYN.DE instantly with zero sync provider calls; concurrent misses
-  = one upstream fetch; outage → stale, never errors.
-- **P2 — Identity, sessions & topology:** admin/user account-kind split; 30-day
-  sessions + PIN; progressive rate limiting; topology env scheme + nginx templates
-  (both modes) + runtime SPA config. Done: admin↔user endpoint isolation (test);
-  PIN renews window; limiter escalation/decay; boots in subdomains & ports mode.
-- **P3 — Portfolio v2 & multi-portfolio prep:** `portfolio_id`-scoped API + one
-  auto default; overview blocks (totals, perf chart, holdings, top winners/losers,
-  donuts, recent tx, quick add); `visibility` flag (consumed P5). Done: scoped flows
-  work; a 2nd portfolio row appears in `GET /portfolios` without code changes.
-- **P4 — Workboard: Conglomerates + calculator:** finish conglomerate CRUD +
-  **Builder** (locks/auto-balance/normalize/autosave/live preview §6.5) + backtest
-  UI; `domain/allocation` never-overshoot algorithm + calculator UI + bulk buy.
-  Done: 13/40/47 basket, 5Y backtest vs S&P; 1000 € → buy list ≤ budget.
-- **P5 — Social minimal:** `friend_requests` + `friendships`; request by
-  username/email (no enumeration), accept/decline/cancel/remove; Friends page;
-  `visibility=friends` → Shared With Me + read-only friend view. Done: two-account
-  flow; privacy tests (non-friends 404, visibility-off 404, unfriend closes access).
-- **P6 — Notifications & email log:** bell + unread + mark-read (REST refetch);
-  `notification_settings`; friend.request/accepted + portfolio.shared wired to P5
-  events; Gmail SMTP preset; `email_log` per send; admin log views. Done: request →
-  bell item + logged email within seconds; SMTP-less deploys log `suppressed`.
-- **P7 — Settings section:** subnav — Account (privacy/sharing toggles),
-  Notifications, Security (sessions/PIN) implemented; Imports/Connections/Backups/
-  API-Access as designed placeholders. Done: every subpage reachable.
-- **P8 — Admin global settings & registration modes:** `app_settings` + admin
-  Settings page; registration-mode selector (closed enforced; others visible,
-  disabled) enforced from day one; overview cards refresh. Done: settings persist +
-  audit-log; closed mode blocks a hand-crafted register call; selector shows 4 modes.
-- **P9 — API `/docs`:** OpenAPI 3 from contracts; `GET /openapi.json` + `GET /docs`
-  on the API origin; CI coverage gate. Done: `/docs` renders complete/accurate
-  endpoints; CI fails on an undocumented route.
-- **P10 — Polish, e2e & v1 gate:** empty states/skeletons/error boundaries;
-  responsive pass; disclaimers; deploy guide (both modes); Playwright e2e;
-  pre-release Fable review. Done: fresh invite → stock → conglomerate → buy list →
-  friend share on a phone; `docker compose up` works from README in either mode.
-
-After all P0–P10: planner creates one `awaiting-owner` "check v1" issue and pauses
-feature planning (only bug-fix/hardening allowed) until the owner responds.
+After all V3-P0…P13: the composer files one `awaiting-owner` **"check v3"** issue
+and pauses feature planning (only bug-fix/hardening allowed) until the owner
+responds.
 
 ## Commands
 

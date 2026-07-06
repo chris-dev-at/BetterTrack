@@ -1,6 +1,6 @@
 # BetterTrack — Model Use Plan
 
-Which Claude model + effort level to use for each part of the V1 build (phases and section numbers reference `PROJECTPLAN.md`, plan v2). Ground rules, per the owner:
+Which model + effort level to use for each kind of work. The per-phase tables below are the V1-era originals, kept for the tier-to-work mapping they encode; **from V3 on, every `PROJECTPLAN.md` §13.3 phase row carries its difficulty label directly** (`diff:easy…diff:max` per `docs/multi-factory.md`; T1 → `diff:max`/`diff:hard`, T2 → `diff:intermediate`, T3 → `diff:easy`/`diff:normal`), and `state/control/models.json` resolves difficulties to providers/models/effort. The ladder and ground rules here remain binding. Ground rules, per the owner:
 
 - **When in doubt, go one tier up** — slightly over-spec is the policy.
 - **The floor is Sonnet 5 at `high` effort.** Nothing runs below that — no Haiku, no medium/low.
