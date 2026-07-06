@@ -451,11 +451,12 @@ const endpoints: EndpointDef[] = [
     method: 'post',
     path: '/auth/password-reset/complete',
     tag: 'Auth',
-    summary: 'Complete a password reset with the emailed token; signs the user in.',
+    summary:
+      'Complete a password reset with the emailed token; signs the user in, or returns a 2FA challenge when 2FA is enabled.',
     public: true,
     body: R.PasswordResetComplete,
     status: 200,
-    response: R.MeResponse,
+    response: R.LoginResponse,
   },
   {
     method: 'post',
