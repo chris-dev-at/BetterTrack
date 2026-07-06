@@ -12,6 +12,7 @@ import {
   externalCashFlowsForTwr,
   InsufficientCashError,
   isExternalCashMovement,
+  netWorthSeries,
   projectCashLedger,
   type CashMovement,
   type CashMovementKind,
@@ -432,5 +433,157 @@ describe('TWR neutrality of cash-funded buys (composition with timeWeightedRetur
     const corrupted = timeWeightedReturn(values, misclassified);
     // (1000 − (−1000)) / 1000 = 2 → a fictitious +100 % on the buy day.
     expect(corrupted[1]?.pct).toBeCloseTo(100, 9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// netWorthSeries — cash counts toward portfolio worth (#311)
+// ---------------------------------------------------------------------------
+
+describe('netWorthSeries', () => {
+  it('returns an empty series when there are neither holdings values nor movements', () => {
+    expect(netWorthSeries({ holdingsValues: [], movements: [], today: '2026-01-10' })).toEqual([]);
+  });
+
+  it('is the identity on the holdings curve when the ledger is empty', () => {
+    const holdingsValues: ValuePoint[] = [
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 1100 },
+    ];
+    expect(netWorthSeries({ holdingsValues, movements: [], today: '2026-01-06' })).toEqual(
+      holdingsValues,
+    );
+  });
+
+  it('renders a cash-only portfolio as a dense daily curve through today', () => {
+    const movements = [
+      mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+      mv('withdrawal', -250, '2026-01-07T09:00:00Z'),
+    ];
+    const series = netWorthSeries({ holdingsValues: [], movements, today: '2026-01-09' });
+    expect(series).toEqual([
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 1000 }, // carry-forward
+      { date: '2026-01-07', valueEur: 750 },
+      { date: '2026-01-08', valueEur: 750 },
+      { date: '2026-01-09', valueEur: 750 },
+    ]);
+  });
+
+  it('equals holdings value + end-of-day cash balance on every day of a known ledger fixture', () => {
+    // Deposit 1000 on day 1; buy 400 of stock from cash on day 3 (holdings
+    // curve starts at 400, flat close); sell for 150 back to cash on day 5
+    // (holdings drop to 250 at flat prices — a real −37.5 % move on the sold
+    // leg is irrelevant here, values are the fixture); withdraw 200 on day 6.
+    const holdingsValues: ValuePoint[] = [
+      { date: '2026-01-07', valueEur: 400 },
+      { date: '2026-01-08', valueEur: 400 },
+      { date: '2026-01-09', valueEur: 250 },
+      { date: '2026-01-10', valueEur: 250 },
+    ];
+    const movements = [
+      mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+      mv('buy', -400, '2026-01-07T10:00:00Z'),
+      mv('sell_proceeds', 150, '2026-01-09T11:00:00Z'),
+      mv('withdrawal', -200, '2026-01-10T12:00:00Z'),
+    ];
+    const series = netWorthSeries({ holdingsValues, movements, today: '2026-01-10' });
+    // EOD cash: 1000, 1000, 600, 600, 750, 550. Holdings: 0, 0, 400, 400, 250, 250.
+    expect(series).toEqual([
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 1000 },
+      { date: '2026-01-07', valueEur: 1000 },
+      { date: '2026-01-08', valueEur: 1000 },
+      { date: '2026-01-09', valueEur: 1000 },
+      { date: '2026-01-10', valueEur: 800 },
+    ]);
+  });
+
+  it('a deposit/withdrawal moves the curve by exactly its amount; a cash-funded buy does not move it', () => {
+    const holdingsValues: ValuePoint[] = [
+      { date: '2026-01-06', valueEur: 500 },
+      { date: '2026-01-07', valueEur: 500 },
+    ];
+    const movements = [
+      mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+      mv('buy', -500, '2026-01-06T10:00:00Z'), // funds the 500 of holdings above
+      mv('withdrawal', -200, '2026-01-07T09:00:00Z'),
+    ];
+    const series = netWorthSeries({ holdingsValues, movements, today: '2026-01-07' });
+    expect(series[0]).toEqual({ date: '2026-01-05', valueEur: 1000 }); // +1000: the deposit, exactly
+    expect(series[1]).toEqual({ date: '2026-01-06', valueEur: 1000 }); // buy day: unchanged — money changed form
+    expect(series[2]).toEqual({ date: '2026-01-07', valueEur: 800 }); // −200: the withdrawal, exactly
+  });
+
+  it('aggregates several same-day movements into one end-of-day balance', () => {
+    const movements = [
+      mv('deposit', 300, '2026-01-05T09:00:00Z'),
+      mv('deposit', 700, '2026-01-05T15:00:00Z'),
+      mv('withdrawal', -100, '2026-01-05T18:00:00Z'),
+    ];
+    const series = netWorthSeries({ holdingsValues: [], movements, today: '2026-01-05' });
+    expect(series).toEqual([{ date: '2026-01-05', valueEur: 900 }]);
+  });
+
+  it('ignores movements dated after the series end', () => {
+    const holdingsValues: ValuePoint[] = [{ date: '2026-01-05', valueEur: 100 }];
+    const movements = [mv('deposit', 1000, '2026-02-01T09:00:00Z')];
+    expect(netWorthSeries({ holdingsValues, movements, today: '2026-01-05' })).toEqual([
+      { date: '2026-01-05', valueEur: 100 },
+    ]);
+    // Only future-dated movements and no holdings → nothing plottable.
+    expect(netWorthSeries({ holdingsValues: [], movements, today: '2026-01-05' })).toEqual([]);
+  });
+
+  it('display path: renders a ledger that dips negative instead of throwing (write gates own solvency)', () => {
+    // A cascade-deleted sell_proceeds can leave a withdrawal that once was
+    // covered: the series shows the truth rather than 500ing the graph.
+    const movements = [
+      mv('withdrawal', -200, '2026-01-05T09:00:00Z'),
+      mv('deposit', 1000, '2026-01-06T09:00:00Z'),
+    ];
+    const series = netWorthSeries({ holdingsValues: [], movements, today: '2026-01-06' });
+    expect(series).toEqual([
+      { date: '2026-01-05', valueEur: -200 },
+      { date: '2026-01-06', valueEur: 800 },
+    ]);
+  });
+
+  it('fails loud on malformed input', () => {
+    expect(() => netWorthSeries({ holdingsValues: [], movements: [], today: 'not-a-day' })).toThrow(
+      CashLedgerError,
+    );
+    expect(() =>
+      netWorthSeries({
+        holdingsValues: [{ date: '2026-01-05', valueEur: Number.NaN }],
+        movements: [],
+        today: '2026-01-05',
+      }),
+    ).toThrow(CashLedgerError);
+    expect(() =>
+      netWorthSeries({
+        holdingsValues: [],
+        movements: [mv('deposit', -5, '2026-01-05')], // sign contradicts kind
+        today: '2026-01-05',
+      }),
+    ).toThrow(CashLedgerError);
+  });
+
+  it('composes with timeWeightedReturn: deposits and internal conversions both link flat', () => {
+    // Deposit day, cash-funded buy day, then a genuine +10 % market move.
+    const holdingsValues: ValuePoint[] = [
+      { date: '2026-01-06', valueEur: 1000 },
+      { date: '2026-01-07', valueEur: 1100 },
+    ];
+    const movements = [
+      mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+      mv('buy', -1000, '2026-01-06T10:00:00Z'),
+    ];
+    const points = netWorthSeries({ holdingsValues, movements, today: '2026-01-07' });
+    const perf = timeWeightedReturn(points, externalCashFlowsForTwr(movements));
+    expect(perf.map((p) => p.pct)).toHaveLength(3);
+    expect(perf[0]?.pct).toBeCloseTo(0, 9); // deposit: neutralized
+    expect(perf[1]?.pct).toBeCloseTo(0, 9); // internal conversion: invisible
+    expect(perf[2]?.pct).toBeCloseTo(10, 9); // the market move — and nothing else
   });
 });

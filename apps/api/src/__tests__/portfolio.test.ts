@@ -1152,12 +1152,16 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
 
   /**
    * A deterministic **trading-day** fixture over the last two years: one close
-   * per weekday from −730 … 0, none on weekends — like a real exchange, so the
-   * series must carry Friday's close across Saturday/Sunday.
+   * per weekday from −736 … 0, none on weekends — like a real exchange, so the
+   * series must carry Friday's close across Saturday/Sunday. The margin week
+   * before the −730 buy guarantees a prior close exists to carry into the
+   * series start even when day −730 lands on a weekend (the same reason the
+   * service reaches back SERIES_EDGE_MARGIN_DAYS when picking its provider
+   * window) — without it these tests failed two weekdays out of seven.
    */
   function twoYearWeekdayCloses(): Map<string, number> {
     const closes = new Map<string, number>();
-    for (let offset = -730; offset <= 0; offset += 1) {
+    for (let offset = -736; offset <= 0; offset += 1) {
       const day = dayOffset(offset);
       const dow = weekdayOf(day);
       if (dow === 0 || dow === 6) continue;
@@ -1670,5 +1674,150 @@ describe('Portfolio cash ledger', () => {
     const after = await cashState(agent, pid);
     expect(after.balanceEur).toBeCloseTo(1000, 6);
     expect(after.movements).toHaveLength(1); // only the deposit remains
+  });
+});
+
+// ─── Cash counts toward portfolio worth (#311) ────────────────────────────────
+
+describe('Cash counts toward portfolio worth (#311)', () => {
+  it('headline totals: a deposit raises totalValueEur by exactly its amount; a cash-funded buy leaves it unchanged', async () => {
+    // Quote pinned to the purchase price so the buy is exactly value-neutral
+    // at the trade moment (any later drift is market movement, not the trade).
+    const marketData = createStubMarketData({
+      quote: () => ({
+        value: {
+          price: 100,
+          currency: 'EUR',
+          prevClose: 100,
+          dayChangePct: 0,
+          asOf: new Date().toISOString(),
+        },
+        stale: false,
+        asOf: Date.now(),
+      }),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // Fresh portfolio: net worth 0.
+    const fresh = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(fresh.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(fresh.body).success).toBe(true);
+    expect(fresh.body.totals.totalValueEur).toBe(0);
+
+    // Deposit 1 000 → the headline rises by exactly 1 000.
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-5) });
+    const afterDeposit = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(afterDeposit.body.totals.totalValueEur).toBeCloseTo(1000, 6);
+    expect(afterDeposit.body.totals.cashEur).toBeCloseTo(1000, 6);
+
+    // Buy 500 from cash → money changes form, the headline does not move.
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 5,
+        price: 100,
+        executedAt: tsOffset(-1),
+        payFromCash: true,
+      });
+    const afterBuy = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(portfolioResponseSchema.safeParse(afterBuy.body).success).toBe(true);
+    expect(afterBuy.body.totals.marketValueEur).toBeCloseTo(500, 6);
+    expect(afterBuy.body.totals.cashEur).toBeCloseTo(500, 6);
+    expect(afterBuy.body.totals.totalValueEur).toBeCloseTo(1000, 6);
+  });
+
+  it('the daily curve is holdings value + cash per day: deposits/withdrawals move it, a cash-funded buy does not', async () => {
+    const h = await createTestApp({ marketData: createStubMarketData() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+
+    // Flat closes so every value change on the curve is a cash event.
+    await h.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-6), close: '100' },
+      { assetId: asset.id, date: dayOffset(-1), close: '100' },
+    ]);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-6) });
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 5,
+        price: 100,
+        executedAt: tsOffset(-3),
+        payFromCash: true,
+      });
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/withdraw`)
+      .set(...XRW)
+      .send({ amountEur: 200, executedAt: tsOffset(-1) });
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(res.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+
+    // The curve starts at the DEPOSIT day — before the first transaction.
+    expect(res.body.points[0].date).toBe(dayOffset(-6));
+    // Per day: holdings (0 until the buy, then 500 at flat prices) + EOD cash
+    // (1000 → 500 after the buy → 300 after the withdrawal).
+    for (const point of res.body.points as Array<{ date: string; valueEur: number }>) {
+      const expected = point.date < dayOffset(-1) ? 1000 : 800;
+      expect(point.valueEur).toBeCloseTo(expected, 6);
+    }
+
+    // Performance-%: prices never moved and every flow is external-neutralized
+    // (deposit, withdrawal) or internal (cash-funded buy) — flat 0 % throughout.
+    for (const point of res.body.performance as Array<{ pct: number }>) {
+      expect(point.pct).toBeCloseTo(0, 9);
+    }
+  });
+
+  it('a cash-only portfolio has a plottable net-worth curve, and cash writes invalidate the cached series', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 1000, executedAt: tsOffset(-5) });
+
+    const first = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(first.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(first.body).success).toBe(true);
+    expect(first.body.points[0]).toMatchObject({ date: dayOffset(-5) });
+    for (const point of first.body.points as Array<{ valueEur: number }>) {
+      expect(point.valueEur).toBeCloseTo(1000, 6);
+    }
+    // A pile of cash has no performance of its own.
+    for (const point of first.body.performance as Array<{ pct: number }>) {
+      expect(point.pct).toBeCloseTo(0, 9);
+    }
+
+    // A second deposit must drop the 1 h cache and reshape the curve at once.
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500, executedAt: tsOffset(-2) });
+    const second = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    const last = second.body.points.at(-1);
+    expect(last.valueEur).toBeCloseTo(1500, 6);
   });
 });

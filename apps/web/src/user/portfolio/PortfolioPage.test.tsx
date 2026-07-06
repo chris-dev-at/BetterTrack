@@ -156,6 +156,7 @@ const TOTALS = {
   dayChangeEur: 9,
   dayChangePct: 0.003,
   cashEur: 5000,
+  totalValueEur: 326350,
 };
 
 const PORTFOLIO = { baseCurrency: 'EUR' as const, holdings: [STOCK, HOUSE], totals: TOTALS };
@@ -171,6 +172,7 @@ const EMPTY_PORTFOLIO = {
     dayChangeEur: 0,
     dayChangePct: null,
     cashEur: 0,
+    totalValueEur: 0,
   },
 };
 
@@ -283,8 +285,9 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
     expect(within(totals).getByText('Invested')).toBeInTheDocument();
     expect(within(totals).getByText('Unrealized P/L')).toBeInTheDocument();
     expect(within(totals).getByText('Day change')).toBeInTheDocument();
-    // 321350 → "321.350,00 €" (de-AT, symbol-last).
-    expect(within(totals).getByText('321.350,00 €')).toBeInTheDocument();
+    // 321350 → "321.350,00 €" (de-AT, symbol-last). Appears twice since #311:
+    // the Market value card and the headline's "invested" composition.
+    expect(within(totals).getAllByText('321.350,00 €').length).toBeGreaterThan(0);
   });
 
   test('renders a holdings row per asset', async () => {
@@ -312,6 +315,39 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
   });
 });
 
+// ─── Net worth incl. cash (#311) ──────────────────────────────────────────────
+
+describe('PortfolioPage — net worth incl. cash (#311)', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('the headline total includes cash and shows the invested/cash composition', async () => {
+    renderPage();
+    const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
+    // The primary figure is net worth: 321 350 invested + 5 000 cash = 326 350.
+    expect(within(totals).getByText('326.350,00 €')).toBeInTheDocument();
+    expect(within(totals).getByText('Total value')).toBeInTheDocument();
+  });
+
+  test('the liquidity stat shows invested/cash percentages that sum coherently with the headline', async () => {
+    renderPage();
+    const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
+    // 321 350 / 326 350 = 98,5 % invested; the cash share is its exact
+    // complement (1,5 %), so the split always describes 100 % of the total.
+    expect(
+      within(totals).getByRole('img', { name: '98,5 % invested, 1,5 % liquid' }),
+    ).toBeInTheDocument();
+    expect(within(totals).getByText('98,5 %')).toBeInTheDocument();
+    expect(within(totals).getByText('1,5 %')).toBeInTheDocument();
+  });
+
+  test('the allocation donuts include a cash slice', async () => {
+    renderPage();
+    const allocation = await screen.findByRole('region', { name: 'Allocation' });
+    // One "Cash" legend entry per donut (by asset and by type).
+    expect(within(allocation).getAllByText('Cash')).toHaveLength(2);
+  });
+});
+
 // ─── Cash balance ("Bargeld", §14, #220) ───────────────────────────────────────
 
 describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
@@ -321,7 +357,8 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
     renderPage();
     const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
     expect(within(totals).getByText('Cash')).toBeInTheDocument();
-    expect(within(totals).getByText('5.000,00 €')).toBeInTheDocument();
+    // Appears twice since #311: the Cash card and the headline composition.
+    expect(within(totals).getAllByText('5.000,00 €').length).toBeGreaterThan(0);
   });
 
   test('depositing cash calls the API and refreshes the totals', async () => {
@@ -382,7 +419,8 @@ describe('PortfolioPage — value chart range toggle', () => {
 
   test('offers only 1M/1Y/Max — no 6M or 5Y buttons', async () => {
     renderPage();
-    await waitFor(() => expect(screen.getByText('321.350,00 €')).toBeInTheDocument());
+    // Wait on the headline net-worth figure (#311) — unique on the page.
+    await waitFor(() => expect(screen.getByText('326.350,00 €')).toBeInTheDocument());
     for (const r of ['1M', '1Y', 'Max']) {
       expect(screen.getByRole('button', { name: r })).toBeInTheDocument();
     }

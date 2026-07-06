@@ -265,6 +265,13 @@ export const portfolioTotalsSchema = z
      * (holdings only) so the UI can show both and their sum.
      */
     cashEur: z.number(),
+    /**
+     * The headline figure (#311): the portfolio's net worth,
+     * `marketValueEur + cashEur`. Cash is a component of what the portfolio
+     * is worth, not a side number — the UI leads with this and shows the
+     * invested/cash composition next to it.
+     */
+    totalValueEur: z.number(),
   })
   .strict();
 export type PortfolioTotals = z.infer<typeof portfolioTotalsSchema>;

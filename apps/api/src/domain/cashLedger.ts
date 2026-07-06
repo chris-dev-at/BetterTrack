@@ -41,15 +41,16 @@
  * movements — aggregated per day, sparse, ascending, in the exact
  * {@link FlowPoint} shape `timeWeightedReturn` consumes — while `buy` /
  * `sell_proceeds` are internal and excluded. Two wiring rules follow for the
- * later service issue: (1) the value series fed to `timeWeightedReturn` must
+ * service (#311): (1) the value series fed to `timeWeightedReturn` must
  * *include* the cash balance (deposit day: value +1000 with a +1000 flow →
- * flat; buy day: value unchanged, no flow → flat); (2) a cash-funded buy/sell
- * transaction must **not** additionally enter `netFlowsOverTime` — its
- * external flow was already booked when the cash was deposited, and counting
- * it again would double the flow.
+ * flat; buy day: value unchanged, no flow → flat) — {@link netWorthSeries}
+ * builds exactly that series; (2) a cash-funded buy/sell transaction must
+ * **not** additionally enter `netFlowsOverTime` — its external flow was
+ * already booked when the cash was deposited, and counting it again would
+ * double the flow.
  */
 
-import type { FlowPoint } from './holdings';
+import type { FlowPoint, ValuePoint } from './holdings';
 
 // ---------------------------------------------------------------------------
 // Movement kinds & constants
@@ -298,6 +299,128 @@ export function cashBalanceOverTime(movements: readonly CashMovement[]): CashBal
     else points.push({ date, balanceEur: entry.balanceEur });
   }
   return points;
+}
+
+// ---------------------------------------------------------------------------
+// Net-worth series (#311)
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY = 86_400_000;
+
+/** UTC midnight epoch-ms of an ISO `YYYY-MM-DD` (deterministic, no clock). */
+function isoDayToMs(date: string): number {
+  return Date.parse(`${date}T00:00:00Z`);
+}
+
+/** Input for {@link netWorthSeries}. */
+export interface NetWorthSeriesInput {
+  /**
+   * The holdings-only daily value curve in EUR (`holdings.valueOverTime`
+   * output): **dense** — one point per calendar day — ascending, ending at the
+   * reporting day. May be empty (a portfolio that holds only cash). A date
+   * absent from the curve is a day with no holdings and counts as 0.
+   */
+  holdingsValues: readonly ValuePoint[];
+  /** The portfolio's full cash ledger, any order. */
+  movements: readonly CashMovement[];
+  /**
+   * The reporting day (ISO `YYYY-MM-DD`): the last day of the series when the
+   * holdings curve is empty. With a non-empty curve the curve's own last day
+   * is the end (it was built through the same reporting day).
+   */
+  today: string;
+}
+
+/**
+ * The portfolio's daily **net worth** curve (#311): for every calendar day,
+ * `holdings value + end-of-day cash balance`. This is the owner-feedback rule
+ * made series-shaped — cash is a component of what the portfolio is worth, so
+ * the absolute value graph carries it too. Two properties follow directly and
+ * are the correctness anchors:
+ *
+ *  - a **deposit / withdrawal** moves the curve by exactly its amount on its
+ *    day (cash changes, holdings don't);
+ *  - a **cash-funded buy** leaves the curve unchanged at the trade moment —
+ *    holdings rise by what cash falls by; money merely changed form. (The
+ *    close of the traded asset may still move the value later that day —
+ *    genuine market movement, not the trade.)
+ *
+ * The grid spans from the earlier of (first holdings day, first movement day)
+ * to the holdings curve's last day (or `today` when it is empty), one point
+ * per calendar day: cash deposited before the first transaction is part of the
+ * portfolio's worth from its deposit day, with holdings contributing 0 until
+ * they exist. The cash balance carries forward between movement days (EOD
+ * balance, ties by input order); movements dated after the grid end never
+ * enter. Full FP precision throughout (§5.4) — no rounding, no clamping.
+ *
+ * **Deliberately no solvency gate.** {@link projectCashLedger} rejects
+ * negative-dipping histories at the *write* boundary; this is a *display*
+ * derivation, and a ledger reshaped after the fact (e.g. a cascade-deleted
+ * `sell_proceeds` that funded a later withdrawal) must still render what the
+ * rows say rather than 500 the whole graph. Malformed movements, dates or
+ * values still fail loud ({@link CashLedgerError}).
+ */
+export function netWorthSeries(input: NetWorthSeriesInput): ValuePoint[] {
+  const { holdingsValues, movements, today } = input;
+  if (!ISO_DAY_RE.test(today)) {
+    throw new CashLedgerError(`today must be ISO YYYY-MM-DD, got ${today}`);
+  }
+  for (const point of holdingsValues) {
+    if (!ISO_DAY_RE.test(point.date)) {
+      throw new CashLedgerError(`Holdings value date must be ISO YYYY-MM-DD, got ${point.date}`);
+    }
+    if (!Number.isFinite(point.valueEur)) {
+      throw new CashLedgerError(
+        `Holdings value on ${point.date} must be a finite number, got ${point.valueEur}`,
+      );
+    }
+  }
+  movements.forEach((movement, i) => assertValidMovement(movement, i));
+
+  // Sparse end-of-day balances: chronological replay (ties by input order,
+  // mirroring projectCashLedger), plain running sum — see docstring for why
+  // the insufficient-cash gate deliberately does not apply here.
+  const ordered = movements
+    .map((movement, index) => ({ movement, index, ms: occurredAtToMs(movement.occurredAt) }))
+    .sort((a, b) => a.ms - b.ms || a.index - b.index);
+  const eodBalances: Array<{ dayMs: number; balanceEur: number }> = [];
+  let balanceEur = 0;
+  for (const { movement } of ordered) {
+    balanceEur += movement.amountEur;
+    const dayMs = isoDayToMs(dayOf(movement.occurredAt));
+    const last = eodBalances[eodBalances.length - 1];
+    if (last !== undefined && last.dayMs === dayMs) last.balanceEur = balanceEur;
+    else eodBalances.push({ dayMs, balanceEur });
+  }
+
+  const firstHoldings = holdingsValues[0];
+  const lastHoldings = holdingsValues[holdingsValues.length - 1];
+  const firstCash = eodBalances[0];
+  if (firstHoldings === undefined && firstCash === undefined) return [];
+
+  const endMs = lastHoldings !== undefined ? isoDayToMs(lastHoldings.date) : isoDayToMs(today);
+  const startMs = Math.min(
+    firstHoldings !== undefined ? isoDayToMs(firstHoldings.date) : Infinity,
+    firstCash?.dayMs ?? Infinity,
+  );
+  // Nothing on or before the grid end (e.g. only future-dated movements).
+  if (startMs > endMs) return [];
+
+  const holdingsByDate = new Map(holdingsValues.map((p) => [p.date, p.valueEur]));
+  const series: ValuePoint[] = [];
+  let cashIdx = 0;
+  let carriedCashEur = 0;
+  for (let ms = startMs; ms <= endMs; ms += MS_PER_DAY) {
+    const date = new Date(ms).toISOString().slice(0, 10);
+    while (cashIdx < eodBalances.length) {
+      const entry = eodBalances[cashIdx];
+      if (entry === undefined || entry.dayMs > ms) break;
+      carriedCashEur = entry.balanceEur;
+      cashIdx += 1;
+    }
+    series.push({ date, valueEur: (holdingsByDate.get(date) ?? 0) + carriedCashEur });
+  }
+  return series;
 }
 
 // ---------------------------------------------------------------------------
