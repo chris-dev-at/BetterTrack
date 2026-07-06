@@ -118,8 +118,8 @@ warning on public / light confirm on all-friends / none on specific friends).
   integrated redesign; calculator stepper → decimal precision (1/0.1/0.01/0.001).
 - **V3-P1 — i18n foundation (L, diff:intermediate):** EN source-of-truth + DE
   first translation; per-user language picker in Settings; all strings extracted;
-  locale-aware dates/numbers; localized emails; a new language = one locale file
-  - registry entry (zero code); CI gate on hardcoded strings.
+  locale-aware dates/numbers; localized emails; a new language = one locale file plus
+  a registry entry (zero code); CI gate on hardcoded strings.
 - **V3-P2 — Custom assets v2 (M, diff:intermediate):** real category on custom
   assets (catalog taxonomy — the CUSTOM slice dies; migration → `other` +
   re-categorize banner); per-asset value-smoothing toggle (linear between marks,
