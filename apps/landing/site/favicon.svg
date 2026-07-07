@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="BetterTrack">
+  <rect width="64" height="64" rx="14" fill="#0a0a0a"/>
+  <path d="M16 40 L28 30 L36 36 L48 22" fill="none" stroke="#38bdf8" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="48" cy="22" r="5" fill="#f6b82e"/>
+</svg>

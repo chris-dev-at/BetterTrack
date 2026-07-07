@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterTrack — the app is in development</title>
+    <meta
+      name="description"
+      content="The BetterTrack mobile app is in development. Use the desktop web app in the meantime."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/env.js"></script>
+  </head>
+  <body>
+    <main class="placeholder">
+      <span class="badge">
+        <img src="/favicon.svg" width="44" height="44" alt="" />
+      </span>
+      <span class="wordmark"
+        ><span class="better">Better</span><span class="track">Track</span
+        ><span class="edition">App</span></span
+      >
+      <h1>The app is in development.</h1>
+      <p>
+        The BetterTrack mobile app isn't ready yet. In the meantime, use the desktop web app — it
+        works great in a mobile browser too.
+      </p>
+      <a class="btn btn-primary js-web-link" href="https://web.bettertrack.at">Open the web app</a>
+      <nav class="lang-switch" aria-label="Language">
+        <a href="/mobile.html" aria-current="true">EN</a>
+        <a href="/mobile.de.html">DE</a>
+      </nav>
+    </main>
+
+    <script>
+      (function () {
+        var origin = (window.__BT_LANDING__ && window.__BT_LANDING__.webOrigin) || '';
+        if (!origin) return;
+        var links = document.querySelectorAll('.js-web-link');
+        for (var i = 0; i < links.length; i++) {
+          links[i].setAttribute('href', origin);
+        }
+      })();
+    </script>
+  </body>
+</html>
