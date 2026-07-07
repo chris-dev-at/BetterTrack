@@ -13,6 +13,7 @@ import type { WorkboardItem } from '@bettertrack/contracts';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
 import { formatSignedPercent } from '../../lib/format';
+import { useT } from '../../i18n';
 import {
   WATCHLIST_SHARING_QUERY_KEY,
   WORKBOARD_QUERY_KEY,
@@ -51,6 +52,7 @@ function WatchlistRow({
   onRemove,
   removeDisabled,
 }: WatchlistRowProps) {
+  const t = useT();
   const quoteQuery = useQuery({
     queryKey: ['asset', item.assetId, 'quote'],
     queryFn: ({ signal }) => getAssetQuote(item.assetId, signal),
@@ -100,7 +102,12 @@ function WatchlistRow({
         {sparklineQuery.isLoading ? (
           <Skeleton width="w-24" height="h-7" />
         ) : (
-          <Sparkline data={sparkData} ariaLabel={`1-month trend for ${item.asset.symbol}`} />
+          <Sparkline
+            data={sparkData}
+            ariaLabel={t('workboard.overview.watchlist.sparklineAriaLabel', {
+              symbol: item.asset.symbol,
+            })}
+          />
         )}
       </td>
 
@@ -150,7 +157,7 @@ function WatchlistRow({
       <td className="px-3 py-3 text-center">
         <span
           className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-neutral-800 px-1.5 text-xs text-neutral-500 ring-1 ring-neutral-700"
-          title="Alerts available in a later phase"
+          title={t('workboard.overview.watchlist.alertsComingSoonTitle')}
         >
           —
         </span>
@@ -162,7 +169,9 @@ function WatchlistRow({
           type="button"
           onClick={onRemove}
           disabled={removeDisabled}
-          aria-label={`Remove ${item.asset.symbol} from watchlist`}
+          aria-label={t('workboard.overview.watchlist.removeAriaLabel', {
+            symbol: item.asset.symbol,
+          })}
           className="rounded p-1 text-xs text-neutral-600 transition-colors hover:bg-neutral-800 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
           ✕
@@ -180,6 +189,7 @@ function WatchlistRow({
  * the owner's friends via Shared With Me; revoking closes access immediately.
  */
 function WatchlistSharingToggle() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState(false);
   const { data } = useQuery({
@@ -205,9 +215,11 @@ function WatchlistSharingToggle() {
         disabled={mutation.isPending || data === undefined}
         aria-pressed={shared}
       >
-        {shared ? 'Shared with friends' : 'Share with friends'}
+        {shared
+          ? t('workboard.overview.watchlist.sharedButton')
+          : t('workboard.overview.watchlist.shareButton')}
       </Button>
-      {error ? <Alert tone="error">Could not update sharing. Please try again.</Alert> : null}
+      {error ? <Alert tone="error">{t('workboard.overview.watchlist.shareError')}</Alert> : null}
     </div>
   );
 }
@@ -215,6 +227,7 @@ function WatchlistSharingToggle() {
 // ─── Zone 1: Watchlist ────────────────────────────────────────────────────────
 
 function WatchlistZone() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [orderedItems, setOrderedItems] = useState<WorkboardItem[]>([]);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -242,7 +255,7 @@ function WatchlistZone() {
       setRemoveError(null);
       void queryClient.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
     },
-    onError: () => setRemoveError('Failed to remove. Please try again.'),
+    onError: () => setRemoveError(t('workboard.overview.watchlist.removeError')),
   });
 
   const reorderMutation = useMutation({
@@ -254,7 +267,7 @@ function WatchlistZone() {
     onError: () => {
       // Revert optimistic order to last known server state.
       if (data) setOrderedItems(data.items);
-      setReorderError('Failed to save new order. Please try again.');
+      setReorderError(t('workboard.overview.watchlist.reorderError'));
     },
   });
 
@@ -295,7 +308,7 @@ function WatchlistZone() {
     return (
       <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
         <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
-          Watchlist
+          {t('workboard.overview.watchlist.heading')}
         </h2>
         <div className="flex flex-col gap-2">
           <Skeleton height="h-14" />
@@ -310,9 +323,9 @@ function WatchlistZone() {
     return (
       <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
         <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
-          Watchlist
+          {t('workboard.overview.watchlist.heading')}
         </h2>
-        <Alert tone="error">Could not load your watchlist. Please refresh the page.</Alert>
+        <Alert tone="error">{t('workboard.overview.watchlist.loadError')}</Alert>
       </section>
     );
   }
@@ -321,7 +334,7 @@ function WatchlistZone() {
     <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id="watchlist-heading" className="text-lg font-semibold text-neutral-200">
-          Watchlist
+          {t('workboard.overview.watchlist.heading')}
         </h2>
         <WatchlistSharingToggle />
       </div>
@@ -332,14 +345,14 @@ function WatchlistZone() {
       {orderedItems.length === 0 ? (
         <EmptyState
           icon="👁"
-          title="Your watchlist is empty"
-          description="Find an asset and add it to your Workboard to start watching."
+          title={t('workboard.overview.watchlist.emptyTitle')}
+          description={t('workboard.overview.watchlist.emptyDescription')}
           cta={
             <Link
               to="/assets/search"
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
-              Search for an asset →
+              {t('workboard.overview.watchlist.emptySearchLink')}
             </Link>
           }
         />
@@ -350,21 +363,25 @@ function WatchlistZone() {
               <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
                 <th scope="col" className="w-5 pl-2" aria-hidden="true" />
                 <th scope="col" className="px-2 py-2">
-                  Trend
+                  {t('workboard.overview.watchlist.trendHeader')}
                 </th>
                 <th scope="col" className="px-3 py-2">
-                  Asset
+                  {t('workboard.overview.watchlist.assetHeader')}
                 </th>
                 <th scope="col" className="px-3 py-2 text-right">
-                  Price
+                  {t('workboard.overview.watchlist.priceHeader')}
                 </th>
                 <th scope="col" className="px-3 py-2 text-right">
-                  Day
+                  {t('workboard.overview.watchlist.dayHeader')}
                 </th>
                 <th scope="col" className="px-3 py-2 text-center">
-                  Alerts
+                  {t('workboard.overview.watchlist.alertsHeader')}
                 </th>
-                <th scope="col" className="pr-2" aria-label="Actions" />
+                <th
+                  scope="col"
+                  className="pr-2"
+                  aria-label={t('workboard.overview.watchlist.actionsAriaLabel')}
+                />
               </tr>
             </thead>
             <tbody>
@@ -393,16 +410,17 @@ function WatchlistZone() {
 // ─── Zone 2: Alerts (placeholder) ────────────────────────────────────────────
 
 function AlertsZone() {
+  const t = useT();
   return (
     <section aria-labelledby="alerts-heading" className="flex flex-col gap-4">
       <h2 id="alerts-heading" className="text-lg font-semibold text-neutral-200">
-        Alerts
+        {t('workboard.overview.alerts.heading')}
       </h2>
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-6">
         <EmptyState
           icon="🔔"
-          title="Alerts panel coming soon"
-          description="Your active alerts across all watched assets will appear here."
+          title={t('workboard.overview.alerts.emptyTitle')}
+          description={t('workboard.overview.alerts.emptyDescription')}
         />
       </div>
     </section>
@@ -412,16 +430,17 @@ function AlertsZone() {
 // ─── Zone 3: My Conglomerates (placeholder) ───────────────────────────────────
 
 function ConglomeratesZone() {
+  const t = useT();
   return (
     <section aria-labelledby="conglomerates-heading" className="flex flex-col gap-4">
       <h2 id="conglomerates-heading" className="text-lg font-semibold text-neutral-200">
-        My Conglomerates
+        {t('workboard.overview.conglomerates.heading')}
       </h2>
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-6">
         <EmptyState
           icon="📊"
-          title="Conglomerates coming soon"
-          description="Your custom ETF baskets will appear here."
+          title={t('workboard.overview.conglomerates.emptyTitle')}
+          description={t('workboard.overview.conglomerates.emptyDescription')}
         />
       </div>
     </section>
@@ -432,13 +451,14 @@ function ConglomeratesZone() {
 
 /** Workboard page (PROJECTPLAN.md §6.4): watchlist zone now; alerts + conglomerates as placeholders. */
 export function WorkboardPage() {
+  const t = useT();
   return (
     <div className="flex flex-col gap-10">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Workboard</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          Your watched assets, alerts and conglomerates at a glance.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+          {t('workboard.overview.title')}
+        </h1>
+        <p className="mt-1 text-sm text-neutral-400">{t('workboard.overview.subtitle')}</p>
       </div>
       <WatchlistZone />
       <AlertsZone />

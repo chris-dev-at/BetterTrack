@@ -1,0 +1,933 @@
+{
+  "auth": {
+    "common": {
+      "checkingSession": "Checking session…",
+      "minPasswordHint": "At least {{count}} characters.",
+      "signOut": "Sign out",
+      "waitSecondsOne": " Please wait {{count}} second and try again.",
+      "waitSecondsOther": " Please wait {{count}} seconds and try again.",
+      "waitMoment": " Please wait a moment and try again."
+    },
+    "login": {
+      "subtitle": "Sign in to your account",
+      "identifierLabel": "Email or username",
+      "passwordLabel": "Password",
+      "submit": "Sign in",
+      "submitting": "Signing in…",
+      "forgotPassword": "Forgot password?",
+      "rateLimited": "Too many login attempts.",
+      "accountDisabled": "This account has been suspended. Please contact the administrator.",
+      "invalidCredentials": "Incorrect email/username or password."
+    },
+    "twoFactor": {
+      "subtitle": "Two-factor authentication",
+      "promptTotpAndEmail": "Enter the 6-digit code from your authenticator app, or request an emailed code below.",
+      "promptTotpOnly": "Enter the 6-digit code from your authenticator app.",
+      "promptEmailOnly": "Enter the 6-digit code we emailed you.",
+      "recoveryPrompt": "Enter one of your recovery codes.",
+      "recoveryCodeLabel": "Recovery code",
+      "verificationCodeLabel": "Verification code",
+      "verify": "Verify",
+      "verifying": "Verifying…",
+      "emailMeACode": "Email me a code",
+      "sendingEmailCode": "Sending…",
+      "useRecoveryCode": "Use a recovery code",
+      "useAuthenticatorOrEmail": "Use an authenticator or email code",
+      "backToSignIn": "Back to sign in",
+      "tooManyCodes": "Too many incorrect codes. Please wait a moment and try again.",
+      "sessionExpired": "Your verification session expired. Please sign in again.",
+      "invalidCode": "That code is incorrect or has expired.",
+      "emailCodeSent": "If email is configured, a sign-in code is on its way. Enter it below.",
+      "emailCodeFailed": "Could not send an email code. Try your authenticator or a recovery code."
+    },
+    "forgotPassword": {
+      "subtitle": "Reset your password",
+      "sentMessage": "If an account exists for that email, we’ve sent a link to reset your password. Check your inbox — the link expires in 1 hour.",
+      "backToSignIn": "Back to sign in",
+      "description": "Enter the email for your account and we’ll send you a link to choose a new password.",
+      "emailLabel": "Email",
+      "submit": "Send reset link",
+      "sending": "Sending…",
+      "rateLimited": "Too many requests."
+    },
+    "resetPassword": {
+      "subtitle": "Choose a new password",
+      "signInInstead": "Sign in instead",
+      "newPasswordLabel": "New password",
+      "submit": "Set new password",
+      "saving": "Saving…",
+      "requestNewLink": "Request a new link",
+      "rateLimited": "Too many attempts.",
+      "invalidReset": "This reset link is invalid or has expired. Request a new one to continue.",
+      "failed": "Could not reset your password. Please try again."
+    },
+    "invite": {
+      "checkingInvite": "Checking your invite…",
+      "invalidSubtitle": "Accept your invite",
+      "invalidMessage": "This invite link is invalid, expired, or has already been used. Ask your administrator for a fresh invite.",
+      "goToSignIn": "Go to sign in",
+      "subtitle": "Set up your account",
+      "emailLabel": "Email",
+      "emailHint": "Set by your invite and can't be changed.",
+      "usernameLabel": "Username",
+      "usernameHint": "3–40 characters: letters, numbers, dot, dash or underscore.",
+      "passwordLabel": "Password",
+      "submit": "Create account",
+      "creating": "Creating account…",
+      "usernameTaken": "That username is already taken — pick another.",
+      "emailTaken": "An account already exists for this email.",
+      "invalidInvite": "This invite link is no longer valid. Ask your admin for a new one.",
+      "acceptFailed": "Could not create your account. Please try again."
+    },
+    "forcedPasswordChange": {
+      "subtitle": "Choose a new password",
+      "signedInAs": "You're signed in as {{email}}. You need to set a new password before continuing.",
+      "infoNoUser": "You need to set a new password before continuing.",
+      "newPasswordLabel": "New password",
+      "confirmPasswordLabel": "Confirm new password",
+      "submit": "Update password",
+      "updating": "Updating…",
+      "mismatch": "The new passwords do not match.",
+      "failed": "Could not change your password. Please try again."
+    },
+    "pin": {
+      "heading": "Enter your PIN",
+      "promptWithUser": "Welcome back, {{username}}. Enter your {{length}}-digit PIN to keep going.",
+      "prompt": "Enter your {{length}}-digit PIN to keep going.",
+      "inputLabel": "PIN",
+      "fallbackError": "Too many incorrect PINs. Please sign in with your password.",
+      "invalidPin": "Incorrect PIN. Please try again.",
+      "rateLimited": "Too many attempts. Please wait a moment and try again.",
+      "verifyFailed": "Could not verify your PIN. Please try again."
+    }
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "delete": "Delete",
+    "edit": "Edit",
+    "remove": "Remove",
+    "confirm": "Confirm",
+    "back": "Back",
+    "next": "Next",
+    "loading": "Loading…",
+    "saving": "Saving…",
+    "retry": "Try again",
+    "search": "Search",
+    "yes": "Yes",
+    "no": "No",
+    "private": "Private",
+    "friends": "Friends",
+    "soon": "Soon",
+    "comingSoon": "Coming soon",
+    "genericError": "Something went wrong. Please try again."
+  },
+  "nav": {
+    "portfolio": "Portfolio",
+    "workboard": "Workboard",
+    "assets": "Assets",
+    "social": "Social",
+    "primary": "Primary",
+    "section": "Section",
+    "openSearch": "Open search (⌘K)",
+    "accountMenu": "Account menu",
+    "account": "Account",
+    "myPortfolio": "My Portfolio",
+    "settings": "Settings",
+    "inviteOthers": "Invite Others",
+    "shareProfile": "Share Profile",
+    "logout": "Logout"
+  },
+  "language": {
+    "title": "Language",
+    "description": "The language BetterTrack uses across the app and in your emails.",
+    "label": "Display language",
+    "saveError": "Couldn't save your language. Please try again."
+  },
+  "settings": {
+    "saveError": "Couldn't save that change. Please try again.",
+    "retryHint": "Please try again in a moment.",
+    "layout": {
+      "title": "Settings"
+    },
+    "section": {
+      "importsExports": "Imports & Exports",
+      "connections": "Connections",
+      "backups": "Backups"
+    },
+    "importsExports": {
+      "description": "Broker CSV imports (Trade Republic, George, …) and full account-data export."
+    },
+    "connections": {
+      "description": "Google login and other third-party connections."
+    },
+    "backups": {
+      "description": "Automatic backups to Google Drive and elsewhere."
+    },
+    "notifications": {
+      "title": "Notifications",
+      "subtitle": "Choose how BetterTrack notifies you for each kind of activity — the in-app bell, email, both, or muted.",
+      "loadError": {
+        "title": "Couldn't load your notification settings"
+      },
+      "types": {
+        "friendRequest": {
+          "label": "Friend requests",
+          "description": "When someone sends you a friend request."
+        },
+        "friendAccepted": {
+          "label": "Accepted friend requests",
+          "description": "When someone accepts your friend request."
+        },
+        "portfolioShared": {
+          "label": "Shared portfolios",
+          "description": "When a friend shares a portfolio with you."
+        },
+        "accountInvite": {
+          "label": "Account invites",
+          "description": "When you're invited to BetterTrack."
+        },
+        "tempPassword": {
+          "label": "Temporary passwords",
+          "description": "When an admin issues you a temporary password."
+        },
+        "alertTriggered": {
+          "label": "Price alerts",
+          "description": "When one of your price alerts fires."
+        }
+      },
+      "routing": {
+        "both": "In-app + email",
+        "inapp": "In-app only",
+        "email": "Email only",
+        "muted": "Muted"
+      },
+      "allTitle": "All notifications",
+      "markAllRead": "Mark all read",
+      "markReadError": "Couldn't update that notification. Please try again.",
+      "listError": {
+        "title": "Couldn't load your notifications"
+      },
+      "empty": {
+        "title": "No notifications yet",
+        "description": "Activity like friend requests and shares will show up here."
+      },
+      "refreshError": "Couldn't refresh notifications. Showing the last loaded list.",
+      "loadMore": "Load more"
+    },
+    "security": {
+      "title": "Security",
+      "subtitle": "Your session, PIN, and two-factor options.",
+      "loadError": {
+        "title": "Couldn't load your security settings"
+      },
+      "session": {
+        "title": "Session",
+        "loadError": {
+          "title": "Couldn't load your session"
+        },
+        "info": "Signed in since {{signedInAt}} — expires after 30 days of inactivity ({{expiresAt}})."
+      },
+      "sessions": {
+        "title": "Active sessions",
+        "description": "Every device currently signed in to your account. Log out any you don't recognise.",
+        "loadError": {
+          "title": "Couldn't load your sessions"
+        },
+        "revokeOneError": "Could not log out that device. Please try again.",
+        "revokeOthersError": "Could not log out the other devices. Please try again.",
+        "currentDevice": "This device",
+        "timestamps": "Signed in {{createdAt}} · last active {{lastSeenAt}}",
+        "logOut": "Log out",
+        "confirmLogoutOthersOne": "Log out all {{count}} other device? You'll stay signed in on this one.",
+        "confirmLogoutOthersOther": "Log out all {{count}} other devices? You'll stay signed in on this one.",
+        "loggingOut": "Logging out…",
+        "logOutAllOthers": "Log out all other devices"
+      },
+      "pin": {
+        "genericError": "Could not update your PIN. Please try again.",
+        "pinLabel": "PIN",
+        "exactDigitsHint": "Exactly {{length}} digits.",
+        "confirmLabel": "Confirm PIN",
+        "mismatch": "The PINs do not match.",
+        "savedNotice": "Your PIN has been saved.",
+        "windowHour": "1 hour",
+        "windowMinuteOne": "{{count}} minute",
+        "windowMinuteOther": "{{count}} minutes",
+        "windowError": "Could not update the unlock window. Please try again.",
+        "lockAfterInactivity": "Lock after inactivity",
+        "lockDescription": "While you're actively using BetterTrack it stays unlocked — reloads and new tabs included. The PIN is asked again only after this long with no activity.",
+        "idleForLabel": "Lock after being idle for",
+        "unlockWindowAriaLabel": "Unlock window",
+        "disabledNotice": "Your PIN has been turned off.",
+        "title": "PIN",
+        "description": "A 4-digit PIN re-confirms it's you after the app has been left idle. It's a privacy curtain on top of your session, not a second factor.",
+        "enable": "Enable PIN",
+        "saveNew": "Save new PIN",
+        "isOn": "Your PIN is on.",
+        "change": "Change PIN",
+        "disabling": "Disabling…",
+        "disable": "Disable PIN"
+      },
+      "twoFactor": {
+        "title": "Two-factor authentication",
+        "description": "Add a second step at sign-in. Turn on either method — or both.",
+        "loadError": {
+          "title": "Couldn't load your two-factor status"
+        },
+        "enabledLabel": "Enabled.",
+        "turnOff": "Turn off",
+        "turningOff": "Turning off…",
+        "confirming": "Confirming…",
+        "confirmAndEnable": "Confirm & enable",
+        "totp": {
+          "cardTitle": "Authenticator app (TOTP)",
+          "cardDescription": "Codes from Google Authenticator, 1Password, or any TOTP app.",
+          "enrollError": "Could not start enrollment. Please try again.",
+          "scanInstructions": "Scan this QR code with Google Authenticator (or any TOTP app), then enter the 6-digit code it shows.",
+          "qrAriaLabel": "Two-factor setup QR code",
+          "manualEntryToggle": "Can’t scan? Enter this key manually",
+          "setupKeyLabel": "Setup key",
+          "otpauthUriLabel": "otpauth URI",
+          "confirmationCodeLabel": "Confirmation code",
+          "confirmationCodeHint": "Enter the current 6-digit code from your authenticator app.",
+          "setup": "Set up authenticator app",
+          "enabledNotice": "Authenticator app enabled.",
+          "disabledNotice": "Authenticator app turned off.",
+          "disableCodeLabel": "Authenticator code or recovery code",
+          "turnOffFull": "Turn off authenticator app"
+        },
+        "email": {
+          "cardTitle": "Email codes",
+          "cardDescription": "A one-time code sent to your account email when you sign in.",
+          "enabledNotice": "Email codes enabled.",
+          "disabledNotice": "Email codes turned off.",
+          "confirmInstructions": "We emailed a code to your address. Enter it to turn on email codes.",
+          "codeLabel": "Email code",
+          "codeHint": "Enter the 6-digit code we just sent you.",
+          "sendingCode": "Sending code…",
+          "setup": "Set up email codes"
+        },
+        "recoveryCodes": {
+          "saveNotice": "Save these recovery codes somewhere safe. Each one can be used once to sign in if you lose access to your authenticator or email — they won't be shown again.",
+          "copied": "Copied!",
+          "copy": "Copy codes",
+          "download": "Download codes",
+          "done": "I've saved these codes",
+          "regenerateError": "Could not regenerate recovery codes. Please try again.",
+          "cardTitle": "Recovery codes",
+          "cardDescription": "One-time codes to sign in if you lose access to your other factors.",
+          "remainingOne": "{{count}} recovery code remaining.",
+          "remainingOther": "{{count}} recovery codes remaining.",
+          "regenerating": "Regenerating…",
+          "regenerate": "Regenerate recovery codes"
+        }
+      }
+    },
+    "api": {
+      "title": "API Access",
+      "introBefore": "Personal API keys authenticate scripts and integrations as you, scoped to what they may read or change. Send a key as ",
+      "introMiddle": ". See the API docs at ",
+      "introAfter": ".",
+      "copied": "Copied",
+      "copy": "Copy",
+      "done": "Done",
+      "revoking": "Revoking…",
+      "confirmRevoke": "Confirm revoke",
+      "revokeFailed": "Couldn't revoke.",
+      "scopeRequired": "Select at least one scope.",
+      "scopesLegend": "Scopes",
+      "scope": {
+        "portfolioRead": {
+          "label": "Portfolio · read",
+          "description": "Read portfolios, holdings and cash."
+        },
+        "portfolioWrite": {
+          "label": "Portfolio · write",
+          "description": "Create/edit portfolios, transactions and cash movements."
+        },
+        "workboardRead": {
+          "label": "Workboard · read",
+          "description": "Read watchlists, conglomerates and backtests."
+        },
+        "workboardWrite": {
+          "label": "Workboard · write",
+          "description": "Edit watchlists, conglomerates and run backtests."
+        },
+        "marketRead": {
+          "label": "Market · read",
+          "description": "Search assets and read quotes/history."
+        },
+        "socialRead": {
+          "label": "Social · read",
+          "description": "Read friends, shares and notifications."
+        }
+      },
+      "keys": {
+        "tokenModal": {
+          "title": "Your new API key",
+          "description": "Copy it now — for your security, it won't be shown again.",
+          "storeWarning": "Store this token somewhere safe. Anyone with it can use the “{{name}}” key with its scopes. You won't be able to see it again — revoke and create a new key if you lose it."
+        },
+        "createError": "Could not create the key. Please try again.",
+        "createTitle": "Create a key",
+        "nameRequired": "Give the key a name.",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Portfolio sync script",
+        "creating": "Creating…",
+        "create": "Create key",
+        "createdLastUsed": "Created {{createdAt}} · last used {{lastUsedAt}}",
+        "createdNeverUsed": "Created {{createdAt}} · never used",
+        "revoke": "Revoke",
+        "sectionTitle": "Your keys",
+        "loadError": {
+          "title": "Couldn't load your API keys"
+        },
+        "empty": {
+          "title": "No API keys yet",
+          "description": "Create a key above to start using the API."
+        }
+      },
+      "oauth": {
+        "sectionTitle": "OAuth apps",
+        "sectionDescription": "Register a third-party app to request scoped, revocable access to BetterTrack accounts via OAuth 2.0 (authorization code + PKCE). Users approve it on a consent screen and never share their password.",
+        "yourApps": "Your apps",
+        "loadError": {
+          "title": "Couldn't load your apps"
+        },
+        "empty": {
+          "title": "No OAuth apps yet",
+          "description": "Register an app above to integrate with the OAuth flow."
+        },
+        "credentialsModal": {
+          "title": "Your new OAuth app",
+          "descriptionSecret": "Copy the client secret now — for your security, it won't be shown again.",
+          "descriptionPublic": "This is a public client — it holds no secret and must use PKCE.",
+          "secretWarning": "Store this secret somewhere safe. Anyone with it can act as the “{{name}}” app. You won't be able to see it again — delete this app and register a new one if you lose it.",
+          "publicClientNotice": "Public clients (mobile/SPA) authenticate with PKCE instead of a secret. Use the client ID above with a code challenge."
+        },
+        "clientIdLabel": "Client ID",
+        "clientSecretLabel": "Client secret",
+        "registerError": "Could not register the app. Check the redirect URIs and try again.",
+        "nameRequired": "Give the app a name.",
+        "redirectUriRequired": "Add at least one redirect URI.",
+        "registerTitle": "Register an app",
+        "appNameLabel": "App name",
+        "appNamePlaceholder": "e.g. My mobile app",
+        "redirectUrisLegend": "Redirect URIs",
+        "redirectUrisHintBefore": "Where we send users after they approve. Use https, http loopback, or a custom-scheme deep link (e.g. ",
+        "redirectUrisHintAfter": ").",
+        "redirectPlaceholder": "https://example.com/callback",
+        "redirectUriAriaLabel": "Redirect URI {{index}}",
+        "removeRedirectUriAriaLabel": "Remove redirect URI {{index}}",
+        "removeUri": "Remove",
+        "addUri": "+ Add another URI",
+        "scopesHint": "What the app may request on the consent screen, in the words users will see.",
+        "publicClientLabel": "Public client",
+        "publicClientDescription": "Mobile / SPA apps that can't keep a secret. Uses PKCE, no client secret is issued.",
+        "registering": "Registering…",
+        "register": "Register app",
+        "public": "Public",
+        "confidential": "Confidential",
+        "deleting": "Deleting…",
+        "confirmDelete": "Confirm delete",
+        "deleteFailed": "Couldn't delete.",
+        "registeredOn": "Registered {{createdAt}}"
+      },
+      "grants": {
+        "sectionTitle": "Authorized apps",
+        "sectionDescription": "Third-party apps you've allowed to access your account. Revoking an app immediately kills its tokens — it must be re-authorized to regain access.",
+        "loadError": {
+          "title": "Couldn't load your authorized apps"
+        },
+        "empty": {
+          "title": "No authorized apps",
+          "description": "Apps you approve on the OAuth consent screen appear here."
+        },
+        "canAccess": "{{appName}} can:",
+        "authorizedLastUsed": "Authorized {{createdAt}} · last used {{lastUsedAt}}",
+        "authorizedNeverUsed": "Authorized {{createdAt}} · never used",
+        "revokeAccess": "Revoke access"
+      }
+    },
+    "account": {
+      "title": "Account",
+      "subtitle": "Your identity, password, and sharing preferences.",
+      "loadError": {
+        "title": "Couldn't load your account",
+        "description": "Please try again in a moment."
+      },
+      "portfolioError": {
+        "title": "Couldn't load your portfolio",
+        "description": "Sharing preferences are unavailable right now."
+      },
+      "field": {
+        "username": "Username",
+        "email": "Email",
+        "memberSince": "Member since",
+        "baseCurrency": "Base currency"
+      },
+      "baseCurrencyFixed": "{{code}} (fixed)"
+    },
+    "password": {
+      "title": "Change password",
+      "current": "Current password",
+      "new": "New password",
+      "confirm": "Confirm new password",
+      "hint": "At least {{count}} characters.",
+      "submit": "Update password",
+      "submitting": "Updating…",
+      "success": "Your password has been changed.",
+      "mismatch": "The new passwords do not match.",
+      "currentWrong": "Your current password is incorrect.",
+      "changeFailed": "Could not change your password. Please try again."
+    },
+    "defaultSharing": {
+      "title": "Default portfolio sharing",
+      "description": "What sharing a *new* portfolio starts with. Changing this never affects portfolios you already have."
+    },
+    "sharing": {
+      "title": "Share with friends",
+      "description": "Share this portfolio with friends: friends can view it read-only. Private keeps it visible only to you."
+    }
+  },
+  "portfolio": {
+    "overview": {
+      "title": "Portfolio",
+      "subtitle": "What you own, what it’s worth, and how it’s doing.",
+      "newCustomButton": "+ Custom investment",
+      "recordButton": "+ Transaction",
+      "loadError": "Could not load your portfolio. Please refresh the page.",
+      "emptyState": {
+        "title": "Your portfolio is empty",
+        "description": "Record your first transaction or add a custom investment to start tracking what you own.",
+        "recordButton": "Record transaction",
+        "newCustomButton": "New custom investment",
+        "searchLink": "Search for an asset →"
+      },
+      "totalsAriaLabel": "Portfolio totals",
+      "netWorth": {
+        "label": "Net Worth",
+        "investedWord": "invested",
+        "cashWord": "cash"
+      },
+      "liquidityRing": {
+        "ariaLabel": "Liquidity",
+        "summary": "{{invested}} invested, {{liquid}} liquid",
+        "investedLegend": "invested",
+        "liquidLegend": "liquid"
+      },
+      "field": {
+        "marketValue": "Market value",
+        "invested": "Invested",
+        "unrealizedPnl": "Unrealized P/L",
+        "dayChange": "Day change",
+        "cash": "Cash",
+        "asset": "Asset",
+        "qty": "Qty",
+        "avgCost": "Avg cost",
+        "price": "Price",
+        "day": "Day",
+        "side": "Side",
+        "date": "Date",
+        "fee": "Fee",
+        "note": "Note"
+      },
+      "depositButton": "+ Deposit",
+      "withdrawButton": "− Withdraw",
+      "allocationAriaLabel": "Allocation",
+      "allocation": {
+        "byAssetTitle": "By asset",
+        "byTypeTitle": "By type",
+        "byAssetChartTitle": "Allocation by asset",
+        "byTypeChartTitle": "Allocation by type"
+      },
+      "assetType": {
+        "stock": "Stocks",
+        "etf": "ETFs",
+        "index": "Indices",
+        "fx": "FX",
+        "commodity": "Commodities",
+        "crypto": "Crypto",
+        "custom": "Custom"
+      },
+      "winnersLosers": {
+        "ariaLabel": "Top winners and losers",
+        "heading": "Top winners / losers",
+        "dayMetric": "Day %",
+        "totalMetric": "Total P/L",
+        "topWinners": "Top winners",
+        "topLosers": "Top losers",
+        "nothingToShow": "Nothing to show."
+      },
+      "recentTransactions": {
+        "ariaLabel": "Recent transactions",
+        "heading": "Recent transactions"
+      },
+      "side": {
+        "buy": "Buy",
+        "sell": "Sell"
+      },
+      "holdingsAriaLabel": "Holdings",
+      "holdingsHeading": "Holdings",
+      "deleteTxnError": "Could not delete the transaction. Please try again.",
+      "holdings": {
+        "expandRow": "Expand {{symbol}} transactions",
+        "collapseRow": "Collapse {{symbol}} transactions",
+        "transactionsHeading": "Transactions",
+        "editValuePoints": "Edit value points",
+        "realizedPnlLabel": "Realized P/L:",
+        "noTransactions": "No transactions loaded for this asset.",
+        "actionsAriaLabel": "Actions"
+      },
+      "transaction": {
+        "deleteConfirm": "Delete?",
+        "editAriaLabel": "Edit transaction from {{date}}",
+        "deleteAriaLabel": "Delete transaction from {{date}}"
+      },
+      "chart": {
+        "heading": "Value over time",
+        "displayModeAriaLabel": "Chart display mode",
+        "valueMode": "Value €",
+        "performanceMode": "Performance %",
+        "overlayToggle": "Overlay assets",
+        "perfHint": "Deposits and withdrawals are neutralized (time-weighted return) — the curve only moves when your holdings move.",
+        "ariaLabelPerformance": "Portfolio performance over time",
+        "ariaLabelValue": "Portfolio value over time"
+      }
+    },
+    "section": {
+      "subnav": {
+        "overview": "Overview",
+        "transactions": "Transactions",
+        "customAssets": "Custom Assets"
+      },
+      "transactionsComingSoon": {
+        "description": "The full transaction ledger — every buy and sell, editable, with realized P/L — lands with the Portfolio phase."
+      },
+      "customAssetsComingSoon": {
+        "description": "Track real estate, vehicles, collectibles and other unlisted holdings with a value-points editor."
+      }
+    },
+    "switcher": {
+      "triggerAriaLabel": "Switch portfolio",
+      "fallbackName": "Portfolio",
+      "defaultBadge": "Default",
+      "menuAriaLabel": "Portfolios",
+      "newPortfolio": "+ New portfolio",
+      "renameCurrent": "Rename current",
+      "archiveCurrent": "Archive current",
+      "archiveDisabledHint": "You cannot archive your only portfolio",
+      "archivedMenuItem": "Archived…",
+      "archiveDialogTitle": "Archive portfolio",
+      "archiveDialogDescription": "Hide \"{{name}}\" from your portfolio list. Its history is kept and you can restore it any time.",
+      "archiving": "Archiving…",
+      "archive": "Archive",
+      "archivedDialogTitle": "Archived portfolios",
+      "archivedDialogDescription": "Restore a portfolio to bring it back into your list.",
+      "noArchived": "No archived portfolios.",
+      "restore": "Restore",
+      "createTitle": "New portfolio",
+      "renameTitle": "Rename portfolio",
+      "nameLabel": "Name",
+      "nameAriaLabel": "Portfolio name",
+      "namePlaceholder": "e.g. Retirement",
+      "create": "Create",
+      "nameTakenError": "You already have a portfolio with that name.",
+      "createError": "Could not create the portfolio. Please try again.",
+      "renameError": "Could not rename the portfolio. Please try again.",
+      "archiveError": "Could not archive the portfolio. Please try again.",
+      "restoreError": "Could not restore the portfolio. Please try again."
+    },
+    "cash": {
+      "title": "Cash balance",
+      "kindGroupAriaLabel": "Deposit or withdraw",
+      "depositTab": "Deposit",
+      "withdrawTab": "Withdraw",
+      "amountLabel": "Amount (EUR)",
+      "amountAriaLabel": "Amount",
+      "previewAriaLabel": "Cash-after preview",
+      "calculating": "Calculating…",
+      "available": "Available",
+      "short": "short",
+      "dateLabel": "Date",
+      "noteLabel": "Note (optional)",
+      "noteAriaLabel": "Note",
+      "depositSubmit": "Deposit cash",
+      "withdrawSubmit": "Withdraw cash",
+      "amountRequired": "Enter an amount greater than 0.",
+      "blockedError": "That would take the cash balance negative.",
+      "invalidDate": "Pick a valid date.",
+      "saveError": "Could not save. Please try again."
+    },
+    "customInvestment": {
+      "title": "New custom investment",
+      "nameLabel": "Name",
+      "namePlaceholder": "e.g. Apartment in Vienna",
+      "categoryLabel": "Category",
+      "currencyLabel": "Currency",
+      "currencyPlaceholder": "EUR",
+      "recordPurchase": "Record an initial purchase",
+      "quantityLabel": "Quantity",
+      "quantityAriaLabel": "Initial quantity",
+      "dateLabel": "Date",
+      "purchaseDateAriaLabel": "Purchase date",
+      "priceLabel": "Price ({{currency}})",
+      "priceAriaLabel": "Initial price",
+      "feeLabel": "Fee ({{currency}})",
+      "feeAriaLabel": "Initial fee",
+      "nameRequired": "Give your investment a name.",
+      "currencyInvalid": "Currency must be a 3-letter ISO code, e.g. EUR.",
+      "quantityInvalid": "Initial quantity must be greater than 0.",
+      "priceInvalid": "Initial price must be 0 or more.",
+      "feeInvalid": "Fee must be 0 or more.",
+      "dateInvalid": "Pick a valid purchase date.",
+      "createError": "Could not create the investment. Please try again.",
+      "creating": "Creating…",
+      "submit": "Create investment",
+      "category": {
+        "realEstate": "Real estate",
+        "vehicle": "Vehicle",
+        "collectible": "Collectible",
+        "cash": "Cash",
+        "unlistedStock": "Unlisted stock",
+        "other": "Other"
+      }
+    },
+    "valuePoint": {
+      "title": "Value points — {{symbol}}",
+      "description": "Record what this investment is worth over time. Between points the value carries forward.",
+      "loadError": "Could not load value points. Please try again.",
+      "empty": "No value points yet. Add one to start tracking this investment’s worth.",
+      "dateHeader": "Date",
+      "valueHeader": "Value ({{currency}})",
+      "removeHeader": "Remove",
+      "dateAriaLabel": "Value point date",
+      "amountAriaLabel": "Value point amount",
+      "removeAriaLabel": "Remove value point {{date}}",
+      "addButton": "+ Add value point",
+      "dateInvalid": "Every row needs a valid date.",
+      "duplicateDate": "Only one value per day — {{date}} is repeated.",
+      "valueInvalid": "Value for {{date}} must be 0 or more.",
+      "saveError": "Could not save value points. Please try again.",
+      "saveButton": "Save value points"
+    }
+  },
+  "workboard": {
+    "section": {
+      "subnav": {
+        "overview": "Overview",
+        "conglomerates": "Conglomerates",
+        "watchlists": "Watchlists",
+        "alerts": "Alerts",
+        "backtests": "Backtests",
+        "calculators": "Calculators",
+        "comparisons": "Comparisons",
+        "savedIdeas": "Saved Ideas"
+      },
+      "watchlist": {
+        "title": "Watchlists",
+        "description": "Named, multiple watchlists arrive here. For now your watchlist lives on the Workboard overview."
+      },
+      "backtests": {
+        "title": "Backtests",
+        "description": "Standalone backtesting across any basket of assets, beyond the conglomerate-embedded backtest."
+      },
+      "calculators": {
+        "title": "Calculators",
+        "description": "Standalone invest calculators — turn a budget into an exact buy list without a saved conglomerate."
+      },
+      "comparisons": {
+        "title": "Comparisons",
+        "description": "Side-by-side comparison of assets and conglomerates on returns, risk and allocation."
+      },
+      "savedIdeas": {
+        "title": "Saved Ideas",
+        "description": "Park draft baskets and investment ideas to revisit later."
+      }
+    },
+    "overview": {
+      "title": "Workboard",
+      "subtitle": "Your watched assets, alerts and conglomerates at a glance.",
+      "watchlist": {
+        "heading": "Watchlist",
+        "shareButton": "Share with friends",
+        "sharedButton": "Shared with friends",
+        "shareError": "Could not update sharing. Please try again.",
+        "loadError": "Could not load your watchlist. Please refresh the page.",
+        "removeError": "Failed to remove. Please try again.",
+        "reorderError": "Failed to save new order. Please try again.",
+        "emptyTitle": "Your watchlist is empty",
+        "emptyDescription": "Find an asset and add it to your Workboard to start watching.",
+        "emptySearchLink": "Search for an asset →",
+        "trendHeader": "Trend",
+        "assetHeader": "Asset",
+        "priceHeader": "Price",
+        "dayHeader": "Day",
+        "alertsHeader": "Alerts",
+        "actionsAriaLabel": "Actions",
+        "alertsComingSoonTitle": "Alerts available in a later phase",
+        "removeAriaLabel": "Remove {{symbol}} from watchlist",
+        "sparklineAriaLabel": "1-month trend for {{symbol}}"
+      },
+      "alerts": {
+        "heading": "Alerts",
+        "emptyTitle": "Alerts panel coming soon",
+        "emptyDescription": "Your active alerts across all watched assets will appear here."
+      },
+      "conglomerates": {
+        "heading": "My Conglomerates",
+        "emptyTitle": "Conglomerates coming soon",
+        "emptyDescription": "Your custom ETF baskets will appear here."
+      }
+    },
+    "calculator": {
+      "modeWhole": "Whole shares",
+      "modeFractional": "Fractional",
+      "buyingModeAriaLabel": "Buying mode",
+      "atLeastOneShareLabel": "At least one share",
+      "atLeastOneShareHint": "A position too small for one whole share still buys exactly one; the rest rebalances.",
+      "noPositions": "This basket has no positions to allocate yet.",
+      "assetHeader": "Asset",
+      "qtyHeader": "Qty",
+      "costHeader": "Cost",
+      "actualHeader": "Actual %",
+      "targetHeader": "Target %",
+      "deltaHeader": "Δpp",
+      "totalCostLabel": "Total cost",
+      "leftoverLabel": "Leftover",
+      "withinBudgetLabel": "Within budget",
+      "budgetLabel": "Budget (EUR)",
+      "decreaseBudgetAriaLabel": "Decrease budget by {{step}}",
+      "increaseBudgetAriaLabel": "Increase budget by {{step}}",
+      "budgetAriaLabel": "Budget in EUR",
+      "stepSizeLabel": "Step size",
+      "stepPrecisionAriaLabel": "Budget step precision",
+      "stepLabel": "Step",
+      "stepAriaLabel": "Fractional quantity step",
+      "calculating": "Calculating…",
+      "calculate": "Calculate",
+      "calcError": "Could not calculate a buy list. Please try again.",
+      "enterBudgetPrompt": "Enter a budget and calculate to see a buy list.",
+      "staleNotice": "Some quotes are stale; showing the last known prices.",
+      "addToPortfolio": "Add to Portfolio"
+    },
+    "backtest": {
+      "range": {
+        "oneYear": "1Y",
+        "threeYear": "3Y",
+        "fiveYear": "5Y",
+        "max": "Max"
+      },
+      "benchmark": {
+        "sp500": "S&P 500",
+        "dax": "DAX",
+        "msciWorld": "MSCI World"
+      },
+      "rangeAriaLabel": "Select backtest range",
+      "benchmarkAriaLabel": "Toggle benchmark overlay",
+      "noPositions": "Add positions to preview a backtest",
+      "error": "Could not run the backtest. Please try again.",
+      "chartAriaLabel": "Conglomerate backtest chart",
+      "stats": {
+        "totalReturn": "Total return",
+        "cagr": "CAGR",
+        "maxDrawdown": "Max drawdown",
+        "volatility": "Volatility (ann.)",
+        "bestDay": "Best day",
+        "worstDay": "Worst day"
+      }
+    },
+    "alerts": {
+      "title": "Price alerts",
+      "subtitle": "Get notified when an asset crosses a price or moves by a percentage. Evaluated every minute against the latest quote.",
+      "newAlert": "+ New alert",
+      "loadError": "Could not load your alerts. Please refresh the page.",
+      "emptyTitle": "No alerts yet",
+      "emptyDescription": "Create an alert to get notified when an asset hits a price or moves by a percentage.",
+      "emptyCta": "New alert →"
+    },
+    "conglomerates": {
+      "title": "Conglomerates",
+      "subtitle": "Your custom ETF-style baskets — build, backtest and turn a budget into a buy list.",
+      "loadError": "Could not load your Conglomerates. Please refresh the page.",
+      "emptyTitle": "No Conglomerates yet",
+      "emptyDescription": "Build a custom ETF-style basket, backtest it and turn a budget into a buy list.",
+      "emptyCta": "New Conglomerate →",
+      "newCardLabel": "New Conglomerate",
+      "positionCountOne": "{{count}} position",
+      "positionCountOther": "{{count}} positions",
+      "status": {
+        "draft": "Draft",
+        "active": "Active"
+      },
+      "statusExplainer": {
+        "draft": "Draft — not used by the calculator yet. Activate once weights sum to 100%.",
+        "active": "Active — your live, validated basket used by the calculator. Weights sum to 100%."
+      }
+    },
+    "detail": {
+      "noPositionsTitle": "No positions yet",
+      "noPositionsDescription": "Add assets and weights in the Builder to start allocating this basket.",
+      "assetHeader": "Asset",
+      "weightHeader": "Weight",
+      "deleteDialogTitle": "Delete Conglomerate?",
+      "deleteDialogBody": "This permanently deletes {{name}} and all its positions. This cannot be undone.",
+      "deleteError": "Could not delete this Conglomerate. Please try again.",
+      "deleting": "Deleting…",
+      "backToConglomeratesError": "← Back to Conglomerates",
+      "backLink": "← Conglomerates",
+      "loadError": "Could not load this Conglomerate. It may not exist or the server is temporarily unavailable.",
+      "shareButton": "Share with friends",
+      "sharedButton": "Shared with friends",
+      "shareError": "Could not update sharing. Please try again.",
+      "positionsHeading": "Positions",
+      "allocationHeading": "Allocation",
+      "allocationChartTitle": "Conglomerate allocation",
+      "backtestHeading": "Backtest",
+      "calculatorHeading": "Calculator"
+    },
+    "builder": {
+      "loading": "Loading the Builder…",
+      "defaultName": "Untitled conglomerate",
+      "nameAriaLabel": "Conglomerate name",
+      "closeAriaLabel": "Close the Builder",
+      "activatableHint": "Active = your live, validated basket used by the calculator; must sum to 100%.",
+      "notActivatableHint": "Weights must sum to 100% (±0.01) before activating.",
+      "activating": "Activating…",
+      "reactivate": "Re-activate",
+      "activate": "Activate",
+      "activateValidationError": "Weights must sum to 100% (±0.01) with every position above 0 before activating.",
+      "activateError": "Could not activate this Conglomerate. Please try again.",
+      "saving": "Saving…",
+      "saveFailed": "Save failed",
+      "draftSaved": "Draft — saved",
+      "draftIdle": "Draft",
+      "addAssetsHeading": "Add assets",
+      "addAssetsHint": "Search and click a result to add it at weight 0.",
+      "searchPlaceholder": "Search stocks, ETFs, indices…",
+      "positionsHeading": "Positions",
+      "autoBalance": "Auto-balance",
+      "normalize": "Normalize",
+      "noPositionsMessage": "No positions yet. Search on the left and click an asset to add it.",
+      "positionsListAriaLabel": "Conglomerate positions",
+      "weightSliderAriaLabel": "Weight slider for {{symbol}}",
+      "weightAriaLabel": "Weight for {{symbol}}",
+      "lockAriaLabel": "Lock {{symbol}}",
+      "unlockAriaLabel": "Unlock {{symbol}}",
+      "lockedTitle": "Locked — untouched by auto-balance / normalize",
+      "lockTitle": "Lock this weight",
+      "removeAriaLabel": "Remove {{symbol}}",
+      "positionsCount": "{{count}} / {{max}} positions",
+      "sumRemainingLeft": "{{value}}% left",
+      "sumRemainingOver": "{{value}}% over",
+      "livePreviewHeading": "Live preview",
+      "statPositions": "Positions",
+      "statTotalWeight": "Total weight",
+      "statLargest": "Largest",
+      "backtestPreviewAriaLabel": "Backtest preview (coming soon)",
+      "backtestPreviewText": "Backtest preview — coming with the backtest panel."
+    }
+  }
+}

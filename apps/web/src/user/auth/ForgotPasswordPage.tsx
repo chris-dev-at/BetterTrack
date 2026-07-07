@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
@@ -14,6 +15,7 @@ import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
  * reveals it (no user enumeration). The tokenized link arrives by email.
  */
 export function ForgotPasswordPage() {
+  const t = useT();
   const { status } = useAuth();
 
   const [email, setEmail] = useState('');
@@ -24,7 +26,7 @@ export function ForgotPasswordPage() {
   if (status === 'loading') {
     return (
       <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
-        <Spinner label="Checking session…" />
+        <Spinner label={t('auth.common.checkingSession')} />
       </div>
     );
   }
@@ -40,11 +42,18 @@ export function ForgotPasswordPage() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         const wait = err.retryAfterSeconds
-          ? ` Please wait ${err.retryAfterSeconds} second${err.retryAfterSeconds === 1 ? '' : 's'} and try again.`
-          : ' Please wait a moment and try again.';
-        setError(`Too many requests.${wait}`);
+          ? t(
+              err.retryAfterSeconds === 1
+                ? 'auth.common.waitSecondsOne'
+                : 'auth.common.waitSecondsOther',
+              {
+                count: err.retryAfterSeconds,
+              },
+            )
+          : t('auth.common.waitMoment');
+        setError(`${t('auth.forgotPassword.rateLimited')}${wait}`);
       } else {
-        setError('Something went wrong. Please try again.');
+        setError(t('common.genericError'));
       }
     } finally {
       setSubmitting(false);
@@ -53,17 +62,14 @@ export function ForgotPasswordPage() {
 
   if (sent) {
     return (
-      <AuthCard subtitle="Reset your password">
+      <AuthCard subtitle={t('auth.forgotPassword.subtitle')}>
         <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <Alert tone="success">
-            If an account exists for that email, we&rsquo;ve sent a link to reset your password.
-            Check your inbox — the link expires in 1 hour.
-          </Alert>
+          <Alert tone="success">{t('auth.forgotPassword.sentMessage')}</Alert>
           <Link
             to="/login"
             className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
           >
-            Back to sign in
+            {t('auth.forgotPassword.backToSignIn')}
           </Link>
         </div>
       </AuthCard>
@@ -71,17 +77,15 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <AuthCard subtitle="Reset your password">
+    <AuthCard subtitle={t('auth.forgotPassword.subtitle')}>
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         {error ? <Alert tone="error">{error}</Alert> : null}
-        <p className="text-sm text-neutral-400">
-          Enter the email for your account and we&rsquo;ll send you a link to choose a new password.
-        </p>
+        <p className="text-sm text-neutral-400">{t('auth.forgotPassword.description')}</p>
         <TextField
-          label="Email"
+          label={t('auth.forgotPassword.emailLabel')}
           name="email"
           type="email"
           autoComplete="email"
@@ -91,13 +95,13 @@ export function ForgotPasswordPage() {
           required
         />
         <Button type="submit" disabled={submitting}>
-          {submitting ? 'Sending…' : 'Send reset link'}
+          {submitting ? t('auth.forgotPassword.sending') : t('auth.forgotPassword.submit')}
         </Button>
         <Link
           to="/login"
           className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
         >
-          Back to sign in
+          {t('auth.forgotPassword.backToSignIn')}
         </Link>
       </form>
     </AuthCard>

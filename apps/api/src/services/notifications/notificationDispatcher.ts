@@ -185,15 +185,18 @@ export function createNotificationDispatcher(
 
     const to = recipient.email;
     const userId = recipient.id;
+    // Render the notification email in the recipient's stored UI language (§13.3
+    // V3-P1); the template falls back to EN for any code it can't translate.
+    const locale = recipient.locale;
     switch (event.type) {
       case 'friend.request':
-        await email.sendFriendRequest({ to, userId, actorUsername: event.actorUsername });
+        await email.sendFriendRequest({ to, userId, actorUsername: event.actorUsername, locale });
         return;
       case 'friend.accepted':
-        await email.sendFriendAccepted({ to, userId, actorUsername: event.actorUsername });
+        await email.sendFriendAccepted({ to, userId, actorUsername: event.actorUsername, locale });
         return;
       case 'portfolio.shared':
-        await email.sendPortfolioShared({ to, userId, actorUsername: event.actorUsername });
+        await email.sendPortfolioShared({ to, userId, actorUsername: event.actorUsername, locale });
         return;
     }
   }
@@ -249,6 +252,7 @@ export function createNotificationDispatcher(
           userId: recipient.id,
           symbol: context.symbol,
           body,
+          locale: recipient.locale,
         });
       }
     }

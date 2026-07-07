@@ -9,11 +9,13 @@ import {
   type PortfolioSummary,
 } from '@bettertrack/contracts';
 
+import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDate } from '../../lib/format';
 import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
+import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
@@ -22,13 +24,13 @@ const PORTFOLIOS_KEY = ['portfolios'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 
 /** Friendly message for the codes `POST /auth/change-password` can return. */
-function changeErrorMessage(err: unknown): string {
+function changeErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.code === 'INVALID_CREDENTIALS') return 'Your current password is incorrect.';
+    if (err.code === 'INVALID_CREDENTIALS') return t('settings.password.currentWrong');
     if (err.code === 'WEAK_PASSWORD') return err.message;
-    if (err.status >= 500) return 'Something went wrong. Please try again.';
+    if (err.status >= 500) return t('common.genericError');
   }
-  return 'Could not change your password. Please try again.';
+  return t('settings.password.changeFailed');
 }
 
 /** One labelled read-only row in the identity card. */
@@ -42,6 +44,7 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function ChangePasswordForm() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -67,22 +70,22 @@ function ChangePasswordForm() {
     setError(null);
     setDone(false);
     if (newPassword !== confirmPassword) {
-      setError('The new passwords do not match.');
+      setError(t('settings.password.mismatch'));
       return;
     }
     mutation.mutate(
       { currentPassword, newPassword },
-      { onError: (err) => setError(changeErrorMessage(err)) },
+      { onError: (err) => setError(changeErrorMessage(t, err)) },
     );
   }
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">Change password</h3>
+      <h3 className="text-sm font-semibold text-neutral-100">{t('settings.password.title')}</h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
-      {done ? <Alert tone="success">Your password has been changed.</Alert> : null}
+      {done ? <Alert tone="success">{t('settings.password.success')}</Alert> : null}
       <TextField
-        label="Current password"
+        label={t('settings.password.current')}
         name="currentPassword"
         type="password"
         autoComplete="current-password"
@@ -91,7 +94,7 @@ function ChangePasswordForm() {
         required
       />
       <TextField
-        label="New password"
+        label={t('settings.password.new')}
         name="newPassword"
         type="password"
         autoComplete="new-password"
@@ -99,10 +102,10 @@ function ChangePasswordForm() {
         onChange={(e) => setNewPassword(e.target.value)}
         minLength={MIN_PASSWORD_LENGTH}
         required
-        hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+        hint={t('settings.password.hint', { count: MIN_PASSWORD_LENGTH })}
       />
       <TextField
-        label="Confirm new password"
+        label={t('settings.password.confirm')}
         name="confirmPassword"
         type="password"
         autoComplete="new-password"
@@ -113,10 +116,59 @@ function ChangePasswordForm() {
       />
       <div>
         <Button type="submit" disabled={mutation.isPending}>
-          {mutation.isPending ? 'Updating…' : 'Update password'}
+          {mutation.isPending ? t('settings.password.submitting') : t('settings.password.submit')}
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Display-language picker (§13.3 V3-P1). Switches the app runtime instantly and
+ * persists the choice per-user (`PATCH /settings/account`), so it survives
+ * logout/login. Options show each language in its own name (endonyms).
+ */
+function LanguageControl() {
+  const t = useT();
+  const { locale, setLocale } = useI18n();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: (code: string) => updateAccountSettings({ locale: code }),
+    onSuccess: (res) => {
+      queryClient.setQueryData(ACCOUNT_SETTINGS_KEY, res);
+      void queryClient.invalidateQueries({ queryKey: ME_KEY });
+      setError(false);
+    },
+    onError: () => setError(true),
+  });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">{t('language.title')}</h3>
+        <p className="text-xs text-neutral-500">{t('language.description')}</p>
+      </div>
+      <select
+        aria-label={t('language.label')}
+        value={locale}
+        disabled={mutation.isPending}
+        onChange={(e) => {
+          const code = e.target.value;
+          setLocale(code);
+          mutation.mutate(code);
+        }}
+        className="w-fit rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed"
+      >
+        {SUPPORTED_LOCALES.map((l) => (
+          <option key={l.code} value={l.code}>
+            {l.label}
+          </option>
+        ))}
+      </select>
+      {error ? <Alert tone="error">{t('language.saveError')}</Alert> : null}
+    </div>
   );
 }
 
@@ -126,6 +178,7 @@ function ChangePasswordForm() {
  * per-item toggles are unaffected.
  */
 function DefaultVisibilityControl() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState(false);
   const query = useQuery({
@@ -136,7 +189,7 @@ function DefaultVisibilityControl() {
 
   const mutation = useMutation({
     mutationFn: (defaultPortfolioVisibility: 'private' | 'friends') =>
-      updateAccountSettings(defaultPortfolioVisibility),
+      updateAccountSettings({ defaultPortfolioVisibility }),
     onSuccess: (res) => {
       queryClient.setQueryData(ACCOUNT_SETTINGS_KEY, res);
       setError(false);
@@ -150,40 +203,40 @@ function DefaultVisibilityControl() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">Default portfolio sharing</h3>
-        <p className="text-xs text-neutral-500">
-          What sharing a *new* portfolio starts with. Changing this never affects portfolios you
-          already have.
-        </p>
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.defaultSharing.title')}
+        </h3>
+        <p className="text-xs text-neutral-500">{t('settings.defaultSharing.description')}</p>
       </div>
       {query.isPending ? (
         <Skeleton height="h-10" width="w-40" />
       ) : (
         <div
           role="radiogroup"
-          aria-label="Default portfolio sharing"
+          aria-label={t('settings.defaultSharing.title')}
           className="inline-flex w-fit rounded-md ring-1 ring-inset ring-neutral-700"
         >
           <SharingChoice
-            label="Private"
+            label={t('common.private')}
             selected={!shared}
             busy={mutation.isPending}
             onSelect={() => shared && mutation.mutate('private')}
           />
           <SharingChoice
-            label="Friends"
+            label={t('common.friends')}
             selected={shared}
             busy={mutation.isPending}
             onSelect={() => !shared && mutation.mutate('friends')}
           />
         </div>
       )}
-      {error ? <Alert tone="error">Couldn't save that change. Please try again.</Alert> : null}
+      {error ? <Alert tone="error">{t('settings.saveError')}</Alert> : null}
     </div>
   );
 }
 
 function SharingToggle({ portfolio }: { portfolio: PortfolioSummary }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState(false);
   const shared = portfolio.visibility === 'friends';
@@ -201,31 +254,28 @@ function SharingToggle({ portfolio }: { portfolio: PortfolioSummary }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">Share with friends</h3>
-        <p className="text-xs text-neutral-500">
-          Share this portfolio with friends: friends can view it read-only. Private keeps it visible
-          only to you.
-        </p>
+        <h3 className="text-sm font-semibold text-neutral-100">{t('settings.sharing.title')}</h3>
+        <p className="text-xs text-neutral-500">{t('settings.sharing.description')}</p>
       </div>
       <div
         role="radiogroup"
-        aria-label="Share this portfolio with friends"
+        aria-label={t('settings.sharing.title')}
         className="inline-flex w-fit rounded-md ring-1 ring-inset ring-neutral-700"
       >
         <SharingChoice
-          label="No"
+          label={t('common.no')}
           selected={!shared}
           busy={mutation.isPending}
           onSelect={() => shared && mutation.mutate('private')}
         />
         <SharingChoice
-          label="Yes"
+          label={t('common.yes')}
           selected={shared}
           busy={mutation.isPending}
           onSelect={() => !shared && mutation.mutate('friends')}
         />
       </div>
-      {error ? <Alert tone="error">Couldn't save that change. Please try again.</Alert> : null}
+      {error ? <Alert tone="error">{t('settings.saveError')}</Alert> : null}
     </div>
   );
 }
@@ -260,12 +310,14 @@ function SharingChoice({
 }
 
 /**
- * Settings → Account (PROJECTPLAN.md §6.11). Shows the identity read from
- * `GET /auth/me` (username, email, member-since, the fixed EUR base currency),
- * a change-password form, and the default portfolio's private↔friends sharing
- * toggle (§6.8). All shapes derive from `@bettertrack/contracts`.
+ * Settings → Account (PROJECTPLAN.md §6.11, §13.3 V3-P1). Shows the identity read
+ * from `GET /auth/me` (username, email, member-since, the fixed EUR base
+ * currency), a change-password form, the display-language picker, and the default
+ * portfolio's private↔friends sharing toggle (§6.8). All shapes derive from
+ * `@bettertrack/contracts`; all copy from the i18n layer.
  */
 export function AccountSettingsPage() {
+  const t = useT();
   const me = useQuery({
     queryKey: ME_KEY,
     queryFn: ({ signal }) => getMe(signal),
@@ -283,10 +335,8 @@ export function AccountSettingsPage() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">Account</h2>
-        <p className="text-sm text-neutral-500">
-          Your identity, password, and sharing preferences.
-        </p>
+        <h2 className="text-lg font-semibold text-neutral-100">{t('settings.account.title')}</h2>
+        <p className="text-sm text-neutral-500">{t('settings.account.subtitle')}</p>
       </div>
 
       <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
@@ -297,17 +347,27 @@ export function AccountSettingsPage() {
           </div>
         ) : me.isError ? (
           <EmptyState
-            title="Couldn't load your account"
-            description="Please try again in a moment."
+            title={t('settings.account.loadError.title')}
+            description={t('settings.account.loadError.description')}
           />
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Username" value={me.data.username} />
-            <Field label="Email" value={me.data.email} />
-            <Field label="Member since" value={formatDate(me.data.createdAt)} />
-            <Field label="Base currency" value={`${me.data.baseCurrency} (fixed)`} />
+            <Field label={t('settings.account.field.username')} value={me.data.username} />
+            <Field label={t('settings.account.field.email')} value={me.data.email} />
+            <Field
+              label={t('settings.account.field.memberSince')}
+              value={formatDate(me.data.createdAt)}
+            />
+            <Field
+              label={t('settings.account.field.baseCurrency')}
+              value={t('settings.account.baseCurrencyFixed', { code: me.data.baseCurrency })}
+            />
           </div>
         )}
+      </section>
+
+      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <LanguageControl />
       </section>
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
@@ -323,8 +383,8 @@ export function AccountSettingsPage() {
           <Skeleton height="h-16" />
         ) : portfolios.isError || !defaultPortfolio ? (
           <EmptyState
-            title="Couldn't load your portfolio"
-            description="Sharing preferences are unavailable right now."
+            title={t('settings.account.portfolioError.title')}
+            description={t('settings.account.portfolioError.description')}
           />
         ) : (
           <SharingToggle portfolio={defaultPortfolio} />

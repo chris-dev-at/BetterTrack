@@ -1,5 +1,7 @@
 import { Outlet } from 'react-router-dom';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
@@ -8,21 +10,36 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
  * Conglomerates · Watchlists · Alerts, plus the Coming-Soon experiments
  * (Backtests · Calculators · Comparisons · Saved Ideas).
  */
-const WORKBOARD_SUBNAV: readonly SubNavItem[] = [
-  { to: '/workboard', label: 'Overview', end: true },
-  { to: '/workboard/conglomerates', label: 'Conglomerates' },
-  { to: '/workboard/watchlist', label: 'Watchlists' },
-  { to: '/workboard/alerts', label: 'Alerts' },
-  { to: '/workboard/backtests', label: 'Backtests', comingSoon: true },
-  { to: '/workboard/calculators', label: 'Calculators', comingSoon: true },
-  { to: '/workboard/comparisons', label: 'Comparisons', comingSoon: true },
-  { to: '/workboard/ideas', label: 'Saved Ideas', comingSoon: true },
-];
+function workboardSubnav(t: TranslateFn): readonly SubNavItem[] {
+  return [
+    { to: '/workboard', label: t('workboard.section.subnav.overview'), end: true },
+    { to: '/workboard/conglomerates', label: t('workboard.section.subnav.conglomerates') },
+    { to: '/workboard/watchlist', label: t('workboard.section.subnav.watchlists') },
+    { to: '/workboard/alerts', label: t('workboard.section.subnav.alerts') },
+    {
+      to: '/workboard/backtests',
+      label: t('workboard.section.subnav.backtests'),
+      comingSoon: true,
+    },
+    {
+      to: '/workboard/calculators',
+      label: t('workboard.section.subnav.calculators'),
+      comingSoon: true,
+    },
+    {
+      to: '/workboard/comparisons',
+      label: t('workboard.section.subnav.comparisons'),
+      comingSoon: true,
+    },
+    { to: '/workboard/ideas', label: t('workboard.section.subnav.savedIdeas'), comingSoon: true },
+  ];
+}
 
 export function WorkboardLayout() {
+  const t = useT();
   return (
     <div className="flex flex-col gap-6">
-      <SubNav items={WORKBOARD_SUBNAV} />
+      <SubNav items={workboardSubnav(t)} />
       <Outlet />
     </div>
   );
@@ -35,46 +52,51 @@ export function WorkboardLayout() {
  * (§7.3). Until then the working watchlist lives on the Workboard Overview.
  */
 export function WatchlistPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Watchlists"
-      description="Named, multiple watchlists arrive here. For now your watchlist lives on the Workboard overview."
+      title={t('workboard.section.watchlist.title')}
+      description={t('workboard.section.watchlist.description')}
     />
   );
 }
 
 export function BacktestsPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Backtests"
-      description="Standalone backtesting across any basket of assets, beyond the conglomerate-embedded backtest."
+      title={t('workboard.section.backtests.title')}
+      description={t('workboard.section.backtests.description')}
     />
   );
 }
 
 export function CalculatorsPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Calculators"
-      description="Standalone invest calculators — turn a budget into an exact buy list without a saved conglomerate."
+      title={t('workboard.section.calculators.title')}
+      description={t('workboard.section.calculators.description')}
     />
   );
 }
 
 export function ComparisonsPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Comparisons"
-      description="Side-by-side comparison of assets and conglomerates on returns, risk and allocation."
+      title={t('workboard.section.comparisons.title')}
+      description={t('workboard.section.comparisons.description')}
     />
   );
 }
 
 export function SavedIdeasPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Saved Ideas"
-      description="Park draft baskets and investment ideas to revisit later."
+      title={t('workboard.section.savedIdeas.title')}
+      description={t('workboard.section.savedIdeas.description')}
     />
   );
 }

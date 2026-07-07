@@ -15,6 +15,8 @@ import {
   type OAuthGrantSummary,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { createApiKey, listApiKeys, revokeApiKey } from '../../lib/apiKeysApi';
 import {
   createOAuthClient,
@@ -33,29 +35,38 @@ const OAUTH_CLIENTS_KEY = ['settings', 'oauth-clients'] as const;
 const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
 
 /** Human labels for each grantable scope (§6.13). */
-const SCOPE_META: Record<ApiKeyScope, { label: string; description: string }> = {
-  'portfolio:read': {
-    label: 'Portfolio · read',
-    description: 'Read portfolios, holdings and cash.',
-  },
-  'portfolio:write': {
-    label: 'Portfolio · write',
-    description: 'Create/edit portfolios, transactions and cash movements.',
-  },
-  'workboard:read': {
-    label: 'Workboard · read',
-    description: 'Read watchlists, conglomerates and backtests.',
-  },
-  'workboard:write': {
-    label: 'Workboard · write',
-    description: 'Edit watchlists, conglomerates and run backtests.',
-  },
-  'market:read': { label: 'Market · read', description: 'Search assets and read quotes/history.' },
-  'social:read': { label: 'Social · read', description: 'Read friends, shares and notifications.' },
-};
+function scopeMeta(t: TranslateFn): Record<ApiKeyScope, { label: string; description: string }> {
+  return {
+    'portfolio:read': {
+      label: t('settings.api.scope.portfolioRead.label'),
+      description: t('settings.api.scope.portfolioRead.description'),
+    },
+    'portfolio:write': {
+      label: t('settings.api.scope.portfolioWrite.label'),
+      description: t('settings.api.scope.portfolioWrite.description'),
+    },
+    'workboard:read': {
+      label: t('settings.api.scope.workboardRead.label'),
+      description: t('settings.api.scope.workboardRead.description'),
+    },
+    'workboard:write': {
+      label: t('settings.api.scope.workboardWrite.label'),
+      description: t('settings.api.scope.workboardWrite.description'),
+    },
+    'market:read': {
+      label: t('settings.api.scope.marketRead.label'),
+      description: t('settings.api.scope.marketRead.description'),
+    },
+    'social:read': {
+      label: t('settings.api.scope.socialRead.label'),
+      description: t('settings.api.scope.socialRead.description'),
+    },
+  };
+}
 
 /** The one-time token modal — the plaintext is available here and never again. */
 function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose: () => void }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
 
   async function copy() {
@@ -69,8 +80,8 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
 
   return (
     <Dialog
-      title="Your new API key"
-      description="Copy it now — for your security, it won't be shown again."
+      title={t('settings.api.keys.tokenModal.title')}
+      description={t('settings.api.keys.tokenModal.description')}
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
@@ -79,16 +90,14 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
             {result.token}
           </code>
           <Button variant="secondary" onClick={copy}>
-            {copied ? 'Copied' : 'Copy'}
+            {copied ? t('settings.api.copied') : t('settings.api.copy')}
           </Button>
         </div>
         <Alert tone="info">
-          Store this token somewhere safe. Anyone with it can use the “{result.key.name}” key with
-          its scopes. You won't be able to see it again — revoke and create a new key if you lose
-          it.
+          {t('settings.api.keys.tokenModal.storeWarning', { name: result.key.name })}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose}>Done</Button>
+          <Button onClick={onClose}>{t('settings.api.done')}</Button>
         </div>
       </div>
     </Dialog>
@@ -97,10 +106,12 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
 
 /** Create-key form: a name plus at least one scope. */
 function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyResponse) => void }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const meta = scopeMeta(t);
 
   const mutation = useMutation({
     mutationFn: (input: { name: string; scopes: ApiKeyScope[] }) => createApiKey(input),
@@ -111,7 +122,7 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
       setError(null);
       onCreated(result);
     },
-    onError: () => setError('Could not create the key. Please try again.'),
+    onError: () => setError(t('settings.api.keys.createError')),
   });
 
   function toggle(scope: ApiKeyScope) {
@@ -126,11 +137,11 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
   function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (name.trim().length === 0) {
-      setError('Give the key a name.');
+      setError(t('settings.api.keys.nameRequired'));
       return;
     }
     if (scopes.size === 0) {
-      setError('Select at least one scope.');
+      setError(t('settings.api.scopeRequired'));
       return;
     }
     mutation.mutate({ name: name.trim(), scopes: [...scopes] });
@@ -138,19 +149,23 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">Create a key</h3>
+      <h3 className="text-sm font-semibold text-neutral-100">
+        {t('settings.api.keys.createTitle')}
+      </h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
       <TextField
-        label="Name"
+        label={t('settings.api.keys.nameLabel')}
         name="name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         maxLength={80}
-        placeholder="e.g. Portfolio sync script"
+        placeholder={t('settings.api.keys.namePlaceholder')}
         required
       />
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
+        <legend className="text-sm font-medium text-neutral-300">
+          {t('settings.api.scopesLegend')}
+        </legend>
         {API_KEY_SCOPES.map((scope) => (
           <label
             key={scope}
@@ -163,17 +178,15 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
               className="mt-1 h-4 w-4 accent-sky-500"
             />
             <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-neutral-100">
-                {SCOPE_META[scope].label}
-              </span>
-              <span className="text-xs text-neutral-500">{SCOPE_META[scope].description}</span>
+              <span className="text-sm font-medium text-neutral-100">{meta[scope].label}</span>
+              <span className="text-xs text-neutral-500">{meta[scope].description}</span>
             </span>
           </label>
         ))}
       </fieldset>
       <div>
         <Button type="submit" disabled={mutation.isPending}>
-          {mutation.isPending ? 'Creating…' : 'Create key'}
+          {mutation.isPending ? t('settings.api.keys.creating') : t('settings.api.keys.create')}
         </Button>
       </div>
     </form>
@@ -182,6 +195,7 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
 
 /** One key row with a two-step confirm before revoking. */
 function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -209,12 +223,18 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
           ))}
         </span>
         <span className="text-xs text-neutral-500">
-          Created {formatDate(apiKey.createdAt)} ·{' '}
-          {apiKey.lastUsedAt ? `last used ${formatDate(apiKey.lastUsedAt)}` : 'never used'}
+          {apiKey.lastUsedAt
+            ? t('settings.api.keys.createdLastUsed', {
+                createdAt: formatDate(apiKey.createdAt),
+                lastUsedAt: formatDate(apiKey.lastUsedAt),
+              })
+            : t('settings.api.keys.createdNeverUsed', { createdAt: formatDate(apiKey.createdAt) })}
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {error ? <span className="text-xs text-red-400">Couldn't revoke.</span> : null}
+        {error ? (
+          <span className="text-xs text-red-400">{t('settings.api.revokeFailed')}</span>
+        ) : null}
         {confirming ? (
           <>
             <Button
@@ -223,19 +243,19 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
               disabled={mutation.isPending}
               onClick={() => mutation.mutate()}
             >
-              {mutation.isPending ? 'Revoking…' : 'Confirm revoke'}
+              {mutation.isPending ? t('settings.api.revoking') : t('settings.api.confirmRevoke')}
             </Button>
             <Button
               variant="ghost"
               disabled={mutation.isPending}
               onClick={() => setConfirming(false)}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
           </>
         ) : (
           <Button variant="ghost" onClick={() => setConfirming(true)}>
-            Revoke
+            {t('settings.api.keys.revoke')}
           </Button>
         )}
       </div>
@@ -257,6 +277,7 @@ function OAuthCredentialsModal({
   result: CreateOAuthClientResponse;
   onClose: () => void;
 }) {
+  const t = useT();
   const [copiedSecret, setCopiedSecret] = useState(false);
 
   async function copySecret() {
@@ -271,41 +292,45 @@ function OAuthCredentialsModal({
 
   return (
     <Dialog
-      title="Your new OAuth app"
+      title={t('settings.api.oauth.credentialsModal.title')}
       description={
         result.clientSecret
-          ? "Copy the client secret now — for your security, it won't be shown again."
-          : 'This is a public client — it holds no secret and must use PKCE.'
+          ? t('settings.api.oauth.credentialsModal.descriptionSecret')
+          : t('settings.api.oauth.credentialsModal.descriptionPublic')
       }
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Client ID</span>
+          <span className="text-sm font-medium text-neutral-300">
+            {t('settings.api.oauth.clientIdLabel')}
+          </span>
           <code className="overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-neutral-200 ring-1 ring-inset ring-neutral-700">
             {result.client.clientId}
           </code>
         </div>
         {result.clientSecret ? (
           <div className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">Client secret</span>
+            <span className="text-sm font-medium text-neutral-300">
+              {t('settings.api.oauth.clientSecretLabel')}
+            </span>
             <div className="flex items-center gap-2">
               <code className="flex-1 overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-emerald-300 ring-1 ring-inset ring-neutral-700">
                 {result.clientSecret}
               </code>
               <Button variant="secondary" onClick={copySecret}>
-                {copiedSecret ? 'Copied' : 'Copy'}
+                {copiedSecret ? t('settings.api.copied') : t('settings.api.copy')}
               </Button>
             </div>
           </div>
         ) : null}
         <Alert tone="info">
           {result.clientSecret
-            ? `Store this secret somewhere safe. Anyone with it can act as the “${result.client.name}” app. You won't be able to see it again — delete this app and register a new one if you lose it.`
-            : `Public clients (mobile/SPA) authenticate with PKCE instead of a secret. Use the client ID above with a code challenge.`}
+            ? t('settings.api.oauth.credentialsModal.secretWarning', { name: result.client.name })
+            : t('settings.api.oauth.credentialsModal.publicClientNotice')}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose}>Done</Button>
+          <Button onClick={onClose}>{t('settings.api.done')}</Button>
         </div>
       </div>
     </Dialog>
@@ -318,6 +343,7 @@ function RegisterOAuthClientForm({
 }: {
   onCreated: (result: CreateOAuthClientResponse) => void;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [redirectUris, setRedirectUris] = useState<string[]>(['']);
@@ -336,7 +362,7 @@ function RegisterOAuthClientForm({
       setError(null);
       onCreated(result);
     },
-    onError: () => setError('Could not register the app. Check the redirect URIs and try again.'),
+    onError: () => setError(t('settings.api.oauth.registerError')),
   });
 
   function toggleScope(scope: ApiKeyScope) {
@@ -363,16 +389,16 @@ function RegisterOAuthClientForm({
   function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (name.trim().length === 0) {
-      setError('Give the app a name.');
+      setError(t('settings.api.oauth.nameRequired'));
       return;
     }
     const uris = redirectUris.map((uri) => uri.trim()).filter((uri) => uri.length > 0);
     if (uris.length === 0) {
-      setError('Add at least one redirect URI.');
+      setError(t('settings.api.oauth.redirectUriRequired'));
       return;
     }
     if (scopes.size === 0) {
-      setError('Select at least one scope.');
+      setError(t('settings.api.scopeRequired'));
       return;
     }
     mutation.mutate({
@@ -385,22 +411,27 @@ function RegisterOAuthClientForm({
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
-      <h3 className="text-sm font-semibold text-neutral-100">Register an app</h3>
+      <h3 className="text-sm font-semibold text-neutral-100">
+        {t('settings.api.oauth.registerTitle')}
+      </h3>
       {error ? <Alert tone="error">{error}</Alert> : null}
       <TextField
-        label="App name"
+        label={t('settings.api.oauth.appNameLabel')}
         name="oauth-name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         maxLength={80}
-        placeholder="e.g. My mobile app"
+        placeholder={t('settings.api.oauth.appNamePlaceholder')}
         required
       />
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">Redirect URIs</legend>
+        <legend className="text-sm font-medium text-neutral-300">
+          {t('settings.api.oauth.redirectUrisLegend')}
+        </legend>
         <p className="text-xs text-neutral-500">
-          Where we send users after they approve. Use https, http loopback, or a custom-scheme deep
-          link (e.g. <code className="font-mono text-neutral-400">myapp://callback</code>).
+          {t('settings.api.oauth.redirectUrisHintBefore')}
+          <code className="font-mono text-neutral-400">{'myapp://callback'}</code>
+          {t('settings.api.oauth.redirectUrisHintAfter')}
         </p>
         {redirectUris.map((uri, index) => (
           // Index keys are acceptable: the inputs are controlled and the list is
@@ -410,17 +441,19 @@ function RegisterOAuthClientForm({
               type="text"
               value={uri}
               onChange={(e) => setUriAt(index, e.target.value)}
-              placeholder="https://example.com/callback"
-              aria-label={`Redirect URI ${index + 1}`}
+              placeholder={t('settings.api.oauth.redirectPlaceholder')}
+              aria-label={t('settings.api.oauth.redirectUriAriaLabel', { index: index + 1 })}
               className="flex-1 rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
             {redirectUris.length > 1 ? (
               <Button
                 variant="ghost"
-                aria-label={`Remove redirect URI ${index + 1}`}
+                aria-label={t('settings.api.oauth.removeRedirectUriAriaLabel', {
+                  index: index + 1,
+                })}
                 onClick={() => removeUriAt(index)}
               >
-                Remove
+                {t('settings.api.oauth.removeUri')}
               </Button>
             ) : null}
           </div>
@@ -428,16 +461,16 @@ function RegisterOAuthClientForm({
         {redirectUris.length < 10 ? (
           <div>
             <Button variant="ghost" onClick={addUri}>
-              + Add another URI
+              {t('settings.api.oauth.addUri')}
             </Button>
           </div>
         ) : null}
       </fieldset>
       <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
-        <p className="text-xs text-neutral-500">
-          What the app may request on the consent screen, in the words users will see.
-        </p>
+        <legend className="text-sm font-medium text-neutral-300">
+          {t('settings.api.scopesLegend')}
+        </legend>
+        <p className="text-xs text-neutral-500">{t('settings.api.oauth.scopesHint')}</p>
         {API_KEY_SCOPES.map((scope) => (
           <label
             key={scope}
@@ -461,15 +494,19 @@ function RegisterOAuthClientForm({
           className="mt-1 h-4 w-4 accent-sky-500"
         />
         <span className="flex flex-col gap-0.5">
-          <span className="text-sm font-medium text-neutral-100">Public client</span>
+          <span className="text-sm font-medium text-neutral-100">
+            {t('settings.api.oauth.publicClientLabel')}
+          </span>
           <span className="text-xs text-neutral-500">
-            Mobile / SPA apps that can't keep a secret. Uses PKCE, no client secret is issued.
+            {t('settings.api.oauth.publicClientDescription')}
           </span>
         </span>
       </label>
       <div>
         <Button type="submit" disabled={mutation.isPending}>
-          {mutation.isPending ? 'Registering…' : 'Register app'}
+          {mutation.isPending
+            ? t('settings.api.oauth.registering')
+            : t('settings.api.oauth.register')}
         </Button>
       </div>
     </form>
@@ -478,6 +515,7 @@ function RegisterOAuthClientForm({
 
 /** One registered app with a two-step confirm before deletion (cascades its grants). */
 function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -498,7 +536,7 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
         <span className="flex items-center gap-2">
           <span className="text-sm font-medium text-neutral-100">{client.name}</span>
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[0.65rem] text-neutral-300">
-            {client.public ? 'Public' : 'Confidential'}
+            {client.public ? t('settings.api.oauth.public') : t('settings.api.oauth.confidential')}
           </span>
         </span>
         <code className="font-mono text-xs text-neutral-400">{client.clientId}</code>
@@ -519,10 +557,14 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
             </span>
           ))}
         </span>
-        <span className="text-xs text-neutral-500">Registered {formatDate(client.createdAt)}</span>
+        <span className="text-xs text-neutral-500">
+          {t('settings.api.oauth.registeredOn', { createdAt: formatDate(client.createdAt) })}
+        </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {error ? <span className="text-xs text-red-400">Couldn't delete.</span> : null}
+        {error ? (
+          <span className="text-xs text-red-400">{t('settings.api.oauth.deleteFailed')}</span>
+        ) : null}
         {confirming ? (
           <>
             <Button
@@ -531,19 +573,21 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
               disabled={mutation.isPending}
               onClick={() => mutation.mutate()}
             >
-              {mutation.isPending ? 'Deleting…' : 'Confirm delete'}
+              {mutation.isPending
+                ? t('settings.api.oauth.deleting')
+                : t('settings.api.oauth.confirmDelete')}
             </Button>
             <Button
               variant="ghost"
               disabled={mutation.isPending}
               onClick={() => setConfirming(false)}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
           </>
         ) : (
           <Button variant="ghost" onClick={() => setConfirming(true)}>
-            Delete
+            {t('common.delete')}
           </Button>
         )}
       </div>
@@ -553,6 +597,7 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
 
 /** One authorized app (grant) with a two-step confirm before revoking access. */
 function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -568,7 +613,9 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
   return (
     <li className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex flex-col gap-1">
-        <span className="text-sm font-medium text-neutral-100">{grant.appName} can:</span>
+        <span className="text-sm font-medium text-neutral-100">
+          {t('settings.api.grants.canAccess', { appName: grant.appName })}
+        </span>
         <ul className="flex flex-col gap-0.5">
           {grant.scopes.map((scope) => (
             <li key={scope} className="text-xs text-neutral-400">
@@ -577,12 +624,20 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
           ))}
         </ul>
         <span className="text-xs text-neutral-500">
-          Authorized {formatDate(grant.createdAt)} ·{' '}
-          {grant.lastUsedAt ? `last used ${formatDate(grant.lastUsedAt)}` : 'never used'}
+          {grant.lastUsedAt
+            ? t('settings.api.grants.authorizedLastUsed', {
+                createdAt: formatDate(grant.createdAt),
+                lastUsedAt: formatDate(grant.lastUsedAt),
+              })
+            : t('settings.api.grants.authorizedNeverUsed', {
+                createdAt: formatDate(grant.createdAt),
+              })}
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {error ? <span className="text-xs text-red-400">Couldn't revoke.</span> : null}
+        {error ? (
+          <span className="text-xs text-red-400">{t('settings.api.revokeFailed')}</span>
+        ) : null}
         {confirming ? (
           <>
             <Button
@@ -591,19 +646,19 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
               disabled={mutation.isPending}
               onClick={() => mutation.mutate()}
             >
-              {mutation.isPending ? 'Revoking…' : 'Confirm revoke'}
+              {mutation.isPending ? t('settings.api.revoking') : t('settings.api.confirmRevoke')}
             </Button>
             <Button
               variant="ghost"
               disabled={mutation.isPending}
               onClick={() => setConfirming(false)}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
           </>
         ) : (
           <Button variant="ghost" onClick={() => setConfirming(true)}>
-            Revoke access
+            {t('settings.api.grants.revokeAccess')}
           </Button>
         )}
       </div>
@@ -617,6 +672,7 @@ function OAuthAppsSection({
 }: {
   onCreated: (result: CreateOAuthClientResponse) => void;
 }) {
+  const t = useT();
   const query = useQuery({
     queryKey: OAUTH_CLIENTS_KEY,
     queryFn: ({ signal }) => listOAuthClients(signal),
@@ -627,12 +683,10 @@ function OAuthAppsSection({
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">OAuth apps</h2>
-        <p className="text-sm text-neutral-500">
-          Register a third-party app to request scoped, revocable access to BetterTrack accounts via
-          OAuth 2.0 (authorization code + PKCE). Users approve it on a consent screen and never
-          share their password.
-        </p>
+        <h2 className="text-lg font-semibold text-neutral-100">
+          {t('settings.api.oauth.sectionTitle')}
+        </h2>
+        <p className="text-sm text-neutral-500">{t('settings.api.oauth.sectionDescription')}</p>
       </div>
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
@@ -640,16 +694,21 @@ function OAuthAppsSection({
       </section>
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-neutral-100">Your apps</h3>
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.api.oauth.yourApps')}
+        </h3>
         {query.isPending ? (
           <Skeleton height="h-20" />
         ) : query.isError ? (
-          <EmptyState title="Couldn't load your apps" description="Please try again in a moment." />
+          <EmptyState
+            title={t('settings.api.oauth.loadError.title')}
+            description={t('settings.retryHint')}
+          />
         ) : clients.length === 0 ? (
           <EmptyState
             icon="🧩"
-            title="No OAuth apps yet"
-            description="Register an app above to integrate with the OAuth flow."
+            title={t('settings.api.oauth.empty.title')}
+            description={t('settings.api.oauth.empty.description')}
           />
         ) : (
           <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
@@ -665,6 +724,7 @@ function OAuthAppsSection({
 
 /** "Authorized apps" — third-party apps the user has granted access to. */
 function AuthorizedAppsSection() {
+  const t = useT();
   const query = useQuery({
     queryKey: OAUTH_GRANTS_KEY,
     queryFn: ({ signal }) => listOAuthGrants(signal),
@@ -675,11 +735,10 @@ function AuthorizedAppsSection() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">Authorized apps</h2>
-        <p className="text-sm text-neutral-500">
-          Third-party apps you've allowed to access your account. Revoking an app immediately kills
-          its tokens — it must be re-authorized to regain access.
-        </p>
+        <h2 className="text-lg font-semibold text-neutral-100">
+          {t('settings.api.grants.sectionTitle')}
+        </h2>
+        <p className="text-sm text-neutral-500">{t('settings.api.grants.sectionDescription')}</p>
       </div>
 
       <section className="flex flex-col gap-3">
@@ -687,14 +746,14 @@ function AuthorizedAppsSection() {
           <Skeleton height="h-20" />
         ) : query.isError ? (
           <EmptyState
-            title="Couldn't load your authorized apps"
-            description="Please try again in a moment."
+            title={t('settings.api.grants.loadError.title')}
+            description={t('settings.retryHint')}
           />
         ) : grants.length === 0 ? (
           <EmptyState
             icon="🔒"
-            title="No authorized apps"
-            description="Apps you approve on the OAuth consent screen appear here."
+            title={t('settings.api.grants.empty.title')}
+            description={t('settings.api.grants.empty.description')}
           />
         ) : (
           <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
@@ -715,6 +774,7 @@ function AuthorizedAppsSection() {
  * the apps you've authorized (grants). The public API docs live at `/docs`.
  */
 export function ApiAccessPage() {
+  const t = useT();
   const [minted, setMinted] = useState<CreateApiKeyResponse | null>(null);
   const [registered, setRegistered] = useState<CreateOAuthClientResponse | null>(null);
   const query = useQuery({
@@ -728,12 +788,13 @@ export function ApiAccessPage() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">API Access</h2>
+        <h2 className="text-lg font-semibold text-neutral-100">{t('settings.api.title')}</h2>
         <p className="text-sm text-neutral-500">
-          Personal API keys authenticate scripts and integrations as you, scoped to what they may
-          read or change. Send a key as{' '}
-          <code className="font-mono text-neutral-300">Authorization: Bearer …</code>. See the API
-          docs at <code className="font-mono text-neutral-300">/docs</code>.
+          {t('settings.api.introBefore')}
+          <code className="font-mono text-neutral-300">{'Authorization: Bearer …'}</code>
+          {t('settings.api.introMiddle')}
+          <code className="font-mono text-neutral-300">{'/docs'}</code>
+          {t('settings.api.introAfter')}
         </p>
       </div>
 
@@ -742,19 +803,21 @@ export function ApiAccessPage() {
       </section>
 
       <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-neutral-100">Your keys</h3>
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.api.keys.sectionTitle')}
+        </h3>
         {query.isPending ? (
           <Skeleton height="h-20" />
         ) : query.isError ? (
           <EmptyState
-            title="Couldn't load your API keys"
-            description="Please try again in a moment."
+            title={t('settings.api.keys.loadError.title')}
+            description={t('settings.retryHint')}
           />
         ) : keys.length === 0 ? (
           <EmptyState
             icon="🔑"
-            title="No API keys yet"
-            description="Create a key above to start using the API."
+            title={t('settings.api.keys.empty.title')}
+            description={t('settings.api.keys.empty.description')}
           />
         ) : (
           <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">

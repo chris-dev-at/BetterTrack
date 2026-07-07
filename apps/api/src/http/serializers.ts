@@ -34,6 +34,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     pinEnabled: row.pinEnabled,
     pinLockIdleMinutes: row.pinLockIdleMinutes,
     baseCurrency: row.baseCurrency,
+    locale: row.locale,
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
   };
@@ -50,6 +51,7 @@ export function toMeResponse(user: AuthUser): MeResponse {
     pinEnabled: user.pinEnabled,
     pinLockIdleMinutes: user.pinLockIdleMinutes,
     baseCurrency: user.baseCurrency,
+    locale: user.locale,
     lastLoginAt: toIso(user.lastLoginAt),
     createdAt: toIsoRequired(user.createdAt),
   };

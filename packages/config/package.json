@@ -8,6 +8,9 @@
     "./eslint": "./eslint.config.js",
     "./prettier": "./prettier.config.js"
   },
+  "scripts": {
+    "test": "node --test \"rules/**/*.test.js\""
+  },
   "dependencies": {
     "@eslint/js": "^9.19.0",
     "eslint-config-prettier": "^9.1.0",

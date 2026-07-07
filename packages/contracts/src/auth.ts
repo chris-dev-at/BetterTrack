@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { localeSchema } from './i18n';
+
 export const ROLES = ['user', 'admin'] as const;
 export const roleSchema = z.enum(ROLES);
 export type Role = z.infer<typeof roleSchema>;
@@ -242,6 +244,8 @@ export const meResponseSchema = z.object({
   /** PIN unlock-window length in minutes; `null` = use the default (§6.1, #288). */
   pinLockIdleMinutes: z.number().int().nullable(),
   baseCurrency: z.string(),
+  /** UI language preference; drives the SPA i18n runtime at load (§13.3 V3-P1). */
+  locale: localeSchema,
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
 });

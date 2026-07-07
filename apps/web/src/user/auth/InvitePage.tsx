@@ -4,6 +4,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { MIN_PASSWORD_LENGTH } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
@@ -12,22 +14,22 @@ import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 type InviteState = { phase: 'loading' } | { phase: 'invalid' } | { phase: 'valid'; email: string };
 
 /** Friendly message for the failure codes `POST /auth/accept-invite` can return. */
-function acceptErrorMessage(err: unknown): string {
+function acceptErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.code) {
       case 'USERNAME_TAKEN':
-        return 'That username is already taken — pick another.';
+        return t('auth.invite.usernameTaken');
       case 'WEAK_PASSWORD':
         return err.message;
       case 'EMAIL_TAKEN':
-        return 'An account already exists for this email.';
+        return t('auth.invite.emailTaken');
       case 'INVALID_INVITE':
-        return 'This invite link is no longer valid. Ask your admin for a new one.';
+        return t('auth.invite.invalidInvite');
       default:
-        if (err.status >= 500) return 'Something went wrong. Please try again.';
+        if (err.status >= 500) return t('common.genericError');
     }
   }
-  return 'Could not create your account. Please try again.';
+  return t('auth.invite.acceptFailed');
 }
 
 /**
@@ -36,6 +38,7 @@ function acceptErrorMessage(err: unknown): string {
  * and on success creates the account and lands them logged-in on `/`.
  */
 export function InvitePage() {
+  const t = useT();
   const { token = '' } = useParams();
   const navigate = useNavigate();
   const { acceptInvite } = useAuth();
@@ -65,24 +68,21 @@ export function InvitePage() {
   if (invite.phase === 'loading') {
     return (
       <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
-        <Spinner label="Checking your invite…" />
+        <Spinner label={t('auth.invite.checkingInvite')} />
       </div>
     );
   }
 
   if (invite.phase === 'invalid') {
     return (
-      <AuthCard subtitle="Accept your invite">
+      <AuthCard subtitle={t('auth.invite.invalidSubtitle')}>
         <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <Alert tone="error">
-            This invite link is invalid, expired, or has already been used. Ask your administrator
-            for a fresh invite.
-          </Alert>
+          <Alert tone="error">{t('auth.invite.invalidMessage')}</Alert>
           <Link
             to="/login"
             className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
           >
-            Go to sign in
+            {t('auth.invite.goToSignIn')}
           </Link>
         </div>
       </AuthCard>
@@ -97,30 +97,30 @@ export function InvitePage() {
       await acceptInvite({ token, username, password });
       navigate('/', { replace: true });
     } catch (err) {
-      setError(acceptErrorMessage(err));
+      setError(acceptErrorMessage(t, err));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <AuthCard subtitle="Set up your account">
+    <AuthCard subtitle={t('auth.invite.subtitle')}>
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
-          label="Email"
+          label={t('auth.invite.emailLabel')}
           name="email"
           type="email"
           value={invite.email}
           readOnly
           disabled
-          hint="Set by your invite and can't be changed."
+          hint={t('auth.invite.emailHint')}
         />
         <TextField
-          label="Username"
+          label={t('auth.invite.usernameLabel')}
           name="username"
           autoComplete="username"
           autoFocus
@@ -128,10 +128,10 @@ export function InvitePage() {
           onChange={(e) => setUsername(e.target.value)}
           minLength={3}
           required
-          hint="3–40 characters: letters, numbers, dot, dash or underscore."
+          hint={t('auth.invite.usernameHint')}
         />
         <TextField
-          label="Password"
+          label={t('auth.invite.passwordLabel')}
           name="password"
           type="password"
           autoComplete="new-password"
@@ -139,10 +139,10 @@ export function InvitePage() {
           onChange={(e) => setPassword(e.target.value)}
           minLength={MIN_PASSWORD_LENGTH}
           required
-          hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+          hint={t('auth.common.minPasswordHint', { count: MIN_PASSWORD_LENGTH })}
         />
         <Button type="submit" disabled={submitting}>
-          {submitting ? 'Creating account…' : 'Create account'}
+          {submitting ? t('auth.invite.creating') : t('auth.invite.submit')}
         </Button>
       </form>
     </AuthCard>
