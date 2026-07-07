@@ -82,7 +82,7 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
         symbol,
         name: q.longname ?? q.shortname ?? symbol,
         exchange: q.exchDisp ?? q.exchange ?? null,
-        type: mapAssetType(q.quoteType),
+        type: mapAssetType(q.quoteType, symbol),
         currency: currencyForSearchResult(symbol, q.exchange),
       });
     }
@@ -161,7 +161,7 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
       name: q.longName ?? q.shortName ?? q.displayName ?? symbol,
       exchange: q.fullExchangeName ?? q.exchange ?? null,
       currency: code,
-      type: mapAssetType(q.quoteType),
+      type: mapAssetType(q.quoteType, symbol),
     };
   }
 
