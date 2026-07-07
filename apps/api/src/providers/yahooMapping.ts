@@ -57,8 +57,30 @@ export function normalizeCurrency(raw: string | null | undefined): NormalizedCur
   return { code: upper, priceScale: 1 };
 }
 
-/** Map a Yahoo `quoteType` onto the BetterTrack asset taxonomy (§5.5). */
-export function mapAssetType(quoteType: string | null | undefined): AssetType {
+/**
+ * ISO-4217 "precious metal" codes: Yahoo prices these against a real currency
+ * (`XAUEUR=X`, `XAUUSD=X`) using the same `=X` shape and `CURRENCY` quoteType
+ * as an actual FX pair, but they represent a commodity spot price, not an
+ * exchange rate — the BetterTrack taxonomy (§5.5) types them as `commodity`.
+ */
+const METAL_CURRENCY_PREFIXES = ['XAU', 'XAG', 'XPT', 'XPD'];
+
+/** True for a Yahoo `=X` ref naming a metal spot price rather than a currency pair. */
+function isMetalCurrencyRef(symbol: string | null | undefined): boolean {
+  const sym = (symbol ?? '').trim().toUpperCase();
+  return sym.endsWith('=X') && METAL_CURRENCY_PREFIXES.some((p) => sym.startsWith(p));
+}
+
+/**
+ * Map a Yahoo `quoteType` onto the BetterTrack asset taxonomy (§5.5). `symbol`
+ * disambiguates the `CURRENCY` quoteType, which Yahoo also uses for metal spot
+ * refs like `XAUEUR=X` (a commodity, not an FX pair) — see
+ * {@link isMetalCurrencyRef}.
+ */
+export function mapAssetType(
+  quoteType: string | null | undefined,
+  symbol?: string | null,
+): AssetType {
   switch ((quoteType ?? '').toUpperCase()) {
     case 'EQUITY':
       return 'stock';
@@ -68,7 +90,7 @@ export function mapAssetType(quoteType: string | null | undefined): AssetType {
     case 'INDEX':
       return 'index';
     case 'CURRENCY':
-      return 'fx';
+      return isMetalCurrencyRef(symbol) ? 'commodity' : 'fx';
     case 'CRYPTOCURRENCY':
       return 'crypto';
     case 'FUTURE':
