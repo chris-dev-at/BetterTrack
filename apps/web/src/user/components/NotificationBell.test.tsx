@@ -10,8 +10,10 @@ vi.mock('../../lib/notificationsApi', () => ({
 }));
 
 import type { Notification, NotificationListResponse } from '@bettertrack/contracts';
+import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
+import { RealtimeContext, type RealtimeContextValue } from '../../lib/realtime';
 import { NotificationBell } from './NotificationBell';
 
 function makeQueryClient() {
@@ -236,6 +238,45 @@ describe('NotificationBell', () => {
     await user.click(screen.getByRole('button', { name: 'Mark all read' }));
 
     expect(await screen.findByText(/Couldn't update that notification/i)).toBeInTheDocument();
+  });
+
+  test('a realtime notification.new push refreshes the bell without waiting for the poll (§4.5)', async () => {
+    vi.mocked(listNotifications)
+      .mockResolvedValueOnce(EMPTY_RESPONSE)
+      .mockResolvedValue({
+        items: [notification({ id: '00000000-0000-0000-0000-000000000002' })],
+        nextCursor: null,
+        unreadCount: 1,
+      });
+
+    // Connected gateway double: capture what the bell subscribes to.
+    const handlers = new Map<string, (payload: unknown) => void>();
+    const realtime: RealtimeContextValue = {
+      connected: true,
+      on: (event, handler) => {
+        handlers.set(event, handler);
+        return () => handlers.delete(event);
+      },
+      joinRoom: () => () => {},
+    };
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <RealtimeContext.Provider value={realtime}>
+          <NotificationBell />
+        </RealtimeContext.Provider>
+      </QueryClientProvider>,
+    );
+
+    // First load: no badge.
+    await waitFor(() => expect(vi.mocked(listNotifications)).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('1')).not.toBeInTheDocument();
+    const push = handlers.get(REALTIME_SERVER_EVENTS.notificationNew);
+    expect(push).toBeTruthy();
+
+    // Server push arrives → the bell refetches immediately and shows the badge.
+    push!({ notificationId: '00000000-0000-0000-0000-000000000002', occurredAt: 'now' });
+    await waitFor(() => expect(vi.mocked(listNotifications)).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('1')).toBeInTheDocument();
   });
 
   test('an alert.triggered notification links to its asset (§14)', async () => {

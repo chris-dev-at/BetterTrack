@@ -153,6 +153,26 @@ export function createNotificationDispatcher(
   const { bus, repo, email, users, resolveAlert, logger } = deps;
   const unsubscribers: Unsubscribe[] = [];
 
+  /**
+   * Announce a freshly-written in-app row on the bus (§4.5): the realtime
+   * gateway maps `notification.created` to a `notification.new` push in the
+   * recipient's `user:{id}` room. Published only when the matrix actually
+   * produced a row, so a bell-muted type never pushes. Best-effort — the row is
+   * already persisted and the SPA's poll fallback catches up regardless.
+   */
+  async function publishCreated(userId: string, notificationId: string): Promise<void> {
+    try {
+      await bus.publish({
+        type: 'notification.created',
+        userId,
+        notificationId,
+        occurredAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      logger?.warn({ err, notificationId }, 'notification.created publish failed');
+    }
+  }
+
   /** Send the event's email on the recipient's enabled email channel (§6.10). */
   async function sendEmail(event: SocialDispatchEvent): Promise<void> {
     if (!email || !users) return;
@@ -207,7 +227,14 @@ export function createNotificationDispatcher(
     };
 
     if (await repo.typeChannelEnabled(event.userId, 'alert.triggered', 'inapp')) {
-      await repo.insert({ userId: event.userId, type: 'alert.triggered', title, body, payload });
+      const notificationId = await repo.insert({
+        userId: event.userId,
+        type: 'alert.triggered',
+        title,
+        body,
+        payload,
+      });
+      await publishCreated(event.userId, notificationId);
     }
 
     if (
@@ -242,7 +269,14 @@ export function createNotificationDispatcher(
     // this type is routed to in-app. Defaults on; an explicit per-type override
     // (bell-off / muted) suppresses it.
     if (await repo.typeChannelEnabled(event.userId, event.type, 'inapp')) {
-      await repo.insert({ userId: event.userId, type: event.type, title, body, payload });
+      const notificationId = await repo.insert({
+        userId: event.userId,
+        type: event.type,
+        title,
+        body,
+        payload,
+      });
+      await publishCreated(event.userId, notificationId);
     }
 
     await sendEmail(event);

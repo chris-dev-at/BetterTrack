@@ -2,9 +2,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 import type { MarkReadRequest, Notification } from '@bettertrack/contracts';
 
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
+import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from './ui';
 
@@ -115,6 +117,13 @@ export function NotificationBell() {
     queryFn: ({ signal }) => listNotifications({}, signal),
     refetchInterval: POLL_INTERVAL_MS,
     refetchOnWindowFocus: true,
+  });
+
+  // Realtime bell push (§4.5, V3-P7a): a `notification.new` push refreshes the
+  // list the moment the row lands. The poll above stays untouched as the
+  // fallback — with no gateway (flag off, disconnected) this hook is a no-op.
+  useRealtimeEvent(REALTIME_SERVER_EVENTS.notificationNew, () => {
+    void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY });
   });
 
   const markReadMutation = useMutation({

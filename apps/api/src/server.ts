@@ -23,12 +23,20 @@ const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, 'BetterTrack API listening');
 });
 
+// Attach the realtime gateway to the API's HTTP server (§4.5, V3-P7a). A no-op
+// when REALTIME_ENABLED=false — no socket server exists, zero behavior change.
+await ctx.realtime.attach(server);
+
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info({ signal }, 'API shutting down');
   try {
+    // Disconnect live websockets first — they are never "idle", so a plain
+    // server.close() would wait on them forever. Also drops the gateway's bus
+    // subscriptions before the bus itself closes below.
+    await ctx.realtime.close();
     server.closeIdleConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     // Drop the dispatcher's bus subscriptions before closing the bus.

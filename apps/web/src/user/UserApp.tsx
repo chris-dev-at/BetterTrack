@@ -1,5 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+
+import { RealtimeProvider } from '../lib/realtime';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
@@ -167,6 +170,16 @@ function UserShell() {
   );
 }
 
+/**
+ * Realtime gateway socket (§4.5, V3-P7a): live only for a fully authenticated
+ * session — anonymous/loading/locked states run without a socket, and every
+ * surface keeps its poll/refetch behavior either way.
+ */
+function RealtimeRoot({ children }: { children: ReactNode }) {
+  const { status } = useAuth();
+  return <RealtimeProvider enabled={status === 'authenticated'}>{children}</RealtimeProvider>;
+}
+
 /** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
@@ -179,7 +192,9 @@ export function UserApp() {
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <RateLimitToastPortal />
-        <UserShell />
+        <RealtimeRoot>
+          <UserShell />
+        </RealtimeRoot>
       </AuthProvider>
     </QueryClientProvider>
   );

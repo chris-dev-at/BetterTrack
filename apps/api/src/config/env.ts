@@ -66,6 +66,12 @@ const envSchema = z.object({
   RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(60),
 
+  // ── Realtime gateway (§4.5, §13.3 V3-P7a) ──────────────────────────────────
+  // Feature flag for the Socket.IO gateway at /ws. Default on; off means the
+  // socket server is never attached and the API behaves exactly as before —
+  // the SPA's poll/refetch fallback carries every feature (flagged rollout).
+  REALTIME_ENABLED: z.string().optional(),
+
   // ── Two-factor auth (§6.1, §13.2 V2-P5) ────────────────────────────────────
   // Issuer label baked into the `otpauth://` URI so the code shows up as
   // "BetterTrack (user@…)" in an authenticator app. TOTP_ENCRYPTION_KEY is the
@@ -219,6 +225,11 @@ export interface AppConfig {
     maxConcurrency: number;
     minSpacingMs: number;
   };
+  /** Realtime gateway (§4.5, V3-P7a). */
+  realtime: {
+    /** When false the Socket.IO server is never attached — zero behavior change. */
+    enabled: boolean;
+  };
   /** Two-factor auth (§6.1, §13.2 V2-P5). */
   twoFactor: {
     /** Issuer label embedded in the `otpauth://` provisioning URI. */
@@ -326,6 +337,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providers: {
       maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,
       minSpacingMs: e.PROVIDER_MIN_SPACING_MS,
+    },
+    realtime: {
+      enabled: boolFrom(e.REALTIME_ENABLED, true),
     },
     twoFactor: {
       issuer: e.TOTP_ISSUER,
