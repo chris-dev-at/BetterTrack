@@ -24,13 +24,23 @@ import {
   getTwoFactorStatus,
   regenerateRecoveryCodes,
 } from '../../lib/twoFactorApi';
-import { disablePin, getMe, getSession, setPin, setPinLockIdleMinutes } from '../../lib/userApi';
+import {
+  disablePin,
+  getMe,
+  getSession,
+  listSessions,
+  revokeOtherSessions,
+  revokeSession,
+  setPin,
+  setPinLockIdleMinutes,
+} from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { PinInput } from '../components/PinInput';
 import { Alert, Button } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
+const SESSIONS_KEY = ['auth', 'sessions'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
 
 function pinErrorMessage(err: unknown): string {
@@ -65,6 +75,144 @@ function SessionInfo() {
           inactivity ({formatDateTime(query.data.expiresAt)}).
         </p>
       )}
+    </section>
+  );
+}
+
+/**
+ * Active-sessions manager (PROJECTPLAN.md §6.1, §6.11 Security, V3-P11a). Lists
+ * the caller's own sessions with a device label, sign-in + last-seen times and a
+ * current-device marker; each other device can be logged out individually, or
+ * all at once. The current session isn't revoked from here — use Log out.
+ */
+function SessionsSection() {
+  const queryClient = useQueryClient();
+  const [confirmingOthers, setConfirmingOthers] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const query = useQuery({
+    queryKey: SESSIONS_KEY,
+    queryFn: ({ signal }) => listSessions(signal),
+    staleTime: 30_000,
+  });
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+
+  const revokeOne = useMutation({
+    mutationFn: (id: string) => revokeSession(id),
+    onSuccess: () => {
+      setError(null);
+      void refresh();
+    },
+    onError: () => setError('Could not log out that device. Please try again.'),
+  });
+
+  const revokeOthers = useMutation({
+    mutationFn: () => revokeOtherSessions(),
+    onSuccess: () => {
+      setError(null);
+      setConfirmingOthers(false);
+      void refresh();
+    },
+    onError: () => setError('Could not log out the other devices. Please try again.'),
+  });
+
+  const sessions = query.data ?? [];
+  const otherCount = sessions.filter((s) => !s.current).length;
+
+  return (
+    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">Active sessions</h3>
+        <p className="text-xs text-neutral-500">
+          Every device currently signed in to your account. Log out any you don't recognise.
+        </p>
+      </div>
+
+      {error ? <Alert tone="error">{error}</Alert> : null}
+
+      {query.isPending ? (
+        <Skeleton height="h-20" />
+      ) : query.isError ? (
+        <EmptyState
+          title="Couldn't load your sessions"
+          description="Please try again in a moment."
+        />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {sessions.map((session) => (
+            <li
+              key={session.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-3"
+            >
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium text-neutral-100">
+                  <span>{session.device}</span>
+                  {session.current ? (
+                    <span className="ml-2 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">
+                      This device
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-xs text-neutral-500">
+                  Signed in {formatDateTime(session.createdAt)} · last active{' '}
+                  {formatDateTime(session.lastSeenAt)}
+                </span>
+              </div>
+              {session.current ? null : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={revokeOne.isPending}
+                  onClick={() => {
+                    setError(null);
+                    revokeOne.mutate(session.id);
+                  }}
+                >
+                  Log out
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {otherCount > 0 ? (
+        confirmingOthers ? (
+          <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
+            <p className="text-sm text-neutral-400">
+              Log out all {otherCount} other device{otherCount === 1 ? '' : 's'}? You'll stay signed
+              in on this one.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={revokeOthers.isPending}
+                onClick={() => revokeOthers.mutate()}
+              >
+                {revokeOthers.isPending ? 'Logging out…' : 'Log out all other devices'}
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setConfirmingOthers(false)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="border-t border-neutral-800 pt-4">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setError(null);
+                setConfirmingOthers(true);
+              }}
+            >
+              Log out all other devices
+            </Button>
+          </div>
+        )
+      ) : null}
     </section>
   );
 }
@@ -828,6 +976,8 @@ export function SecuritySettingsPage() {
       </div>
 
       <SessionInfo />
+
+      <SessionsSection />
 
       {me.isPending ? (
         <Skeleton height="h-24" />

@@ -9,6 +9,7 @@ import {
   type PasswordResetRequest,
   type RegisterRequest,
   type SessionInfoResponse,
+  type SessionSummary,
   type TwoFactorChannel,
 } from '@bettertrack/contracts';
 
@@ -28,11 +29,12 @@ import {
 } from '../../errors';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { generateToken, hashToken } from '../crypto/tokens';
+import { generateToken, hashToken, sha256Base64Url } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
+import { describeUserAgent } from '../sessions/deviceLabel';
 import type { SessionService } from '../sessions/sessionService';
 import {
   clearLoginThrottle,
@@ -127,7 +129,14 @@ export interface AuthService {
    */
   requestTwoFactorEmailCode(pendingToken: string, ip?: string | null): Promise<void>;
   logout(sessionId: string): Promise<void>;
-  resolveSession(sessionId: string): Promise<UserRow | null>;
+  /**
+   * Resolve a session cookie to its user (every authenticated request). Also
+   * stamps the session's last-seen and captures its device on first-seen
+   * (V3-P11a) — a throttled write to a side key that never touches the fixed
+   * 30-day window (§6.1). `userAgent` comes from the request; omit it off the
+   * request path.
+   */
+  resolveSession(sessionId: string, userAgent?: string | null): Promise<UserRow | null>;
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
@@ -185,6 +194,29 @@ export interface AuthService {
    * already gone.
    */
   getSessionInfo(sessionId: string): Promise<SessionInfoResponse | null>;
+  /**
+   * The caller's own active sessions for Settings → Security (V3-P11a, §6.11):
+   * device label, created/last-seen, and a current-session marker. Only ever the
+   * user's own sessions — `userId` comes from the session cookie.
+   */
+  listSessions(userId: string, currentSessionId: string | null): Promise<SessionSummary[]>;
+  /**
+   * Revoke one of the caller's sessions by its opaque handle (V3-P11a). That
+   * session's next request is rejected as unauthenticated. `wasCurrent` is true
+   * when the handle is the caller's own session, so the route can clear the
+   * cookie for a clean logout. `revoked` is false when no such session exists.
+   */
+  revokeSession(
+    userId: string,
+    publicId: string,
+    currentSessionId: string | null,
+  ): Promise<{ revoked: boolean; wasCurrent: boolean }>;
+  /**
+   * Revoke every session of the caller EXCEPT the current one (V3-P11a) —
+   * "log out all other devices". Returns how many were revoked. The caller stays
+   * logged in on `currentSessionId`.
+   */
+  revokeOtherSessions(userId: string, currentSessionId: string | null): Promise<number>;
 }
 
 // Self-service reset links are short-lived (§6.1, §14): valid for one hour.
@@ -569,7 +601,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       await sessions.destroy(sessionId);
     },
 
-    async resolveSession(sessionId) {
+    async resolveSession(sessionId, userAgent) {
       const data = await sessions.get(sessionId);
       if (!data) return null;
       const user = await userRepo.findById(data.userId);
@@ -577,6 +609,13 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         // Disabled/deleted out from under a live session → terminate it.
         await sessions.destroy(sessionId);
         return null;
+      }
+      // Session manager bookkeeping (V3-P11a): stamp last-seen + capture the
+      // device on first-seen. Throttled and written to a side key, so it never
+      // extends the fixed 30-day window (§6.1). Only when a UA is actually
+      // present (i.e. an HTTP request), never on internal resolves.
+      if (userAgent !== undefined) {
+        await sessions.touchLastSeen(sessionId, userAgent);
       }
       return user;
     },
@@ -905,6 +944,28 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         // The 30-day window is fixed from the last login / PIN verify (§6.1).
         expiresAt: new Date(session.renewedAt + sessions.ttlSeconds * 1000).toISOString(),
       };
+    },
+
+    async listSessions(userId, currentSessionId) {
+      const entries = await sessions.listForUser(userId, currentSessionId);
+      return entries.map((entry) => ({
+        id: entry.id,
+        device: describeUserAgent(entry.userAgent),
+        createdAt: new Date(entry.createdAt).toISOString(),
+        lastSeenAt: new Date(entry.lastSeenAt).toISOString(),
+        current: entry.current,
+      }));
+    },
+
+    async revokeSession(userId, publicId, currentSessionId) {
+      const wasCurrent =
+        currentSessionId !== null && sha256Base64Url(currentSessionId) === publicId;
+      const revoked = await sessions.revokeForUser(userId, publicId);
+      return { revoked, wasCurrent };
+    },
+
+    async revokeOtherSessions(userId, currentSessionId) {
+      return sessions.revokeOthersForUser(userId, currentSessionId);
     },
   };
 }

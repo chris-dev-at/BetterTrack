@@ -326,6 +326,45 @@ export const sessionInfoResponseSchema = z
   .strict();
 export type SessionInfoResponse = z.infer<typeof sessionInfoResponseSchema>;
 
+/**
+ * Session manager (PROJECTPLAN.md §6.1, §6.11 Security, V3-P11a). One active
+ * session as shown in Settings → Security. `id` is an OPAQUE public handle — the
+ * SHA-256 of the underlying session id, never the raw session token itself — so
+ * the raw credential is never exposed to the browser but a specific session can
+ * still be addressed for revocation.
+ */
+export const sessionSummarySchema = z
+  .object({
+    /** Opaque revocation handle (SHA-256 of the session id), safe to expose. */
+    id: z.string(),
+    /** Human device/browser label parsed from the User-Agent, or "Unknown device". */
+    device: z.string(),
+    /** When this session was created — i.e. its login. */
+    createdAt: z.string().datetime(),
+    /** Last time a request rode this session (throttled), or its creation time. */
+    lastSeenAt: z.string().datetime(),
+    /** True for the caller's own session — the one making this request. */
+    current: z.boolean(),
+  })
+  .strict();
+export type SessionSummary = z.infer<typeof sessionSummarySchema>;
+
+/** `GET /auth/sessions` — the caller's own active sessions (§6.11 Security). */
+export const sessionListResponseSchema = z
+  .object({ sessions: z.array(sessionSummarySchema) })
+  .strict();
+export type SessionListResponse = z.infer<typeof sessionListResponseSchema>;
+
+/** `POST /auth/sessions/revoke-others` — how many other sessions were killed. */
+export const revokeSessionsResponseSchema = z
+  .object({ revoked: z.number().int().nonnegative() })
+  .strict();
+export type RevokeSessionsResponse = z.infer<typeof revokeSessionsResponseSchema>;
+
+/** `DELETE /auth/sessions/:id` path param — the opaque session handle. */
+export const sessionHandleParamSchema = z.object({ id: z.string().min(1).max(256) }).strict();
+export type SessionHandleParam = z.infer<typeof sessionHandleParamSchema>;
+
 export const inviteValidationResponseSchema = z.object({
   valid: z.boolean(),
   email: z.string().nullable(),
