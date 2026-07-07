@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/notificationsApi', () => ({
@@ -235,5 +236,38 @@ describe('NotificationBell', () => {
     await user.click(screen.getByRole('button', { name: 'Mark all read' }));
 
     expect(await screen.findByText(/Couldn't update that notification/i)).toBeInTheDocument();
+  });
+
+  test('an alert.triggered notification links to its asset (§14)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [
+        notification({
+          id: '00000000-0000-0000-0000-000000000003',
+          type: 'alert.triggered',
+          title: 'AAPL alert triggered',
+          body: 'AAPL rose above $200',
+          payload: { assetId: 'asset-42', alertId: 'al1', kind: 'price_above' },
+        }),
+      ],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter>
+          <NotificationBell />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await user.click(await screen.findByRole('button', { name: /Notifications/ }));
+    const link = screen.getByRole('link', { name: /AAPL alert triggered/ });
+    expect(link).toHaveAttribute('href', '/assets/asset-42');
+
+    await user.click(link);
+    expect(markNotificationsRead).toHaveBeenCalledWith({
+      ids: ['00000000-0000-0000-0000-000000000003'],
+    });
   });
 });

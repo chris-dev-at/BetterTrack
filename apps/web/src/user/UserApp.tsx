@@ -22,6 +22,7 @@ import {
   WatchlistPage,
   WorkboardLayout,
 } from './workboard/WorkboardSection';
+import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
 import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
@@ -113,6 +114,7 @@ function UserShell() {
           <Route path="workboard" element={<WorkboardLayout />}>
             <Route index element={<WorkboardPage />} />
             <Route path="watchlist" element={<WatchlistPage />} />
+            <Route path="alerts" element={<AlertsPage />} />
             <Route path="conglomerates" element={<ConglomeratesListPage />} />
             <Route path="conglomerates/:id" element={<ConglomerateDetailPage />} />
             <Route path="backtests" element={<BacktestsPage />} />

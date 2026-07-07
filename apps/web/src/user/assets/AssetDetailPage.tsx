@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import type {
+  Alert as AlertType,
   AssetDetailResponse,
   HistoryInterval,
   HistoryRange,
@@ -11,12 +12,15 @@ import type {
   QuoteResponse,
 } from '@bettertrack/contracts';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
 import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
 import { formatDateTime, formatSignedPercent } from '../../lib/format';
 import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
+import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
+import { AlertList } from '../components/AlertList';
 import { Alert, Button } from '../components/ui';
 
 // ─── Range mapping ────────────────────────────────────────────────────────────
@@ -160,19 +164,66 @@ function StatsRow({
 
 // ─── Section shells ───────────────────────────────────────────────────────────
 
-function AlertsSection({ assetId: _assetId }: { assetId: string }) {
+/**
+ * Inline price-alerts widget on the asset page (PROJECTPLAN.md §14, V3-P10 arc
+ * b). Creating prefills the current asset and passes the live quote as
+ * reference context; the list is this asset's slice of the shared alerts query,
+ * with the same edit / delete / re-arm actions as the Workboard panel.
+ */
+function AlertsSection({
+  asset,
+  referencePrice,
+}: {
+  asset: AlertDialogAsset;
+  referencePrice: number | null;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<AlertType | null>(null);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ALERTS_QUERY_KEY,
+    queryFn: ({ signal }) => listAlerts(signal),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+  const alerts = (data?.items ?? []).filter((a) => a.asset.id === asset.id);
+
   return (
     <section aria-labelledby="alerts-heading" className="flex flex-col gap-3">
-      <h2 id="alerts-heading" className="text-base font-semibold text-neutral-200">
-        Your alerts on this asset
-      </h2>
-      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <EmptyState
-          icon="🔔"
-          title="No alerts on this asset yet"
-          description="Alerts will appear here once the alerts API is available."
-        />
+      <div className="flex items-center justify-between gap-2">
+        <h2 id="alerts-heading" className="text-base font-semibold text-neutral-200">
+          Your alerts on this asset
+        </h2>
+        <Button variant="secondary" onClick={() => setCreating(true)}>
+          + New alert
+        </Button>
       </div>
+
+      {isLoading ? (
+        <Skeleton height="h-24" />
+      ) : isError ? (
+        <Alert tone="error">Could not load your alerts. Please try again.</Alert>
+      ) : alerts.length === 0 ? (
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+          <EmptyState
+            icon="🔔"
+            title="No alerts on this asset yet"
+            description="Create an alert to get notified when it crosses a price or moves by a percentage."
+          />
+        </div>
+      ) : (
+        <AlertList alerts={alerts} showAsset={false} onEdit={setEditing} />
+      )}
+
+      {creating ? (
+        <AlertDialog
+          asset={asset}
+          referencePrice={referencePrice}
+          onClose={() => setCreating(false)}
+        />
+      ) : null}
+      {editing ? <AlertDialog existing={editing} onClose={() => setEditing(null)} /> : null}
     </section>
   );
 }
@@ -458,7 +509,15 @@ export function AssetDetailPage() {
 
       {/* Sections */}
       <AppearsInSection />
-      <AlertsSection assetId={id} />
+      <AlertsSection
+        asset={{
+          id,
+          symbol: asset.symbol,
+          name: asset.name,
+          currency: quoteQuery.data?.quote?.currency ?? detail.quote?.currency ?? 'EUR',
+        }}
+        referencePrice={quoteQuery.data?.quote?.price ?? detail.quote?.price ?? null}
+      />
 
       <Disclaimer>
         Market data comes from an unofficial source and may be delayed or inaccurate.
