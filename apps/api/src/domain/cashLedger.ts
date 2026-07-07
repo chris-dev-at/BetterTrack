@@ -9,6 +9,16 @@
  * service wiring, and overview UI land in a later V2-P6 issue; this module is
  * the authoritative rulebook they will call into.
  *
+ * **V3-P3 — cash sources.** The single ledger became **Main** plus named
+ * sibling sources: every movement belongs to one source, the portfolio ledger
+ * is the union of all sources' movements (so every roll-up here keeps working
+ * on the union), solvency is checked **per source**
+ * ({@link projectCashLedgerBySource}), transfers between sources are paired
+ * `transfer_out`/`transfer_in` legs that cancel to zero in every sum and are
+ * never TWR flows ({@link pairedTransferMovements}), and "set balance to X"
+ * reduces to a normal deposit/withdrawal carrying the computed delta
+ * ({@link setBalanceMovement}).
+ *
  * **Data model.** A movement is `kind + signed EUR amount + ISO-8601 timestamp`.
  * The sign is part of the data (not derived): inflow kinds (`deposit`,
  * `sell_proceeds`) carry a strictly positive `amountEur`, outflow kinds
@@ -56,26 +66,43 @@ import type { FlowPoint, ValuePoint } from './holdings';
 // Movement kinds & constants
 // ---------------------------------------------------------------------------
 
-/** Every cash-movement kind, external and internal. */
-export const CASH_MOVEMENT_KINDS = ['deposit', 'withdrawal', 'buy', 'sell_proceeds'] as const;
+/**
+ * Every cash-movement kind, external and internal. `transfer_out` /
+ * `transfer_in` (V3-P3) are the paired legs of an internal transfer between two
+ * cash sources of the same portfolio — see {@link pairedTransferMovements}.
+ */
+export const CASH_MOVEMENT_KINDS = [
+  'deposit',
+  'withdrawal',
+  'buy',
+  'sell_proceeds',
+  'transfer_out',
+  'transfer_in',
+] as const;
 
 export type CashMovementKind = (typeof CASH_MOVEMENT_KINDS)[number];
 
 /**
- * Required sign of `amountEur` per kind: inflows (`deposit`, `sell_proceeds`)
- * are strictly positive, outflows (`withdrawal`, `buy`) strictly negative.
+ * Required sign of `amountEur` per kind: inflows (`deposit`, `sell_proceeds`,
+ * `transfer_in`) are strictly positive, outflows (`withdrawal`, `buy`,
+ * `transfer_out`) strictly negative.
  */
 export const CASH_MOVEMENT_SIGN: Readonly<Record<CashMovementKind, 1 | -1>> = {
   deposit: 1,
   sell_proceeds: 1,
+  transfer_in: 1,
   withdrawal: -1,
   buy: -1,
+  transfer_out: -1,
 };
 
 /**
  * The kinds that are **external** flows for TWR purposes: money crossing the
  * portfolio boundary. `buy` / `sell_proceeds` are internal (cash ↔ shares form
- * change) and deliberately absent.
+ * change) and deliberately absent — as are `transfer_out` / `transfer_in`
+ * (V3-P3): a transfer moves money between two sources *inside* the portfolio,
+ * so it is NEVER an external flow (its paired legs also cancel to zero in every
+ * roll-up, keeping net worth unchanged).
  */
 export const EXTERNAL_CASH_MOVEMENT_KINDS: readonly CashMovementKind[] = ['deposit', 'withdrawal'];
 
@@ -329,6 +356,208 @@ export function cashBalanceOverTime(movements: readonly CashMovement[]): CashBal
     else points.push({ date, balanceEur: entry.balanceEur });
   }
   return points;
+}
+
+// ---------------------------------------------------------------------------
+// Cash sources (V3-P3, §13.3)
+// ---------------------------------------------------------------------------
+//
+// The V2 single ledger becomes **Main** plus named sibling sources. Every
+// movement now belongs to exactly one source; the *portfolio* ledger is simply
+// the union of all sources' movements, so every roll-up above (cashBalance,
+// projectCashLedger, cashBalanceOverTime, netWorthSeries,
+// externalCashFlowsForTwr) keeps working unchanged when fed the union — a
+// transfer's paired legs cancel to zero inside every sum. The *solvency* gate,
+// however, is per source: each source is a real account, and money in "Bank"
+// cannot cover an overdraft of "Main". The per-source projection below is the
+// authoritative admission check; per-source validity implies portfolio-level
+// validity (each source's running balance is ≥ 0, so their sum is too).
+
+/** A cash movement attributed to the source it belongs to (V3-P3). */
+export interface SourcedCashMovement extends CashMovement {
+  /** The owning cash source's id. Never empty. */
+  sourceId: string;
+}
+
+/** Fail-loud check that a movement carries a usable source id. */
+function assertSourced(movement: SourcedCashMovement, at?: number): void {
+  const where = at === undefined ? '' : ` (movement ${at})`;
+  if (typeof movement.sourceId !== 'string' || movement.sourceId.length === 0) {
+    throw new CashLedgerError(`Movement sourceId must be a non-empty string${where}.`);
+  }
+}
+
+/**
+ * Current balance of **each** source: `Map` of `sourceId` → sum of its signed
+ * movements (the §14 reconciliation invariant, per source). Sources with no
+ * movements are absent — the caller supplies zeroes for freshly created ones.
+ * Full FP precision (§5.4); quantize with {@link roundCents} at the boundary.
+ * Throws {@link CashLedgerError} on any malformed movement.
+ */
+export function cashBalancesBySource(
+  movements: readonly SourcedCashMovement[],
+): Map<string, number> {
+  const balances = new Map<string, number>();
+  for (const [i, movement] of movements.entries()) {
+    assertValidMovement(movement, i);
+    assertSourced(movement, i);
+    balances.set(movement.sourceId, (balances.get(movement.sourceId) ?? 0) + movement.amountEur);
+  }
+  return balances;
+}
+
+/**
+ * Replay every source's own history chronologically through the
+ * {@link applyCashMovement} admission gate — the V3-P3 solvency check. A
+ * history in which **any single source** ever dips negative is rejected with
+ * {@link InsufficientCashError} at the offending movement (its `movement`
+ * retains the `sourceId`), even when the other sources hold plenty. Returns the
+ * per-source projections (`sourceId` → running-balance entries), each the exact
+ * shape {@link projectCashLedger} produces for a single ledger.
+ */
+export function projectCashLedgerBySource(
+  movements: readonly SourcedCashMovement[],
+): Map<string, CashLedgerEntry[]> {
+  movements.forEach((movement, i) => assertSourced(movement, i));
+  const bySource = new Map<string, SourcedCashMovement[]>();
+  for (const movement of movements) {
+    const list = bySource.get(movement.sourceId);
+    if (list) list.push(movement);
+    else bySource.set(movement.sourceId, [movement]);
+  }
+  const projections = new Map<string, CashLedgerEntry[]>();
+  for (const [sourceId, sourceMovements] of bySource) {
+    projections.set(sourceId, projectCashLedger(sourceMovements));
+  }
+  return projections;
+}
+
+/** Input for {@link pairedTransferMovements}. */
+export interface CashTransferInput {
+  /** Source the money leaves. Must differ from `toSourceId`. */
+  fromSourceId: string;
+  /** Source the money enters. */
+  toSourceId: string;
+  /** Positive EUR magnitude to move; quantized to whole cents here (#322). */
+  amountEur: number;
+  /** ISO-8601 timestamp shared by both legs (same day ⇒ roll-ups never wobble). */
+  occurredAt: string;
+}
+
+/** The two legs of one transfer, double-entry style. */
+export interface CashTransferLegs {
+  /** `transfer_out` on the from-source: strictly negative amount. */
+  outgoing: SourcedCashMovement;
+  /** `transfer_in` on the to-source: the exact mirror amount, positive. */
+  incoming: SourcedCashMovement;
+}
+
+/**
+ * Build the paired movements of an internal transfer (V3-P3): `transfer_out`
+ * of `−X` on the from-source and `transfer_in` of `+X` on the to-source,
+ * sharing one timestamp — double-entry style, so both histories carry the
+ * transfer while every roll-up sums the pair to exactly zero (net worth
+ * unchanged, and never a TWR flow — see
+ * {@link EXTERNAL_CASH_MOVEMENT_KINDS}). The magnitude is quantized to whole
+ * cents (#322: cash exists only in cents); an amount that rounds to zero, a
+ * non-finite/negative amount, a same-source transfer, or an empty source id
+ * fails loud with {@link CashLedgerError}. Solvency of the from-source is the
+ * per-source projection's job, not this builder's.
+ */
+export function pairedTransferMovements(input: CashTransferInput): CashTransferLegs {
+  const { fromSourceId, toSourceId, occurredAt } = input;
+  if (typeof fromSourceId !== 'string' || fromSourceId.length === 0) {
+    throw new CashLedgerError('Transfer fromSourceId must be a non-empty string.');
+  }
+  if (typeof toSourceId !== 'string' || toSourceId.length === 0) {
+    throw new CashLedgerError('Transfer toSourceId must be a non-empty string.');
+  }
+  if (fromSourceId === toSourceId) {
+    throw new CashLedgerError('A transfer needs two different cash sources.');
+  }
+  if (!Number.isFinite(input.amountEur) || input.amountEur <= 0) {
+    throw new CashLedgerError(
+      `Transfer amountEur must be a strictly positive number, got ${input.amountEur}.`,
+    );
+  }
+  const amountEur = roundCents(input.amountEur);
+  if (amountEur === 0) {
+    throw new CashLedgerError(
+      `Transfer amountEur rounds to €0.00 (got ${input.amountEur}); nothing to move.`,
+    );
+  }
+  const outgoing: SourcedCashMovement = {
+    kind: 'transfer_out',
+    amountEur: -amountEur,
+    occurredAt,
+    sourceId: fromSourceId,
+  };
+  const incoming: SourcedCashMovement = {
+    kind: 'transfer_in',
+    amountEur,
+    occurredAt,
+    sourceId: toSourceId,
+  };
+  // Reuse the single admission gate's shape checks (kind/sign/timestamp).
+  assertValidMovement(outgoing);
+  assertValidMovement(incoming);
+  return { outgoing, incoming };
+}
+
+/**
+ * The signed cent delta of a "set balance to X" operation (V3-P3, §16
+ * 2026-07-07): the movement amount that takes `currentBalanceEur` to
+ * `targetBalanceEur`. Both inputs are quantized to whole cents first — pass the
+ * *reported* (cent-exact, #322) balance as `current` — so the returned delta is
+ * itself cent-exact and the post-movement balance reads exactly the target.
+ * Positive ⇒ record a deposit, negative ⇒ a withdrawal, `0` ⇒ record nothing
+ * (see {@link setBalanceMovement}). The target must be a finite, non-negative
+ * EUR amount (no silent negative balances); malformed input fails loud.
+ */
+export function setBalanceDelta(currentBalanceEur: number, targetBalanceEur: number): number {
+  if (!Number.isFinite(currentBalanceEur)) {
+    throw new CashLedgerError(
+      `Set-balance current balance must be a finite number of EUR, got ${currentBalanceEur}.`,
+    );
+  }
+  if (!Number.isFinite(targetBalanceEur) || targetBalanceEur < 0) {
+    throw new CashLedgerError(
+      `Set-balance target must be a finite non-negative number of EUR, got ${targetBalanceEur}.`,
+    );
+  }
+  // Quantize each operand, then the difference: 200.00 − 123.45 carries FP
+  // noise (76.55000000000001) that must not survive into a stored amount.
+  return roundCents(roundCents(targetBalanceEur) - roundCents(currentBalanceEur));
+}
+
+/**
+ * The **normal movement** a set-balance records (§16: the app computes the
+ * signed difference itself and books it like any other movement, keeping the
+ * audit trail intact): a `deposit` carrying a positive delta, a `withdrawal`
+ * carrying a negative one, or `null` when the target already equals the
+ * current balance — a no-op writes nothing. Set-balance deltas are external
+ * flows exactly like hand-entered deposits/withdrawals: money appeared in (or
+ * left) the real-world account, crossing the portfolio boundary.
+ */
+export function setBalanceMovement(input: {
+  sourceId: string;
+  currentBalanceEur: number;
+  targetBalanceEur: number;
+  occurredAt: string;
+}): SourcedCashMovement | null {
+  if (typeof input.sourceId !== 'string' || input.sourceId.length === 0) {
+    throw new CashLedgerError('Set-balance sourceId must be a non-empty string.');
+  }
+  const deltaEur = setBalanceDelta(input.currentBalanceEur, input.targetBalanceEur);
+  if (deltaEur === 0) return null;
+  const movement: SourcedCashMovement = {
+    kind: deltaEur > 0 ? 'deposit' : 'withdrawal',
+    amountEur: deltaEur,
+    occurredAt: input.occurredAt,
+    sourceId: input.sourceId,
+  };
+  assertValidMovement(movement);
+  return movement;
 }
 
 // ---------------------------------------------------------------------------

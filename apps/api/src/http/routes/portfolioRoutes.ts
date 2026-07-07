@@ -3,24 +3,36 @@ import { Router } from 'express';
 import {
   cashEntryRequestSchema,
   cashPreviewRequestSchema,
+  cashSourceListQuerySchema,
+  cashSourceParamsSchema,
+  cashTransferRequestSchema,
+  createCashSourceRequestSchema,
   createPortfolioRequestSchema,
   createTransactionsRequestSchema,
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
   portfolioListQuerySchema,
   portfolioTransactionParamsSchema,
+  setCashBalanceRequestSchema,
   transactionListQuerySchema,
+  updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
   updateTransactionRequestSchema,
   type CashEntryRequest,
   type CashPreviewRequest,
+  type CashSourceListQuery,
+  type CashSourceResponse,
+  type CashTransferRequest,
+  type CreateCashSourceRequest,
   type CreatePortfolioRequest,
   type CreateTransactionsRequest,
   type PortfolioHistoryQuery,
   type PortfolioListQuery,
   type PortfolioMutationResponse,
+  type SetCashBalanceRequest,
   type TransactionInput,
   type TransactionListQuery,
+  type UpdateCashSourceRequest,
   type UpdatePortfolioRequest,
   type UpdatePortfolioResponse,
   type UpdateTransactionRequest,
@@ -153,6 +165,125 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const body = req.valid?.body as CashPreviewRequest;
       const preview = await ctx.portfolio.previewCash(req.authUser!.id, portfolioId, body);
       res.json(preview);
+    },
+  );
+
+  // GET /portfolios/:portfolioId/cash/sources?includeArchived= — the sources with
+  // per-source balances, Main first (V3-P3).
+  router.get(
+    '/:portfolioId/cash/sources',
+    validateParams(portfolioIdParamSchema),
+    validateQuery(cashSourceListQuerySchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const { includeArchived } = req.valid?.query as CashSourceListQuery;
+      const list = await ctx.portfolio.listCashSources(req.authUser!.id, portfolioId, {
+        includeArchived,
+      });
+      res.json(list);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/sources — create a named source (V3-P3).
+  router.post(
+    '/:portfolioId/cash/sources',
+    validateParams(portfolioIdParamSchema),
+    validateBody(createCashSourceRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CreateCashSourceRequest;
+      const source = await ctx.portfolio.createCashSource(req.authUser!.id, portfolioId, body);
+      const response: CashSourceResponse = { source };
+      res.status(201).json(response);
+    },
+  );
+
+  // PATCH /portfolios/:portfolioId/cash/sources/:sourceId — rename / relabel (V3-P3).
+  router.patch(
+    '/:portfolioId/cash/sources/:sourceId',
+    validateParams(cashSourceParamsSchema),
+    validateBody(updateCashSourceRequestSchema),
+    async (req, res) => {
+      const { portfolioId, sourceId } = req.valid?.params as {
+        portfolioId: string;
+        sourceId: string;
+      };
+      const patch = req.valid?.body as UpdateCashSourceRequest;
+      const source = await ctx.portfolio.updateCashSource(
+        req.authUser!.id,
+        portfolioId,
+        sourceId,
+        patch,
+      );
+      const response: CashSourceResponse = { source };
+      res.json(response);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/sources/:sourceId/archive — soft-archive;
+  // rejects Main and any non-zero balance (V3-P3).
+  router.post(
+    '/:portfolioId/cash/sources/:sourceId/archive',
+    validateParams(cashSourceParamsSchema),
+    async (req, res) => {
+      const { portfolioId, sourceId } = req.valid?.params as {
+        portfolioId: string;
+        sourceId: string;
+      };
+      const source = await ctx.portfolio.archiveCashSource(req.authUser!.id, portfolioId, sourceId);
+      const response: CashSourceResponse = { source };
+      res.json(response);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/sources/:sourceId/restore — undo archive (V3-P3).
+  router.post(
+    '/:portfolioId/cash/sources/:sourceId/restore',
+    validateParams(cashSourceParamsSchema),
+    async (req, res) => {
+      const { portfolioId, sourceId } = req.valid?.params as {
+        portfolioId: string;
+        sourceId: string;
+      };
+      const source = await ctx.portfolio.restoreCashSource(req.authUser!.id, portfolioId, sourceId);
+      const response: CashSourceResponse = { source };
+      res.json(response);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/transfer — atomic paired movement between
+  // two sources; never a TWR flow (V3-P3).
+  router.post(
+    '/:portfolioId/cash/transfer',
+    validateParams(portfolioIdParamSchema),
+    validateBody(cashTransferRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CashTransferRequest;
+      const result = await ctx.portfolio.transferCash(req.authUser!.id, portfolioId, body);
+      res.status(201).json(result);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/cash/sources/:sourceId/set-balance — "set
+  // balance to X": the server computes the delta and records a normal movement (V3-P3, §16).
+  router.post(
+    '/:portfolioId/cash/sources/:sourceId/set-balance',
+    validateParams(cashSourceParamsSchema),
+    validateBody(setCashBalanceRequestSchema),
+    async (req, res) => {
+      const { portfolioId, sourceId } = req.valid?.params as {
+        portfolioId: string;
+        sourceId: string;
+      };
+      const body = req.valid?.body as SetCashBalanceRequest;
+      const result = await ctx.portfolio.setCashBalance(
+        req.authUser!.id,
+        portfolioId,
+        sourceId,
+        body,
+      );
+      res.json(result);
     },
   );
 
