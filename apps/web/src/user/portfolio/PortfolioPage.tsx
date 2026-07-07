@@ -79,9 +79,81 @@ function DeltaPct({ value }: { value: number | null }) {
 }
 
 /**
+ * Compact liquidity ring (V3-P0 redesign, #322): a small invested-vs-liquid
+ * donut that belongs in the overview instead of the old full-width split bar the
+ * owner found "out of place". Same data — the invested share (sky) and its cash
+ * complement (emerald) — drawn as two arcs of a single ring with the liquid
+ * share called out in the centre. Purely decorative shape; the accessible
+ * description carries both percentages.
+ */
+function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct: number }) {
+  const radius = 26;
+  const circumference = 2 * Math.PI * radius;
+  const investedLen = (investedPct / 100) * circumference;
+
+  return (
+    <div className="flex items-center gap-3" aria-label="Liquidity">
+      <svg
+        viewBox="0 0 64 64"
+        className="h-16 w-16 shrink-0 -rotate-90"
+        role="img"
+        aria-label={`${formatPercent(investedPct)} invested, ${formatPercent(cashPct)} liquid`}
+      >
+        {/* Track under the two arcs, so any rounding gap reads as neutral. */}
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="8"
+          className="text-neutral-800"
+        />
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          strokeWidth="8"
+          className="text-sky-500"
+          stroke="currentColor"
+          strokeDasharray={`${investedLen} ${circumference}`}
+        />
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          strokeWidth="8"
+          className="text-emerald-500"
+          stroke="currentColor"
+          strokeDasharray={`${circumference - investedLen} ${circumference}`}
+          strokeDashoffset={-investedLen}
+        />
+      </svg>
+      <div className="text-xs text-neutral-400" aria-hidden="true">
+        <div className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-sky-500" />
+          <span>
+            <span className="font-medium text-neutral-200">{formatPercent(investedPct)}</span>{' '}
+            invested
+          </span>
+        </div>
+        <div className="mt-1 flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span>
+            <span className="font-medium text-neutral-200">{formatPercent(cashPct)}</span> liquid
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Net-worth headline (#311): the primary figure is the portfolio's total worth
  * — holdings + cash — with the invested/cash composition spelled out and a
- * slim liquidity ratio bar answering "how liquid am I?" at a glance.
+ * compact liquidity ring answering "how liquid am I?" at a glance.
  */
 function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
   // Clamp the invested share to [0, 100] and derive the cash share as its
@@ -93,9 +165,9 @@ function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
   const cashPct = investedPct == null ? null : 100 - investedPct;
 
   return (
-    <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+    <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
       <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Total value</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Net Worth</p>
         <p className="mt-1 text-3xl font-semibold tracking-tight text-neutral-100">
           <MoneyText amount={totals.totalValueEur} />
         </p>
@@ -105,25 +177,7 @@ function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
         </p>
       </div>
       {investedPct != null && cashPct != null ? (
-        <div className="w-full sm:max-w-xs sm:flex-1" aria-label="Liquidity">
-          <div className="flex items-center justify-between gap-3 text-xs text-neutral-400">
-            <span>
-              <span className="font-medium text-neutral-200">{formatPercent(investedPct)}</span>{' '}
-              invested
-            </span>
-            <span>
-              <span className="font-medium text-neutral-200">{formatPercent(cashPct)}</span> liquid
-            </span>
-          </div>
-          <div
-            role="img"
-            aria-label={`${formatPercent(investedPct)} invested, ${formatPercent(cashPct)} liquid`}
-            className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-neutral-800"
-          >
-            <div className="bg-sky-500" style={{ width: `${investedPct}%` }} />
-            <div className="bg-emerald-500" style={{ width: `${cashPct}%` }} />
-          </div>
-        </div>
+        <LiquidityRing investedPct={investedPct} cashPct={cashPct} />
       ) : null}
     </div>
   );
