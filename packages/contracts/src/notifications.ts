@@ -19,6 +19,7 @@ export const NOTIFICATION_TYPES = [
   'portfolio.shared',
   'account.invite',
   'account.temp_password',
+  'alert.triggered',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);

@@ -62,6 +62,7 @@ function makeMatrix(overrides: Partial<NotificationMatrix> = {}): NotificationMa
     'portfolio.shared': { inapp: true, email: true },
     'account.invite': { inapp: true, email: true },
     'account.temp_password': { inapp: true, email: true },
+    'alert.triggered': { inapp: true, email: true },
     ...overrides,
   };
 }

@@ -451,7 +451,7 @@ describe('fx.refreshSpot', () => {
 // ---- registration ---------------------------------------------------------
 
 describe('createJobDefinitions registration', () => {
-  it('builds the heartbeat + three market-data jobs', async () => {
+  it('builds the heartbeat + market-data jobs + the alerts evaluator', async () => {
     const db = await makeDb();
     const defs = createJobDefinitions({ db, marketData: createStubMarketData() });
     expect(defs.map((d) => d.name)).toEqual([
@@ -459,6 +459,7 @@ describe('createJobDefinitions registration', () => {
       'prices.refreshDaily',
       'prices.backfill',
       'fx.refreshSpot',
+      'alerts.evaluate',
     ]);
   });
 
@@ -477,7 +478,12 @@ describe('createJobDefinitions registration', () => {
 
     const ids = await registerSchedules(registry, defs);
 
-    expect(ids).toEqual(['system.heartbeat', 'prices.refreshDaily', 'fx.refreshSpot']);
+    expect(ids).toEqual([
+      'system.heartbeat',
+      'prices.refreshDaily',
+      'fx.refreshSpot',
+      'alerts.evaluate',
+    ]);
     const daily = calls.find((c) => c.id === 'prices.refreshDaily');
     expect(daily?.opts).toEqual({ pattern: '0 3 * * *', tz: 'Europe/Vienna' });
     const fx = calls.find((c) => c.id === 'fx.refreshSpot');

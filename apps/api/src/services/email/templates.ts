@@ -276,6 +276,30 @@ export function twoFactorCodeEmail(params: { code: string; minutes: number }): E
   };
 }
 
+/**
+ * Price-alert notification email (PROJECTPLAN.md §14, V3-P10). Sent by the
+ * dispatcher when the recipient routes `alert.triggered` to email. `body` is the
+ * same one-sentence phrasing the in-app bell item carries.
+ */
+export function alertTriggeredEmail(params: {
+  symbol: string;
+  body: string;
+  appUrl: string;
+}): EmailContent {
+  const { symbol, body, appUrl } = params;
+  return {
+    subject: `Price alert: ${symbol}`,
+    html: layout(
+      `Price alert: ${escapeHtml(symbol)}`,
+      [
+        `<p>${escapeHtml(body)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, 'Open BetterTrack')}</p>`,
+      ].join(''),
+    ),
+    text: [`Price alert: ${symbol}`, '', body, '', `Open BetterTrack: ${appUrl}`].join('\n'),
+  };
+}
+
 export function welcomeEmail(params: { username: string; appUrl: string }): EmailContent {
   const { username, appUrl } = params;
   return {
