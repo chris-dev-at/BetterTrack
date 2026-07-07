@@ -10,6 +10,8 @@ export default defineConfig({
     // (mirrors the nginx topology described in PROJECTPLAN.md §4.6).
     proxy: {
       '/api': 'http://localhost:3000',
+      // Realtime gateway websocket (§4.5, V3-P7a) — same-origin in dev, like /api.
+      '/ws': { target: 'http://localhost:3000', ws: true },
     },
   },
   test: {

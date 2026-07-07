@@ -29,6 +29,7 @@ import {
   type BackfillScheduler,
 } from '../jobs';
 import type { Logger } from '../logger';
+import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
@@ -131,6 +132,15 @@ export interface AppContext {
    * only need the HTTP surface don't accrue bus subscriptions.
    */
   notificationDispatcher: NotificationDispatcher;
+  /**
+   * Realtime gateway (§4.5, V3-P7a): the second designed bus subscriber —
+   * Socket.IO at /ws mapping domain events to room emissions. Built here but
+   * only *attached* by the API bootstrap (`server.ts`), which owns the HTTP
+   * server; with REALTIME_ENABLED=false attach is a no-op. Tests that only need
+   * the HTTP surface never attach it, so no socket server or bus subscription
+   * exists for them.
+   */
+  realtime: RealtimeGateway;
   /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
    * dispatcher subscribes. Held on the context so the process can close its Redis
@@ -382,6 +392,21 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
+  // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
+  // owner-or-shared with the same repository checks the shared-view HTTP
+  // endpoints use (§6.9), recomputed at join time.
+  const realtime = createRealtimeGateway({
+    config,
+    bus: events,
+    logger,
+    resolveSession: (sessionId, userAgent) => auth.resolveSession(sessionId, userAgent),
+    canViewPortfolio: async (userId, portfolioId) => {
+      if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
+      return Boolean(await friendshipRepo.findSharedPortfolioForViewer(userId, portfolioId));
+    },
+  });
+
   return {
     config,
     redis,
@@ -405,6 +430,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     accountSettings,
     alerts,
     notificationDispatcher,
+    realtime,
     events,
   };
 }
