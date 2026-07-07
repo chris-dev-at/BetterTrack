@@ -112,6 +112,38 @@ beforeEach(() => {
 });
 
 describe('BudgetCalculator', () => {
+  test('the budget stepper steps at a selectable decimal precision (V3-P0 #322)', async () => {
+    const user = userEvent.setup();
+    renderCalculator();
+
+    const budget = screen.getByLabelText('Budget in EUR') as HTMLInputElement;
+    expect(budget.value).toBe('1000');
+
+    // Default granularity is whole euros: + steps by 1.
+    await user.click(screen.getByRole('button', { name: 'Increase budget by 1' }));
+    expect(budget.value).toBe('1001');
+
+    // Selecting 0.01 makes the stepper move in cents and rewrites the input
+    // `step` so keyboard/native stepping matches — "how far off the comma".
+    await user.selectOptions(screen.getByLabelText('Budget step precision'), '0.01');
+    expect(budget).toHaveAttribute('step', '0.01');
+
+    await user.click(screen.getByRole('button', { name: 'Increase budget by 0.01' }));
+    expect(budget.value).toBe('1001.01');
+    await user.click(screen.getByRole('button', { name: 'Decrease budget by 0.01' }));
+    expect(budget.value).toBe('1001.00');
+
+    // Cents feed straight into the allocate call — no rounding back to whole euros.
+    vi.mocked(allocateConglomerate).mockResolvedValue(RESPONSE);
+    await calculate(user);
+    await waitFor(() =>
+      expect(allocateConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID, {
+        budgetEur: 1001,
+        mode: 'whole',
+      }),
+    );
+  });
+
   test('calculating renders the deviation table and a totals footer with total cost ≤ budget', async () => {
     vi.mocked(allocateConglomerate).mockResolvedValue(RESPONSE);
     const user = userEvent.setup();

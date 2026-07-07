@@ -326,10 +326,10 @@ describe('PortfolioPage — net worth incl. cash (#311)', () => {
     const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
     // The primary figure is net worth: 321 350 invested + 5 000 cash = 326 350.
     expect(within(totals).getByText('326.350,00 €')).toBeInTheDocument();
-    expect(within(totals).getByText('Total value')).toBeInTheDocument();
+    expect(within(totals).getByText('Net Worth')).toBeInTheDocument();
   });
 
-  test('the liquidity stat shows invested/cash percentages that sum coherently with the headline', async () => {
+  test('the liquidity ring shows invested/cash percentages that sum coherently with the headline', async () => {
     renderPage();
     const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
     // 321 350 / 326 350 = 98,5 % invested; the cash share is its exact

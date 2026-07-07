@@ -34,6 +34,34 @@ test('every item renders as a resolvable tab link', () => {
   }
 });
 
+test('preserveParams carries the named search param across tab links (V3-P0 #322)', () => {
+  const items: readonly SubNavItem[] = [
+    { to: '/portfolio', label: 'Overview', end: true },
+    { to: '/portfolio/transactions', label: 'Transactions' },
+    { to: '/portfolio/custom-assets', label: 'Custom Assets' },
+  ];
+  render(
+    <MemoryRouter initialEntries={['/portfolio?portfolio=pf-2&stray=x']}>
+      <SubNav items={items} preserveParams={['portfolio']} />
+    </MemoryRouter>,
+  );
+  // Every tab keeps the active portfolio in its href, so navigating to
+  // Transactions / Custom Assets no longer drops the selection to the default.
+  expect(screen.getByRole('link', { name: 'Transactions' })).toHaveAttribute(
+    'href',
+    '/portfolio/transactions?portfolio=pf-2',
+  );
+  expect(screen.getByRole('link', { name: 'Custom Assets' })).toHaveAttribute(
+    'href',
+    '/portfolio/custom-assets?portfolio=pf-2',
+  );
+  // Only the named key travels — unrelated params never leak between sections.
+  expect(screen.getByRole('link', { name: 'Overview' })).toHaveAttribute(
+    'href',
+    '/portfolio?portfolio=pf-2',
+  );
+});
+
 test('the strip scrolls horizontally instead of wrapping at narrow widths', () => {
   renderNav();
   const nav = screen.getByRole('navigation', { name: 'Section' });

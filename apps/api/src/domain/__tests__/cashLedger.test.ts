@@ -14,6 +14,7 @@ import {
   isExternalCashMovement,
   netWorthSeries,
   projectCashLedger,
+  roundCents,
   type CashMovement,
   type CashMovementKind,
 } from '../cashLedger';
@@ -34,6 +35,51 @@ function mixedSequence(): CashMovement[] {
     mv('withdrawal', -200, '2026-01-08T12:00:00Z'),
   ];
 }
+
+// ---------------------------------------------------------------------------
+// roundCents — the whole-cent boundary quantizer (V3-P0, #322)
+// ---------------------------------------------------------------------------
+
+describe('roundCents', () => {
+  it('is a no-op on values already expressible in whole cents', () => {
+    expect(roundCents(0)).toBe(0);
+    expect(roundCents(100)).toBe(100);
+    expect(roundCents(1234.56)).toBe(1234.56);
+    expect(roundCents(-99.99)).toBe(-99.99);
+  });
+
+  it('quantizes sub-cent EUR to the nearest whole cent (half away from zero)', () => {
+    expect(roundCents(100.006)).toBe(100.01);
+    expect(roundCents(100.004)).toBe(100.0);
+    expect(roundCents(0.005)).toBe(0.01);
+    expect(roundCents(-0.005)).toBe(-0.01);
+    // 1.005 is stored as 1.00499999…; the ULP nudge rounds it the way a person
+    // reading cents expects rather than down to 1.00.
+    expect(roundCents(1.005)).toBe(1.01);
+  });
+
+  it('sheds FP summation dust so a reconciled balance is exactly zero cents', () => {
+    // 0.1 + 0.2 − 0.3 leaves ~5.5e-17 of float dust; quantizing lands it at 0.
+    const dust = 0.1 + 0.2 - 0.3;
+    expect(dust).not.toBe(0);
+    expect(roundCents(dust)).toBe(0);
+  });
+
+  it('makes a withdraw-all cancel to exactly €0.00 with no residue', () => {
+    // A sub-cent FX-converted buy leaves a balance the display rounds to cents;
+    // withdrawing that cent-exact balance must land at exactly 0 — the #322 bug.
+    const balance = roundCents(cashBalance([mv('deposit', 100.006, '2026-01-01T00:00:00Z')]));
+    expect(balance).toBe(100.01);
+    const after = roundCents(balance + -balance);
+    expect(after).toBe(0);
+    expect(Object.is(after, 0)).toBe(true);
+  });
+
+  it('throws on a non-finite amount', () => {
+    expect(() => roundCents(Number.POSITIVE_INFINITY)).toThrow(CashLedgerError);
+    expect(() => roundCents(Number.NaN)).toThrow(CashLedgerError);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // cashBalance — the reconciliation invariant
