@@ -6,9 +6,10 @@ import { portfolioVisibilitySchema } from './portfolio';
 /**
  * User-facing notification settings (PROJECTPLAN.md §6.10, §6.11, §8). The
  * `GET/PATCH /settings/notifications` surface exposes a **per-type × channel
- * matrix**: each V1 notification type (`friend.request`, `friend.accepted`,
- * `portfolio.shared`, `account.invite`, `account.temp_password`) can be routed
- * independently to the **in-app bell**, **email**, both, or neither (muted).
+ * matrix**: each notification type (`friend.request`, `friend.accepted`,
+ * `portfolio.shared`, `account.invite`, `account.temp_password`, and the V3
+ * `alert.triggered` price alert) can be routed independently to the **in-app
+ * bell**, **email**, both, or neither (muted).
  *
  * V1 ships two channels: **in-app** and **email**, each defaulting to *on* for a
  * type that has no override. The stored overrides live in the existing

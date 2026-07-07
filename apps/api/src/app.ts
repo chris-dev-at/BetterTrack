@@ -11,6 +11,7 @@ import { createRateLimiters } from './http/middleware/rateLimit';
 import { enforcePasswordChange, loadSession } from './http/middleware/session';
 import { createOpenApiRouter } from './http/openapi';
 import { createAdminRouter } from './http/routes/adminRoutes';
+import { createAlertsRouter } from './http/routes/alertsRoutes';
 import { createAssetsRouter } from './http/routes/assetsRoutes';
 import { createAuthRouter } from './http/routes/authRoutes';
 import { createBacktestRouter } from './http/routes/backtestRoutes';
@@ -84,6 +85,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
+  app.use('/api/v1/alerts', createAlertsRouter(ctx));
   app.use('/api/v1/settings', createSettingsRouter(ctx));
   // Session-authenticated OAuth consent endpoints (authorize + authorization-
   // details). The public /oauth/token router above already handled its path.

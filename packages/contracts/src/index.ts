@@ -11,5 +11,6 @@ export * from './backtest';
 export * from './social';
 export * from './notifications';
 export * from './settings';
+export * from './alerts';
 export * from './apiKeys';
 export * from './oauth';

@@ -75,6 +75,10 @@ const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; descript
     label: 'Temporary passwords',
     description: 'When an admin issues you a temporary password.',
   },
+  'alert.triggered': {
+    label: 'Price alerts',
+    description: 'When one of your price alerts fires.',
+  },
 };
 
 /** The four routing choices a type offers — the two channels collapsed to a mode. */

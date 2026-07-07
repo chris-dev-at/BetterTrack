@@ -3,6 +3,7 @@ import type { EmailLogRepository } from '../../data/repositories/emailLogReposit
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import {
+  alertTriggeredEmail,
   friendAcceptedEmail,
   friendRequestEmail,
   inviteEmail,
@@ -100,6 +101,13 @@ export interface EmailService {
     userId: string;
     actorUsername: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: a price alert `userId` set fired (§14). */
+  sendAlertTriggered(params: {
+    to: string;
+    userId: string;
+    symbol: string;
+    body: string;
+  }): Promise<EmailSendResult>;
 }
 
 export interface EmailServiceDeps {
@@ -122,7 +130,8 @@ type EmailTemplateKind =
   | 'test'
   | 'friend_request'
   | 'friend_accepted'
-  | 'portfolio_shared';
+  | 'portfolio_shared'
+  | 'alert_triggered';
 
 /** Coarse, secret-free error tag for logs/audit. Never the raw SMTP response. */
 function errorCode(err: unknown): string {
@@ -275,6 +284,16 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         to,
         portfolioSharedEmail({ actorUsername, appUrl: config.appOrigin }),
         { userId },
+      ),
+
+    sendAlertTriggered: ({ to, userId, symbol, body }) =>
+      deliver(
+        'alert_triggered',
+        to,
+        alertTriggeredEmail({ symbol, body, appUrl: config.appOrigin }),
+        {
+          userId,
+        },
       ),
   };
 }
