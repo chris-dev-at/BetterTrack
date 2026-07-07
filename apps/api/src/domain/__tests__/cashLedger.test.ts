@@ -7,16 +7,22 @@ import {
   CASH_MOVEMENT_SIGN,
   cashBalance,
   cashBalanceOverTime,
+  cashBalancesBySource,
   CashLedgerError,
   EXTERNAL_CASH_MOVEMENT_KINDS,
   externalCashFlowsForTwr,
   InsufficientCashError,
   isExternalCashMovement,
   netWorthSeries,
+  pairedTransferMovements,
   projectCashLedger,
+  projectCashLedgerBySource,
   roundCents,
+  setBalanceDelta,
+  setBalanceMovement,
   type CashMovement,
   type CashMovementKind,
+  type SourcedCashMovement,
 } from '../cashLedger';
 import { timeWeightedReturn, type ValuePoint } from '../holdings';
 
@@ -631,5 +637,258 @@ describe('netWorthSeries', () => {
     expect(perf[0]?.pct).toBeCloseTo(0, 9); // deposit: neutralized
     expect(perf[1]?.pct).toBeCloseTo(0, 9); // internal conversion: invisible
     expect(perf[2]?.pct).toBeCloseTo(10, 9); // the market move — and nothing else
+  });
+});
+
+// ---------------------------------------------------------------------------
+// V3-P3 — cash sources: per-source ledgers, transfers, set-balance
+// ---------------------------------------------------------------------------
+
+function smv(
+  sourceId: string,
+  kind: CashMovementKind,
+  amountEur: number,
+  occurredAt: string,
+): SourcedCashMovement {
+  return { sourceId, kind, amountEur, occurredAt };
+}
+
+describe('cashBalancesBySource', () => {
+  it('sums each source independently and rolls up to the portfolio balance', () => {
+    const movements = [
+      smv('main', 'deposit', 1000, '2026-01-05T09:00:00Z'),
+      smv('bank', 'deposit', 250, '2026-01-05T10:00:00Z'),
+      smv('main', 'buy', -400, '2026-01-06T10:00:00Z'),
+      smv('bank', 'withdrawal', -50, '2026-01-07T10:00:00Z'),
+    ];
+    const balances = cashBalancesBySource(movements);
+    expect(balances.get('main')).toBe(600);
+    expect(balances.get('bank')).toBe(200);
+    // The portfolio roll-up is the union fed to the V2 balance function.
+    expect(cashBalance(movements)).toBe(800);
+    expect([...balances.values()].reduce((a, b) => a + b, 0)).toBe(cashBalance(movements));
+  });
+
+  it('omits sources without movements and fails loud on a missing sourceId', () => {
+    expect(cashBalancesBySource([]).size).toBe(0);
+    expect(() =>
+      cashBalancesBySource([
+        { kind: 'deposit', amountEur: 1, occurredAt: '2026-01-05', sourceId: '' },
+      ]),
+    ).toThrow(CashLedgerError);
+  });
+});
+
+describe('projectCashLedgerBySource (per-source solvency gate)', () => {
+  it('rejects a source overdraft even when another source holds plenty', () => {
+    const movements = [
+      smv('main', 'deposit', 10_000, '2026-01-05T09:00:00Z'),
+      smv('bank', 'deposit', 100, '2026-01-05T10:00:00Z'),
+      smv('bank', 'withdrawal', -150, '2026-01-06T10:00:00Z'), // bank has only 100
+    ];
+    let caught: unknown;
+    try {
+      projectCashLedgerBySource(movements);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(InsufficientCashError);
+    const rejection = caught as InsufficientCashError;
+    expect(rejection.balanceEur).toBe(100);
+    expect(rejection.shortfallEur).toBe(50);
+    // The offending movement retains its source attribution.
+    expect((rejection.movement as SourcedCashMovement).sourceId).toBe('bank');
+  });
+
+  it('projects each source chronologically and independently', () => {
+    const movements = [
+      smv('bank', 'transfer_in', 300, '2026-01-06T10:00:00Z'),
+      smv('main', 'deposit', 1000, '2026-01-05T09:00:00Z'),
+      smv('main', 'transfer_out', -300, '2026-01-06T10:00:00Z'),
+      smv('main', 'buy', -500, '2026-01-07T10:00:00Z'),
+    ];
+    const projections = projectCashLedgerBySource(movements);
+    expect([...projections.keys()].sort()).toEqual(['bank', 'main']);
+    expect(projections.get('main')?.map((e) => e.balanceEur)).toEqual([1000, 700, 200]);
+    expect(projections.get('bank')?.map((e) => e.balanceEur)).toEqual([300]);
+  });
+
+  it('per-source validity implies the portfolio-level union never dips negative', () => {
+    const movements = [
+      smv('main', 'deposit', 500, '2026-01-05T09:00:00Z'),
+      smv('main', 'transfer_out', -500, '2026-01-06T10:00:00Z'),
+      smv('bank', 'transfer_in', 500, '2026-01-06T10:00:00Z'),
+      smv('bank', 'withdrawal', -500, '2026-01-07T10:00:00Z'),
+    ];
+    projectCashLedgerBySource(movements); // does not throw
+    const union = projectCashLedger(movements); // neither does the roll-up
+    expect(union.at(-1)?.balanceEur).toBe(0);
+  });
+});
+
+describe('pairedTransferMovements', () => {
+  it('builds mirrored double-entry legs sharing the timestamp', () => {
+    const { outgoing, incoming } = pairedTransferMovements({
+      fromSourceId: 'main',
+      toSourceId: 'bank',
+      amountEur: 500,
+      occurredAt: '2026-02-01T12:00:00Z',
+    });
+    expect(outgoing).toEqual({
+      kind: 'transfer_out',
+      amountEur: -500,
+      occurredAt: '2026-02-01T12:00:00Z',
+      sourceId: 'main',
+    });
+    expect(incoming).toEqual({
+      kind: 'transfer_in',
+      amountEur: 500,
+      occurredAt: '2026-02-01T12:00:00Z',
+      sourceId: 'bank',
+    });
+    // The pair cancels in every roll-up.
+    expect(cashBalance([outgoing, incoming])).toBe(0);
+  });
+
+  it('quantizes the magnitude to whole cents (#322)', () => {
+    const { outgoing, incoming } = pairedTransferMovements({
+      fromSourceId: 'a',
+      toSourceId: 'b',
+      amountEur: 10.005,
+      occurredAt: '2026-02-01T12:00:00Z',
+    });
+    expect(incoming.amountEur).toBe(10.01);
+    expect(outgoing.amountEur).toBe(-10.01);
+  });
+
+  it('rejects same-source, non-positive, sub-cent and malformed inputs', () => {
+    const base = { fromSourceId: 'a', toSourceId: 'b', occurredAt: '2026-02-01T12:00:00Z' };
+    expect(() => pairedTransferMovements({ ...base, toSourceId: 'a', amountEur: 10 })).toThrow(
+      CashLedgerError,
+    );
+    expect(() => pairedTransferMovements({ ...base, amountEur: 0 })).toThrow(CashLedgerError);
+    expect(() => pairedTransferMovements({ ...base, amountEur: -5 })).toThrow(CashLedgerError);
+    expect(() => pairedTransferMovements({ ...base, amountEur: 0.001 })).toThrow(CashLedgerError);
+    expect(() => pairedTransferMovements({ ...base, amountEur: Number.NaN })).toThrow(
+      CashLedgerError,
+    );
+    expect(() => pairedTransferMovements({ ...base, fromSourceId: '', amountEur: 10 })).toThrow(
+      CashLedgerError,
+    );
+    expect(() =>
+      pairedTransferMovements({ ...base, amountEur: 10, occurredAt: 'not-a-date' }),
+    ).toThrow(CashLedgerError);
+  });
+
+  it('transfer legs are internal: never TWR flows, invisible to the net-worth curve', () => {
+    expect(isExternalCashMovement('transfer_out')).toBe(false);
+    expect(isExternalCashMovement('transfer_in')).toBe(false);
+
+    const before = [
+      smv('main', 'deposit', 1000, '2026-01-05T09:00:00Z'),
+      smv('bank', 'deposit', 200, '2026-01-05T09:30:00Z'),
+    ];
+    const { outgoing, incoming } = pairedTransferMovements({
+      fromSourceId: 'main',
+      toSourceId: 'bank',
+      amountEur: 500,
+      occurredAt: '2026-01-06T10:00:00Z',
+    });
+    const after = [...before, outgoing, incoming];
+
+    // Identical external-flow series…
+    expect(externalCashFlowsForTwr(after)).toEqual(externalCashFlowsForTwr(before));
+    // …and an identical net-worth curve, so the performance-% curve (a pure
+    // function of the two) is unchanged by any internal transfer.
+    const today = '2026-01-07';
+    expect(netWorthSeries({ holdingsValues: [], movements: after, today })).toEqual(
+      netWorthSeries({ holdingsValues: [], movements: before, today }),
+    );
+    const perfBefore = timeWeightedReturn(
+      netWorthSeries({ holdingsValues: [], movements: before, today }),
+      externalCashFlowsForTwr(before),
+    );
+    const perfAfter = timeWeightedReturn(
+      netWorthSeries({ holdingsValues: [], movements: after, today }),
+      externalCashFlowsForTwr(after),
+    );
+    expect(perfAfter).toEqual(perfBefore);
+  });
+});
+
+describe('setBalanceDelta / setBalanceMovement', () => {
+  it('computes the owner example exactly: €123.45 → €200.00 is +€76.55', () => {
+    // Naive FP subtraction yields 76.55000000000001 — the delta must be exact.
+    expect(setBalanceDelta(123.45, 200.0)).toBe(76.55);
+    expect(123.45 + setBalanceDelta(123.45, 200.0)).toBe(200.0);
+  });
+
+  it('is symmetric for negative deltas: €200.00 → €123.45 is −€76.55', () => {
+    expect(setBalanceDelta(200.0, 123.45)).toBe(-76.55);
+    expect(200.0 + setBalanceDelta(200.0, 123.45)).toBe(123.45);
+  });
+
+  it('quantizes both operands to cents before differencing', () => {
+    expect(setBalanceDelta(0, 100.006)).toBe(100.01);
+    expect(setBalanceDelta(100.004, 100.004)).toBe(0);
+  });
+
+  it('setting a balance to €0.00 withdraws everything, landing at exactly zero', () => {
+    const delta = setBalanceDelta(123.45, 0);
+    expect(delta).toBe(-123.45);
+    expect(123.45 + delta).toBe(0);
+  });
+
+  it('rejects a negative or non-finite target and a non-finite current balance', () => {
+    expect(() => setBalanceDelta(100, -1)).toThrow(CashLedgerError);
+    expect(() => setBalanceDelta(100, Number.POSITIVE_INFINITY)).toThrow(CashLedgerError);
+    expect(() => setBalanceDelta(Number.NaN, 100)).toThrow(CashLedgerError);
+  });
+
+  it('builds a normal deposit for a positive delta and a withdrawal for a negative one', () => {
+    const up = setBalanceMovement({
+      sourceId: 'bank',
+      currentBalanceEur: 123.45,
+      targetBalanceEur: 200.0,
+      occurredAt: '2026-03-01T08:00:00Z',
+    });
+    expect(up).toEqual({
+      kind: 'deposit',
+      amountEur: 76.55,
+      occurredAt: '2026-03-01T08:00:00Z',
+      sourceId: 'bank',
+    });
+
+    const down = setBalanceMovement({
+      sourceId: 'bank',
+      currentBalanceEur: 200.0,
+      targetBalanceEur: 123.45,
+      occurredAt: '2026-03-01T08:00:00Z',
+    });
+    expect(down?.kind).toBe('withdrawal');
+    expect(down?.amountEur).toBe(-76.55);
+  });
+
+  it('records nothing when the target equals the current balance', () => {
+    expect(
+      setBalanceMovement({
+        sourceId: 'bank',
+        currentBalanceEur: 200.0,
+        targetBalanceEur: 200.0,
+        occurredAt: '2026-03-01T08:00:00Z',
+      }),
+    ).toBeNull();
+  });
+
+  it('set-balance deltas are external flows, exactly like hand-entered deposits', () => {
+    const movement = setBalanceMovement({
+      sourceId: 'bank',
+      currentBalanceEur: 0,
+      targetBalanceEur: 500,
+      occurredAt: '2026-03-01T08:00:00Z',
+    });
+    expect(movement).not.toBeNull();
+    expect(isExternalCashMovement(movement!.kind)).toBe(true);
+    expect(externalCashFlowsForTwr([movement!])).toEqual([{ date: '2026-03-01', flowEur: 500 }]);
   });
 });

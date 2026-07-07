@@ -511,22 +511,69 @@ export const transactions = pgTable(
 );
 
 /**
- * Per-portfolio cash ledger ("Bargeld", PROJECTPLAN.md §14, #220/#278). Every
- * movement is a *reconciling* row — signed EUR amount — so **current cash = sum
- * of signed movements** (the #220 invariant, computed via
- * `domain/cashLedger.cashBalance`). `deposit` / `withdrawal` are external
- * (money crossing the portfolio boundary, TWR cash flows); `buy` /
+ * Per-portfolio cash ledger ("Bargeld", PROJECTPLAN.md §14, #220/#278; cash
+ * sources V3-P3 §13.3). Every movement is a *reconciling* row — signed EUR
+ * amount — so **current cash = sum of signed movements** (the #220 invariant,
+ * computed via `domain/cashLedger.cashBalance`). `deposit` / `withdrawal` are
+ * external (money crossing the portfolio boundary, TWR cash flows); `buy` /
  * `sell_proceeds` are internal (cash ↔ shares form change, TWR-neutral) and
- * carry `transaction_id` linking the movement to the buy/sell it funded. Cash
- * is EUR-only in V1 (multi-currency cash is out of scope). Deleting the linked
- * transaction cascades its movement away, restoring the balance.
+ * carry `transaction_id` linking the movement to the buy/sell it funded;
+ * `transfer_out` / `transfer_in` (V3-P3) are the paired legs of an internal
+ * transfer between two cash sources — they share a `transfer_id`, cancel to
+ * zero in every roll-up, and are NEVER TWR flows. Cash is EUR-only in V1
+ * (multi-currency cash is out of scope). Deleting the linked transaction
+ * cascades its movement away, restoring the balance.
  */
 export const cashMovementKindEnum = pgEnum('cash_movement_kind', [
   'deposit',
   'withdrawal',
   'buy',
   'sell_proceeds',
+  'transfer_out',
+  'transfer_in',
 ]);
+
+/**
+ * Cash sources (V3-P3): the auto-provisioned **Main** plus named siblings
+ * ("Bank account X"), each owning a slice of the portfolio's cash movements.
+ * Exactly one Main per portfolio (partial unique index; provisioned on first
+ * cash touch, or by the 0019 migration for pre-existing ledgers). The type is a
+ * purely descriptive label. Balances are never stored — a source's balance is
+ * the sum of its movements' signed amounts. Sources soft-archive like
+ * portfolios: `archived_at` hides them from active listings while their history
+ * stays queryable; the service only archives sources whose balance is exactly
+ * €0.00 and never archives Main.
+ */
+export const cashSourceTypeEnum = pgEnum('cash_source_type', [
+  'bank',
+  'retirement',
+  'cash',
+  'custom',
+]);
+
+export const portfolioCashSources = pgTable(
+  'portfolio_cash_sources',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    type: cashSourceTypeEnum('type').notNull(),
+    isMain: boolean('is_main').notNull().default(false),
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Names are unique per portfolio across archived rows too (mirrors
+    // portfolios_user_name_unique), so create/rename can 409 cleanly.
+    uniqueIndex('portfolio_cash_sources_portfolio_name_unique').on(t.portfolioId, t.name),
+    // At most one Main per portfolio — the idempotence anchor of getOrCreateMain.
+    uniqueIndex('portfolio_cash_sources_main_unique')
+      .on(t.portfolioId)
+      .where(sql`${t.isMain}`),
+  ],
+);
 
 export const portfolioCashMovements = pgTable(
   'portfolio_cash_movements',
@@ -535,9 +582,16 @@ export const portfolioCashMovements = pgTable(
     portfolioId: uuid('portfolio_id')
       .notNull()
       .references(() => portfolios.id, { onDelete: 'cascade' }),
+    // The cash source this movement belongs to (V3-P3). No cascade: sources are
+    // soft-archived, never hard-deleted while movements exist (portfolio
+    // deletion cascades through portfolio_id on both tables instead).
+    sourceId: uuid('source_id')
+      .notNull()
+      .references(() => portfolioCashSources.id),
     kind: cashMovementKindEnum('kind').notNull(),
-    // Signed EUR amount, full precision: inflows (deposit/sell_proceeds) > 0,
-    // outflows (withdrawal/buy) < 0. The sign is part of the data, not derived.
+    // Signed EUR amount, full precision: inflows (deposit/sell_proceeds/
+    // transfer_in) > 0, outflows (withdrawal/buy/transfer_out) < 0. The sign is
+    // part of the data, not derived.
     amountEur: numeric('amount_eur', { precision: 20, scale: 6 }).notNull(),
     // Set for internal (buy/sell_proceeds) movements: the transaction they
     // funded. Null for external deposits/withdrawals. Cascade so removing the
@@ -545,18 +599,30 @@ export const portfolioCashMovements = pgTable(
     transactionId: uuid('transaction_id').references(() => transactions.id, {
       onDelete: 'cascade',
     }),
+    // Set on both legs of one transfer (V3-P3): a shared correlation id pairing
+    // transfer_out with its transfer_in, plus the other leg's source for
+    // display ("Transfer to Bank X") without a self-join. Null otherwise.
+    transferId: uuid('transfer_id'),
+    counterpartSourceId: uuid('counterpart_source_id').references(() => portfolioCashSources.id),
     executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
     note: text('note'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('portfolio_cash_movements_portfolio_idx').on(t.portfolioId, t.executedAt),
+    index('portfolio_cash_movements_source_idx').on(t.sourceId, t.executedAt),
     // Defense-in-depth mirror of domain/cashLedger's CASH_MOVEMENT_SIGN: the
     // amount's sign must match the kind, and never zero (the ledger never guesses).
     check(
       'portfolio_cash_movements_sign',
-      sql`(${t.kind} in ('deposit','sell_proceeds') and ${t.amountEur} > 0)
-          or (${t.kind} in ('withdrawal','buy') and ${t.amountEur} < 0)`,
+      sql`(${t.kind} in ('deposit','sell_proceeds','transfer_in') and ${t.amountEur} > 0)
+          or (${t.kind} in ('withdrawal','buy','transfer_out') and ${t.amountEur} < 0)`,
+    ),
+    // Transfer legs always carry their pairing columns; other kinds never do.
+    check(
+      'portfolio_cash_movements_transfer_link',
+      sql`(${t.kind} in ('transfer_out','transfer_in'))
+          = (${t.transferId} is not null and ${t.counterpartSourceId} is not null)`,
     ),
   ],
 );
@@ -780,6 +846,8 @@ export type PortfolioRow = typeof portfolios.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
 export type CashMovementRow = typeof portfolioCashMovements.$inferSelect;
 export type NewCashMovementRow = typeof portfolioCashMovements.$inferInsert;
+export type CashSourceRow = typeof portfolioCashSources.$inferSelect;
+export type NewCashSourceRow = typeof portfolioCashSources.$inferInsert;
 export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
@@ -827,6 +895,7 @@ export const schema = {
   shareLinks,
   portfolios,
   transactions,
+  portfolioCashSources,
   portfolioCashMovements,
   friendRequests,
   friendships,
@@ -842,5 +911,6 @@ export const schema = {
   transactionSideEnum,
   portfolioVisibilityEnum,
   cashMovementKindEnum,
+  cashSourceTypeEnum,
   friendRequestStatusEnum,
 };

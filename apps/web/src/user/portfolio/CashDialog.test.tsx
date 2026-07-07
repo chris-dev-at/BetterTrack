@@ -51,11 +51,15 @@ describe('CashDialog', () => {
         id: 'm1',
         kind: 'deposit',
         amountEur: 500,
+        sourceId: 'src-main',
         transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
         executedAt: '2026-07-02T00:00:00.000Z',
         note: null,
         createdAt: '2026-07-02T00:00:00.000Z',
       },
+      sourceBalanceEur: 1500,
       balanceEur: 1500,
     });
     const user = userEvent.setup();
