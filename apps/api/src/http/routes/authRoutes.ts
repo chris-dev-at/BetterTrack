@@ -8,6 +8,7 @@ import {
   passwordResetRequestSchema,
   pinVerifyRequestSchema,
   registerRequestSchema,
+  sessionHandleParamSchema,
   setPinLockRequestSchema,
   setPinRequestSchema,
   tokenParamSchema,
@@ -32,7 +33,7 @@ import {
   type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
-import { unauthorized } from '../../errors';
+import { notFound, unauthorized } from '../../errors';
 import { clearSessionCookie, setSessionCookie } from '../cookies';
 import { requireAuth, requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
@@ -114,6 +115,41 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     const info = await ctx.auth.getSessionInfo(req.sessionId!);
     if (!info) throw unauthorized();
     res.json(info);
+  });
+
+  // ── Session manager (§6.1, §6.11 Security, V3-P11a) ─────────────────────────
+  // The caller's own active sessions + revocation. Cookie-session only: the
+  // whole `/auth/*` group is bearer-forbidden (§6.13), so an API-key/OAuth
+  // principal gets 403 API_KEY_FORBIDDEN before reaching these — a user only
+  // ever sees/revokes their OWN sessions.
+  router.get('/sessions', requireAuth, async (req, res) => {
+    const sessions = await ctx.auth.listSessions(req.authUser!.id, req.sessionId ?? null);
+    res.json({ sessions });
+  });
+
+  // Revoke one session ("log out that device"). Revoking your own current
+  // session clears the cookie for a clean logout; an unknown handle is a 404.
+  router.delete(
+    '/sessions/:id',
+    requireAuth,
+    validateParams(sessionHandleParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const { revoked, wasCurrent } = await ctx.auth.revokeSession(
+        req.authUser!.id,
+        id,
+        req.sessionId ?? null,
+      );
+      if (!revoked) throw notFound();
+      if (wasCurrent) clearSessionCookie(res, ctx.config);
+      res.json({ ok: true });
+    },
+  );
+
+  // Log out every other device, keeping the caller signed in on this session.
+  router.post('/sessions/revoke-others', requireAuth, async (req, res) => {
+    const revoked = await ctx.auth.revokeOtherSessions(req.authUser!.id, req.sessionId ?? null);
+    res.json({ revoked });
   });
 
   router.post(

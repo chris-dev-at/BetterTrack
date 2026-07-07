@@ -5,13 +5,14 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
 
 /**
  * Workboard section shell (PROJECTPLAN.md §6.4, §7.2). Subnav: Overview ·
- * Conglomerates · Watchlists, plus the Coming-Soon experiments
+ * Conglomerates · Watchlists · Alerts, plus the Coming-Soon experiments
  * (Backtests · Calculators · Comparisons · Saved Ideas).
  */
 const WORKBOARD_SUBNAV: readonly SubNavItem[] = [
   { to: '/workboard', label: 'Overview', end: true },
   { to: '/workboard/conglomerates', label: 'Conglomerates' },
   { to: '/workboard/watchlist', label: 'Watchlists' },
+  { to: '/workboard/alerts', label: 'Alerts' },
   { to: '/workboard/backtests', label: 'Backtests', comingSoon: true },
   { to: '/workboard/calculators', label: 'Calculators', comingSoon: true },
   { to: '/workboard/comparisons', label: 'Comparisons', comingSoon: true },
