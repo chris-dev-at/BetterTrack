@@ -34,6 +34,31 @@ const inputClass = cx(
   'focus:outline-none focus:ring-2 focus:ring-sky-500',
 );
 
+/**
+ * Selectable stepper granularities for the budget amount (V3-P0, #322): "how far
+ * off the comma you want" — whole euros down to a tenth of a cent. The default
+ * (1) reproduces the plain whole-euro stepping; finer picks let the owner nudge
+ * the budget by cents without retyping.
+ */
+const BUDGET_STEPS = [1, 0.1, 0.01, 0.001] as const;
+type BudgetStep = (typeof BUDGET_STEPS)[number];
+
+/** Decimal places a step implies (1 → 0, 0.1 → 1, 0.01 → 2, 0.001 → 3). */
+function decimalsForStep(step: number): number {
+  return Math.max(0, Math.round(-Math.log10(step)));
+}
+
+/**
+ * Step a numeric budget string by `delta`, clamped at 0 and re-quantized to the
+ * step's own precision so repeated cent steps never accumulate float dust
+ * (`0.1 + 0.2` etc.). An empty/invalid current value counts as 0.
+ */
+function stepBudget(current: string, delta: number, step: BudgetStep): string {
+  const decimals = decimalsForStep(step);
+  const base = current.trim() !== '' && Number.isFinite(Number(current)) ? Number(current) : 0;
+  return Math.max(0, base + delta).toFixed(decimals);
+}
+
 function ModeToggle({
   active,
   onSelect,
@@ -240,6 +265,7 @@ function toPrefillRows(positions: AllocatePosition[]): TransactionPrefillRow[] {
 export function BudgetCalculator({ conglomerateId, className }: BudgetCalculatorProps) {
   const queryClient = useQueryClient();
   const [budget, setBudget] = useState('1000');
+  const [budgetStep, setBudgetStep] = useState<BudgetStep>(1);
   const [mode, setMode] = useState<AllocateMode>('whole');
   const [step, setStep] = useState('');
   const [atLeastOneShare, setAtLeastOneShare] = useState(false);
@@ -294,18 +320,52 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   return (
     <div className={cx('flex flex-col gap-4', className)}>
       <form onSubmit={handleCalculate} className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-neutral-300">Budget (EUR)</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="any"
-            min="0"
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-            aria-label="Budget in EUR"
-            className={cx(inputClass, 'w-40')}
-          />
+          <div className="flex items-stretch gap-1">
+            <button
+              type="button"
+              aria-label={`Decrease budget by ${budgetStep}`}
+              onClick={() => setBudget((b) => stepBudget(b, -budgetStep, budgetStep))}
+              className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              inputMode="decimal"
+              step={budgetStep}
+              min="0"
+              value={budget}
+              onChange={(e) => setBudget(e.target.value)}
+              aria-label="Budget in EUR"
+              className={cx(inputClass, 'w-28 text-center')}
+            />
+            <button
+              type="button"
+              aria-label={`Increase budget by ${budgetStep}`}
+              onClick={() => setBudget((b) => stepBudget(b, budgetStep, budgetStep))}
+              className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-neutral-300">Step size</span>
+          <select
+            value={budgetStep}
+            onChange={(e) => setBudgetStep(Number(e.target.value) as BudgetStep)}
+            aria-label="Budget step precision"
+            className={cx(inputClass, 'w-24')}
+          >
+            {BUDGET_STEPS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
         </label>
 
         <ModeToggle active={mode} onSelect={setMode} />

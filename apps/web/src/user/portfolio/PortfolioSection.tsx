@@ -2,7 +2,7 @@ import { Outlet } from 'react-router-dom';
 
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
-import { PortfolioSwitcher } from './PortfolioSwitcher';
+import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from './PortfolioSwitcher';
 
 /**
  * Portfolio section shell (PROJECTPLAN.md §6.8, §7.2). Hosts the portfolio
@@ -20,7 +20,10 @@ export function PortfolioLayout() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <PortfolioSwitcher />
       </div>
-      <SubNav items={PORTFOLIO_SUBNAV} />
+      {/* The active portfolio lives only in `?portfolio=<id>` (PortfolioSwitcher);
+          carry it across the subnav so opening Transactions / Custom Assets keeps
+          the selection instead of silently reverting to the default (#322). */}
+      <SubNav items={PORTFOLIO_SUBNAV} preserveParams={[ACTIVE_PORTFOLIO_PARAM]} />
       <Outlet />
     </div>
   );
