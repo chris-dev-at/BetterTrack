@@ -143,10 +143,13 @@ export const transactionInputSchema = z
      * from the portfolio's EUR cash balance (a linked internal `buy` movement,
      * rejected if it would overdraw); on a SELL, `addProceedsToCash` books the
      * net proceeds into cash (a `sell_proceeds` movement). A flag that does not
-     * match the side is rejected. Both default to off.
+     * match the side is rejected. Both default to off. `cashSourceId` picks
+     * which cash source funds/receives the movement (V3-P3), defaulting to the
+     * portfolio's Main source; it requires one of the two flags.
      */
     payFromCash: z.boolean().optional(),
     addProceedsToCash: z.boolean().optional(),
+    cashSourceId: z.string().uuid().optional(),
   })
   .strict();
 export type TransactionInput = z.infer<typeof transactionInputSchema>;
@@ -376,26 +379,113 @@ export type PortfolioHistoryResponse = z.infer<typeof portfolioHistoryResponseSc
 // --- Cash ledger ("Bargeld") -----------------------------------------------
 
 /**
- * Cash-movement kind (§14, #220). `deposit` / `withdrawal` are external (money
- * crossing the portfolio boundary — TWR cash flows); `buy` / `sell_proceeds`
- * are internal (cash ↔ shares form change, TWR-neutral). Mirrors
- * `domain/cashLedger.CASH_MOVEMENT_KINDS`.
+ * Cash-movement kind (§14, #220; V3-P3 §13.3). `deposit` / `withdrawal` are
+ * external (money crossing the portfolio boundary — TWR cash flows); `buy` /
+ * `sell_proceeds` are internal (cash ↔ shares form change, TWR-neutral);
+ * `transfer_out` / `transfer_in` are the paired legs of an internal transfer
+ * between two cash sources (money moving *inside* the portfolio — NEVER a TWR
+ * flow). Mirrors `domain/cashLedger.CASH_MOVEMENT_KINDS`.
  */
-export const cashMovementKindSchema = z.enum(['deposit', 'withdrawal', 'buy', 'sell_proceeds']);
+export const cashMovementKindSchema = z.enum([
+  'deposit',
+  'withdrawal',
+  'buy',
+  'sell_proceeds',
+  'transfer_out',
+  'transfer_in',
+]);
 export type CashMovementKind = z.infer<typeof cashMovementKindSchema>;
 
+// --- Cash sources (V3-P3, §13.3) ---------------------------------------------
+
+/** Cash-source type label (V3-P3): purely descriptive, no behavioral difference. */
+export const CASH_SOURCE_TYPES = ['bank', 'retirement', 'cash', 'custom'] as const;
+export const cashSourceTypeSchema = z.enum(CASH_SOURCE_TYPES);
+export type CashSourceType = z.infer<typeof cashSourceTypeSchema>;
+
 /**
- * One cash movement as returned to the owner (§14). `amountEur` is **signed**
- * (inflows positive, outflows negative), full precision; `transactionId` links
- * an internal `buy` / `sell_proceeds` movement to the transaction it funded and
- * is null for external deposits/withdrawals.
+ * One cash source (V3-P3): the auto-provisioned **Main** (`isMain`, the sticky
+ * default target of every cash flow) or a named sibling ("Bank account X").
+ * `balanceEur` is derived — the cent-exact sum of the source's signed movements
+ * — never stored. Archived sources keep their queryable history (movements stay
+ * in the ledger and in every roll-up) but leave the active listings; archiving
+ * requires a €0.00 balance, so an archived source never hides money.
+ */
+export const cashSourceSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    type: cashSourceTypeSchema,
+    isMain: z.boolean(),
+    archivedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+    balanceEur: z.number(),
+  })
+  .strict();
+export type CashSource = z.infer<typeof cashSourceSchema>;
+
+/** `GET /portfolios/:id/cash/sources?includeArchived=` query (explicit enum, like the portfolio list). */
+export const cashSourceListQuerySchema = z
+  .object({
+    includeArchived: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((v) => v === 'true'),
+  })
+  .strict();
+export type CashSourceListQuery = z.infer<typeof cashSourceListQuerySchema>;
+
+/** `GET /portfolios/:id/cash/sources` response — Main first, then by creation. */
+export const cashSourceListResponseSchema = z
+  .object({ sources: z.array(cashSourceSchema) })
+  .strict();
+export type CashSourceListResponse = z.infer<typeof cashSourceListResponseSchema>;
+
+/** `POST /portfolios/:id/cash/sources` body — create a named source (V3-P3). */
+export const createCashSourceRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    type: cashSourceTypeSchema,
+  })
+  .strict();
+export type CreateCashSourceRequest = z.infer<typeof createCashSourceRequestSchema>;
+
+/** `PATCH /portfolios/:id/cash/sources/:sourceId` body — rename / relabel. */
+export const updateCashSourceRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    type: cashSourceTypeSchema.optional(),
+  })
+  .strict();
+export type UpdateCashSourceRequest = z.infer<typeof updateCashSourceRequestSchema>;
+
+/** Response of every single-source mutation (create / update / archive / restore). */
+export const cashSourceResponseSchema = z.object({ source: cashSourceSchema }).strict();
+export type CashSourceResponse = z.infer<typeof cashSourceResponseSchema>;
+
+/** Route params for `/portfolios/:portfolioId/cash/sources/:sourceId` operations. */
+export const cashSourceParamsSchema = z
+  .object({ portfolioId: z.string().uuid(), sourceId: z.string().uuid() })
+  .strict();
+
+/**
+ * One cash movement as returned to the owner (§14, V3-P3). `amountEur` is
+ * **signed** (inflows positive, outflows negative), full precision;
+ * `transactionId` links an internal `buy` / `sell_proceeds` movement to the
+ * transaction it funded. `sourceId` is the cash source the movement belongs to;
+ * a transfer leg additionally carries the pair's shared `transferId` and the
+ * `counterpartSourceId` it moved money to/from (all three null where not
+ * applicable).
  */
 export const cashMovementSchema = z
   .object({
     id: z.string().uuid(),
     kind: cashMovementKindSchema,
     amountEur: z.number(),
+    sourceId: z.string().uuid(),
     transactionId: z.string().uuid().nullable(),
+    transferId: z.string().uuid().nullable(),
+    counterpartSourceId: z.string().uuid().nullable(),
     executedAt: z.string().datetime(),
     note: z.string().nullable(),
     createdAt: z.string().datetime(),
@@ -403,11 +493,18 @@ export const cashMovementSchema = z
   .strict();
 export type CashMovement = z.infer<typeof cashMovementSchema>;
 
-/** `GET /portfolios/:id/cash` response — the movements plus the current balance. */
+/**
+ * `GET /portfolios/:id/cash` response — every movement (all sources,
+ * chronological), the portfolio's rolled-up balance across all sources, and the
+ * sources themselves (archived ones included, so historical movements can
+ * always resolve their source's name) with per-source balances — the liquidity
+ * split (V3-P3).
+ */
 export const cashMovementsResponseSchema = z
   .object({
     balanceEur: z.number(),
     movements: z.array(cashMovementSchema),
+    sources: z.array(cashSourceSchema),
   })
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
@@ -427,21 +524,27 @@ const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_E
 /**
  * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
  * **magnitude**; the service assigns the sign by kind. `executedAt` defaults to
- * now (server-side) when omitted.
+ * now (server-side) when omitted. `sourceId` picks the cash source (V3-P3) and
+ * defaults to the portfolio's Main source when omitted.
  */
 export const cashEntryRequestSchema = z
   .object({
     amountEur: cashAmountEurSchema,
+    sourceId: z.string().uuid().optional(),
     executedAt: z.string().datetime().optional(),
     note: z.string().max(1000).nullish(),
   })
   .strict();
 export type CashEntryRequest = z.infer<typeof cashEntryRequestSchema>;
 
-/** `POST /portfolios/:id/cash/deposit|withdraw` response — the new movement + balance. */
+/**
+ * `POST /portfolios/:id/cash/deposit|withdraw` response — the new movement, the
+ * affected source's balance, and the portfolio's rolled-up balance.
+ */
 export const cashMovementResponseSchema = z
   .object({
     movement: cashMovementSchema,
+    sourceBalanceEur: z.number(),
     balanceEur: z.number(),
   })
   .strict();
@@ -450,21 +553,23 @@ export type CashMovementResponse = z.infer<typeof cashMovementResponseSchema>;
 /**
  * `POST /portfolios/:id/cash/preview` body — a proposed movement of `kind` and
  * positive EUR magnitude, for the live "available → after" preview. Read-only:
- * no movement is persisted.
+ * no movement is persisted. Solvency is per source (V3-P3), so the preview is
+ * scoped to `sourceId` (Main when omitted).
  */
 export const cashPreviewRequestSchema = z
   .object({
     kind: cashMovementKindSchema,
     amountEur: cashAmountEurSchema,
+    sourceId: z.string().uuid().optional(),
   })
   .strict();
 export type CashPreviewRequest = z.infer<typeof cashPreviewRequestSchema>;
 
 /**
- * `POST /portfolios/:id/cash/preview` response — the balance before and after
- * the proposed movement, whether cash suffices, and the shortfall (0 when it
- * does). No silent negative balances: an outflow beyond the balance is reported
- * as `sufficient: false` rather than applied.
+ * `POST /portfolios/:id/cash/preview` response — the source's balance before
+ * and after the proposed movement, whether its cash suffices, and the shortfall
+ * (0 when it does). No silent negative balances: an outflow beyond the balance
+ * is reported as `sufficient: false` rather than applied.
  */
 export const cashPreviewResponseSchema = z
   .object({
@@ -475,6 +580,69 @@ export const cashPreviewResponseSchema = z
   })
   .strict();
 export type CashPreviewResponse = z.infer<typeof cashPreviewResponseSchema>;
+
+/**
+ * `POST /portfolios/:id/cash/transfer` body — move a positive EUR magnitude
+ * between two *different* active sources of the same portfolio (V3-P3). Written
+ * as an atomic pair of movements (`transfer_out` on `fromSourceId`,
+ * `transfer_in` on `toSourceId`) sharing one `transferId` — double-entry style,
+ * so both histories carry the transfer and the roll-up is unchanged. NEVER a
+ * TWR external flow. `executedAt` defaults to now.
+ */
+export const cashTransferRequestSchema = z
+  .object({
+    fromSourceId: z.string().uuid(),
+    toSourceId: z.string().uuid(),
+    amountEur: cashAmountEurSchema,
+    executedAt: z.string().datetime().optional(),
+    note: z.string().max(1000).nullish(),
+  })
+  .strict();
+export type CashTransferRequest = z.infer<typeof cashTransferRequestSchema>;
+
+/** `POST /portfolios/:id/cash/transfer` response — both legs + resulting balances. */
+export const cashTransferResponseSchema = z
+  .object({
+    outgoing: cashMovementSchema,
+    incoming: cashMovementSchema,
+    fromBalanceEur: z.number(),
+    toBalanceEur: z.number(),
+    /** Portfolio roll-up across all sources — unchanged by the transfer. */
+    balanceEur: z.number(),
+  })
+  .strict();
+export type CashTransferResponse = z.infer<typeof cashTransferResponseSchema>;
+
+/**
+ * `POST /portfolios/:id/cash/sources/:sourceId/set-balance` body — "set balance
+ * to X" (V3-P3, §16 2026-07-07): the server computes the signed delta from the
+ * source's current balance itself and records it as a *normal* deposit /
+ * withdrawal movement, keeping the audit trail intact — no head-math when
+ * reconciling with what the bank says. Always effective now (no back-dating).
+ */
+export const setCashBalanceRequestSchema = z
+  .object({
+    balanceEur: z.number().nonnegative().finite().max(MAX_CASH_AMOUNT_EUR),
+    note: z.string().max(1000).nullish(),
+  })
+  .strict();
+export type SetCashBalanceRequest = z.infer<typeof setCashBalanceRequestSchema>;
+
+/**
+ * Set-balance response. `movement` is the recorded deposit/withdrawal carrying
+ * the signed delta, or null when the target already equals the current balance
+ * (a no-op records nothing); `sourceBalanceEur` reads exactly the requested
+ * target afterwards.
+ */
+export const setCashBalanceResponseSchema = z
+  .object({
+    movement: cashMovementSchema.nullable(),
+    deltaEur: z.number(),
+    sourceBalanceEur: z.number(),
+    balanceEur: z.number(),
+  })
+  .strict();
+export type SetCashBalanceResponse = z.infer<typeof setCashBalanceResponseSchema>;
 
 // --- Custom assets ---------------------------------------------------------
 

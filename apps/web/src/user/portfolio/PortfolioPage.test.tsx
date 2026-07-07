@@ -368,11 +368,15 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
         id: 'm1',
         kind: 'deposit',
         amountEur: 1000,
+        sourceId: 'src-main',
         transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
         executedAt: '2024-06-01T00:00:00.000Z',
         note: null,
         createdAt: '2024-06-01T00:00:00.000Z',
       },
+      sourceBalanceEur: 6000,
       balanceEur: 6000,
     });
     const user = userEvent.setup();

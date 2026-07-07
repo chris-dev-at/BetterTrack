@@ -45,12 +45,14 @@ export interface TransactionWithAsset extends TransactionRecord {
 /**
  * A linked EUR cash movement created atomically with its transaction (§14,
  * #220): a `buy` funded from cash (negative `amountEur`) or `sell_proceeds`
- * booked into cash (positive). The sign/kind invariant is enforced by the
- * domain engine + a DB check; the caller passes the already-signed EUR amount.
+ * booked into cash (positive), against the given cash source (V3-P3). The
+ * sign/kind invariant is enforced by the domain engine + a DB check; the caller
+ * passes the already-signed EUR amount and a resolved, active source id.
  */
 export interface LinkedCashMovement {
   kind: 'buy' | 'sell_proceeds';
   amountEur: number;
+  sourceId: string;
   note: string | null;
 }
 
@@ -128,6 +130,7 @@ export function createTransactionRepository(db: Database) {
             if (!link) return null;
             return {
               portfolioId,
+              sourceId: link.sourceId,
               kind: link.kind,
               amountEur: String(link.amountEur),
               transactionId: row.id,

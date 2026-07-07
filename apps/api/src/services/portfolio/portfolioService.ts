@@ -5,7 +5,15 @@ import type {
   CashMovementsResponse,
   CashPreviewRequest,
   CashPreviewResponse,
+  CashSource as CashSourceDto,
+  CashSourceListResponse,
+  CashTransferRequest,
+  CashTransferResponse,
+  CreateCashSourceRequest,
   CreatePortfolioRequest,
+  SetCashBalanceRequest,
+  SetCashBalanceResponse,
+  UpdateCashSourceRequest,
   Holding as HoldingDto,
   HistoryRange,
   PortfolioHistoryOverlay,
@@ -25,10 +33,15 @@ import type {
 import type { Redis } from 'ioredis';
 
 import type { AssetRow } from '../../data/schema';
+import { newId } from '../../data/ids';
 import type {
   CashMovementRecord,
   CashMovementRepository,
 } from '../../data/repositories/cashMovementRepository';
+import type {
+  CashSourceRecord,
+  CashSourceRepository,
+} from '../../data/repositories/cashSourceRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
@@ -42,12 +55,17 @@ import {
   CASH_EPSILON,
   CASH_MOVEMENT_SIGN,
   cashBalance,
+  cashBalancesBySource,
+  CashLedgerError,
   externalCashFlowsForTwr,
   InsufficientCashError,
   netWorthSeries,
-  projectCashLedger,
+  pairedTransferMovements,
+  projectCashLedgerBySource,
   roundCents,
-  type CashMovement as DomainCashMovement,
+  setBalanceMovement,
+  type CashTransferLegs,
+  type SourcedCashMovement,
 } from '../../domain/cashLedger';
 import {
   dailyCloseSeries,
@@ -96,6 +114,7 @@ export interface PortfolioServiceDeps {
   portfolioRepo: PortfolioRepository;
   transactionRepo: TransactionRepository;
   cashMovementRepo: CashMovementRepository;
+  cashSourceRepo: CashSourceRepository;
   /** Reads the owner's default portfolio visibility, applied at create (§6.9, V2-P9). */
   userRepo: UserRepository;
   marketData: MarketDataService;
@@ -157,21 +176,75 @@ export interface PortfolioService {
   ): Promise<TransactionDto>;
   deleteTransaction(userId: string, portfolioId: string, id: string): Promise<void>;
   getPortfolio(userId: string, portfolioId: string): Promise<PortfolioResponse>;
-  /** The portfolio's cash movements + current balance (§14, #220). */
+  /**
+   * The portfolio's cash movements (all sources) + rolled-up balance + the
+   * sources with per-source balances — the liquidity split (§14, #220, V3-P3).
+   */
   getCashMovements(userId: string, portfolioId: string): Promise<CashMovementsResponse>;
-  /** Record an external cash deposit (§14). */
+  /** The portfolio's cash sources with balances, Main first (V3-P3). */
+  listCashSources(
+    userId: string,
+    portfolioId: string,
+    opts?: { includeArchived?: boolean },
+  ): Promise<CashSourceListResponse>;
+  /** Create a named cash source; 409 on a duplicate name (V3-P3). */
+  createCashSource(
+    userId: string,
+    portfolioId: string,
+    input: CreateCashSourceRequest,
+  ): Promise<CashSourceDto>;
+  /** Rename / relabel a cash source; 404/409 otherwise (V3-P3). */
+  updateCashSource(
+    userId: string,
+    portfolioId: string,
+    sourceId: string,
+    patch: UpdateCashSourceRequest,
+  ): Promise<CashSourceDto>;
+  /**
+   * Soft-archive a source (V3-P3). Main is never archivable, and only a source
+   * whose balance is exactly €0.00 can be archived — an archived source never
+   * hides money; its history stays queryable and inside every roll-up.
+   */
+  archiveCashSource(userId: string, portfolioId: string, sourceId: string): Promise<CashSourceDto>;
+  /** Restore an archived source (V3-P3). */
+  restoreCashSource(userId: string, portfolioId: string, sourceId: string): Promise<CashSourceDto>;
+  /**
+   * Transfer between two active sources (V3-P3): one atomic pair of
+   * `transfer_out`/`transfer_in` movements — both histories carry it, net worth
+   * is unchanged, and it is NEVER a TWR external flow.
+   */
+  transferCash(
+    userId: string,
+    portfolioId: string,
+    input: CashTransferRequest,
+  ): Promise<CashTransferResponse>;
+  /**
+   * "Set balance to X" (V3-P3, §16 2026-07-07): computes the signed delta from
+   * the source's current balance and records it as a normal deposit/withdrawal
+   * movement (audit trail intact); a zero delta records nothing.
+   */
+  setCashBalance(
+    userId: string,
+    portfolioId: string,
+    sourceId: string,
+    input: SetCashBalanceRequest,
+  ): Promise<SetCashBalanceResponse>;
+  /** Record an external cash deposit (§14) into a source (Main by default, V3-P3). */
   depositCash(
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
   ): Promise<CashMovementResponse>;
-  /** Record an external cash withdrawal; rejects an overdraw (§14, no silent negatives). */
+  /**
+   * Record an external cash withdrawal from a source (Main by default);
+   * rejects an overdraw of that source (§14/V3-P3, no silent negatives).
+   */
   withdrawCash(
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
   ): Promise<CashMovementResponse>;
-  /** Live "available → after" preview for a proposed cash movement (§14). */
+  /** Live "available → after" preview against one source's balance (§14, V3-P3). */
   previewCash(
     userId: string,
     portfolioId: string,
@@ -231,6 +304,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     portfolioRepo,
     transactionRepo,
     cashMovementRepo,
+    cashSourceRepo,
     userRepo,
     marketData,
     currencyService,
@@ -377,11 +451,22 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     return portfolio;
   }
 
-  // --- Cash ledger (§14, #220) ---------------------------------------------
+  // --- Cash ledger (§14, #220; cash sources V3-P3) ---------------------------
 
-  /** Map a stored cash-movement row into the pure-domain movement shape. */
-  function toDomainMovement(r: CashMovementRecord): DomainCashMovement {
-    return { kind: r.kind, amountEur: r.amountEur, occurredAt: r.executedAt.toISOString() };
+  /**
+   * Map a stored cash-movement row into the pure-domain movement shape. The
+   * result carries the `sourceId`, so it feeds the per-source functions
+   * (solvency, per-source balances) and — being a structural superset — every
+   * portfolio-level roll-up (`cashBalance`, `netWorthSeries`,
+   * `externalCashFlowsForTwr`) unchanged.
+   */
+  function toDomainMovement(r: CashMovementRecord): SourcedCashMovement {
+    return {
+      kind: r.kind,
+      amountEur: r.amountEur,
+      occurredAt: r.executedAt.toISOString(),
+      sourceId: r.sourceId,
+    };
   }
 
   function movementToDto(r: CashMovementRecord): CashMovementDto {
@@ -389,10 +474,25 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       id: r.id,
       kind: r.kind,
       amountEur: r.amountEur,
+      sourceId: r.sourceId,
       transactionId: r.transactionId,
+      transferId: r.transferId,
+      counterpartSourceId: r.counterpartSourceId,
       executedAt: r.executedAt.toISOString(),
       note: r.note,
       createdAt: r.createdAt.toISOString(),
+    };
+  }
+
+  function sourceToDto(record: CashSourceRecord, balanceEur: number): CashSourceDto {
+    return {
+      id: record.id,
+      name: record.name,
+      type: record.type,
+      isMain: record.isMain,
+      archivedAt: record.archivedAt ? record.archivedAt.toISOString() : null,
+      createdAt: record.createdAt.toISOString(),
+      balanceEur,
     };
   }
 
@@ -402,7 +502,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * cent-exact (deposit/withdraw and cash-linked buys/sells all pass through
    * {@link roundCents}), so this only sheds FP summation dust — the reported
    * balance is always exact cents, which is what lets a withdraw-all land at
-   * exactly €0.00 (V3-P0, issue #322).
+   * exactly €0.00 (V3-P0, issue #322). Rolls up across ALL sources (V3-P3).
    */
   async function cashBalanceFor(portfolioId: string): Promise<number> {
     const records = await cashMovementRepo.listForPortfolio(portfolioId);
@@ -410,16 +510,65 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /**
-   * Replay the existing ledger with the proposed movements appended and reject
-   * (400 `INSUFFICIENT_CASH`) if any point would dip negative — the single
-   * no-silent-negative gate, driven entirely by `domain/cashLedger`.
+   * The portfolio's movements plus its per-source **cent-quantized** balances
+   * (V3-P3): sources without movements read €0.00. One ledger read feeds both.
+   */
+  async function loadCashState(portfolioId: string): Promise<{
+    records: CashMovementRecord[];
+    balanceBySource: Map<string, number>;
+    totalEur: number;
+  }> {
+    const records = await cashMovementRepo.listForPortfolio(portfolioId);
+    const raw = cashBalancesBySource(records.map(toDomainMovement));
+    const balanceBySource = new Map<string, number>();
+    for (const [sourceId, balance] of raw) balanceBySource.set(sourceId, roundCents(balance));
+    return {
+      records,
+      balanceBySource,
+      totalEur: roundCents(cashBalance(records.map(toDomainMovement))),
+    };
+  }
+
+  /** Resolve a source inside this portfolio, or 404 (never leaks across users). */
+  async function requireSource(portfolioId: string, sourceId: string): Promise<CashSourceRecord> {
+    const source = await cashSourceRepo.findByIdForPortfolio(portfolioId, sourceId);
+    if (!source) throw notFound('Cash source not found.', 'CASH_SOURCE_NOT_FOUND');
+    return source;
+  }
+
+  /**
+   * Resolve the source a cash flow targets (V3-P3): the explicitly requested
+   * one — which must be *active*; archived sources keep history but accept no
+   * new movements — or the portfolio's Main, materialised on first touch.
+   */
+  async function resolveFlowSource(
+    portfolioId: string,
+    sourceId: string | undefined,
+  ): Promise<CashSourceRecord> {
+    if (sourceId === undefined) return cashSourceRepo.getOrCreateMain(portfolioId);
+    const source = await requireSource(portfolioId, sourceId);
+    if (source.archivedAt) {
+      throw badRequest(
+        'This cash source is archived. Restore it before recording new movements.',
+        'CASH_SOURCE_ARCHIVED',
+      );
+    }
+    return source;
+  }
+
+  /**
+   * Replay every source's ledger with the proposed movements appended and
+   * reject (400 `INSUFFICIENT_CASH`) if any source would dip negative at any
+   * point — the single no-silent-negative gate, per source (V3-P3: money in
+   * "Bank" cannot cover an overdraft of "Main"), driven entirely by
+   * `domain/cashLedger`.
    */
   function assertCashSolvent(
     existing: readonly CashMovementRecord[],
-    proposed: readonly DomainCashMovement[],
+    proposed: readonly SourcedCashMovement[],
   ): void {
     try {
-      projectCashLedger([...existing.map(toDomainMovement), ...proposed]);
+      projectCashLedgerBySource([...existing.map(toDomainMovement), ...proposed]);
     } catch (err) {
       if (err instanceof InsufficientCashError) {
         throw badRequest('Insufficient cash balance.', 'INSUFFICIENT_CASH', {
@@ -451,10 +600,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * from cash books an internal `buy` (cash↓, TWR-neutral) for its total cost
    * (quantity·price + fee); a sell adds `sell_proceeds` (cash↑) for its net
    * proceeds (quantity·price − fee). A flag that contradicts the side is a 400.
+   * The movement lands in `sourceId` — the caller-resolved cash source (V3-P3).
    */
   async function buildCashLink(
     input: TransactionInput,
     asset: AssetRow,
+    sourceId: string,
   ): Promise<LinkedCashMovement | null> {
     if (input.payFromCash && input.side !== 'buy') {
       throw badRequest('"Pay from cash" applies only to buys.', 'CASH_FLAG_MISMATCH');
@@ -473,7 +624,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         await toCashEur(input.quantity * input.price + input.fee, asset.currency, day),
       );
       if (costEur <= CASH_EPSILON) return null;
-      return { kind: 'buy', amountEur: -costEur, note: 'Paid from cash balance' };
+      return { kind: 'buy', amountEur: -costEur, sourceId, note: 'Paid from cash balance' };
     }
     if (input.addProceedsToCash && input.side === 'sell') {
       const proceedsEur = roundCents(
@@ -483,6 +634,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return {
         kind: 'sell_proceeds',
         amountEur: proceedsEur,
+        sourceId,
         note: 'Proceeds added to cash balance',
       };
     }
@@ -850,31 +1002,53 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         assertNoOversell([...existing.map(recordToDomain), ...pending]);
       }
 
-      // Cash-ledger linkage (§14, #220): resolve each cash-flagged buy/sell into
-      // a linked EUR movement, then reject up-front if the batch — replayed over
-      // the existing ledger — would ever overdraw (no silent negative balances).
-      // The transactions and their movements are then written atomically.
+      // Cash-ledger linkage (§14, #220; V3-P3): resolve each cash-flagged
+      // buy/sell into a linked EUR movement against its cash source — the
+      // explicitly requested one (must be active) or Main — then reject
+      // up-front if the batch, replayed over the existing ledger, would ever
+      // overdraw any source (no silent negative balances). The transactions and
+      // their movements are then written atomically.
+      const flowSourceCache = new Map<string, Promise<CashSourceRecord>>();
+      const flowSource = (sourceId: string | undefined): Promise<CashSourceRecord> => {
+        const key = sourceId ?? '';
+        let cached = flowSourceCache.get(key);
+        if (!cached) {
+          cached = resolveFlowSource(portfolioId, sourceId);
+          flowSourceCache.set(key, cached);
+        }
+        return cached;
+      };
       const cashLinks = await Promise.all(
-        inputs.map((input) => {
-          if (!input.payFromCash && !input.addProceedsToCash) return null;
+        inputs.map(async (input) => {
+          if (!input.payFromCash && !input.addProceedsToCash) {
+            if (input.cashSourceId !== undefined) {
+              throw badRequest(
+                'A cash source applies only together with "pay from cash" or "add proceeds to cash".',
+                'CASH_FLAG_MISMATCH',
+              );
+            }
+            return null;
+          }
           const asset = assetsById.get(input.assetId);
           if (!asset) throw new Error(`Asset ${input.assetId} missing while linking cash`);
-          return buildCashLink(input, asset);
+          const source = await flowSource(input.cashSourceId);
+          return buildCashLink(input, asset, source.id);
         }),
       );
       if (cashLinks.some((link) => link)) {
         const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-        const proposed: DomainCashMovement[] = cashLinks
-          .map((link, i): DomainCashMovement | null =>
+        const proposed: SourcedCashMovement[] = cashLinks
+          .map((link, i): SourcedCashMovement | null =>
             link
               ? {
                   kind: link.kind,
                   amountEur: link.amountEur,
+                  sourceId: link.sourceId,
                   occurredAt: new Date(inputs[i]!.executedAt).toISOString(),
                 }
               : null,
           )
-          .filter((m): m is DomainCashMovement => m !== null);
+          .filter((m): m is SourcedCashMovement => m !== null);
         assertCashSolvent(existing, proposed);
       }
 
@@ -989,13 +1163,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // that cash, the *remaining* ledger would dip negative — and the solvency
       // gate replays the whole history, so from then on every cash write is
       // rejected. Enforce the no-negative invariant at the delete boundary too:
-      // replay the ledger without this txn's linked movement and refuse the
-      // delete if any point would go negative.
+      // replay the ledger (per source, V3-P3) without this txn's linked
+      // movement and refuse the delete if any point would go negative.
       const cashMovements = await cashMovementRepo.listForPortfolio(portfolioId);
       if (cashMovements.some((m) => m.transactionId === id)) {
         const remaining = cashMovements.filter((m) => m.transactionId !== id).map(toDomainMovement);
         try {
-          projectCashLedger(remaining);
+          projectCashLedgerBySource(remaining);
         } catch (err) {
           if (err instanceof InsufficientCashError) {
             throw badRequest(
@@ -1082,19 +1256,242 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
     async getCashMovements(userId, portfolioId) {
       await requireOwnedPortfolio(userId, portfolioId);
-      const records = await cashMovementRepo.listForPortfolio(portfolioId);
+      // Materialise Main so even an untouched portfolio answers with its
+      // default source (V3-P3) — mirrors listPortfolios' behavior.
+      await cashSourceRepo.getOrCreateMain(portfolioId);
+      const [{ records, balanceBySource, totalEur }, sources] = await Promise.all([
+        loadCashState(portfolioId),
+        // Archived sources are included here so every historical movement can
+        // resolve its source's name; active listings use listCashSources.
+        cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
+      ]);
       return {
-        balanceEur: cashBalance(records.map(toDomainMovement)),
+        balanceEur: totalEur,
         movements: records.map(movementToDto),
+        sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
+      };
+    },
+
+    async listCashSources(userId, portfolioId, opts) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      await cashSourceRepo.getOrCreateMain(portfolioId);
+      const [{ balanceBySource }, sources] = await Promise.all([
+        loadCashState(portfolioId),
+        cashSourceRepo.listForPortfolio(portfolioId, {
+          includeArchived: opts?.includeArchived ?? false,
+        }),
+      ]);
+      return { sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)) };
+    },
+
+    async createCashSource(userId, portfolioId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      // Materialise Main first so it exists before any sibling and its name is
+      // reserved — a sibling can then never squat "Main" ahead of provisioning.
+      await cashSourceRepo.getOrCreateMain(portfolioId);
+      const name = input.name.trim();
+      // Reject a duplicate name up-front (the unique index spans archived rows)
+      // with a clean 409 rather than surfacing a raw DB constraint error.
+      if (await cashSourceRepo.nameExists(portfolioId, name)) {
+        throw conflict('A cash source with that name already exists.', 'CASH_SOURCE_NAME_TAKEN');
+      }
+      const source = await cashSourceRepo.createSource(portfolioId, { name, type: input.type });
+      return sourceToDto(source, 0);
+    },
+
+    async updateCashSource(userId, portfolioId, sourceId, patch) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const before = await requireSource(portfolioId, sourceId);
+      const name = patch.name?.trim();
+      if (name !== undefined && name !== before.name) {
+        if (await cashSourceRepo.nameExists(portfolioId, name, sourceId)) {
+          throw conflict('A cash source with that name already exists.', 'CASH_SOURCE_NAME_TAKEN');
+        }
+      }
+      const updated = await cashSourceRepo.updateSource(portfolioId, sourceId, {
+        name,
+        type: patch.type,
+      });
+      if (!updated) throw notFound('Cash source not found.', 'CASH_SOURCE_NOT_FOUND');
+      const { balanceBySource } = await loadCashState(portfolioId);
+      return sourceToDto(updated, balanceBySource.get(sourceId) ?? 0);
+    },
+
+    async archiveCashSource(userId, portfolioId, sourceId) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const source = await requireSource(portfolioId, sourceId);
+      // Main is the guaranteed default target of every cash flow — never
+      // archivable (owner decision, PR for §16): there is always exactly one
+      // active Main per portfolio.
+      if (source.isMain) {
+        throw badRequest('The Main cash source cannot be archived.', 'CASH_SOURCE_IS_MAIN');
+      }
+      if (source.archivedAt) {
+        throw badRequest('Cash source is already archived.', 'CASH_SOURCE_ALREADY_ARCHIVED');
+      }
+      // Only an exactly-€0.00 source may be archived (owner decision, PR for
+      // §16): archived sources leave the active listings, and a hidden source
+      // must never hide money — the roll-ups would show cash "from nowhere".
+      const { balanceBySource } = await loadCashState(portfolioId);
+      const balanceEur = balanceBySource.get(sourceId) ?? 0;
+      if (balanceEur !== 0) {
+        throw badRequest(
+          'Only a cash source with a balance of exactly €0.00 can be archived. Transfer or withdraw the remaining balance first.',
+          'CASH_SOURCE_NOT_EMPTY',
+          { balanceEur },
+        );
+      }
+      const archived = await cashSourceRepo.archiveSource(portfolioId, sourceId, new Date(now()));
+      // Concurrent archive raced us to null → treat as already archived.
+      if (!archived) {
+        throw badRequest('Cash source is already archived.', 'CASH_SOURCE_ALREADY_ARCHIVED');
+      }
+      return sourceToDto(archived, 0);
+    },
+
+    async restoreCashSource(userId, portfolioId, sourceId) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const source = await requireSource(portfolioId, sourceId);
+      if (!source.archivedAt) {
+        throw badRequest('Cash source is not archived.', 'CASH_SOURCE_NOT_ARCHIVED');
+      }
+      const restored = await cashSourceRepo.restoreSource(portfolioId, sourceId);
+      if (!restored) throw notFound('Cash source not found.', 'CASH_SOURCE_NOT_FOUND');
+      const { balanceBySource } = await loadCashState(portfolioId);
+      return sourceToDto(restored, balanceBySource.get(sourceId) ?? 0);
+    },
+
+    async transferCash(userId, portfolioId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      if (input.fromSourceId === input.toSourceId) {
+        throw badRequest(
+          'A transfer needs two different cash sources.',
+          'CASH_TRANSFER_SAME_SOURCE',
+        );
+      }
+      // Both endpoints must be active sources of THIS portfolio: archived ones
+      // accept no new movements, and a foreign source id is a 404.
+      const [from, to] = await Promise.all([
+        resolveFlowSource(portfolioId, input.fromSourceId),
+        resolveFlowSource(portfolioId, input.toSourceId),
+      ]);
+      const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // The pure builder quantizes the magnitude to cents (#322) and mirrors it
+      // into the two double-entry legs sharing one timestamp.
+      let legs: CashTransferLegs;
+      try {
+        legs = pairedTransferMovements({
+          fromSourceId: from.id,
+          toSourceId: to.id,
+          amountEur: input.amountEur,
+          occurredAt: executedAt.toISOString(),
+        });
+      } catch (err) {
+        if (err instanceof CashLedgerError) {
+          throw badRequest(err.message, 'CASH_TRANSFER_INVALID');
+        }
+        throw err;
+      }
+      // No overdraw of the from-source at any point once the (possibly
+      // back-dated) pair is replayed — checked per source over both legs.
+      const existing = await cashMovementRepo.listForPortfolio(portfolioId);
+      assertCashSolvent(existing, [legs.outgoing, legs.incoming]);
+
+      // One shared transferId pairs the legs; each leg names the other side
+      // for display. Written atomically — neither leg can persist alone.
+      const transferId = newId();
+      const note = input.note ?? null;
+      const [outgoing, incoming] = await cashMovementRepo.insertTransferPair(portfolioId, [
+        {
+          sourceId: from.id,
+          kind: 'transfer_out',
+          amountEur: legs.outgoing.amountEur,
+          executedAt,
+          note,
+          transferId,
+          counterpartSourceId: to.id,
+        },
+        {
+          sourceId: to.id,
+          kind: 'transfer_in',
+          amountEur: legs.incoming.amountEur,
+          executedAt,
+          note,
+          transferId,
+          counterpartSourceId: from.id,
+        },
+      ]);
+      // The paired legs cancel in the net-worth curve and are never TWR flows,
+      // so the cached series is provably identical — invalidate anyway to keep
+      // the blanket "every cash write invalidates" rule simple and true.
+      await invalidateHistory(portfolioId);
+      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      return {
+        outgoing: movementToDto(outgoing),
+        incoming: movementToDto(incoming),
+        fromBalanceEur: balanceBySource.get(from.id) ?? 0,
+        toBalanceEur: balanceBySource.get(to.id) ?? 0,
+        balanceEur: totalEur,
+      };
+    },
+
+    async setCashBalance(userId, portfolioId, sourceId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const source = await resolveFlowSource(portfolioId, sourceId);
+      const existing = await cashMovementRepo.listForPortfolio(portfolioId);
+      const currentEur = roundCents(
+        cashBalance(existing.filter((m) => m.sourceId === source.id).map(toDomainMovement)),
+      );
+      // §16 (2026-07-07): the app computes the signed delta itself and records
+      // it as a NORMAL deposit/withdrawal movement — audit trail intact, and
+      // TWR-wise an external flow exactly like a hand-entered one. Always
+      // effective now: "set balance to X" reconciles the present, not the past.
+      const domainMovement = setBalanceMovement({
+        sourceId: source.id,
+        currentBalanceEur: currentEur,
+        targetBalanceEur: input.balanceEur,
+        occurredAt: new Date(now()).toISOString(),
+      });
+      if (!domainMovement) {
+        // Already at the target — a no-op records nothing (nothing happened).
+        return {
+          movement: null,
+          deltaEur: 0,
+          sourceBalanceEur: currentEur,
+          balanceEur: await cashBalanceFor(portfolioId),
+        };
+      }
+      // A negative delta is a withdrawal: guard future-dated movements that
+      // relied on the removed cash (per-source replay, no silent negatives).
+      if (domainMovement.amountEur < 0) {
+        assertCashSolvent(existing, [domainMovement]);
+      }
+      const movement = await cashMovementRepo.insert(portfolioId, {
+        sourceId: source.id,
+        kind: domainMovement.kind,
+        amountEur: domainMovement.amountEur,
+        executedAt: new Date(domainMovement.occurredAt),
+        note: input.note ?? null,
+      });
+      // Cash is part of the net-worth curve (#311) — drop the cached series.
+      await invalidateHistory(portfolioId);
+      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      return {
+        movement: movementToDto(movement),
+        deltaEur: domainMovement.amountEur,
+        sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
+        balanceEur: totalEur,
       };
     },
 
     async depositCash(userId, portfolioId, input) {
       await requireOwnedPortfolio(userId, portfolioId);
+      const source = await resolveFlowSource(portfolioId, input.sourceId);
       // A deposit only ever raises the balance, so it needs no solvency gate.
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
       // Cash is whole-cent money — quantize the entered amount to cents (#322).
       const movement = await cashMovementRepo.insert(portfolioId, {
+        sourceId: source.id,
         kind: 'deposit',
         amountEur: roundCents(input.amountEur),
         executedAt,
@@ -1102,23 +1499,35 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
       // Cash is part of the net-worth curve (#311) — drop the cached series.
       await invalidateHistory(portfolioId);
-      return { movement: movementToDto(movement), balanceEur: await cashBalanceFor(portfolioId) };
+      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      return {
+        movement: movementToDto(movement),
+        sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
+        balanceEur: totalEur,
+      };
     },
 
     async withdrawCash(userId, portfolioId, input) {
       await requireOwnedPortfolio(userId, portfolioId);
+      const source = await resolveFlowSource(portfolioId, input.sourceId);
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
       // Cash is whole-cent money — quantize the entered amount to cents (#322),
       // so a withdraw-all (the cent-exact reported balance) cancels the ledger
       // to exactly €0.00 rather than stranding sub-cent residue.
       const amountEur = roundCents(input.amountEur);
       const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-      // Guard against an overdraw at *any* point once this (possibly back-dated)
-      // withdrawal is replayed into the ledger — no silent negative balance.
+      // Guard against an overdraw of THIS source at *any* point once this
+      // (possibly back-dated) withdrawal is replayed — no silent negatives.
       assertCashSolvent(existing, [
-        { kind: 'withdrawal', amountEur: -amountEur, occurredAt: executedAt.toISOString() },
+        {
+          kind: 'withdrawal',
+          amountEur: -amountEur,
+          occurredAt: executedAt.toISOString(),
+          sourceId: source.id,
+        },
       ]);
       const movement = await cashMovementRepo.insert(portfolioId, {
+        sourceId: source.id,
         kind: 'withdrawal',
         amountEur: -amountEur,
         executedAt,
@@ -1126,12 +1535,21 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
       // Cash is part of the net-worth curve (#311) — drop the cached series.
       await invalidateHistory(portfolioId);
-      return { movement: movementToDto(movement), balanceEur: await cashBalanceFor(portfolioId) };
+      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      return {
+        movement: movementToDto(movement),
+        sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
+        balanceEur: totalEur,
+      };
     },
 
     async previewCash(userId, portfolioId, input) {
       await requireOwnedPortfolio(userId, portfolioId);
-      const availableEur = await cashBalanceFor(portfolioId);
+      // Solvency is per source (V3-P3): preview against the chosen source's
+      // balance (Main when omitted), mirroring what the write path enforces.
+      const source = await resolveFlowSource(portfolioId, input.sourceId);
+      const { balanceBySource } = await loadCashState(portfolioId);
+      const availableEur = balanceBySource.get(source.id) ?? 0;
       // Quantize the proposed amount to cents to mirror what the write path will
       // actually record (#322), so the "available → after" preview matches the
       // balance the user will land on — a withdraw-all previews exactly €0.00.
