@@ -1,6 +1,7 @@
 import type {
   AdminInvite,
   AdminUser,
+  Alert,
   AppSettingsResponse,
   AuditLogEntry,
   EmailLogEntry,
@@ -8,6 +9,7 @@ import type {
   WorkboardItem,
 } from '@bettertrack/contracts';
 
+import type { AlertRecord } from '../data/repositories/alertRepository';
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
 import type { AuditLogRow, EmailLogRow, InviteRow, UserRow } from '../data/schema';
 import type { AppSettings } from '../services/appSettings/appSettingsService';
@@ -99,6 +101,25 @@ export function toWorkboardItem(item: WorkboardItemWithAsset): WorkboardItem {
       exchange: item.asset.exchange ?? null,
       currency: item.asset.currency,
       type: item.asset.type,
+    },
+  };
+}
+
+export function toAlert(record: AlertRecord): Alert {
+  return {
+    id: record.id,
+    kind: record.kind,
+    threshold: record.threshold,
+    refPrice: record.refPrice,
+    repeat: record.repeat,
+    status: record.status,
+    lastTriggeredAt: toIso(record.lastTriggeredAt),
+    asset: {
+      id: record.asset.id,
+      symbol: record.asset.symbol,
+      name: record.asset.name,
+      currency: record.asset.currency,
+      type: record.asset.type,
     },
   };
 }

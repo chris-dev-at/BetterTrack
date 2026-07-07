@@ -220,3 +220,63 @@ describe('friend-request notification regression (#248)', () => {
     }
   });
 });
+
+describe('alert.triggered notification (§14, V3-P10)', () => {
+  /** Poll the recipient's notification list until an item lands, or time out. */
+  async function waitForBellItem(agent: Agent) {
+    let page = await listNotifications(agent);
+    for (let attempt = 0; attempt < 60 && page.items.length === 0; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      page = await listNotifications(agent);
+    }
+    return page;
+  }
+
+  it('a fired alert reaches the owner’s bell via the bus → dispatcher path', async () => {
+    await harness.ctx.notificationDispatcher.start();
+    try {
+      const user = await harness.seedUser({ email: 'ann@bt.test', username: 'ann' });
+      const agent = await loginAgent(harness.app, user.email, user.password);
+
+      const [asset] = await harness.db
+        .insert(schema.assets)
+        .values({
+          providerId: 'yahoo',
+          providerRef: 'AAPL',
+          type: 'stock',
+          symbol: 'AAPL',
+          name: 'Apple Inc.',
+          currency: 'USD',
+        })
+        .returning();
+      const [alert] = await harness.db
+        .insert(schema.alerts)
+        .values({
+          userId: user.id,
+          assetId: asset!.id,
+          kind: 'price_above',
+          threshold: '100',
+          repeat: false,
+          status: 'active',
+        })
+        .returning();
+
+      // The evaluator publishes this on the bus; the API dispatcher subscribes.
+      await harness.ctx.events.publish({
+        type: 'alert.triggered',
+        userId: user.id,
+        alertId: alert!.id,
+        assetId: asset!.id,
+        occurredAt: '2026-07-07T12:00:00.000Z',
+      });
+
+      const page = await waitForBellItem(agent);
+      expect(page.unreadCount).toBe(1);
+      expect(page.items[0]?.type).toBe('alert.triggered');
+      expect(page.items[0]?.title).toBe('Price alert: AAPL');
+    } finally {
+      await harness.ctx.notificationDispatcher.stop();
+      await harness.ctx.events.close();
+    }
+  });
+});

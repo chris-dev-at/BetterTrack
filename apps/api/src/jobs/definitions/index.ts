@@ -1,5 +1,6 @@
 import type { JobDefinition } from '../types';
 
+import { createAlertsEvaluateJob } from './alertsJob';
 import { heartbeatJob } from './heartbeat';
 import {
   createFxRefreshSpotJob,
@@ -19,6 +20,7 @@ export function createJobDefinitions(deps: MarketDataJobDeps): readonly JobDefin
     createPricesRefreshDailyJob(deps),
     createPricesBackfillJob(deps),
     createFxRefreshSpotJob(deps),
+    createAlertsEvaluateJob(deps),
   ];
 }
 
@@ -28,6 +30,13 @@ export {
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_ASSET_ID,
 } from './heartbeat';
+
+export {
+  createAlertsEvaluateJob,
+  ALERTS_EVALUATE_SCHEDULER_ID,
+  ALERTS_EVALUATE_INTERVAL_MS,
+  type AlertsJobDeps,
+} from './alertsJob';
 
 export {
   createPricesRefreshDailyJob,

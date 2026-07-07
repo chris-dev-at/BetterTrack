@@ -2,6 +2,7 @@ import type { Redis } from 'ioredis';
 
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
+import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
@@ -34,6 +35,7 @@ import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
+import { createAlertService, type AlertService } from '../services/alerts/alertService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
@@ -118,6 +120,8 @@ export interface AppContext {
   notificationSettings: NotificationSettingsService;
   /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
   accountSettings: AccountSettingsService;
+  /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
+  alerts: AlertService;
   /**
    * Notification dispatcher (§6.10, §9): the bus subscriber that turns the social
    * domain events into in-app rows + emails. Built here and started by the API
@@ -357,6 +361,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // visibility, applied by the portfolio service at create time.
   const accountSettings = createAccountSettingsService({ userRepo });
 
+  // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
+  // the worker fires them and publishes `alert.triggered`, which the dispatcher
+  // below fans out via the notification matrix.
+  const alertRepo = createAlertRepository(db);
+  const alerts = createAlertService({ repo: alertRepo, assetRepo, marketData, logger });
+
   // Notification dispatcher (§6.10, §9): fans the V1 social events out to the
   // recipient's in-app + email channels, consulting the per-type × channel
   // matrix. Built with the API's own email + user deps and started by the API
@@ -367,6 +377,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: notificationRepo,
     email,
     users: userRepo,
+    // Resolves an `alert.triggered` event's asset + rule for rendering (§14).
+    resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
     logger,
   });
 
@@ -391,6 +403,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notifications,
     notificationSettings,
     accountSettings,
+    alerts,
     notificationDispatcher,
     events,
   };

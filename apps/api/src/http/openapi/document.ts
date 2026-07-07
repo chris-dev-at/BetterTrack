@@ -164,6 +164,12 @@ const componentSchemas = {
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
 
+  // Price alerts (§14, V3-P10)
+  Alert: contracts.alertSchema,
+  AlertListResponse: contracts.alertListResponseSchema,
+  CreateAlertRequest: contracts.createAlertRequestSchema,
+  UpdateAlertRequest: contracts.updateAlertRequestSchema,
+
   // Personal API keys (§6.13, V2-P12)
   CreateApiKeyRequest: contracts.createApiKeyRequestSchema,
   ApiKeyListResponse: contracts.apiKeyListResponseSchema,
@@ -1163,6 +1169,52 @@ const endpoints: EndpointDef[] = [
     body: R.MarkReadRequest,
     status: 200,
     response: R.OkResponse,
+  },
+
+  // Price alerts (§14, V3-P10)
+  {
+    method: 'get',
+    path: '/alerts',
+    tag: 'Alerts',
+    summary: 'The caller’s price alerts.',
+    status: 200,
+    response: R.AlertListResponse,
+  },
+  {
+    method: 'post',
+    path: '/alerts',
+    tag: 'Alerts',
+    summary: 'Create a price alert (captures a reference price for the from-ref kinds).',
+    body: R.CreateAlertRequest,
+    status: 201,
+    response: R.Alert,
+  },
+  {
+    method: 'patch',
+    path: '/alerts/{id}',
+    tag: 'Alerts',
+    summary: 'Update an alert’s threshold and/or repeat behaviour.',
+    params: contracts.alertIdParamSchema,
+    body: R.UpdateAlertRequest,
+    status: 200,
+    response: R.Alert,
+  },
+  {
+    method: 'post',
+    path: '/alerts/{id}/rearm',
+    tag: 'Alerts',
+    summary: 'Re-arm a fired one-shot alert back to active.',
+    params: contracts.alertIdParamSchema,
+    status: 200,
+    response: R.Alert,
+  },
+  {
+    method: 'delete',
+    path: '/alerts/{id}',
+    tag: 'Alerts',
+    summary: 'Delete a price alert.',
+    params: contracts.alertIdParamSchema,
+    status: 204,
   },
 
   // Settings (§6.10, §6.11)
