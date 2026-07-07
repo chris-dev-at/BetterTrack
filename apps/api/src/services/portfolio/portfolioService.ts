@@ -46,6 +46,7 @@ import {
   InsufficientCashError,
   netWorthSeries,
   projectCashLedger,
+  roundCents,
   type CashMovement as DomainCashMovement,
 } from '../../domain/cashLedger';
 import {
@@ -395,10 +396,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     };
   }
 
-  /** Current EUR cash balance = sum of signed movements (§14 reconciliation invariant). */
+  /**
+   * Current EUR cash balance = sum of signed movements (§14 reconciliation
+   * invariant), quantized to whole cents. Movements enter the ledger already
+   * cent-exact (deposit/withdraw and cash-linked buys/sells all pass through
+   * {@link roundCents}), so this only sheds FP summation dust — the reported
+   * balance is always exact cents, which is what lets a withdraw-all land at
+   * exactly €0.00 (V3-P0, issue #322).
+   */
   async function cashBalanceFor(portfolioId: string): Promise<number> {
     const records = await cashMovementRepo.listForPortfolio(portfolioId);
-    return cashBalance(records.map(toDomainMovement));
+    return roundCents(cashBalance(records.map(toDomainMovement)));
   }
 
   /**
@@ -456,20 +464,20 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     }
     const day = new Date(input.executedAt).toISOString().slice(0, 10);
 
+    // Cash is whole-cent money: a currency conversion can yield sub-cent EUR,
+    // so quantize the linked movement to cents before it enters the ledger
+    // (V3-P0 exact-cents fix, #322) — otherwise the sub-cent residue strands a
+    // reported cent that can never be withdrawn.
     if (input.payFromCash && input.side === 'buy') {
-      const costEur = await toCashEur(
-        input.quantity * input.price + input.fee,
-        asset.currency,
-        day,
+      const costEur = roundCents(
+        await toCashEur(input.quantity * input.price + input.fee, asset.currency, day),
       );
       if (costEur <= CASH_EPSILON) return null;
       return { kind: 'buy', amountEur: -costEur, note: 'Paid from cash balance' };
     }
     if (input.addProceedsToCash && input.side === 'sell') {
-      const proceedsEur = await toCashEur(
-        input.quantity * input.price - input.fee,
-        asset.currency,
-        day,
+      const proceedsEur = roundCents(
+        await toCashEur(input.quantity * input.price - input.fee, asset.currency, day),
       );
       if (proceedsEur <= CASH_EPSILON) return null;
       return {
@@ -1085,9 +1093,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       await requireOwnedPortfolio(userId, portfolioId);
       // A deposit only ever raises the balance, so it needs no solvency gate.
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // Cash is whole-cent money — quantize the entered amount to cents (#322).
       const movement = await cashMovementRepo.insert(portfolioId, {
         kind: 'deposit',
-        amountEur: input.amountEur,
+        amountEur: roundCents(input.amountEur),
         executedAt,
         note: input.note ?? null,
       });
@@ -1099,15 +1108,19 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async withdrawCash(userId, portfolioId, input) {
       await requireOwnedPortfolio(userId, portfolioId);
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // Cash is whole-cent money — quantize the entered amount to cents (#322),
+      // so a withdraw-all (the cent-exact reported balance) cancels the ledger
+      // to exactly €0.00 rather than stranding sub-cent residue.
+      const amountEur = roundCents(input.amountEur);
       const existing = await cashMovementRepo.listForPortfolio(portfolioId);
       // Guard against an overdraw at *any* point once this (possibly back-dated)
       // withdrawal is replayed into the ledger — no silent negative balance.
       assertCashSolvent(existing, [
-        { kind: 'withdrawal', amountEur: -input.amountEur, occurredAt: executedAt.toISOString() },
+        { kind: 'withdrawal', amountEur: -amountEur, occurredAt: executedAt.toISOString() },
       ]);
       const movement = await cashMovementRepo.insert(portfolioId, {
         kind: 'withdrawal',
-        amountEur: -input.amountEur,
+        amountEur: -amountEur,
         executedAt,
         note: input.note ?? null,
       });
@@ -1119,10 +1132,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async previewCash(userId, portfolioId, input) {
       await requireOwnedPortfolio(userId, portfolioId);
       const availableEur = await cashBalanceFor(portfolioId);
-      // Signed by kind (deposit/sell_proceeds add, withdrawal/buy subtract), then
-      // report the resulting balance — never applied, so an overdraw surfaces as
-      // `sufficient: false` for the "available → after" preview rather than error.
-      const afterEur = availableEur + input.amountEur * CASH_MOVEMENT_SIGN[input.kind];
+      // Quantize the proposed amount to cents to mirror what the write path will
+      // actually record (#322), so the "available → after" preview matches the
+      // balance the user will land on — a withdraw-all previews exactly €0.00.
+      const afterEur = roundCents(
+        availableEur + roundCents(input.amountEur) * CASH_MOVEMENT_SIGN[input.kind],
+      );
       const sufficient = afterEur >= -CASH_EPSILON;
       return {
         availableEur,

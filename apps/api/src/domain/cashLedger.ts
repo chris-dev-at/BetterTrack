@@ -87,6 +87,36 @@ export const EXTERNAL_CASH_MOVEMENT_KINDS: readonly CashMovementKind[] = ['depos
  */
 export const CASH_EPSILON = 1e-9;
 
+/** The number of decimal places real money is denominated in (cents). */
+export const CASH_DECIMALS = 2;
+
+/**
+ * Quantize a EUR amount to whole cents (V3-P0 withdraw-all fix, issue #322).
+ *
+ * Cash is **real money** — it exists only in whole cents. The pure engine above
+ * sums at full FP precision (§5.4), but sub-cent residue must never survive to a
+ * *stored* movement or a *reported* balance: a balance of `100.006 €` displays as
+ * `100,01 €` yet can never be fully withdrawn (a `100,01 €` withdrawal overdraws
+ * the true `100.006`), stranding the reported cent — exactly the reported bug.
+ * The boundary fix is to round every amount that enters the ledger, and every
+ * balance that leaves it, to cents here, so a withdraw-all lands at exactly
+ * `0,00 €` with no float residue.
+ *
+ * Rounds half away from zero (`0.005 → 0.01`, `−0.005 → −0.01`), nudging by one
+ * ULP first so a value the decimal literal can't represent exactly (`1.005`,
+ * stored as `1.00499999…`) still rounds the way a person reading cents expects.
+ * This is a **boundary quantizer** for the service layer — the domain replay
+ * functions themselves stay unrounded (§5.4).
+ */
+export function roundCents(amountEur: number): number {
+  if (!Number.isFinite(amountEur)) {
+    throw new CashLedgerError(`Cannot round a non-finite EUR amount, got ${amountEur}.`);
+  }
+  const scaled = amountEur * 100;
+  const nudged = scaled + Math.sign(scaled) * Number.EPSILON * Math.abs(scaled);
+  return Math.round(nudged) / 100;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

@@ -187,7 +187,7 @@ describe('GET /api/v1/social/shared (Shared With Me)', () => {
     expect(res.status).toBe(401);
   });
 
-  it("lists exactly a friend's visibility=friends portfolios with owner + total value", async () => {
+  it("lists exactly a friend's visibility=friends portfolios with owner + net worth", async () => {
     const { bobAgent } = await scenario();
 
     const res = await bobAgent.get('/api/v1/social/shared');

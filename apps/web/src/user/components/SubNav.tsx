@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useSearchParams } from 'react-router-dom';
 
 import { cx } from './ui';
 
@@ -23,8 +23,29 @@ export interface SubNavItem {
  * wrapping: tabs stay on one line (`whitespace-nowrap` + `overflow-x-auto`) and
  * the scrollbar is hidden (`.no-scrollbar`), so sections with many subnav
  * entries (e.g. Settings' seven) never clip or push the page wider than 375px.
+ *
+ * `preserveParams` names the search-param keys a section carries across its own
+ * tabs. Some section state lives only in the URL query — most notably the
+ * Portfolio section's active portfolio (`?portfolio=<id>`, {@link PortfolioSwitcher})
+ * — and a plain path link would drop it, silently reverting the selection to the
+ * default when opening Transactions or Custom Assets (V3-P0 bug, #322). Only the
+ * named keys are carried, so no stray params leak between sections.
  */
-export function SubNav({ items }: { items: readonly SubNavItem[] }) {
+export function SubNav({
+  items,
+  preserveParams,
+}: {
+  items: readonly SubNavItem[];
+  preserveParams?: readonly string[];
+}) {
+  const [searchParams] = useSearchParams();
+  const preserved = new URLSearchParams();
+  for (const key of preserveParams ?? []) {
+    const value = searchParams.get(key);
+    if (value !== null) preserved.set(key, value);
+  }
+  const search = preserved.toString();
+
   return (
     <nav
       aria-label="Section"
@@ -33,7 +54,7 @@ export function SubNav({ items }: { items: readonly SubNavItem[] }) {
       {items.map((item) => (
         <NavLink
           key={item.to}
-          to={item.to}
+          to={search ? { pathname: item.to, search } : item.to}
           end={item.end}
           className={({ isActive }) =>
             cx(

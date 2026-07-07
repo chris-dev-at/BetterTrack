@@ -97,7 +97,7 @@ export type FriendsListResponse = z.infer<typeof friendsListResponseSchema>;
 /**
  * One friend-shared portfolio as it appears in **Shared With Me** (§6.9): the
  * owner (public-safe — id + username only), the portfolio name, and its current
- * EUR total value. The summary carries no holdings ledger — the read-only detail
+ * EUR net worth. The summary carries no holdings ledger — the read-only detail
  * view (`GET /social/shared/:portfolioId`) exposes those.
  */
 export const sharedPortfolioSummarySchema = z
