@@ -16,6 +16,8 @@ Which model + effort level to use for each kind of work. The per-phase tables be
 
 > If your Claude Code build only offers `high`/`max` in `/effort`, read `xhigh` as `max`.
 
+> **Fable succession (2026-07-07, permanent — §16):** Claude Fable 5 retired from interactive/subscription use after 2026-07-07 (API-only since). **Every "T1 — Fable" reference in this file and elsewhere now reads: the top available tier — today Opus 4.8 (`claude-opus-4-8`), `max` for money-math first implementations and final reviews, `xhigh` otherwise.** `multi-factory/state/control/models.json` already routes `diff:hard` → opus `xhigh` and `diff:max` → opus `max`. The escalation ladder ends at Opus max: beyond that, decompose or re-scope instead of looping. Unlike the 2026-06-15 outage, there is no automatic revert.
+
 ## Per-phase assignments
 
 ### P0 — v2 shell & restructure
