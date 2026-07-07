@@ -61,6 +61,9 @@ const componentSchemas = {
   LoginResponse: contracts.loginResponseSchema,
   MeResponse: contracts.meResponseSchema,
   SessionInfoResponse: contracts.sessionInfoResponseSchema,
+  SessionSummary: contracts.sessionSummarySchema,
+  SessionListResponse: contracts.sessionListResponseSchema,
+  RevokeSessionsResponse: contracts.revokeSessionsResponseSchema,
   InviteValidationResponse: contracts.inviteValidationResponseSchema,
 
   // Admin (§6.12)
@@ -308,6 +311,31 @@ const endpoints: EndpointDef[] = [
     summary: 'Read-only info about the caller’s current session.',
     status: 200,
     response: R.SessionInfoResponse,
+  },
+  {
+    method: 'get',
+    path: '/auth/sessions',
+    tag: 'Auth',
+    summary: 'List the caller’s active sessions (device, created, last-seen, current marker).',
+    status: 200,
+    response: R.SessionListResponse,
+  },
+  {
+    method: 'delete',
+    path: '/auth/sessions/{id}',
+    tag: 'Auth',
+    summary: 'Revoke one session by its opaque handle (“log out that device”).',
+    params: contracts.sessionHandleParamSchema,
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/auth/sessions/revoke-others',
+    tag: 'Auth',
+    summary: 'Revoke every other session, keeping the caller signed in.',
+    status: 200,
+    response: R.RevokeSessionsResponse,
   },
   {
     method: 'post',

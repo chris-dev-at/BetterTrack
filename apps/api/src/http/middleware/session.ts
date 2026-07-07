@@ -24,7 +24,9 @@ export function loadSession(ctx: AppContext): RequestHandler {
         next();
         return;
       }
-      const user = await ctx.auth.resolveSession(sessionId);
+      // Pass the request's User-Agent so the session manager can stamp
+      // last-seen (throttled) and capture the device on first-seen (V3-P11a).
+      const user = await ctx.auth.resolveSession(sessionId, req.get('user-agent') ?? null);
       if (!user) {
         clearSessionCookie(res, ctx.config);
         next();

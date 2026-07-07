@@ -6,12 +6,16 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type {
   MeResponse,
   SessionInfoResponse,
+  SessionSummary,
   TwoFactorStatusResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../lib/userApi', () => ({
   getMe: vi.fn(),
   getSession: vi.fn(),
+  listSessions: vi.fn(),
+  revokeSession: vi.fn(),
+  revokeOtherSessions: vi.fn(),
   setPin: vi.fn(),
   disablePin: vi.fn(),
   setPinLockIdleMinutes: vi.fn(),
@@ -39,7 +43,16 @@ import {
   getTwoFactorStatus,
   regenerateRecoveryCodes,
 } from '../../lib/twoFactorApi';
-import { disablePin, getMe, getSession, setPin, setPinLockIdleMinutes } from '../../lib/userApi';
+import {
+  disablePin,
+  getMe,
+  getSession,
+  listSessions,
+  revokeOtherSessions,
+  revokeSession,
+  setPin,
+  setPinLockIdleMinutes,
+} from '../../lib/userApi';
 import { SecuritySettingsPage } from './SecuritySettingsPage';
 
 const SESSION: SessionInfoResponse = {
@@ -85,9 +98,29 @@ function renderPage() {
   );
 }
 
+const SESSIONS: SessionSummary[] = [
+  {
+    id: 'handle-current',
+    device: 'Chrome on macOS',
+    createdAt: '2026-07-01T08:00:00.000Z',
+    lastSeenAt: '2026-07-07T09:00:00.000Z',
+    current: true,
+  },
+  {
+    id: 'handle-other',
+    device: 'Firefox on Windows',
+    createdAt: '2026-06-20T08:00:00.000Z',
+    lastSeenAt: '2026-07-05T10:00:00.000Z',
+    current: false,
+  },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getSession).mockResolvedValue(SESSION);
+  vi.mocked(listSessions).mockResolvedValue(SESSIONS);
+  vi.mocked(revokeSession).mockResolvedValue(undefined);
+  vi.mocked(revokeOtherSessions).mockResolvedValue({ revoked: 1 });
   vi.mocked(setPin).mockResolvedValue(makeMe(true));
   vi.mocked(disablePin).mockResolvedValue(makeMe(false));
   vi.mocked(setPinLockIdleMinutes).mockResolvedValue(makeMe(true));
@@ -103,6 +136,41 @@ describe('SecuritySettingsPage', () => {
 
     expect(await screen.findByText(/signed in since/i)).toBeInTheDocument();
     expect(screen.getByText(/expires after 30 days of inactivity/i)).toBeInTheDocument();
+  });
+
+  test('lists active sessions with device labels and a current-device marker (V3-P11a)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Active sessions' })).toBeInTheDocument();
+    expect(await screen.findByText('Chrome on macOS')).toBeInTheDocument();
+    expect(screen.getByText('Firefox on Windows')).toBeInTheDocument();
+    // The current session is marked and has no per-row log-out button.
+    expect(screen.getByText('This device')).toBeInTheDocument();
+    // Exactly one per-row "Log out" (the non-current device).
+    expect(screen.getAllByRole('button', { name: 'Log out' })).toHaveLength(1);
+  });
+
+  test('logs out one device via revokeSession (V3-P11a)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Log out' }));
+    await waitFor(() => expect(revokeSession).toHaveBeenCalledWith('handle-other'));
+  });
+
+  test('logs out all other devices behind a confirm step (V3-P11a)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    const user = userEvent.setup();
+    renderPage();
+
+    // First click reveals the confirmation, not an immediate revoke.
+    await user.click(await screen.findByRole('button', { name: 'Log out all other devices' }));
+    expect(revokeOtherSessions).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Log out all other devices' }));
+    await waitFor(() => expect(revokeOtherSessions).toHaveBeenCalled());
   });
 
   test('enables a PIN when none is set', async () => {
