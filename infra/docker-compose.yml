@@ -41,6 +41,21 @@ services:
       api:
         condition: service_healthy
 
+  # Product landing page (bettertrack.at root origin) + mobile.* placeholder —
+  # a tiny framework-free static site (§13.3 V3-P12 arcs a+b). Independent of the
+  # SPA and API; the only env it reads is the web-app origin its CTA links point
+  # at. Host port bindings live in the mode overlay files, like `web`.
+  landing:
+    build:
+      context: ..
+      dockerfile: apps/landing/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Web-app origin the "Open the web app" links resolve to. Defaults to the
+      # subdomains-mode public origin; the 5-origin topology derivation is the
+      # separate V3-P12 arc (c) follow-up.
+      BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-https://web.${BT_DOMAIN:-bettertrack.at}}'
+
   api:
     build:
       context: ..

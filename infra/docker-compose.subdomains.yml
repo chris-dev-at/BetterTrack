@@ -8,6 +8,10 @@ name: bettertrack
 # (Caddy/Traefik/Cloudflare Tunnel) is what end users reach — api/web/admin are
 # addressed by the proxy over the internal network, not by host port.
 
+# The `landing` service (§13.3 V3-P12) is intentionally NOT published here: in
+# subdomains mode the reverse proxy reaches it over the internal network on :80,
+# same as api/web/admin. Its origin routing lands with V3-P12 arc (c).
+
 services:
   web:
     ports:

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 380" role="img"
+     aria-label="BetterTrack asset search and detail with price chart">
+  <rect width="600" height="380" fill="#0d0d0d"/>
+  <rect x="0" y="0" width="600" height="44" fill="#171717"/>
+  <text x="24" y="28" font-family="Arial" font-weight="700" font-size="15" fill="#f5f5f5">Assets</text>
+  <!-- search box -->
+  <rect x="24" y="60" width="552" height="40" rx="10" fill="#171717" stroke="#2e2e2e"/>
+  <circle cx="46" cy="80" r="7" fill="none" stroke="#737373" stroke-width="2"/>
+  <line x1="51" y1="85" x2="57" y2="91" stroke="#737373" stroke-width="2"/>
+  <text x="70" y="85" font-family="Arial" font-size="13" fill="#737373">Search stocks, ETFs, crypto…</text>
+  <!-- result list -->
+  <g font-family="Arial" font-size="13">
+    <g transform="translate(24,116)">
+      <rect width="250" height="222" rx="10" fill="#171717" stroke="#2e2e2e"/>
+      <g transform="translate(16,20)">
+        <text y="14" fill="#f5f5f5" font-weight="700">AAPL</text>
+        <text y="32" fill="#737373" font-size="11">Apple Inc.</text>
+        <text x="218" y="20" fill="#34d399" text-anchor="end">+1.2%</text>
+      </g>
+      <line x1="12" y1="66" x2="238" y2="66" stroke="#2e2e2e"/>
+      <g transform="translate(16,82)">
+        <text y="14" fill="#f5f5f5" font-weight="700">BTC-EUR</text>
+        <text y="32" fill="#737373" font-size="11">Bitcoin</text>
+        <text x="218" y="20" fill="#f87171" text-anchor="end">-0.6%</text>
+      </g>
+      <line x1="12" y1="128" x2="238" y2="128" stroke="#2e2e2e"/>
+      <g transform="translate(16,144)">
+        <text y="14" fill="#f5f5f5" font-weight="700">XAUEUR=X</text>
+        <text y="32" fill="#737373" font-size="11">Gold (EUR)</text>
+        <text x="218" y="20" fill="#34d399" text-anchor="end">+0.4%</text>
+      </g>
+    </g>
+    <!-- detail -->
+    <g transform="translate(290,116)">
+      <rect width="286" height="222" rx="10" fill="#171717" stroke="#2e2e2e"/>
+      <text x="18" y="34" fill="#f5f5f5" font-weight="700" font-size="17">Apple Inc.</text>
+      <text x="18" y="54" fill="#737373" font-size="11">AAPL · NASDAQ · USD</text>
+      <text x="268" y="36" fill="#f5f5f5" font-weight="700" font-size="18" text-anchor="end">$214.30</text>
+      <path d="M20 170 L60 158 L100 164 L140 140 L180 148 L220 120 L266 104"
+            fill="none" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g font-size="11" fill="#737373">
+        <text x="20" y="200">1M</text><text x="120" y="200">6M</text><text x="248" y="200">1Y</text>
+      </g>
+    </g>
+  </g>
+</svg>
