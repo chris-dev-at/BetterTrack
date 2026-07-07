@@ -51,11 +51,23 @@ describe('COMMON_SYMBOLS_SEED (§6.2(c) content)', () => {
       'VWCE.DE', // popular UCITS world ETF
       'BTC-USD', // crypto
       'ETH-USD',
+      'BTC-EUR', // EUR-denominated crypto (V3-P10c)
+      'ETH-EUR',
       'EURUSD=X', // FX
       'GC=F', // gold commodity
+      'XAUEUR=X', // gold priced in EUR (V3-P10c)
+      'XAGEUR=X', // silver priced in EUR (V3-P10c)
     ]) {
       expect(refs.has(ref)).toBe(true);
     }
+  });
+
+  it('types the V3-P10c EUR instruments correctly', () => {
+    const byRef = new Map(CATALOG_SEED_ENTRIES.map((e) => [e.providerRef, e]));
+    expect(byRef.get('BTC-EUR')).toMatchObject({ type: 'crypto', currency: 'EUR' });
+    expect(byRef.get('ETH-EUR')).toMatchObject({ type: 'crypto', currency: 'EUR' });
+    expect(byRef.get('XAUEUR=X')).toMatchObject({ type: 'commodity', currency: 'EUR' });
+    expect(byRef.get('XAGEUR=X')).toMatchObject({ type: 'commodity', currency: 'EUR' });
   });
 });
 
@@ -78,6 +90,10 @@ describe('seedAssetCatalog with the shipped list', () => {
       ['dax', '^GDAXI'],
       ['gold', 'GC=F'],
       ['btc', 'BTC-USD'],
+      ['bitcoin', 'BTC-EUR'],
+      ['ethereum', 'ETH-EUR'],
+      ['gold (eur)', 'XAUEUR=X'],
+      ['silver (eur)', 'XAGEUR=X'],
     ];
     for (const [query, expectedRef] of cases) {
       const matches = await repo.searchCatalog(userId, query, 20);

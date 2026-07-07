@@ -703,6 +703,12 @@ const CRYPTO: Entry[] = (
   ] as const
 ).map(([ref, name]) => entry('crypto', ref, name, 'CCC', 'USD'));
 
+// ── EUR-denominated crypto pairs (V3-P10c: the app's base currency is EUR) ───
+const CRYPTO_EUR: Entry[] = [
+  entry('crypto', 'BTC-EUR', 'Bitcoin', 'CCC', 'EUR'),
+  entry('crypto', 'ETH-EUR', 'Ethereum', 'CCC', 'EUR'),
+];
+
 // ── Major FX pairs (Yahoo `=X`), currency = quote currency ───────────────────
 const FX: Entry[] = [
   entry('fx', 'EURUSD=X', 'EUR/USD', 'CCY', 'USD'),
@@ -724,6 +730,14 @@ const COMMODITIES: Entry[] = [
   entry('commodity', 'NG=F', 'Natural Gas', 'NYM', 'USD'),
 ];
 
+// ── Metal spot prices in EUR (Yahoo `=X` currency-style refs, §5.5 quoteType
+// CURRENCY) — the app's base currency is EUR until V3-P10d, so these give a
+// EUR-native alternative to the USD futures above without duplicating them.
+const METALS_EUR: Entry[] = [
+  entry('commodity', 'XAUEUR=X', 'Gold (EUR)', 'CCY', 'EUR'),
+  entry('commodity', 'XAGEUR=X', 'Silver (EUR)', 'CCY', 'EUR'),
+];
+
 /**
  * Full shipped catalog seed. Order is irrelevant (upsert is per-row idempotent),
  * but grouping keeps the file auditable against §6.2(c).
@@ -735,6 +749,8 @@ export const CATALOG_SEED_ENTRIES: readonly Entry[] = [
   ...ATX20,
   ...SP500,
   ...CRYPTO,
+  ...CRYPTO_EUR,
   ...FX,
   ...COMMODITIES,
+  ...METALS_EUR,
 ];

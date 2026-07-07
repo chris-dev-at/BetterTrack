@@ -319,6 +319,44 @@ describe('GET /api/v1/assets/:id/history', () => {
   });
 });
 
+describe('V3-P10c EUR crypto/commodity instruments', () => {
+  it.each([
+    ['BTC-EUR', 'crypto', 'Bitcoin'],
+    ['ETH-EUR', 'crypto', 'Ethereum'],
+    ['XAUEUR=X', 'commodity', 'Gold (EUR)'],
+  ] as const)(
+    '%s (%s) is chartable via the standard detail + history endpoints',
+    async (symbol, type, name) => {
+      const marketData = createStubMarketData({
+        quote: () => cachedQuote({ value: sampleQuote({ currency: 'EUR' }) }),
+        history: () => cachedHistory(),
+      });
+      const h = await createTestApp({ marketData });
+      const user = await h.seedUser();
+      const asset = await seedGlobalAsset(h, {
+        providerRef: symbol,
+        symbol,
+        type,
+        name,
+        currency: 'EUR',
+      });
+      const agent = await loginAgent(h.app, user.email, user.password);
+
+      const detail = await agent.get(`/api/v1/assets/${asset.id}`);
+      expect(detail.status).toBe(200);
+      expect(detail.body.asset).toMatchObject({ symbol, type, currency: 'EUR' });
+      expect(detail.body.quote?.currency).toBe('EUR');
+
+      const history = await agent.get(`/api/v1/assets/${asset.id}/history?range=1Y`);
+      expect(history.status).toBe(200);
+      const parsed = historyResponseSchema.safeParse(history.body);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) return;
+      expect(parsed.data.points).toHaveLength(2);
+    },
+  );
+});
+
 describe('GET /api/v1/assets/:id/daily-closes', () => {
   it('returns the full daily series, forcing the MAX range at a 1d interval (§5.3)', async () => {
     let seenRange: HistoryRange | undefined;

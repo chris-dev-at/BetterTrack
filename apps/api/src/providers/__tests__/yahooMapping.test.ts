@@ -43,6 +43,21 @@ describe('mapAssetType (§5.5)', () => {
   ] as const)('maps %s → %s', (input, expected) => {
     expect(mapAssetType(input)).toBe(expected);
   });
+
+  it('types an actual currency pair as fx (§5.5)', () => {
+    expect(mapAssetType('CURRENCY', 'EURUSD=X')).toBe('fx');
+  });
+
+  it('types a metal spot ref as commodity even though Yahoo reports quoteType CURRENCY (V3-P10c)', () => {
+    expect(mapAssetType('CURRENCY', 'XAUEUR=X')).toBe('commodity');
+    expect(mapAssetType('CURRENCY', 'XAUUSD=X')).toBe('commodity');
+    expect(mapAssetType('CURRENCY', 'XAGEUR=X')).toBe('commodity');
+  });
+
+  it('defaults an unrecognized CURRENCY ref (no symbol given) to fx', () => {
+    expect(mapAssetType('CURRENCY')).toBe('fx');
+    expect(mapAssetType('CURRENCY', null)).toBe('fx');
+  });
 });
 
 describe('currencyForSearchResult (§6.2)', () => {
