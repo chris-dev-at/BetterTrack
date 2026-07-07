@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 
 import type { CashMovementKind, CashPreviewResponse } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { depositCash, previewCash, withdrawCash } from '../../lib/portfolioApi';
 import { useDebounce } from '../hooks/useDebounce';
@@ -46,6 +47,7 @@ export function CashDialog({
   onSubmitted,
   today,
 }: CashDialogProps) {
+  const t = useT();
   const headingId = useId();
   const [kind, setKind] = useState<'deposit' | 'withdrawal'>(initialKind);
   const [amount, setAmount] = useState('');
@@ -87,15 +89,15 @@ export function CashDialog({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!amountValid) {
-      setError('Enter an amount greater than 0.');
+      setError(t('portfolio.cash.amountRequired'));
       return;
     }
     if (blockedByPreview) {
-      setError('That would take the cash balance negative.');
+      setError(t('portfolio.cash.blockedError'));
       return;
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      setError('Pick a valid date.');
+      setError(t('portfolio.cash.invalidDate'));
       return;
     }
 
@@ -115,23 +117,23 @@ export function CashDialog({
       if (err instanceof ApiError && err.code === 'INSUFFICIENT_CASH') {
         setError(err.message);
       } else {
-        setError('Could not save. Please try again.');
+        setError(t('portfolio.cash.saveError'));
       }
       setSubmitting(false);
     }
   }
 
   return (
-    <Dialog title="Cash balance" onClose={onClose} widthClassName="max-w-md">
+    <Dialog title={t('portfolio.cash.title')} onClose={onClose} widthClassName="max-w-md">
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" aria-labelledby={headingId}>
         <span id={headingId} className="sr-only">
-          Cash balance
+          {t('portfolio.cash.title')}
         </span>
 
         <div
           className="flex gap-1 rounded-md bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-700"
           role="group"
-          aria-label="Deposit or withdraw"
+          aria-label={t('portfolio.cash.kindGroupAriaLabel')}
         >
           <button
             type="button"
@@ -145,7 +147,7 @@ export function CashDialog({
                 : 'text-neutral-400 hover:text-neutral-200',
             )}
           >
-            Deposit
+            {t('portfolio.cash.depositTab')}
           </button>
           <button
             type="button"
@@ -159,12 +161,14 @@ export function CashDialog({
                 : 'text-neutral-400 hover:text-neutral-200',
             )}
           >
-            Withdraw
+            {t('portfolio.cash.withdrawTab')}
           </button>
         </div>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Amount (EUR)</span>
+          <span className="text-sm font-medium text-neutral-300">
+            {t('portfolio.cash.amountLabel')}
+          </span>
           <input
             type="number"
             inputMode="decimal"
@@ -172,24 +176,28 @@ export function CashDialog({
             min="0"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
-            aria-label="Amount"
+            aria-label={t('portfolio.cash.amountAriaLabel')}
             className={inputClass}
           />
         </label>
 
         {amountValid ? (
-          <p className="text-xs text-neutral-400" role="status" aria-label="Cash-after preview">
+          <p
+            className="text-xs text-neutral-400"
+            role="status"
+            aria-label={t('portfolio.cash.previewAriaLabel')}
+          >
             {previewLoading || !preview ? (
-              'Calculating…'
+              t('portfolio.cash.calculating')
             ) : (
               <>
-                Available <MoneyText amount={preview.availableEur} /> &rarr;{' '}
+                {t('portfolio.cash.available')} <MoneyText amount={preview.availableEur} /> &rarr;{' '}
                 <span className={blockedByPreview ? 'text-red-400' : 'text-neutral-200'}>
                   <MoneyText amount={preview.afterEur} />
                 </span>
                 {blockedByPreview ? (
                   <span className="ml-1 text-red-400">
-                    (short <MoneyText amount={preview.shortfallEur} />)
+                    ({t('portfolio.cash.short')} <MoneyText amount={preview.shortfallEur} />)
                   </span>
                 ) : null}
               </>
@@ -198,24 +206,28 @@ export function CashDialog({
         ) : null}
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Date</span>
+          <span className="text-sm font-medium text-neutral-300">
+            {t('portfolio.cash.dateLabel')}
+          </span>
           <input
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
-            aria-label="Date"
+            aria-label={t('portfolio.cash.dateLabel')}
             className={inputClass}
           />
         </label>
 
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Note (optional)</span>
+          <span className="text-sm font-medium text-neutral-300">
+            {t('portfolio.cash.noteLabel')}
+          </span>
           <input
             type="text"
             value={note}
             maxLength={1000}
             onChange={(e) => setNote(e.target.value)}
-            aria-label="Note"
+            aria-label={t('portfolio.cash.noteAriaLabel')}
             className={inputClass}
           />
         </label>
@@ -224,10 +236,14 @@ export function CashDialog({
 
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button type="submit" disabled={submitting || blockedByPreview}>
-            {submitting ? 'Saving…' : kind === 'deposit' ? 'Deposit cash' : 'Withdraw cash'}
+            {submitting
+              ? t('common.saving')
+              : kind === 'deposit'
+                ? t('portfolio.cash.depositSubmit')
+                : t('portfolio.cash.withdrawSubmit')}
           </Button>
         </div>
       </form>

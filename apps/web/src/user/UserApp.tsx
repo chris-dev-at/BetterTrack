@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
+import { I18nProvider, useI18n } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
 
 import { AuthProvider, useAuth } from './AuthContext';
@@ -187,15 +189,34 @@ function RateLimitToastPortal() {
   return <Toast onDismiss={clearRateLimitBanner}>{rateLimitBanner}</Toast>;
 }
 
+/**
+ * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
+ * signed-in `me` carries a locale, switch the runtime to it. The language picker
+ * also flips the runtime instantly and persists server-side, so a `me` refetch
+ * just re-affirms the same choice. Renders nothing.
+ */
+function LocaleSync() {
+  const { user } = useAuth();
+  const { setLocale } = useI18n();
+  const locale = user?.locale;
+  useEffect(() => {
+    if (locale) setLocale(locale);
+  }, [locale, setLocale]);
+  return null;
+}
+
 export function UserApp() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <RateLimitToastPortal />
-        <RealtimeRoot>
-          <UserShell />
-        </RealtimeRoot>
-      </AuthProvider>
-    </QueryClientProvider>
+    <I18nProvider>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <LocaleSync />
+          <RateLimitToastPortal />
+          <RealtimeRoot>
+            <UserShell />
+          </RealtimeRoot>
+        </AuthProvider>
+      </QueryClientProvider>
+    </I18nProvider>
   );
 }

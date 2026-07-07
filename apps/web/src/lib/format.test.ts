@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 
 import {
   EM_DASH,
@@ -10,6 +10,8 @@ import {
   formatSignedDelta,
   formatSignedPercent,
   formatWeight,
+  getFormatLocale,
+  setFormatLocale,
 } from './format';
 
 // ---------------------------------------------------------------------------
@@ -198,5 +200,40 @@ describe('formatDateTime', () => {
     expect(formatDateTime(null)).toBe(EM_DASH);
     expect(formatDateTime(undefined)).toBe(EM_DASH);
     expect(formatDateTime('bad')).toBe(EM_DASH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Locale-aware formatting (§13.3 V3-P1)
+//
+// The active Intl locale follows the user's chosen UI language. The default is
+// de-AT (asserted above); switching to en-GB flips number/date formatting while
+// money stays symbol-last in every locale. `afterEach` restores the default so
+// no other test in this file inherits a switched locale.
+
+describe('locale-aware formatting (§13.3 V3-P1)', () => {
+  afterEach(() => setFormatLocale('de-AT'));
+
+  test('en-GB uses "." decimals and "," grouping; money stays symbol-last', () => {
+    setFormatLocale('en-GB');
+    expect(getFormatLocale()).toBe('en-GB');
+    expect(formatMoney(1234.56)).toBe('1,234.56 €');
+    // en-GB disambiguates the dollar as "US$" — the locale's own symbol is kept.
+    expect(formatMoney(1234.56, 'USD')).toBe('1,234.56 US$');
+    expect(formatQuantity(1234.5)).toBe('1,234.5');
+    expect(formatPercent(2.5)).toMatch(/^2\.5\s?%$/);
+  });
+
+  test('de-AT uses "," decimals and "." grouping (the default dialect)', () => {
+    setFormatLocale('de-AT');
+    expect(formatMoney(1234.56)).toBe('1.234,56 €');
+    expect(formatPercent(2.5)).toBe('2,5 %');
+  });
+
+  test('dates render in the active locale, always Europe/Vienna wall-clock', () => {
+    setFormatLocale('en-GB');
+    expect(formatDate('2024-01-15T12:00:00.000Z')).toMatch(/15 Jan 2024/);
+    setFormatLocale('de-AT');
+    expect(formatDate('2024-01-15T12:00:00.000Z')).toBe('15.01.2024');
   });
 });

@@ -36,6 +36,7 @@ const member: MeResponse = {
   pinEnabled: false,
   pinLockIdleMinutes: null,
   baseCurrency: 'EUR',
+  locale: 'en',
   lastLoginAt: null,
   createdAt: '2026-01-01T00:00:00.000Z',
 };

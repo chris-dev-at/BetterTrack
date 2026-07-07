@@ -76,6 +76,12 @@ export const users = pgTable(
     // the last one goes off.
     twoFactorEmailEnabled: boolean('two_factor_email_enabled').notNull().default(false),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
+    // UI-language preference (§13.3 V3-P1). A short BCP-47-ish code (`en`, `de`,
+    // `de-AT`); EN is the source of truth and the default, so a fresh account
+    // keeps the column default and the SPA falls back to EN for any code it
+    // can't render. Persisted here so `/auth/me` can seed the runtime and
+    // notification emails can render in the recipient's language.
+    locale: varchar('locale', { length: 5 }).notNull().default('en'),
     // Default friend-sharing visibility applied when the user creates a *new*
     // portfolio (§6.9, §13.2 V2-P9). Only affects the default at creation time;
     // existing portfolios and explicit per-item toggles are untouched. The

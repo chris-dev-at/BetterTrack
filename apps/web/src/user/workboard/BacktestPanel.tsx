@@ -13,6 +13,8 @@ import {
 import { previewBacktest } from '../../lib/backtestApi';
 import { cx } from '../../lib/cx';
 import { formatDate, formatPercent, formatSignedPercent } from '../../lib/format';
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { PriceChart, type BenchmarkSeries, type ChartPoint } from '../../ui/charts';
 import { Alert } from '../components/ui';
@@ -23,18 +25,22 @@ export interface BacktestPanelProps {
   className?: string;
 }
 
-const RANGE_LABELS: Record<BacktestPreviewRange, string> = {
-  '1Y': '1Y',
-  '3Y': '3Y',
-  '5Y': '5Y',
-  MAX: 'Max',
-};
+function rangeLabels(t: TranslateFn): Record<BacktestPreviewRange, string> {
+  return {
+    '1Y': t('workboard.backtest.range.oneYear'),
+    '3Y': t('workboard.backtest.range.threeYear'),
+    '5Y': t('workboard.backtest.range.fiveYear'),
+    MAX: t('workboard.backtest.range.max'),
+  };
+}
 
-const BENCHMARK_LABELS: Record<BacktestBenchmark, string> = {
-  '^GSPC': 'S&P 500',
-  '^GDAXI': 'DAX',
-  URTH: 'MSCI World',
-};
+function benchmarkLabels(t: TranslateFn): Record<BacktestBenchmark, string> {
+  return {
+    '^GSPC': t('workboard.backtest.benchmark.sp500'),
+    '^GDAXI': t('workboard.backtest.benchmark.dax'),
+    URTH: t('workboard.backtest.benchmark.msciWorld'),
+  };
+}
 
 function toChartPoints(series: Array<{ date: string; value: number }>): ChartPoint[] {
   return series.map((point) => ({ time: point.date as Time, value: point.value }));
@@ -47,10 +53,12 @@ function RangeSelector({
   active: BacktestPreviewRange;
   onSelect: (range: BacktestPreviewRange) => void;
 }) {
+  const t = useT();
+  const labels = rangeLabels(t);
   return (
     <div
       role="group"
-      aria-label="Select backtest range"
+      aria-label={t('workboard.backtest.rangeAriaLabel')}
       className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
       {BACKTEST_PREVIEW_RANGES.map((token) => {
@@ -69,7 +77,7 @@ function RangeSelector({
                 : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
             )}
           >
-            {RANGE_LABELS[token]}
+            {labels[token]}
           </button>
         );
       })}
@@ -84,8 +92,14 @@ function BenchmarkToggle({
   active: BacktestBenchmark | null;
   onSelect: (benchmark: BacktestBenchmark | null) => void;
 }) {
+  const t = useT();
+  const labels = benchmarkLabels(t);
   return (
-    <div role="group" aria-label="Toggle benchmark overlay" className="flex flex-wrap gap-1.5">
+    <div
+      role="group"
+      aria-label={t('workboard.backtest.benchmarkAriaLabel')}
+      className="flex flex-wrap gap-1.5"
+    >
       {BACKTEST_BENCHMARKS.map((ticker) => {
         const selected = ticker === active;
         return (
@@ -102,7 +116,7 @@ function BenchmarkToggle({
                 : 'text-neutral-400 ring-neutral-700 hover:bg-neutral-800 hover:text-neutral-100',
             )}
           >
-            {BENCHMARK_LABELS[ticker]}
+            {labels[ticker]}
           </button>
         );
       })}
@@ -118,6 +132,8 @@ function BenchmarkToggle({
  * Builder's live preview (debounced draft weights) without change.
  */
 export function BacktestPanel({ positions, className }: BacktestPanelProps) {
+  const t = useT();
+  const labels = benchmarkLabels(t);
   const [range, setRange] = useState<BacktestPreviewRange>('5Y');
   const [benchmark, setBenchmark] = useState<BacktestBenchmark | null>(null);
 
@@ -132,7 +148,7 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
   const chartSeries = data ? toChartPoints(data.series) : [];
   const benchmarkSeries: BenchmarkSeries | null =
     data?.benchmark && benchmark
-      ? { label: BENCHMARK_LABELS[benchmark], series: toChartPoints(data.benchmark.series) }
+      ? { label: labels[benchmark], series: toChartPoints(data.benchmark.series) }
       : null;
 
   return (
@@ -143,11 +159,11 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
       </div>
 
       {!hasPositions ? (
-        <EmptyState title="Add positions to preview a backtest" />
+        <EmptyState title={t('workboard.backtest.noPositions')} />
       ) : isLoading ? (
         <Skeleton height="h-80" />
       ) : isError ? (
-        <Alert tone="error">Could not run the backtest. Please try again.</Alert>
+        <Alert tone="error">{t('workboard.backtest.error')}</Alert>
       ) : !data ? null : (
         <>
           {data.notice ? <Alert tone="info">{data.notice}</Alert> : null}
@@ -156,20 +172,32 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
             benchmark={benchmarkSeries}
             showRangeToggle={false}
             loading={isFetching}
-            ariaLabel="Conglomerate backtest chart"
+            ariaLabel={t('workboard.backtest.chartAriaLabel')}
           />
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatCard label="Total return" value={formatSignedPercent(data.stats.totalReturnPct)} />
-            <StatCard label="CAGR" value={formatSignedPercent(data.stats.cagrPct)} />
-            <StatCard label="Max drawdown" value={formatSignedPercent(data.stats.maxDrawdownPct)} />
-            <StatCard label="Volatility (ann.)" value={formatPercent(data.stats.volatilityPct)} />
             <StatCard
-              label="Best day"
+              label={t('workboard.backtest.stats.totalReturn')}
+              value={formatSignedPercent(data.stats.totalReturnPct)}
+            />
+            <StatCard
+              label={t('workboard.backtest.stats.cagr')}
+              value={formatSignedPercent(data.stats.cagrPct)}
+            />
+            <StatCard
+              label={t('workboard.backtest.stats.maxDrawdown')}
+              value={formatSignedPercent(data.stats.maxDrawdownPct)}
+            />
+            <StatCard
+              label={t('workboard.backtest.stats.volatility')}
+              value={formatPercent(data.stats.volatilityPct)}
+            />
+            <StatCard
+              label={t('workboard.backtest.stats.bestDay')}
               value={formatSignedPercent(data.stats.bestDay?.returnPct)}
               subValue={formatDate(data.stats.bestDay?.date)}
             />
             <StatCard
-              label="Worst day"
+              label={t('workboard.backtest.stats.worstDay')}
               value={formatSignedPercent(data.stats.worstDay?.returnPct)}
               subValue={formatDate(data.stats.worstDay?.date)}
             />

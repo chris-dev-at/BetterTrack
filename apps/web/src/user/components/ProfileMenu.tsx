@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { useAuth } from '../AuthContext';
 import { cx } from './ui';
 
@@ -11,6 +12,7 @@ import { cx } from './ui';
  * V1; Logout ends the session. Closes on outside-click and Escape.
  */
 export function ProfileMenu() {
+  const t = useT();
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -41,7 +43,7 @@ export function ProfileMenu() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Account menu"
+        aria-label={t('nav.accountMenu')}
         className="grid h-9 w-9 place-items-center rounded-full bg-neutral-800 text-sm font-semibold text-neutral-200 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
         <span aria-hidden="true">
@@ -52,7 +54,7 @@ export function ProfileMenu() {
       {open ? (
         <div
           role="menu"
-          aria-label="Account"
+          aria-label={t('nav.account')}
           className="absolute right-0 z-40 mt-2 w-56 rounded-lg border border-neutral-800 bg-neutral-900 p-1 shadow-xl"
         >
           {user ? (
@@ -69,7 +71,7 @@ export function ProfileMenu() {
               className={itemClass}
               onClick={() => setOpen(false)}
             >
-              My Portfolio
+              {t('nav.myPortfolio')}
             </Link>
             <Link
               to="/settings"
@@ -77,36 +79,36 @@ export function ProfileMenu() {
               className={itemClass}
               onClick={() => setOpen(false)}
             >
-              Settings
+              {t('nav.settings')}
             </Link>
             <button
               type="button"
               role="menuitem"
               disabled
-              title="Coming soon"
+              title={t('common.comingSoon')}
               className={cx(
                 itemClass,
                 'flex items-center justify-between disabled:cursor-not-allowed disabled:text-neutral-500 disabled:hover:bg-transparent',
               )}
             >
-              Invite Others
+              {t('nav.inviteOthers')}
               <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500">
-                Soon
+                {t('common.soon')}
               </span>
             </button>
             <button
               type="button"
               role="menuitem"
               disabled
-              title="Coming soon"
+              title={t('common.comingSoon')}
               className={cx(
                 itemClass,
                 'flex items-center justify-between disabled:cursor-not-allowed disabled:text-neutral-500 disabled:hover:bg-transparent',
               )}
             >
-              Share Profile
+              {t('nav.shareProfile')}
               <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500">
-                Soon
+                {t('common.soon')}
               </span>
             </button>
           </div>
@@ -121,7 +123,7 @@ export function ProfileMenu() {
               }}
               className={cx(itemClass, 'text-neutral-300 hover:text-white')}
             >
-              Logout
+              {t('nav.logout')}
             </button>
           </div>
         </div>

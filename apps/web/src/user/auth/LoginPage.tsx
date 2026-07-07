@@ -4,6 +4,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
 import type { TwoFactorChallengeResponse } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { AdminAccountError, useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
@@ -26,6 +27,7 @@ function intendedPath(state: unknown): string {
  * collects the second factor before the app opens.
  */
 export function LoginPage() {
+  const t = useT();
   const { status, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -42,7 +44,7 @@ export function LoginPage() {
   if (status === 'loading') {
     return (
       <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
-        <Spinner label="Checking session…" />
+        <Spinner label={t('auth.common.checkingSession')} />
       </div>
     );
   }
@@ -66,21 +68,28 @@ export function LoginPage() {
       if (err instanceof ApiError && err.status === 429) {
         // Rate-limited: show a dedicated message distinct from bad-credentials (§6.1).
         const wait = err.retryAfterSeconds
-          ? ` Please wait ${err.retryAfterSeconds} second${err.retryAfterSeconds === 1 ? '' : 's'} and try again.`
-          : ' Please wait a moment and try again.';
-        setError(`Too many login attempts.${wait}`);
+          ? t(
+              err.retryAfterSeconds === 1
+                ? 'auth.common.waitSecondsOne'
+                : 'auth.common.waitSecondsOther',
+              {
+                count: err.retryAfterSeconds,
+              },
+            )
+          : t('auth.common.waitMoment');
+        setError(`${t('auth.login.rateLimited')}${wait}`);
       } else if (err instanceof AdminAccountError) {
         // Admin credentials on the user app: point them at the admin area (§10).
         setError(err.message);
       } else if (err instanceof ApiError && err.status === 403 && err.code === 'ACCOUNT_DISABLED') {
         // Correct password but the account is suspended: a distinct message,
         // separate from bad-credentials and the rate-limit notice (§6.1, §16).
-        setError('This account has been suspended. Please contact the administrator.');
+        setError(t('auth.login.accountDisabled'));
       } else if (err instanceof ApiError && err.status >= 500) {
-        setError('Something went wrong. Please try again.');
+        setError(t('common.genericError'));
       } else {
         // Never distinguish "no such user" from "wrong password" (§6.1).
-        setError('Incorrect email/username or password.');
+        setError(t('auth.login.invalidCredentials'));
       }
     } finally {
       setSubmitting(false);
@@ -103,14 +112,14 @@ export function LoginPage() {
   }
 
   return (
-    <AuthCard subtitle="Sign in to your account">
+    <AuthCard subtitle={t('auth.login.subtitle')}>
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
-          label="Email or username"
+          label={t('auth.login.identifierLabel')}
           name="identifier"
           autoComplete="username"
           autoFocus
@@ -119,7 +128,7 @@ export function LoginPage() {
           required
         />
         <TextField
-          label="Password"
+          label={t('auth.login.passwordLabel')}
           name="password"
           type="password"
           autoComplete="current-password"
@@ -128,13 +137,13 @@ export function LoginPage() {
           required
         />
         <Button type="submit" disabled={submitting}>
-          {submitting ? 'Signing in…' : 'Sign in'}
+          {submitting ? t('auth.login.submitting') : t('auth.login.submit')}
         </Button>
         <Link
           to="/forgot-password"
           className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
         >
-          Forgot password?
+          {t('auth.login.forgotPassword')}
         </Link>
       </form>
     </AuthCard>
@@ -151,24 +160,26 @@ export function TwoFactorStep({
   challenge,
   onVerified,
   onCancel,
-  cancelLabel = 'Back to sign in',
+  cancelLabel,
 }: {
   challenge: TwoFactorChallengeResponse;
   onVerified: () => void;
   onCancel: () => void;
   cancelLabel?: string;
 }) {
+  const t = useT();
   const { verifyTwoFactor, requestTwoFactorEmailCode } = useAuth();
   const totpAvailable = challenge.channels.includes('totp');
   const emailAvailable = challenge.channels.includes('email');
   const recoveryAvailable = challenge.channels.includes('recovery');
+  const resolvedCancelLabel = cancelLabel ?? t('auth.twoFactor.backToSignIn');
 
   // Tailor the prompt to the methods this account actually enabled (#298).
   const codePrompt = totpAvailable
     ? emailAvailable
-      ? 'Enter the 6-digit code from your authenticator app, or request an emailed code below.'
-      : 'Enter the 6-digit code from your authenticator app.'
-    : 'Enter the 6-digit code we emailed you.';
+      ? t('auth.twoFactor.promptTotpAndEmail')
+      : t('auth.twoFactor.promptTotpOnly')
+    : t('auth.twoFactor.promptEmailOnly');
 
   const [useRecovery, setUseRecovery] = useState(false);
   const [value, setValue] = useState('');
@@ -191,11 +202,11 @@ export function TwoFactorStep({
       onVerified();
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
-        setError('Too many incorrect codes. Please wait a moment and try again.');
+        setError(t('auth.twoFactor.tooManyCodes'));
       } else if (err instanceof ApiError && err.code === 'TWO_FACTOR_PENDING_INVALID') {
-        setError('Your verification session expired. Please sign in again.');
+        setError(t('auth.twoFactor.sessionExpired'));
       } else {
-        setError('That code is incorrect or has expired.');
+        setError(t('auth.twoFactor.invalidCode'));
       }
     } finally {
       setSubmitting(false);
@@ -208,12 +219,12 @@ export function TwoFactorStep({
     setSendingCode(true);
     try {
       await requestTwoFactorEmailCode({ pendingToken: challenge.pendingToken });
-      setInfo('If email is configured, a sign-in code is on its way. Enter it below.');
+      setInfo(t('auth.twoFactor.emailCodeSent'));
     } catch (err) {
       if (err instanceof ApiError && err.code === 'TWO_FACTOR_PENDING_INVALID') {
-        setError('Your verification session expired. Please sign in again.');
+        setError(t('auth.twoFactor.sessionExpired'));
       } else {
-        setError('Could not send an email code. Try your authenticator or a recovery code.');
+        setError(t('auth.twoFactor.emailCodeFailed'));
       }
     } finally {
       setSendingCode(false);
@@ -221,7 +232,7 @@ export function TwoFactorStep({
   }
 
   return (
-    <AuthCard subtitle="Two-factor authentication">
+    <AuthCard subtitle={t('auth.twoFactor.subtitle')}>
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
@@ -229,10 +240,14 @@ export function TwoFactorStep({
         {error ? <Alert tone="error">{error}</Alert> : null}
         {info ? <Alert tone="info">{info}</Alert> : null}
         <p className="text-sm text-neutral-400">
-          {useRecovery ? 'Enter one of your recovery codes.' : codePrompt}
+          {useRecovery ? t('auth.twoFactor.recoveryPrompt') : codePrompt}
         </p>
         <TextField
-          label={useRecovery ? 'Recovery code' : 'Verification code'}
+          label={
+            useRecovery
+              ? t('auth.twoFactor.recoveryCodeLabel')
+              : t('auth.twoFactor.verificationCodeLabel')
+          }
           name={useRecovery ? 'recoveryCode' : 'code'}
           autoComplete="one-time-code"
           inputMode={useRecovery ? 'text' : 'numeric'}
@@ -242,11 +257,11 @@ export function TwoFactorStep({
           required
         />
         <Button type="submit" disabled={submitting || value.trim().length === 0}>
-          {submitting ? 'Verifying…' : 'Verify'}
+          {submitting ? t('auth.twoFactor.verifying') : t('auth.twoFactor.verify')}
         </Button>
         {emailAvailable && !useRecovery ? (
           <Button type="button" variant="secondary" onClick={onEmailCode} disabled={sendingCode}>
-            {sendingCode ? 'Sending…' : 'Email me a code'}
+            {sendingCode ? t('auth.twoFactor.sendingEmailCode') : t('auth.twoFactor.emailMeACode')}
           </Button>
         ) : null}
         {recoveryAvailable ? (
@@ -260,7 +275,9 @@ export function TwoFactorStep({
               setInfo(null);
             }}
           >
-            {useRecovery ? 'Use an authenticator or email code' : 'Use a recovery code'}
+            {useRecovery
+              ? t('auth.twoFactor.useAuthenticatorOrEmail')
+              : t('auth.twoFactor.useRecoveryCode')}
           </button>
         ) : null}
         <button
@@ -268,7 +285,7 @@ export function TwoFactorStep({
           className="text-center text-sm font-medium text-neutral-400 hover:text-neutral-200"
           onClick={onCancel}
         >
-          {cancelLabel}
+          {resolvedCancelLabel}
         </button>
       </form>
     </AuthCard>

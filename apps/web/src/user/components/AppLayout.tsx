@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { Disclaimer, ErrorBoundary, TAGLINE } from '../../ui';
 import { CmdKPalette } from './CmdKPalette';
@@ -16,13 +17,14 @@ import { cx } from './ui';
  * reachable from any route.
  */
 const NAV_ITEMS = [
-  { to: '/portfolio', label: 'Portfolio' },
-  { to: '/workboard', label: 'Workboard' },
-  { to: '/assets', label: 'Assets' },
-  { to: '/social', label: 'Social' },
+  { to: '/portfolio', labelKey: 'nav.portfolio' },
+  { to: '/workboard', labelKey: 'nav.workboard' },
+  { to: '/assets', labelKey: 'nav.assets' },
+  { to: '/social', labelKey: 'nav.social' },
 ] as const;
 
 export function AppLayout() {
+  const t = useT();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
 
@@ -47,7 +49,10 @@ export function AppLayout() {
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-4 sm:gap-6">
             <Wordmark edition="Web" className="shrink-0 text-xl" />
-            <nav aria-label="Primary" className="no-scrollbar flex min-w-0 gap-1 overflow-x-auto">
+            <nav
+              aria-label={t('nav.primary')}
+              className="no-scrollbar flex min-w-0 gap-1 overflow-x-auto"
+            >
               {NAV_ITEMS.map((item) => (
                 <NavLink
                   key={item.to}
@@ -61,7 +66,7 @@ export function AppLayout() {
                     )
                   }
                 >
-                  {item.label}
+                  {t(item.labelKey)}
                 </NavLink>
               ))}
             </nav>
@@ -70,14 +75,14 @@ export function AppLayout() {
             <button
               type="button"
               onClick={openPalette}
-              aria-label="Open search (⌘K)"
+              aria-label={t('nav.openSearch')}
               className={cx(
                 'hidden items-center gap-2 rounded-md px-3 py-1.5 text-xs text-neutral-500 sm:flex',
                 'ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 hover:text-neutral-300',
                 'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
               )}
             >
-              Search
+              {t('common.search')}
               <kbd className="rounded bg-neutral-800 px-1 py-0.5 font-mono text-neutral-500">
                 ⌘K
               </kbd>

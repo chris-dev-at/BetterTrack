@@ -84,6 +84,7 @@ function makeMe(pinEnabled: boolean): MeResponse {
     pinEnabled,
     pinLockIdleMinutes: null,
     baseCurrency: 'EUR',
+    locale: 'en',
     lastLoginAt: '2026-07-01T08:00:00.000Z',
     createdAt: '2026-01-15T09:00:00.000Z',
   };

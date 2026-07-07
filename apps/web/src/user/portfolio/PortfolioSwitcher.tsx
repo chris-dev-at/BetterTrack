@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import {
   archivePortfolio,
@@ -57,6 +58,7 @@ const inputClass = cx(
 type NameDialogState = { mode: 'create' } | { mode: 'rename'; portfolio: PortfolioSummary };
 
 export function PortfolioSwitcher() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
@@ -138,8 +140,8 @@ export function PortfolioSwitcher() {
     onError: (err) =>
       setActionError(
         err instanceof ApiError && err.code === 'PORTFOLIO_NAME_TAKEN'
-          ? 'You already have a portfolio with that name.'
-          : 'Could not create the portfolio. Please try again.',
+          ? t('portfolio.switcher.nameTakenError')
+          : t('portfolio.switcher.createError'),
       ),
   });
 
@@ -153,8 +155,8 @@ export function PortfolioSwitcher() {
     onError: (err) =>
       setActionError(
         err instanceof ApiError && err.code === 'PORTFOLIO_NAME_TAKEN'
-          ? 'You already have a portfolio with that name.'
-          : 'Could not rename the portfolio. Please try again.',
+          ? t('portfolio.switcher.nameTakenError')
+          : t('portfolio.switcher.renameError'),
       ),
   });
 
@@ -172,7 +174,7 @@ export function PortfolioSwitcher() {
       setActionError(
         err instanceof ApiError && err.code === 'LAST_ACTIVE_PORTFOLIO'
           ? err.message
-          : 'Could not archive the portfolio. Please try again.',
+          : t('portfolio.switcher.archiveError'),
       ),
   });
 
@@ -183,7 +185,7 @@ export function PortfolioSwitcher() {
       refetchLists();
       void queryClient.invalidateQueries({ queryKey: ['portfolios', 'archived'] });
     },
-    onError: () => setActionError('Could not restore the portfolio. Please try again.'),
+    onError: () => setActionError(t('portfolio.switcher.restoreError')),
   });
 
   const itemClass =
@@ -197,13 +199,15 @@ export function PortfolioSwitcher() {
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Switch portfolio"
+        aria-label={t('portfolio.switcher.triggerAriaLabel')}
         className="inline-flex items-center gap-2 rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-neutral-200 ring-1 ring-inset ring-neutral-800 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
-        <span className="max-w-[12rem] truncate">{active?.name ?? 'Portfolio'}</span>
+        <span className="max-w-[12rem] truncate">
+          {active?.name ?? t('portfolio.switcher.fallbackName')}
+        </span>
         {active?.isDefault ? (
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500">
-            Default
+            {t('portfolio.switcher.defaultBadge')}
           </span>
         ) : null}
         <span aria-hidden="true" className="text-neutral-500">
@@ -214,7 +218,7 @@ export function PortfolioSwitcher() {
       {open ? (
         <div
           role="menu"
-          aria-label="Portfolios"
+          aria-label={t('portfolio.switcher.menuAriaLabel')}
           className="absolute left-0 z-40 mt-2 w-64 rounded-lg border border-neutral-800 bg-neutral-900 p-1 shadow-xl"
         >
           <div className="max-h-64 overflow-y-auto py-1">
@@ -238,7 +242,7 @@ export function PortfolioSwitcher() {
                 </span>
                 {p.isDefault ? (
                   <span className="shrink-0 rounded-full bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500">
-                    Default
+                    {t('portfolio.switcher.defaultBadge')}
                   </span>
                 ) : null}
               </button>
@@ -256,7 +260,7 @@ export function PortfolioSwitcher() {
               }}
               className={itemClass}
             >
-              + New portfolio
+              {t('portfolio.switcher.newPortfolio')}
             </button>
             <button
               type="button"
@@ -270,13 +274,13 @@ export function PortfolioSwitcher() {
               }}
               className={cx(itemClass, 'disabled:cursor-not-allowed disabled:text-neutral-600')}
             >
-              Rename current
+              {t('portfolio.switcher.renameCurrent')}
             </button>
             <button
               type="button"
               role="menuitem"
               disabled={!active || onlyOneActive}
-              title={onlyOneActive ? 'You cannot archive your only portfolio' : undefined}
+              title={onlyOneActive ? t('portfolio.switcher.archiveDisabledHint') : undefined}
               onClick={() => {
                 if (!active) return;
                 setActionError(null);
@@ -285,7 +289,7 @@ export function PortfolioSwitcher() {
               }}
               className={cx(itemClass, 'disabled:cursor-not-allowed disabled:text-neutral-600')}
             >
-              Archive current
+              {t('portfolio.switcher.archiveCurrent')}
             </button>
           </div>
 
@@ -300,7 +304,7 @@ export function PortfolioSwitcher() {
               }}
               className={itemClass}
             >
-              Archived…
+              {t('portfolio.switcher.archivedMenuItem')}
             </button>
           </div>
         </div>
@@ -331,8 +335,10 @@ export function PortfolioSwitcher() {
 
       {confirmArchive ? (
         <Dialog
-          title="Archive portfolio"
-          description={`Hide "${confirmArchive.name}" from your portfolio list. Its history is kept and you can restore it any time.`}
+          title={t('portfolio.switcher.archiveDialogTitle')}
+          description={t('portfolio.switcher.archiveDialogDescription', {
+            name: confirmArchive.name,
+          })}
           onClose={() => {
             setConfirmArchive(null);
             setActionError(null);
@@ -350,13 +356,15 @@ export function PortfolioSwitcher() {
                 }}
                 disabled={archiveMutation.isPending}
               >
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button
                 onClick={() => archiveMutation.mutate(confirmArchive.id)}
                 disabled={archiveMutation.isPending}
               >
-                {archiveMutation.isPending ? 'Archiving…' : 'Archive'}
+                {archiveMutation.isPending
+                  ? t('portfolio.switcher.archiving')
+                  : t('portfolio.switcher.archive')}
               </Button>
             </div>
           </div>
@@ -365,8 +373,8 @@ export function PortfolioSwitcher() {
 
       {archivedOpen ? (
         <Dialog
-          title="Archived portfolios"
-          description="Restore a portfolio to bring it back into your list."
+          title={t('portfolio.switcher.archivedDialogTitle')}
+          description={t('portfolio.switcher.archivedDialogDescription')}
           onClose={() => {
             setArchivedOpen(false);
             setActionError(null);
@@ -381,7 +389,7 @@ export function PortfolioSwitcher() {
                 <Skeleton height="h-10" />
               </div>
             ) : archived.length === 0 ? (
-              <p className="text-sm text-neutral-500">No archived portfolios.</p>
+              <p className="text-sm text-neutral-500">{t('portfolio.switcher.noArchived')}</p>
             ) : (
               <ul className="flex flex-col gap-2">
                 {archived.map((p) => (
@@ -395,7 +403,7 @@ export function PortfolioSwitcher() {
                       onClick={() => restoreMutation.mutate(p.id)}
                       disabled={restoreMutation.isPending}
                     >
-                      Restore
+                      {t('portfolio.switcher.restore')}
                     </Button>
                   </li>
                 ))}
@@ -424,13 +432,18 @@ function NameDialog({
   onClose: () => void;
   onSubmit: (name: string) => void;
 }) {
+  const t = useT();
   const [name, setName] = useState(initialName);
   const trimmed = name.trim();
   const valid = trimmed.length > 0 && trimmed.length <= 120;
 
   return (
     <Dialog
-      title={mode === 'create' ? 'New portfolio' : 'Rename portfolio'}
+      title={
+        mode === 'create'
+          ? t('portfolio.switcher.createTitle')
+          : t('portfolio.switcher.renameTitle')
+      }
       onClose={onClose}
       widthClassName="max-w-md"
     >
@@ -442,15 +455,17 @@ function NameDialog({
         className="flex flex-col gap-4"
       >
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Name</span>
+          <span className="text-sm font-medium text-neutral-300">
+            {t('portfolio.switcher.nameLabel')}
+          </span>
           <input
             type="text"
             value={name}
             maxLength={120}
             autoFocus
             onChange={(e) => setName(e.target.value)}
-            aria-label="Portfolio name"
-            placeholder="e.g. Retirement"
+            aria-label={t('portfolio.switcher.nameAriaLabel')}
+            placeholder={t('portfolio.switcher.namePlaceholder')}
             className={inputClass}
           />
         </label>
@@ -459,10 +474,14 @@ function NameDialog({
 
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button type="submit" disabled={!valid || submitting}>
-            {submitting ? 'Saving…' : mode === 'create' ? 'Create' : 'Save'}
+            {submitting
+              ? t('common.saving')
+              : mode === 'create'
+                ? t('portfolio.switcher.create')
+                : t('common.save')}
           </Button>
         </div>
       </form>

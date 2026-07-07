@@ -83,23 +83,26 @@ export interface EmailService {
   }): Promise<EmailSendResult>;
   /** Admin diagnostic (PROJECTPLAN.md §6.12): a throwaway "does SMTP work" mail. */
   sendTest(params: { to: string; audit: EmailAuditTarget }): Promise<EmailSendResult>;
-  /** Notification email: someone sent `userId` a friend request. */
+  /** Notification email: someone sent `userId` a friend request. `locale` = recipient's UI language (§13.3 V3-P1). */
   sendFriendRequest(params: {
     to: string;
     userId: string;
     actorUsername: string;
+    locale?: string;
   }): Promise<EmailSendResult>;
   /** Notification email: `userId`'s pending friend request was accepted. */
   sendFriendAccepted(params: {
     to: string;
     userId: string;
     actorUsername: string;
+    locale?: string;
   }): Promise<EmailSendResult>;
   /** Notification email: a portfolio was shared with `userId`. */
   sendPortfolioShared(params: {
     to: string;
     userId: string;
     actorUsername: string;
+    locale?: string;
   }): Promise<EmailSendResult>;
   /** Notification email: a price alert `userId` set fired (§14). */
   sendAlertTriggered(params: {
@@ -107,6 +110,7 @@ export interface EmailService {
     userId: string;
     symbol: string;
     body: string;
+    locale?: string;
   }): Promise<EmailSendResult>;
 }
 
@@ -260,37 +264,37 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
     sendTest: ({ to, audit: target }) =>
       deliver('test', to, testEmail({ appUrl: config.appOrigin }), { audit: target }),
 
-    sendFriendRequest: ({ to, userId, actorUsername }) =>
+    sendFriendRequest: ({ to, userId, actorUsername, locale }) =>
       deliver(
         'friend_request',
         to,
-        friendRequestEmail({ actorUsername, appUrl: config.appOrigin }),
+        friendRequestEmail({ actorUsername, appUrl: config.appOrigin, locale }),
         {
           userId,
         },
       ),
 
-    sendFriendAccepted: ({ to, userId, actorUsername }) =>
+    sendFriendAccepted: ({ to, userId, actorUsername, locale }) =>
       deliver(
         'friend_accepted',
         to,
-        friendAcceptedEmail({ actorUsername, appUrl: config.appOrigin }),
+        friendAcceptedEmail({ actorUsername, appUrl: config.appOrigin, locale }),
         { userId },
       ),
 
-    sendPortfolioShared: ({ to, userId, actorUsername }) =>
+    sendPortfolioShared: ({ to, userId, actorUsername, locale }) =>
       deliver(
         'portfolio_shared',
         to,
-        portfolioSharedEmail({ actorUsername, appUrl: config.appOrigin }),
+        portfolioSharedEmail({ actorUsername, appUrl: config.appOrigin, locale }),
         { userId },
       ),
 
-    sendAlertTriggered: ({ to, userId, symbol, body }) =>
+    sendAlertTriggered: ({ to, userId, symbol, body, locale }) =>
       deliver(
         'alert_triggered',
         to,
-        alertTriggeredEmail({ symbol, body, appUrl: config.appOrigin }),
+        alertTriggeredEmail({ symbol, body, appUrl: config.appOrigin, locale }),
         {
           userId,
         },

@@ -3,7 +3,7 @@ import {
   notificationSettingsResponseSchema,
   type AccountSettingsResponse,
   type NotificationSettingsResponse,
-  type PortfolioVisibility,
+  type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -37,13 +37,17 @@ export async function getAccountSettings(signal?: AbortSignal): Promise<AccountS
   return accountSettingsResponseSchema.parse(data);
 }
 
-/** `PATCH /settings/account` — update the default portfolio visibility (§6.9, V2-P9). */
+/**
+ * `PATCH /settings/account` — partial update of the caller's account prefs
+ * (default portfolio visibility §6.9/V2-P9, and/or UI language §13.3/V3-P1).
+ * Supply only the fields to change.
+ */
 export async function updateAccountSettings(
-  defaultPortfolioVisibility: PortfolioVisibility,
+  patch: UpdateAccountSettingsRequest,
 ): Promise<AccountSettingsResponse> {
   const data = await apiRequest<unknown>('/settings/account', {
     method: 'PATCH',
-    body: { defaultPortfolioVisibility },
+    body: patch,
   });
   return accountSettingsResponseSchema.parse(data);
 }

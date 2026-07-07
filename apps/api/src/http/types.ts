@@ -11,6 +11,7 @@ export interface AuthUser {
   pinEnabled: boolean;
   pinLockIdleMinutes: number | null;
   baseCurrency: string;
+  locale: string;
   lastLoginAt: Date | string | null;
   createdAt: Date | string;
 }

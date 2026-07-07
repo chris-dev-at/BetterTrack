@@ -50,13 +50,14 @@ export function createSettingsRouter(ctx: AppContext): Router {
     res.json(settings);
   });
 
-  // PATCH /settings/account — update the default portfolio visibility (§6.9, V2-P9).
+  // PATCH /settings/account — partial update of the caller's account prefs:
+  // default portfolio visibility (§6.9, V2-P9) and/or UI language (§13.3 V3-P1).
   router.patch('/account', validateBody(updateAccountSettingsRequestSchema), async (req, res) => {
     const body = req.valid?.body as UpdateAccountSettingsRequest;
-    const settings = await ctx.accountSettings.update(
-      req.authUser!.id,
-      body.defaultPortfolioVisibility,
-    );
+    const settings = await ctx.accountSettings.update(req.authUser!.id, {
+      defaultPortfolioVisibility: body.defaultPortfolioVisibility,
+      locale: body.locale,
+    });
     res.json(settings);
   });
 

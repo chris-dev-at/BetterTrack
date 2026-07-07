@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { Alert } from '@bettertrack/contracts';
 
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
+import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { AlertDialog } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
@@ -20,6 +21,7 @@ const ALERTS_POLL_INTERVAL_MS = 60_000;
  * dialog + list components and the same cached query.
  */
 export function AlertsPage() {
+  const t = useT();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Alert | null>(null);
 
@@ -36,13 +38,12 @@ export function AlertsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Price alerts</h1>
-          <p className="mt-1 text-sm text-neutral-400">
-            Get notified when an asset crosses a price or moves by a percentage. Evaluated every
-            minute against the latest quote.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+            {t('workboard.alerts.title')}
+          </h1>
+          <p className="mt-1 text-sm text-neutral-400">{t('workboard.alerts.subtitle')}</p>
         </div>
-        <Button onClick={() => setCreating(true)}>+ New alert</Button>
+        <Button onClick={() => setCreating(true)}>{t('workboard.alerts.newAlert')}</Button>
       </div>
 
       {isLoading ? (
@@ -52,19 +53,19 @@ export function AlertsPage() {
           <Skeleton height="h-24" />
         </div>
       ) : isError ? (
-        <AlertBanner tone="error">Could not load your alerts. Please refresh the page.</AlertBanner>
+        <AlertBanner tone="error">{t('workboard.alerts.loadError')}</AlertBanner>
       ) : alerts.length === 0 ? (
         <EmptyState
           icon="🔔"
-          title="No alerts yet"
-          description="Create an alert to get notified when an asset hits a price or moves by a percentage."
+          title={t('workboard.alerts.emptyTitle')}
+          description={t('workboard.alerts.emptyDescription')}
           cta={
             <button
               type="button"
               onClick={() => setCreating(true)}
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
-              New alert →
+              {t('workboard.alerts.emptyCta')}
             </button>
           }
         />

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { localeSchema } from './i18n';
 import { NOTIFICATION_TYPES, type NotificationType } from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
 
@@ -83,12 +84,27 @@ export type UpdateNotificationSettingsRequest = z.infer<
  * portfolios and explicit per-item toggles are untouched.
  */
 export const accountSettingsResponseSchema = z
-  .object({ defaultPortfolioVisibility: portfolioVisibilitySchema })
+  .object({
+    defaultPortfolioVisibility: portfolioVisibilitySchema,
+    /** The user's UI-language preference (§13.3 V3-P1); EN by default. */
+    locale: localeSchema,
+  })
   .strict();
 export type AccountSettingsResponse = z.infer<typeof accountSettingsResponseSchema>;
 
-/** `PATCH /settings/account` body — update the default portfolio visibility. */
+/**
+ * `PATCH /settings/account` body — a **partial** account-settings update: supply
+ * the default portfolio visibility, the UI language, or both. At least one field
+ * is required, mirroring the notification-matrix PATCH. Omitted fields are left
+ * untouched.
+ */
 export const updateAccountSettingsRequestSchema = z
-  .object({ defaultPortfolioVisibility: portfolioVisibilitySchema })
-  .strict();
+  .object({
+    defaultPortfolioVisibility: portfolioVisibilitySchema.optional(),
+    locale: localeSchema.optional(),
+  })
+  .strict()
+  .refine((body) => body.defaultPortfolioVisibility !== undefined || body.locale !== undefined, {
+    message: 'At least one setting is required.',
+  });
 export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;

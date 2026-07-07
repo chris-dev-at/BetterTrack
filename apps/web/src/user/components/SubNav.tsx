@@ -1,5 +1,6 @@
 import { NavLink, useSearchParams } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { cx } from './ui';
 
 export interface SubNavItem {
@@ -38,6 +39,7 @@ export function SubNav({
   items: readonly SubNavItem[];
   preserveParams?: readonly string[];
 }) {
+  const t = useT();
   const [searchParams] = useSearchParams();
   const preserved = new URLSearchParams();
   for (const key of preserveParams ?? []) {
@@ -48,7 +50,7 @@ export function SubNav({
 
   return (
     <nav
-      aria-label="Section"
+      aria-label={t('nav.section')}
       className="no-scrollbar -mx-4 flex gap-1 overflow-x-auto border-b border-neutral-800 px-4 pb-px sm:mx-0 sm:px-0"
     >
       {items.map((item) => (
@@ -69,9 +71,9 @@ export function SubNav({
           {item.comingSoon ? (
             <span
               className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-neutral-500"
-              title="Coming soon"
+              title={t('common.comingSoon')}
             >
-              Soon
+              {t('common.soon')}
             </span>
           ) : null}
         </NavLink>

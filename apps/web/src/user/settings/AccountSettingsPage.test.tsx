@@ -18,6 +18,7 @@ vi.mock('../../lib/settingsApi', () => ({
   updateAccountSettings: vi.fn(),
 }));
 
+import { I18nProvider } from '../../i18n';
 import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
@@ -33,6 +34,7 @@ const ME: MeResponse = {
   pinEnabled: false,
   pinLockIdleMinutes: null,
   baseCurrency: 'EUR',
+  locale: 'en',
   lastLoginAt: '2026-07-01T10:00:00.000Z',
   createdAt: '2026-01-15T09:00:00.000Z',
 };
@@ -50,20 +52,29 @@ const DEFAULT_PORTFOLIO: PortfolioSummary = {
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
-    <QueryClientProvider client={client}>
-      <AccountSettingsPage />
-    </QueryClientProvider>,
+    <I18nProvider>
+      <QueryClientProvider client={client}>
+        <AccountSettingsPage />
+      </QueryClientProvider>
+    </I18nProvider>,
   );
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(getMe).mockResolvedValue(ME);
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [DEFAULT_PORTFOLIO] });
   vi.mocked(changePassword).mockResolvedValue(ME);
   vi.mocked(updatePortfolio).mockResolvedValue({ ...DEFAULT_PORTFOLIO, visibility: 'friends' });
-  vi.mocked(getAccountSettings).mockResolvedValue({ defaultPortfolioVisibility: 'private' });
-  vi.mocked(updateAccountSettings).mockResolvedValue({ defaultPortfolioVisibility: 'friends' });
+  vi.mocked(getAccountSettings).mockResolvedValue({
+    defaultPortfolioVisibility: 'private',
+    locale: 'en',
+  });
+  vi.mocked(updateAccountSettings).mockResolvedValue({
+    defaultPortfolioVisibility: 'friends',
+    locale: 'en',
+  });
 });
 
 describe('AccountSettingsPage', () => {
@@ -116,7 +127,28 @@ describe('AccountSettingsPage', () => {
 
     await user.click(friends);
 
-    await waitFor(() => expect(updateAccountSettings).toHaveBeenCalledWith('friends'));
+    await waitFor(() =>
+      expect(updateAccountSettings).toHaveBeenCalledWith({ defaultPortfolioVisibility: 'friends' }),
+    );
+  });
+
+  test('the language picker persists the choice and switches the app to German', async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateAccountSettings).mockResolvedValue({
+      defaultPortfolioVisibility: 'private',
+      locale: 'de',
+    });
+    renderPage();
+
+    // Renders in English by default (source of truth).
+    expect(await screen.findByText('Account')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Display language'), 'de');
+
+    // Persists the choice server-side …
+    await waitFor(() => expect(updateAccountSettings).toHaveBeenCalledWith({ locale: 'de' }));
+    // … and switches the app at runtime without a reload (German heading appears).
+    expect(await screen.findByText('Konto')).toBeInTheDocument();
   });
 
   test('turning sharing on PATCHes the default portfolio to friends', async () => {
