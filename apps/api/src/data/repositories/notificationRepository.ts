@@ -51,15 +51,20 @@ function toRecord(row: typeof notifications.$inferSelect): NotificationRecord {
 
 export function createNotificationRepository(db: Database) {
   return {
-    /** Insert one in-app notification row. */
-    async insert(input: InsertNotificationInput): Promise<void> {
-      await db.insert(notifications).values({
-        userId: input.userId,
-        type: input.type,
-        title: input.title,
-        body: input.body,
-        payload: input.payload ?? null,
-      });
+    /** Insert one in-app notification row; returns the new row's id (§4.5 —
+     *  the dispatcher publishes `notification.created` with it for the bell push). */
+    async insert(input: InsertNotificationInput): Promise<string> {
+      const [row] = await db
+        .insert(notifications)
+        .values({
+          userId: input.userId,
+          type: input.type,
+          title: input.title,
+          body: input.body,
+          payload: input.payload ?? null,
+        })
+        .returning({ id: notifications.id });
+      return row!.id;
     },
 
     /**

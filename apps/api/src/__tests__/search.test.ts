@@ -262,6 +262,50 @@ describe('GET /api/v1/search', () => {
     expect(res.body.results).toHaveLength(0);
   });
 
+  it('resolves the V3-P10c EUR crypto/commodity instruments from the local catalog with zero synchronous provider calls', async () => {
+    const marketData = createStubMarketData({
+      search: () => new Promise<never>(() => undefined),
+    });
+    const h = await createTestApp({ marketData, backfill });
+    await seedCatalogAsset(h, {
+      symbol: 'BTC-EUR',
+      name: 'Bitcoin',
+      providerRef: 'BTC-EUR',
+    });
+    await h.db
+      .update(schema.assets)
+      .set({ type: 'crypto', currency: 'EUR', exchange: 'CCC' })
+      .where(eq(schema.assets.providerRef, 'BTC-EUR'));
+    await seedCatalogAsset(h, {
+      symbol: 'XAUEUR=X',
+      name: 'Gold (EUR)',
+      providerRef: 'XAUEUR=X',
+    });
+    await h.db
+      .update(schema.assets)
+      .set({ type: 'commodity', currency: 'EUR', exchange: 'CCY' })
+      .where(eq(schema.assets.providerRef, 'XAUEUR=X'));
+
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const btcRes = await agent.get('/api/v1/search?q=bitcoin');
+    expect(btcRes.status).toBe(200);
+    expect(btcRes.body.results[0]).toMatchObject({
+      symbol: 'BTC-EUR',
+      type: 'crypto',
+      currency: 'EUR',
+    });
+
+    const goldRes = await agent.get('/api/v1/search?q=gold');
+    expect(goldRes.status).toBe(200);
+    expect(goldRes.body.results[0]).toMatchObject({
+      symbol: 'XAUEUR=X',
+      type: 'commodity',
+      currency: 'EUR',
+    });
+  });
+
   it('does not re-run enrichment while the catalog answers well', async () => {
     const marketData = createStubMarketData({
       search: () => {

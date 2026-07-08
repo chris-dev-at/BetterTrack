@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterTrack — dein persönlicher Investing-Workspace</title>
+    <meta
+      name="description"
+      content="BetterTrack ist ein selbst gehosteter Workspace für Finanzen und Investments: Verfolge jedes Portfolio, baue und backteste eigene ETF-artige Baskets und durchsuche jedes Asset. Nur mit Einladung."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/env.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <span class="wordmark"
+          ><span class="better">Better</span><span class="track">Track</span></span
+        >
+        <div class="header-actions">
+          <nav class="lang-switch" aria-label="Sprache">
+            <a href="/index.html">EN</a>
+            <a href="/de.html" aria-current="true">DE</a>
+          </nav>
+          <a class="btn btn-ghost js-web-link" href="https://web.bettertrack.at">Web-App öffnen</a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap">
+          <span class="eyebrow">Selbst gehostet · Nur mit Einladung</span>
+          <h1>Dein gesamtes Vermögen in einem klaren Workspace.</h1>
+          <p class="lede">
+            BetterTrack verfolgt jedes Portfolio, das dir gehört — Aktien, ETFs, Krypto und
+            außerbörsliche Werte wie dein Auto oder deine Wohnung —, baut und backtestet eigene
+            ETF-artige Baskets und macht aus einem Budget eine Kaufliste.
+          </p>
+          <div class="hero-cta">
+            <a class="btn btn-primary js-web-link" href="https://web.bettertrack.at"
+              >Web-App öffnen</a
+            >
+            <a class="btn btn-ghost" href="#features">Funktionen ansehen</a>
+          </div>
+          <p class="invite-note">
+            <strong>Nur mit Einladung.</strong> BetterTrack ist ein geschlossener Workspace für eine
+            Person — der Zugang erfolgt auf Einladung des Hosts.
+          </p>
+          <div class="hero-shot">
+            <img
+              src="/screens/portfolio.svg"
+              width="960"
+              height="560"
+              alt="BetterTrack Portfolio-Übersicht mit Nettovermögen, Wertverlauf und Positionen"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="features" id="features">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Alles, was du verfolgst, an einem Ort</h2>
+            <p>Vier Dinge, die BetterTrack kann und eine Tabelle nicht.</p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/portfolio.svg"
+                  width="960"
+                  height="560"
+                  alt="Portfolio-Übersicht mit Nettovermögen und Positionen"
+                />
+              </div>
+              <div class="body">
+                <h3>Jedes Portfolio, ein Nettovermögen</h3>
+                <p>
+                  Führe getrennte Portfolios und außerbörsliche Custom Assets nebeneinander. Bargeld
+                  zählt mit, damit dein Nettovermögen immer ehrlich bleibt.
+                </p>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/conglomerate.svg"
+                  width="600"
+                  height="380"
+                  alt="Conglomerate-Builder mit gewichtetem Allocation-Donut"
+                />
+              </div>
+              <div class="body">
+                <h3>Baue deine eigenen ETFs</h3>
+                <p>
+                  Conglomerates sind deine eigenen gewichteten Baskets aus beliebigen Assets. Lege
+                  die Gewichte fest, rebalanciere und behandle den Basket wie eine einzelne
+                  Position.
+                </p>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/backtest.svg"
+                  width="600"
+                  height="380"
+                  alt="Backtest-Chart, der einen Basket mit einer Benchmark vergleicht"
+                />
+              </div>
+              <div class="body">
+                <h3>Backtesten, bevor du kaufst</h3>
+                <p>
+                  Lass jeden Basket durch Jahre an Historie laufen und vergleiche ihn mit einer
+                  Benchmark — CAGR, Drawdown und Wachstum direkt nebeneinander.
+                </p>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/assets.svg"
+                  width="600"
+                  height="380"
+                  alt="Asset-Suche und Detailansicht mit Kurschart"
+                />
+              </div>
+              <div class="body">
+                <h3>Durchsuche jedes Asset</h3>
+                <p>
+                  Eine schnelle lokale Suche über Aktien, ETFs, Krypto und Rohstoffe — mit einer
+                  klaren Detailansicht und Kurshistorie für jedes davon.
+                </p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span
+          >© BetterTrack —
+          <a class="js-web-link" href="https://web.bettertrack.at">Web-App</a></span
+        >
+        <span>Selbst gehostete Finanz- &amp; Investment-Verwaltung. Nur mit Einladung.</span>
+      </div>
+    </footer>
+
+    <script>
+      // Verweist jeden „Web-App öffnen"-Link auf das konfigurierte Web-Origin
+      // (window.__BT_LANDING__.webOrigin, beim Container-Start via env.js gesetzt).
+      (function () {
+        var origin = (window.__BT_LANDING__ && window.__BT_LANDING__.webOrigin) || '';
+        if (!origin) return;
+        var links = document.querySelectorAll('.js-web-link');
+        for (var i = 0; i < links.length; i++) {
+          links[i].setAttribute('href', origin);
+        }
+      })();
+    </script>
+  </body>
+</html>

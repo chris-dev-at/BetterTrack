@@ -1,0 +1,196 @@
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import type { Socket } from 'socket.io-client';
+
+import {
+  REALTIME_CLIENT_EVENTS,
+  REALTIME_SERVER_EVENTS,
+  realtimePortfolioChangedSchema,
+  realtimeQuoteUpdatedSchema,
+  type RealtimeRoom,
+} from '@bettertrack/contracts';
+
+import { createRealtimeSocket } from './socket';
+
+/** The server pushes a consumer can subscribe to (contract event names). */
+export type RealtimeServerEvent =
+  (typeof REALTIME_SERVER_EVENTS)[keyof typeof REALTIME_SERVER_EVENTS];
+
+export interface RealtimeContextValue {
+  /** True while the socket is connected — pushes are flowing. */
+  connected: boolean;
+  /**
+   * Subscribe to a server push. Returns the unsubscribe. Handlers registered
+   * while disconnected simply wait — they fire once pushes resume.
+   */
+  on(event: RealtimeServerEvent, handler: (payload: unknown) => void): () => void;
+  /**
+   * Reference-counted membership in an `asset:{id}` / `portfolio:{id}` room
+   * (§4.5). Returns the leave function; the room is re-joined automatically
+   * after a reconnect for as long as any reference holds it.
+   */
+  joinRoom(room: RealtimeRoom): () => void;
+}
+
+/**
+ * Default = no provider mounted (anonymous, admin app, tests): every operation
+ * is a safe no-op, so consumers never need to know whether realtime exists —
+ * exactly the poll-fallback guarantee of §4.5.
+ */
+const NOOP_CONTEXT: RealtimeContextValue = {
+  connected: false,
+  on: () => () => {},
+  joinRoom: () => () => {},
+};
+
+export const RealtimeContext = createContext<RealtimeContextValue>(NOOP_CONTEXT);
+
+export function useRealtime(): RealtimeContextValue {
+  return useContext(RealtimeContext);
+}
+
+/**
+ * Subscribe to one server push for the lifetime of the component. The handler
+ * is kept in a ref so an inline closure never re-subscribes per render.
+ */
+export function useRealtimeEvent(
+  event: RealtimeServerEvent,
+  handler: (payload: unknown) => void,
+): void {
+  const { on } = useRealtime();
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  useEffect(() => on(event, (payload) => handlerRef.current(payload)), [on, event]);
+}
+
+const roomKey = (room: RealtimeRoom): string => `${room.kind}:${room.id}`;
+
+/**
+ * Owns the app's single gateway socket (PROJECTPLAN.md §4.5, V3-P7a): connects
+ * while `enabled` (an authenticated user-app session), tears down otherwise,
+ * and fans server pushes out to `useRealtimeEvent` subscribers.
+ *
+ * Cache sync: pushes map to TanStack Query invalidations — `quote.updated` →
+ * the asset's queries, `portfolio.changed` → that portfolio + the portfolio
+ * list (cross-tab / shared-view freshness). `notification.new` is handled by
+ * the bell itself, which owns the notifications query key. Every consumer keeps
+ * its poll/refetch behavior untouched, so a dead socket degrades silently.
+ */
+export function RealtimeProvider({ enabled, children }: { enabled: boolean; children: ReactNode }) {
+  const queryClient = useQueryClient();
+  const [connected, setConnected] = useState(false);
+  const socketRef = useRef<Socket | null>(null);
+  const handlersRef = useRef(new Map<string, Set<(payload: unknown) => void>>());
+  const roomsRef = useRef(new Map<string, { room: RealtimeRoom; count: number }>());
+
+  useEffect(() => {
+    if (!enabled) return;
+    const socket = createRealtimeSocket();
+    socketRef.current = socket;
+
+    const onConnect = () => {
+      setConnected(true);
+      // Room membership does not survive a reconnect — re-join everything a
+      // mounted consumer still references.
+      for (const { room } of roomsRef.current.values()) {
+        socket.emit(REALTIME_CLIENT_EVENTS.roomJoin, { room });
+      }
+    };
+    const onDisconnect = () => setConnected(false);
+    // Silent by design: the poll fallback carries the app while we retry.
+    const onConnectError = () => {};
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
+
+    const pushListeners = Object.values(REALTIME_SERVER_EVENTS).map((event) => {
+      const listener = (payload: unknown) => {
+        const set = handlersRef.current.get(event);
+        if (!set) return;
+        for (const handler of [...set]) handler(payload);
+      };
+      socket.on(event, listener);
+      return [event, listener] as const;
+    });
+
+    return () => {
+      setConnected(false);
+      socketRef.current = null;
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
+      for (const [event, listener] of pushListeners) socket.off(event, listener);
+      socket.disconnect();
+    };
+  }, [enabled]);
+
+  const on = useCallback<RealtimeContextValue['on']>((event, handler) => {
+    let set = handlersRef.current.get(event);
+    if (!set) {
+      set = new Set();
+      handlersRef.current.set(event, set);
+    }
+    set.add(handler);
+    return () => {
+      set.delete(handler);
+    };
+  }, []);
+
+  const joinRoom = useCallback<RealtimeContextValue['joinRoom']>((room) => {
+    const key = roomKey(room);
+    const entry = roomsRef.current.get(key) ?? { room, count: 0 };
+    entry.count += 1;
+    roomsRef.current.set(key, entry);
+    if (entry.count === 1) {
+      socketRef.current?.emit(REALTIME_CLIENT_EVENTS.roomJoin, { room });
+    }
+    let left = false;
+    return () => {
+      if (left) return;
+      left = true;
+      const current = roomsRef.current.get(key);
+      if (!current) return;
+      current.count -= 1;
+      if (current.count <= 0) {
+        roomsRef.current.delete(key);
+        socketRef.current?.emit(REALTIME_CLIENT_EVENTS.roomLeave, { room });
+      }
+    };
+  }, []);
+
+  // Central cache sync for the pushes whose query keys are app-global.
+  useEffect(() => {
+    const offQuote = on(REALTIME_SERVER_EVENTS.quoteUpdated, (payload) => {
+      const parsed = realtimeQuoteUpdatedSchema.safeParse(payload);
+      if (!parsed.success) return;
+      void queryClient.invalidateQueries({ queryKey: ['asset', parsed.data.assetId] });
+    });
+    const offPortfolio = on(REALTIME_SERVER_EVENTS.portfolioChanged, (payload) => {
+      const parsed = realtimePortfolioChangedSchema.safeParse(payload);
+      if (!parsed.success) return;
+      void queryClient.invalidateQueries({ queryKey: ['portfolio', parsed.data.portfolioId] });
+      void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
+    });
+    return () => {
+      offQuote();
+      offPortfolio();
+    };
+  }, [on, queryClient]);
+
+  const value = useMemo<RealtimeContextValue>(
+    () => ({ connected, on, joinRoom }),
+    [connected, on, joinRoom],
+  );
+
+  return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;
+}

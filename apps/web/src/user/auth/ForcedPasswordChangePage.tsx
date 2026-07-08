@@ -3,17 +3,19 @@ import type { FormEvent } from 'react';
 
 import { MIN_PASSWORD_LENGTH } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, TextField } from '../components/ui';
 
 /** Friendly message for the codes `POST /auth/change-password` can return. */
-function changeErrorMessage(err: unknown): string {
+function changeErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'WEAK_PASSWORD') return err.message;
-    if (err.status >= 500) return 'Something went wrong. Please try again.';
+    if (err.status >= 500) return t('common.genericError');
   }
-  return 'Could not change your password. Please try again.';
+  return t('auth.forcedPasswordChange.failed');
 }
 
 /**
@@ -25,6 +27,7 @@ function changeErrorMessage(err: unknown): string {
  * password is confirmed client-side; the policy/blocklist is enforced server-side.
  */
 export function ForcedPasswordChangePage() {
+  const t = useT();
   const { user, changePassword, logout } = useAuth();
 
   const [newPassword, setNewPassword] = useState('');
@@ -36,7 +39,7 @@ export function ForcedPasswordChangePage() {
     e.preventDefault();
     setError(null);
     if (newPassword !== confirmPassword) {
-      setError('The new passwords do not match.');
+      setError(t('auth.forcedPasswordChange.mismatch'));
       return;
     }
     setSubmitting(true);
@@ -44,25 +47,26 @@ export function ForcedPasswordChangePage() {
       // Success rotates the session and releases the trap via the AuthContext.
       await changePassword({ newPassword });
     } catch (err) {
-      setError(changeErrorMessage(err));
+      setError(changeErrorMessage(t, err));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <AuthCard subtitle="Choose a new password">
+    <AuthCard subtitle={t('auth.forcedPasswordChange.subtitle')}>
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         <Alert tone="info">
-          {user ? <>You're signed in as {user.email}. </> : null}
-          You need to set a new password before continuing.
+          {user
+            ? t('auth.forcedPasswordChange.signedInAs', { email: user.email })
+            : t('auth.forcedPasswordChange.infoNoUser')}
         </Alert>
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
-          label="New password"
+          label={t('auth.forcedPasswordChange.newPasswordLabel')}
           name="newPassword"
           type="password"
           autoComplete="new-password"
@@ -71,10 +75,10 @@ export function ForcedPasswordChangePage() {
           onChange={(e) => setNewPassword(e.target.value)}
           minLength={MIN_PASSWORD_LENGTH}
           required
-          hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+          hint={t('auth.common.minPasswordHint', { count: MIN_PASSWORD_LENGTH })}
         />
         <TextField
-          label="Confirm new password"
+          label={t('auth.forcedPasswordChange.confirmPasswordLabel')}
           name="confirmPassword"
           type="password"
           autoComplete="new-password"
@@ -84,10 +88,12 @@ export function ForcedPasswordChangePage() {
           required
         />
         <Button type="submit" disabled={submitting}>
-          {submitting ? 'Updating…' : 'Update password'}
+          {submitting
+            ? t('auth.forcedPasswordChange.updating')
+            : t('auth.forcedPasswordChange.submit')}
         </Button>
         <Button type="button" variant="ghost" onClick={() => void logout()} disabled={submitting}>
-          Sign out
+          {t('auth.common.signOut')}
         </Button>
       </form>
     </AuthCard>

@@ -17,6 +17,8 @@ import {
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
@@ -54,15 +56,17 @@ function toHistoryRange(r: PriceRange): PortfolioHistoryRange {
 /** §6.9 caches the series 1 h; mirror that as the client staleTime. */
 const HISTORY_STALE_MS = 3_600_000;
 
-const TYPE_LABELS: Record<string, string> = {
-  stock: 'Stocks',
-  etf: 'ETFs',
-  index: 'Indices',
-  fx: 'FX',
-  commodity: 'Commodities',
-  crypto: 'Crypto',
-  custom: 'Custom',
-};
+function assetTypeLabels(t: TranslateFn): Record<string, string> {
+  return {
+    stock: t('portfolio.overview.assetType.stock'),
+    etf: t('portfolio.overview.assetType.etf'),
+    index: t('portfolio.overview.assetType.index'),
+    fx: t('portfolio.overview.assetType.fx'),
+    commodity: t('portfolio.overview.assetType.commodity'),
+    crypto: t('portfolio.overview.assetType.crypto'),
+    custom: t('portfolio.overview.assetType.custom'),
+  };
+}
 
 // ─── Totals header ────────────────────────────────────────────────────────────
 
@@ -79,11 +83,92 @@ function DeltaPct({ value }: { value: number | null }) {
 }
 
 /**
+ * Compact liquidity ring (V3-P0 redesign, #322): a small invested-vs-liquid
+ * donut that belongs in the overview instead of the old full-width split bar the
+ * owner found "out of place". Same data — the invested share (sky) and its cash
+ * complement (emerald) — drawn as two arcs of a single ring with the liquid
+ * share called out in the centre. Purely decorative shape; the accessible
+ * description carries both percentages.
+ */
+function LiquidityRing({ investedPct, cashPct }: { investedPct: number; cashPct: number }) {
+  const t = useT();
+  const radius = 26;
+  const circumference = 2 * Math.PI * radius;
+  const investedLen = (investedPct / 100) * circumference;
+
+  return (
+    <div
+      className="flex items-center gap-3"
+      aria-label={t('portfolio.overview.liquidityRing.ariaLabel')}
+    >
+      <svg
+        viewBox="0 0 64 64"
+        className="h-16 w-16 shrink-0 -rotate-90"
+        role="img"
+        aria-label={t('portfolio.overview.liquidityRing.summary', {
+          invested: formatPercent(investedPct),
+          liquid: formatPercent(cashPct),
+        })}
+      >
+        {/* Track under the two arcs, so any rounding gap reads as neutral. */}
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="8"
+          className="text-neutral-800"
+        />
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          strokeWidth="8"
+          className="text-sky-500"
+          stroke="currentColor"
+          strokeDasharray={`${investedLen} ${circumference}`}
+        />
+        <circle
+          cx="32"
+          cy="32"
+          r={radius}
+          fill="none"
+          strokeWidth="8"
+          className="text-emerald-500"
+          stroke="currentColor"
+          strokeDasharray={`${circumference - investedLen} ${circumference}`}
+          strokeDashoffset={-investedLen}
+        />
+      </svg>
+      <div className="text-xs text-neutral-400" aria-hidden="true">
+        <div className="flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-sky-500" />
+          <span>
+            <span className="font-medium text-neutral-200">{formatPercent(investedPct)}</span>{' '}
+            {t('portfolio.overview.liquidityRing.investedLegend')}
+          </span>
+        </div>
+        <div className="mt-1 flex items-center gap-1.5">
+          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+          <span>
+            <span className="font-medium text-neutral-200">{formatPercent(cashPct)}</span>{' '}
+            {t('portfolio.overview.liquidityRing.liquidLegend')}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Net-worth headline (#311): the primary figure is the portfolio's total worth
  * — holdings + cash — with the invested/cash composition spelled out and a
- * slim liquidity ratio bar answering "how liquid am I?" at a glance.
+ * compact liquidity ring answering "how liquid am I?" at a glance.
  */
 function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
+  const t = useT();
   // Clamp the invested share to [0, 100] and derive the cash share as its
   // complement, so the two always sum to exactly 100 % of the headline total.
   const investedPct =
@@ -93,37 +178,22 @@ function NetWorthHeadline({ totals }: { totals: PortfolioTotals }) {
   const cashPct = investedPct == null ? null : 100 - investedPct;
 
   return (
-    <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+    <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
       <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">Total value</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+          {t('portfolio.overview.netWorth.label')}
+        </p>
         <p className="mt-1 text-3xl font-semibold tracking-tight text-neutral-100">
           <MoneyText amount={totals.totalValueEur} />
         </p>
         <p className="mt-1 text-sm text-neutral-400">
-          <MoneyText amount={totals.marketValueEur} /> invested &middot;{' '}
-          <MoneyText amount={totals.cashEur} /> cash
+          <MoneyText amount={totals.marketValueEur} />{' '}
+          {t('portfolio.overview.netWorth.investedWord')} &middot;{' '}
+          <MoneyText amount={totals.cashEur} /> {t('portfolio.overview.netWorth.cashWord')}
         </p>
       </div>
       {investedPct != null && cashPct != null ? (
-        <div className="w-full sm:max-w-xs sm:flex-1" aria-label="Liquidity">
-          <div className="flex items-center justify-between gap-3 text-xs text-neutral-400">
-            <span>
-              <span className="font-medium text-neutral-200">{formatPercent(investedPct)}</span>{' '}
-              invested
-            </span>
-            <span>
-              <span className="font-medium text-neutral-200">{formatPercent(cashPct)}</span> liquid
-            </span>
-          </div>
-          <div
-            role="img"
-            aria-label={`${formatPercent(investedPct)} invested, ${formatPercent(cashPct)} liquid`}
-            className="mt-1.5 flex h-2 overflow-hidden rounded-full bg-neutral-800"
-          >
-            <div className="bg-sky-500" style={{ width: `${investedPct}%` }} />
-            <div className="bg-emerald-500" style={{ width: `${cashPct}%` }} />
-          </div>
-        </div>
+        <LiquidityRing investedPct={investedPct} cashPct={cashPct} />
       ) : null}
     </div>
   );
@@ -138,24 +208,31 @@ function TotalsHeader({
   onDeposit: () => void;
   onWithdraw: () => void;
 }) {
+  const t = useT();
   return (
-    <section aria-label="Portfolio totals" className="flex flex-col gap-3">
+    <section aria-label={t('portfolio.overview.totalsAriaLabel')} className="flex flex-col gap-3">
       <NetWorthHeadline totals={totals} />
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <StatCard label="Market value" value={<MoneyText amount={totals.marketValueEur} />} />
-        <StatCard label="Invested" value={<MoneyText amount={totals.investedEur} />} />
         <StatCard
-          label="Unrealized P/L"
+          label={t('portfolio.overview.field.marketValue')}
+          value={<MoneyText amount={totals.marketValueEur} />}
+        />
+        <StatCard
+          label={t('portfolio.overview.field.invested')}
+          value={<MoneyText amount={totals.investedEur} />}
+        />
+        <StatCard
+          label={t('portfolio.overview.field.unrealizedPnl')}
           value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
           subValue={<DeltaPct value={totals.unrealizedPnlPct} />}
         />
         <StatCard
-          label="Day change"
+          label={t('portfolio.overview.field.dayChange')}
           value={<MoneyText amount={totals.dayChangeEur} signed />}
           subValue={<DeltaPct value={totals.dayChangePct} />}
         />
         <StatCard
-          label="Cash"
+          label={t('portfolio.overview.field.cash')}
           value={<MoneyText amount={totals.cashEur} />}
           subValue={
             <span className="flex gap-2">
@@ -164,14 +241,14 @@ function TotalsHeader({
                 onClick={onDeposit}
                 className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
               >
-                + Deposit
+                {t('portfolio.overview.depositButton')}
               </button>
               <button
                 type="button"
                 onClick={onWithdraw}
                 className="text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
               >
-                − Withdraw
+                {t('portfolio.overview.withdrawButton')}
               </button>
             </span>
           }
@@ -184,6 +261,8 @@ function TotalsHeader({
 // ─── Allocation donuts ──────────────────────────────────────────────────────
 
 function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur: number }) {
+  const t = useT();
+  const typeLabels = assetTypeLabels(t);
   const byAsset: AllocationSegment[] = holdings
     .filter((h) => h.marketValueEur != null && h.marketValueEur > 0)
     .map((h) => ({ label: h.asset.symbol, value: h.marketValueEur! }));
@@ -194,28 +273,41 @@ function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur
     byTypeMap.set(h.asset.type, (byTypeMap.get(h.asset.type) ?? 0) + h.marketValueEur);
   }
   const byType: AllocationSegment[] = [...byTypeMap].map(([type, value]) => ({
-    label: TYPE_LABELS[type] ?? type,
+    label: typeLabels[type] ?? type,
     value,
   }));
 
   // Cash is part of the portfolio's worth (#311) — the composition view gets
   // a cash slice in both donuts so the shares describe the headline total.
   if (cashEur > 0) {
-    byAsset.push({ label: 'Cash', value: cashEur });
-    byType.push({ label: 'Cash', value: cashEur });
+    byAsset.push({ label: t('portfolio.overview.field.cash'), value: cashEur });
+    byType.push({ label: t('portfolio.overview.field.cash'), value: cashEur });
   }
 
   if (byAsset.length === 0) return null;
 
   return (
-    <section aria-label="Allocation" className="grid gap-6 sm:grid-cols-2">
+    <section
+      aria-label={t('portfolio.overview.allocationAriaLabel')}
+      className="grid gap-6 sm:grid-cols-2"
+    >
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">By asset</h3>
-        <AllocationDonut data={byAsset} title="Allocation by asset" />
+        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
+          {t('portfolio.overview.allocation.byAssetTitle')}
+        </h3>
+        <AllocationDonut
+          data={byAsset}
+          title={t('portfolio.overview.allocation.byAssetChartTitle')}
+        />
       </div>
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">By type</h3>
-        <AllocationDonut data={byType} title="Allocation by type" />
+        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
+          {t('portfolio.overview.allocation.byTypeTitle')}
+        </h3>
+        <AllocationDonut
+          data={byType}
+          title={t('portfolio.overview.allocation.byTypeChartTitle')}
+        />
       </div>
     </section>
   );
@@ -271,11 +363,14 @@ function RankedHoldingRow({ holding, pct, deltaEur }: RankedHolding) {
 }
 
 function RankedList({ title, items }: { title: string; items: RankedHolding[] }) {
+  const t = useT();
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
       <h3 className="mb-3 text-sm font-semibold text-neutral-200">{title}</h3>
       {items.length === 0 ? (
-        <p className="text-sm text-neutral-500">Nothing to show.</p>
+        <p className="text-sm text-neutral-500">
+          {t('portfolio.overview.winnersLosers.nothingToShow')}
+        </p>
       ) : (
         <ul className="flex flex-col gap-3">
           {items.map((item) => (
@@ -289,6 +384,7 @@ function RankedList({ title, items }: { title: string; items: RankedHolding[] })
 
 /** §6.8 top winners / top losers — ranked by day % or total P/L %, toggleable. */
 function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
+  const t = useT();
   const [metric, setMetric] = useState<RankMetric>('day');
   const ranked = rankHoldings(holdings, metric);
 
@@ -304,9 +400,14 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
     .slice(0, WINNERS_LOSERS_LIMIT);
 
   return (
-    <section aria-label="Top winners and losers" className="flex flex-col gap-3">
+    <section
+      aria-label={t('portfolio.overview.winnersLosers.ariaLabel')}
+      className="flex flex-col gap-3"
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-neutral-200">Top winners / losers</h2>
+        <h2 className="text-lg font-semibold text-neutral-200">
+          {t('portfolio.overview.winnersLosers.heading')}
+        </h2>
         <div className="flex gap-1 rounded p-0.5 ring-1 ring-inset ring-neutral-800">
           <button
             type="button"
@@ -320,7 +421,7 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
                 : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
             )}
           >
-            Day %
+            {t('portfolio.overview.winnersLosers.dayMetric')}
           </button>
           <button
             type="button"
@@ -334,13 +435,13 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
                 : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
             )}
           >
-            Total P/L
+            {t('portfolio.overview.winnersLosers.totalMetric')}
           </button>
         </div>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        <RankedList title="Top winners" items={winners} />
-        <RankedList title="Top losers" items={losers} />
+        <RankedList title={t('portfolio.overview.winnersLosers.topWinners')} items={winners} />
+        <RankedList title={t('portfolio.overview.winnersLosers.topLosers')} items={losers} />
       </div>
     </section>
   );
@@ -352,63 +453,73 @@ const RECENT_TRANSACTIONS_LIMIT = 8;
 
 /** §6.8 recent transactions — flat, newest-first ledger across all holdings. */
 function RecentTransactionsSection({ transactions }: { transactions: Transaction[] }) {
+  const t = useT();
   if (transactions.length === 0) return null;
   const recent = [...transactions]
     .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())
     .slice(0, RECENT_TRANSACTIONS_LIMIT);
 
   return (
-    <section aria-label="Recent transactions" className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold text-neutral-200">Recent transactions</h2>
+    <section
+      aria-label={t('portfolio.overview.recentTransactions.ariaLabel')}
+      className="flex flex-col gap-3"
+    >
+      <h2 className="text-lg font-semibold text-neutral-200">
+        {t('portfolio.overview.recentTransactions.heading')}
+      </h2>
       <div className="overflow-x-auto rounded-lg border border-neutral-800">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
               <th scope="col" className="px-3 py-2">
-                Asset
+                {t('portfolio.overview.field.asset')}
               </th>
               <th scope="col" className="px-3 py-2">
-                Side
+                {t('portfolio.overview.field.side')}
               </th>
               <th scope="col" className="px-3 py-2 text-right">
-                Qty
+                {t('portfolio.overview.field.qty')}
               </th>
               <th scope="col" className="px-3 py-2 text-right">
-                Price
+                {t('portfolio.overview.field.price')}
               </th>
               <th scope="col" className="px-3 py-2">
-                Date
+                {t('portfolio.overview.field.date')}
               </th>
             </tr>
           </thead>
           <tbody>
-            {recent.map((t) => (
-              <tr key={t.id} className="border-b border-neutral-800 last:border-b-0">
+            {recent.map((txn) => (
+              <tr key={txn.id} className="border-b border-neutral-800 last:border-b-0">
                 <td className="min-w-0 px-3 py-2">
                   <Link
-                    to={`/assets/${t.assetId}`}
+                    to={`/assets/${txn.assetId}`}
                     className="font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
                   >
-                    {t.asset.symbol}
+                    {txn.asset.symbol}
                   </Link>
                 </td>
                 <td className="px-3 py-2">
                   <span
                     className={cx(
                       'rounded px-1.5 py-0.5 text-xs font-medium',
-                      t.side === 'buy'
+                      txn.side === 'buy'
                         ? 'bg-emerald-900/50 text-emerald-300'
                         : 'bg-amber-900/50 text-amber-300',
                     )}
                   >
-                    {t.side === 'buy' ? 'Buy' : 'Sell'}
+                    {txn.side === 'buy'
+                      ? t('portfolio.overview.side.buy')
+                      : t('portfolio.overview.side.sell')}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(t.quantity)}</td>
-                <td className="px-3 py-2 text-right">
-                  <MoneyText amount={t.price} currency={t.asset.currency} />
+                <td className="px-3 py-2 text-right tabular-nums">
+                  {formatQuantity(txn.quantity)}
                 </td>
-                <td className="px-3 py-2 text-neutral-400">{formatDate(t.executedAt)}</td>
+                <td className="px-3 py-2 text-right">
+                  <MoneyText amount={txn.price} currency={txn.asset.currency} />
+                </td>
+                <td className="px-3 py-2 text-neutral-400">{formatDate(txn.executedAt)}</td>
               </tr>
             ))}
           </tbody>
@@ -443,6 +554,7 @@ function HoldingsTable({
   onEditValuePoints,
   deletingId,
 }: HoldingsTableProps) {
+  const t = useT();
   return (
     <div className="overflow-x-auto rounded-lg border border-neutral-800">
       <table className="w-full text-left text-sm">
@@ -450,25 +562,25 @@ function HoldingsTable({
           <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
             <th scope="col" className="w-5 pl-2" aria-hidden="true" />
             <th scope="col" className="px-3 py-2">
-              Asset
+              {t('portfolio.overview.field.asset')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Qty
+              {t('portfolio.overview.field.qty')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Avg cost
+              {t('portfolio.overview.field.avgCost')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Price
+              {t('portfolio.overview.field.price')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Market value
+              {t('portfolio.overview.field.marketValue')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Unrealized P/L
+              {t('portfolio.overview.field.unrealizedPnl')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Day
+              {t('portfolio.overview.field.day')}
             </th>
           </tr>
         </thead>
@@ -516,6 +628,7 @@ function HoldingRow({
   onEditValuePoints,
   deletingId,
 }: HoldingRowProps) {
+  const t = useT();
   const { asset } = h;
   const dialogAsset: TransactionDialogAsset = {
     id: asset.id,
@@ -532,7 +645,11 @@ function HoldingRow({
             type="button"
             onClick={onToggle}
             aria-expanded={isExpanded}
-            aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${asset.symbol} transactions`}
+            aria-label={
+              isExpanded
+                ? t('portfolio.overview.holdings.collapseRow', { symbol: asset.symbol })
+                : t('portfolio.overview.holdings.expandRow', { symbol: asset.symbol })
+            }
             className="rounded p-1 text-neutral-500 transition-colors hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
           >
             <span aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
@@ -587,7 +704,7 @@ function HoldingRow({
             <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-                  Transactions
+                  {t('portfolio.overview.holdings.transactionsHeading')}
                 </h4>
                 <div className="flex gap-2">
                   {asset.isCustom ? (
@@ -602,62 +719,64 @@ function HoldingRow({
                         })
                       }
                     >
-                      Edit value points
+                      {t('portfolio.overview.holdings.editValuePoints')}
                     </Button>
                   ) : null}
                   <Button variant="secondary" onClick={() => onRecord(dialogAsset)}>
-                    + Transaction
+                    {t('portfolio.overview.recordButton')}
                   </Button>
                 </div>
               </div>
 
               {h.realizedPnl !== 0 ? (
                 <p className="text-xs text-neutral-500">
-                  Realized P/L:{' '}
+                  {t('portfolio.overview.holdings.realizedPnlLabel')}{' '}
                   <MoneyText amount={h.realizedPnl} currency={asset.currency} signed />
                 </p>
               ) : null}
 
               {transactions.length === 0 ? (
-                <p className="text-sm text-neutral-500">No transactions loaded for this asset.</p>
+                <p className="text-sm text-neutral-500">
+                  {t('portfolio.overview.holdings.noTransactions')}
+                </p>
               ) : (
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className="text-neutral-500">
                       <th scope="col" className="py-1 pr-3 font-medium">
-                        Date
+                        {t('portfolio.overview.field.date')}
                       </th>
                       <th scope="col" className="py-1 pr-3 font-medium">
-                        Side
+                        {t('portfolio.overview.field.side')}
                       </th>
                       <th scope="col" className="py-1 pr-3 text-right font-medium">
-                        Qty
+                        {t('portfolio.overview.field.qty')}
                       </th>
                       <th scope="col" className="py-1 pr-3 text-right font-medium">
-                        Price
+                        {t('portfolio.overview.field.price')}
                       </th>
                       <th scope="col" className="py-1 pr-3 text-right font-medium">
-                        Fee
+                        {t('portfolio.overview.field.fee')}
                       </th>
                       <th scope="col" className="py-1 pr-3 font-medium">
-                        Note
+                        {t('portfolio.overview.field.note')}
                       </th>
                       <th
                         scope="col"
                         className="py-1 text-right font-medium"
-                        aria-label="Actions"
+                        aria-label={t('portfolio.overview.holdings.actionsAriaLabel')}
                       />
                     </tr>
                   </thead>
                   <tbody>
-                    {transactions.map((t) => (
+                    {transactions.map((txn) => (
                       <TransactionRow
-                        key={t.id}
-                        txn={t}
+                        key={txn.id}
+                        txn={txn}
                         currency={asset.currency}
-                        onEdit={() => onEditTxn(t)}
-                        onDelete={() => onDeleteTxn(t.id)}
-                        deleting={deletingId === t.id}
+                        onEdit={() => onEditTxn(txn)}
+                        onDelete={() => onDeleteTxn(txn.id)}
+                        deleting={deletingId === txn.id}
                       />
                     ))}
                   </tbody>
@@ -684,6 +803,7 @@ function TransactionRow({
   onDelete: () => void;
   deleting: boolean;
 }) {
+  const t = useT();
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -698,7 +818,9 @@ function TransactionRow({
               : 'bg-amber-900/50 text-amber-300',
           )}
         >
-          {txn.side === 'buy' ? 'Buy' : 'Sell'}
+          {txn.side === 'buy'
+            ? t('portfolio.overview.side.buy')
+            : t('portfolio.overview.side.sell')}
         </span>
       </td>
       <td className="py-2 pr-3 text-right tabular-nums text-neutral-300">
@@ -719,14 +841,16 @@ function TransactionRow({
       <td className="py-2 text-right">
         {confirming ? (
           <span className="inline-flex items-center gap-1">
-            <span className="text-neutral-400">Delete?</span>
+            <span className="text-neutral-400">
+              {t('portfolio.overview.transaction.deleteConfirm')}
+            </span>
             <button
               type="button"
               onClick={onDelete}
               disabled={deleting}
               className="rounded px-1.5 py-0.5 text-red-400 hover:bg-neutral-800 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
-              {deleting ? '…' : 'Yes'}
+              {deleting ? '…' : t('common.yes')}
             </button>
             <button
               type="button"
@@ -734,7 +858,7 @@ function TransactionRow({
               disabled={deleting}
               className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
-              No
+              {t('common.no')}
             </button>
           </span>
         ) : (
@@ -742,15 +866,19 @@ function TransactionRow({
             <button
               type="button"
               onClick={onEdit}
-              aria-label={`Edit transaction from ${formatDate(txn.executedAt)}`}
+              aria-label={t('portfolio.overview.transaction.editAriaLabel', {
+                date: formatDate(txn.executedAt),
+              })}
               className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
-              Edit
+              {t('common.edit')}
             </button>
             <button
               type="button"
               onClick={() => setConfirming(true)}
-              aria-label={`Delete transaction from ${formatDate(txn.executedAt)}`}
+              aria-label={t('portfolio.overview.transaction.deleteAriaLabel', {
+                date: formatDate(txn.executedAt),
+              })}
               className="rounded px-1.5 py-0.5 text-neutral-400 hover:bg-neutral-800 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               ✕
@@ -777,6 +905,7 @@ type TxnDialogState =
  * the `TransactionDialog`, `ValuePointEditor` and `CustomInvestmentDialog`.
  */
 export function PortfolioPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<PriceRange>('1M');
   const [overlay, setOverlay] = useState(false);
@@ -843,16 +972,16 @@ export function PortfolioPage() {
       setActionError(
         err instanceof ApiError && err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE'
           ? err.message
-          : 'Could not delete the transaction. Please try again.',
+          : t('portfolio.overview.deleteTxnError'),
       ),
   });
 
   const txnsByAsset = useMemo(() => {
     const map = new Map<string, Transaction[]>();
-    for (const t of transactionsQuery.data?.items ?? []) {
-      const list = map.get(t.assetId);
-      if (list) list.push(t);
-      else map.set(t.assetId, [t]);
+    for (const txn of transactionsQuery.data?.items ?? []) {
+      const list = map.get(txn.assetId);
+      if (list) list.push(txn);
+      else map.set(txn.assetId, [txn]);
     }
     return map;
   }, [transactionsQuery.data]);
@@ -942,7 +1071,7 @@ export function PortfolioPage() {
           onRecord={() => setTxnDialog({ kind: 'create' })}
           onNewCustom={() => setCustomOpen(true)}
         />
-        <Alert tone="error">Could not load your portfolio. Please refresh the page.</Alert>
+        <Alert tone="error">{t('portfolio.overview.loadError')}</Alert>
         {renderDialogs()}
       </div>
     );
@@ -999,19 +1128,21 @@ export function PortfolioPage() {
       {isEmpty ? (
         <EmptyState
           icon="💼"
-          title="Your portfolio is empty"
-          description="Record your first transaction or add a custom investment to start tracking what you own."
+          title={t('portfolio.overview.emptyState.title')}
+          description={t('portfolio.overview.emptyState.description')}
           cta={
             <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setTxnDialog({ kind: 'create' })}>Record transaction</Button>
+              <Button onClick={() => setTxnDialog({ kind: 'create' })}>
+                {t('portfolio.overview.emptyState.recordButton')}
+              </Button>
               <Button variant="secondary" onClick={() => setCustomOpen(true)}>
-                New custom investment
+                {t('portfolio.overview.emptyState.newCustomButton')}
               </Button>
               <Link
                 to="/assets/search"
                 className="rounded px-3 py-2 text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
               >
-                Search for an asset →
+                {t('portfolio.overview.emptyState.searchLink')}
               </Link>
             </div>
           }
@@ -1024,20 +1155,25 @@ export function PortfolioPage() {
             onWithdraw={() => setCashDialogKind('withdrawal')}
           />
 
-          <section aria-label="Value over time" className="flex flex-col gap-3">
+          <section
+            aria-label={t('portfolio.overview.chart.heading')}
+            className="flex flex-col gap-3"
+          >
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold text-neutral-200">Value over time</h2>
+              <h2 className="text-lg font-semibold text-neutral-200">
+                {t('portfolio.overview.chart.heading')}
+              </h2>
               <div className="flex flex-wrap items-center gap-2">
                 <div
                   role="group"
-                  aria-label="Chart display mode"
+                  aria-label={t('portfolio.overview.chart.displayModeAriaLabel')}
                   className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
                 >
                   <ModeButton selected={!perfMode} onClick={() => setPerfMode(false)}>
-                    Value &euro;
+                    {t('portfolio.overview.chart.valueMode')}
                   </ModeButton>
                   <ModeButton selected={perfMode} onClick={() => setPerfMode(true)}>
-                    Performance %
+                    {t('portfolio.overview.chart.performanceMode')}
                   </ModeButton>
                 </div>
                 <button
@@ -1052,15 +1188,12 @@ export function PortfolioPage() {
                       : 'bg-neutral-900 text-neutral-400 ring-neutral-800 hover:bg-neutral-800 hover:text-neutral-100',
                   )}
                 >
-                  Overlay assets
+                  {t('portfolio.overview.chart.overlayToggle')}
                 </button>
               </div>
             </div>
             {perfMode ? (
-              <p className="text-xs text-neutral-500">
-                Deposits and withdrawals are neutralized (time-weighted return) — the curve only
-                moves when your holdings move.
-              </p>
+              <p className="text-xs text-neutral-500">{t('portfolio.overview.chart.perfHint')}</p>
             ) : null}
             <PriceChart
               series={chartPoints}
@@ -1071,14 +1204,23 @@ export function PortfolioPage() {
               onRangeChange={setRange}
               overlays={overlay ? chartOverlays : []}
               loading={historyQuery.isLoading || historyQuery.isFetching}
-              ariaLabel={perfMode ? 'Portfolio performance over time' : 'Portfolio value over time'}
+              ariaLabel={
+                perfMode
+                  ? t('portfolio.overview.chart.ariaLabelPerformance')
+                  : t('portfolio.overview.chart.ariaLabelValue')
+              }
             />
           </section>
 
           <AllocationSection holdings={holdings} cashEur={totals.cashEur} />
 
-          <section aria-label="Holdings" className="flex flex-col gap-3">
-            <h2 className="text-lg font-semibold text-neutral-200">Holdings</h2>
+          <section
+            aria-label={t('portfolio.overview.holdingsAriaLabel')}
+            className="flex flex-col gap-3"
+          >
+            <h2 className="text-lg font-semibold text-neutral-200">
+              {t('portfolio.overview.holdingsHeading')}
+            </h2>
             {actionError ? <Alert tone="error">{actionError}</Alert> : null}
             <HoldingsTable
               holdings={holdings}
@@ -1133,19 +1275,20 @@ function ModeButton({
 }
 
 function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCustom: () => void }) {
+  const t = useT();
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Portfolio</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          What you own, what it&rsquo;s worth, and how it&rsquo;s doing.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+          {t('portfolio.overview.title')}
+        </h1>
+        <p className="mt-1 text-sm text-neutral-400">{t('portfolio.overview.subtitle')}</p>
       </div>
       <div className="flex gap-2">
         <Button variant="secondary" onClick={onNewCustom}>
-          + Custom investment
+          {t('portfolio.overview.newCustomButton')}
         </Button>
-        <Button onClick={onRecord}>+ Transaction</Button>
+        <Button onClick={onRecord}>{t('portfolio.overview.recordButton')}</Button>
       </div>
     </div>
   );

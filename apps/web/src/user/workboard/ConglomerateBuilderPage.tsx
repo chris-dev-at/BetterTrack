@@ -13,6 +13,7 @@ import {
   updateConglomerate,
 } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
+import { useT } from '../../i18n';
 import { AllocationDonut } from '../../ui/charts';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Alert, Button, Spinner } from '../components/ui';
@@ -40,8 +41,6 @@ import {
 const PREVIEW_DEBOUNCE_MS = 500;
 /** …and before the draft autosaves. */
 const AUTOSAVE_DEBOUNCE_MS = 600;
-/** Name a `new` draft is created under before the user provides one. */
-const DEFAULT_NAME = 'Untitled conglomerate';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -60,6 +59,7 @@ export function ConglomerateBuilderPage() {
 }
 
 function EditBuilderLoader({ id }: { id: string }) {
+  const t = useT();
   const { data, isLoading, isError } = useQuery({
     queryKey: ['conglomerate', id],
     queryFn: ({ signal }) => getConglomerate(id, signal),
@@ -69,7 +69,7 @@ function EditBuilderLoader({ id }: { id: string }) {
     return (
       <BuilderFrame>
         <div className="grid flex-1 place-items-center">
-          <Spinner label="Loading the Builder…" />
+          <Spinner label={t('workboard.builder.loading')} />
         </div>
       </BuilderFrame>
     );
@@ -79,12 +79,9 @@ function EditBuilderLoader({ id }: { id: string }) {
     return (
       <BuilderFrame>
         <div className="mx-auto flex max-w-md flex-col gap-4 px-4 py-16">
-          <Alert tone="error">
-            Could not load this Conglomerate. It may not exist or the server is temporarily
-            unavailable.
-          </Alert>
+          <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
           <Link to="/workboard/conglomerates" className="text-sm text-sky-400 hover:underline">
-            ← Back to Conglomerates
+            {t('workboard.detail.backToConglomeratesError')}
           </Link>
         </div>
       </BuilderFrame>
@@ -148,8 +145,10 @@ function hasMeaningfulContent(name: string, positions: readonly BuilderPosition[
 // ─── Builder ─────────────────────────────────────────────────────────────────
 
 function Builder({ initial }: { initial: BuilderInitial | null }) {
+  const t = useT();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const defaultName = t('workboard.builder.defaultName');
 
   const [name, setName] = useState(initial?.name ?? '');
   const [positions, setPositions] = useState<BuilderPosition[]>(initial?.positions ?? []);
@@ -184,7 +183,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 
       let id = idRef.current;
       if (!id) {
-        const created = await createConglomerate({ name: trimmed || DEFAULT_NAME });
+        const created = await createConglomerate({ name: trimmed || defaultName });
         id = created.id;
         idRef.current = id;
         savedNameRef.current = created.name;
@@ -204,7 +203,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
         savedPositionsKeyRef.current = payloadKey;
       }
     },
-    [queryClient],
+    [queryClient, defaultName],
   );
 
   /**
@@ -293,9 +292,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const handleActivate = useCallback(async () => {
     setActivateError(null);
     if (!canActivate(positionsRef.current)) {
-      setActivateError(
-        'Weights must sum to 100% (±0.01) with every position above 0 before activating.',
-      );
+      setActivateError(t('workboard.builder.activateValidationError'));
       return;
     }
     setActivating(true);
@@ -310,14 +307,12 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
       navigate(`/workboard/conglomerates/${id}`);
     } catch (err) {
       setActivateError(
-        err instanceof ApiError
-          ? err.message
-          : 'Could not activate this Conglomerate. Please try again.',
+        err instanceof ApiError ? err.message : t('workboard.builder.activateError'),
       );
     } finally {
       setActivating(false);
     }
-  }, [navigate, queryClient, scheduleSave]);
+  }, [navigate, queryClient, scheduleSave, t]);
 
   // ── Live preview (debounced) ──
 
@@ -383,13 +378,14 @@ function BuilderHeader({
   activating: boolean;
   onActivate: () => void;
 }) {
+  const t = useT();
   return (
     <header className="border-b border-neutral-800 bg-neutral-900/70">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <Link
             to="/workboard/conglomerates"
-            aria-label="Close the Builder"
+            aria-label={t('workboard.builder.closeAriaLabel')}
             className="shrink-0 rounded px-2 py-1 text-sm text-neutral-500 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
           >
             ✕
@@ -398,8 +394,8 @@ function BuilderHeader({
             type="text"
             value={name}
             onChange={(e) => onNameChange(e.target.value)}
-            placeholder="Untitled conglomerate"
-            aria-label="Conglomerate name"
+            placeholder={t('workboard.builder.defaultName')}
+            aria-label={t('workboard.builder.nameAriaLabel')}
             className="min-w-0 flex-1 rounded-md bg-transparent px-2 py-1.5 text-lg font-semibold text-neutral-100 ring-1 ring-inset ring-transparent placeholder:text-neutral-600 hover:ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
           />
         </div>
@@ -412,11 +408,15 @@ function BuilderHeader({
             disabled={!activatable || activating}
             title={
               activatable
-                ? 'Active = your live, validated basket used by the calculator; must sum to 100%.'
-                : 'Weights must sum to 100% (±0.01) before activating.'
+                ? t('workboard.builder.activatableHint')
+                : t('workboard.builder.notActivatableHint')
             }
           >
-            {activating ? 'Activating…' : status === 'active' ? 'Re-activate' : 'Activate'}
+            {activating
+              ? t('workboard.builder.activating')
+              : status === 'active'
+                ? t('workboard.builder.reactivate')
+                : t('workboard.builder.activate')}
           </Button>
         </div>
       </div>
@@ -425,11 +425,14 @@ function BuilderHeader({
 }
 
 function SavePill({ state, error }: { state: SaveState; error: string | null }) {
+  const t = useT();
   const base =
     'inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset';
   if (state === 'saving') {
     return (
-      <span className={cx(base, 'bg-neutral-800 text-neutral-300 ring-neutral-700')}>Saving…</span>
+      <span className={cx(base, 'bg-neutral-800 text-neutral-300 ring-neutral-700')}>
+        {t('workboard.builder.saving')}
+      </span>
     );
   }
   if (state === 'error') {
@@ -438,19 +441,21 @@ function SavePill({ state, error }: { state: SaveState; error: string | null }) 
         className={cx(base, 'bg-red-950/60 text-red-300 ring-red-800')}
         title={error ?? undefined}
       >
-        Save failed
+        {t('workboard.builder.saveFailed')}
       </span>
     );
   }
   if (state === 'saved') {
     return (
       <span className={cx(base, 'bg-emerald-950/60 text-emerald-300 ring-emerald-800')}>
-        Draft — saved
+        {t('workboard.builder.draftSaved')}
       </span>
     );
   }
   return (
-    <span className={cx(base, 'bg-neutral-800 text-neutral-500 ring-neutral-700')}>Draft</span>
+    <span className={cx(base, 'bg-neutral-800 text-neutral-500 ring-neutral-700')}>
+      {t('workboard.builder.draftIdle')}
+    </span>
   );
 }
 
@@ -463,17 +468,18 @@ function AddAssetsPanel({
   notice: string | null;
   onSelect: (item: SearchResultItem) => void;
 }) {
+  const t = useT();
   return (
     <section aria-labelledby="add-assets-heading" className="flex flex-col gap-3">
       <h2
         id="add-assets-heading"
         className="text-sm font-semibold uppercase tracking-wide text-neutral-400"
       >
-        Add assets
+        {t('workboard.builder.addAssetsHeading')}
       </h2>
-      <p className="text-xs text-neutral-500">Search and click a result to add it at weight 0.</p>
+      <p className="text-xs text-neutral-500">{t('workboard.builder.addAssetsHint')}</p>
       {notice ? <Alert tone="error">{notice}</Alert> : null}
-      <AssetSearchBox onSelect={onSelect} placeholder="Search stocks, ETFs, indices…" />
+      <AssetSearchBox onSelect={onSelect} placeholder={t('workboard.builder.searchPlaceholder')} />
     </section>
   );
 }
@@ -495,6 +501,7 @@ function PositionsPanel({
   onAutoBalance: () => void;
   onNormalize: () => void;
 }) {
+  const t = useT();
   return (
     <section aria-labelledby="positions-heading" className="flex min-w-0 flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
@@ -502,24 +509,27 @@ function PositionsPanel({
           id="positions-heading"
           className="text-sm font-semibold uppercase tracking-wide text-neutral-400"
         >
-          Positions
+          {t('workboard.builder.positionsHeading')}
         </h2>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={onAutoBalance} disabled={positions.length === 0}>
-            Auto-balance
+            {t('workboard.builder.autoBalance')}
           </Button>
           <Button variant="secondary" onClick={onNormalize} disabled={positions.length === 0}>
-            Normalize
+            {t('workboard.builder.normalize')}
           </Button>
         </div>
       </div>
 
       {positions.length === 0 ? (
         <div className="rounded-lg border border-dashed border-neutral-800 bg-neutral-900/30 p-8 text-center text-sm text-neutral-500">
-          No positions yet. Search on the left and click an asset to add it.
+          {t('workboard.builder.noPositionsMessage')}
         </div>
       ) : (
-        <ul className="flex flex-col gap-2" aria-label="Conglomerate positions">
+        <ul
+          className="flex flex-col gap-2"
+          aria-label={t('workboard.builder.positionsListAriaLabel')}
+        >
           {positions.map((position) => (
             <WeightRow
               key={position.assetId}
@@ -555,6 +565,7 @@ export function WeightRow({
   onToggleLock: () => void;
   onRemove: () => void;
 }) {
+  const t = useT();
   const { symbol, name, weightPct, locked } = position;
   const [draft, setDraft] = useState(String(weightPct));
 
@@ -580,7 +591,7 @@ export function WeightRow({
           step={WEIGHT_SLIDER_STEP}
           value={weightPct}
           onChange={(e) => onWeight(Number(e.target.value))}
-          aria-label={`Weight slider for ${symbol}`}
+          aria-label={t('workboard.builder.weightSliderAriaLabel', { symbol })}
           className="min-w-0 flex-1 accent-sky-500"
         />
         <div className="flex items-center gap-1">
@@ -597,7 +608,7 @@ export function WeightRow({
               const parsed = Number(raw);
               if (Number.isFinite(parsed)) onWeight(parsed);
             }}
-            aria-label={`Weight for ${symbol}`}
+            aria-label={t('workboard.builder.weightAriaLabel', { symbol })}
             className="w-20 rounded-md bg-neutral-950 px-2 py-1.5 text-right text-sm tabular-nums text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
           />
           <span aria-hidden="true" className="text-sm text-neutral-500">
@@ -611,8 +622,12 @@ export function WeightRow({
           type="button"
           onClick={onToggleLock}
           aria-pressed={locked}
-          aria-label={`${locked ? 'Unlock' : 'Lock'} ${symbol}`}
-          title={locked ? 'Locked — untouched by auto-balance / normalize' : 'Lock this weight'}
+          aria-label={
+            locked
+              ? t('workboard.builder.unlockAriaLabel', { symbol })
+              : t('workboard.builder.lockAriaLabel', { symbol })
+          }
+          title={locked ? t('workboard.builder.lockedTitle') : t('workboard.builder.lockTitle')}
           className={cx(
             'rounded px-2 py-1 text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
             locked
@@ -625,7 +640,7 @@ export function WeightRow({
         <button
           type="button"
           onClick={onRemove}
-          aria-label={`Remove ${symbol}`}
+          aria-label={t('workboard.builder.removeAriaLabel', { symbol })}
           className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-800 hover:text-red-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
           ✕
@@ -636,10 +651,11 @@ export function WeightRow({
 }
 
 function PositionsFooter({ positions }: { positions: BuilderPosition[] }) {
+  const t = useT();
   return (
     <div className="flex items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/60 px-4 py-3">
       <span className="text-xs text-neutral-500">
-        {positions.length} / {MAX_POSITIONS} positions
+        {t('workboard.builder.positionsCount', { count: positions.length, max: MAX_POSITIONS })}
       </span>
       <SumPill positions={positions} />
     </div>
@@ -651,6 +667,7 @@ function PositionsFooter({ positions }: { positions: BuilderPosition[] }) {
  * with the remaining "% left" (or "% over" when past 100).
  */
 export function SumPill({ positions }: { positions: BuilderPosition[] }) {
+  const t = useT();
   const sum = sumWeights(positions);
   const valid = isSumValid(positions);
   const remaining = roundWeight(ACTIVE_SUM - sum);
@@ -667,7 +684,9 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
   }
 
   const tail =
-    remaining >= 0 ? `${remaining.toFixed(1)}% left` : `${Math.abs(remaining).toFixed(1)}% over`;
+    remaining >= 0
+      ? t('workboard.builder.sumRemainingLeft', { value: remaining.toFixed(1) })
+      : t('workboard.builder.sumRemainingOver', { value: Math.abs(remaining).toFixed(1) });
   return (
     <span
       role="status"
@@ -681,6 +700,7 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
 // ─── Right: live preview ─────────────────────────────────────────────────────
 
 function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
+  const t = useT();
   const live = persistablePositions(positions);
   const donutData = live.map((p) => ({ label: p.symbol, value: p.weightPct }));
   const total = sumWeights(positions);
@@ -695,27 +715,31 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
         id="preview-heading"
         className="text-sm font-semibold uppercase tracking-wide text-neutral-400"
       >
-        Live preview
+        {t('workboard.builder.livePreviewHeading')}
       </h2>
 
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <AllocationDonut data={donutData} size={180} title="Conglomerate allocation" />
+        <AllocationDonut
+          data={donutData}
+          size={180}
+          title={t('workboard.detail.allocationChartTitle')}
+        />
       </div>
 
       <dl className="grid grid-cols-3 gap-2">
-        <Stat label="Positions" value={String(live.length)} />
-        <Stat label="Total weight" value={`${total.toFixed(1)}%`} />
+        <Stat label={t('workboard.builder.statPositions')} value={String(live.length)} />
+        <Stat label={t('workboard.builder.statTotalWeight')} value={`${total.toFixed(1)}%`} />
         <Stat
-          label="Largest"
+          label={t('workboard.builder.statLargest')}
           value={largest ? `${largest.symbol} ${largest.weightPct.toFixed(1)}%` : '—'}
         />
       </dl>
 
       <div
-        aria-label="Backtest preview (coming soon)"
+        aria-label={t('workboard.builder.backtestPreviewAriaLabel')}
         className="rounded-lg border border-dashed border-neutral-800 bg-neutral-900/30 p-6 text-center text-sm text-neutral-500"
       >
-        Backtest preview — coming with the backtest panel.
+        {t('workboard.builder.backtestPreviewText')}
       </div>
     </section>
   );

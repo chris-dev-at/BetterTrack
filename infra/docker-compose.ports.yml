@@ -13,3 +13,8 @@ services:
       - '${BT_PORT_WEB:-8080}:${BT_PORT_WEB:-8080}'
       - '${BT_PORT_ADMIN:-8081}:${BT_PORT_ADMIN:-8081}'
       - '${BT_PORT_API:-3000}:${BT_PORT_API:-3000}'
+
+  # Static landing/mobile site (§13.3 V3-P12) on its own host port.
+  landing:
+    ports:
+      - '${BT_PORT_LANDING:-8082}:80'

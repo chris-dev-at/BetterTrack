@@ -9,6 +9,7 @@ import type {
 
 import { deleteConglomerate, getConglomerate, updateConglomerate } from '../../lib/conglomerateApi';
 import { formatWeight } from '../../lib/format';
+import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
@@ -20,12 +21,13 @@ import { StatusBadge } from './ConglomeratesListPage';
 // ─── Positions table ────────────────────────────────────────────────────────
 
 function PositionsTable({ positions }: { positions: ConglomeratePositionWithAsset[] }) {
+  const t = useT();
   if (positions.length === 0) {
     return (
       <EmptyState
         icon="➕"
-        title="No positions yet"
-        description="Add assets and weights in the Builder to start allocating this basket."
+        title={t('workboard.detail.noPositionsTitle')}
+        description={t('workboard.detail.noPositionsDescription')}
       />
     );
   }
@@ -36,10 +38,10 @@ function PositionsTable({ positions }: { positions: ConglomeratePositionWithAsse
         <thead>
           <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
             <th scope="col" className="px-3 py-2">
-              Asset
+              {t('workboard.detail.assetHeader')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Weight
+              {t('workboard.detail.weightHeader')}
             </th>
           </tr>
         </thead>
@@ -80,19 +82,17 @@ function DeleteConfirmDialog({
   pending: boolean;
   error: boolean;
 }) {
+  const t = useT();
   return (
-    <Dialog title="Delete Conglomerate?" onClose={onClose}>
+    <Dialog title={t('workboard.detail.deleteDialogTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-neutral-400">
-          This permanently deletes <span className="font-medium text-neutral-200">{name}</span> and
-          all its positions. This cannot be undone.
+          {t('workboard.detail.deleteDialogBody', { name })}
         </p>
-        {error ? (
-          <Alert tone="error">Could not delete this Conglomerate. Please try again.</Alert>
-        ) : null}
+        {error ? <Alert tone="error">{t('workboard.detail.deleteError')}</Alert> : null}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} disabled={pending}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -100,7 +100,7 @@ function DeleteConfirmDialog({
             disabled={pending}
             className="bg-red-700 hover:bg-red-600 disabled:bg-red-900"
           >
-            {pending ? 'Deleting…' : 'Delete'}
+            {pending ? t('workboard.detail.deleting') : t('common.delete')}
           </Button>
         </div>
       </div>
@@ -116,6 +116,7 @@ function DeleteConfirmDialog({
  * (#137), and the Invest Calculator (§6.7, #138).
  */
 export function ConglomerateDetailPage() {
+  const t = useT();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -162,12 +163,9 @@ export function ConglomerateDetailPage() {
     return (
       <div className="flex flex-col gap-4">
         <Link to="/workboard/conglomerates" className="text-sm text-sky-400 hover:underline">
-          ← Back to Conglomerates
+          {t('workboard.detail.backToConglomeratesError')}
         </Link>
-        <Alert tone="error">
-          Could not load this Conglomerate. It may not exist or the server is temporarily
-          unavailable.
-        </Alert>
+        <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
       </div>
     );
   }
@@ -180,13 +178,18 @@ export function ConglomerateDetailPage() {
     .filter((p) => p.weightPct > 0)
     .map((p) => ({ assetId: p.assetId, weight: p.weightPct }));
 
+  const positionCountText =
+    data.positionCount === 1
+      ? t('workboard.conglomerates.positionCountOne', { count: data.positionCount })
+      : t('workboard.conglomerates.positionCountOther', { count: data.positionCount });
+
   return (
     <div className="flex flex-col gap-8">
       <Link
         to="/workboard/conglomerates"
         className="text-sm text-neutral-500 hover:text-neutral-300"
       >
-        ← Conglomerates
+        {t('workboard.detail.backLink')}
       </Link>
 
       {/* Header */}
@@ -205,39 +208,37 @@ export function ConglomerateDetailPage() {
               disabled={shareMutation.isPending}
               aria-pressed={data.visibility === 'friends'}
             >
-              {data.visibility === 'friends' ? 'Shared with friends' : 'Share with friends'}
+              {data.visibility === 'friends'
+                ? t('workboard.detail.sharedButton')
+                : t('workboard.detail.shareButton')}
             </Button>
             <Link to={`/workboard/conglomerates/${id}/edit`}>
-              <Button variant="secondary">Edit</Button>
+              <Button variant="secondary">{t('common.edit')}</Button>
             </Link>
             <Button variant="secondary" onClick={() => setConfirmOpen(true)}>
-              Delete
+              {t('common.delete')}
             </Button>
           </div>
         </div>
-        <p className="text-sm text-neutral-400">
-          {data.positionCount} {data.positionCount === 1 ? 'position' : 'positions'}
-        </p>
+        <p className="text-sm text-neutral-400">{positionCountText}</p>
         {data.description ? <p className="text-sm text-neutral-500">{data.description}</p> : null}
-        {shareError ? (
-          <Alert tone="error">Could not update sharing. Please try again.</Alert>
-        ) : null}
+        {shareError ? <Alert tone="error">{t('workboard.detail.shareError')}</Alert> : null}
       </div>
 
       {/* Positions + allocation */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section aria-labelledby="positions-heading" className="flex flex-col gap-3">
           <h2 id="positions-heading" className="text-base font-semibold text-neutral-200">
-            Positions
+            {t('workboard.detail.positionsHeading')}
           </h2>
           <PositionsTable positions={data.positions} />
         </section>
         <section aria-labelledby="allocation-heading" className="flex flex-col gap-3">
           <h2 id="allocation-heading" className="text-base font-semibold text-neutral-200">
-            Allocation
+            {t('workboard.detail.allocationHeading')}
           </h2>
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-            <AllocationDonut data={donutData} title="Conglomerate allocation" />
+            <AllocationDonut data={donutData} title={t('workboard.detail.allocationChartTitle')} />
           </div>
         </section>
       </div>
@@ -245,7 +246,7 @@ export function ConglomerateDetailPage() {
       {/* Backtest panel (#137) */}
       <section aria-labelledby="backtest-heading" className="flex flex-col gap-3">
         <h2 id="backtest-heading" className="text-base font-semibold text-neutral-200">
-          Backtest
+          {t('workboard.detail.backtestHeading')}
         </h2>
         <BacktestPanel positions={backtestPositions} />
       </section>
@@ -253,7 +254,7 @@ export function ConglomerateDetailPage() {
       {/* Invest Calculator (§6.7, #138) */}
       <section aria-labelledby="calculator-heading" className="flex flex-col gap-3">
         <h2 id="calculator-heading" className="text-base font-semibold text-neutral-200">
-          Calculator
+          {t('workboard.detail.calculatorHeading')}
         </h2>
         <BudgetCalculator conglomerateId={id} />
       </section>

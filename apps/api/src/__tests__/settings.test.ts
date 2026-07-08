@@ -3,7 +3,12 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { NOTIFICATION_TYPES, notificationSettingsResponseSchema } from '@bettertrack/contracts';
+import {
+  NOTIFICATION_TYPES,
+  accountSettingsResponseSchema,
+  meResponseSchema,
+  notificationSettingsResponseSchema,
+} from '@bettertrack/contracts';
 
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import * as schema from '../data/schema';
@@ -145,5 +150,87 @@ describe('PATCH /api/v1/settings/notifications', () => {
     // Bob still sees his own change.
     const bobSettings = await getSettings(bobAgent);
     expect(bobSettings!.matrix['friend.request']).toEqual({ inapp: false, email: false });
+  });
+});
+
+// --- Account settings: locale (§13.3 V3-P1) + default portfolio visibility ---
+
+async function getAccount(agent: Agent) {
+  const res = await agent.get('/api/v1/settings/account');
+  expect(res.status).toBe(200);
+  return accountSettingsResponseSchema.parse(res.body);
+}
+
+function patchAccount(agent: Agent, body: Record<string, unknown>) {
+  return agent
+    .patch('/api/v1/settings/account')
+    .set(...XRW)
+    .send(body);
+}
+
+async function getMe(agent: Agent) {
+  const res = await agent.get('/api/v1/auth/me');
+  expect(res.status).toBe(200);
+  return meResponseSchema.parse(res.body);
+}
+
+describe('Account settings — locale (§13.3 V3-P1)', () => {
+  it('defaults a fresh user to the EN locale, on both /settings/account and /auth/me', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    expect((await getAccount(agent)).locale).toBe('en');
+    expect((await getMe(agent)).locale).toBe('en');
+  });
+
+  it('persists a locale change and survives logout/login (per-user)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const patched = await patchAccount(agent, { locale: 'de' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.locale).toBe('de');
+    // The stored preference immediately rides the /auth/me response the SPA seeds from.
+    expect((await getMe(agent)).locale).toBe('de');
+
+    // A brand-new session for the same account still reads 'de' — it is persisted
+    // per user, not just in the session.
+    const freshAgent = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await getAccount(freshAgent)).locale).toBe('de');
+    expect((await getMe(freshAgent)).locale).toBe('de');
+  });
+
+  it('is a partial update: locale and visibility change independently', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    // Change only the locale — visibility keeps its default.
+    const afterLocale = await patchAccount(agent, { locale: 'de' });
+    expect(afterLocale.body).toEqual({ defaultPortfolioVisibility: 'private', locale: 'de' });
+
+    // Change only the visibility — the locale set above is untouched.
+    const afterVisibility = await patchAccount(agent, { defaultPortfolioVisibility: 'friends' });
+    expect(afterVisibility.body).toEqual({ defaultPortfolioVisibility: 'friends', locale: 'de' });
+  });
+
+  it('accepts a region-tagged code and rejects malformed / empty bodies', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    expect((await patchAccount(agent, { locale: 'de-AT' })).status).toBe(200);
+    expect((await patchAccount(agent, { locale: 'english' })).status).toBe(400);
+    expect((await patchAccount(agent, { locale: 'DE' })).status).toBe(400);
+    expect((await patchAccount(agent, {})).status).toBe(400);
+  });
+
+  it('is strictly session-user scoped — one user cannot change another’s locale', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await patchAccount(bobAgent, { locale: 'de' });
+
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await getAccount(aliceAgent)).locale).toBe('en');
   });
 });

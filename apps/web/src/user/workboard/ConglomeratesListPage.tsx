@@ -4,13 +4,17 @@ import { Link } from 'react-router-dom';
 import type { ConglomerateStatus, ConglomerateSummary } from '@bettertrack/contracts';
 
 import { listConglomerates } from '../../lib/conglomerateApi';
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert } from '../components/ui';
 
-const STATUS_LABEL: Record<ConglomerateStatus, string> = {
-  draft: 'Draft',
-  active: 'Active',
-};
+function statusLabels(t: TranslateFn): Record<ConglomerateStatus, string> {
+  return {
+    draft: t('workboard.conglomerates.status.draft'),
+    active: t('workboard.conglomerates.status.active'),
+  };
+}
 
 const STATUS_CLASS: Record<ConglomerateStatus, string> = {
   draft: 'bg-neutral-800 text-neutral-400 ring-neutral-700',
@@ -21,23 +25,34 @@ const STATUS_CLASS: Record<ConglomerateStatus, string> = {
  * What "Active" means (§6.5, §13.2 V2-P7): shared across Builder, Detail and
  * List so an owner-naive user gets the same explanation everywhere.
  */
-const STATUS_EXPLAINER: Record<ConglomerateStatus, string> = {
-  draft: 'Draft — not used by the calculator yet. Activate once weights sum to 100%.',
-  active: 'Active — your live, validated basket used by the calculator. Weights sum to 100%.',
-};
+function statusExplainers(t: TranslateFn): Record<ConglomerateStatus, string> {
+  return {
+    draft: t('workboard.conglomerates.statusExplainer.draft'),
+    active: t('workboard.conglomerates.statusExplainer.active'),
+  };
+}
+
+/** Rendered position count, correctly singular/plural in every locale. */
+function positionCountLabel(t: TranslateFn, count: number): string {
+  return count === 1
+    ? t('workboard.conglomerates.positionCountOne', { count })
+    : t('workboard.conglomerates.positionCountOther', { count });
+}
 
 export function StatusBadge({ status }: { status: ConglomerateStatus }) {
+  const t = useT();
   return (
     <span
-      title={STATUS_EXPLAINER[status]}
+      title={statusExplainers(t)[status]}
       className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_CLASS[status]}`}
     >
-      {STATUS_LABEL[status]}
+      {statusLabels(t)[status]}
     </span>
   );
 }
 
 function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary }) {
+  const t = useT();
   return (
     <Link
       to={`/workboard/conglomerates/${conglomerate.id}`}
@@ -50,13 +65,14 @@ function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary 
         <StatusBadge status={conglomerate.status} />
       </div>
       <p className="text-sm text-neutral-500">
-        {conglomerate.positionCount} {conglomerate.positionCount === 1 ? 'position' : 'positions'}
+        {positionCountLabel(t, conglomerate.positionCount)}
       </p>
     </Link>
   );
 }
 
 function NewConglomerateCard() {
+  const t = useT();
   return (
     <Link
       to="/workboard/conglomerates/new"
@@ -65,7 +81,7 @@ function NewConglomerateCard() {
       <span className="text-xl" aria-hidden="true">
         +
       </span>
-      <span className="font-medium">New Conglomerate</span>
+      <span className="font-medium">{t('workboard.conglomerates.newCardLabel')}</span>
     </Link>
   );
 }
@@ -76,6 +92,7 @@ function NewConglomerateCard() {
  * issue; the "New Conglomerate" card links there ahead of that route landing.
  */
 export function ConglomeratesListPage() {
+  const t = useT();
   const { data, isLoading, isError } = useQuery({
     queryKey: ['conglomerates'],
     queryFn: ({ signal }) => listConglomerates(signal),
@@ -85,10 +102,10 @@ export function ConglomeratesListPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Conglomerates</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          Your custom ETF-style baskets — build, backtest and turn a budget into a buy list.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+          {t('workboard.conglomerates.title')}
+        </h1>
+        <p className="mt-1 text-sm text-neutral-400">{t('workboard.conglomerates.subtitle')}</p>
       </div>
 
       {isLoading ? (
@@ -98,18 +115,18 @@ export function ConglomeratesListPage() {
           <Skeleton height="h-[104px]" />
         </div>
       ) : isError ? (
-        <Alert tone="error">Could not load your Conglomerates. Please refresh the page.</Alert>
+        <Alert tone="error">{t('workboard.conglomerates.loadError')}</Alert>
       ) : data!.conglomerates.length === 0 ? (
         <EmptyState
           icon="📊"
-          title="No Conglomerates yet"
-          description="Build a custom ETF-style basket, backtest it and turn a budget into a buy list."
+          title={t('workboard.conglomerates.emptyTitle')}
+          description={t('workboard.conglomerates.emptyDescription')}
           cta={
             <Link
               to="/workboard/conglomerates/new"
               className="rounded text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
-              New Conglomerate →
+              {t('workboard.conglomerates.emptyCta')}
             </Link>
           }
         />

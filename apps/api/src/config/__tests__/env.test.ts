@@ -132,3 +132,19 @@ describe('CORS & cookie derivation', () => {
     expect(https.cookie.domain).toBeUndefined();
   });
 });
+
+describe('realtime flag (§4.5, V3-P7a)', () => {
+  it('defaults to enabled', () => {
+    expect(config({}).realtime.enabled).toBe(true);
+  });
+
+  it('REALTIME_ENABLED=false disables the gateway', () => {
+    expect(config({ REALTIME_ENABLED: 'false' }).realtime.enabled).toBe(false);
+    expect(config({ REALTIME_ENABLED: '0' }).realtime.enabled).toBe(false);
+  });
+
+  it('truthy spellings enable it explicitly', () => {
+    expect(config({ REALTIME_ENABLED: 'true' }).realtime.enabled).toBe(true);
+    expect(config({ REALTIME_ENABLED: '1' }).realtime.enabled).toBe(true);
+  });
+});

@@ -134,6 +134,20 @@
       "when": 1783371778657,
       "tag": "0018_equal_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783436592140,
+      "tag": "0019_cash_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783461663492,
+      "tag": "0020_user_locale",
+      "breakpoints": true
     }
   ]
 }

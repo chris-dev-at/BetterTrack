@@ -2,6 +2,7 @@ import type { Redis } from 'ioredis';
 
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
+import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
@@ -16,6 +17,7 @@ import { createPasswordResetTokenRepository } from '../data/repositories/passwor
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
+import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -28,12 +30,14 @@ import {
   type BackfillScheduler,
 } from '../jobs';
 import type { Logger } from '../logger';
+import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
+import { createAlertService, type AlertService } from '../services/alerts/alertService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
@@ -118,6 +122,8 @@ export interface AppContext {
   notificationSettings: NotificationSettingsService;
   /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
   accountSettings: AccountSettingsService;
+  /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
+  alerts: AlertService;
   /**
    * Notification dispatcher (§6.10, §9): the bus subscriber that turns the social
    * domain events into in-app rows + emails. Built here and started by the API
@@ -127,6 +133,15 @@ export interface AppContext {
    * only need the HTTP surface don't accrue bus subscriptions.
    */
   notificationDispatcher: NotificationDispatcher;
+  /**
+   * Realtime gateway (§4.5, V3-P7a): the second designed bus subscriber —
+   * Socket.IO at /ws mapping domain events to room emissions. Built here but
+   * only *attached* by the API bootstrap (`server.ts`), which owns the HTTP
+   * server; with REALTIME_ENABLED=false attach is a no-op. Tests that only need
+   * the HTTP surface never attach it, so no socket server or bus subscription
+   * exists for them.
+   */
+  realtime: RealtimeGateway;
   /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
    * dispatcher subscribes. Held on the context so the process can close its Redis
@@ -300,10 +315,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // value-series cache invalidation.
   const transactionRepo = createTransactionRepository(db);
   const cashMovementRepo = createCashMovementRepository(db);
+  const cashSourceRepo = createCashSourceRepository(db);
   const portfolio = createPortfolioService({
     portfolioRepo,
     transactionRepo,
     cashMovementRepo,
+    cashSourceRepo,
     userRepo,
     marketData,
     currencyService: currency,
@@ -357,6 +374,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // visibility, applied by the portfolio service at create time.
   const accountSettings = createAccountSettingsService({ userRepo });
 
+  // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
+  // the worker fires them and publishes `alert.triggered`, which the dispatcher
+  // below fans out via the notification matrix.
+  const alertRepo = createAlertRepository(db);
+  const alerts = createAlertService({ repo: alertRepo, assetRepo, marketData, logger });
+
   // Notification dispatcher (§6.10, §9): fans the V1 social events out to the
   // recipient's in-app + email channels, consulting the per-type × channel
   // matrix. Built with the API's own email + user deps and started by the API
@@ -367,7 +390,24 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: notificationRepo,
     email,
     users: userRepo,
+    // Resolves an `alert.triggered` event's asset + rule for rendering (§14).
+    resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
     logger,
+  });
+
+  // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
+  // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
+  // owner-or-shared with the same repository checks the shared-view HTTP
+  // endpoints use (§6.9), recomputed at join time.
+  const realtime = createRealtimeGateway({
+    config,
+    bus: events,
+    logger,
+    resolveSession: (sessionId, userAgent) => auth.resolveSession(sessionId, userAgent),
+    canViewPortfolio: async (userId, portfolioId) => {
+      if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
+      return Boolean(await friendshipRepo.findSharedPortfolioForViewer(userId, portfolioId));
+    },
   });
 
   return {
@@ -391,7 +431,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notifications,
     notificationSettings,
     accountSettings,
+    alerts,
     notificationDispatcher,
+    realtime,
     events,
   };
 }

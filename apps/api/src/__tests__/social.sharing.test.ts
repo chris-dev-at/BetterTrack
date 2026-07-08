@@ -187,7 +187,7 @@ describe('GET /api/v1/social/shared (Shared With Me)', () => {
     expect(res.status).toBe(401);
   });
 
-  it("lists exactly a friend's visibility=friends portfolios with owner + total value", async () => {
+  it("lists exactly a friend's visibility=friends portfolios with owner + net worth", async () => {
     const { bobAgent } = await scenario();
 
     const res = await bobAgent.get('/api/v1/social/shared');
@@ -569,7 +569,7 @@ describe('default portfolio visibility (Settings → Account)', () => {
 
     const get = await aliceAgent.get('/api/v1/settings/account');
     expect(get.status).toBe(200);
-    expect(get.body).toEqual({ defaultPortfolioVisibility: 'private' });
+    expect(get.body).toEqual({ defaultPortfolioVisibility: 'private', locale: 'en' });
 
     const created = await aliceAgent
       .post('/api/v1/portfolios')
@@ -587,7 +587,7 @@ describe('default portfolio visibility (Settings → Account)', () => {
       .set(...XRW)
       .send({ defaultPortfolioVisibility: 'friends' });
     expect(patch.status).toBe(200);
-    expect(patch.body).toEqual({ defaultPortfolioVisibility: 'friends' });
+    expect(patch.body).toEqual({ defaultPortfolioVisibility: 'friends', locale: 'en' });
 
     // A newly created portfolio adopts the friends default.
     const created = await aliceAgent

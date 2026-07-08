@@ -2,7 +2,9 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  revokeSessionsResponseSchema,
   sessionInfoResponseSchema,
+  sessionListResponseSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type InviteValidationResponse,
@@ -12,7 +14,9 @@ import {
   type PasswordResetComplete,
   type PasswordResetRequest,
   type PinVerifyRequest,
+  type RevokeSessionsResponse,
   type SessionInfoResponse,
+  type SessionSummary,
   type SetPinLockRequest,
   type SetPinRequest,
   type TwoFactorEmailCodeRequest,
@@ -86,6 +90,27 @@ export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
 export async function getSession(signal?: AbortSignal): Promise<SessionInfoResponse> {
   const data = await apiRequest<unknown>('/auth/session', { signal, suppressAuthRedirect: true });
   return sessionInfoResponseSchema.parse(data);
+}
+
+/**
+ * `GET /auth/sessions` — the caller's active sessions for Settings → Security
+ * (§6.11, V3-P11a): device label, created/last-seen, and the current-session
+ * marker. Only ever the caller's own sessions.
+ */
+export async function listSessions(signal?: AbortSignal): Promise<SessionSummary[]> {
+  const data = await apiRequest<unknown>('/auth/sessions', { signal });
+  return sessionListResponseSchema.parse(data).sessions;
+}
+
+/** Revoke one session by its opaque handle — "log out that device" (V3-P11a). */
+export async function revokeSession(id: string): Promise<void> {
+  await apiRequest<unknown>(`/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Revoke every other session, keeping this one signed in (V3-P11a). */
+export async function revokeOtherSessions(): Promise<RevokeSessionsResponse> {
+  const data = await apiRequest<unknown>('/auth/sessions/revoke-others', { method: 'POST' });
+  return revokeSessionsResponseSchema.parse(data);
 }
 
 export async function changePassword(body: ChangePasswordRequest): Promise<MeResponse> {

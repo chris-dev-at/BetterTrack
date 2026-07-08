@@ -7,6 +7,8 @@ import { allocateConglomerate } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent, formatQuantity, formatSignedPercent } from '../../lib/format';
 import { listPortfolios } from '../../lib/portfolioApi';
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { Alert, Button } from '../components/ui';
 import {
@@ -23,16 +25,43 @@ export interface BudgetCalculatorProps {
   className?: string;
 }
 
-const MODES: Array<{ value: AllocateMode; label: string }> = [
-  { value: 'whole', label: 'Whole shares' },
-  { value: 'fractional', label: 'Fractional' },
-];
+function allocateModes(t: TranslateFn): Array<{ value: AllocateMode; label: string }> {
+  return [
+    { value: 'whole', label: t('workboard.calculator.modeWhole') },
+    { value: 'fractional', label: t('workboard.calculator.modeFractional') },
+  ];
+}
 
 const inputClass = cx(
   'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
   'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
   'focus:outline-none focus:ring-2 focus:ring-sky-500',
 );
+
+/**
+ * Selectable stepper granularities for the budget amount (V3-P0, #322): "how far
+ * off the comma you want" — whole euros down to a tenth of a cent. The default
+ * (1) reproduces the plain whole-euro stepping; finer picks let the owner nudge
+ * the budget by cents without retyping.
+ */
+const BUDGET_STEPS = [1, 0.1, 0.01, 0.001] as const;
+type BudgetStep = (typeof BUDGET_STEPS)[number];
+
+/** Decimal places a step implies (1 → 0, 0.1 → 1, 0.01 → 2, 0.001 → 3). */
+function decimalsForStep(step: number): number {
+  return Math.max(0, Math.round(-Math.log10(step)));
+}
+
+/**
+ * Step a numeric budget string by `delta`, clamped at 0 and re-quantized to the
+ * step's own precision so repeated cent steps never accumulate float dust
+ * (`0.1 + 0.2` etc.). An empty/invalid current value counts as 0.
+ */
+function stepBudget(current: string, delta: number, step: BudgetStep): string {
+  const decimals = decimalsForStep(step);
+  const base = current.trim() !== '' && Number.isFinite(Number(current)) ? Number(current) : 0;
+  return Math.max(0, base + delta).toFixed(decimals);
+}
 
 function ModeToggle({
   active,
@@ -41,13 +70,14 @@ function ModeToggle({
   active: AllocateMode;
   onSelect: (mode: AllocateMode) => void;
 }) {
+  const t = useT();
   return (
     <div
       role="group"
-      aria-label="Buying mode"
+      aria-label={t('workboard.calculator.buyingModeAriaLabel')}
       className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
-      {MODES.map(({ value, label }) => {
+      {allocateModes(t).map(({ value, label }) => {
         const selected = value === active;
         return (
           <button
@@ -83,15 +113,17 @@ function AtLeastOneShareToggle({
   checked: boolean;
   onChange: (next: boolean) => void;
 }) {
+  const t = useT();
+  const label = t('workboard.calculator.atLeastOneShareLabel');
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-sm font-medium text-neutral-300">At least one share</span>
+      <span className="text-sm font-medium text-neutral-300">{label}</span>
       <div className="flex items-center gap-2">
         <button
           type="button"
           role="switch"
           aria-checked={checked}
-          aria-label="At least one share"
+          aria-label={label}
           onClick={() => onChange(!checked)}
           className={cx(
             'relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
@@ -108,7 +140,7 @@ function AtLeastOneShareToggle({
           />
         </button>
         <span className="max-w-[14rem] text-xs text-neutral-500">
-          A position too small for one whole share still buys exactly one; the rest rebalances.
+          {t('workboard.calculator.atLeastOneShareHint')}
         </span>
       </div>
     </div>
@@ -116,8 +148,9 @@ function AtLeastOneShareToggle({
 }
 
 function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
+  const t = useT();
   if (positions.length === 0) {
-    return <EmptyState title="This basket has no positions to allocate yet." />;
+    return <EmptyState title={t('workboard.calculator.noPositions')} />;
   }
 
   return (
@@ -126,22 +159,22 @@ function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
         <thead>
           <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
             <th scope="col" className="px-3 py-2">
-              Asset
+              {t('workboard.calculator.assetHeader')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Qty
+              {t('workboard.calculator.qtyHeader')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Cost
+              {t('workboard.calculator.costHeader')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Actual %
+              {t('workboard.calculator.actualHeader')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Target %
+              {t('workboard.calculator.targetHeader')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Δpp
+              {t('workboard.calculator.deltaHeader')}
             </th>
           </tr>
         </thead>
@@ -192,14 +225,21 @@ function DeviationTable({ positions }: { positions: AllocatePosition[] }) {
 }
 
 function TotalsFooter({ result, budgetEur }: { result: AllocateResponse; budgetEur: number }) {
+  const t = useT();
   const withinBudget = result.totalCostEur <= budgetEur + 0.005;
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-      <StatCard label="Total cost" value={formatMoney(result.totalCostEur)} />
-      <StatCard label="Leftover" value={formatMoney(result.leftoverEur)} />
       <StatCard
-        label="Within budget"
-        value={withinBudget ? 'Yes' : 'No'}
+        label={t('workboard.calculator.totalCostLabel')}
+        value={formatMoney(result.totalCostEur)}
+      />
+      <StatCard
+        label={t('workboard.calculator.leftoverLabel')}
+        value={formatMoney(result.leftoverEur)}
+      />
+      <StatCard
+        label={t('workboard.calculator.withinBudgetLabel')}
+        value={withinBudget ? t('common.yes') : t('common.no')}
         className={withinBudget ? undefined : 'ring-1 ring-inset ring-red-800'}
       />
     </div>
@@ -238,8 +278,10 @@ function toPrefillRows(positions: AllocatePosition[]): TransactionPrefillRow[] {
  * over the existing `TransactionDialog` + bulk transactions endpoint.
  */
 export function BudgetCalculator({ conglomerateId, className }: BudgetCalculatorProps) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [budget, setBudget] = useState('1000');
+  const [budgetStep, setBudgetStep] = useState<BudgetStep>(1);
   const [mode, setMode] = useState<AllocateMode>('whole');
   const [step, setStep] = useState('');
   const [atLeastOneShare, setAtLeastOneShare] = useState(false);
@@ -294,18 +336,56 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   return (
     <div className={cx('flex flex-col gap-4', className)}>
       <form onSubmit={handleCalculate} className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-neutral-300">
+            {t('workboard.calculator.budgetLabel')}
+          </span>
+          <div className="flex items-stretch gap-1">
+            <button
+              type="button"
+              aria-label={t('workboard.calculator.decreaseBudgetAriaLabel', { step: budgetStep })}
+              onClick={() => setBudget((b) => stepBudget(b, -budgetStep, budgetStep))}
+              className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              inputMode="decimal"
+              step={budgetStep}
+              min="0"
+              value={budget}
+              onChange={(e) => setBudget(e.target.value)}
+              aria-label={t('workboard.calculator.budgetAriaLabel')}
+              className={cx(inputClass, 'w-28 text-center')}
+            />
+            <button
+              type="button"
+              aria-label={t('workboard.calculator.increaseBudgetAriaLabel', { step: budgetStep })}
+              onClick={() => setBudget((b) => stepBudget(b, budgetStep, budgetStep))}
+              className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
         <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Budget (EUR)</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="any"
-            min="0"
-            value={budget}
-            onChange={(e) => setBudget(e.target.value)}
-            aria-label="Budget in EUR"
-            className={cx(inputClass, 'w-40')}
-          />
+          <span className="text-sm font-medium text-neutral-300">
+            {t('workboard.calculator.stepSizeLabel')}
+          </span>
+          <select
+            value={budgetStep}
+            onChange={(e) => setBudgetStep(Number(e.target.value) as BudgetStep)}
+            aria-label={t('workboard.calculator.stepPrecisionAriaLabel')}
+            className={cx(inputClass, 'w-24')}
+          >
+            {BUDGET_STEPS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
         </label>
 
         <ModeToggle active={mode} onSelect={setMode} />
@@ -316,7 +396,9 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
 
         {mode === 'fractional' ? (
           <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">Step</span>
+            <span className="text-sm font-medium text-neutral-300">
+              {t('workboard.calculator.stepLabel')}
+            </span>
             <input
               type="number"
               inputMode="decimal"
@@ -325,32 +407,32 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
               placeholder="0.0001"
               value={step}
               onChange={(e) => setStep(e.target.value)}
-              aria-label="Fractional quantity step"
+              aria-label={t('workboard.calculator.stepAriaLabel')}
               className={cx(inputClass, 'w-28')}
             />
           </label>
         ) : null}
 
         <Button type="submit" disabled={!budgetValid || mutation.isPending}>
-          {mutation.isPending ? 'Calculating…' : 'Calculate'}
+          {mutation.isPending
+            ? t('workboard.calculator.calculating')
+            : t('workboard.calculator.calculate')}
         </Button>
       </form>
 
       {mutation.isPending ? <Skeleton height="h-40" /> : null}
 
-      {mutation.isError ? (
-        <Alert tone="error">Could not calculate a buy list. Please try again.</Alert>
-      ) : null}
+      {mutation.isError ? <Alert tone="error">{t('workboard.calculator.calcError')}</Alert> : null}
 
       {!mutation.isPending && !mutation.data && !mutation.isError ? (
-        <EmptyState title="Enter a budget and calculate to see a buy list." />
+        <EmptyState title={t('workboard.calculator.enterBudgetPrompt')} />
       ) : null}
 
       {mutation.data ? (
         <>
           {mutation.data.stale ? (
             <Alert tone="info">
-              {mutation.data.quoteNotice ?? 'Some quotes are stale; showing the last known prices.'}
+              {mutation.data.quoteNotice ?? t('workboard.calculator.staleNotice')}
             </Alert>
           ) : null}
           {mutation.data.warnings.map((warning) => (
@@ -368,7 +450,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
             disabled={nonZeroCount === 0 || !portfolioId}
             onClick={() => setAddOpen(true)}
           >
-            Add to Portfolio
+            {t('workboard.calculator.addToPortfolio')}
           </Button>
         </>
       ) : null}

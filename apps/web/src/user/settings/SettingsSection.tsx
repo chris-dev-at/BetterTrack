@@ -10,6 +10,8 @@ import {
   type NotificationTypeRouting,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
 import { ComingSoon, EmptyState, Skeleton } from '../../ui';
@@ -26,21 +28,24 @@ export { SecuritySettingsPage } from './SecuritySettingsPage';
  * (Imports & Exports · Connections · Backups · API Access). `/settings`
  * redirects to `/settings/account`.
  */
-const SETTINGS_SUBNAV: readonly SubNavItem[] = [
-  { to: '/settings/account', label: 'Account' },
-  { to: '/settings/notifications', label: 'Notifications' },
-  { to: '/settings/security', label: 'Security' },
-  { to: '/settings/imports', label: 'Imports & Exports', comingSoon: true },
-  { to: '/settings/connections', label: 'Connections', comingSoon: true },
-  { to: '/settings/backups', label: 'Backups', comingSoon: true },
-  { to: '/settings/api', label: 'API Access' },
-];
-
 export function SettingsLayout() {
+  const t = useT();
+  const settingsSubnav: readonly SubNavItem[] = [
+    { to: '/settings/account', label: t('settings.account.title') },
+    { to: '/settings/notifications', label: t('settings.notifications.title') },
+    { to: '/settings/security', label: t('settings.security.title') },
+    { to: '/settings/imports', label: t('settings.section.importsExports'), comingSoon: true },
+    { to: '/settings/connections', label: t('settings.section.connections'), comingSoon: true },
+    { to: '/settings/backups', label: t('settings.section.backups'), comingSoon: true },
+    { to: '/settings/api', label: t('settings.api.title') },
+  ];
+
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Settings</h1>
-      <SubNav items={SETTINGS_SUBNAV} />
+      <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+        {t('settings.layout.title')}
+      </h1>
+      <SubNav items={settingsSubnav} />
       <Outlet />
     </div>
   );
@@ -54,38 +59,48 @@ export function SettingsLayout() {
 const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
 
 /** Human labels + descriptions for each routable notification type (§6.10). */
-const NOTIFICATION_TYPE_META: Record<NotificationType, { label: string; description: string }> = {
-  'friend.request': {
-    label: 'Friend requests',
-    description: 'When someone sends you a friend request.',
-  },
-  'friend.accepted': {
-    label: 'Accepted friend requests',
-    description: 'When someone accepts your friend request.',
-  },
-  'portfolio.shared': {
-    label: 'Shared portfolios',
-    description: 'When a friend shares a portfolio with you.',
-  },
-  'account.invite': {
-    label: 'Account invites',
-    description: "When you're invited to BetterTrack.",
-  },
-  'account.temp_password': {
-    label: 'Temporary passwords',
-    description: 'When an admin issues you a temporary password.',
-  },
-};
+function notificationTypeMeta(
+  t: TranslateFn,
+): Record<NotificationType, { label: string; description: string }> {
+  return {
+    'friend.request': {
+      label: t('settings.notifications.types.friendRequest.label'),
+      description: t('settings.notifications.types.friendRequest.description'),
+    },
+    'friend.accepted': {
+      label: t('settings.notifications.types.friendAccepted.label'),
+      description: t('settings.notifications.types.friendAccepted.description'),
+    },
+    'portfolio.shared': {
+      label: t('settings.notifications.types.portfolioShared.label'),
+      description: t('settings.notifications.types.portfolioShared.description'),
+    },
+    'account.invite': {
+      label: t('settings.notifications.types.accountInvite.label'),
+      description: t('settings.notifications.types.accountInvite.description'),
+    },
+    'account.temp_password': {
+      label: t('settings.notifications.types.tempPassword.label'),
+      description: t('settings.notifications.types.tempPassword.description'),
+    },
+    'alert.triggered': {
+      label: t('settings.notifications.types.alertTriggered.label'),
+      description: t('settings.notifications.types.alertTriggered.description'),
+    },
+  };
+}
 
 /** The four routing choices a type offers — the two channels collapsed to a mode. */
 type RoutingMode = 'both' | 'inapp' | 'email' | 'muted';
 
-const ROUTING_MODE_OPTIONS: readonly { value: RoutingMode; label: string }[] = [
-  { value: 'both', label: 'In-app + email' },
-  { value: 'inapp', label: 'In-app only' },
-  { value: 'email', label: 'Email only' },
-  { value: 'muted', label: 'Muted' },
-];
+function routingModeOptions(t: TranslateFn): readonly { value: RoutingMode; label: string }[] {
+  return [
+    { value: 'both', label: t('settings.notifications.routing.both') },
+    { value: 'inapp', label: t('settings.notifications.routing.inapp') },
+    { value: 'email', label: t('settings.notifications.routing.email') },
+    { value: 'muted', label: t('settings.notifications.routing.muted') },
+  ];
+}
 
 function routingToMode(routing: NotificationTypeRouting): RoutingMode {
   if (routing.inapp && routing.email) return 'both';
@@ -112,6 +127,7 @@ function NotificationMatrixRow({
   busy?: boolean;
   onChange: (next: RoutingMode) => void;
 }) {
+  const t = useT();
   return (
     <div className="flex items-start justify-between gap-4 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
       <div className="flex flex-col gap-0.5">
@@ -129,7 +145,7 @@ function NotificationMatrixRow({
           'disabled:cursor-not-allowed disabled:opacity-60',
         )}
       >
-        {ROUTING_MODE_OPTIONS.map((option) => (
+        {routingModeOptions(t).map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
@@ -217,6 +233,7 @@ function NotificationListRow({
  * alongside this list.
  */
 function NotificationList() {
+  const t = useT();
   const queryClient = useQueryClient();
   const query = useInfiniteQuery({
     queryKey: NOTIFICATIONS_LIST_KEY,
@@ -241,19 +258,21 @@ function NotificationList() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-neutral-300">All notifications</h3>
+        <h3 className="text-sm font-medium text-neutral-300">
+          {t('settings.notifications.allTitle')}
+        </h3>
         <button
           type="button"
           onClick={() => markReadMutation.mutate({ all: true })}
           disabled={unreadCount === 0 || markReadMutation.isPending}
           className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
         >
-          Mark all read
+          {t('settings.notifications.markAllRead')}
         </button>
       </div>
 
       {markReadMutation.isError ? (
-        <Alert tone="error">Couldn't update that notification. Please try again.</Alert>
+        <Alert tone="error">{t('settings.notifications.markReadError')}</Alert>
       ) : null}
 
       {query.isPending ? (
@@ -264,21 +283,19 @@ function NotificationList() {
         </div>
       ) : query.isError && items.length === 0 ? (
         <EmptyState
-          title="Couldn't load your notifications"
-          description="Please try again in a moment."
+          title={t('settings.notifications.listError.title')}
+          description={t('settings.retryHint')}
         />
       ) : items.length === 0 ? (
         <EmptyState
           icon="🔔"
-          title="No notifications yet"
-          description="Activity like friend requests and shares will show up here."
+          title={t('settings.notifications.empty.title')}
+          description={t('settings.notifications.empty.description')}
         />
       ) : (
         <>
           {query.isError ? (
-            <Alert tone="error">
-              Couldn't refresh notifications. Showing the last loaded list.
-            </Alert>
+            <Alert tone="error">{t('settings.notifications.refreshError')}</Alert>
           ) : null}
           <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
             {items.map((notification) => (
@@ -297,7 +314,9 @@ function NotificationList() {
               disabled={query.isFetchingNextPage}
               className="self-center text-sm font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
-              {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
+              {query.isFetchingNextPage
+                ? t('common.loading')
+                : t('settings.notifications.loadMore')}
             </button>
           ) : null}
         </>
@@ -313,6 +332,7 @@ function NotificationList() {
  * full, paged notification list.
  */
 export function NotificationSettingsPage() {
+  const t = useT();
   const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: NOTIFICATION_SETTINGS_KEY,
@@ -329,15 +349,15 @@ export function NotificationSettingsPage() {
   });
 
   const pendingType = mutation.isPending ? mutation.variables?.type : undefined;
+  const typeMeta = notificationTypeMeta(t);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">Notifications</h2>
-        <p className="text-sm text-neutral-500">
-          Choose how BetterTrack notifies you for each kind of activity — the in-app bell, email,
-          both, or muted.
-        </p>
+        <h2 className="text-lg font-semibold text-neutral-100">
+          {t('settings.notifications.title')}
+        </h2>
+        <p className="text-sm text-neutral-500">{t('settings.notifications.subtitle')}</p>
       </div>
 
       {query.isPending ? (
@@ -347,13 +367,13 @@ export function NotificationSettingsPage() {
         </div>
       ) : query.isError ? (
         <EmptyState
-          title="Couldn't load your notification settings"
-          description="Please try again in a moment."
+          title={t('settings.notifications.loadError.title')}
+          description={t('settings.retryHint')}
         />
       ) : (
         <div className="flex flex-col gap-3">
           {NOTIFICATION_TYPES.map((type) => {
-            const meta = NOTIFICATION_TYPE_META[type];
+            const meta = typeMeta[type];
             return (
               <NotificationMatrixRow
                 key={type}
@@ -365,9 +385,7 @@ export function NotificationSettingsPage() {
               />
             );
           })}
-          {mutation.isError ? (
-            <Alert tone="error">Couldn't save that change. Please try again.</Alert>
-          ) : null}
+          {mutation.isError ? <Alert tone="error">{t('settings.saveError')}</Alert> : null}
         </div>
       )}
 
@@ -379,22 +397,31 @@ export function NotificationSettingsPage() {
 // ─── Coming-Soon pages ────────────────────────────────────────────────────────
 
 export function ImportsExportsPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Imports & Exports"
-      description="Broker CSV imports (Trade Republic, George, …) and full account-data export."
+      title={t('settings.section.importsExports')}
+      description={t('settings.importsExports.description')}
     />
   );
 }
 
 export function ConnectionsPage() {
+  const t = useT();
   return (
-    <ComingSoon title="Connections" description="Google login and other third-party connections." />
+    <ComingSoon
+      title={t('settings.section.connections')}
+      description={t('settings.connections.description')}
+    />
   );
 }
 
 export function BackupsPage() {
+  const t = useT();
   return (
-    <ComingSoon title="Backups" description="Automatic backups to Google Drive and elsewhere." />
+    <ComingSoon
+      title={t('settings.section.backups')}
+      description={t('settings.backups.description')}
+    />
   );
 }

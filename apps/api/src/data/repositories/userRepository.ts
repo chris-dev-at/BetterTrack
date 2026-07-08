@@ -177,6 +177,11 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
+    /** Set the user's UI-language preference (§13.3 V3-P1). */
+    async setLocale(id: string, locale: string): Promise<void> {
+      await db.update(users).set({ locale, updatedAt: new Date() }).where(eq(users.id, id));
+    },
+
     async setLastLogin(id: string, when: Date): Promise<void> {
       await db
         .update(users)

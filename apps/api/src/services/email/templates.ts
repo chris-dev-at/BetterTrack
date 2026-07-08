@@ -3,7 +3,13 @@
  * plain-text fallback — no images, no tracking, inline styles only so they
  * render the same in every client. These cover the v1 account flows; the full
  * notification template set (alert.triggered, etc.) lands with P5.
+ *
+ * Notification emails (friend request/accepted, portfolio shared, price alert)
+ * render in the recipient's locale via {@link notificationCopy} (§13.3 V3-P1);
+ * account/admin emails stay EN.
  */
+
+import { notificationCopy, resolveEmailLocale } from './emailI18n';
 
 export interface EmailContent {
   subject: string;
@@ -13,11 +19,24 @@ export interface EmailContent {
 
 const BRAND = 'BetterTrack';
 
-/** Shared shell so every account email looks the same. `body` is trusted HTML. */
-function layout(heading: string, body: string): string {
+/** The default (account-email) footer line; notification emails pass their own. */
+const DEFAULT_FOOTER =
+  'You received this email because someone manages a BetterTrack account for this address.';
+
+/**
+ * Shared shell so every email looks the same. `body` is trusted HTML. `lang`
+ * sets the document language (localized notification emails pass the recipient's
+ * locale); `footer` overrides the default account-email footer line.
+ */
+function layout(
+  heading: string,
+  body: string,
+  opts: { lang?: string; footer?: string } = {},
+): string {
+  const { lang = 'en', footer = DEFAULT_FOOTER } = opts;
   return [
     '<!doctype html>',
-    '<html lang="en">',
+    `<html lang="${escapeHtml(lang)}">`,
     '<body style="margin:0;padding:24px;background:#f5f6f8;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1d21;">',
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">',
     '<table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;background:#ffffff;border-radius:12px;padding:32px;">',
@@ -25,7 +44,7 @@ function layout(heading: string, body: string): string {
     `<tr><td style="font-size:20px;font-weight:600;padding-bottom:12px;">${heading}</td></tr>`,
     `<tr><td style="font-size:14px;line-height:1.6;color:#333;">${body}</td></tr>`,
     '<tr><td style="font-size:12px;color:#8a9099;padding-top:24px;border-top:1px solid #eceef1;margin-top:24px;">',
-    'You received this email because someone manages a BetterTrack account for this address.',
+    escapeHtml(footer),
     '</td></tr>',
     '</table></td></tr></table>',
     '</body></html>',
@@ -43,6 +62,23 @@ function escapeHtml(value: string): string {
 
 function button(href: string, label: string): string {
   return `<a href="${escapeHtml(href)}" style="display:inline-block;background:#1a1d21;color:#ffffff;text-decoration:none;padding:10px 20px;border-radius:8px;font-weight:600;">${label}</a>`;
+}
+
+/**
+ * Fill a localized copy string's `{actor}`/`{symbol}` tokens. `html` bolds and
+ * HTML-escapes the value; `text` inlines it raw. One template string serves both.
+ */
+function fillHtml(template: string, values: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => {
+    const value = values[key];
+    return value === undefined ? `{${key}}` : `<strong>${escapeHtml(value)}</strong>`;
+  });
+}
+function fillText(template: string, values: Record<string, string>): string {
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => {
+    const value = values[key];
+    return value === undefined ? `{${key}}` : value;
+  });
 }
 
 export function inviteEmail(params: { inviteUrl: string }): EmailContent {
@@ -178,74 +214,69 @@ export function testEmail(params: { appUrl: string }): EmailContent {
 export function friendRequestEmail(params: {
   actorUsername: string;
   appUrl: string;
+  locale?: string;
 }): EmailContent {
-  const { actorUsername, appUrl } = params;
+  const { actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.friendRequest;
   return {
-    subject: `New friend request on ${BRAND}`,
+    subject: c.subject,
     html: layout(
-      'New friend request',
+      c.heading,
       [
-        `<p><strong>${escapeHtml(actorUsername)}</strong> sent you a friend request on ${BRAND}.</p>`,
-        `<p style="padding:8px 0 0;">${button(appUrl, 'View request')}</p>`,
+        `<p>${fillHtml(c.body, { actor: actorUsername })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
       ].join(''),
+      { lang: loc, footer: copy.footer },
     ),
-    text: [
-      `New friend request on ${BRAND}.`,
-      '',
-      `${actorUsername} sent you a friend request.`,
-      '',
-      `View it: ${appUrl}`,
-    ].join('\n'),
+    text: [fillText(c.body, { actor: actorUsername }), '', `${c.button}: ${appUrl}`].join('\n'),
   };
 }
 
 export function friendAcceptedEmail(params: {
   actorUsername: string;
   appUrl: string;
+  locale?: string;
 }): EmailContent {
-  const { actorUsername, appUrl } = params;
+  const { actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.friendAccepted;
   return {
-    subject: `${actorUsername} accepted your friend request`,
+    subject: fillText(c.subject, { actor: actorUsername }),
     html: layout(
-      'Friend request accepted',
+      c.heading,
       [
-        `<p><strong>${escapeHtml(actorUsername)}</strong> accepted your friend request on ${BRAND}. `,
-        'You can now see the portfolios they share with friends.</p>',
-        `<p style="padding:8px 0 0;">${button(appUrl, 'Open BetterTrack')}</p>`,
+        `<p>${fillHtml(c.body, { actor: actorUsername })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
       ].join(''),
+      { lang: loc, footer: copy.footer },
     ),
-    text: [
-      `${actorUsername} accepted your friend request.`,
-      '',
-      'You can now see the portfolios they share with friends.',
-      '',
-      `Open BetterTrack: ${appUrl}`,
-    ].join('\n'),
+    text: [fillText(c.body, { actor: actorUsername }), '', `${c.button}: ${appUrl}`].join('\n'),
   };
 }
 
 export function portfolioSharedEmail(params: {
   actorUsername: string;
   appUrl: string;
+  locale?: string;
 }): EmailContent {
-  const { actorUsername, appUrl } = params;
+  const { actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.portfolioShared;
   return {
-    subject: `${actorUsername} shared a portfolio with you`,
+    subject: fillText(c.subject, { actor: actorUsername }),
     html: layout(
-      'Portfolio shared with you',
+      c.heading,
       [
-        `<p><strong>${escapeHtml(actorUsername)}</strong> shared a portfolio with friends on ${BRAND}. `,
-        'It is now visible to you under Shared With Me.</p>',
-        `<p style="padding:8px 0 0;">${button(appUrl, 'View shared portfolio')}</p>`,
+        `<p>${fillHtml(c.body, { actor: actorUsername })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
       ].join(''),
+      { lang: loc, footer: copy.footer },
     ),
-    text: [
-      `${actorUsername} shared a portfolio with you on ${BRAND}.`,
-      '',
-      'It is now visible under Shared With Me.',
-      '',
-      `View it: ${appUrl}`,
-    ].join('\n'),
+    text: [fillText(c.body, { actor: actorUsername }), '', `${c.button}: ${appUrl}`].join('\n'),
   };
 }
 
@@ -273,6 +304,35 @@ export function twoFactorCodeEmail(params: { code: string; minutes: number }): E
       `This code expires in ${minutes} minutes and can be used once.`,
       'If you did not try to sign in, you can safely ignore this email.',
     ].join('\n'),
+  };
+}
+
+/**
+ * Price-alert notification email (PROJECTPLAN.md §14, V3-P10). Sent by the
+ * dispatcher when the recipient routes `alert.triggered` to email. `body` is the
+ * same one-sentence phrasing the in-app bell item carries.
+ */
+export function alertTriggeredEmail(params: {
+  symbol: string;
+  body: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { symbol, body, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.alertTriggered;
+  return {
+    subject: fillText(c.subject, { symbol }),
+    html: layout(
+      c.heading.replace('{symbol}', escapeHtml(symbol)),
+      [
+        `<p>${escapeHtml(body)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.subject, { symbol }), '', body, '', `${c.button}: ${appUrl}`].join('\n'),
   };
 }
 

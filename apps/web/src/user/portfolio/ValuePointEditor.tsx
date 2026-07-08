@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 
 import type { ValuePoint } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { getValuePoints, putValuePoints } from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
@@ -52,20 +54,20 @@ function toEditRows(points: ValuePoint[]): EditRow[] {
 }
 
 /** Validate the editable rows into a wire set, or return a human error. */
-function validate(rows: EditRow[]): { points?: ValuePoint[]; error?: string } {
+function validate(t: TranslateFn, rows: EditRow[]): { points?: ValuePoint[]; error?: string } {
   const seen = new Set<string>();
   const points: ValuePoint[] = [];
   for (const row of rows) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
-      return { error: 'Every row needs a valid date.' };
+      return { error: t('portfolio.valuePoint.dateInvalid') };
     }
     if (seen.has(row.date)) {
-      return { error: `Only one value per day — ${row.date} is repeated.` };
+      return { error: t('portfolio.valuePoint.duplicateDate', { date: row.date }) };
     }
     seen.add(row.date);
     const value = Number(row.value);
     if (row.value.trim() === '' || !Number.isFinite(value) || value < 0) {
-      return { error: `Value for ${row.date} must be 0 or more.` };
+      return { error: t('portfolio.valuePoint.valueInvalid', { date: row.date }) };
     }
     points.push({ date: row.date, value });
   }
@@ -81,6 +83,7 @@ function validate(rows: EditRow[]): { points?: ValuePoint[]; error?: string } {
  * carries forward (step function), so sparse data stays honest.
  */
 export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointEditorProps) {
+  const t = useT();
   const [rows, setRows] = useState<EditRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -110,7 +113,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
   }
 
   async function handleSave() {
-    const { points, error: validationError } = validate(rows);
+    const { points, error: validationError } = validate(t, rows);
     if (validationError) {
       setError(validationError);
       return;
@@ -122,15 +125,15 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
       onSaved();
       onClose();
     } catch {
-      setError('Could not save value points. Please try again.');
+      setError(t('portfolio.valuePoint.saveError'));
       setSaving(false);
     }
   }
 
   return (
     <Dialog
-      title={`Value points — ${asset.symbol}`}
-      description="Record what this investment is worth over time. Between points the value carries forward."
+      title={t('portfolio.valuePoint.title', { symbol: asset.symbol })}
+      description={t('portfolio.valuePoint.description')}
       onClose={onClose}
       widthClassName="max-w-lg"
     >
@@ -140,19 +143,17 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
           <Skeleton height="h-9" />
         </div>
       ) : isError ? (
-        <Alert tone="error">Could not load value points. Please try again.</Alert>
+        <Alert tone="error">{t('portfolio.valuePoint.loadError')}</Alert>
       ) : (
         <div className="flex flex-col gap-4">
           {rows.length === 0 ? (
-            <p className="text-sm text-neutral-500">
-              No value points yet. Add one to start tracking this investment&rsquo;s worth.
-            </p>
+            <p className="text-sm text-neutral-500">{t('portfolio.valuePoint.empty')}</p>
           ) : (
             <ul className="flex flex-col gap-2">
               <li className="grid grid-cols-[1fr_1fr_auto] gap-2 px-1 text-xs uppercase tracking-wide text-neutral-500">
-                <span>Date</span>
-                <span>Value ({asset.currency})</span>
-                <span className="sr-only">Remove</span>
+                <span>{t('portfolio.valuePoint.dateHeader')}</span>
+                <span>{t('portfolio.valuePoint.valueHeader', { currency: asset.currency })}</span>
+                <span className="sr-only">{t('portfolio.valuePoint.removeHeader')}</span>
               </li>
               {rows.map((row) => (
                 <li key={row.key} className="grid grid-cols-[1fr_1fr_auto] items-center gap-2">
@@ -160,7 +161,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
                     type="date"
                     value={row.date}
                     onChange={(e) => updateRow(row.key, { date: e.target.value })}
-                    aria-label="Value point date"
+                    aria-label={t('portfolio.valuePoint.dateAriaLabel')}
                     className={inputClass}
                   />
                   <input
@@ -170,13 +171,13 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
                     min="0"
                     value={row.value}
                     onChange={(e) => updateRow(row.key, { value: e.target.value })}
-                    aria-label="Value point amount"
+                    aria-label={t('portfolio.valuePoint.amountAriaLabel')}
                     className={inputClass}
                   />
                   <button
                     type="button"
                     onClick={() => removeRow(row.key)}
-                    aria-label={`Remove value point ${row.date}`}
+                    aria-label={t('portfolio.valuePoint.removeAriaLabel', { date: row.date })}
                     className="rounded p-2 text-neutral-500 hover:bg-neutral-800 hover:text-red-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                   >
                     ✕
@@ -191,17 +192,17 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
             onClick={addRow}
             className="self-start text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
           >
-            + Add value point
+            {t('portfolio.valuePoint.addButton')}
           </button>
 
           {error ? <Alert tone="error">{error}</Alert> : null}
 
           <div className="flex justify-end gap-2">
             <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button type="button" onClick={() => void handleSave()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save value points'}
+              {saving ? t('common.saving') : t('portfolio.valuePoint.saveButton')}
             </Button>
           </div>
         </div>

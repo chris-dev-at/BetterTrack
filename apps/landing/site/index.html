@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterTrack — your personal investing workspace</title>
+    <meta
+      name="description"
+      content="BetterTrack is a self-hosted personal finance and investing workspace: track every portfolio, build and backtest your own ETF-style baskets, and browse any asset. Invite-only."
+    />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/env.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <span class="wordmark"
+          ><span class="better">Better</span><span class="track">Track</span></span
+        >
+        <div class="header-actions">
+          <nav class="lang-switch" aria-label="Language">
+            <a href="/index.html" aria-current="true">EN</a>
+            <a href="/de.html">DE</a>
+          </nav>
+          <a class="btn btn-ghost js-web-link" href="https://web.bettertrack.at"
+            >Open the web app</a
+          >
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap">
+          <span class="eyebrow">Self-hosted · Invite-only</span>
+          <h1>Your whole net worth, one clear workspace.</h1>
+          <p class="lede">
+            BetterTrack tracks every portfolio you own — stocks, ETFs, crypto and off-market assets
+            like your car or apartment — builds and backtests your own ETF-style baskets, and turns
+            a budget into a buy list.
+          </p>
+          <div class="hero-cta">
+            <a class="btn btn-primary js-web-link" href="https://web.bettertrack.at"
+              >Open the web app</a
+            >
+            <a class="btn btn-ghost" href="#features">See the features</a>
+          </div>
+          <p class="invite-note">
+            <strong>Invite-only.</strong> BetterTrack is a closed, single-owner workspace — access
+            is by invitation from the host.
+          </p>
+          <div class="hero-shot">
+            <img
+              src="/screens/portfolio.svg"
+              width="960"
+              height="560"
+              alt="BetterTrack portfolio overview showing net worth, a value chart and holdings"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section class="features" id="features">
+        <div class="wrap">
+          <div class="section-head">
+            <h2>Everything you track, in one place</h2>
+            <p>Four things BetterTrack does that a spreadsheet can't.</p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/portfolio.svg"
+                  width="960"
+                  height="560"
+                  alt="Portfolio overview with net worth and holdings"
+                />
+              </div>
+              <div class="body">
+                <h3>Every portfolio, one net worth</h3>
+                <p>
+                  Keep separate portfolios and off-market custom assets side by side. Cash counts
+                  toward the total, so your net worth is always honest.
+                </p>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/conglomerate.svg"
+                  width="600"
+                  height="380"
+                  alt="Conglomerate builder with a weighted allocation donut"
+                />
+              </div>
+              <div class="body">
+                <h3>Build your own ETFs</h3>
+                <p>
+                  Conglomerates are your own weighted baskets of any assets. Set the weights,
+                  rebalance, and treat the basket like a single holding.
+                </p>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/backtest.svg"
+                  width="600"
+                  height="380"
+                  alt="Backtest chart comparing a basket to a benchmark"
+                />
+              </div>
+              <div class="body">
+                <h3>Backtest before you buy</h3>
+                <p>
+                  Run any basket back through years of history and compare it against a benchmark —
+                  CAGR, drawdown and growth, side by side.
+                </p>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div class="shot">
+                <img
+                  src="/screens/assets.svg"
+                  width="600"
+                  height="380"
+                  alt="Asset search and detail with a price chart"
+                />
+              </div>
+              <div class="body">
+                <h3>Browse any asset</h3>
+                <p>
+                  A fast local search across stocks, ETFs, crypto and commodities, with a clean
+                  detail view and price history for each one.
+                </p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <span
+          >© BetterTrack —
+          <a class="js-web-link" href="https://web.bettertrack.at">web app</a></span
+        >
+        <span>Self-hosted personal finance &amp; investing. Invite-only.</span>
+      </div>
+    </footer>
+
+    <script>
+      // Point every "Open the web app" link at the configured web origin
+      // (window.__BT_LANDING__.webOrigin, injected by env.js at container start).
+      (function () {
+        var origin = (window.__BT_LANDING__ && window.__BT_LANDING__.webOrigin) || '';
+        if (!origin) return;
+        var links = document.querySelectorAll('.js-web-link');
+        for (var i = 0; i < links.length; i++) {
+          links[i].setAttribute('href', origin);
+        }
+      })();
+    </script>
+  </body>
+</html>

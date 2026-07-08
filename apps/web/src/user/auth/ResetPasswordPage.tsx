@@ -4,30 +4,39 @@ import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 
 import { MIN_PASSWORD_LENGTH, type TwoFactorChallengeResponse } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 import { TwoFactorStep } from './LoginPage';
 
 /** Friendly message for the failure codes `POST /auth/password-reset/complete` returns. */
-function completeErrorMessage(err: unknown): string {
+function completeErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 429) {
       const wait = err.retryAfterSeconds
-        ? ` Please wait ${err.retryAfterSeconds} second${err.retryAfterSeconds === 1 ? '' : 's'} and try again.`
-        : ' Please wait a moment and try again.';
-      return `Too many attempts.${wait}`;
+        ? t(
+            err.retryAfterSeconds === 1
+              ? 'auth.common.waitSecondsOne'
+              : 'auth.common.waitSecondsOther',
+            {
+              count: err.retryAfterSeconds,
+            },
+          )
+        : t('auth.common.waitMoment');
+      return `${t('auth.resetPassword.rateLimited')}${wait}`;
     }
     switch (err.code) {
       case 'WEAK_PASSWORD':
         return err.message;
       case 'INVALID_RESET':
-        return 'This reset link is invalid or has expired. Request a new one to continue.';
+        return t('auth.resetPassword.invalidReset');
       default:
-        if (err.status >= 500) return 'Something went wrong. Please try again.';
+        if (err.status >= 500) return t('common.genericError');
     }
   }
-  return 'Could not reset your password. Please try again.';
+  return t('auth.resetPassword.failed');
 }
 
 /**
@@ -37,6 +46,7 @@ function completeErrorMessage(err: unknown): string {
  * session so there is no redundant sign-in prompt (#268).
  */
 export function ResetPasswordPage() {
+  const t = useT();
   const { token = '' } = useParams();
   const navigate = useNavigate();
   const { status, completePasswordReset } = useAuth();
@@ -51,7 +61,7 @@ export function ResetPasswordPage() {
   if (status === 'loading') {
     return (
       <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
-        <Spinner label="Checking session…" />
+        <Spinner label={t('auth.common.checkingSession')} />
       </div>
     );
   }
@@ -70,7 +80,7 @@ export function ResetPasswordPage() {
       }
       navigate('/', { replace: true });
     } catch (err) {
-      setError(completeErrorMessage(err));
+      setError(completeErrorMessage(t, err));
     } finally {
       setSubmitting(false);
     }
@@ -82,20 +92,20 @@ export function ResetPasswordPage() {
         challenge={challenge}
         onVerified={() => navigate('/', { replace: true })}
         onCancel={() => navigate('/login', { replace: true })}
-        cancelLabel="Sign in instead"
+        cancelLabel={t('auth.resetPassword.signInInstead')}
       />
     );
   }
 
   return (
-    <AuthCard subtitle="Choose a new password">
+    <AuthCard subtitle={t('auth.resetPassword.subtitle')}>
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
-          label="New password"
+          label={t('auth.resetPassword.newPasswordLabel')}
           name="password"
           type="password"
           autoComplete="new-password"
@@ -104,16 +114,16 @@ export function ResetPasswordPage() {
           onChange={(e) => setPassword(e.target.value)}
           minLength={MIN_PASSWORD_LENGTH}
           required
-          hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+          hint={t('auth.common.minPasswordHint', { count: MIN_PASSWORD_LENGTH })}
         />
         <Button type="submit" disabled={submitting}>
-          {submitting ? 'Saving…' : 'Set new password'}
+          {submitting ? t('auth.resetPassword.saving') : t('auth.resetPassword.submit')}
         </Button>
         <Link
           to="/forgot-password"
           className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
         >
-          Request a new link
+          {t('auth.resetPassword.requestNewLink')}
         </Link>
       </form>
     </AuthCard>

@@ -1,0 +1,933 @@
+{
+  "auth": {
+    "common": {
+      "checkingSession": "Sitzung wird überprüft…",
+      "minPasswordHint": "Mindestens {{count}} Zeichen.",
+      "signOut": "Abmelden",
+      "waitSecondsOne": " Bitte warte {{count}} Sekunde und versuche es erneut.",
+      "waitSecondsOther": " Bitte warte {{count}} Sekunden und versuche es erneut.",
+      "waitMoment": " Bitte warte einen Moment und versuche es erneut."
+    },
+    "login": {
+      "subtitle": "Melde dich bei deinem Konto an",
+      "identifierLabel": "E-Mail oder Benutzername",
+      "passwordLabel": "Passwort",
+      "submit": "Anmelden",
+      "submitting": "Wird angemeldet…",
+      "forgotPassword": "Passwort vergessen?",
+      "rateLimited": "Zu viele Anmeldeversuche.",
+      "accountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
+      "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch."
+    },
+    "twoFactor": {
+      "subtitle": "Zwei-Faktor-Authentifizierung",
+      "promptTotpAndEmail": "Gib den 6-stelligen Code aus deiner Authenticator-App ein oder fordere unten einen Code per E-Mail an.",
+      "promptTotpOnly": "Gib den 6-stelligen Code aus deiner Authenticator-App ein.",
+      "promptEmailOnly": "Gib den 6-stelligen Code ein, den wir dir per E-Mail geschickt haben.",
+      "recoveryPrompt": "Gib einen deiner Wiederherstellungscodes ein.",
+      "recoveryCodeLabel": "Wiederherstellungscode",
+      "verificationCodeLabel": "Bestätigungscode",
+      "verify": "Bestätigen",
+      "verifying": "Wird bestätigt…",
+      "emailMeACode": "Code per E-Mail senden",
+      "sendingEmailCode": "Wird gesendet…",
+      "useRecoveryCode": "Wiederherstellungscode verwenden",
+      "useAuthenticatorOrEmail": "Authenticator- oder E-Mail-Code verwenden",
+      "backToSignIn": "Zurück zur Anmeldung",
+      "tooManyCodes": "Zu viele falsche Codes. Bitte warte einen Moment und versuche es erneut.",
+      "sessionExpired": "Deine Bestätigungssitzung ist abgelaufen. Bitte melde dich erneut an.",
+      "invalidCode": "Dieser Code ist falsch oder abgelaufen.",
+      "emailCodeSent": "Falls E-Mail eingerichtet ist, ist ein Anmeldecode unterwegs. Gib ihn unten ein.",
+      "emailCodeFailed": "E-Mail-Code konnte nicht gesendet werden. Versuche es mit deinem Authenticator oder einem Wiederherstellungscode."
+    },
+    "forgotPassword": {
+      "subtitle": "Setze dein Passwort zurück",
+      "sentMessage": "Falls für diese E-Mail-Adresse ein Konto existiert, haben wir dir einen Link zum Zurücksetzen deines Passworts gesendet. Sieh in deinem Posteingang nach — der Link läuft in 1 Stunde ab.",
+      "backToSignIn": "Zurück zur Anmeldung",
+      "description": "Gib die E-Mail-Adresse deines Kontos ein, und wir senden dir einen Link, um ein neues Passwort zu wählen.",
+      "emailLabel": "E-Mail",
+      "submit": "Reset-Link senden",
+      "sending": "Wird gesendet…",
+      "rateLimited": "Zu viele Anfragen."
+    },
+    "resetPassword": {
+      "subtitle": "Wähle ein neues Passwort",
+      "signInInstead": "Stattdessen anmelden",
+      "newPasswordLabel": "Neues Passwort",
+      "submit": "Neues Passwort festlegen",
+      "saving": "Wird gespeichert…",
+      "requestNewLink": "Neuen Link anfordern",
+      "rateLimited": "Zu viele Versuche.",
+      "invalidReset": "Dieser Reset-Link ist ungültig oder abgelaufen. Fordere einen neuen an, um fortzufahren.",
+      "failed": "Passwort konnte nicht zurückgesetzt werden. Bitte versuche es erneut."
+    },
+    "invite": {
+      "checkingInvite": "Deine Einladung wird überprüft…",
+      "invalidSubtitle": "Einladung annehmen",
+      "invalidMessage": "Dieser Einladungslink ist ungültig, abgelaufen oder wurde bereits verwendet. Bitte deinen Administrator um eine neue Einladung.",
+      "goToSignIn": "Zur Anmeldung",
+      "subtitle": "Richte dein Konto ein",
+      "emailLabel": "E-Mail",
+      "emailHint": "Durch deine Einladung festgelegt und kann nicht geändert werden.",
+      "usernameLabel": "Benutzername",
+      "usernameHint": "3–40 Zeichen: Buchstaben, Zahlen, Punkt, Bindestrich oder Unterstrich.",
+      "passwordLabel": "Passwort",
+      "submit": "Konto erstellen",
+      "creating": "Konto wird erstellt…",
+      "usernameTaken": "Dieser Benutzername ist bereits vergeben — wähle einen anderen.",
+      "emailTaken": "Für diese E-Mail-Adresse existiert bereits ein Konto.",
+      "invalidInvite": "Dieser Einladungslink ist nicht mehr gültig. Bitte deinen Administrator um eine neue Einladung.",
+      "acceptFailed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut."
+    },
+    "forcedPasswordChange": {
+      "subtitle": "Wähle ein neues Passwort",
+      "signedInAs": "Du bist als {{email}} angemeldet. Du musst ein neues Passwort festlegen, bevor du fortfährst.",
+      "infoNoUser": "Du musst ein neues Passwort festlegen, bevor du fortfährst.",
+      "newPasswordLabel": "Neues Passwort",
+      "confirmPasswordLabel": "Neues Passwort bestätigen",
+      "submit": "Passwort aktualisieren",
+      "updating": "Wird aktualisiert…",
+      "mismatch": "Die neuen Passwörter stimmen nicht überein.",
+      "failed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
+    },
+    "pin": {
+      "heading": "Gib deinen PIN ein",
+      "promptWithUser": "Willkommen zurück, {{username}}. Gib deinen {{length}}-stelligen PIN ein, um fortzufahren.",
+      "prompt": "Gib deinen {{length}}-stelligen PIN ein, um fortzufahren.",
+      "inputLabel": "PIN",
+      "fallbackError": "Zu viele falsche PINs. Bitte melde dich mit deinem Passwort an.",
+      "invalidPin": "Falscher PIN. Bitte versuche es erneut.",
+      "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
+      "verifyFailed": "PIN konnte nicht überprüft werden. Bitte versuche es erneut."
+    }
+  },
+  "common": {
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "close": "Schließen",
+    "delete": "Löschen",
+    "edit": "Bearbeiten",
+    "remove": "Entfernen",
+    "confirm": "Bestätigen",
+    "back": "Zurück",
+    "next": "Weiter",
+    "loading": "Wird geladen…",
+    "saving": "Wird gespeichert…",
+    "retry": "Erneut versuchen",
+    "search": "Suchen",
+    "yes": "Ja",
+    "no": "Nein",
+    "private": "Privat",
+    "friends": "Freunde",
+    "soon": "Bald",
+    "comingSoon": "Demnächst",
+    "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut."
+  },
+  "nav": {
+    "portfolio": "Portfolio",
+    "workboard": "Workboard",
+    "assets": "Anlagen",
+    "social": "Sozial",
+    "primary": "Primär",
+    "section": "Abschnitt",
+    "openSearch": "Suche öffnen (⌘K)",
+    "accountMenu": "Kontomenü",
+    "account": "Konto",
+    "myPortfolio": "Mein Portfolio",
+    "settings": "Einstellungen",
+    "inviteOthers": "Andere einladen",
+    "shareProfile": "Profil teilen",
+    "logout": "Abmelden"
+  },
+  "language": {
+    "title": "Sprache",
+    "description": "Die Sprache, die BetterTrack in der App und in deinen E-Mails verwendet.",
+    "label": "Anzeigesprache",
+    "saveError": "Deine Sprache konnte nicht gespeichert werden. Bitte versuche es erneut."
+  },
+  "settings": {
+    "saveError": "Diese Änderung konnte nicht gespeichert werden. Bitte versuche es erneut.",
+    "retryHint": "Bitte versuche es gleich noch einmal.",
+    "layout": {
+      "title": "Einstellungen"
+    },
+    "section": {
+      "importsExports": "Importe & Exporte",
+      "connections": "Verbindungen",
+      "backups": "Backups"
+    },
+    "importsExports": {
+      "description": "Broker-CSV-Importe (Trade Republic, George, …) und vollständiger Konto-Datenexport."
+    },
+    "connections": {
+      "description": "Google-Login und andere Verbindungen zu Drittanbietern."
+    },
+    "backups": {
+      "description": "Automatische Backups zu Google Drive und anderswo."
+    },
+    "notifications": {
+      "title": "Benachrichtigungen",
+      "subtitle": "Lege fest, wie BetterTrack dich zu jeder Art von Aktivität benachrichtigt — Glocke in der App, E-Mail, beides oder stummgeschaltet.",
+      "loadError": {
+        "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
+      },
+      "types": {
+        "friendRequest": {
+          "label": "Freundschaftsanfragen",
+          "description": "Wenn dir jemand eine Freundschaftsanfrage sendet."
+        },
+        "friendAccepted": {
+          "label": "Angenommene Freundschaftsanfragen",
+          "description": "Wenn jemand deine Freundschaftsanfrage annimmt."
+        },
+        "portfolioShared": {
+          "label": "Geteilte Portfolios",
+          "description": "Wenn ein Freund ein Portfolio mit dir teilt."
+        },
+        "accountInvite": {
+          "label": "Konto-Einladungen",
+          "description": "Wenn du zu BetterTrack eingeladen wirst."
+        },
+        "tempPassword": {
+          "label": "Temporäre Passwörter",
+          "description": "Wenn ein Administrator dir ein temporäres Passwort ausstellt."
+        },
+        "alertTriggered": {
+          "label": "Preisalarme",
+          "description": "Wenn einer deiner Preisalarme auslöst."
+        }
+      },
+      "routing": {
+        "both": "In der App + E-Mail",
+        "inapp": "Nur in der App",
+        "email": "Nur E-Mail",
+        "muted": "Stummgeschaltet"
+      },
+      "allTitle": "Alle Benachrichtigungen",
+      "markAllRead": "Alle als gelesen markieren",
+      "markReadError": "Diese Benachrichtigung konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "listError": {
+        "title": "Deine Benachrichtigungen konnten nicht geladen werden"
+      },
+      "empty": {
+        "title": "Noch keine Benachrichtigungen",
+        "description": "Aktivitäten wie Freundschaftsanfragen und Freigaben erscheinen hier."
+      },
+      "refreshError": "Benachrichtigungen konnten nicht aktualisiert werden. Die zuletzt geladene Liste wird angezeigt.",
+      "loadMore": "Mehr laden"
+    },
+    "security": {
+      "title": "Sicherheit",
+      "subtitle": "Deine Sitzung, dein PIN und Zwei-Faktor-Optionen.",
+      "loadError": {
+        "title": "Deine Sicherheitseinstellungen konnten nicht geladen werden"
+      },
+      "session": {
+        "title": "Sitzung",
+        "loadError": {
+          "title": "Deine Sitzung konnte nicht geladen werden"
+        },
+        "info": "Angemeldet seit {{signedInAt}} — läuft nach 30 Tagen Inaktivität ab ({{expiresAt}})."
+      },
+      "sessions": {
+        "title": "Aktive Sitzungen",
+        "description": "Jedes Gerät, das aktuell bei deinem Konto angemeldet ist. Melde Geräte ab, die du nicht erkennst.",
+        "loadError": {
+          "title": "Deine Sitzungen konnten nicht geladen werden"
+        },
+        "revokeOneError": "Dieses Gerät konnte nicht abgemeldet werden. Bitte versuche es erneut.",
+        "revokeOthersError": "Die anderen Geräte konnten nicht abgemeldet werden. Bitte versuche es erneut.",
+        "currentDevice": "Dieses Gerät",
+        "timestamps": "Angemeldet {{createdAt}} · zuletzt aktiv {{lastSeenAt}}",
+        "logOut": "Abmelden",
+        "confirmLogoutOthersOne": "{{count}} anderes Gerät abmelden? Du bleibst auf diesem Gerät angemeldet.",
+        "confirmLogoutOthersOther": "Alle {{count}} anderen Geräte abmelden? Du bleibst auf diesem Gerät angemeldet.",
+        "loggingOut": "Wird abgemeldet…",
+        "logOutAllOthers": "Alle anderen Geräte abmelden"
+      },
+      "pin": {
+        "genericError": "Dein PIN konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+        "pinLabel": "PIN",
+        "exactDigitsHint": "Genau {{length}} Ziffern.",
+        "confirmLabel": "PIN bestätigen",
+        "mismatch": "Die PINs stimmen nicht überein.",
+        "savedNotice": "Dein PIN wurde gespeichert.",
+        "windowHour": "1 Stunde",
+        "windowMinuteOne": "{{count}} Minute",
+        "windowMinuteOther": "{{count}} Minuten",
+        "windowError": "Das Sperrfenster konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+        "lockAfterInactivity": "Nach Inaktivität sperren",
+        "lockDescription": "Solange du BetterTrack aktiv nutzt, bleibt es entsperrt — auch bei Neuladen und neuen Tabs. Der PIN wird erst nach dieser Zeit ohne Aktivität wieder abgefragt.",
+        "idleForLabel": "Sperren nach Inaktivität von",
+        "unlockWindowAriaLabel": "Entsperrfenster",
+        "disabledNotice": "Dein PIN wurde deaktiviert.",
+        "title": "PIN",
+        "description": "Ein 4-stelliger PIN bestätigt erneut, dass du es bist, nachdem die App eine Weile inaktiv war. Er ist ein Sichtschutz über deiner Sitzung, kein zweiter Faktor.",
+        "enable": "PIN aktivieren",
+        "saveNew": "Neuen PIN speichern",
+        "isOn": "Dein PIN ist aktiv.",
+        "change": "PIN ändern",
+        "disabling": "Wird deaktiviert…",
+        "disable": "PIN deaktivieren"
+      },
+      "twoFactor": {
+        "title": "Zwei-Faktor-Authentifizierung",
+        "description": "Füge einen zweiten Schritt bei der Anmeldung hinzu. Aktiviere eine Methode — oder beide.",
+        "loadError": {
+          "title": "Dein Zwei-Faktor-Status konnte nicht geladen werden"
+        },
+        "enabledLabel": "Aktiviert.",
+        "turnOff": "Deaktivieren",
+        "turningOff": "Wird deaktiviert…",
+        "confirming": "Wird bestätigt…",
+        "confirmAndEnable": "Bestätigen & aktivieren",
+        "totp": {
+          "cardTitle": "Authenticator-App (TOTP)",
+          "cardDescription": "Codes aus Google Authenticator, 1Password oder jeder anderen TOTP-App.",
+          "enrollError": "Die Einrichtung konnte nicht gestartet werden. Bitte versuche es erneut.",
+          "scanInstructions": "Scanne diesen QR-Code mit Google Authenticator (oder einer beliebigen TOTP-App) und gib dann den 6-stelligen Code ein, den er anzeigt.",
+          "qrAriaLabel": "QR-Code für die Zwei-Faktor-Einrichtung",
+          "manualEntryToggle": "Kein Scan möglich? Diesen Schlüssel manuell eingeben",
+          "setupKeyLabel": "Einrichtungsschlüssel",
+          "otpauthUriLabel": "otpauth-URI",
+          "confirmationCodeLabel": "Bestätigungscode",
+          "confirmationCodeHint": "Gib den aktuellen 6-stelligen Code aus deiner Authenticator-App ein.",
+          "setup": "Authenticator-App einrichten",
+          "enabledNotice": "Authenticator-App aktiviert.",
+          "disabledNotice": "Authenticator-App deaktiviert.",
+          "disableCodeLabel": "Authenticator-Code oder Wiederherstellungscode",
+          "turnOffFull": "Authenticator-App deaktivieren"
+        },
+        "email": {
+          "cardTitle": "E-Mail-Codes",
+          "cardDescription": "Ein Einmalcode, der bei der Anmeldung an deine Konto-E-Mail gesendet wird.",
+          "enabledNotice": "E-Mail-Codes aktiviert.",
+          "disabledNotice": "E-Mail-Codes deaktiviert.",
+          "confirmInstructions": "Wir haben einen Code an deine Adresse gesendet. Gib ihn ein, um E-Mail-Codes zu aktivieren.",
+          "codeLabel": "E-Mail-Code",
+          "codeHint": "Gib den 6-stelligen Code ein, den wir dir gerade gesendet haben.",
+          "sendingCode": "Code wird gesendet…",
+          "setup": "E-Mail-Codes einrichten"
+        },
+        "recoveryCodes": {
+          "saveNotice": "Bewahre diese Wiederherstellungscodes sicher auf. Jeder kann einmal verwendet werden, um dich anzumelden, falls du den Zugriff auf deinen Authenticator oder deine E-Mail verlierst — sie werden nicht erneut angezeigt.",
+          "copied": "Kopiert!",
+          "copy": "Codes kopieren",
+          "download": "Codes herunterladen",
+          "done": "Ich habe diese Codes gespeichert",
+          "regenerateError": "Wiederherstellungscodes konnten nicht neu erzeugt werden. Bitte versuche es erneut.",
+          "cardTitle": "Wiederherstellungscodes",
+          "cardDescription": "Einmalcodes zum Anmelden, falls du den Zugriff auf deine anderen Faktoren verlierst.",
+          "remainingOne": "Noch {{count}} Wiederherstellungscode übrig.",
+          "remainingOther": "Noch {{count}} Wiederherstellungscodes übrig.",
+          "regenerating": "Wird neu erzeugt…",
+          "regenerate": "Wiederherstellungscodes neu erzeugen"
+        }
+      }
+    },
+    "api": {
+      "title": "API-Zugriff",
+      "introBefore": "Persönliche API-Schlüssel authentifizieren Skripte und Integrationen als du selbst, begrenzt auf das, was sie lesen oder ändern dürfen. Sende einen Schlüssel als ",
+      "introMiddle": ". Die API-Dokumentation findest du unter ",
+      "introAfter": ".",
+      "copied": "Kopiert",
+      "copy": "Kopieren",
+      "done": "Fertig",
+      "revoking": "Wird widerrufen…",
+      "confirmRevoke": "Widerruf bestätigen",
+      "revokeFailed": "Konnte nicht widerrufen werden.",
+      "scopeRequired": "Wähle mindestens einen Berechtigungsbereich.",
+      "scopesLegend": "Berechtigungsbereiche",
+      "scope": {
+        "portfolioRead": {
+          "label": "Portfolio · lesen",
+          "description": "Portfolios, Bestände und Kassenbestände lesen."
+        },
+        "portfolioWrite": {
+          "label": "Portfolio · schreiben",
+          "description": "Portfolios, Transaktionen und Kassenbewegungen erstellen/bearbeiten."
+        },
+        "workboardRead": {
+          "label": "Workboard · lesen",
+          "description": "Watchlists, Konglomerate und Backtests lesen."
+        },
+        "workboardWrite": {
+          "label": "Workboard · schreiben",
+          "description": "Watchlists und Konglomerate bearbeiten, Backtests ausführen."
+        },
+        "marketRead": {
+          "label": "Markt · lesen",
+          "description": "Anlagen suchen und Kurse/Historie lesen."
+        },
+        "socialRead": {
+          "label": "Sozial · lesen",
+          "description": "Freunde, Freigaben und Benachrichtigungen lesen."
+        }
+      },
+      "keys": {
+        "tokenModal": {
+          "title": "Dein neuer API-Schlüssel",
+          "description": "Kopiere ihn jetzt — aus Sicherheitsgründen wird er nicht erneut angezeigt.",
+          "storeWarning": "Bewahre diesen Token sicher auf. Jeder, der ihn besitzt, kann den Schlüssel „{{name}}“ mit seinen Berechtigungen verwenden. Du wirst ihn nicht erneut sehen können — widerrufe ihn und erstelle bei Verlust einen neuen."
+        },
+        "createError": "Der Schlüssel konnte nicht erstellt werden. Bitte versuche es erneut.",
+        "createTitle": "Einen Schlüssel erstellen",
+        "nameRequired": "Gib dem Schlüssel einen Namen.",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. Portfolio-Sync-Skript",
+        "creating": "Wird erstellt…",
+        "create": "Schlüssel erstellen",
+        "createdLastUsed": "Erstellt {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
+        "createdNeverUsed": "Erstellt {{createdAt}} · nie verwendet",
+        "revoke": "Widerrufen",
+        "sectionTitle": "Deine Schlüssel",
+        "loadError": {
+          "title": "Deine API-Schlüssel konnten nicht geladen werden"
+        },
+        "empty": {
+          "title": "Noch keine API-Schlüssel",
+          "description": "Erstelle oben einen Schlüssel, um die API zu nutzen."
+        }
+      },
+      "oauth": {
+        "sectionTitle": "OAuth-Apps",
+        "sectionDescription": "Registriere eine Drittanbieter-App für begrenzten, widerrufbaren Zugriff auf BetterTrack-Konten über OAuth 2.0 (Authorization Code + PKCE). Nutzer stimmen auf einem Zustimmungsbildschirm zu und geben ihr Passwort nie preis.",
+        "yourApps": "Deine Apps",
+        "loadError": {
+          "title": "Deine Apps konnten nicht geladen werden"
+        },
+        "empty": {
+          "title": "Noch keine OAuth-Apps",
+          "description": "Registriere oben eine App, um sie in den OAuth-Flow einzubinden."
+        },
+        "credentialsModal": {
+          "title": "Deine neue OAuth-App",
+          "descriptionSecret": "Kopiere das Client-Secret jetzt — aus Sicherheitsgründen wird es nicht erneut angezeigt.",
+          "descriptionPublic": "Dies ist ein öffentlicher Client — er besitzt kein Secret und muss PKCE verwenden.",
+          "secretWarning": "Bewahre dieses Secret sicher auf. Jeder, der es besitzt, kann als App „{{name}}“ auftreten. Du wirst es nicht erneut sehen können — lösche diese App und registriere bei Verlust eine neue.",
+          "publicClientNotice": "Öffentliche Clients (Mobil/SPA) authentifizieren sich per PKCE statt mit einem Secret. Verwende die Client-ID oben mit einer Code-Challenge."
+        },
+        "clientIdLabel": "Client-ID",
+        "clientSecretLabel": "Client-Secret",
+        "registerError": "Die App konnte nicht registriert werden. Prüfe die Redirect-URIs und versuche es erneut.",
+        "nameRequired": "Gib der App einen Namen.",
+        "redirectUriRequired": "Füge mindestens eine Redirect-URI hinzu.",
+        "registerTitle": "Eine App registrieren",
+        "appNameLabel": "App-Name",
+        "appNamePlaceholder": "z. B. Meine mobile App",
+        "redirectUrisLegend": "Redirect-URIs",
+        "redirectUrisHintBefore": "Wohin Nutzer nach der Zustimmung geleitet werden. Verwende https, http-Loopback oder einen Deep-Link mit eigenem Schema (z. B. ",
+        "redirectUrisHintAfter": ").",
+        "redirectPlaceholder": "https://example.com/callback",
+        "redirectUriAriaLabel": "Redirect-URI {{index}}",
+        "removeRedirectUriAriaLabel": "Redirect-URI {{index}} entfernen",
+        "removeUri": "Entfernen",
+        "addUri": "+ Weitere URI hinzufügen",
+        "scopesHint": "Was die App auf dem Zustimmungsbildschirm anfragen darf, in den Worten, die Nutzer sehen.",
+        "publicClientLabel": "Öffentlicher Client",
+        "publicClientDescription": "Mobile/SPA-Apps, die kein Secret geheim halten können. Verwendet PKCE, es wird kein Client-Secret ausgestellt.",
+        "registering": "Wird registriert…",
+        "register": "App registrieren",
+        "public": "Öffentlich",
+        "confidential": "Vertraulich",
+        "deleting": "Wird gelöscht…",
+        "confirmDelete": "Löschen bestätigen",
+        "deleteFailed": "Konnte nicht gelöscht werden.",
+        "registeredOn": "Registriert {{createdAt}}"
+      },
+      "grants": {
+        "sectionTitle": "Autorisierte Apps",
+        "sectionDescription": "Drittanbieter-Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App beendet sofort ihre Tokens — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
+        "loadError": {
+          "title": "Deine autorisierten Apps konnten nicht geladen werden"
+        },
+        "empty": {
+          "title": "Keine autorisierten Apps",
+          "description": "Apps, die du auf dem OAuth-Zustimmungsbildschirm genehmigst, erscheinen hier."
+        },
+        "canAccess": "{{appName}} kann:",
+        "authorizedLastUsed": "Autorisiert {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
+        "authorizedNeverUsed": "Autorisiert {{createdAt}} · nie verwendet",
+        "revokeAccess": "Zugriff widerrufen"
+      }
+    },
+    "account": {
+      "title": "Konto",
+      "subtitle": "Deine Identität, dein Passwort und deine Freigabe-Einstellungen.",
+      "loadError": {
+        "title": "Dein Konto konnte nicht geladen werden",
+        "description": "Bitte versuche es gleich noch einmal."
+      },
+      "portfolioError": {
+        "title": "Dein Portfolio konnte nicht geladen werden",
+        "description": "Die Freigabe-Einstellungen sind gerade nicht verfügbar."
+      },
+      "field": {
+        "username": "Benutzername",
+        "email": "E-Mail",
+        "memberSince": "Mitglied seit",
+        "baseCurrency": "Basiswährung"
+      },
+      "baseCurrencyFixed": "{{code}} (fest)"
+    },
+    "password": {
+      "title": "Passwort ändern",
+      "current": "Aktuelles Passwort",
+      "new": "Neues Passwort",
+      "confirm": "Neues Passwort bestätigen",
+      "hint": "Mindestens {{count}} Zeichen.",
+      "submit": "Passwort aktualisieren",
+      "submitting": "Wird aktualisiert…",
+      "success": "Dein Passwort wurde geändert.",
+      "mismatch": "Die neuen Passwörter stimmen nicht überein.",
+      "currentWrong": "Dein aktuelles Passwort ist falsch.",
+      "changeFailed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
+    },
+    "defaultSharing": {
+      "title": "Standard-Portfolio-Freigabe",
+      "description": "Womit die Freigabe eines *neuen* Portfolios beginnt. Diese Änderung wirkt sich nie auf bereits vorhandene Portfolios aus."
+    },
+    "sharing": {
+      "title": "Mit Freunden teilen",
+      "description": "Teile dieses Portfolio mit Freunden: Freunde können es schreibgeschützt ansehen. Privat hält es nur für dich sichtbar."
+    }
+  },
+  "portfolio": {
+    "overview": {
+      "title": "Portfolio",
+      "subtitle": "Was du besitzt, was es wert ist, und wie es sich entwickelt.",
+      "newCustomButton": "+ Individuelle Anlage",
+      "recordButton": "+ Transaktion",
+      "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
+      "emptyState": {
+        "title": "Dein Portfolio ist leer",
+        "description": "Erfasse deine erste Transaktion oder füge eine individuelle Anlage hinzu, um zu verfolgen, was du besitzt.",
+        "recordButton": "Transaktion erfassen",
+        "newCustomButton": "Neue individuelle Anlage",
+        "searchLink": "Nach einer Anlage suchen →"
+      },
+      "totalsAriaLabel": "Portfolio-Summen",
+      "netWorth": {
+        "label": "Nettovermögen",
+        "investedWord": "investiert",
+        "cashWord": "Bargeld"
+      },
+      "liquidityRing": {
+        "ariaLabel": "Liquidität",
+        "summary": "{{invested}} investiert, {{liquid}} liquide",
+        "investedLegend": "investiert",
+        "liquidLegend": "liquide"
+      },
+      "field": {
+        "marketValue": "Marktwert",
+        "invested": "Investiert",
+        "unrealizedPnl": "Unrealisierter G/V",
+        "dayChange": "Tagesänderung",
+        "cash": "Bargeld",
+        "asset": "Anlage",
+        "qty": "Anzahl",
+        "avgCost": "Ø Kosten",
+        "price": "Preis",
+        "day": "Tag",
+        "side": "Seite",
+        "date": "Datum",
+        "fee": "Gebühr",
+        "note": "Notiz"
+      },
+      "depositButton": "+ Einzahlen",
+      "withdrawButton": "− Abheben",
+      "allocationAriaLabel": "Aufteilung",
+      "allocation": {
+        "byAssetTitle": "Nach Anlage",
+        "byTypeTitle": "Nach Typ",
+        "byAssetChartTitle": "Aufteilung nach Anlage",
+        "byTypeChartTitle": "Aufteilung nach Typ"
+      },
+      "assetType": {
+        "stock": "Aktien",
+        "etf": "ETFs",
+        "index": "Indizes",
+        "fx": "Devisen",
+        "commodity": "Rohstoffe",
+        "crypto": "Krypto",
+        "custom": "Individuell"
+      },
+      "winnersLosers": {
+        "ariaLabel": "Top-Gewinner und -Verlierer",
+        "heading": "Top-Gewinner / -Verlierer",
+        "dayMetric": "Tag %",
+        "totalMetric": "Gesamt-G/V",
+        "topWinners": "Top-Gewinner",
+        "topLosers": "Top-Verlierer",
+        "nothingToShow": "Nichts anzuzeigen."
+      },
+      "recentTransactions": {
+        "ariaLabel": "Letzte Transaktionen",
+        "heading": "Letzte Transaktionen"
+      },
+      "side": {
+        "buy": "Kauf",
+        "sell": "Verkauf"
+      },
+      "holdingsAriaLabel": "Bestände",
+      "holdingsHeading": "Bestände",
+      "deleteTxnError": "Die Transaktion konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "holdings": {
+        "expandRow": "{{symbol}}-Transaktionen aufklappen",
+        "collapseRow": "{{symbol}}-Transaktionen einklappen",
+        "transactionsHeading": "Transaktionen",
+        "editValuePoints": "Wertpunkte bearbeiten",
+        "realizedPnlLabel": "Realisierter G/V:",
+        "noTransactions": "Keine Transaktionen für diese Anlage geladen.",
+        "actionsAriaLabel": "Aktionen"
+      },
+      "transaction": {
+        "deleteConfirm": "Löschen?",
+        "editAriaLabel": "Transaktion vom {{date}} bearbeiten",
+        "deleteAriaLabel": "Transaktion vom {{date}} löschen"
+      },
+      "chart": {
+        "heading": "Wertverlauf",
+        "displayModeAriaLabel": "Diagrammanzeige",
+        "valueMode": "Wert €",
+        "performanceMode": "Performance %",
+        "overlayToggle": "Anlagen einblenden",
+        "perfHint": "Ein- und Auszahlungen werden neutralisiert (zeitgewichtete Rendite) — die Kurve bewegt sich nur, wenn sich deine Bestände bewegen.",
+        "ariaLabelPerformance": "Portfolio-Performance im Zeitverlauf",
+        "ariaLabelValue": "Portfolio-Wert im Zeitverlauf"
+      }
+    },
+    "section": {
+      "subnav": {
+        "overview": "Übersicht",
+        "transactions": "Transaktionen",
+        "customAssets": "Individuelle Anlagen"
+      },
+      "transactionsComingSoon": {
+        "description": "Das vollständige Transaktionsjournal — jeder Kauf und Verkauf, bearbeitbar, mit realisiertem G/V — kommt mit der Portfolio-Phase."
+      },
+      "customAssetsComingSoon": {
+        "description": "Verfolge Immobilien, Fahrzeuge, Sammlerstücke und andere nicht notierte Bestände mit einem Wertpunkte-Editor."
+      }
+    },
+    "switcher": {
+      "triggerAriaLabel": "Portfolio wechseln",
+      "fallbackName": "Portfolio",
+      "defaultBadge": "Standard",
+      "menuAriaLabel": "Portfolios",
+      "newPortfolio": "+ Neues Portfolio",
+      "renameCurrent": "Aktuelles umbenennen",
+      "archiveCurrent": "Aktuelles archivieren",
+      "archiveDisabledHint": "Du kannst dein einziges Portfolio nicht archivieren",
+      "archivedMenuItem": "Archiviert…",
+      "archiveDialogTitle": "Portfolio archivieren",
+      "archiveDialogDescription": "„{{name}}“ aus deiner Portfolioliste ausblenden. Der Verlauf bleibt erhalten und du kannst es jederzeit wiederherstellen.",
+      "archiving": "Wird archiviert…",
+      "archive": "Archivieren",
+      "archivedDialogTitle": "Archivierte Portfolios",
+      "archivedDialogDescription": "Stelle ein Portfolio wieder her, um es zurück in deine Liste zu bringen.",
+      "noArchived": "Keine archivierten Portfolios.",
+      "restore": "Wiederherstellen",
+      "createTitle": "Neues Portfolio",
+      "renameTitle": "Portfolio umbenennen",
+      "nameLabel": "Name",
+      "nameAriaLabel": "Portfolioname",
+      "namePlaceholder": "z. B. Altersvorsorge",
+      "create": "Erstellen",
+      "nameTakenError": "Du hast bereits ein Portfolio mit diesem Namen.",
+      "createError": "Das Portfolio konnte nicht erstellt werden. Bitte versuche es erneut.",
+      "renameError": "Das Portfolio konnte nicht umbenannt werden. Bitte versuche es erneut.",
+      "archiveError": "Das Portfolio konnte nicht archiviert werden. Bitte versuche es erneut.",
+      "restoreError": "Das Portfolio konnte nicht wiederhergestellt werden. Bitte versuche es erneut."
+    },
+    "cash": {
+      "title": "Bargeldbestand",
+      "kindGroupAriaLabel": "Einzahlen oder abheben",
+      "depositTab": "Einzahlen",
+      "withdrawTab": "Abheben",
+      "amountLabel": "Betrag (EUR)",
+      "amountAriaLabel": "Betrag",
+      "previewAriaLabel": "Vorschau: Bargeld danach",
+      "calculating": "Wird berechnet…",
+      "available": "Verfügbar",
+      "short": "Fehlbetrag",
+      "dateLabel": "Datum",
+      "noteLabel": "Notiz (optional)",
+      "noteAriaLabel": "Notiz",
+      "depositSubmit": "Bargeld einzahlen",
+      "withdrawSubmit": "Bargeld abheben",
+      "amountRequired": "Gib einen Betrag größer als 0 ein.",
+      "blockedError": "Das würde den Bargeldbestand negativ werden lassen.",
+      "invalidDate": "Wähle ein gültiges Datum.",
+      "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut."
+    },
+    "customInvestment": {
+      "title": "Neue individuelle Anlage",
+      "nameLabel": "Name",
+      "namePlaceholder": "z. B. Wohnung in Wien",
+      "categoryLabel": "Kategorie",
+      "currencyLabel": "Währung",
+      "currencyPlaceholder": "EUR",
+      "recordPurchase": "Einen ersten Kauf erfassen",
+      "quantityLabel": "Menge",
+      "quantityAriaLabel": "Anfangsmenge",
+      "dateLabel": "Datum",
+      "purchaseDateAriaLabel": "Kaufdatum",
+      "priceLabel": "Preis ({{currency}})",
+      "priceAriaLabel": "Anfangspreis",
+      "feeLabel": "Gebühr ({{currency}})",
+      "feeAriaLabel": "Anfangsgebühr",
+      "nameRequired": "Gib deiner Anlage einen Namen.",
+      "currencyInvalid": "Die Währung muss ein 3-stelliger ISO-Code sein, z. B. EUR.",
+      "quantityInvalid": "Die Anfangsmenge muss größer als 0 sein.",
+      "priceInvalid": "Der Anfangspreis muss 0 oder mehr sein.",
+      "feeInvalid": "Die Gebühr muss 0 oder mehr sein.",
+      "dateInvalid": "Wähle ein gültiges Kaufdatum.",
+      "createError": "Die Anlage konnte nicht erstellt werden. Bitte versuche es erneut.",
+      "creating": "Wird erstellt…",
+      "submit": "Anlage erstellen",
+      "category": {
+        "realEstate": "Immobilie",
+        "vehicle": "Fahrzeug",
+        "collectible": "Sammlerstück",
+        "cash": "Bargeld",
+        "unlistedStock": "Nicht notierte Aktie",
+        "other": "Sonstiges"
+      }
+    },
+    "valuePoint": {
+      "title": "Wertpunkte — {{symbol}}",
+      "description": "Erfasse, was diese Anlage im Zeitverlauf wert ist. Zwischen den Punkten wird der Wert fortgeschrieben.",
+      "loadError": "Wertpunkte konnten nicht geladen werden. Bitte versuche es erneut.",
+      "empty": "Noch keine Wertpunkte. Füge einen hinzu, um den Wert dieser Anlage zu verfolgen.",
+      "dateHeader": "Datum",
+      "valueHeader": "Wert ({{currency}})",
+      "removeHeader": "Entfernen",
+      "dateAriaLabel": "Datum des Wertpunkts",
+      "amountAriaLabel": "Betrag des Wertpunkts",
+      "removeAriaLabel": "Wertpunkt vom {{date}} entfernen",
+      "addButton": "+ Wertpunkt hinzufügen",
+      "dateInvalid": "Jede Zeile braucht ein gültiges Datum.",
+      "duplicateDate": "Nur ein Wert pro Tag — {{date}} ist doppelt.",
+      "valueInvalid": "Der Wert für {{date}} muss 0 oder mehr sein.",
+      "saveError": "Wertpunkte konnten nicht gespeichert werden. Bitte versuche es erneut.",
+      "saveButton": "Wertpunkte speichern"
+    }
+  },
+  "workboard": {
+    "section": {
+      "subnav": {
+        "overview": "Übersicht",
+        "conglomerates": "Konglomerate",
+        "watchlists": "Watchlists",
+        "alerts": "Alarme",
+        "backtests": "Backtests",
+        "calculators": "Rechner",
+        "comparisons": "Vergleiche",
+        "savedIdeas": "Gespeicherte Ideen"
+      },
+      "watchlist": {
+        "title": "Watchlists",
+        "description": "Benannte, mehrere Watchlists kommen hierher. Bis dahin lebt deine Watchlist auf der Workboard-Übersicht."
+      },
+      "backtests": {
+        "title": "Backtests",
+        "description": "Eigenständiges Backtesting über einen beliebigen Anlagenkorb hinweg, über den im Konglomerat eingebetteten Backtest hinaus."
+      },
+      "calculators": {
+        "title": "Rechner",
+        "description": "Eigenständige Investitionsrechner — verwandle ein Budget in eine genaue Kaufliste ohne gespeichertes Konglomerat."
+      },
+      "comparisons": {
+        "title": "Vergleiche",
+        "description": "Direkter Vergleich von Anlagen und Konglomeraten nach Rendite, Risiko und Aufteilung."
+      },
+      "savedIdeas": {
+        "title": "Gespeicherte Ideen",
+        "description": "Parke Entwurfskörbe und Anlageideen, um sie später erneut anzusehen."
+      }
+    },
+    "overview": {
+      "title": "Workboard",
+      "subtitle": "Deine beobachteten Anlagen, Alarme und Konglomerate auf einen Blick.",
+      "watchlist": {
+        "heading": "Watchlist",
+        "shareButton": "Mit Freunden teilen",
+        "sharedButton": "Mit Freunden geteilt",
+        "shareError": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+        "loadError": "Deine Watchlist konnte nicht geladen werden. Bitte lade die Seite neu.",
+        "removeError": "Entfernen fehlgeschlagen. Bitte versuche es erneut.",
+        "reorderError": "Neue Reihenfolge konnte nicht gespeichert werden. Bitte versuche es erneut.",
+        "emptyTitle": "Deine Watchlist ist leer",
+        "emptyDescription": "Finde eine Anlage und füge sie deinem Workboard hinzu, um sie zu beobachten.",
+        "emptySearchLink": "Nach einer Anlage suchen →",
+        "trendHeader": "Trend",
+        "assetHeader": "Anlage",
+        "priceHeader": "Preis",
+        "dayHeader": "Tag",
+        "alertsHeader": "Alarme",
+        "actionsAriaLabel": "Aktionen",
+        "alertsComingSoonTitle": "Alarme kommen in einer späteren Phase",
+        "removeAriaLabel": "{{symbol}} von der Watchlist entfernen",
+        "sparklineAriaLabel": "1-Monats-Trend für {{symbol}}"
+      },
+      "alerts": {
+        "heading": "Alarme",
+        "emptyTitle": "Alarm-Panel folgt in Kürze",
+        "emptyDescription": "Deine aktiven Alarme für alle beobachteten Anlagen erscheinen hier."
+      },
+      "conglomerates": {
+        "heading": "Meine Konglomerate",
+        "emptyTitle": "Konglomerate folgen in Kürze",
+        "emptyDescription": "Deine individuellen ETF-Körbe erscheinen hier."
+      }
+    },
+    "calculator": {
+      "modeWhole": "Ganze Anteile",
+      "modeFractional": "Fraktioniert",
+      "buyingModeAriaLabel": "Kaufmodus",
+      "atLeastOneShareLabel": "Mindestens ein Anteil",
+      "atLeastOneShareHint": "Eine Position, die für einen ganzen Anteil zu klein ist, kauft trotzdem genau einen; der Rest wird neu ausbalanciert.",
+      "noPositions": "Dieser Korb hat noch keine Positionen zum Zuweisen.",
+      "assetHeader": "Anlage",
+      "qtyHeader": "Anzahl",
+      "costHeader": "Kosten",
+      "actualHeader": "Ist %",
+      "targetHeader": "Ziel %",
+      "deltaHeader": "Δpp",
+      "totalCostLabel": "Gesamtkosten",
+      "leftoverLabel": "Restbetrag",
+      "withinBudgetLabel": "Im Budget",
+      "budgetLabel": "Budget (EUR)",
+      "decreaseBudgetAriaLabel": "Budget um {{step}} verringern",
+      "increaseBudgetAriaLabel": "Budget um {{step}} erhöhen",
+      "budgetAriaLabel": "Budget in EUR",
+      "stepSizeLabel": "Schrittgröße",
+      "stepPrecisionAriaLabel": "Budget-Schrittgenauigkeit",
+      "stepLabel": "Schritt",
+      "stepAriaLabel": "Fraktionierter Mengenschritt",
+      "calculating": "Wird berechnet…",
+      "calculate": "Berechnen",
+      "calcError": "Kaufliste konnte nicht berechnet werden. Bitte versuche es erneut.",
+      "enterBudgetPrompt": "Gib ein Budget ein und berechne, um eine Kaufliste zu sehen.",
+      "staleNotice": "Einige Kurse sind veraltet; die zuletzt bekannten Preise werden angezeigt.",
+      "addToPortfolio": "Zum Portfolio hinzufügen"
+    },
+    "backtest": {
+      "range": {
+        "oneYear": "1Y",
+        "threeYear": "3Y",
+        "fiveYear": "5Y",
+        "max": "Max"
+      },
+      "benchmark": {
+        "sp500": "S&P 500",
+        "dax": "DAX",
+        "msciWorld": "MSCI World"
+      },
+      "rangeAriaLabel": "Backtest-Zeitraum auswählen",
+      "benchmarkAriaLabel": "Benchmark-Overlay umschalten",
+      "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
+      "error": "Der Backtest konnte nicht ausgeführt werden. Bitte versuche es erneut.",
+      "chartAriaLabel": "Konglomerat-Backtest-Diagramm",
+      "stats": {
+        "totalReturn": "Gesamtrendite",
+        "cagr": "CAGR",
+        "maxDrawdown": "Maximaler Drawdown",
+        "volatility": "Volatilität (p. a.)",
+        "bestDay": "Bester Tag",
+        "worstDay": "Schlechtester Tag"
+      }
+    },
+    "alerts": {
+      "title": "Preisalarme",
+      "subtitle": "Werde benachrichtigt, wenn eine Anlage einen Preis überschreitet oder sich um einen Prozentsatz bewegt. Wird jede Minute anhand des aktuellsten Kurses ausgewertet.",
+      "newAlert": "+ Neuer Alarm",
+      "loadError": "Deine Alarme konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "emptyTitle": "Noch keine Alarme",
+      "emptyDescription": "Erstelle einen Alarm, um benachrichtigt zu werden, wenn eine Anlage einen Preis erreicht oder sich um einen Prozentsatz bewegt.",
+      "emptyCta": "Neuer Alarm →"
+    },
+    "conglomerates": {
+      "title": "Konglomerate",
+      "subtitle": "Deine individuellen ETF-artigen Körbe — erstellen, backtesten und ein Budget in eine Kaufliste verwandeln.",
+      "loadError": "Deine Konglomerate konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "emptyTitle": "Noch keine Konglomerate",
+      "emptyDescription": "Erstelle einen individuellen ETF-artigen Korb, backteste ihn und verwandle ein Budget in eine Kaufliste.",
+      "emptyCta": "Neues Konglomerat →",
+      "newCardLabel": "Neues Konglomerat",
+      "positionCountOne": "{{count}} Position",
+      "positionCountOther": "{{count}} Positionen",
+      "status": {
+        "draft": "Entwurf",
+        "active": "Aktiv"
+      },
+      "statusExplainer": {
+        "draft": "Entwurf — wird vom Rechner noch nicht verwendet. Aktiviere, sobald die Gewichte 100 % ergeben.",
+        "active": "Aktiv — dein Live-, validierter Korb, den der Rechner verwendet. Gewichte ergeben 100 %."
+      }
+    },
+    "detail": {
+      "noPositionsTitle": "Noch keine Positionen",
+      "noPositionsDescription": "Füge Anlagen und Gewichte im Builder hinzu, um diesen Korb zuzuweisen.",
+      "assetHeader": "Anlage",
+      "weightHeader": "Gewicht",
+      "deleteDialogTitle": "Konglomerat löschen?",
+      "deleteDialogBody": "Dies löscht {{name}} und alle seine Positionen dauerhaft. Dies kann nicht rückgängig gemacht werden.",
+      "deleteError": "Dieses Konglomerat konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "deleting": "Wird gelöscht…",
+      "backToConglomeratesError": "← Zurück zu Konglomeraten",
+      "backLink": "← Konglomerate",
+      "loadError": "Dieses Konglomerat konnte nicht geladen werden. Es existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
+      "shareButton": "Mit Freunden teilen",
+      "sharedButton": "Mit Freunden geteilt",
+      "shareError": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "positionsHeading": "Positionen",
+      "allocationHeading": "Aufteilung",
+      "allocationChartTitle": "Konglomerat-Aufteilung",
+      "backtestHeading": "Backtest",
+      "calculatorHeading": "Rechner"
+    },
+    "builder": {
+      "loading": "Builder wird geladen…",
+      "defaultName": "Unbenanntes Konglomerat",
+      "nameAriaLabel": "Konglomeratname",
+      "closeAriaLabel": "Builder schließen",
+      "activatableHint": "Aktiv = dein Live-, validierter Korb, den der Rechner verwendet; muss 100 % ergeben.",
+      "notActivatableHint": "Gewichte müssen 100 % (±0,01) ergeben, bevor aktiviert werden kann.",
+      "activating": "Wird aktiviert…",
+      "reactivate": "Erneut aktivieren",
+      "activate": "Aktivieren",
+      "activateValidationError": "Gewichte müssen 100 % (±0,01) ergeben, mit jeder Position über 0, bevor aktiviert werden kann.",
+      "activateError": "Dieses Konglomerat konnte nicht aktiviert werden. Bitte versuche es erneut.",
+      "saving": "Wird gespeichert…",
+      "saveFailed": "Speichern fehlgeschlagen",
+      "draftSaved": "Entwurf — gespeichert",
+      "draftIdle": "Entwurf",
+      "addAssetsHeading": "Anlagen hinzufügen",
+      "addAssetsHint": "Suche und klicke ein Ergebnis an, um es mit Gewicht 0 hinzuzufügen.",
+      "searchPlaceholder": "Aktien, ETFs, Indizes suchen…",
+      "positionsHeading": "Positionen",
+      "autoBalance": "Auto-Balance",
+      "normalize": "Normalisieren",
+      "noPositionsMessage": "Noch keine Positionen. Suche links und klicke eine Anlage an, um sie hinzuzufügen.",
+      "positionsListAriaLabel": "Konglomerat-Positionen",
+      "weightSliderAriaLabel": "Gewichtsregler für {{symbol}}",
+      "weightAriaLabel": "Gewicht für {{symbol}}",
+      "lockAriaLabel": "{{symbol}} sperren",
+      "unlockAriaLabel": "{{symbol}} entsperren",
+      "lockedTitle": "Gesperrt — unberührt von Auto-Balance / Normalisieren",
+      "lockTitle": "Dieses Gewicht sperren",
+      "removeAriaLabel": "{{symbol}} entfernen",
+      "positionsCount": "{{count}} / {{max}} Positionen",
+      "sumRemainingLeft": "{{value}} % übrig",
+      "sumRemainingOver": "{{value}} % zu viel",
+      "livePreviewHeading": "Live-Vorschau",
+      "statPositions": "Positionen",
+      "statTotalWeight": "Gesamtgewicht",
+      "statLargest": "Größte",
+      "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
+      "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel."
+    }
+  }
+}

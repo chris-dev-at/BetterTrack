@@ -1,14 +1,16 @@
 import { z } from 'zod';
 
+import { localeSchema } from './i18n';
 import { NOTIFICATION_TYPES, type NotificationType } from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
 
 /**
  * User-facing notification settings (PROJECTPLAN.md §6.10, §6.11, §8). The
  * `GET/PATCH /settings/notifications` surface exposes a **per-type × channel
- * matrix**: each V1 notification type (`friend.request`, `friend.accepted`,
- * `portfolio.shared`, `account.invite`, `account.temp_password`) can be routed
- * independently to the **in-app bell**, **email**, both, or neither (muted).
+ * matrix**: each notification type (`friend.request`, `friend.accepted`,
+ * `portfolio.shared`, `account.invite`, `account.temp_password`, and the V3
+ * `alert.triggered` price alert) can be routed independently to the **in-app
+ * bell**, **email**, both, or neither (muted).
  *
  * V1 ships two channels: **in-app** and **email**, each defaulting to *on* for a
  * type that has no override. The stored overrides live in the existing
@@ -82,12 +84,27 @@ export type UpdateNotificationSettingsRequest = z.infer<
  * portfolios and explicit per-item toggles are untouched.
  */
 export const accountSettingsResponseSchema = z
-  .object({ defaultPortfolioVisibility: portfolioVisibilitySchema })
+  .object({
+    defaultPortfolioVisibility: portfolioVisibilitySchema,
+    /** The user's UI-language preference (§13.3 V3-P1); EN by default. */
+    locale: localeSchema,
+  })
   .strict();
 export type AccountSettingsResponse = z.infer<typeof accountSettingsResponseSchema>;
 
-/** `PATCH /settings/account` body — update the default portfolio visibility. */
+/**
+ * `PATCH /settings/account` body — a **partial** account-settings update: supply
+ * the default portfolio visibility, the UI language, or both. At least one field
+ * is required, mirroring the notification-matrix PATCH. Omitted fields are left
+ * untouched.
+ */
 export const updateAccountSettingsRequestSchema = z
-  .object({ defaultPortfolioVisibility: portfolioVisibilitySchema })
-  .strict();
+  .object({
+    defaultPortfolioVisibility: portfolioVisibilitySchema.optional(),
+    locale: localeSchema.optional(),
+  })
+  .strict()
+  .refine((body) => body.defaultPortfolioVisibility !== undefined || body.locale !== undefined, {
+    message: 'At least one setting is required.',
+  });
 export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;

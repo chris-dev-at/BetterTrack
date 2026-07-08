@@ -326,10 +326,10 @@ describe('PortfolioPage — net worth incl. cash (#311)', () => {
     const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
     // The primary figure is net worth: 321 350 invested + 5 000 cash = 326 350.
     expect(within(totals).getByText('326.350,00 €')).toBeInTheDocument();
-    expect(within(totals).getByText('Total value')).toBeInTheDocument();
+    expect(within(totals).getByText('Net Worth')).toBeInTheDocument();
   });
 
-  test('the liquidity stat shows invested/cash percentages that sum coherently with the headline', async () => {
+  test('the liquidity ring shows invested/cash percentages that sum coherently with the headline', async () => {
     renderPage();
     const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
     // 321 350 / 326 350 = 98,5 % invested; the cash share is its exact
@@ -368,11 +368,15 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
         id: 'm1',
         kind: 'deposit',
         amountEur: 1000,
+        sourceId: 'src-main',
         transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
         executedAt: '2024-06-01T00:00:00.000Z',
         note: null,
         createdAt: '2024-06-01T00:00:00.000Z',
       },
+      sourceBalanceEur: 6000,
       balanceEur: 6000,
     });
     const user = userEvent.setup();

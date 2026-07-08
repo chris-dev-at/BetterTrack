@@ -2,6 +2,8 @@ import { useState } from 'react';
 
 import { PIN_LENGTH } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { ApiError } from '../../lib/apiClient';
 import { useAuth } from '../AuthContext';
@@ -9,17 +11,16 @@ import { PinInput } from '../components/PinInput';
 import { Alert, Button, cx } from '../components/ui';
 
 /** Friendly message for the codes `POST /auth/pin/verify` can return. */
-function pinErrorMessage(err: unknown): string {
+function pinErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     // The fallback case navigates away (the session was dropped); this message
     // only flashes if that transition hasn't rendered yet.
-    if (err.code === 'PIN_FALLBACK_LOGIN')
-      return 'Too many incorrect PINs. Please sign in with your password.';
-    if (err.code === 'INVALID_PIN') return 'Incorrect PIN. Please try again.';
-    if (err.status === 429) return 'Too many attempts. Please wait a moment and try again.';
-    if (err.status >= 500) return 'Something went wrong. Please try again.';
+    if (err.code === 'PIN_FALLBACK_LOGIN') return t('auth.pin.fallbackError');
+    if (err.code === 'INVALID_PIN') return t('auth.pin.invalidPin');
+    if (err.status === 429) return t('auth.pin.rateLimited');
+    if (err.status >= 500) return t('common.genericError');
   }
-  return 'Could not verify your PIN. Please try again.';
+  return t('auth.pin.verifyFailed');
 }
 
 /**
@@ -37,6 +38,7 @@ function pinErrorMessage(err: unknown): string {
  * user to the full login screen. The user can always sign out instead.
  */
 export function PinGate() {
+  const t = useT();
   const { user, verifyPin, logout } = useAuth();
 
   const [pin, setPin] = useState('');
@@ -58,7 +60,7 @@ export function PinGate() {
       // Success releases the trap via the AuthContext.
       await verifyPin({ pin: value });
     } catch (err) {
-      setError(pinErrorMessage(err));
+      setError(pinErrorMessage(t, err));
       setPin('');
       setAttempt((n) => n + 1);
       setShake(true);
@@ -85,10 +87,11 @@ export function PinGate() {
           )}
         >
           <div className="flex flex-col gap-1 text-center">
-            <h1 className="text-lg font-semibold text-neutral-100">Enter your PIN</h1>
+            <h1 className="text-lg font-semibold text-neutral-100">{t('auth.pin.heading')}</h1>
             <p className="text-sm text-neutral-500">
-              {user ? <>Welcome back, {user.username}. </> : null}
-              Enter your {PIN_LENGTH}-digit PIN to keep going.
+              {user
+                ? t('auth.pin.promptWithUser', { username: user.username, length: PIN_LENGTH })
+                : t('auth.pin.prompt', { length: PIN_LENGTH })}
             </p>
           </div>
 
@@ -97,7 +100,7 @@ export function PinGate() {
           <div className="flex justify-center">
             <PinInput
               key={attempt}
-              label="PIN"
+              label={t('auth.pin.inputLabel')}
               length={PIN_LENGTH}
               value={pin}
               onChange={setPin}
@@ -108,7 +111,7 @@ export function PinGate() {
           </div>
 
           <Button type="button" variant="ghost" onClick={() => void logout()} disabled={submitting}>
-            Sign out
+            {t('auth.common.signOut')}
           </Button>
         </form>
       </div>

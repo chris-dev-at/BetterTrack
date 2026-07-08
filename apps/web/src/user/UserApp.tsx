@@ -1,5 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import type { ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+
+import { I18nProvider, useI18n } from '../i18n';
+import { RealtimeProvider } from '../lib/realtime';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
@@ -22,6 +27,7 @@ import {
   WatchlistPage,
   WorkboardLayout,
 } from './workboard/WorkboardSection';
+import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
 import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
@@ -113,6 +119,7 @@ function UserShell() {
           <Route path="workboard" element={<WorkboardLayout />}>
             <Route index element={<WorkboardPage />} />
             <Route path="watchlist" element={<WatchlistPage />} />
+            <Route path="alerts" element={<AlertsPage />} />
             <Route path="conglomerates" element={<ConglomeratesListPage />} />
             <Route path="conglomerates/:id" element={<ConglomerateDetailPage />} />
             <Route path="backtests" element={<BacktestsPage />} />
@@ -165,6 +172,16 @@ function UserShell() {
   );
 }
 
+/**
+ * Realtime gateway socket (§4.5, V3-P7a): live only for a fully authenticated
+ * session — anonymous/loading/locked states run without a socket, and every
+ * surface keeps its poll/refetch behavior either way.
+ */
+function RealtimeRoot({ children }: { children: ReactNode }) {
+  const { status } = useAuth();
+  return <RealtimeProvider enabled={status === 'authenticated'}>{children}</RealtimeProvider>;
+}
+
 /** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
@@ -172,13 +189,34 @@ function RateLimitToastPortal() {
   return <Toast onDismiss={clearRateLimitBanner}>{rateLimitBanner}</Toast>;
 }
 
+/**
+ * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
+ * signed-in `me` carries a locale, switch the runtime to it. The language picker
+ * also flips the runtime instantly and persists server-side, so a `me` refetch
+ * just re-affirms the same choice. Renders nothing.
+ */
+function LocaleSync() {
+  const { user } = useAuth();
+  const { setLocale } = useI18n();
+  const locale = user?.locale;
+  useEffect(() => {
+    if (locale) setLocale(locale);
+  }, [locale, setLocale]);
+  return null;
+}
+
 export function UserApp() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <RateLimitToastPortal />
-        <UserShell />
-      </AuthProvider>
-    </QueryClientProvider>
+    <I18nProvider>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <LocaleSync />
+          <RateLimitToastPortal />
+          <RealtimeRoot>
+            <UserShell />
+          </RealtimeRoot>
+        </AuthProvider>
+      </QueryClientProvider>
+    </I18nProvider>
   );
 }

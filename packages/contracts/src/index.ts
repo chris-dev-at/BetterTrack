@@ -1,5 +1,6 @@
 export * from './health';
 export * from './common';
+export * from './i18n';
 export * from './auth';
 export * from './admin';
 export * from './market';
@@ -11,5 +12,7 @@ export * from './backtest';
 export * from './social';
 export * from './notifications';
 export * from './settings';
+export * from './alerts';
 export * from './apiKeys';
 export * from './oauth';
+export * from './realtime';

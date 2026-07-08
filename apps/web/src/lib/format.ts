@@ -1,8 +1,16 @@
 /**
- * Shared display-layer formatting for the whole web client (de-AT locale,
- * PROJECTPLAN.md §7.1). Every user-facing number, money amount, percentage and
- * date passes through here so the app speaks one consistent dialect:
- * `1.234,56 €`, `12,3456`, `-2,5 %`, `15.01.2024`.
+ * Shared display-layer formatting for the whole web client (PROJECTPLAN.md §7.1,
+ * §13.3 V3-P1). Every user-facing number, money amount, percentage and date
+ * passes through here so the app speaks one consistent dialect.
+ *
+ * **Locale-aware (V3-P1).** The active Intl locale is a module-level setting the
+ * i18n runtime drives via {@link setFormatLocale} (`de-AT` for German, `en-GB`
+ * for English, …), so numbers/dates follow the user's chosen language:
+ * `1.234,56 €` / `15.01.2024` in de-AT, `1,234.56 €` / `15 Jan 2024` in en-GB.
+ * Dates always render in the **Europe/Vienna** wall-clock (§5.5). Money stays
+ * symbol-LAST in every locale (§7.1). The default is `de-AT` so pure unit tests
+ * and any non-UI consumer get deterministic output without a provider; the live
+ * app always sets the real locale before first paint.
  *
  * These helpers are pure and prop-driven — no React, no network — so they are
  * equally usable from components, tests and any future non-DOM consumer.
@@ -10,6 +18,26 @@
 
 /** Rendered in place of an absent or non-finite value. */
 export const EM_DASH = '—';
+
+/** Dates always display in Vienna wall-clock, regardless of host timezone (§5.5). */
+const DISPLAY_TIME_ZONE = 'Europe/Vienna';
+
+/**
+ * The active Intl locale. Defaults to `de-AT` (the app's original single dialect)
+ * so tests and non-UI callers are deterministic; the i18n provider overrides it
+ * to the user's locale before the first UI paint.
+ */
+let activeLocale = 'de-AT';
+
+/** Switch the locale all formatters use (called by the i18n runtime). */
+export function setFormatLocale(locale: string): void {
+  activeLocale = locale;
+}
+
+/** The active Intl locale — exposed for tests/diagnostics. */
+export function getFormatLocale(): string {
+  return activeLocale;
+}
 
 /**
  * ICU/CLDR separates a number from its currency/percent symbol with a narrow
@@ -32,74 +60,93 @@ function withoutNegativeZero(value: number): number {
 }
 
 // ---------------------------------------------------------------------------
-// Intl instances — one per distinct shape, created once. Currency formatters
-// are memoised per ISO code on first use.
+// Intl instances — memoised per active locale (and, for money, per ISO code),
+// so switching languages never rebuilds a formatter that already exists.
 
-const moneyFormatters = new Map<string, Intl.NumberFormat>();
+interface LocaleFormatters {
+  quantity: Intl.NumberFormat;
+  percent: Intl.NumberFormat;
+  signedPercent: Intl.NumberFormat;
+  signedDelta: Intl.NumberFormat;
+  dateTime: Intl.DateTimeFormat;
+  date: Intl.DateTimeFormat;
+  money: Map<string, Intl.NumberFormat>;
+}
+
+const localeCache = new Map<string, LocaleFormatters>();
+
+function formatters(): LocaleFormatters {
+  let cached = localeCache.get(activeLocale);
+  if (!cached) {
+    cached = {
+      // Quantities (e.g. fractional shares): up to 6 dp, no forced trailing zeros.
+      quantity: new Intl.NumberFormat(activeLocale, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 6,
+      }),
+      // Percent/weight: callers pass a 0–100 magnitude, so divide by 100 — `style:
+      // 'percent'` scales the input internally and supplies the locale-correct symbol.
+      percent: new Intl.NumberFormat(activeLocale, {
+        style: 'percent',
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      }),
+      // Signed percent delta — `exceptZero` prepends `+`/`-`, nothing for zero.
+      signedPercent: new Intl.NumberFormat(activeLocale, {
+        style: 'percent',
+        signDisplay: 'exceptZero',
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      }),
+      // Signed plain-number delta (non-currency), always 2 dp.
+      signedDelta: new Intl.NumberFormat(activeLocale, {
+        signDisplay: 'exceptZero',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }),
+      dateTime: new Intl.DateTimeFormat(activeLocale, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: DISPLAY_TIME_ZONE,
+      }),
+      date: new Intl.DateTimeFormat(activeLocale, {
+        dateStyle: 'medium',
+        timeZone: DISPLAY_TIME_ZONE,
+      }),
+      money: new Map(),
+    };
+    localeCache.set(activeLocale, cached);
+  }
+  return cached;
+}
 
 function moneyFormatter(currency: string): Intl.NumberFormat {
-  let formatter = moneyFormatters.get(currency);
+  const cache = formatters().money;
+  let formatter = cache.get(currency);
   if (!formatter) {
-    formatter = new Intl.NumberFormat('de-AT', {
+    formatter = new Intl.NumberFormat(activeLocale, {
       style: 'currency',
       currency,
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
-    moneyFormatters.set(currency, formatter);
+    cache.set(currency, formatter);
   }
   return formatter;
 }
-
-// Quantities (e.g. fractional shares): up to 6 dp, no forced trailing zeros.
-const quantityFormatter = new Intl.NumberFormat('de-AT', {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 6,
-});
-
-// Percent/weight: callers pass a 0–100 magnitude, so divide by 100 — `style:
-// 'percent'` scales the input internally and supplies the locale-correct ` %`.
-const percentFormatter = new Intl.NumberFormat('de-AT', {
-  style: 'percent',
-  minimumFractionDigits: 1,
-  maximumFractionDigits: 1,
-});
-
-// Signed percent delta — `exceptZero` prepends `+` for positives, `-` for
-// negatives, and nothing for zero.
-const signedPercentFormatter = new Intl.NumberFormat('de-AT', {
-  style: 'percent',
-  signDisplay: 'exceptZero',
-  minimumFractionDigits: 1,
-  maximumFractionDigits: 1,
-});
-
-// Signed plain-number delta (non-currency), always 2 dp.
-const signedDeltaFormatter = new Intl.NumberFormat('de-AT', {
-  signDisplay: 'exceptZero',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
-const dateTimeFormatter = new Intl.DateTimeFormat('de-AT', {
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
-
-const dateFormatter = new Intl.DateTimeFormat('de-AT', { dateStyle: 'medium' });
 
 // ---------------------------------------------------------------------------
 
 /**
  * Money in the asset's native currency, symbol-last, always 2 dp:
- * `formatMoney(1234.56)` → `"1.234,56 €"`, `formatMoney(-50, 'USD')` →
+ * `formatMoney(1234.56)` → `"1.234,56 €"` (de-AT), `formatMoney(-50, 'USD')` →
  * `"-50,00 $"`.
  *
- * de-AT's Intl currency output is symbol-*first* (`€ 1.234,56`), but
- * PROJECTPLAN §7.1 mandates symbol-*last* (`1.234,56 €`). We therefore format
- * via `formatToParts`, drop the currency part and the literal separator
- * adjacent to it, and re-append ` <symbol>`. This keeps the number formatting
- * (grouping, decimals, minus placement) exactly as ICU produces it.
+ * Intl currency output is often symbol-*first* (`€ 1.234,56`), but PROJECTPLAN
+ * §7.1 mandates symbol-*last* (`1.234,56 €`) in every locale. We therefore format
+ * via `formatToParts`, drop the currency part and the literal separator adjacent
+ * to it, and re-append ` <symbol>`. This keeps the number formatting (grouping,
+ * decimals, minus placement) exactly as ICU produces it for the active locale.
  *
  * Returns {@link EM_DASH} for `null`/`undefined`/`NaN`/`Infinity`.
  */
@@ -128,7 +175,7 @@ export function formatMoney(value: number | null | undefined, currency = 'EUR'):
  */
 export function formatQuantity(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH;
-  return normalizeSpaces(quantityFormatter.format(withoutNegativeZero(value)));
+  return normalizeSpaces(formatters().quantity.format(withoutNegativeZero(value)));
 }
 
 /**
@@ -138,7 +185,7 @@ export function formatQuantity(value: number | null | undefined): string {
  */
 export function formatPercent(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH;
-  return normalizeSpaces(percentFormatter.format(withoutNegativeZero(value) / 100));
+  return normalizeSpaces(formatters().percent.format(withoutNegativeZero(value) / 100));
 }
 
 /** Alias of {@link formatPercent} — a conglomerate position weight (0–100). */
@@ -151,7 +198,7 @@ export const formatWeight = formatPercent;
  */
 export function formatSignedPercent(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH;
-  return normalizeSpaces(signedPercentFormatter.format(withoutNegativeZero(value) / 100));
+  return normalizeSpaces(formatters().signedPercent.format(withoutNegativeZero(value) / 100));
 }
 
 /**
@@ -161,19 +208,19 @@ export function formatSignedPercent(value: number | null | undefined): string {
  */
 export function formatSignedDelta(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH;
-  return normalizeSpaces(signedDeltaFormatter.format(withoutNegativeZero(value)));
+  return normalizeSpaces(formatters().signedDelta.format(withoutNegativeZero(value)));
 }
 
-/** ISO timestamp → localised date + time, or {@link EM_DASH} when absent/invalid. */
+/** ISO timestamp → localised date + time (Vienna), or {@link EM_DASH} when absent/invalid. */
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return EM_DASH;
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? EM_DASH : dateTimeFormatter.format(date);
+  return Number.isNaN(date.getTime()) ? EM_DASH : formatters().dateTime.format(date);
 }
 
-/** ISO timestamp → localised date, or {@link EM_DASH} when absent/invalid. */
+/** ISO timestamp → localised date (Vienna), or {@link EM_DASH} when absent/invalid. */
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return EM_DASH;
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? EM_DASH : dateFormatter.format(date);
+  return Number.isNaN(date.getTime()) ? EM_DASH : formatters().date.format(date);
 }

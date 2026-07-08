@@ -1,11 +1,31 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 
+import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 import type { MarkReadRequest, Notification } from '@bettertrack/contracts';
 
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
+import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from './ui';
+
+/**
+ * The in-app deep link for a notification, when its payload carries one. An
+ * `alert.triggered` row (§14) links to the asset it fired on so the bell opens
+ * the asset page; every other type stays a plain mark-read row for now.
+ */
+function notificationLink(notification: Notification): string | null {
+  if (notification.type !== 'alert.triggered') return null;
+  const payload = notification.payload;
+  if (payload && typeof payload === 'object' && 'assetId' in payload) {
+    const assetId = (payload as { assetId?: unknown }).assetId;
+    if (typeof assetId === 'string' && assetId.length > 0) {
+      return `/assets/${encodeURIComponent(assetId)}`;
+    }
+  }
+  return null;
+}
 
 const POLL_INTERVAL_MS = 30_000;
 const NOTIFICATIONS_QUERY_KEY = ['notifications'];
@@ -26,39 +46,58 @@ function formatRelativeTime(iso: string): string {
 function NotificationRow({
   notification,
   onRead,
+  onNavigate,
 }: {
   notification: Notification;
   onRead: () => void;
+  onNavigate: () => void;
 }) {
   const unread = notification.readAt === null;
+  const to = notificationLink(notification);
+  const rowClassName = cx(
+    'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors hover:bg-neutral-800',
+    unread ? 'bg-neutral-800/60' : undefined,
+  );
+  const inner = (
+    <>
+      <span className="flex items-center gap-2">
+        {unread ? (
+          <span aria-hidden="true" className="h-1.5 w-1.5 flex-none rounded-full bg-sky-400" />
+        ) : null}
+        <span
+          className={cx(
+            'truncate text-sm font-medium',
+            unread ? 'text-neutral-100' : 'text-neutral-400',
+          )}
+        >
+          {notification.title}
+        </span>
+      </span>
+      <span className="truncate text-xs text-neutral-500">{notification.body}</span>
+      <span className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
+        {formatRelativeTime(notification.createdAt)}
+      </span>
+    </>
+  );
+
   return (
     <li>
-      <button
-        type="button"
-        onClick={onRead}
-        className={cx(
-          'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors hover:bg-neutral-800',
-          unread ? 'bg-neutral-800/60' : undefined,
-        )}
-      >
-        <span className="flex items-center gap-2">
-          {unread ? (
-            <span aria-hidden="true" className="h-1.5 w-1.5 flex-none rounded-full bg-sky-400" />
-          ) : null}
-          <span
-            className={cx(
-              'truncate text-sm font-medium',
-              unread ? 'text-neutral-100' : 'text-neutral-400',
-            )}
-          >
-            {notification.title}
-          </span>
-        </span>
-        <span className="truncate text-xs text-neutral-500">{notification.body}</span>
-        <span className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
-          {formatRelativeTime(notification.createdAt)}
-        </span>
-      </button>
+      {to ? (
+        <Link
+          to={to}
+          onClick={() => {
+            onRead();
+            onNavigate();
+          }}
+          className={rowClassName}
+        >
+          {inner}
+        </Link>
+      ) : (
+        <button type="button" onClick={onRead} className={rowClassName}>
+          {inner}
+        </button>
+      )}
     </li>
   );
 }
@@ -78,6 +117,13 @@ export function NotificationBell() {
     queryFn: ({ signal }) => listNotifications({}, signal),
     refetchInterval: POLL_INTERVAL_MS,
     refetchOnWindowFocus: true,
+  });
+
+  // Realtime bell push (§4.5, V3-P7a): a `notification.new` push refreshes the
+  // list the moment the row lands. The poll above stays untouched as the
+  // fallback — with no gateway (flag off, disconnected) this hook is a no-op.
+  useRealtimeEvent(REALTIME_SERVER_EVENTS.notificationNew, () => {
+    void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_QUERY_KEY });
   });
 
   const markReadMutation = useMutation({
@@ -193,6 +239,7 @@ export function NotificationBell() {
                       markReadMutation.mutate({ ids: [notification.id] });
                     }
                   }}
+                  onNavigate={() => setOpen(false)}
                 />
               ))}
             </ul>

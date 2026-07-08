@@ -12,6 +12,8 @@ import {
   type TwoFactorStatusResponse,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
 import {
@@ -24,25 +26,36 @@ import {
   getTwoFactorStatus,
   regenerateRecoveryCodes,
 } from '../../lib/twoFactorApi';
-import { disablePin, getMe, getSession, setPin, setPinLockIdleMinutes } from '../../lib/userApi';
+import {
+  disablePin,
+  getMe,
+  getSession,
+  listSessions,
+  revokeOtherSessions,
+  revokeSession,
+  setPin,
+  setPinLockIdleMinutes,
+} from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { PinInput } from '../components/PinInput';
 import { Alert, Button } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
+const SESSIONS_KEY = ['auth', 'sessions'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
 
-function pinErrorMessage(err: unknown): string {
+function pinErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'WEAK_PASSWORD' || err.code === 'VALIDATION_ERROR') return err.message;
-    if (err.status >= 500) return 'Something went wrong. Please try again.';
+    if (err.status >= 500) return t('common.genericError');
   }
-  return 'Could not update your PIN. Please try again.';
+  return t('settings.security.pin.genericError');
 }
 
 /** Signed-in-since / expiry line, read from `GET /auth/session`. */
 function SessionInfo() {
+  const t = useT();
   const query = useQuery({
     queryKey: SESSION_KEY,
     queryFn: ({ signal }) => getSession(signal),
@@ -51,20 +64,171 @@ function SessionInfo() {
 
   return (
     <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
-      <h3 className="text-sm font-semibold text-neutral-100">Session</h3>
+      <h3 className="text-sm font-semibold text-neutral-100">
+        {t('settings.security.session.title')}
+      </h3>
       {query.isPending ? (
         <Skeleton height="h-6" />
       ) : query.isError ? (
         <EmptyState
-          title="Couldn't load your session"
-          description="Please try again in a moment."
+          title={t('settings.security.session.loadError.title')}
+          description={t('settings.retryHint')}
         />
       ) : (
         <p className="text-sm text-neutral-400">
-          Signed in since {formatDateTime(query.data.signedInAt)} — expires after 30 days of
-          inactivity ({formatDateTime(query.data.expiresAt)}).
+          {t('settings.security.session.info', {
+            signedInAt: formatDateTime(query.data.signedInAt),
+            expiresAt: formatDateTime(query.data.expiresAt),
+          })}
         </p>
       )}
+    </section>
+  );
+}
+
+/**
+ * Active-sessions manager (PROJECTPLAN.md §6.1, §6.11 Security, V3-P11a). Lists
+ * the caller's own sessions with a device label, sign-in + last-seen times and a
+ * current-device marker; each other device can be logged out individually, or
+ * all at once. The current session isn't revoked from here — use Log out.
+ */
+function SessionsSection() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [confirmingOthers, setConfirmingOthers] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const query = useQuery({
+    queryKey: SESSIONS_KEY,
+    queryFn: ({ signal }) => listSessions(signal),
+    staleTime: 30_000,
+  });
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+
+  const revokeOne = useMutation({
+    mutationFn: (id: string) => revokeSession(id),
+    onSuccess: () => {
+      setError(null);
+      void refresh();
+    },
+    onError: () => setError(t('settings.security.sessions.revokeOneError')),
+  });
+
+  const revokeOthers = useMutation({
+    mutationFn: () => revokeOtherSessions(),
+    onSuccess: () => {
+      setError(null);
+      setConfirmingOthers(false);
+      void refresh();
+    },
+    onError: () => setError(t('settings.security.sessions.revokeOthersError')),
+  });
+
+  const sessions = query.data ?? [];
+  const otherCount = sessions.filter((s) => !s.current).length;
+
+  return (
+    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.security.sessions.title')}
+        </h3>
+        <p className="text-xs text-neutral-500">{t('settings.security.sessions.description')}</p>
+      </div>
+
+      {error ? <Alert tone="error">{error}</Alert> : null}
+
+      {query.isPending ? (
+        <Skeleton height="h-20" />
+      ) : query.isError ? (
+        <EmptyState
+          title={t('settings.security.sessions.loadError.title')}
+          description={t('settings.retryHint')}
+        />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {sessions.map((session) => (
+            <li
+              key={session.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-3"
+            >
+              <div className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium text-neutral-100">
+                  <span>{session.device}</span>
+                  {session.current ? (
+                    <span className="ml-2 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-300">
+                      {t('settings.security.sessions.currentDevice')}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="text-xs text-neutral-500">
+                  {t('settings.security.sessions.timestamps', {
+                    createdAt: formatDateTime(session.createdAt),
+                    lastSeenAt: formatDateTime(session.lastSeenAt),
+                  })}
+                </span>
+              </div>
+              {session.current ? null : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={revokeOne.isPending}
+                  onClick={() => {
+                    setError(null);
+                    revokeOne.mutate(session.id);
+                  }}
+                >
+                  {t('settings.security.sessions.logOut')}
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {otherCount > 0 ? (
+        confirmingOthers ? (
+          <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
+            <p className="text-sm text-neutral-400">
+              {t(
+                otherCount === 1
+                  ? 'settings.security.sessions.confirmLogoutOthersOne'
+                  : 'settings.security.sessions.confirmLogoutOthersOther',
+                { count: otherCount },
+              )}
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={revokeOthers.isPending}
+                onClick={() => revokeOthers.mutate()}
+              >
+                {revokeOthers.isPending
+                  ? t('settings.security.sessions.loggingOut')
+                  : t('settings.security.sessions.logOutAllOthers')}
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setConfirmingOthers(false)}>
+                {t('common.cancel')}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="border-t border-neutral-800 pt-4">
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setError(null);
+                setConfirmingOthers(true);
+              }}
+            >
+              {t('settings.security.sessions.logOutAllOthers')}
+            </Button>
+          </div>
+        )
+      ) : null}
     </section>
   );
 }
@@ -77,6 +241,7 @@ function PinForm({
   submitLabel: string;
   onDone: (message: string) => void;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [pin, setPinValue] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -88,16 +253,16 @@ function PinForm({
       void queryClient.invalidateQueries({ queryKey: ME_KEY });
       setPinValue('');
       setConfirm('');
-      onDone('Your PIN has been saved.');
+      onDone(t('settings.security.pin.savedNotice'));
     },
-    onError: (err) => setError(pinErrorMessage(err)),
+    onError: (err) => setError(pinErrorMessage(t, err)),
   });
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     if (pin !== confirm) {
-      setError('The PINs do not match.');
+      setError(t('settings.security.pin.mismatch'));
       return;
     }
     mutation.mutate({ pin });
@@ -109,16 +274,21 @@ function PinForm({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <PinInput
-        label="PIN"
+        label={t('settings.security.pin.pinLabel')}
         length={PIN_LENGTH}
         value={pin}
         onChange={setPinValue}
-        hint={`Exactly ${PIN_LENGTH} digits.`}
+        hint={t('settings.security.pin.exactDigitsHint', { length: PIN_LENGTH })}
       />
-      <PinInput label="Confirm PIN" length={PIN_LENGTH} value={confirm} onChange={setConfirm} />
+      <PinInput
+        label={t('settings.security.pin.confirmLabel')}
+        length={PIN_LENGTH}
+        value={confirm}
+        onChange={setConfirm}
+      />
       <div>
         <Button type="submit" disabled={mutation.isPending || tooShort}>
-          {mutation.isPending ? 'Saving…' : submitLabel}
+          {mutation.isPending ? t('common.saving') : submitLabel}
         </Button>
       </div>
     </form>
@@ -128,9 +298,14 @@ function PinForm({
 /** Preset unlock-window lengths (minutes) offered for the PIN. */
 const WINDOW_MINUTE_OPTIONS = [1, 5, 10, 15, 30, 60] as const;
 
-function windowOptionLabel(minutes: number): string {
-  if (minutes === 60) return '1 hour';
-  return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+function windowOptionLabel(t: TranslateFn, minutes: number): string {
+  if (minutes === 60) return t('settings.security.pin.windowHour');
+  return t(
+    minutes === 1
+      ? 'settings.security.pin.windowMinuteOne'
+      : 'settings.security.pin.windowMinuteOther',
+    { count: minutes },
+  );
 }
 
 /**
@@ -140,6 +315,7 @@ function windowOptionLabel(minutes: number): string {
  * Only rendered while the PIN is on.
  */
 function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
@@ -149,7 +325,7 @@ function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
       queryClient.setQueryData(ME_KEY, data);
       setError(null);
     },
-    onError: () => setError('Could not update the unlock window. Please try again.'),
+    onError: () => setError(t('settings.security.pin.windowError')),
   });
 
   const selected = windowMinutes ?? DEFAULT_PIN_WINDOW_MINUTES;
@@ -157,28 +333,29 @@ function PinWindowSection({ windowMinutes }: { windowMinutes: number | null }) {
   return (
     <div className="flex flex-col gap-3 border-t border-neutral-800 pt-4">
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-100">Lock after inactivity</span>
+        <span className="text-sm font-medium text-neutral-100">
+          {t('settings.security.pin.lockAfterInactivity')}
+        </span>
         <span className="text-xs text-neutral-500">
-          While you're actively using BetterTrack it stays unlocked — reloads and new tabs included.
-          The PIN is asked again only after this long with no activity.
+          {t('settings.security.pin.lockDescription')}
         </span>
       </div>
 
       <label className="flex items-center gap-2 text-sm text-neutral-400">
-        Lock after being idle for
+        {t('settings.security.pin.idleForLabel')}
         <select
-          aria-label="Unlock window"
+          aria-label={t('settings.security.pin.unlockWindowAriaLabel')}
           value={selected}
           disabled={mutation.isPending}
           onChange={(e) => mutation.mutate(Number(e.target.value))}
           className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
           {(WINDOW_MINUTE_OPTIONS as readonly number[]).includes(selected) ? null : (
-            <option value={selected}>{windowOptionLabel(selected)}</option>
+            <option value={selected}>{windowOptionLabel(t, selected)}</option>
           )}
           {WINDOW_MINUTE_OPTIONS.map((m) => (
             <option key={m} value={m}>
-              {windowOptionLabel(m)}
+              {windowOptionLabel(t, m)}
             </option>
           ))}
         </select>
@@ -197,6 +374,7 @@ function PinSection({
   pinEnabled: boolean;
   idleMinutes: number | null;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -208,26 +386,25 @@ function PinSection({
       void queryClient.invalidateQueries({ queryKey: ME_KEY });
       setChanging(false);
       setError(null);
-      setNotice('Your PIN has been turned off.');
+      setNotice(t('settings.security.pin.disabledNotice'));
     },
-    onError: (err) => setError(pinErrorMessage(err)),
+    onError: (err) => setError(pinErrorMessage(t, err)),
   });
 
   return (
     <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">PIN</h3>
-        <p className="text-xs text-neutral-500">
-          A 4-digit PIN re-confirms it's you after the app has been left idle. It's a privacy
-          curtain on top of your session, not a second factor.
-        </p>
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.security.pin.title')}
+        </h3>
+        <p className="text-xs text-neutral-500">{t('settings.security.pin.description')}</p>
       </div>
 
       {notice ? <Alert tone="success">{notice}</Alert> : null}
 
       {!pinEnabled ? (
         <PinForm
-          submitLabel="Enable PIN"
+          submitLabel={t('settings.security.pin.enable')}
           onDone={(message) => {
             setNotice(message);
           }}
@@ -237,7 +414,7 @@ function PinSection({
           {changing ? (
             <div className="flex flex-col gap-4">
               <PinForm
-                submitLabel="Save new PIN"
+                submitLabel={t('settings.security.pin.saveNew')}
                 onDone={(message) => {
                   setChanging(false);
                   setNotice(message);
@@ -245,13 +422,13 @@ function PinSection({
               />
               <div>
                 <Button type="button" variant="ghost" onClick={() => setChanging(false)}>
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               </div>
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              <p className="text-sm text-neutral-400">Your PIN is on.</p>
+              <p className="text-sm text-neutral-400">{t('settings.security.pin.isOn')}</p>
               {error ? <Alert tone="error">{error}</Alert> : null}
               <div className="flex flex-wrap gap-3">
                 <Button
@@ -262,7 +439,7 @@ function PinSection({
                     setChanging(true);
                   }}
                 >
-                  Change PIN
+                  {t('settings.security.pin.change')}
                 </Button>
                 <Button
                   type="button"
@@ -273,7 +450,9 @@ function PinSection({
                     disable.mutate();
                   }}
                 >
-                  {disable.isPending ? 'Disabling…' : 'Disable PIN'}
+                  {disable.isPending
+                    ? t('settings.security.pin.disabling')
+                    : t('settings.security.pin.disable')}
                 </Button>
               </div>
             </div>
@@ -285,15 +464,16 @@ function PinSection({
   );
 }
 
-function twoFactorErrorMessage(err: unknown): string {
+function twoFactorErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status < 500) return err.message;
   }
-  return 'Something went wrong. Please try again.';
+  return t('common.genericError');
 }
 
 /** Recovery codes, shown exactly once after the first method is enabled or a regenerate. */
 function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone: () => void }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -321,10 +501,7 @@ function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone
 
   return (
     <div className="flex flex-col gap-4">
-      <Alert tone="info">
-        Save these recovery codes somewhere safe. Each one can be used once to sign in if you lose
-        access to your authenticator or email — they won't be shown again.
-      </Alert>
+      <Alert tone="info">{t('settings.security.twoFactor.recoveryCodes.saveNotice')}</Alert>
       <div className="grid grid-cols-2 gap-2 rounded-md border border-neutral-800 bg-neutral-950 p-4 font-mono text-sm text-neutral-100">
         {codes.map((code) => (
           <span key={code}>{code}</span>
@@ -332,13 +509,15 @@ function RecoveryCodesCard({ codes, onDone }: { codes: readonly string[]; onDone
       </div>
       <div className="flex flex-wrap gap-3">
         <Button type="button" variant="secondary" onClick={handleCopy}>
-          {copied ? 'Copied!' : 'Copy codes'}
+          {copied
+            ? t('settings.security.twoFactor.recoveryCodes.copied')
+            : t('settings.security.twoFactor.recoveryCodes.copy')}
         </Button>
         <Button type="button" variant="secondary" onClick={handleDownload}>
-          Download codes
+          {t('settings.security.twoFactor.recoveryCodes.download')}
         </Button>
         <Button type="button" onClick={onDone}>
-          I've saved these codes
+          {t('settings.security.twoFactor.recoveryCodes.done')}
         </Button>
       </div>
     </div>
@@ -353,12 +532,13 @@ function EnrollWizard({
   onEnrolled: (recoveryCodes: string[] | null) => void;
   onCancel: () => void;
 }) {
+  const t = useT();
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const enroll = useMutation({
     mutationFn: enrollTwoFactor,
-    onError: () => setError('Could not start enrollment. Please try again.'),
+    onError: () => setError(t('settings.security.twoFactor.totp.enrollError')),
   });
   const enrollStart = enroll.mutate;
 
@@ -370,7 +550,7 @@ function EnrollWizard({
   const confirm = useMutation({
     mutationFn: () => confirmTwoFactor({ code }),
     onSuccess: (data) => onEnrolled(data.recoveryCodes),
-    onError: (err) => setError(twoFactorErrorMessage(err)),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   if (!enroll.data) {
@@ -391,8 +571,7 @@ function EnrollWizard({
     <form onSubmit={onSubmit} className="flex flex-col gap-4">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <p className="text-sm text-neutral-400">
-        Scan this QR code with Google Authenticator (or any TOTP app), then enter the 6-digit code
-        it shows.
+        {t('settings.security.twoFactor.totp.scanInstructions')}
       </p>
       {/* QR needs a light quiet-zone to scan reliably against the dark theme. */}
       <div className="self-start rounded-md bg-white p-3">
@@ -400,34 +579,40 @@ function EnrollWizard({
           value={enroll.data.otpauthUri}
           size={176}
           marginSize={0}
-          aria-label="Two-factor setup QR code"
+          aria-label={t('settings.security.twoFactor.totp.qrAriaLabel')}
         />
       </div>
       <details className="rounded-md border border-neutral-800 bg-neutral-950 p-4">
         <summary className="cursor-pointer text-xs font-medium text-neutral-400">
-          Can’t scan? Enter this key manually
+          {t('settings.security.twoFactor.totp.manualEntryToggle')}
         </summary>
         <div className="mt-3 flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-neutral-500">Setup key</span>
+          <span className="text-xs font-medium text-neutral-500">
+            {t('settings.security.twoFactor.totp.setupKeyLabel')}
+          </span>
           <code className="break-all text-sm text-neutral-100">{enroll.data.secret}</code>
-          <span className="mt-2 text-xs font-medium text-neutral-500">otpauth URI</span>
+          <span className="mt-2 text-xs font-medium text-neutral-500">
+            {t('settings.security.twoFactor.totp.otpauthUriLabel')}
+          </span>
           <code className="break-all text-xs text-neutral-400">{enroll.data.otpauthUri}</code>
         </div>
       </details>
       <PinInput
-        label="Confirmation code"
+        label={t('settings.security.twoFactor.totp.confirmationCodeLabel')}
         length={TOTP_CODE_LENGTH}
         value={code}
         onChange={setCode}
-        hint="Enter the current 6-digit code from your authenticator app."
+        hint={t('settings.security.twoFactor.totp.confirmationCodeHint')}
         autoFocus
       />
       <div className="flex flex-wrap gap-3">
         <Button type="submit" disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH}>
-          {confirm.isPending ? 'Confirming…' : 'Confirm & enable'}
+          {confirm.isPending
+            ? t('settings.security.twoFactor.confirming')
+            : t('settings.security.twoFactor.confirmAndEnable')}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
+          {t('common.cancel')}
         </Button>
       </div>
     </form>
@@ -436,13 +621,14 @@ function EnrollWizard({
 
 /** Inline code-entry form used to authorize disabling the authenticator method. */
 function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCancel: () => void }) {
+  const t = useT();
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const disable = useMutation({
     mutationFn: () => disableTwoFactor({ code }),
     onSuccess: onDisabled,
-    onError: (err) => setError(twoFactorErrorMessage(err)),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   function onSubmit(e: FormEvent) {
@@ -455,7 +641,7 @@ function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCance
     <form onSubmit={onSubmit} className="flex flex-col gap-3">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
-        Authenticator code or recovery code
+        {t('settings.security.twoFactor.totp.disableCodeLabel')}
         <input
           type="text"
           autoComplete="off"
@@ -466,10 +652,12 @@ function DisableForm({ onDisabled, onCancel }: { onDisabled: () => void; onCance
       </label>
       <div className="flex flex-wrap gap-3">
         <Button type="submit" variant="secondary" disabled={disable.isPending || code.length < 6}>
-          {disable.isPending ? 'Disabling…' : 'Turn off authenticator app'}
+          {disable.isPending
+            ? t('settings.security.pin.disabling')
+            : t('settings.security.twoFactor.totp.turnOffFull')}
         </Button>
         <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
+          {t('common.cancel')}
         </Button>
       </div>
     </form>
@@ -509,13 +697,14 @@ function AuthenticatorMethodCard({
   onFirstRecoveryCodes: (codes: string[]) => void;
   refresh: () => void;
 }) {
+  const t = useT();
   const [view, setView] = useState<AuthenticatorView>('status');
   const [notice, setNotice] = useState<string | null>(null);
 
   return (
     <MethodCard
-      title="Authenticator app (TOTP)"
-      description="Codes from Google Authenticator, 1Password, or any TOTP app."
+      title={t('settings.security.twoFactor.totp.cardTitle')}
+      description={t('settings.security.twoFactor.totp.cardDescription')}
     >
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {view === 'enrolling' ? (
@@ -523,7 +712,7 @@ function AuthenticatorMethodCard({
           onEnrolled={(codes) => {
             setView('status');
             if (codes) onFirstRecoveryCodes(codes);
-            else setNotice('Authenticator app enabled.');
+            else setNotice(t('settings.security.twoFactor.totp.enabledNotice'));
             refresh();
           }}
           onCancel={() => setView('status')}
@@ -537,21 +726,23 @@ function AuthenticatorMethodCard({
               setView('enrolling');
             }}
           >
-            Set up authenticator app
+            {t('settings.security.twoFactor.totp.setup')}
           </Button>
         </div>
       ) : view === 'disabling' ? (
         <DisableForm
           onDisabled={() => {
             setView('status');
-            setNotice('Authenticator app turned off.');
+            setNotice(t('settings.security.twoFactor.totp.disabledNotice'));
             refresh();
           }}
           onCancel={() => setView('status')}
         />
       ) : (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">Enabled.</p>
+          <p className="text-sm text-neutral-400">
+            {t('settings.security.twoFactor.enabledLabel')}
+          </p>
           <div>
             <Button
               type="button"
@@ -561,7 +752,7 @@ function AuthenticatorMethodCard({
                 setView('disabling');
               }}
             >
-              Turn off
+              {t('settings.security.twoFactor.turnOff')}
             </Button>
           </div>
         </div>
@@ -582,6 +773,7 @@ function EmailMethodCard({
   onFirstRecoveryCodes: (codes: string[]) => void;
   refresh: () => void;
 }) {
+  const t = useT();
   const [view, setView] = useState<EmailMethodView>('status');
   const [code, setCode] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -594,7 +786,7 @@ function EmailMethodCard({
       setView('confirming');
     },
     // A missing SMTP config surfaces as a clear TWO_FACTOR_EMAIL_UNAVAILABLE message.
-    onError: (err) => setError(twoFactorErrorMessage(err)),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   const confirm = useMutation({
@@ -603,20 +795,20 @@ function EmailMethodCard({
       setView('status');
       setCode('');
       if (data.recoveryCodes) onFirstRecoveryCodes(data.recoveryCodes);
-      else setNotice('Email codes enabled.');
+      else setNotice(t('settings.security.twoFactor.email.enabledNotice'));
       refresh();
     },
-    onError: (err) => setError(twoFactorErrorMessage(err)),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   const disable = useMutation({
     mutationFn: disableEmailTwoFactor,
     onSuccess: () => {
-      setNotice('Email codes turned off.');
+      setNotice(t('settings.security.twoFactor.email.disabledNotice'));
       setError(null);
       refresh();
     },
-    onError: (err) => setError(twoFactorErrorMessage(err)),
+    onError: (err) => setError(twoFactorErrorMessage(t, err)),
   });
 
   function onConfirm(e: FormEvent) {
@@ -627,14 +819,16 @@ function EmailMethodCard({
 
   return (
     <MethodCard
-      title="Email codes"
-      description="A one-time code sent to your account email when you sign in."
+      title={t('settings.security.twoFactor.email.cardTitle')}
+      description={t('settings.security.twoFactor.email.cardDescription')}
     >
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {error ? <Alert tone="error">{error}</Alert> : null}
       {enabled ? (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">Enabled.</p>
+          <p className="text-sm text-neutral-400">
+            {t('settings.security.twoFactor.enabledLabel')}
+          </p>
           <div>
             <Button
               type="button"
@@ -645,26 +839,30 @@ function EmailMethodCard({
                 disable.mutate();
               }}
             >
-              {disable.isPending ? 'Turning off…' : 'Turn off'}
+              {disable.isPending
+                ? t('settings.security.twoFactor.turningOff')
+                : t('settings.security.twoFactor.turnOff')}
             </Button>
           </div>
         </div>
       ) : view === 'confirming' ? (
         <form onSubmit={onConfirm} className="flex flex-col gap-4">
           <p className="text-sm text-neutral-400">
-            We emailed a code to your address. Enter it to turn on email codes.
+            {t('settings.security.twoFactor.email.confirmInstructions')}
           </p>
           <PinInput
-            label="Email code"
+            label={t('settings.security.twoFactor.email.codeLabel')}
             length={TOTP_CODE_LENGTH}
             value={code}
             onChange={setCode}
-            hint="Enter the 6-digit code we just sent you."
+            hint={t('settings.security.twoFactor.email.codeHint')}
             autoFocus
           />
           <div className="flex flex-wrap gap-3">
             <Button type="submit" disabled={confirm.isPending || code.length !== TOTP_CODE_LENGTH}>
-              {confirm.isPending ? 'Confirming…' : 'Confirm & enable'}
+              {confirm.isPending
+                ? t('settings.security.twoFactor.confirming')
+                : t('settings.security.twoFactor.confirmAndEnable')}
             </Button>
             <Button
               type="button"
@@ -675,7 +873,7 @@ function EmailMethodCard({
                 setError(null);
               }}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
           </div>
         </form>
@@ -689,7 +887,9 @@ function EmailMethodCard({
               enroll.mutate();
             }}
           >
-            {enroll.isPending ? 'Sending code…' : 'Set up email codes'}
+            {enroll.isPending
+              ? t('settings.security.twoFactor.email.sendingCode')
+              : t('settings.security.twoFactor.email.setup')}
           </Button>
         </div>
       )}
@@ -705,6 +905,7 @@ function RecoveryCodesControl({
   remaining: number;
   onRegenerated: (codes: string[]) => void;
 }) {
+  const t = useT();
   const [error, setError] = useState<string | null>(null);
   const regenerate = useMutation({
     mutationFn: regenerateRecoveryCodes,
@@ -712,16 +913,21 @@ function RecoveryCodesControl({
       setError(null);
       onRegenerated(data.recoveryCodes);
     },
-    onError: () => setError('Could not regenerate recovery codes. Please try again.'),
+    onError: () => setError(t('settings.security.twoFactor.recoveryCodes.regenerateError')),
   });
 
   return (
     <MethodCard
-      title="Recovery codes"
-      description="One-time codes to sign in if you lose access to your other factors."
+      title={t('settings.security.twoFactor.recoveryCodes.cardTitle')}
+      description={t('settings.security.twoFactor.recoveryCodes.cardDescription')}
     >
       <p className="text-sm text-neutral-400">
-        {remaining} recovery code{remaining === 1 ? '' : 's'} remaining.
+        {t(
+          remaining === 1
+            ? 'settings.security.twoFactor.recoveryCodes.remainingOne'
+            : 'settings.security.twoFactor.recoveryCodes.remainingOther',
+          { count: remaining },
+        )}
       </p>
       {error ? <Alert tone="error">{error}</Alert> : null}
       <div>
@@ -731,7 +937,9 @@ function RecoveryCodesControl({
           disabled={regenerate.isPending}
           onClick={() => regenerate.mutate()}
         >
-          {regenerate.isPending ? 'Regenerating…' : 'Regenerate recovery codes'}
+          {regenerate.isPending
+            ? t('settings.security.twoFactor.recoveryCodes.regenerating')
+            : t('settings.security.twoFactor.recoveryCodes.regenerate')}
         </Button>
       </div>
     </MethodCard>
@@ -745,6 +953,7 @@ function RecoveryCodesControl({
  * when the first method is enabled (or on regenerate).
  */
 function TwoFactorSection() {
+  const t = useT();
   const queryClient = useQueryClient();
   const status = useQuery({
     queryKey: TWO_FACTOR_KEY,
@@ -763,10 +972,10 @@ function TwoFactorSection() {
   return (
     <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">Two-factor authentication</h3>
-        <p className="text-xs text-neutral-500">
-          Add a second step at sign-in. Turn on either method — or both.
-        </p>
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.security.twoFactor.title')}
+        </h3>
+        <p className="text-xs text-neutral-500">{t('settings.security.twoFactor.description')}</p>
       </div>
 
       {recoveryCodes ? (
@@ -781,8 +990,8 @@ function TwoFactorSection() {
         <Skeleton height="h-16" />
       ) : status.isError ? (
         <EmptyState
-          title="Couldn't load your two-factor status"
-          description="Please try again in a moment."
+          title={t('settings.security.twoFactor.loadError.title')}
+          description={t('settings.retryHint')}
         />
       ) : (
         <div className="flex flex-col gap-4">
@@ -814,6 +1023,7 @@ function TwoFactorSection() {
  * derive from `@bettertrack/contracts` via the web api-client.
  */
 export function SecuritySettingsPage() {
+  const t = useT();
   const me = useQuery({
     queryKey: ME_KEY,
     queryFn: ({ signal }) => getMe(signal),
@@ -823,18 +1033,20 @@ export function SecuritySettingsPage() {
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold text-neutral-100">Security</h2>
-        <p className="text-sm text-neutral-500">Your session, PIN, and two-factor options.</p>
+        <h2 className="text-lg font-semibold text-neutral-100">{t('settings.security.title')}</h2>
+        <p className="text-sm text-neutral-500">{t('settings.security.subtitle')}</p>
       </div>
 
       <SessionInfo />
+
+      <SessionsSection />
 
       {me.isPending ? (
         <Skeleton height="h-24" />
       ) : me.isError ? (
         <EmptyState
-          title="Couldn't load your security settings"
-          description="Please try again in a moment."
+          title={t('settings.security.loadError.title')}
+          description={t('settings.retryHint')}
         />
       ) : (
         <PinSection pinEnabled={me.data.pinEnabled} idleMinutes={me.data.pinLockIdleMinutes} />
