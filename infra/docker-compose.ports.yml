@@ -4,8 +4,10 @@ name: bettertrack
 # top of the base file:
 #   docker compose -f infra/docker-compose.yml -f infra/docker-compose.ports.yml up -d
 #
-# Publishes the three service ports directly, no front proxy port — nothing
-# binds :80, so this is safe on a host already serving something else there.
+# Publishes the five service ports directly on the `web` front proxy — nothing
+# binds :80, so this is safe on a host already serving something else there. The
+# proxy routes each `listen` port to its origin, including the product/mobile
+# ports which reverse-proxy to the internal `landing` container (V3-P12 arc (c)).
 
 services:
   web:
@@ -13,8 +15,5 @@ services:
       - '${BT_PORT_WEB:-8080}:${BT_PORT_WEB:-8080}'
       - '${BT_PORT_ADMIN:-8081}:${BT_PORT_ADMIN:-8081}'
       - '${BT_PORT_API:-3000}:${BT_PORT_API:-3000}'
-
-  # Static landing/mobile site (§13.3 V3-P12) on its own host port.
-  landing:
-    ports:
-      - '${BT_PORT_LANDING:-8082}:80'
+      - '${BT_PORT_PRODUCT:-8082}:${BT_PORT_PRODUCT:-8082}'
+      - '${BT_PORT_MOBILE:-8083}:${BT_PORT_MOBILE:-8083}'

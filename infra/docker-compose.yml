@@ -26,11 +26,16 @@ services:
       BT_SUB_API: '${BT_SUB_API:-api}'
       BT_SUB_WEB: '${BT_SUB_WEB:-web}'
       BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+      BT_SUB_MOBILE: '${BT_SUB_MOBILE:-mobile}'
       BT_PORT_API: '${BT_PORT_API:-3000}'
       BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
       BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+      BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
+      BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
       BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
       API_UPSTREAM: 'api:3000'
+      # The apex product + mobile origins proxy to the static `landing` container.
+      LANDING_UPSTREAM: 'landing:80'
     # Host port bindings are mode-conditional and live in the override file for
     # your topology, NOT here (a bare `docker compose up` with only this file
     # publishes no host ports at all). Layer one of:
@@ -40,11 +45,15 @@ services:
     depends_on:
       api:
         condition: service_healthy
+      # nginx resolves the landing upstream hostname at startup, so it must exist.
+      landing:
+        condition: service_started
 
-  # Product landing page (bettertrack.at root origin) + mobile.* placeholder —
+  # Product landing page (bettertrack.at apex origin) + mobile.* placeholder —
   # a tiny framework-free static site (§13.3 V3-P12 arcs a+b). Independent of the
   # SPA and API; the only env it reads is the web-app origin its CTA links point
-  # at. Host port bindings live in the mode overlay files, like `web`.
+  # at. In both modes the `web` front proxy routes the apex + mobile origins to
+  # this container over the internal network (arc (c) — no host ports of its own).
   landing:
     build:
       context: ..
@@ -52,8 +61,7 @@ services:
     restart: unless-stopped
     environment:
       # Web-app origin the "Open the web app" links resolve to. Defaults to the
-      # subdomains-mode public origin; the 5-origin topology derivation is the
-      # separate V3-P12 arc (c) follow-up.
+      # subdomains-mode public web origin; override to match your topology mode.
       BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-https://web.${BT_DOMAIN:-bettertrack.at}}'
 
   api:
@@ -74,12 +82,17 @@ services:
       BT_SUB_API: '${BT_SUB_API:-api}'
       BT_SUB_WEB: '${BT_SUB_WEB:-web}'
       BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+      BT_SUB_MOBILE: '${BT_SUB_MOBILE:-mobile}'
       BT_PORT_API: '${BT_PORT_API:-3000}'
       BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
       BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+      BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
+      BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
       BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
       BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
       BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
+      BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
+      BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
       SMTP_HOST: '${SMTP_HOST:-}'
       SMTP_PORT: '${SMTP_PORT:-}'
       SMTP_USER: '${SMTP_USER:-}'
@@ -125,12 +138,17 @@ services:
       BT_SUB_API: '${BT_SUB_API:-api}'
       BT_SUB_WEB: '${BT_SUB_WEB:-web}'
       BT_SUB_ADMIN: '${BT_SUB_ADMIN:-admin}'
+      BT_SUB_MOBILE: '${BT_SUB_MOBILE:-mobile}'
       BT_PORT_API: '${BT_PORT_API:-3000}'
       BT_PORT_WEB: '${BT_PORT_WEB:-8080}'
       BT_PORT_ADMIN: '${BT_PORT_ADMIN:-8081}'
+      BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
+      BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
       BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
       BT_WEB_ORIGIN: '${BT_WEB_ORIGIN:-}'
       BT_ADMIN_ORIGIN: '${BT_ADMIN_ORIGIN:-}'
+      BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
+      BT_MOBILE_ORIGIN: '${BT_MOBILE_ORIGIN:-}'
       SMTP_HOST: '${SMTP_HOST:-}'
       SMTP_PORT: '${SMTP_PORT:-}'
       SMTP_USER: '${SMTP_USER:-}'
