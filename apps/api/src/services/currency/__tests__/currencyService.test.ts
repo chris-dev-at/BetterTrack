@@ -107,3 +107,34 @@ describe('createCurrencyService', () => {
     });
   });
 });
+
+describe('withBase (per-user base passthrough, §5.4 / V3-P10d)', () => {
+  it('returns the same instance when the base already matches (case-insensitive)', () => {
+    const svc = createCurrencyService({ source: stubSource() });
+    expect(svc.withBase('EUR')).toBe(svc);
+    expect(svc.withBase('eur')).toBe(svc);
+  });
+
+  it('produces a view whose default toBase target is the new base', async () => {
+    const getSpotRate = vi.fn(() => Promise.resolve(1.25)); // 1 EUR = 1.25 USD
+    const svc = createCurrencyService({ source: stubSource({ getSpotRate }) });
+    const usd = svc.withBase('USD');
+    expect(usd.baseCurrency).toBe('USD');
+    await expect(usd.toBase(100, 'EUR')).resolves.toBeCloseTo(125, 10);
+    expect(getSpotRate).toHaveBeenCalledWith('EUR', 'USD');
+    // The original service is untouched — its base stays EUR.
+    expect(svc.baseCurrency).toBe('EUR');
+  });
+
+  it('shares the same rate source (the §5.3 caches stay shared)', async () => {
+    const getHistoricalRate = vi.fn(() => Promise.resolve(1.1));
+    const svc = createCurrencyService({ source: stubSource({ getHistoricalRate }) });
+    await svc.withBase('CHF').toBase(10, 'EUR', { date: '2026-01-05' });
+    expect(getHistoricalRate).toHaveBeenCalledWith('EUR', 'CHF', '2026-01-05');
+  });
+
+  it('rejects an invalid base code loudly', () => {
+    const svc = createCurrencyService({ source: stubSource() });
+    expect(() => svc.withBase('DOLLARS')).toThrowError(/Invalid currency code/);
+  });
+});

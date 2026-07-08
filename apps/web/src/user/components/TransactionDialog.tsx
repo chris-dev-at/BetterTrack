@@ -1019,13 +1019,13 @@ function RowFields({
                   'Calculating…'
                 ) : (
                   <>
-                    Available <MoneyText amount={cash.preview.availableEur} /> &rarr;{' '}
+                    Available <MoneyText amount={cash.preview.availableEur} currency="EUR" /> &rarr;{' '}
                     <span className={cash.insufficient ? 'text-red-400' : 'text-neutral-200'}>
-                      <MoneyText amount={cash.preview.afterEur} />
+                      <MoneyText amount={cash.preview.afterEur} currency="EUR" />
                     </span>
                     {cash.insufficient ? (
                       <span className="ml-1 text-red-400">
-                        (short <MoneyText amount={cash.preview.shortfallEur} />)
+                        (short <MoneyText amount={cash.preview.shortfallEur} currency="EUR" />)
                       </span>
                     ) : null}
                   </>

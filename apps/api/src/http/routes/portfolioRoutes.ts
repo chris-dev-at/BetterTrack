@@ -88,7 +88,9 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   // GET /portfolios/:portfolioId — holdings + totals (§6.8).
   router.get('/:portfolioId', validateParams(portfolioIdParamSchema), async (req, res) => {
     const { portfolioId } = req.valid?.params as { portfolioId: string };
-    const portfolio = await ctx.portfolio.getPortfolio(req.authUser!.id, portfolioId);
+    const portfolio = await ctx.portfolio.getPortfolio(req.authUser!.id, portfolioId, {
+      baseCurrency: req.authUser!.baseCurrency,
+    });
     res.json(portfolio);
   });
 
@@ -117,6 +119,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const { range, overlay } = req.valid?.query as PortfolioHistoryQuery;
       const history = await ctx.portfolio.getHistory(req.authUser!.id, portfolioId, range, {
         overlay,
+        baseCurrency: req.authUser!.baseCurrency,
       });
       res.json(history);
     },

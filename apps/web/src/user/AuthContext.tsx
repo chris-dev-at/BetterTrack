@@ -25,6 +25,7 @@ import type {
 import { DEFAULT_PIN_WINDOW_MINUTES } from '@bettertrack/contracts';
 
 import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
+import { setMoneyCurrency } from '../lib/format';
 import * as api from '../lib/userApi';
 
 /**
@@ -210,6 +211,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // activity; only real DOM interaction or an actual unlock records it.
   const applyUser = useCallback((me: MeResponse) => {
     setUser(me);
+    // Drive the display layer's default money currency from the session user's
+    // base currency (§5.4, V3-P10d) — every converted figure the API returns
+    // is denominated in it, so the omitted-currency formatMoney default must
+    // match before the first money paint.
+    setMoneyCurrency(me.baseCurrency);
     if (me.mustChangePassword) {
       setStatus('password-change-required');
     } else if (isPinLocked(me)) {
@@ -228,6 +234,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearActivity();
     setUser(null);
     setStatus('anonymous');
+    // Back to the EUR default so the next account never inherits the previous
+    // user's base currency (mirrors the query-cache clear below).
+    setMoneyCurrency('EUR');
     queryClient.clear();
   }, [queryClient]);
 

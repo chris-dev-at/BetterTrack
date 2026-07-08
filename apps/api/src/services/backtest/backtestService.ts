@@ -95,19 +95,35 @@ export interface BacktestServiceDeps {
 }
 
 export interface BacktestService {
-  /** Backtest an inline draft basket for the Builder live preview (§6.5). */
-  runPreview(userId: string, input: BacktestPreviewInput): Promise<BacktestResponse>;
+  /**
+   * Backtest an inline draft basket for the Builder live preview (§6.5),
+   * computed in `opts.baseCurrency` (the caller's per-user base, §5.4/V3-P10d;
+   * EUR when omitted). The base changes the *result*, not just labels — a USD
+   * investor's return on a EUR-priced asset carries the FX leg.
+   */
+  runPreview(
+    userId: string,
+    input: BacktestPreviewInput,
+    opts?: { baseCurrency?: string },
+  ): Promise<BacktestResponse>;
 }
 
 /**
- * Redis memo key for a preview — hash(positions+range+benchmark), namespaced by
- * user id so a custom-asset basket's result never leaks across users (§10).
+ * Redis memo key for a preview — hash(positions+range+benchmark+base),
+ * namespaced by user id so a custom-asset basket's result never leaks across
+ * users (§10). The base currency is part of the identity (V3-P10d): the same
+ * basket backtested in USD is a different result, not a different rendering.
  */
-export function backtestPreviewCacheKey(userId: string, input: BacktestPreviewInput): string {
+export function backtestPreviewCacheKey(
+  userId: string,
+  input: BacktestPreviewInput,
+  baseCurrency: string,
+): string {
   const canonical = JSON.stringify({
     positions: input.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
     range: input.range,
     benchmark: input.benchmark ?? null,
+    baseCurrency,
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:preview:${userId}:${hash}`;
@@ -142,8 +158,12 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
   }
 
   return {
-    async runPreview(userId, input) {
-      const key = backtestPreviewCacheKey(userId, input);
+    async runPreview(userId, input, opts) {
+      const fx =
+        opts?.baseCurrency === undefined
+          ? currencyService
+          : currencyService.withBase(opts.baseCurrency);
+      const key = backtestPreviewCacheKey(userId, input, fx.baseCurrency);
       const cached = await redis.get(key);
       if (cached) {
         try {
@@ -221,8 +241,8 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           positions: input.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
           assets,
           range: { start, end },
-          converter: currencyService,
-          baseCurrency: currencyService.baseCurrency,
+          converter: fx,
+          baseCurrency: fx.baseCurrency,
           benchmark: benchmarkAsset,
         });
       } catch (err) {

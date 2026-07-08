@@ -465,10 +465,20 @@
       "field": {
         "username": "Username",
         "email": "Email",
-        "memberSince": "Member since",
-        "baseCurrency": "Base currency"
-      },
-      "baseCurrencyFixed": "{{code}} (fixed)"
+        "memberSince": "Member since"
+      }
+    },
+    "baseCurrency": {
+      "title": "Base currency",
+      "description": "The currency every valuation, chart and report is shown in. Amounts stay stored in each asset’s native currency — only the display conversion changes.",
+      "label": "Base currency",
+      "saveError": "Couldn’t save your base currency. Please try again.",
+      "option": {
+        "EUR": "EUR — Euro (€)",
+        "USD": "USD — US Dollar ($)",
+        "CHF": "CHF — Swiss Franc",
+        "GBP": "GBP — British Pound (£)"
+      }
     },
     "password": {
       "title": "Change password",

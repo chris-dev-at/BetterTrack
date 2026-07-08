@@ -569,7 +569,11 @@ describe('default portfolio visibility (Settings → Account)', () => {
 
     const get = await aliceAgent.get('/api/v1/settings/account');
     expect(get.status).toBe(200);
-    expect(get.body).toEqual({ defaultPortfolioVisibility: 'private', locale: 'en' });
+    expect(get.body).toEqual({
+      defaultPortfolioVisibility: 'private',
+      locale: 'en',
+      baseCurrency: 'EUR',
+    });
 
     const created = await aliceAgent
       .post('/api/v1/portfolios')
@@ -587,7 +591,11 @@ describe('default portfolio visibility (Settings → Account)', () => {
       .set(...XRW)
       .send({ defaultPortfolioVisibility: 'friends' });
     expect(patch.status).toBe(200);
-    expect(patch.body).toEqual({ defaultPortfolioVisibility: 'friends', locale: 'en' });
+    expect(patch.body).toEqual({
+      defaultPortfolioVisibility: 'friends',
+      locale: 'en',
+      baseCurrency: 'EUR',
+    });
 
     // A newly created portfolio adopts the friends default.
     const created = await aliceAgent

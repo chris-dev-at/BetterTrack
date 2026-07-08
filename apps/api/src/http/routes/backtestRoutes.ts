@@ -22,11 +22,15 @@ export function createBacktestRouter(ctx: AppContext): Router {
   // POST /backtest/preview — inline {positions, range, benchmark?} → base-100 series + stats.
   router.post('/preview', validateBody(backtestPreviewRequestSchema), async (req, res) => {
     const body = req.valid?.body as BacktestPreviewRequest;
-    const result = await ctx.backtest.runPreview(req.authUser!.id, {
-      positions: body.positions,
-      range: body.range,
-      benchmark: body.benchmark ?? null,
-    });
+    const result = await ctx.backtest.runPreview(
+      req.authUser!.id,
+      {
+        positions: body.positions,
+        range: body.range,
+        benchmark: body.benchmark ?? null,
+      },
+      { baseCurrency: req.authUser!.baseCurrency },
+    );
     res.json(result);
   });
 

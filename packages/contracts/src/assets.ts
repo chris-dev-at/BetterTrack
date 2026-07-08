@@ -99,10 +99,12 @@ export type AssetSummary = z.infer<typeof assetSummarySchema>;
  * the stored row; the quote is best-effort: `null` (with `stale: true`) when the
  * provider is down and nothing has ever been cached.
  *
- * `eurPrice`: the native price converted to EUR via the current spot FX rate.
- * Present (as a number or null) only when the asset's currency is not EUR.
+ * `eurPrice`: the native price converted into the caller's **base currency**
+ * (§5.4, §13.3 V3-P10d — the field name predates per-user bases; `baseCurrency`
+ * is the authoritative denomination) via the current spot FX rate. Present (as
+ * a number or null) only when the asset's currency differs from the base.
  * `null` means the conversion was unavailable (provider degraded or FX pair
- * unknown); absent means the native currency already is EUR.
+ * unknown); absent means the native currency already is the base.
  */
 export const assetDetailResponseSchema = z
   .object({
@@ -110,6 +112,8 @@ export const assetDetailResponseSchema = z
     quote: quoteSchema.nullable(),
     stale: z.boolean(),
     asOf: z.string().datetime().nullable(),
+    /** The currency `eurPrice` is denominated in — the caller's base (§5.4). */
+    baseCurrency: currencyCodeSchema,
     eurPrice: z.number().nullable().optional(),
   })
   .strict();
