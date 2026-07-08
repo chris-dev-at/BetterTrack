@@ -31,6 +31,12 @@ import type {
   Unsubscribe,
 } from '../../events';
 import type { Logger } from '../../logger';
+import {
+  createManualAssetSource,
+  createManualProvider,
+  createMarketDataService,
+  createProviderRegistry,
+} from '../../providers';
 import { createStubMarketData, type StubMarketDataControls } from '../../testing/marketDataStubs';
 import { createDeadLetter } from '../deadLetter';
 import {
@@ -42,6 +48,7 @@ import {
   createPricesRefreshDailyJob,
   DAILY_INTERVAL,
   FX_REFRESH_SPOT_CRON,
+  type MarketDataJobDeps,
   PRICES_REFRESH_DAILY_CRON,
   PRICES_REFRESH_DAILY_TZ,
   REFRESH_DAILY_RANGE,
@@ -301,6 +308,108 @@ describe('prices.refreshDaily', () => {
     });
     await job.handler(makeJob({}), makeCtx(events));
     expect(events.published).toEqual([]);
+  });
+});
+
+// ---- custom assets: local-provider safety (V3-P2 value smoothing) ---------
+
+/**
+ * Regression for the smoothing feature: a custom asset's value marks ARE its
+ * `price_history` rows and are the source of truth. The price jobs must never
+ * fetch a local (`manual`) provider — with smoothing on, `getHistory` returns the
+ * daily-interpolated reconstruction, and persisting that back would turn the
+ * interpolated interior days into permanent value marks (violating "every
+ * mark-day value stays exact"). These tests wire the REAL manual provider so the
+ * reconstruction really happens if the guard is ever removed.
+ */
+describe('price jobs × custom assets (smoothing must not be persisted)', () => {
+  let db: Database;
+  let userId: string;
+
+  beforeEach(async () => {
+    db = await makeDb();
+    userId = await seedUser(db);
+  });
+
+  /** Real manual-provider-backed market data on a fixed clock, plus the local guard. */
+  function customAssetDeps(nowMs: number): MarketDataJobDeps {
+    const registry = createProviderRegistry([
+      createManualProvider({ source: createManualAssetSource(db), now: () => nowMs }),
+    ]);
+    const service = createMarketDataService({
+      registry,
+      redis: new RedisMock() as unknown as Redis,
+    });
+    return {
+      db,
+      marketData: service,
+      isLocalProvider: (id) => registry.has(id) && registry.get(id).local === true,
+    };
+  }
+
+  /** A smoothing-on custom asset held in a portfolio (so it's referenced), with marks. */
+  async function seedSmoothedCustomAsset(marks: [string, number][]): Promise<string> {
+    const rows = await db
+      .insert(schema.assets)
+      .values({
+        providerId: 'manual',
+        providerRef: 'house-1',
+        ownerId: userId,
+        type: 'custom',
+        symbol: 'HOUSE',
+        name: 'House',
+        currency: 'EUR',
+        meta: { smoothing: true },
+      })
+      .returning({ id: schema.assets.id });
+    const assetId = rows[0]!.id;
+    // A held custom asset has a BUY txn, so listReferencedAssets includes it.
+    const pf = await db
+      .insert(schema.portfolios)
+      .values({ userId, name: 'Main' })
+      .returning({ id: schema.portfolios.id });
+    await db.insert(schema.transactions).values({
+      portfolioId: pf[0]!.id,
+      assetId,
+      side: 'buy',
+      quantity: '1',
+      price: String(marks[0]![1]),
+      executedAt: new Date(`${marks[0]![0]}T00:00:00Z`),
+    });
+    // The value marks live in `price_history` (§5.1).
+    await db
+      .insert(schema.priceHistory)
+      .values(marks.map(([date, value]) => ({ assetId, date, close: String(value) })));
+    return assetId;
+  }
+
+  it('refreshDaily leaves a smoothing-on custom asset marks exactly as entered', async () => {
+    // 2026-07-08 clock so the 1M refresh window covers both marks (see rangeStartMs).
+    const nowMs = Date.parse('2026-07-08T00:00:00.000Z');
+    const assetId = await seedSmoothedCustomAsset([
+      ['2026-06-25', 100],
+      ['2026-07-05', 200],
+    ]);
+
+    const job = createPricesRefreshDailyJob(customAssetDeps(nowMs));
+    await job.handler(makeJob({}), makeCtx(recordingBus()));
+
+    // Only the two real marks remain — none of the 9 interpolated interior days
+    // (110, 120, …) leaked into the stored value points.
+    expect(await closesFor(db, assetId)).toEqual({ '2026-06-25': '100', '2026-07-05': '200' });
+  });
+
+  it('backfill skips a custom asset instead of densifying its marks', async () => {
+    const nowMs = Date.parse('2026-07-08T00:00:00.000Z');
+    const assetId = await seedSmoothedCustomAsset([
+      ['2026-06-25', 100],
+      ['2026-07-05', 200],
+    ]);
+
+    const job = createPricesBackfillJob(customAssetDeps(nowMs));
+    await job.handler(makeJob({ assetId }), makeCtx(recordingBus()));
+
+    expect(await closesFor(db, assetId)).toEqual({ '2026-06-25': '100', '2026-07-05': '200' });
   });
 });
 

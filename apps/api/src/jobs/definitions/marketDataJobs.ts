@@ -55,7 +55,22 @@ export const BACKFILL_LIMITER = { max: 1, duration: 1000 } as const;
 export interface MarketDataJobDeps {
   db: Database;
   marketData: MarketDataService;
+  /**
+   * True for providers whose data is already durable in our own DB — today only
+   * the `manual` provider, whose custom-asset value marks *are* their
+   * `price_history` rows (§5.1), written by the custom-asset service. The price
+   * jobs skip these: there is nothing upstream to fetch, and re-`getHistory`-ing
+   * them would push the provider's read-time reconstruction back into
+   * `price_history`. With value-smoothing on (V3-P2) that reconstruction is the
+   * daily-interpolated series, so the interior days would be persisted as
+   * first-class marks, permanently polluting the user's value points. Defaults to
+   * treating no provider as local (tests that don't wire a registry are unaffected).
+   */
+  isLocalProvider?: (providerId: string) => boolean;
 }
+
+/** Never-local fallback so a caller that omits the predicate keeps prior behaviour. */
+const NEVER_LOCAL = (): boolean => false;
 
 /** ISO timestamp the job's events are stamped with (mirrors the heartbeat job). */
 function occurredAtOf(job: { timestamp?: number }): string {
@@ -102,6 +117,7 @@ export function createPricesRefreshDailyJob(
   deps: MarketDataJobDeps,
 ): JobDefinition<'prices.refreshDaily'> {
   const repo = createPriceJobsRepository(deps.db);
+  const isLocalProvider = deps.isLocalProvider ?? NEVER_LOCAL;
   return {
     name: QUEUE_NAMES.pricesRefreshDaily,
     schedule: {
@@ -115,7 +131,12 @@ export function createPricesRefreshDailyJob(
         repo.listReferencedAssets(),
         repo.listFxAssets(),
       ]);
-      const targets = dedupeById([...referenced, ...fx]);
+      // Local-provider assets (custom assets) are already durable in
+      // `price_history`; fetching them would corrupt their value marks (see
+      // {@link MarketDataJobDeps.isLocalProvider}).
+      const targets = dedupeById([...referenced, ...fx]).filter(
+        (asset) => !isLocalProvider(asset.providerId),
+      );
 
       const failures: string[] = [];
       for (const asset of targets) {
@@ -161,6 +182,7 @@ export function createPricesRefreshDailyJob(
  */
 export function createPricesBackfillJob(deps: MarketDataJobDeps): JobDefinition<'prices.backfill'> {
   const repo = createPriceJobsRepository(deps.db);
+  const isLocalProvider = deps.isLocalProvider ?? NEVER_LOCAL;
   return {
     name: QUEUE_NAMES.pricesBackfill,
     workerOptions: { limiter: { ...BACKFILL_LIMITER } },
@@ -170,6 +192,16 @@ export function createPricesBackfillJob(deps: MarketDataJobDeps): JobDefinition<
       const asset = await repo.findAssetById(assetId);
       if (!asset) {
         ctx.logger.warn({ assetId }, 'prices.backfill: asset no longer exists, skipping');
+        return;
+      }
+      // Custom assets carry their own durable value marks; backfilling them would
+      // persist the provider's smoothing reconstruction (see
+      // {@link MarketDataJobDeps.isLocalProvider}).
+      if (isLocalProvider(asset.providerId)) {
+        ctx.logger.info(
+          { assetId, providerId: asset.providerId },
+          'prices.backfill: local provider, skipping (values already durable)',
+        );
         return;
       }
 

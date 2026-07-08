@@ -44,7 +44,7 @@ const registry = createQueueRegistry(createConnection());
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
 const marketDataConnection = createConnection();
-const { service: marketData } = createMarketData({
+const { registry: providerRegistry, service: marketData } = createMarketData({
   db,
   redis: marketDataConnection,
   queueOptions: {
@@ -58,7 +58,14 @@ const { service: marketData } = createMarketData({
       logger.warn({ key, err }, 'market-data background refresh failed'),
   },
 });
-const definitions = createJobDefinitions({ db, marketData });
+const definitions = createJobDefinitions({
+  db,
+  marketData,
+  // Custom assets (the `manual` provider) are durable in our own DB; the price
+  // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
+  isLocalProvider: (providerId) =>
+    providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+});
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
 
