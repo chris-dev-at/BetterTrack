@@ -16,7 +16,7 @@ If anything here contradicts live state, trust live state and memory (`bettertra
 
 Claude Fable 5 retired from interactive/subscription use after 2026-07-07 (API-only since; §16 entry exists).
 
-- Top tier everywhere = **Opus 4.8**. `multi-factory/state/control/models.json` was already re-routed on 2026-07-07: `diff:hard` → opus `xhigh`, `diff:max` → opus `max`. Verify at prep, never route factory work to `claude-fable-5`.
+- Top tier everywhere = **Opus 4.8**. `multi-factory/state/control/models.json` is **owner-managed** — the owner runs the remaining Fable window on it and sets the post-Fable routing himself (owner directive 2026-07-08). Do not edit, "verify-fix", or prescribe it.
 - Wherever any doc says "Fable" / "T1" (MODELUSE.md, CHIEF.md, §13.x "pre-release Fable review"), read: **the top available tier — today Opus 4.8 at max**.
 - The escalation ladder ("bug survives two fix attempts → up one tier") now ends at opus max. Beyond that: decompose the issue or re-scope via the checker, don't loop.
 - Optional levers, owner's call only: codex `gpt-5.5` / gemini via the ControlWebView **Models** tab are wired and verified (docs/multi-factory.md). Non-claude runs log `cost_usd: 0` in the ledger — remember that when reporting spend.
@@ -28,11 +28,11 @@ On boot (after CHIEF.md's own boot list): `gh issue list --state all --search "c
 | Stage | Condition                                              | Do                                                                                                                                                                                                                                                                                                 |
 | ----- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **A** | v3 issues still open, no `check v3` issue              | Supervise v3 to completion per CHIEF.md. Nothing v4-specific yet.                                                                                                                                                                                                                                  |
-| **B** | `check v3` open                                        | Run the **milestone endgame protocol** (CHIEF.md): personal Chrome QA on http://localhost:8090 AND a spot-check on https://web.bettertrack.at (the public instance auto-deploys main). File findings as difficulty-labeled factory issues, iterate to STABLE, then hand to the owner for sign-off. |
-| **C** | v3 signed off, §13.4 **V4-P0 row still says RESERVED** | Collect the owner's v3 feedback **in chat**, convert to concrete quick-win items (bugs + small UX only; bigger asks → §14 entry or a §13.5 note), write them into the V4-P0 row via docs PR, close the check-v3 gate issue with a sign-off + feedback record (v3 pattern: issue #317).             |
+| **B** | `check v3` open                                        | Run the **milestone endgame protocol** (CHIEF.md): personal Chrome QA on https://web.bettertrack.at (the public live instance — auto-deploys main; localhost:8090 is gone). File findings as difficulty-labeled factory issues, iterate to STABLE, then hand to the owner for sign-off. **The moment the owner signs off in chat, close the check-v3 gate issue with the sign-off + feedback record** (pattern: issue #317) — so B can never re-match after sign-off. |
+| **C** | `check v3` closed, §13.4 **V4-P0 row still says RESERVED** | Collect the owner's v3 feedback **in chat**, convert to concrete quick-win items (bugs + small UX only; bigger asks → §14 entry or a §13.5 note), write them into the V4-P0 row via docs PR.             |
 | **D** | P0 filled, factory down/drained                        | Run the **v4 prep checklist** below, report "v4 ready" + estimate to the owner, **launch only on the owner's go**.                                                                                                                                                                                 |
 | **E** | v4 issues open / factory up                            | Supervise per CHIEF.md heartbeats. Incident playbook below.                                                                                                                                                                                                                                        |
-| **F** | `check v4` open                                        | Endgame protocol again (preview + public spot-check), STABLE → owner sign-off → close the gate with the feedback record → update memory → tell the owner the next boot phrase: _"Read factory/V5_KICKOFF.md and execute."_                                                                         |
+| **F** | `check v4` open                                        | Endgame protocol again (public-instance QA), STABLE → owner sign-off → close the gate with the feedback record → update memory → tell the owner the next boot phrase: _"Read factory/V5_KICKOFF.md and execute."_                                                                                  |
 
 ## Stage D — the v4 prep checklist
 
@@ -42,7 +42,7 @@ Mirror of the proven v3 prep (PR #320). All docs changes in ONE PR.
 2. **CHIEF.md**: mission line → "current milestone — **V4**, per `PROJECTPLAN.md` §13.4" (v1–v3 shipped).
 3. **Gate hygiene:** check-v3 issue closed with sign-off record; zero open v3 autopilot issues/PRs; `factory/usage-report.sh` snapshot of v3 total cost → report to owner.
 4. **MF state reset** (exactly like v3 prep): `multi-factory/state/` — clear `status/*`, `.composer-backoff`, `.composer-last`, `.composer-snapshot` (fresh milestone ⇒ composer must fire on first tick), `assignments/` and `merge-queue/` empty, `control/triggers.json` = `[]`, `control/workers` = 2, stale `control/phase`/`mode` cleared.
-5. **models.json sanity:** all-claude; easy→sonnet high, normal→opus medium, intermediate→opus high, hard→opus xhigh, max→opus max; composer/checker = hard; reviewFloor = intermediate.
+5. **models.json:** owner-managed — skip. The owner sets model/effort routing himself (incl. the post-Fable flip); never edit it in prep (owner directive 2026-07-08).
 6. **Self-test:** `multi-factory/test.sh` all green; if factory lib/compose changed since last image build, rebuild via `./multi-factory/autorun.sh` path (compose changes need container RECREATE, not restart — scripts are baked/pinned).
 7. **GitHub:** factory token rate limit healthy (`gh api rate_limit`), repo auto-merge ON, `diff:*` + `autopilot` + `needs-human` + `awaiting-owner` labels exist.
 8. **Owner-items inventory** (one chat message, none block launch — all env-gated): Firebase service-account key (P3), Google OAuth client credentials (P4), Drive/rclone credentials (P6), optional Telegram bot token (P10), one physical Android device for the P3 gate test.
@@ -90,4 +90,4 @@ Every report, finding, warning, or question goes **plainly in the user-facing ch
 
 ## Definition of done
 
-`check v4` filed → endgame QA (preview + public spot-check) → STABLE → owner sign-off in chat → gate issue closed with feedback record → memory updated → owner pointed at `factory/V5_KICKOFF.md`.
+`check v4` filed → endgame QA (public instance) → STABLE → owner sign-off in chat → gate issue closed with feedback record → memory updated → owner pointed at `factory/V5_KICKOFF.md`.

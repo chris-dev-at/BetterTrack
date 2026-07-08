@@ -3,7 +3,7 @@
 Which model + effort level to use for each kind of work. The per-phase tables below are the V1-era originals, kept for the tier-to-work mapping they encode; **from V3 on, every `PROJECTPLAN.md` §13.3 phase row carries its difficulty label directly** (`diff:easy…diff:max` per `docs/multi-factory.md`; T1 → `diff:max`/`diff:hard`, T2 → `diff:intermediate`, T3 → `diff:easy`/`diff:normal`), and `state/control/models.json` resolves difficulties to providers/models/effort. The ladder and ground rules here remain binding. Ground rules, per the owner:
 
 - **When in doubt, go one tier up** — slightly over-spec is the policy.
-- **The floor is Sonnet 5 at `high` effort.** Nothing runs below that — no Haiku, no medium/low.
+- **The floor (owner decision 2026-07-08): Opus 4.8 at `low` effort for easy work** — Opus replaces Sonnet on the easy tier (better cost/usage/output). No Haiku, nothing below `opus low`.
 - Set per session in Claude Code with `/model` and `/effort`. One work package per session keeps the prompt cache warm and the model consistent.
 
 ## The ladder
@@ -16,7 +16,7 @@ Which model + effort level to use for each kind of work. The per-phase tables be
 
 > If your Claude Code build only offers `high`/`max` in `/effort`, read `xhigh` as `max`.
 
-> **Fable succession (2026-07-07, permanent — §16):** Claude Fable 5 retired from interactive/subscription use after 2026-07-07 (API-only since). **Every "T1 — Fable" reference in this file and elsewhere now reads: the top available tier — today Opus 4.8 (`claude-opus-4-8`), `max` for money-math first implementations and final reviews, `xhigh` otherwise.** `multi-factory/state/control/models.json` already routes `diff:hard` → opus `xhigh` and `diff:max` → opus `max`. The escalation ladder ends at Opus max: beyond that, decompose or re-scope instead of looping. Unlike the 2026-06-15 outage, there is no automatic revert.
+> **Fable succession (2026-07-07, permanent — §16):** Claude Fable 5 retired from interactive/subscription use after 2026-07-07 (API-only since). **Every "T1 — Fable" reference in this file and elsewhere now reads: the top available tier — today Opus 4.8 (`claude-opus-4-8`), `max` for money-math first implementations and final reviews, `xhigh` otherwise.** `multi-factory/state/control/models.json` is **owner-managed**: the owner runs the remaining Fable window on it and flips the routing himself when Fable access ends — sessions do not prescribe or edit it. The escalation ladder ends at Opus max: beyond that, decompose or re-scope instead of looping. Unlike the 2026-06-15 outage, there is no automatic revert.
 
 ## Per-phase assignments
 
