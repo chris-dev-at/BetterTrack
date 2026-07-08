@@ -929,5 +929,14 @@
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
       "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel."
     }
+  },
+  "assets": {
+    "live": {
+      "badge": "LIVE",
+      "toggleLabel": "Live-Modus umschalten",
+      "windowGroupLabel": "Live-Zeitfenster wählen",
+      "waiting": "Warte auf Live-Kurse…",
+      "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist."
+    }
   }
 }

@@ -929,5 +929,14 @@
       "backtestPreviewAriaLabel": "Backtest preview (coming soon)",
       "backtestPreviewText": "Backtest preview — coming with the backtest panel."
     }
+  },
+  "assets": {
+    "live": {
+      "badge": "LIVE",
+      "toggleLabel": "Toggle live mode",
+      "windowGroupLabel": "Select live window",
+      "waiting": "Waiting for live prices…",
+      "fallbackNote": "Live updates every 60 s while the stream reconnects."
+    }
   }
 }

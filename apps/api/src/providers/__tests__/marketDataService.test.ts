@@ -341,3 +341,56 @@ describe('MarketDataService.search', () => {
     expect(provider.calls.search).toBe(2); // local search is answered live each time
   });
 });
+
+describe('MarketDataService.pollQuote (Live Mode, §6.3 V3-P7b)', () => {
+  it('always goes upstream — a fresh cached quote does not satisfy a live poll', async () => {
+    const { provider, service } = serviceWith();
+
+    await service.getQuote(REF); // warms the 60 s cache
+    expect(provider.calls.quote).toBe(1);
+
+    const polled = await service.pollQuote(REF);
+    expect(polled.stale).toBe(false);
+    expect(provider.calls.quote).toBe(2); // bypassed the freshness window
+  });
+
+  it('primes the regular quote cache: the 60 s path is then served without upstream', async () => {
+    const { provider, service } = serviceWith();
+
+    await service.pollQuote(REF);
+    expect(provider.calls.quote).toBe(1);
+    expect(
+      await redis.get(freshCacheKey(cacheKey('fake', 'ACME', 'quote', 'spot'))),
+    ).not.toBeNull();
+
+    const viaCache = await service.getQuote(REF);
+    expect(viaCache.stale).toBe(false);
+    expect(provider.calls.quote).toBe(1); // rode the primed entry
+  });
+
+  it('a 429 trips the shared breaker; further polls throw CircuitOpenError with zero upstream calls', async () => {
+    const provider = createFakeProvider('fake', {
+      quote: () =>
+        Promise.reject(Object.assign(new Error('HTTP 429'), { code: 429 })) as Promise<
+          ReturnType<typeof sampleQuote>
+        >,
+    });
+    const { service } = serviceWith(provider);
+
+    await expect(service.pollQuote(REF)).rejects.toMatchObject({ code: 429 });
+    expect(provider.calls.quote).toBe(1); // definitive — never retried
+
+    await expect(service.pollQuote(REF)).rejects.toBeInstanceOf(CircuitOpenError);
+    expect(provider.calls.quote).toBe(1); // breaker open: no upstream attempt
+  });
+
+  it('serves local providers live with no cache involvement', async () => {
+    const provider: FakeProvider = { ...createFakeProvider('fake'), local: true };
+    const { service } = serviceWith(provider);
+
+    await service.pollQuote(REF);
+    await service.pollQuote(REF);
+    expect(provider.calls.quote).toBe(2); // answered live each time
+    expect(await redis.get(freshCacheKey(cacheKey('fake', 'ACME', 'quote', 'spot')))).toBeNull();
+  });
+});

@@ -37,6 +37,9 @@ async function shutdown(signal: string): Promise<void> {
     // server.close() would wait on them forever. Also drops the gateway's bus
     // subscriptions before the bus itself closes below.
     await ctx.realtime.close();
+    // Gateway disconnects release every live watch; this stops any loop a
+    // still-in-flight tick might otherwise reschedule (§6.3, V3-P7b).
+    ctx.liveMode.close();
     server.closeIdleConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     // Drop the dispatcher's bus subscriptions before closing the bus.

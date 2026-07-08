@@ -73,6 +73,7 @@ function stubMarketData(
     getHistory,
     search: unused('search'),
     getMeta: unused('getMeta'),
+    pollQuote: unused('pollQuote'),
     settled: async () => {},
   };
   return { service, getQuote, getHistory };

@@ -3,16 +3,22 @@ import type { Time } from 'lightweight-charts';
 import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
-import type {
-  Alert as AlertType,
-  AssetDetailResponse,
-  HistoryInterval,
-  HistoryRange,
-  PricePoint,
-  QuoteResponse,
+import {
+  LIVE_WINDOWS,
+  LIVE_WINDOW_MS,
+  type Alert as AlertType,
+  type AssetDetailResponse,
+  type HistoryInterval,
+  type HistoryRange,
+  type LiveWindow,
+  type PricePoint,
+  type QuoteResponse,
+  type RealtimeLiveFrame,
 } from '@bettertrack/contracts';
+import { useT } from '../../i18n';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
+import { useLiveFrames } from '../../lib/realtime';
 import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
 import { formatDateTime, formatSignedPercent } from '../../lib/format';
@@ -57,6 +63,27 @@ function toChartPoints(points: PricePoint[], interval: HistoryInterval | undefin
       : p.time.slice(0, 10)) as Time,
     value: p.close,
   }));
+}
+
+/**
+ * Live frames → chart points (§6.3, V3-P7b). Live times are Unix seconds;
+ * frames landing within the same second keep the newest value (lightweight-
+ * charts requires strictly ascending unique times).
+ */
+function toLiveChartPoints(frames: RealtimeLiveFrame[]): ChartPoint[] {
+  const bySecond = new Map<number, number>();
+  for (const frame of frames) {
+    bySecond.set(Math.floor(Date.parse(frame.at) / 1000), frame.price);
+  }
+  return [...bySecond.entries()].map(([time, value]) => ({ time: time as Time, value }));
+}
+
+/** Trim a frame list to the selected live window, anchored at the newest frame. */
+function trimToWindow(frames: RealtimeLiveFrame[], window: LiveWindow): RealtimeLiveFrame[] {
+  const last = frames[frames.length - 1];
+  if (!last) return frames;
+  const cutoff = Date.parse(last.at) - LIVE_WINDOW_MS[window];
+  return frames.filter((frame) => Date.parse(frame.at) >= cutoff);
 }
 
 // ─── Header ───────────────────────────────────────────────────────────────────
@@ -380,6 +407,112 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
   );
 }
 
+// ─── Live Mode (§6.3, V3-P7b) ────────────────────────────────────────────────
+
+/**
+ * The chart's LIVE controls: the toggle (a Coming-Soon marker until V3-P7b —
+ * now real) plus, while live, the six short window tokens. Window switches only
+ * re-backfill; the shared upstream poll loop never restarts (§5.3).
+ */
+function LiveControls({
+  live,
+  window,
+  onToggle,
+  onWindowChange,
+}: {
+  live: boolean;
+  window: LiveWindow;
+  onToggle: () => void;
+  onWindowChange: (window: LiveWindow) => void;
+}) {
+  const t = useT();
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        aria-pressed={live}
+        aria-label={t('assets.live.toggleLabel')}
+        onClick={onToggle}
+        className={cx(
+          'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors',
+          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+          live
+            ? 'bg-red-600/20 text-red-400 ring-1 ring-inset ring-red-700'
+            : 'text-neutral-400 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 hover:text-neutral-100',
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className={cx(
+            'h-1.5 w-1.5 rounded-full',
+            live ? 'animate-pulse bg-red-400' : 'bg-neutral-600',
+          )}
+        />
+        {t('assets.live.badge')}
+      </button>
+
+      {live ? (
+        <div
+          role="group"
+          aria-label={t('assets.live.windowGroupLabel')}
+          className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+        >
+          {LIVE_WINDOWS.map((token) => {
+            const selected = token === window;
+            return (
+              <button
+                key={token}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => onWindowChange(token)}
+                className={cx(
+                  'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                  selected
+                    ? 'bg-sky-600 text-white'
+                    : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+                )}
+              >
+                {token}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Poll-fallback frame accumulator: when Live Mode is on but the stream is
+ * unavailable (flag off, gateway down, reconnecting), the already-running 60 s
+ * cache-served quote poll feeds the live chart instead — the §6.3 "light
+ * preview", with zero user-visible errors. Cleared while streaming so the two
+ * sources never mix.
+ */
+function usePollFallbackFrames(
+  assetId: string,
+  quote: QuoteResponse | undefined,
+  active: boolean,
+): RealtimeLiveFrame[] {
+  const [frames, setFrames] = useState<RealtimeLiveFrame[]>([]);
+  useEffect(() => {
+    if (!active) {
+      setFrames([]);
+      return;
+    }
+    if (!quote?.quote || !quote.asOf) return;
+    const { price, currency, dayChangePct } = quote.quote;
+    const at = quote.asOf;
+    setFrames((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.at >= at) return prev;
+      return [...prev, { assetId, price, currency, dayChangePct: dayChangePct ?? null, at }];
+    });
+  }, [active, assetId, quote]);
+  return frames;
+}
+
 /** Quick actions (§6.3): reachable near the top, right under the header. */
 function ActionBar({ assetId, symbol }: { assetId: string; symbol: string }) {
   return (
@@ -409,13 +542,18 @@ function ActionBar({ assetId, symbol }: { assetId: string; symbol: string }) {
  * `/assets/:id`, polls the quote every 60 s for a live-ish price, and
  * fetches chart history per selected range.
  *
- * Live quote socket join (`asset:{id}` room + `quote.update`) is the §7.1
- * enhancement path; until the socket gateway lands the polled query is the
- * fallback and the page degrades gracefully to it with no hard dependency.
+ * Live Mode (V3-P7b): the LIVE toggle switches the chart to short real-time
+ * windows fed by the gateway's shared per-asset poll stream (`live.watch` →
+ * ring-buffer backfill → `live.frame`). The 60 s polled quote stays the
+ * degradation path — gateway down or flag off just means slower frames, never
+ * an error.
  */
 export function AssetDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const t = useT();
   const [range, setRange] = useState<PriceRange>('1M');
+  const [live, setLive] = useState(false);
+  const [liveWindow, setLiveWindow] = useState<LiveWindow>('10m');
 
   const historyRange = toHistoryRange(range);
 
@@ -444,6 +582,13 @@ export function AssetDetailPage() {
     staleTime: HISTORY_STALE_MS[historyRange],
     enabled: !!id,
   });
+
+  // Live Mode (§6.3, V3-P7b): stream from the shared per-asset loop while it
+  // is reachable; otherwise the 60 s quote poll above doubles as the source.
+  const isCustom = detailQuery.data?.asset.isCustom ?? false;
+  const liveActive = live && !isCustom && !!id;
+  const { frames: streamedFrames, streaming } = useLiveFrames(id, liveWindow, liveActive);
+  const fallbackFrames = usePollFallbackFrames(id ?? '', quoteQuery.data, liveActive && !streaming);
 
   if (!id) return null;
 
@@ -479,6 +624,8 @@ export function AssetDetailPage() {
   const chartMode = asset.isCustom ? 'step' : 'area';
 
   const chartPoints = toChartPoints(historyQuery.data?.points ?? [], historyQuery.data?.interval);
+  const liveFrames = trimToWindow(streaming ? streamedFrames : fallbackFrames, liveWindow);
+  const livePoints = toLiveChartPoints(liveFrames);
 
   return (
     <div className="flex flex-col gap-8">
@@ -494,15 +641,41 @@ export function AssetDetailPage() {
       {/* Quick actions — reachable near the top (§13.2), not buried below the fold */}
       <ActionBar assetId={id} symbol={asset.symbol} />
 
-      {/* Price chart */}
-      <PriceChart
-        series={chartPoints}
-        mode={chartMode}
-        range={range}
-        onRangeChange={setRange}
-        loading={historyQuery.isLoading || historyQuery.isFetching}
-        ariaLabel={`Price chart for ${asset.symbol}`}
-      />
+      {/* Price chart — historical ranges, or short live windows when LIVE is on (§6.3) */}
+      <div className="flex flex-col gap-3">
+        {!asset.isCustom ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <LiveControls
+              live={liveActive}
+              window={liveWindow}
+              onToggle={() => setLive((v) => !v)}
+              onWindowChange={setLiveWindow}
+            />
+            {liveActive && !streaming ? (
+              <span className="text-xs text-neutral-500">{t('assets.live.fallbackNote')}</span>
+            ) : null}
+          </div>
+        ) : null}
+        {liveActive ? (
+          <PriceChart
+            series={livePoints}
+            mode="area"
+            showRangeToggle={false}
+            live
+            emptyMessage={t('assets.live.waiting')}
+            ariaLabel={`Live price chart for ${asset.symbol}`}
+          />
+        ) : (
+          <PriceChart
+            series={chartPoints}
+            mode={chartMode}
+            range={range}
+            onRangeChange={setRange}
+            loading={historyQuery.isLoading || historyQuery.isFetching}
+            ariaLabel={`Price chart for ${asset.symbol}`}
+          />
+        )}
+      </div>
 
       {/* Stats row */}
       <StatsRow detail={detail} liveQuote={quoteQuery.data} />

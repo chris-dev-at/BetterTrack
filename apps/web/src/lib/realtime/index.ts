@@ -8,3 +8,4 @@ export {
   type RealtimeServerEvent,
 } from './RealtimeProvider';
 export { createRealtimeSocket } from './socket';
+export { useLiveFrames, type LiveFramesState } from './useLiveFrames';
