@@ -465,10 +465,20 @@
       "field": {
         "username": "Username",
         "email": "Email",
-        "memberSince": "Member since",
-        "baseCurrency": "Base currency"
-      },
-      "baseCurrencyFixed": "{{code}} (fixed)"
+        "memberSince": "Member since"
+      }
+    },
+    "baseCurrency": {
+      "title": "Base currency",
+      "description": "The currency every valuation, chart and report is shown in. Amounts stay stored in each asset’s native currency — only the display conversion changes.",
+      "label": "Base currency",
+      "saveError": "Couldn’t save your base currency. Please try again.",
+      "option": {
+        "EUR": "EUR — Euro (€)",
+        "USD": "USD — US Dollar ($)",
+        "CHF": "CHF — Swiss Franc",
+        "GBP": "GBP — British Pound (£)"
+      }
     },
     "password": {
       "title": "Change password",
@@ -825,8 +835,14 @@
         "dax": "DAX",
         "msciWorld": "MSCI World"
       },
+      "mode": {
+        "clip": "Clip to common history",
+        "cash": "Cash until listing",
+        "redistribute": "Redistribute until listing"
+      },
       "rangeAriaLabel": "Select backtest range",
       "benchmarkAriaLabel": "Toggle benchmark overlay",
+      "modeAriaLabel": "Select late-listing mode",
       "noPositions": "Add positions to preview a backtest",
       "error": "Could not run the backtest. Please try again.",
       "chartAriaLabel": "Conglomerate backtest chart",
@@ -836,8 +852,14 @@
         "maxDrawdown": "Max drawdown",
         "volatility": "Volatility (ann.)",
         "bestDay": "Best day",
-        "worstDay": "Worst day"
-      }
+        "worstDay": "Worst day",
+        "idleCash": "Avg. uninvested"
+      },
+      "modeNotice": {
+        "cash": "Full requested window — {{entries}}: a late constituent’s share sits as uninvested cash (0 % return) until its listing day.",
+        "redistribute": "Full requested window — {{entries}}: a late constituent’s share is split equally among the already-listed constituents, then rebalanced to the target weights on its listing day."
+      },
+      "entryMarker": "{{symbol}} enters"
     },
     "alerts": {
       "title": "Price alerts",

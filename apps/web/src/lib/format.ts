@@ -40,6 +40,27 @@ export function getFormatLocale(): string {
 }
 
 /**
+ * The active default money currency — the signed-in user's **base currency**
+ * (§5.4, §13.3 V3-P10d). The auth runtime drives it from the session user
+ * (EUR default, matching the API's default base), so every `formatMoney` /
+ * `MoneyText` call that doesn't name a currency renders in the user's base —
+ * which is exactly the denomination the API's converted figures arrive in.
+ * Amounts that are NOT in the user's base (an asset's native price, the
+ * EUR-native cash ledger) must keep passing their currency explicitly.
+ */
+let activeCurrency = 'EUR';
+
+/** Switch the default money currency (called by the auth runtime). */
+export function setMoneyCurrency(currency: string): void {
+  activeCurrency = currency;
+}
+
+/** The active default money currency — the user's base (§5.4). */
+export function getMoneyCurrency(): string {
+  return activeCurrency;
+}
+
+/**
  * ICU/CLDR separates a number from its currency/percent symbol with a narrow
  * no-break space (U+202F) or a regular no-break space (U+00A0) depending on the
  * locale and ICU version. Collapse both to a plain space so output is stable
@@ -138,9 +159,11 @@ function moneyFormatter(currency: string): Intl.NumberFormat {
 // ---------------------------------------------------------------------------
 
 /**
- * Money in the asset's native currency, symbol-last, always 2 dp:
- * `formatMoney(1234.56)` → `"1.234,56 €"` (de-AT), `formatMoney(-50, 'USD')` →
- * `"-50,00 $"`.
+ * Money, symbol-last, always 2 dp: `formatMoney(1234.56)` → `"1.234,56 €"`
+ * (de-AT, EUR base), `formatMoney(-50, 'USD')` → `"-50,00 $"`. The currency
+ * defaults to the user's **base currency** ({@link setMoneyCurrency}) — pass it
+ * explicitly for amounts in any other denomination (native asset prices, the
+ * EUR-native cash ledger).
  *
  * Intl currency output is often symbol-*first* (`€ 1.234,56`), but PROJECTPLAN
  * §7.1 mandates symbol-*last* (`1.234,56 €`) in every locale. We therefore format
@@ -150,8 +173,9 @@ function moneyFormatter(currency: string): Intl.NumberFormat {
  *
  * Returns {@link EM_DASH} for `null`/`undefined`/`NaN`/`Infinity`.
  */
-export function formatMoney(value: number | null | undefined, currency = 'EUR'): string {
+export function formatMoney(value: number | null | undefined, currency?: string): string {
   if (!isFiniteNumber(value)) return EM_DASH;
+  currency ??= activeCurrency;
 
   const parts = moneyFormatter(currency).formatToParts(withoutNegativeZero(value));
   const symbol = parts.find((part) => part.type === 'currency')?.value ?? currency;

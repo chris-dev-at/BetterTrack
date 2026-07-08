@@ -206,11 +206,19 @@ describe('Account settings — locale (§13.3 V3-P1)', () => {
 
     // Change only the locale — visibility keeps its default.
     const afterLocale = await patchAccount(agent, { locale: 'de' });
-    expect(afterLocale.body).toEqual({ defaultPortfolioVisibility: 'private', locale: 'de' });
+    expect(afterLocale.body).toEqual({
+      defaultPortfolioVisibility: 'private',
+      locale: 'de',
+      baseCurrency: 'EUR',
+    });
 
     // Change only the visibility — the locale set above is untouched.
     const afterVisibility = await patchAccount(agent, { defaultPortfolioVisibility: 'friends' });
-    expect(afterVisibility.body).toEqual({ defaultPortfolioVisibility: 'friends', locale: 'de' });
+    expect(afterVisibility.body).toEqual({
+      defaultPortfolioVisibility: 'friends',
+      locale: 'de',
+      baseCurrency: 'EUR',
+    });
   });
 
   it('accepts a region-tagged code and rejects malformed / empty bodies', async () => {
@@ -232,5 +240,59 @@ describe('Account settings — locale (§13.3 V3-P1)', () => {
 
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     expect((await getAccount(aliceAgent)).locale).toBe('en');
+  });
+});
+
+describe('Account settings — base currency (§5.4, §13.3 V3-P10d)', () => {
+  it('defaults a fresh user to EUR, on both /settings/account and /auth/me', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    expect((await getAccount(agent)).baseCurrency).toBe('EUR');
+    expect((await getMe(agent)).baseCurrency).toBe('EUR');
+  });
+
+  it('persists a base-currency change and survives logout/login (per-user)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const patched = await patchAccount(agent, { baseCurrency: 'USD' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.baseCurrency).toBe('USD');
+    // The stored preference immediately rides the /auth/me response the SPA seeds from.
+    expect((await getMe(agent)).baseCurrency).toBe('USD');
+
+    // A brand-new session still reads USD — persisted per user, not per session.
+    const freshAgent = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await getAccount(freshAgent)).baseCurrency).toBe('USD');
+    expect((await getMe(freshAgent)).baseCurrency).toBe('USD');
+  });
+
+  it('is a partial update and only accepts the supported picker set', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    // Changing only the base currency leaves the other prefs at their defaults.
+    const patched = await patchAccount(agent, { baseCurrency: 'CHF' });
+    expect(patched.body).toEqual({
+      defaultPortfolioVisibility: 'private',
+      locale: 'en',
+      baseCurrency: 'CHF',
+    });
+
+    expect((await patchAccount(agent, { baseCurrency: 'GBP' })).status).toBe(200);
+    expect((await patchAccount(agent, { baseCurrency: 'JPY' })).status).toBe(400);
+    expect((await patchAccount(agent, { baseCurrency: 'eur' })).status).toBe(400);
+  });
+
+  it('is strictly session-user scoped — one user cannot change another’s base', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await patchAccount(bobAgent, { baseCurrency: 'USD' });
+
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await getAccount(aliceAgent)).baseCurrency).toBe('EUR');
   });
 });

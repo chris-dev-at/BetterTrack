@@ -1,17 +1,22 @@
 import { cx } from '../lib/cx';
-import { formatMoney } from '../lib/format';
+import { formatMoney, getMoneyCurrency } from '../lib/format';
 
 export interface MoneyTextProps {
-  /** Amount in the native currency. */
+  /** The amount. */
   amount: number | null | undefined;
-  /** ISO 4217 currency code for `amount`. Defaults to `'EUR'`. */
+  /**
+   * ISO 4217 currency code for `amount`. Defaults to the user's base currency
+   * (§5.4, V3-P10d) — the denomination the API's converted figures arrive in.
+   * Pass it explicitly for amounts in any other denomination (an asset's
+   * native price, the EUR-native cash ledger).
+   */
   currency?: string;
   /**
-   * Optional EUR-converted equivalent, shown in parentheses after the native
-   * amount. Only rendered when the native currency is not already EUR and the
-   * value is finite.
+   * Optional base-currency-converted equivalent, shown in parentheses after
+   * the native amount. Only rendered when the native currency differs from the
+   * user's base and the value is finite.
    */
-  eurAmount?: number | null;
+  convertedAmount?: number | null;
   /**
    * Colour-code by sign — green for gains, red for losses — and prepend `+`
    * for positive values. Use for P&L / day-change deltas. Off by default
@@ -22,18 +27,21 @@ export interface MoneyTextProps {
 }
 
 /**
- * Inline money display (PROJECTPLAN.md §7.3 MoneyText): native amount, an
- * optional EUR conversion, sign-coloured when it represents a delta. Pure
- * presentation — all formatting flows through `lib/format`.
+ * Inline money display (PROJECTPLAN.md §7.3 MoneyText): the amount in its own
+ * currency, an optional conversion into the user's base currency,
+ * sign-coloured when it represents a delta. Pure presentation — all
+ * formatting flows through `lib/format`.
  */
 export function MoneyText({
   amount,
-  currency = 'EUR',
-  eurAmount,
+  currency,
+  convertedAmount,
   signed = false,
   className,
 }: MoneyTextProps) {
-  const formatted = formatMoney(amount, currency);
+  const base = getMoneyCurrency();
+  const effectiveCurrency = currency ?? base;
+  const formatted = formatMoney(amount, effectiveCurrency);
 
   // Only positive/negative finite deltas get colour and a leading `+`; zero,
   // null and NaN stay neutral.
@@ -42,13 +50,14 @@ export function MoneyText({
   // Intl already emits `-` for negatives; we only need to add the `+`.
   const display = sign > 0 ? `+${formatted}` : formatted;
 
-  const showEur = eurAmount != null && Number.isFinite(eurAmount) && currency !== 'EUR';
+  const showConverted =
+    convertedAmount != null && Number.isFinite(convertedAmount) && effectiveCurrency !== base;
 
   return (
     <span className={cx('tabular-nums', colorClass, className)}>
       {display}
-      {showEur ? (
-        <span className="ml-1 text-neutral-500">({formatMoney(eurAmount, 'EUR')})</span>
+      {showConverted ? (
+        <span className="ml-1 text-neutral-500">({formatMoney(convertedAmount, base)})</span>
       ) : null}
     </span>
   );

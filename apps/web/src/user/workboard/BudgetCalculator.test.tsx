@@ -74,6 +74,7 @@ const RESPONSE: AllocateResponse = {
   ],
   stale: false,
   quoteNotice: null,
+  baseCurrency: 'EUR',
 };
 
 function makeQueryClient() {

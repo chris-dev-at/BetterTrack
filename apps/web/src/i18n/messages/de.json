@@ -465,10 +465,20 @@
       "field": {
         "username": "Benutzername",
         "email": "E-Mail",
-        "memberSince": "Mitglied seit",
-        "baseCurrency": "Basiswährung"
-      },
-      "baseCurrencyFixed": "{{code}} (fest)"
+        "memberSince": "Mitglied seit"
+      }
+    },
+    "baseCurrency": {
+      "title": "Basiswährung",
+      "description": "Die Währung, in der alle Bewertungen, Diagramme und Berichte angezeigt werden. Beträge bleiben in der nativen Währung des jeweiligen Assets gespeichert — nur die Anzeige-Umrechnung ändert sich.",
+      "label": "Basiswährung",
+      "saveError": "Deine Basiswährung konnte nicht gespeichert werden. Bitte versuche es erneut.",
+      "option": {
+        "EUR": "EUR — Euro (€)",
+        "USD": "USD — US-Dollar ($)",
+        "CHF": "CHF — Schweizer Franken",
+        "GBP": "GBP — Britisches Pfund (£)"
+      }
     },
     "password": {
       "title": "Passwort ändern",
@@ -825,8 +835,14 @@
         "dax": "DAX",
         "msciWorld": "MSCI World"
       },
+      "mode": {
+        "clip": "Auf gemeinsame Historie kürzen",
+        "cash": "Cash bis zur Notierung",
+        "redistribute": "Umverteilen bis zur Notierung"
+      },
       "rangeAriaLabel": "Backtest-Zeitraum auswählen",
       "benchmarkAriaLabel": "Benchmark-Overlay umschalten",
+      "modeAriaLabel": "Modus für spät notierte Werte wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
       "error": "Der Backtest konnte nicht ausgeführt werden. Bitte versuche es erneut.",
       "chartAriaLabel": "Konglomerat-Backtest-Diagramm",
@@ -836,8 +852,14 @@
         "maxDrawdown": "Maximaler Drawdown",
         "volatility": "Volatilität (p. a.)",
         "bestDay": "Bester Tag",
-        "worstDay": "Schlechtester Tag"
-      }
+        "worstDay": "Schlechtester Tag",
+        "idleCash": "Ø nicht investiert"
+      },
+      "modeNotice": {
+        "cash": "Voller angefragter Zeitraum — {{entries}}: Der Anteil eines spät notierten Werts liegt bis zu seinem ersten Handelstag als nicht investiertes Cash (0 % Rendite) bereit.",
+        "redistribute": "Voller angefragter Zeitraum — {{entries}}: Der Anteil eines spät notierten Werts wird bis zu seinem ersten Handelstag gleichmäßig auf die bereits notierten Werte verteilt und dann auf die Zielgewichte rebalanciert."
+      },
+      "entryMarker": "{{symbol}} steigt ein"
     },
     "alerts": {
       "title": "Preisalarme",

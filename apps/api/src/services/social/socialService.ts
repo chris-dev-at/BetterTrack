@@ -84,13 +84,19 @@ export interface SocialService {
    * Everything the caller's friends share with them — portfolios, conglomerates
    * and watchlists — aggregated (Shared With Me, §6.9, V2-P9).
    */
-  listSharedWithMe(userId: string): Promise<SharedWithMeResponse>;
+  listSharedWithMe(userId: string, opts?: { baseCurrency?: string }): Promise<SharedWithMeResponse>;
   /**
    * The read-only overview of a friend-shared portfolio. Asserts an existing
    * friendship **and** the owner's `visibility=friends` at call time; a 404
-   * (never 403) otherwise, recomputed per request (§6.9).
+   * (never 403) otherwise, recomputed per request (§6.9). Money renders in the
+   * **viewer's** base currency (`opts.baseCurrency`, §5.4/V3-P10d) — the
+   * shared view is the viewer's report, not the owner's.
    */
-  getSharedPortfolio(viewerId: string, portfolioId: string): Promise<SharedPortfolioDetailResponse>;
+  getSharedPortfolio(
+    viewerId: string,
+    portfolioId: string,
+    opts?: { baseCurrency?: string },
+  ): Promise<SharedPortfolioDetailResponse>;
   /**
    * The read-only view of a friend-shared conglomerate — positions with asset
    * identity. Asserts friendship **and** the owner's `visibility=friends` at call
@@ -239,7 +245,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!removed) throw FRIEND_NOT_FOUND();
     },
 
-    async listSharedWithMe(userId) {
+    async listSharedWithMe(userId, opts) {
       // Each list is authorization-derived (friendship AND owner grant, resolved
       // in the repository join), so revoking either instantly drops the row.
       const [portfolioRows, conglomerateRows, watchlistRows] = await Promise.all([
@@ -253,7 +259,10 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // agrees with the total shown on the shared-portfolio detail view below.
       const portfolios = await Promise.all(
         portfolioRows.map(async (row) => {
-          const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId);
+          // The owner scopes the data; the VIEWER's base denominates it (V3-P10d).
+          const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId, {
+            baseCurrency: opts?.baseCurrency,
+          });
           return {
             portfolioId: row.portfolioId,
             name: row.name,
@@ -276,16 +285,18 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       return { portfolios, conglomerates, watchlists };
     },
 
-    async getSharedPortfolio(viewerId, portfolioId) {
+    async getSharedPortfolio(viewerId, portfolioId, opts) {
       // Authorization recomputed here every call — friendship AND owner
       // visibility='friends' in one query; revoking either 404s immediately.
       const shared = await repo.findSharedPortfolioForViewer(viewerId, portfolioId);
       if (!shared) throw SHARED_NOT_FOUND();
 
       // Build the overview from the *owner's* scope so it mirrors exactly what
-      // the owner sees; the viewer never becomes the owner of any derived data.
-      const overview = await portfolio.getPortfolio(shared.ownerId, portfolioId);
-      const history = await portfolio.getHistory(shared.ownerId, portfolioId, 'MAX');
+      // the owner sees — denominated in the VIEWER's base (V3-P10d); the
+      // viewer never becomes the owner of any derived data.
+      const base = { baseCurrency: opts?.baseCurrency };
+      const overview = await portfolio.getPortfolio(shared.ownerId, portfolioId, base);
+      const history = await portfolio.getHistory(shared.ownerId, portfolioId, 'MAX', base);
       return {
         portfolioId,
         name: shared.name,

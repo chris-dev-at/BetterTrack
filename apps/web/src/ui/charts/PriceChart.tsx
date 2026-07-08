@@ -3,11 +3,13 @@ import {
   BaselineSeries,
   ColorType,
   createChart,
+  createSeriesMarkers,
   LineSeries,
   LineType,
   PriceScaleMode,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type Time,
 } from 'lightweight-charts';
 import { useEffect, useRef, useState } from 'react';
@@ -17,6 +19,7 @@ import { cx } from '../../lib/cx';
 import {
   PRICE_RANGES,
   type BenchmarkSeries,
+  type ChartMarker,
   type ChartPoint,
   type PriceChartMode,
   type PriceRange,
@@ -47,6 +50,11 @@ export interface PriceChartProps {
   showRangeToggle?: boolean;
   /** Optional overlay series, e.g. a benchmark index (PROJECTPLAN.md §6.6). */
   benchmark?: BenchmarkSeries | null;
+  /**
+   * Labelled event markers pinned to axis dates — the §14 backtest entry
+   * markers ("X enters"). Drawn as flags above the main series at their date.
+   */
+  markers?: readonly ChartMarker[];
   /**
    * Per-asset overlay series drawn over the main one (#122). When non-empty the
    * price scale switches to **percentage mode**: every series (main + overlays)
@@ -85,6 +93,7 @@ const MAIN_LINE = '#38bdf8'; // sky-400
 const MAIN_AREA_TOP = 'rgba(56, 189, 248, 0.35)';
 const MAIN_AREA_BOTTOM = 'rgba(56, 189, 248, 0.02)';
 const BENCHMARK_LINE = '#a78bfa'; // violet-400
+const MARKER_FLAG = '#fbbf24'; // amber-400 — entry-event flags (§14)
 const GRID = 'rgba(82, 82, 91, 0.25)'; // neutral-600 @ 25%
 const TEXT = '#a1a1aa'; // neutral-400
 
@@ -129,6 +138,7 @@ export function PriceChart({
   onRangeChange,
   showRangeToggle = true,
   benchmark = null,
+  markers = [],
   overlays = [],
   percentValues = false,
   loading = false,
@@ -160,6 +170,7 @@ export function PriceChart({
     firstTime: null,
     length: 0,
   });
+  const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
 
   const isEmpty = series.length === 0;
   const hasBenchmark = benchmark !== null && benchmark.series.length > 0;
@@ -276,6 +287,7 @@ export function PriceChart({
       benchRef.current = null;
       overlayRefs.current = [];
       drawnRef.current = { firstTime: null, length: 0 };
+      markersRef.current = null;
     };
   }, [mode, hasBenchmark, overlayCount, percentValues, height, loading, isEmpty]);
 
@@ -301,6 +313,21 @@ export function PriceChart({
         main.setData(series);
       }
       drawnRef.current = { firstTime, length: series.length };
+      // Event markers ride the main series. The plugin is created lazily on
+      // first use and re-set (possibly to empty) on every data pass after that,
+      // so toggling markers off clears the flags without a chart rebuild.
+      if (markers.length > 0 || markersRef.current) {
+        markersRef.current ??= createSeriesMarkers(main, []);
+        markersRef.current.setMarkers(
+          markers.map((m) => ({
+            time: m.time,
+            position: 'aboveBar' as const,
+            shape: 'arrowDown' as const,
+            color: MARKER_FLAG,
+            text: m.label,
+          })),
+        );
+      }
     }
     if (benchRef.current && benchmark) benchRef.current.setData(benchmark.series);
     overlayRefs.current.forEach((line, i) => {
@@ -308,7 +335,7 @@ export function PriceChart({
       if (overlay) line.setData(overlay.series);
     });
     chartRef.current?.timeScale().fitContent();
-  }, [series, benchmark, overlays, live]);
+  }, [series, benchmark, markers, overlays, live]);
 
   return (
     <div className={cx('flex flex-col gap-3', className)}>

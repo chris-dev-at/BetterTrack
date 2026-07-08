@@ -4,14 +4,16 @@ import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
+  BASE_CURRENCIES,
   MIN_PASSWORD_LENGTH,
+  type BaseCurrency,
   type ChangePasswordRequest,
   type PortfolioSummary,
 } from '@bettertrack/contracts';
 
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import { formatDate } from '../../lib/format';
+import { formatDate, setMoneyCurrency } from '../../lib/format';
 import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
@@ -168,6 +170,66 @@ function LanguageControl() {
         ))}
       </select>
       {error ? <Alert tone="error">{t('language.saveError')}</Alert> : null}
+    </div>
+  );
+}
+
+/**
+ * Base-currency picker (§5.4, §13.3 V3-P10d): the currency every valuation,
+ * chart and report renders in, persisted per user (`PATCH /settings/account`).
+ * Conversion is display-time only — stored amounts stay in each asset's native
+ * currency. On change the formatter default flips immediately and every cached
+ * query is refetched, since all converted figures change denomination.
+ */
+function BaseCurrencyControl() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState(false);
+  const query = useQuery({
+    queryKey: ACCOUNT_SETTINGS_KEY,
+    queryFn: ({ signal }) => getAccountSettings(signal),
+    staleTime: 30_000,
+  });
+
+  const mutation = useMutation({
+    mutationFn: (baseCurrency: BaseCurrency) => updateAccountSettings({ baseCurrency }),
+    onSuccess: (res) => {
+      queryClient.setQueryData(ACCOUNT_SETTINGS_KEY, res);
+      setMoneyCurrency(res.baseCurrency);
+      // Every money figure on screen is now denominated differently — refetch
+      // the lot rather than trying to enumerate the affected queries.
+      void queryClient.invalidateQueries();
+      setError(false);
+    },
+    onError: () => setError(true),
+  });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.baseCurrency.title')}
+        </h3>
+        <p className="text-xs text-neutral-500">{t('settings.baseCurrency.description')}</p>
+      </div>
+      {query.isPending ? (
+        <Skeleton height="h-10" width="w-40" />
+      ) : (
+        <select
+          aria-label={t('settings.baseCurrency.label')}
+          value={query.data?.baseCurrency ?? 'EUR'}
+          disabled={mutation.isPending}
+          onChange={(e) => mutation.mutate(e.target.value as BaseCurrency)}
+          className="w-fit rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed"
+        >
+          {BASE_CURRENCIES.map((code) => (
+            <option key={code} value={code}>
+              {t(`settings.baseCurrency.option.${code}`)}
+            </option>
+          ))}
+        </select>
+      )}
+      {error ? <Alert tone="error">{t('settings.baseCurrency.saveError')}</Alert> : null}
     </div>
   );
 }
@@ -358,16 +420,16 @@ export function AccountSettingsPage() {
               label={t('settings.account.field.memberSince')}
               value={formatDate(me.data.createdAt)}
             />
-            <Field
-              label={t('settings.account.field.baseCurrency')}
-              value={t('settings.account.baseCurrencyFixed', { code: me.data.baseCurrency })}
-            />
           </div>
         )}
       </section>
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
         <LanguageControl />
+      </section>
+
+      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <BaseCurrencyControl />
       </section>
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
