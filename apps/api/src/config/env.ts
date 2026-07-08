@@ -19,10 +19,12 @@ const envSchema = z.object({
   // ── Deployment topology (PROJECTPLAN.md §4.6, §10, §11) ────────────────────
   // One global scheme that drives every public origin. `subdomains` (default)
   // fronts each service on its own subdomain of BT_DOMAIN with TLS at the proxy;
-  // `ports` puts each service on its own port of a single host. The three
-  // origins (api/web/admin) are DERIVED from these (see deriveOrigins); CORS,
-  // cookies and link generation consume the derived values so no origin is ever
-  // hand-maintained. Explicit BT_*_ORIGIN overrides win over derivation.
+  // `ports` puts each service on its own port of a single host. The five origins
+  // (api/web/admin + the static product/mobile landing pages) are DERIVED from
+  // these (see deriveOrigins); CORS, cookies and link generation consume the
+  // derived values so no origin is ever hand-maintained. Explicit BT_*_ORIGIN
+  // overrides win over derivation. NOTE: the product landing lives at the APEX
+  // (`{domain}`, no subdomain) in subdomains mode; `mobile.` is its own subdomain.
   BT_MODE: z.enum(['subdomains', 'ports']).default('subdomains'),
   BT_DOMAIN: z.string().min(1).default('localhost'),
   // Front-proxy TLS. Defaults per mode (subdomains → https, ports → http) when
@@ -31,14 +33,20 @@ const envSchema = z.object({
   BT_SUB_API: z.string().min(1).default('api'),
   BT_SUB_WEB: z.string().min(1).default('web'),
   BT_SUB_ADMIN: z.string().min(1).default('admin'),
+  // Product landing has no subdomain label — it is served from BT_DOMAIN's apex.
+  BT_SUB_MOBILE: z.string().min(1).default('mobile'),
   BT_PORT_API: z.coerce.number().int().positive().default(3000),
   BT_PORT_WEB: z.coerce.number().int().positive().default(8080),
   BT_PORT_ADMIN: z.coerce.number().int().positive().default(8081),
+  BT_PORT_PRODUCT: z.coerce.number().int().positive().default(8082),
+  BT_PORT_MOBILE: z.coerce.number().int().positive().default(8083),
   // Explicit origin overrides (win over derivation). Useful for split hosting or
   // a legacy single-origin setup. APP_ORIGIN is a legacy alias for BT_WEB_ORIGIN.
   BT_API_ORIGIN: z.string().url().optional(),
   BT_WEB_ORIGIN: z.string().url().optional(),
   BT_ADMIN_ORIGIN: z.string().url().optional(),
+  BT_PRODUCT_ORIGIN: z.string().url().optional(),
+  BT_MOBILE_ORIGIN: z.string().url().optional(),
   APP_ORIGIN: z.string().url().optional(),
 
   SMTP_HOST: z.string().optional(),
@@ -87,7 +95,7 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type DeploymentMode = 'subdomains' | 'ports';
 
-/** The three public origins the app fronts, derived from the topology scheme. */
+/** The public origins the app fronts, derived from the topology scheme. */
 export interface Topology {
   mode: DeploymentMode;
   domain: string;
@@ -99,6 +107,14 @@ export interface Topology {
   webOrigin: string;
   /** Origin serving the admin SPA. */
   adminOrigin: string;
+  /**
+   * Origin serving the static product landing page — the APEX (`{domain}`, no
+   * subdomain) in subdomains mode. Static, credential-free, so it is NEVER in
+   * the credentialed CORS allowlist (§4.6).
+   */
+  productOrigin: string;
+  /** Origin serving the static `mobile.` placeholder page — same rules as product. */
+  mobileOrigin: string;
 }
 
 /** Optional boolean env parse: unset/empty → fall back to `dflt`. */
@@ -115,12 +131,17 @@ function stripTrailingSlash(origin: string): string {
 type Service = 'api' | 'web' | 'admin';
 
 /**
- * Derive the three public origins from the topology scheme (§11). Explicit
+ * Derive the public origins from the topology scheme (§11). Explicit
  * BT_*_ORIGIN overrides win; otherwise:
  *   subdomains → `{scheme}://{sub}.{domain}`
  *   ports      → `{scheme}://{domain}:{port}`
  * The scheme comes from BT_TLS, defaulting to https for subdomains and http for
  * ports (typical self-hosted layouts). Cookies/CORS read these, never raw env.
+ *
+ * The static product/mobile landing origins are derived here too so the same
+ * single source of truth feeds nginx templating and the SPA runtime config — but
+ * product lives at the APEX (`{domain}`, no subdomain) in subdomains mode, and
+ * neither ever joins the credentialed CORS allowlist (they carry no cookies).
  */
 export function deriveOrigins(e: {
   BT_MODE: DeploymentMode;
@@ -129,12 +150,17 @@ export function deriveOrigins(e: {
   BT_SUB_API: string;
   BT_SUB_WEB: string;
   BT_SUB_ADMIN: string;
+  BT_SUB_MOBILE: string;
   BT_PORT_API: number;
   BT_PORT_WEB: number;
   BT_PORT_ADMIN: number;
+  BT_PORT_PRODUCT: number;
+  BT_PORT_MOBILE: number;
   BT_API_ORIGIN?: string;
   BT_WEB_ORIGIN?: string;
   BT_ADMIN_ORIGIN?: string;
+  BT_PRODUCT_ORIGIN?: string;
+  BT_MOBILE_ORIGIN?: string;
   APP_ORIGIN?: string;
 }): Topology {
   const mode = e.BT_MODE;
@@ -165,6 +191,19 @@ export function deriveOrigins(e: {
       : `${scheme}://${e.BT_DOMAIN}:${ports[service]}`;
   };
 
+  // Product landing: apex (no subdomain) in subdomains mode, own port otherwise.
+  const productOrigin = e.BT_PRODUCT_ORIGIN
+    ? stripTrailingSlash(e.BT_PRODUCT_ORIGIN)
+    : mode === 'subdomains'
+      ? `${scheme}://${e.BT_DOMAIN}`
+      : `${scheme}://${e.BT_DOMAIN}:${e.BT_PORT_PRODUCT}`;
+  // Mobile placeholder: its own subdomain / own port.
+  const mobileOrigin = e.BT_MOBILE_ORIGIN
+    ? stripTrailingSlash(e.BT_MOBILE_ORIGIN)
+    : mode === 'subdomains'
+      ? `${scheme}://${e.BT_SUB_MOBILE}.${e.BT_DOMAIN}`
+      : `${scheme}://${e.BT_DOMAIN}:${e.BT_PORT_MOBILE}`;
+
   return {
     mode,
     domain: e.BT_DOMAIN,
@@ -172,6 +211,8 @@ export function deriveOrigins(e: {
     apiOrigin: derive('api'),
     webOrigin: derive('web'),
     adminOrigin: derive('admin'),
+    productOrigin,
+    mobileOrigin,
   };
 }
 
@@ -189,6 +230,9 @@ export interface AppConfig {
   /**
    * CORS allowlist (§10): the web + admin origins, the only cross-origin callers
    * of the API. Credentialed and derived from {@link Topology} — never hardcoded.
+   * The static product/mobile landing origins are deliberately excluded: they
+   * carry no cookies and never call the API, so admitting them would only widen
+   * the credentialed surface (§4.6).
    */
   corsOrigins: string[];
   /** First secret signs new cookies; all are accepted for verification (rotation). */

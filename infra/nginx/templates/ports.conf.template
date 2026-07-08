@@ -1,6 +1,8 @@
 # Ports topology (PROJECTPLAN.md §4.6, §11). One host, one front proxy, each
-# service on its own port (routed by `listen`). Plain http by default; set
-# BT_TLS=true (and front with a TLS terminator) for https.
+# service on its own port (routed by `listen`): api/web/admin plus the static
+# product landing and mobile placeholder (both proxied to the `landing`
+# container). Plain http by default; set BT_TLS=true (and front with a TLS
+# terminator) for https.
 # Generated at container start from env by docker-entrypoint.sh (envsubst).
 
 # ── API port → Express service ──────────────────────────────────────────────
@@ -63,5 +65,44 @@ server {
 
     location / {
         try_files $uri $uri/ /index.html;
+    }
+}
+
+# ── Product port → static product landing (landing container) ────────────────
+server {
+    listen ${BT_PORT_PRODUCT};
+
+    location / {
+        proxy_pass http://${LANDING_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# ── Mobile port → static mobile placeholder (landing container) ──────────────
+server {
+    listen ${BT_PORT_MOBILE};
+
+    # Same shared static container as the product port; only the root document
+    # differs, so `/` maps to mobile.html and everything else passes through.
+    location = / {
+        proxy_pass http://${LANDING_UPSTREAM}/mobile.html;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://${LANDING_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
