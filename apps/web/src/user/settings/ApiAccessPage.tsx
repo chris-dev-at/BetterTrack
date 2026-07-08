@@ -61,6 +61,30 @@ function scopeMeta(t: TranslateFn): Record<ApiKeyScope, { label: string; descrip
       label: t('settings.api.scope.socialRead.label'),
       description: t('settings.api.scope.socialRead.description'),
     },
+    'social:write': {
+      label: t('settings.api.scope.socialWrite.label'),
+      description: t('settings.api.scope.socialWrite.description'),
+    },
+    'notifications:read': {
+      label: t('settings.api.scope.notificationsRead.label'),
+      description: t('settings.api.scope.notificationsRead.description'),
+    },
+    'notifications:write': {
+      label: t('settings.api.scope.notificationsWrite.label'),
+      description: t('settings.api.scope.notificationsWrite.description'),
+    },
+    'chat:read': {
+      label: t('settings.api.scope.chatRead.label'),
+      description: t('settings.api.scope.chatRead.description'),
+    },
+    'chat:write': {
+      label: t('settings.api.scope.chatWrite.label'),
+      description: t('settings.api.scope.chatWrite.description'),
+    },
+    'account:security': {
+      label: t('settings.api.scope.accountSecurity.label'),
+      description: t('settings.api.scope.accountSecurity.description'),
+    },
   };
 }
 

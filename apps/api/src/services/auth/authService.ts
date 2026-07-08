@@ -42,6 +42,7 @@ import {
   LOGIN_ACCOUNT_NAMESPACE,
   pinFailCountKey,
   PIN_FALLBACK_THRESHOLD,
+  PIN_TOKEN_ACCOUNT_NAMESPACE,
   TWO_FACTOR_ACCOUNT_NAMESPACE,
 } from './loginThrottle';
 import type { TwoFactorService } from './twoFactorService';
@@ -173,6 +174,16 @@ export interface AuthService {
    * the session and throw `PIN_FALLBACK_LOGIN`, forcing a full login.
    */
   verifyPin(input: VerifyPinInput): Promise<UserRow>;
+  /**
+   * Verify the PIN for a **bearer** principal (personal API key / OAuth token,
+   * #361) — the app-lock "Use my BetterTrack PIN". Reuses the EXACT same
+   * `pin_hash` + argon2id verify as the session {@link verifyPin} (one PIN, both
+   * clients — no separate mobile PIN), but has no session to renew or destroy, so
+   * it protects the 4-digit secret with a per-account progressive brute-force
+   * throttle instead: a wrong PIN is `401 INVALID_PIN`, a cooling-down account is
+   * `429`, and `PIN_NOT_ENABLED` when no web PIN is set. Never logs the PIN.
+   */
+  verifyPinForToken(input: { userId: string; pin: string; ip?: string | null }): Promise<void>;
   /** Enable the PIN or change it to a new value (§6.1). */
   setPin(userId: string, pin: string, ip?: string | null): Promise<UserRow>;
   /** Turn the PIN gate off (§6.1). */
@@ -284,6 +295,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   const twoFactorThrottle = createProgressiveLimiter(
     redis,
     TWO_FACTOR_ACCOUNT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
+  // Per-account brute-force throttle for bearer PIN verification (#361). A bearer
+  // has no session to drop after N wrong PINs (the session gate's defence), so a
+  // 4-digit PIN is protected here on the same escalation ladder as failed
+  // passwords, keyed per account and independent of the per-IP HTTP limiter.
+  const pinTokenThrottle = createProgressiveLimiter(
+    redis,
+    PIN_TOKEN_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
 
@@ -882,6 +902,47 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         ip,
       });
       return user;
+    },
+
+    async verifyPinForToken({ userId, pin, ip }) {
+      const user = await userRepo.findById(userId);
+      if (!user || user.status !== 'active') throw unauthorized();
+      if (!user.pinEnabled || !user.pinHash) {
+        // The app hides "Use my BetterTrack PIN" until a web PIN exists; still,
+        // never treat a not-set PIN as a match.
+        throw badRequest('No PIN is set for this account.', 'PIN_NOT_ENABLED');
+      }
+      // Reject an already-cooling account before the (deliberately slow) hash
+      // verify, mirroring the password limiter's peek-before-check.
+      const cooling = await pinTokenThrottle.peek(user.id);
+      if (cooling > 0) throw tooManyRequests(cooling);
+
+      // The SAME argon2id verify against the SAME `pin_hash` the session PIN gate
+      // and web login use — one PIN, both clients. `pin` is never logged.
+      const ok = await passwordHasher.verify(user.pinHash, pin);
+      if (!ok) {
+        const decision = await pinTokenThrottle.consume(user.id);
+        await audit.record({
+          action: AuditAction.PinVerifyFail,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+          meta: { via: 'token' },
+        });
+        if (!decision.allowed) throw tooManyRequests(decision.retryAfterSec);
+        throw unauthorized('Incorrect PIN.', 'INVALID_PIN');
+      }
+
+      // Correct PIN: clear the brute-force tally. No session to renew.
+      await pinTokenThrottle.reset(user.id);
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PinVerified,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+        meta: { via: 'token' },
+      });
     },
 
     async setPin(userId, pin, ip) {

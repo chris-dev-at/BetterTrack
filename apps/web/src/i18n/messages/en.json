@@ -362,6 +362,30 @@
         "socialRead": {
           "label": "Social · read",
           "description": "Read friends, shares and notifications."
+        },
+        "socialWrite": {
+          "label": "Social · write",
+          "description": "Send/answer friend requests and manage friends."
+        },
+        "notificationsRead": {
+          "label": "Notifications · read",
+          "description": "Read your notification inbox."
+        },
+        "notificationsWrite": {
+          "label": "Notifications · write",
+          "description": "Mark notifications read and change notification settings."
+        },
+        "chatRead": {
+          "label": "Chat · read",
+          "description": "Read your messages."
+        },
+        "chatWrite": {
+          "label": "Chat · write",
+          "description": "Send messages on your behalf."
+        },
+        "accountSecurity": {
+          "label": "Account security",
+          "description": "Manage sign-in sessions, two-factor, password and app PIN."
         }
       },
       "keys": {
