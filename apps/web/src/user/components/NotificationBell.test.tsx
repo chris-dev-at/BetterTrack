@@ -258,6 +258,8 @@ describe('NotificationBell', () => {
         return () => handlers.delete(event);
       },
       joinRoom: () => () => {},
+      watchLive: () => Promise.resolve(null),
+      unwatchLive: () => {},
     };
     render(
       <QueryClientProvider client={makeQueryClient()}>

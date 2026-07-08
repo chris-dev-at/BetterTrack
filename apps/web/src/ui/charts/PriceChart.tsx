@@ -72,6 +72,15 @@ export interface PriceChartProps {
   percentValues?: boolean;
   /** Show a spinner instead of the chart (parent is fetching). */
   loading?: boolean;
+  /**
+   * Live-append mode (PROJECTPLAN.md §6.3, V3-P7b): when the series merely
+   * grows at the tail (streamed live frames), the new points are pushed via
+   * `series.update()` instead of a full `setData()` re-draw. Any other change
+   * (window switch, asset change) falls back to `setData`.
+   */
+  live?: boolean;
+  /** Empty-state copy override (e.g. "Waiting for live prices…"). */
+  emptyMessage?: string;
   /** Chart height in px. Defaults to 320. */
   height?: number;
   className?: string;
@@ -133,6 +142,8 @@ export function PriceChart({
   overlays = [],
   percentValues = false,
   loading = false,
+  live = false,
+  emptyMessage,
   height = 320,
   className,
   ariaLabel = 'Price chart',
@@ -154,6 +165,11 @@ export function PriceChart({
   );
   const benchRef = useRef<ISeriesApi<'Line'> | null>(null);
   const overlayRefs = useRef<Array<ISeriesApi<'Line'>>>([]);
+  // What the main series currently shows, to detect a pure tail-append (live).
+  const drawnRef = useRef<{ firstTime: Time | null; length: number }>({
+    firstTime: null,
+    length: 0,
+  });
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
 
   const isEmpty = series.length === 0;
@@ -259,6 +275,10 @@ export function PriceChart({
     observer.observe(el);
     chart.applyOptions({ width: el.clientWidth || undefined });
 
+    // A brand-new chart instance holds no data yet — never treat the first
+    // data push after a (re)create as a live tail-append.
+    drawnRef.current = { firstTime: null, length: 0 };
+
     return () => {
       observer.disconnect();
       chart.remove();
@@ -266,19 +286,38 @@ export function PriceChart({
       mainRef.current = null;
       benchRef.current = null;
       overlayRefs.current = [];
+      drawnRef.current = { firstTime: null, length: 0 };
       markersRef.current = null;
     };
   }, [mode, hasBenchmark, overlayCount, percentValues, height, loading, isEmpty]);
 
   // Push data into the existing series instances; refit the visible window.
   useEffect(() => {
-    if (mainRef.current) {
-      mainRef.current.setData(series);
+    const main = mainRef.current;
+    if (main) {
+      const drawn = drawnRef.current;
+      const firstTime = series[0]?.time ?? null;
+      // Live-append (§6.3): same series, only grown at the tail → stream the
+      // new points into the instance instead of re-drawing everything.
+      const isTailAppend =
+        live &&
+        drawn.length > 0 &&
+        firstTime !== null &&
+        firstTime === drawn.firstTime &&
+        series.length >= drawn.length;
+      if (isTailAppend) {
+        // Re-update from the last drawn point: update() with an existing time
+        // replaces it in place, so this is safe and covers value corrections.
+        for (let i = drawn.length - 1; i < series.length; i++) main.update(series[i]!);
+      } else {
+        main.setData(series);
+      }
+      drawnRef.current = { firstTime, length: series.length };
       // Event markers ride the main series. The plugin is created lazily on
       // first use and re-set (possibly to empty) on every data pass after that,
       // so toggling markers off clears the flags without a chart rebuild.
       if (markers.length > 0 || markersRef.current) {
-        markersRef.current ??= createSeriesMarkers(mainRef.current, []);
+        markersRef.current ??= createSeriesMarkers(main, []);
         markersRef.current.setMarkers(
           markers.map((m) => ({
             time: m.time,
@@ -296,7 +335,7 @@ export function PriceChart({
       if (overlay) line.setData(overlay.series);
     });
     chartRef.current?.timeScale().fitContent();
-  }, [series, benchmark, markers, overlays]);
+  }, [series, benchmark, markers, overlays, live]);
 
   return (
     <div className={cx('flex flex-col gap-3', className)}>
@@ -345,7 +384,7 @@ export function PriceChart({
           className="grid place-items-center rounded-md bg-neutral-900/40 text-sm text-neutral-500"
           style={{ height }}
         >
-          No price data for this range yet.
+          {emptyMessage ?? 'No price data for this range yet.'}
         </div>
       ) : (
         <div

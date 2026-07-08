@@ -110,6 +110,7 @@ function buildInertContext(): AppContext {
     alerts: inertService('alerts'),
     notificationDispatcher: inertService('notificationDispatcher'),
     realtime: inertService('realtime'),
+    liveMode: inertService('liveMode'),
   };
 }
 
