@@ -179,6 +179,24 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     (socket.data.liveAssets = new Set<string>());
 
   /**
+   * Serialize a socket's live-mode ops. `live.watch` awaits an asset resolve
+   * between reading and writing the socket's watch set, and clients re-emit
+   * watches (window switch, remount) without awaiting the previous ack — so
+   * un-serialized handlers can interleave at that await: two watches would both
+   * register with the shared loop while the set holds ONE entry, leaking an
+   * upstream poll loop no unwatch/disconnect can ever release (§5.3), and an
+   * unwatch overtaking an in-flight watch would no-op. Running watch, unwatch
+   * and disconnect-cleanup one-at-a-time per socket (errors don't stall the
+   * chain) makes each op see settled state.
+   */
+  function enqueueLiveOp(socket: Socket, op: () => Promise<void>): Promise<void> {
+    const prev = (socket.data.liveOpQueue as Promise<void> | undefined) ?? Promise.resolve();
+    const next = prev.then(op);
+    socket.data.liveOpQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  /**
    * `live.watch` (§6.3, V3-P7b): first watch per socket registers with the
    * shared loop and joins the `asset:{id}` room for `live.frame` fan-out; a
    * repeat watch (window switch) only re-backfills — the loop never restarts.
@@ -210,6 +228,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       if (!ref) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
         respond({ ok: false, error: 'NOT_FOUND' });
+        return;
+      }
+      if (socket.disconnected) {
+        // The socket vanished during the resolve: registering now would leave a
+        // watch the disconnect cleanup (already queued behind this op) has to
+        // undo, and the room join would outlive the adapter's own cleanup.
+        respond({ ok: false, error: 'GONE' });
         return;
       }
       liveMode.watch(assetId, ref);
@@ -316,20 +341,25 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           });
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveWatch, (payload: unknown, ack: unknown) => {
-          void handleLiveWatch(socket, userId, payload, ack).catch((err) => {
-            logger.warn({ err, userId }, 'live watch failed');
-          });
+          void enqueueLiveOp(socket, () => handleLiveWatch(socket, userId, payload, ack)).catch(
+            (err) => {
+              logger.warn({ err, userId }, 'live watch failed');
+            },
+          );
         });
         socket.on(REALTIME_CLIENT_EVENTS.liveUnwatch, (payload: unknown, ack: unknown) => {
-          void handleLiveUnwatch(socket, payload, ack).catch((err) => {
+          void enqueueLiveOp(socket, () => handleLiveUnwatch(socket, payload, ack)).catch((err) => {
             logger.warn({ err, userId }, 'live unwatch failed');
           });
         });
         // A vanished socket must release its live watches, or a closed tab
-        // would keep an upstream loop hot forever (§6.3 auto-stop).
+        // would keep an upstream loop hot forever (§6.3 auto-stop). Queued so
+        // it runs AFTER any in-flight watch registers what it must release.
         socket.on('disconnect', () => {
-          for (const assetId of liveAssetsOf(socket)) deps.liveMode?.unwatch(assetId);
-          liveAssetsOf(socket).clear();
+          void enqueueLiveOp(socket, async () => {
+            for (const assetId of liveAssetsOf(socket)) deps.liveMode?.unwatch(assetId);
+            liveAssetsOf(socket).clear();
+          });
         });
       });
 

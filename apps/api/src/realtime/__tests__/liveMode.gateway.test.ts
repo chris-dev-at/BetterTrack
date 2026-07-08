@@ -253,6 +253,46 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(stub.calls.poll).toBe(0); // nothing above ever reached the provider
   });
 
+  it('two un-acked watches for the same asset register ONE count (TOCTOU regression)', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+
+    // A window switch re-emits live.watch without awaiting the previous ack, so
+    // both packets can sit at the asset-resolve await together. Un-serialized,
+    // both registered with the shared loop while the socket's set held one
+    // entry — one count could then never be released (§5.3 eternal loop).
+    const [first, second] = await Promise.all([
+      watch(alice, assetId, '1m'),
+      watch(alice, assetId, '12h'),
+    ]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+
+    // A single unwatch must fully release the socket's hold: loop goes cold.
+    await unwatch(alice, assetId);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+    alice.disconnect();
+    await vi.waitFor(() => expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0));
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 2)); // drain in-flight tick
+    const frozen = stub.calls.poll;
+    await new Promise((resolve) => setTimeout(resolve, POLL_MS * 5));
+    expect(stub.calls.poll).toBe(frozen);
+  });
+
+  it('an unwatch racing the first watch of an asset still releases it', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+
+    // The unwatch packet arrives while the watch is still resolving the asset.
+    // Un-serialized it no-oped (nothing held yet) and the watch then registered
+    // a count the client believed it had already released.
+    const [ack] = await Promise.all([watch(alice, assetId, '1m'), unwatch(alice, assetId)]);
+    expect(ack.ok).toBe(true);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+  });
+
   it('unwatch is idempotent and only releases a held watch', async () => {
     const assetId = await seedAsset();
     const alice = await connectUser('alice@bt.test', 'alice');

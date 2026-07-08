@@ -176,6 +176,20 @@ describe('liveModeService — provider distress (§5.3 politeness)', () => {
     expect(frames).toEqual([]);
     expect(await service.backfill(ASSET_ID, '12h')).toEqual([]);
   });
+
+  it('a failed ring append is not distress: frames still flow at the base cadence', async () => {
+    const { service } = makeService();
+    // The quote succeeds; only the Redis write behind the backfill ring dies.
+    (redis as unknown as Record<string, unknown>).pipeline = () => {
+      throw new Error('redis connection lost');
+    };
+    const frames: unknown[] = [];
+    service.onFrame((f) => frames.push(f));
+
+    service.watch(ASSET_ID, REF);
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(2));
+    expect(service.pollIntervalMs(ASSET_ID)).toBe(20); // never stretched
+  });
 });
 
 describe('liveRingBuffer', () => {

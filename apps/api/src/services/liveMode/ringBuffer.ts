@@ -39,9 +39,16 @@ export function createLiveRingBuffer(
   return {
     async append(frame) {
       const key = liveRingKey(frame.assetId);
-      await redis.rpush(key, JSON.stringify(frame));
-      await redis.ltrim(key, -capacity, -1);
-      await redis.pexpire(key, retentionMs);
+      // One round-trip per tick: hot assets append every poll interval. A
+      // pipeline reports per-command errors in its results, not by rejecting —
+      // surface them so callers still observe a failed append.
+      const results = await redis
+        .pipeline()
+        .rpush(key, JSON.stringify(frame))
+        .ltrim(key, -capacity, -1)
+        .pexpire(key, retentionMs)
+        .exec();
+      for (const [err] of results ?? []) if (err) throw err;
     },
 
     async readSince(assetId, sinceMs) {

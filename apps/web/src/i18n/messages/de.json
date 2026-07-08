@@ -931,12 +931,16 @@
     }
   },
   "assets": {
+    "detail": {
+      "chartAriaLabel": "Kursdiagramm für {{symbol}}"
+    },
     "live": {
       "badge": "LIVE",
       "toggleLabel": "Live-Modus umschalten",
       "windowGroupLabel": "Live-Zeitfenster wählen",
       "waiting": "Warte auf Live-Kurse…",
-      "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist."
+      "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
+      "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}"
     }
   }
 }

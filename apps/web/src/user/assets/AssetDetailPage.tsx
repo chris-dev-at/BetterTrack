@@ -663,7 +663,7 @@ export function AssetDetailPage() {
             showRangeToggle={false}
             live
             emptyMessage={t('assets.live.waiting')}
-            ariaLabel={`Live price chart for ${asset.symbol}`}
+            ariaLabel={t('assets.live.chartAriaLabel', { symbol: asset.symbol })}
           />
         ) : (
           <PriceChart
@@ -672,7 +672,7 @@ export function AssetDetailPage() {
             range={range}
             onRangeChange={setRange}
             loading={historyQuery.isLoading || historyQuery.isFetching}
-            ariaLabel={`Price chart for ${asset.symbol}`}
+            ariaLabel={t('assets.detail.chartAriaLabel', { symbol: asset.symbol })}
           />
         )}
       </div>

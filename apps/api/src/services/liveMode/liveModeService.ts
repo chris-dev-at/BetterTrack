@@ -130,8 +130,15 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         dayChangePct: cached.value.dayChangePct ?? null,
         at: new Date(now()).toISOString(),
       };
-      await ring.append(frame);
       loop.intervalMs = baseIntervalMs; // recovered — snap back to base cadence
+      try {
+        await ring.append(frame);
+      } catch (err) {
+        // A Redis hiccup only costs backfill history — the quote succeeded, so
+        // the frame still reaches live viewers and the cadence stays at base;
+        // stretching is reserved for UPSTREAM distress (§5.3).
+        logger.warn({ err, assetId }, 'live ring append failed; frame emitted without backfill');
+      }
       emit(frame);
     } catch (err) {
       // 429 (breaker just tripped), CircuitOpenError, timeout, 5xx: stretch the

@@ -94,7 +94,7 @@ export const realtimeLiveFrameSchema = z.object({
   currency: currencyCodeSchema,
   dayChangePct: z.number().nullable(),
   /** When the loop observed this price (ISO-8601, producer-stamped). */
-  at: z.string(),
+  at: z.string().datetime(),
 });
 export type RealtimeLiveFrame = z.infer<typeof realtimeLiveFrameSchema>;
 
