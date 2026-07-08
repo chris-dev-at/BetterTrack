@@ -100,6 +100,49 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
+    /** Resolve a first-party client by internal id (admin edit: before-state + 404). */
+    async findFirstPartyClientById(id: string): Promise<OAuthClientRow | undefined> {
+      const [row] = await db
+        .select()
+        .from(oauthClients)
+        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+        .limit(1);
+      return row;
+    },
+
+    /**
+     * Edit a first-party client's mutable fields (name, redirect URIs, allowed
+     * scopes, logo) by internal id (admin panel). Scoped to `is_first_party` so
+     * this path can never touch a user-owned app. The `client_id`, the client
+     * secret and the public/confidential flag are immutable and deliberately not
+     * settable here — issued tokens reference the `client_id`, and flipping the
+     * client type would force a secret rotation (a separate concern).
+     *
+     * Consent-safety: this only rewrites the CLIENT's allowed-scope ceiling; it
+     * never rewrites any grant/token scopes. Because the effective scope of a
+     * live token is the intersection of its consented scopes and this ceiling
+     * (see the client join in {@link findAccessTokenByHash}), widening cannot
+     * grant an existing token a new scope (it never consented to it) while
+     * narrowing drops the removed scope immediately. Returns the updated row, or
+     * undefined when the id isn't a first-party app.
+     */
+    async updateFirstPartyClient(
+      id: string,
+      input: { name: string; redirectUris: string[]; scopes: string[]; logoUrl: string | null },
+    ): Promise<OAuthClientRow | undefined> {
+      const [row] = await db
+        .update(oauthClients)
+        .set({
+          name: input.name,
+          redirectUris: input.redirectUris,
+          scopes: input.scopes,
+          logoUrl: input.logoUrl,
+        })
+        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+        .returning();
+      return row;
+    },
+
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
     async findClientByClientId(clientId: string): Promise<OAuthClientRow | undefined> {
       const [row] = await db
@@ -232,18 +275,26 @@ export function createOAuthRepository(db: Database) {
     },
 
     /**
-     * Resolve an access token by hash, joined to its (active) grant and the
-     * owning user — the bearer-auth lookup. Returns nothing for a token whose
-     * grant is revoked; the service still checks expiry against the row.
+     * Resolve an access token by hash, joined to its (active) grant, the owning
+     * user AND the granting client — the bearer-auth lookup. Returns nothing for
+     * a token whose grant is revoked; the service still checks expiry against the
+     * row. The client is joined so the service can clamp the token's effective
+     * scope to the app's CURRENT allowed-scope ceiling (consent-safety: a scope
+     * removed from the app is denied immediately; a scope added to the app is not
+     * silently granted to a token that never consented to it).
      */
     async findAccessTokenByHash(
       tokenHash: string,
-    ): Promise<{ token: OAuthAccessTokenRow; grant: OAuthGrantRow; user: UserRow } | undefined> {
+    ): Promise<
+      | { token: OAuthAccessTokenRow; grant: OAuthGrantRow; user: UserRow; client: OAuthClientRow }
+      | undefined
+    > {
       const [row] = await db
-        .select({ token: oauthAccessTokens, grant: oauthGrants, user: users })
+        .select({ token: oauthAccessTokens, grant: oauthGrants, user: users, client: oauthClients })
         .from(oauthAccessTokens)
         .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))
         .innerJoin(users, eq(oauthGrants.userId, users.id))
+        .innerJoin(oauthClients, eq(oauthGrants.clientId, oauthClients.id))
         .where(and(eq(oauthAccessTokens.tokenHash, tokenHash), isNull(oauthGrants.revokedAt)))
         .limit(1);
       return row;

@@ -123,6 +123,33 @@ export const createOAuthClientRequestSchema = z
   .strict();
 export type CreateOAuthClientRequest = z.infer<typeof createOAuthClientRequestSchema>;
 
+/**
+ * `PATCH /admin/oauth-clients/:id` — edit an existing (first-party) app: its
+ * name, redirect URIs and allowed scopes, with the SAME validation as creation.
+ * Full-replacement semantics: the caller sends the complete desired redirect-URI
+ * and scope sets. The `client_id`, the public/confidential nature and the client
+ * secret are intentionally NOT editable here — issued tokens reference the
+ * `client_id`, and flipping the client type would force a secret rotation (a
+ * separate, deliberately un-bundled concern).
+ *
+ * Consent-safety (enforced at the token/resource layer, not just the UI):
+ * widening `scopes` NEVER silently widens an existing user grant — the effective
+ * scope of a live access token is the intersection of the scopes the user
+ * originally consented to and the app's *current* allowed scopes, so a user only
+ * gains a newly-added scope through a fresh consent. Narrowing (removing a scope
+ * or a redirect URI) takes effect immediately for every existing token/grant.
+ */
+export const updateOAuthClientRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80),
+    redirectUris: z.array(oauthRedirectUriSchema).min(1).max(10),
+    scopes: z.array(apiKeyScopeSchema).min(1).max(API_KEY_SCOPES.length),
+    /** Optional consent-screen icon (third-party apps; ignored for first-party). */
+    logoUrl: oauthLogoUrlSchema.nullish(),
+  })
+  .strict();
+export type UpdateOAuthClientRequest = z.infer<typeof updateOAuthClientRequestSchema>;
+
 /** A registered OAuth app as listed under API Access (never carries a secret). */
 export const oauthClientSummarySchema = z
   .object({

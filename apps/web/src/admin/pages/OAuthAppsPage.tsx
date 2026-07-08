@@ -46,6 +46,7 @@ export function OAuthAppsPage() {
   const [created, setCreated] = useState<CreateOAuthClientResponse | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<OAuthClientSummary | null>(null);
 
   const apps = useResource((signal) => api.listFirstPartyApps(signal), []);
 
@@ -210,13 +211,25 @@ export function OAuthAppsPage() {
                   </div>
                   <div className="mt-1 font-mono text-xs text-neutral-500">{app.clientId}</div>
                 </div>
-                <Button
-                  variant="danger"
-                  disabled={busyId === app.id}
-                  onClick={() => void remove(app)}
-                >
-                  Delete
-                </Button>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    variant="secondary"
+                    disabled={busyId === app.id}
+                    onClick={() => {
+                      setRowError(null);
+                      setEditing(app);
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={busyId === app.id}
+                    onClick={() => void remove(app)}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {app.scopes.map((scope) => (
@@ -254,6 +267,155 @@ export function OAuthAppsPage() {
           </div>
         </Modal>
       ) : null}
+
+      {editing ? (
+        <EditOAuthAppModal
+          app={editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            apps.reload();
+          }}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * Edit an existing first-party app. The client_id and public/confidential nature
+ * are immutable (issued tokens reference the client_id; flipping the client type
+ * would force a secret rotation), so only the name, redirect URIs and allowed
+ * scopes are editable — with the same validation as registration.
+ *
+ * Consent-safety note surfaced to the admin: ADDING a scope here does not grant
+ * it to anyone already signed in — the API clamps every live token to the app's
+ * allowed scopes and users receive a newly-added scope only after re-consenting.
+ * REMOVING a scope (or a redirect URI) takes effect immediately.
+ */
+function EditOAuthAppModal({
+  app,
+  onClose,
+  onSaved,
+}: {
+  app: OAuthClientSummary;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [name, setName] = useState(app.name);
+  const [redirectText, setRedirectText] = useState(app.redirectUris.join('\n'));
+  const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(app.scopes));
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  function toggleScope(scope: ApiKeyScope) {
+    setScopes((prev) => {
+      const next = new Set(prev);
+      if (next.has(scope)) next.delete(scope);
+      else next.add(scope);
+      return next;
+    });
+  }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const redirectUris = redirectText
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (redirectUris.length === 0) {
+      setError('Add at least one redirect URI.');
+      return;
+    }
+    if (scopes.size === 0) {
+      setError('Select at least one scope.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.updateFirstPartyApp(app.id, {
+        name: name.trim(),
+        redirectUris,
+        scopes: [...scopes],
+      });
+      onSaved();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title={`Edit ${app.name}`} onClose={onClose}>
+      <form onSubmit={onSubmit} className="flex flex-col gap-4">
+        <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
+          <div className="text-xs text-neutral-500">Client ID (immutable)</div>
+          <div className="font-mono text-xs text-neutral-300">{app.clientId}</div>
+        </div>
+
+        <TextField
+          label="App name"
+          name="edit-oauth-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          required
+        />
+
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-neutral-300">Redirect URIs</span>
+          <span className="text-xs text-neutral-500">
+            One per line. https, http-loopback, or a custom-scheme deep link.
+          </span>
+          <textarea
+            name="edit-oauth-redirects"
+            rows={3}
+            value={redirectText}
+            onChange={(e) => setRedirectText(e.target.value)}
+            className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 font-mono text-xs text-neutral-200 focus:border-neutral-600 focus:outline-none"
+          />
+        </label>
+
+        <fieldset className="flex flex-col gap-2">
+          <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
+          <p className="text-xs text-neutral-500">
+            Adding a scope does not grant it to users already signed in — they must re-consent.
+            Removing a scope takes effect immediately.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {API_KEY_SCOPES.map((scope) => (
+              <label
+                key={scope}
+                className="flex items-start gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-200"
+              >
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={scopes.has(scope)}
+                  onChange={() => toggleScope(scope)}
+                />
+                <span>
+                  <span className="font-mono text-xs text-neutral-400">{scope}</span>
+                  <br />
+                  {OAUTH_SCOPE_LABELS[scope]}
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        {error ? <Alert tone="error">{error}</Alert> : null}
+
+        <div className="flex gap-2">
+          <Button type="submit" disabled={saving}>
+            {saving ? 'Saving…' : 'Save changes'}
+          </Button>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

@@ -12,6 +12,7 @@ import {
   idParamSchema,
   testEmailRequestSchema,
   updateAppSettingsRequestSchema,
+  updateOAuthClientRequestSchema,
   updateUserRequestSchema,
   type AuditQuery,
   type BulkUserActionRequest,
@@ -22,6 +23,7 @@ import {
   type EmailLogQuery,
   type TestEmailRequest,
   type UpdateAppSettingsRequest,
+  type UpdateOAuthClientRequest,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -228,6 +230,32 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     });
     res.status(201).json(result);
   });
+
+  // Edit an existing first-party app: name, redirect URIs and allowed scopes,
+  // with the same validation as creation. Consent-safe (§6.13, #341): widening
+  // the scopes never widens a live user grant — the effective scope of a token is
+  // clamped to the app's current allowed set at the resource layer — while
+  // narrowing (removing a scope or redirect URI) takes effect immediately. The
+  // client_id and secret are immutable. Audit-logged with the before/after diff.
+  router.patch(
+    '/oauth-clients/:id',
+    validateParams(idParamSchema),
+    validateBody(updateOAuthClientRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const body = req.valid?.body as UpdateOAuthClientRequest;
+      const client = await ctx.oauth.updateFirstPartyClient({
+        adminId: req.authUser!.id,
+        id,
+        name: body.name,
+        redirectUris: body.redirectUris,
+        scopes: body.scopes,
+        logoUrl: body.logoUrl ?? null,
+        ip: req.ip ?? null,
+      });
+      res.json(client);
+    },
+  );
 
   router.delete('/oauth-clients/:id', validateParams(idParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };

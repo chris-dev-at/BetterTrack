@@ -200,6 +200,8 @@ const componentSchemas = {
 
   // OAuth apps (§6.13, V2-P12)
   CreateOAuthClientRequest: contracts.createOAuthClientRequestSchema,
+  UpdateOAuthClientRequest: contracts.updateOAuthClientRequestSchema,
+  OAuthClientSummary: contracts.oauthClientSummarySchema,
   OAuthClientListResponse: contracts.oauthClientListResponseSchema,
   CreateOAuthClientResponse: contracts.createOAuthClientResponseSchema,
   OAuthGrantListResponse: contracts.oauthGrantListResponseSchema,
@@ -630,6 +632,17 @@ const endpoints: EndpointDef[] = [
     body: R.CreateOAuthClientRequest,
     status: 201,
     response: R.CreateOAuthClientResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/oauth-clients/{id}',
+    tag: 'Admin',
+    summary:
+      'Edit a first-party OAuth app (name, redirect URIs, scopes). Consent-safe: widening scopes never widens live grants; narrowing applies immediately.',
+    params: contracts.idParamSchema,
+    body: R.UpdateOAuthClientRequest,
+    status: 200,
+    response: R.OAuthClientSummary,
   },
   {
     method: 'delete',

@@ -162,6 +162,13 @@
       "when": 1783490000000,
       "tag": "0022_custom_asset_categories",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1783491000000,
+      "tag": "0023_mobile_oauth_scopes",
+      "breakpoints": true
     }
   ]
 }

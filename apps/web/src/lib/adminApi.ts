@@ -13,6 +13,7 @@ import {
   emailStatusResponseSchema,
   meResponseSchema,
   oauthClientListResponseSchema,
+  oauthClientSummarySchema,
   okResponseSchema,
   resetPasswordResponseSchema,
   testEmailResponseSchema,
@@ -36,10 +37,12 @@ import {
   type LoginRequest,
   type MeResponse,
   type OAuthClientListResponse,
+  type OAuthClientSummary,
   type ResetPasswordResponse,
   type TestEmailRequest,
   type TestEmailResponse,
   type UpdateAppSettingsRequest,
+  type UpdateOAuthClientRequest,
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
@@ -145,6 +148,14 @@ export async function createFirstPartyApp(
 ): Promise<CreateOAuthClientResponse> {
   const data = await apiRequest<unknown>('/admin/oauth-clients', { method: 'POST', body });
   return createOAuthClientResponseSchema.parse(data);
+}
+
+export async function updateFirstPartyApp(
+  id: string,
+  body: UpdateOAuthClientRequest,
+): Promise<OAuthClientSummary> {
+  const data = await apiRequest<unknown>(`/admin/oauth-clients/${id}`, { method: 'PATCH', body });
+  return oauthClientSummarySchema.parse(data);
 }
 
 export async function deleteFirstPartyApp(id: string): Promise<void> {

@@ -70,6 +70,20 @@ export interface OAuthService {
   }): Promise<CreateOAuthClientResponse>;
   listFirstPartyClients(): Promise<OAuthClientSummary[]>;
   deleteFirstPartyClient(input: { adminId: string; id: string; ip?: string | null }): Promise<void>;
+  /**
+   * Admin panel: edit an existing first-party app's name, redirect URIs and
+   * allowed scopes (consent-safe — see {@link clampToAllowed}). The client_id,
+   * secret and public/confidential flag are immutable.
+   */
+  updateFirstPartyClient(input: {
+    adminId: string;
+    id: string;
+    name: string;
+    redirectUris: string[];
+    scopes: ApiKeyScope[];
+    logoUrl?: string | null;
+    ip?: string | null;
+  }): Promise<OAuthClientSummary>;
   listGrants(userId: string): Promise<OAuthGrantSummary[]>;
   revokeGrant(input: { userId: string; id: string; ip?: string | null }): Promise<void>;
   /** Consent-screen data: validates the authorize request, plain-language scopes. */
@@ -152,6 +166,31 @@ function parseScopes(scope: string, client: OAuthClientRow): ApiKeyScope[] {
     }
   }
   return out;
+}
+
+/**
+ * The consent-safety rule, in one place: an OAuth grant/token's EFFECTIVE scope
+ * is the set the user actually consented to (recorded on the grant + stamped on
+ * the token at issue time) intersected with the app's CURRENT allowed-scope
+ * ceiling. This single `min()` makes both required behaviours fall out for free:
+ *
+ *  - Widening the app (admin adds a scope) can NEVER silently widen a live grant
+ *    — the token never consented to the new scope, so the intersection omits it;
+ *    the user gains it only by running the consent flow again (which re-stamps
+ *    the grant/token with the freshly-consented set).
+ *  - Narrowing the app (admin removes a scope, or a redirect URI) applies
+ *    IMMEDIATELY — the removed scope drops out of every existing token/grant the
+ *    next time it is used, without re-issuing or revoking anything.
+ *
+ * Enforced at the token/resource layer ({@link OAuthService.authenticateToken})
+ * so it holds for every bearer request, not merely in the admin UI.
+ */
+function clampToAllowed(
+  consented: readonly ApiKeyScope[],
+  allowed: readonly string[],
+): ApiKeyScope[] {
+  const ceiling = new Set(allowed);
+  return consented.filter((s) => ceiling.has(s));
 }
 
 /**
@@ -379,13 +418,58 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       });
     },
 
+    async updateFirstPartyClient({ adminId, id, name, redirectUris, scopes, ip }) {
+      // Defense in depth: re-check URI shape even though the contract gated it,
+      // so the service never trusts a caller that skipped validation.
+      for (const uri of redirectUris) {
+        if (!isValidRedirectUri(uri)) {
+          throw badRequest(`Invalid redirect URI "${uri}".`, 'INVALID_REDIRECT_URI');
+        }
+      }
+      // Capture the before-state so the audit entry records exactly what changed.
+      const before = await repo.findFirstPartyClientById(id);
+      if (!before) {
+        throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
+      }
+      const row = await repo.updateFirstPartyClient(id, {
+        name,
+        redirectUris,
+        scopes,
+        // First-party apps render the BetterTrack mark, so a logo is never stored
+        // (mirrors registration).
+        logoUrl: null,
+      });
+      if (!row) {
+        throw notFound('OAuth app not found.', 'OAUTH_CLIENT_NOT_FOUND');
+      }
+      await audit.record({
+        actorId: adminId,
+        action: AuditAction.OAuthClientUpdated,
+        targetType: 'oauth_client',
+        targetId: row.id,
+        ip: ip ?? null,
+        meta: {
+          before: {
+            name: before.name,
+            scopes: before.scopes,
+            redirectUris: before.redirectUris,
+          },
+          after: { name: row.name, scopes: row.scopes, redirectUris: row.redirectUris },
+        },
+      });
+      return toClientSummary(row);
+    },
+
     async listGrants(userId) {
       const rows = await repo.listGrantsForUser(userId);
       return rows.map(({ grant, client }) => ({
         id: grant.id,
         clientId: client.clientId,
         appName: client.name,
-        scopes: grant.scopes as ApiKeyScope[],
+        // Show the EFFECTIVE scopes (consented ∩ the app's current ceiling) so the
+        // "authorized apps" list reflects what the token can actually do after an
+        // admin narrows the app — never a scope the app no longer allows.
+        scopes: clampToAllowed(grant.scopes as ApiKeyScope[], client.scopes),
         createdAt: grant.createdAt.toISOString(),
         lastUsedAt: grant.lastUsedAt ? grant.lastUsedAt.toISOString() : null,
       }));
@@ -479,10 +563,15 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
       if (first === 'OK') {
         await repo.touchGrantLastUsed(found.grant.id, now());
       }
+      // Consent-safety choke point (see {@link clampToAllowed}): the token's
+      // effective scope is what it consented to, clamped to the app's CURRENT
+      // allowed scopes. This is why widening the app can never grant a live token
+      // a scope it never consented to, and narrowing the app denies the removed
+      // scope immediately — enforced here, before any resource is reached.
       return {
         user: found.user,
         grantId: found.grant.id,
-        scopes: found.token.scopes as ApiKeyScope[],
+        scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client.scopes),
       };
     },
 
@@ -531,7 +620,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     if (!consumed) {
       throw badRequest('Authorization code has already been used.', 'INVALID_GRANT');
     }
-    const scopes = found.scopes as ApiKeyScope[];
+    // Clamp the consented scopes to the app's CURRENT allowed set: if the admin
+    // narrowed the app during the code's brief lifetime, the grant + token
+    // reflect the reduced set immediately (consent-safe narrowing).
+    const scopes = clampToAllowed(found.scopes as ApiKeyScope[], client.scopes);
+    if (scopes.length === 0) {
+      throw badRequest('No requested scope is still permitted for this app.', 'INVALID_SCOPE');
+    }
     // Establish (or reuse) the grant for this app↔user pair.
     const existing = await repo.findActiveGrant(client.id, found.userId);
     let grantId: string;
@@ -582,7 +677,10 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
     if (!consumed) {
       throw badRequest('Refresh token has already been used.', 'INVALID_GRANT');
     }
-    const scopes = found.grant.scopes as ApiKeyScope[];
+    // Clamp to the app's current allowed scopes so a refresh never re-broadens a
+    // grant past a scope the admin has since removed, and the advertised `scope`
+    // matches what the freshly-issued token can actually use.
+    const scopes = clampToAllowed(found.grant.scopes as ApiKeyScope[], client.scopes);
     const tokens = await issueTokenPair(found.grant.id, scopes);
     await repo.touchGrantLastUsed(found.grant.id, now());
     await audit.record({
