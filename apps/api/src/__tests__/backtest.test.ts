@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { backtestResponseSchema } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { backtestPreviewCacheKey } from '../services/backtest/backtestService';
 import { createStubMarketData, type StubMarketDataControls } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -381,5 +382,156 @@ describe('POST /api/v1/backtest/preview', () => {
       .send({ positions: [], range: '1Y' });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('POST /api/v1/backtest/preview — late-listing modes (§14)', () => {
+  // The route-level "SpaceX case": AAA has 300 days of history and moves before
+  // LLL lists 100 days ago, so the three modes give visibly different results.
+  //   AAA: 100 → 150 (day −150) → 120        LLL: 50 → 55
+  const lateHistory = (ref: { providerRef: string }) =>
+    ref.providerRef === 'AAA'
+      ? cachedHistory([
+          { time: tsOffset(-300), close: 100 },
+          { time: tsOffset(-150), close: 150 },
+          { time: tsOffset(-1), close: 120 },
+        ])
+      : cachedHistory([
+          { time: tsOffset(-100), close: 50 },
+          { time: tsOffset(-1), close: 55 },
+        ]);
+
+  async function lateHarness() {
+    const { h, agent, marketData } = await harnessWith(lateHistory);
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const l = await seedAsset(h, { providerRef: 'LLL', symbol: 'LLL', name: 'Late Asset' });
+    const positions = [
+      { assetId: a.id, weight: 50 },
+      { assetId: l.id, weight: 50 },
+    ];
+    return { agent, marketData, a, l, positions };
+  }
+
+  it('omitting the mode is byte-identical to an explicit clip (pre-§14 regression)', async () => {
+    const { agent, positions } = await lateHarness();
+
+    const omitted = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions, range: '5Y' });
+    const explicit = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions, range: '5Y', mode: 'clip' });
+
+    expect(omitted.status).toBe(200);
+    expect(explicit.status).toBe(200);
+    expect(omitted.body).toEqual(explicit.body);
+
+    // Clip behavior is unchanged: window starts at the youngest constituent,
+    // the notice names it, and the §14 response fields are inert.
+    expect(omitted.body.mode).toBe('clip');
+    expect(omitted.body.entryEvents).toEqual([]);
+    expect(omitted.body.idleCashAvgPct).toBeNull();
+    expect(omitted.body.notice).toBe(`Limited by LLL (data since ${dayOffset(-100)})`);
+    expect(omitted.body.series[0].date).toBe(dayOffset(-100));
+    // AAA carries 150 into the clipped t₀: 0.5·(120/150) + 0.5·(55/50) → 95.
+    expect(omitted.body.series[omitted.body.series.length - 1].value).toBeCloseTo(95, 6);
+  });
+
+  it('cash mode runs the full window, reports the entry event and the idle-cash stat', async () => {
+    const { agent, l, positions } = await lateHarness();
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions, range: 'MAX', mode: 'cash' });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.mode).toBe('cash');
+    // MAX in a full-window mode anchors at the EARLIEST history, not the common start.
+    expect(res.body.series[0].date).toBe(dayOffset(-300));
+    expect(res.body.series[0].value).toBeCloseTo(100, 6);
+    expect(res.body.notice).toBeNull();
+
+    // LLL's share waits as cash, then buys in at its first close (50):
+    // end = 0.5·(120/100) + 0.5·(55/50) = 1.15 → 115.
+    expect(res.body.series[res.body.series.length - 1].value).toBeCloseTo(115, 6);
+    expect(res.body.entryEvents).toEqual([{ assetId: l.id, symbol: 'LLL', date: dayOffset(-100) }]);
+    // Axis [−300, −150, −100, −1]; cash fractions 0.5, 0.5/1.25, 0, 0 → 22.5 %.
+    expect(res.body.idleCashAvgPct).toBeCloseTo(22.5, 6);
+  });
+
+  it('redistribute mode splits the late share into AAA and rebalances on the entry day', async () => {
+    const { agent, l, positions } = await lateHarness();
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ positions, range: 'MAX', mode: 'redistribute' });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.mode).toBe('redistribute');
+    expect(res.body.series[0].date).toBe(dayOffset(-300));
+    expect(res.body.idleCashAvgPct).toBeNull();
+    expect(res.body.entryEvents).toEqual([{ assetId: l.id, symbol: 'LLL', date: dayOffset(-100) }]);
+
+    // All-in AAA until the entry (1 → 1.5 by day −150, carried to −100), then a
+    // 50/50 rebalance: 0.75·(120/150) + 0.75·(55/50) = 1.425 → 142.5 — visibly
+    // different from clip (95) and cash (115) on the same inputs.
+    expect(res.body.series[res.body.series.length - 1].value).toBeCloseTo(142.5, 6);
+
+    // Money-weighted contributions still sum to the total return.
+    const sum = res.body.contributions.reduce(
+      (acc: number, c: { contributionPct: number }) => acc + c.contributionPct,
+      0,
+    );
+    expect(sum).toBeCloseTo(res.body.stats.totalReturnPct, 6);
+  });
+
+  it('two modes on identical inputs never share a memo entry (both compute)', async () => {
+    const { agent, marketData, positions } = await lateHarness();
+    const body = { positions, range: 'MAX' };
+
+    const cash = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ ...body, mode: 'cash' });
+    expect(cash.status).toBe(200);
+    expect(marketData.calls.history).toBe(2);
+
+    const redistribute = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({ ...body, mode: 'redistribute' });
+    expect(redistribute.status).toBe(200);
+    // A fresh compute (2 more history fetches), not a memo hit from the other mode.
+    expect(marketData.calls.history).toBe(4);
+    expect(redistribute.body.series).not.toEqual(cash.body.series);
+  });
+});
+
+describe('backtestPreviewCacheKey — §14 mode separation', () => {
+  const input = {
+    positions: [{ assetId: 'a1', weight: 50 }],
+    range: '5Y' as const,
+    benchmark: null,
+  };
+
+  it('an omitted mode and an explicit clip share one memo entry', () => {
+    expect(backtestPreviewCacheKey('u1', input)).toBe(
+      backtestPreviewCacheKey('u1', { ...input, mode: 'clip' }),
+    );
+  });
+
+  it('each mode gets its own memo entry on otherwise identical inputs', () => {
+    const keys = new Set([
+      backtestPreviewCacheKey('u1', { ...input, mode: 'clip' }),
+      backtestPreviewCacheKey('u1', { ...input, mode: 'cash' }),
+      backtestPreviewCacheKey('u1', { ...input, mode: 'redistribute' }),
+    ]);
+    expect(keys.size).toBe(3);
   });
 });

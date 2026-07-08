@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
   const remove = vi.fn();
   const fitContent = vi.fn();
   const applyOptions = vi.fn();
+  const setMarkers = vi.fn();
   const addSeries = vi.fn((_def: unknown, _opts?: unknown) => ({
     setData,
     applyOptions: vi.fn(),
@@ -19,11 +20,22 @@ const mocks = vi.hoisted(() => {
     timeScale: () => ({ fitContent }),
     remove,
   }));
-  return { setData, remove, fitContent, applyOptions, addSeries, createChart };
+  const createSeriesMarkers = vi.fn(() => ({ setMarkers }));
+  return {
+    setData,
+    remove,
+    fitContent,
+    applyOptions,
+    setMarkers,
+    addSeries,
+    createChart,
+    createSeriesMarkers,
+  };
 });
 
 vi.mock('lightweight-charts', () => ({
   createChart: mocks.createChart,
+  createSeriesMarkers: mocks.createSeriesMarkers,
   AreaSeries: 'AreaSeries',
   BaselineSeries: 'BaselineSeries',
   LineSeries: 'LineSeries',
@@ -68,6 +80,32 @@ describe('PriceChart', () => {
     expect(mocks.addSeries).toHaveBeenCalledTimes(2);
     expect(screen.getByText(sampleBenchmarkSeries.label)).toBeInTheDocument();
     expect(mocks.setData).toHaveBeenCalledWith(sampleBenchmarkSeries.series);
+  });
+
+  test('entry markers ride the main series as labelled flags (§14)', () => {
+    const markers = [
+      { time: '2024-06-14', label: 'SPACEX enters' },
+      { time: '2024-09-02', label: 'LATE enters' },
+    ];
+    render(<PriceChart series={samplePriceSeries} markers={markers} />);
+
+    expect(mocks.createSeriesMarkers).toHaveBeenCalledTimes(1);
+    expect(mocks.setMarkers).toHaveBeenCalledWith(
+      markers.map((m) => ({
+        time: m.time,
+        position: 'aboveBar',
+        shape: 'arrowDown',
+        color: expect.any(String),
+        text: m.label,
+      })),
+    );
+  });
+
+  test('without markers the marker plugin is never created', () => {
+    render(<PriceChart series={samplePriceSeries} />);
+
+    expect(mocks.createSeriesMarkers).not.toHaveBeenCalled();
+    expect(mocks.setMarkers).not.toHaveBeenCalled();
   });
 
   test('asset overlays draw one line each, switch the scale to percentage mode and show legend chips (#122)', () => {

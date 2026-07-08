@@ -1,0 +1,145 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`backtest — late-listing modes (§14) > SpaceX case: one late constituent, all three modes visibly differ, with entry markers (snapshot) 1`] = `
+{
+  "cash": {
+    "endDate": "2026-01-10",
+    "entryEvents": [
+      {
+        "assetId": "SPX",
+        "date": "2026-01-06",
+        "symbol": "SPX",
+      },
+    ],
+    "idleCashAvgPct": 12.392039930923211,
+    "notice": null,
+    "series": [
+      {
+        "date": "2026-01-01",
+        "value": 100,
+      },
+      {
+        "date": "2026-01-02",
+        "value": 100.4375,
+      },
+      {
+        "date": "2026-01-03",
+        "value": 100.875,
+      },
+      {
+        "date": "2026-01-04",
+        "value": 101.3125,
+      },
+      {
+        "date": "2026-01-05",
+        "value": 101.75,
+      },
+      {
+        "date": "2026-01-06",
+        "value": 102.18750000000001,
+      },
+      {
+        "date": "2026-01-07",
+        "value": 103.875,
+      },
+      {
+        "date": "2026-01-08",
+        "value": 105.5625,
+      },
+      {
+        "date": "2026-01-09",
+        "value": 107.25,
+      },
+      {
+        "date": "2026-01-10",
+        "value": 108.9375,
+      },
+    ],
+    "startDate": "2026-01-01",
+  },
+  "clip": {
+    "endDate": "2026-01-10",
+    "entryEvents": [],
+    "idleCashAvgPct": null,
+    "notice": "Limited by SPX (data since 2026-01-06)",
+    "series": [
+      {
+        "date": "2026-01-06",
+        "value": 100,
+      },
+      {
+        "date": "2026-01-07",
+        "value": 101.60930735930735,
+      },
+      {
+        "date": "2026-01-08",
+        "value": 103.21861471861473,
+      },
+      {
+        "date": "2026-01-09",
+        "value": 104.82792207792207,
+      },
+      {
+        "date": "2026-01-10",
+        "value": 106.43722943722942,
+      },
+    ],
+    "startDate": "2026-01-06",
+  },
+  "redistribute": {
+    "endDate": "2026-01-10",
+    "entryEvents": [
+      {
+        "assetId": "SPX",
+        "date": "2026-01-06",
+        "symbol": "SPX",
+      },
+    ],
+    "idleCashAvgPct": null,
+    "notice": null,
+    "series": [
+      {
+        "date": "2026-01-01",
+        "value": 100,
+      },
+      {
+        "date": "2026-01-02",
+        "value": 100.58333333333334,
+      },
+      {
+        "date": "2026-01-03",
+        "value": 101.16666666666667,
+      },
+      {
+        "date": "2026-01-04",
+        "value": 101.75,
+      },
+      {
+        "date": "2026-01-05",
+        "value": 102.33333333333334,
+      },
+      {
+        "date": "2026-01-06",
+        "value": 102.91666666666669,
+      },
+      {
+        "date": "2026-01-07",
+        "value": 104.57291215728716,
+      },
+      {
+        "date": "2026-01-08",
+        "value": 106.22915764790766,
+      },
+      {
+        "date": "2026-01-09",
+        "value": 107.88540313852815,
+      },
+      {
+        "date": "2026-01-10",
+        "value": 109.54164862914864,
+      },
+    ],
+    "startDate": "2026-01-01",
+  },
+}
+`;
