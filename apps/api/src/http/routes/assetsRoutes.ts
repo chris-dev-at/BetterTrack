@@ -15,7 +15,9 @@ export function createAssetsRouter(ctx: AppContext): Router {
   // GET /assets/:id — meta + latest quote.
   router.get('/:id', validateParams(assetIdParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };
-    const detail = await ctx.assets.getDetail(req.authUser!.id, id);
+    const detail = await ctx.assets.getDetail(req.authUser!.id, id, {
+      baseCurrency: req.authUser!.baseCurrency,
+    });
     res.json(detail);
   });
 

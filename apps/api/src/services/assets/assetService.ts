@@ -23,7 +23,11 @@ import type { CurrencyService } from '../currency/currencyService';
  */
 export interface AssetService {
   /** Asset meta + latest quote (§6.3). */
-  getDetail(userId: string, id: string): Promise<AssetDetailResponse>;
+  getDetail(
+    userId: string,
+    id: string,
+    opts?: { baseCurrency?: string },
+  ): Promise<AssetDetailResponse>;
   /** Latest quote with stale/asOf markers (§6.3). */
   getQuote(userId: string, id: string): Promise<QuoteResponse>;
   /** Price history for a range; interval follows the §5.3 table. */
@@ -70,23 +74,29 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
   }
 
   return {
-    async getDetail(userId, id) {
+    async getDetail(userId, id, opts) {
       const row = await requireAsset(userId, id);
       const asset = toSummary(row);
+      const fx =
+        opts?.baseCurrency === undefined
+          ? currencyService
+          : currencyService.withBase(opts.baseCurrency);
       try {
         const cached = await marketData.getQuote({
           providerId: row.providerId,
           providerRef: row.providerRef,
         });
 
-        // EUR conversion for foreign assets (§6.3, §5.4). All conversion routes
-        // through the currency keystone — no inline FX math here. Best-effort:
-        // null when the spot rate is unavailable, absent when already EUR.
+        // Base-currency conversion for foreign assets (§6.3, §5.4, V3-P10d —
+        // the caller's per-user base; the `eurPrice` field name predates it).
+        // All conversion routes through the currency keystone — no inline FX
+        // math here. Best-effort: null when the spot rate is unavailable,
+        // absent when the native currency already is the base.
         let eurPriceEntry: { eurPrice: number | null } | undefined;
-        if (asset.currency !== 'EUR') {
+        if (asset.currency !== fx.baseCurrency) {
           try {
             eurPriceEntry = {
-              eurPrice: await currencyService.toBase(cached.value.price, asset.currency),
+              eurPrice: await fx.toBase(cached.value.price, asset.currency),
             };
           } catch {
             eurPriceEntry = { eurPrice: null };
@@ -98,13 +108,14 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
           quote: cached.value,
           stale: cached.stale,
           asOf: asOfIso(cached.asOf),
+          baseCurrency: fx.baseCurrency,
           ...eurPriceEntry,
         };
       } catch {
         // Meta always resolves from the stored row; the quote is best-effort, so
         // a provider outage with no cached copy degrades to a null quote rather
         // than failing the whole page (§6.3).
-        return { asset, quote: null, stale: true, asOf: null };
+        return { asset, quote: null, stale: true, asOf: null, baseCurrency: fx.baseCurrency };
       }
     },
 

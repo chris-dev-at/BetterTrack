@@ -83,12 +83,12 @@ import {
   type Transaction as DomainTransaction,
   type ValueOverTimeAsset,
 } from '../../domain/holdings';
-import { badRequest, conflict, notFound } from '../../errors';
+import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { EventBus } from '../../events';
 import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
-import type { CurrencyService } from '../currency/currencyService';
+import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 
 /**
  * Portfolio service (PROJECTPLAN.md §6.9). Owns the write-side validation and
@@ -175,7 +175,16 @@ export interface PortfolioService {
     patch: UpdateTransactionRequest,
   ): Promise<TransactionDto>;
   deleteTransaction(userId: string, portfolioId: string, id: string): Promise<void>;
-  getPortfolio(userId: string, portfolioId: string): Promise<PortfolioResponse>;
+  /**
+   * Holdings + totals (§6.9), denominated in `opts.baseCurrency` (the caller's
+   * per-user base, §5.4/V3-P10d; EUR when omitted). Conversion happens at read
+   * time only — stored amounts stay native.
+   */
+  getPortfolio(
+    userId: string,
+    portfolioId: string,
+    opts?: { baseCurrency?: string },
+  ): Promise<PortfolioResponse>;
   /**
    * The portfolio's cash movements (all sources) + rolled-up balance + the
    * sources with per-source balances — the liquidity split (§14, #220, V3-P3).
@@ -250,11 +259,18 @@ export interface PortfolioService {
     portfolioId: string,
     input: CashPreviewRequest,
   ): Promise<CashPreviewResponse>;
+  /**
+   * The value/performance series (§6.9), denominated in `opts.baseCurrency`
+   * (EUR when omitted). Non-EUR bases convert the cached EUR ingredients day
+   * by day with **historical daily FX rates** — never one spot rate across
+   * the curve — and derive the TWR from the converted values + flows, so a
+   * USD user's performance is their true USD-terms performance (V3-P10d).
+   */
   getHistory(
     userId: string,
     portfolioId: string,
     range: PortfolioHistoryRange,
-    opts?: { overlay?: boolean },
+    opts?: { overlay?: boolean; baseCurrency?: string },
   ): Promise<{
     range: PortfolioHistoryRange;
     baseCurrency: string;
@@ -272,23 +288,30 @@ const HISTORY_TTL_SECONDS = 3600; // 1 h (§6.9).
 /**
  * Redis key for the cached, full value-over-time payload of a portfolio.
  *
- * Versioned (`v4`): the cached *semantics* changed with #311 (the value curve
- * became the net-worth curve — holdings + cash — and the TWR flows moved to
- * the external-flow classification; `v3` added the #125 performance series,
- * `v2` the #122 overlays), and bumping the version also wholesale-invalidates
- * every series a *previous* deployment computed. The 1 h TTL is only refreshed
- * by writes, so without the bump a pre-deploy entry — possibly computed by
- * older, buggier code — would keep being served for up to an hour after a fix
- * ships (exactly the stale single-point graph reported in #122).
+ * Versioned (`v5`): the cached *shape* changed with V3-P10d — the payload now
+ * stores the raw EUR **ingredients** (net-worth points + external flows)
+ * instead of a precomputed performance curve, so one cached entry serves every
+ * per-user base currency via read-time conversion (`v4` was the #311 net-worth
+ * semantics, `v3` added the #125 performance series, `v2` the #122 overlays).
+ * Bumping the version also wholesale-invalidates every series a *previous*
+ * deployment computed. The 1 h TTL is only refreshed by writes, so without the
+ * bump a pre-deploy entry — possibly computed by older, buggier code — would
+ * keep being served for up to an hour after a fix ships (exactly the stale
+ * single-point graph reported in #122).
  */
 export function portfolioHistoryCacheKey(portfolioId: string): string {
-  return `portfolio:history:v4:${portfolioId}`;
+  return `portfolio:history:v5:${portfolioId}`;
 }
 
-/** The full cached graph payload: EUR value curve + TWR performance curve + per-asset overlay series. */
+/**
+ * The full cached graph payload, always EUR-denominated (the storage base):
+ * the net-worth value curve, the external TWR flows it pairs with, and the
+ * per-asset overlay series (native currency). Per-user bases are applied at
+ * read time (see `getHistory`), so this cache stays one-entry-per-portfolio.
+ */
 interface HistoryPayload {
   points: Array<{ date: string; valueEur: number }>;
-  performance: PortfolioPerformancePoint[];
+  flows: FlowPoint[];
   assets: PortfolioHistoryOverlay[];
 }
 
@@ -315,6 +338,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     logger,
   } = deps;
   const now = deps.now ?? Date.now;
+  // The STORAGE base (EUR): the cash ledger's currency and the denomination of
+  // the cached history ingredients. A caller's per-user base (V3-P10d) never
+  // replaces this — it is applied at read time via `fxFor`/`seriesInBase`.
   const baseCurrency = currencyService.baseCurrency;
 
   /** Today's UTC calendar day, the last point of the value series. */
@@ -581,7 +607,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     }
   }
 
-  /** Convert a native-currency amount to EUR at the movement date, or 400 if no FX. */
+  /**
+   * Convert a native-currency amount to EUR at the movement date, or 400 if no
+   * FX. Deliberately pinned to EUR — the cash ledger's storage currency — and
+   * NOT the caller's base (V3-P10d): this is a *write* path, and stored
+   * amounts always stay native per §5.4.
+   */
   async function toCashEur(amountNative: number, currency: string, day: string): Promise<number> {
     try {
       return await currencyService.toBase(amountNative, currency, { date: day });
@@ -592,6 +623,74 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         { currency },
       );
     }
+  }
+
+  // --- Per-user base currency (§5.4, V3-P10d) --------------------------------
+
+  /**
+   * The §5.4 conversion view for a request's effective base: the caller's
+   * per-user base when supplied, the service default (EUR) otherwise. Same
+   * FxRateSource underneath — the §5.3 caches and coalescing are shared.
+   */
+  const fxFor = (base?: string): CurrencyService =>
+    base === undefined ? currencyService : currencyService.withBase(base);
+
+  /**
+   * The (EUR-stored) cash balance in `fx`'s base at the current spot rate.
+   * Identity for the EUR base; a base whose spot rate is unavailable is a 422
+   * — cash cannot silently stay EUR inside a response that declares another
+   * denomination.
+   */
+  async function cashInBase(cashEur: number, fx: CurrencyService): Promise<number> {
+    if (fx.baseCurrency === baseCurrency || cashEur === 0) return cashEur;
+    try {
+      return await fx.toBase(cashEur, baseCurrency);
+    } catch {
+      throw unprocessable(
+        `Exchange rates for your base currency (${fx.baseCurrency}) are currently unavailable.`,
+        'BASE_FX_UNAVAILABLE',
+      );
+    }
+  }
+
+  /**
+   * The cached EUR series ingredients converted into `fx`'s base, each day at
+   * that day's **historical** FX rate (§5.4) — a value curve re-priced with one
+   * spot rate would fake the FX leg of every past day. Identity (no lookups)
+   * for the EUR base. Days before the FX pair's recorded history (beyond the
+   * nearest-prior window) are dropped from points and flows alike — the curve
+   * starts where it can be stated honestly in the requested base.
+   */
+  async function seriesInBase(
+    payload: HistoryPayload,
+    fx: CurrencyService,
+  ): Promise<{ points: HistoryPayload['points']; flows: FlowPoint[] }> {
+    if (fx.baseCurrency === baseCurrency) return { points: payload.points, flows: payload.flows };
+
+    const dates = new Set<string>();
+    for (const p of payload.points) dates.add(p.date);
+    for (const f of payload.flows) dates.add(f.date);
+
+    // One rate per distinct day; the FX source memoises the pair's daily-close
+    // series, so this is one provider fetch + N map lookups, not N fetches.
+    const rateByDate = new Map<string, number>();
+    for (const date of dates) {
+      try {
+        rateByDate.set(date, await fx.getRate(baseCurrency, fx.baseCurrency, { date }));
+      } catch (err) {
+        if (err instanceof FxRateUnavailableError) continue;
+        throw err;
+      }
+    }
+
+    return {
+      points: payload.points
+        .filter((p) => rateByDate.has(p.date))
+        .map((p) => ({ date: p.date, valueEur: p.valueEur * rateByDate.get(p.date)! })),
+      flows: payload.flows
+        .filter((f) => rateByDate.has(f.date))
+        .map((f) => ({ date: f.date, flowEur: f.flowEur * rateByDate.get(f.date)! })),
+    };
   }
 
   /**
@@ -642,7 +741,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /** The empty graph payload (no transactions / nothing convertible to plot). */
-  const emptyHistory = (): HistoryPayload => ({ points: [], performance: [], assets: [] });
+  const emptyHistory = (): HistoryPayload => ({ points: [], flows: [], assets: [] });
 
   /**
    * The full value-over-time payload for a portfolio (first transaction or
@@ -669,7 +768,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         if (
           parsed &&
           Array.isArray(parsed.points) &&
-          Array.isArray(parsed.performance) &&
+          Array.isArray(parsed.flows) &&
           Array.isArray(parsed.assets)
         ) {
           return parsed;
@@ -705,17 +804,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // The absolute curve is the NET-WORTH curve (#311): holdings value plus
     // the end-of-day cash balance — a deposit moves it by exactly its amount,
     // a cash-funded buy leaves it flat at the trade moment (money changes
-    // form). Performance mode (#125) links the same curve against EXTERNAL
-    // flows only: ledger deposits/withdrawals plus transactions not funded
-    // from cash. timeWeightedReturn aggregates same-day flows, so the two
-    // sparse flow series concatenate safely.
+    // form). The EXTERNAL flows (#125) — ledger deposits/withdrawals plus
+    // transactions not funded from cash — are cached alongside rather than a
+    // precomputed TWR curve, because the performance in a non-EUR base needs
+    // BOTH ingredients converted per day first (V3-P10d); timeWeightedReturn
+    // aggregates same-day flows, so the two sparse series concatenate safely.
     const points = netWorthSeries({ holdingsValues: legs.points, movements, today });
-    const performance = timeWeightedReturn(points, [
-      ...legs.flows,
-      ...externalCashFlowsForTwr(movements),
-    ]);
+    const flows = [...legs.flows, ...externalCashFlowsForTwr(movements)];
 
-    const payload: HistoryPayload = { points, performance, assets: legs.overlays };
+    const payload: HistoryPayload = { points, flows, assets: legs.overlays };
     await redis.set(key, JSON.stringify(payload), 'EX', HISTORY_TTL_SECONDS);
     return payload;
   }
@@ -1188,15 +1285,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       await invalidateHistory(portfolioId);
     },
 
-    async getPortfolio(userId, portfolioId) {
+    async getPortfolio(userId, portfolioId, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
+      const fx = fxFor(opts?.baseCurrency);
       // Cash is a first-class overview line (§14): loaded up-front so it shows
-      // even for a portfolio that holds only cash (no transactions yet).
-      const cashEur = await cashBalanceFor(portfolioId);
+      // even for a portfolio that holds only cash (no transactions yet). The
+      // ledger stores EUR; the overview reports it in the caller's base at the
+      // current spot rate — the same moment the holdings are priced at.
+      const cashValue = await cashInBase(await cashBalanceFor(portfolioId), fx);
       const empty: PortfolioResponse = {
-        baseCurrency,
+        baseCurrency: fx.baseCurrency,
         holdings: [],
-        totals: emptyTotals(cashEur),
+        totals: emptyTotals(cashValue),
       };
 
       const txns = await transactionRepo.listForPortfolio(portfolioId);
@@ -1220,9 +1320,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             providerRef: asset.providerRef,
           });
           quote = { price: cached.value.price, prevClose: cached.value.prevClose ?? null };
-          if (asset.currency !== baseCurrency) {
+          if (asset.currency !== fx.baseCurrency) {
             // Throws if no spot rate is available → degrade to no quote.
-            await currencyService.getRate(asset.currency, baseCurrency);
+            await fx.getRate(asset.currency, fx.baseCurrency);
           }
         } catch {
           quote = null;
@@ -1231,7 +1331,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
 
       const domainTxns = txns.map(recordToDomain);
-      const holdings = await deriveHoldings(domainTxns, assetInputs, currencyService);
+      // The converter carries the caller's base (§5.4) — the pure domain never
+      // learns where it came from.
+      const holdings = await deriveHoldings(domainTxns, assetInputs, fx);
 
       const holdingDtos: HoldingDto[] = holdings.map((h) => {
         const asset = assetsById.get(h.assetId);
@@ -1251,7 +1353,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         };
       });
 
-      return { baseCurrency, holdings: holdingDtos, totals: computeTotals(holdings, cashEur) };
+      return {
+        baseCurrency: fx.baseCurrency,
+        holdings: holdingDtos,
+        totals: computeTotals(holdings, cashValue),
+      };
     },
 
     async getCashMovements(userId, portfolioId) {
@@ -1570,10 +1676,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // missing — portfolio is a 404, not a silent fall-back to the default.
       await requireOwnedPortfolio(userId, portfolioId);
       const overlay = opts?.overlay ?? false;
+      const fx = fxFor(opts?.baseCurrency);
 
       const today = todayIso();
       const payload = await loadSeries(portfolioId);
-      const points = sliceRange(payload.points, range, today);
+      // Re-denominate the cached EUR ingredients into the caller's base with
+      // per-day historical rates (identity for EUR), THEN derive the TWR — a
+      // USD user's performance includes the FX leg of holding EUR-priced
+      // assets, exactly as their real USD-terms return does (V3-P10d).
+      const series = await seriesInBase(payload, fx);
+      const points = sliceRange(series.points, range, today);
       // The performance curve is cumulative since inception. MAX serves it
       // unchanged: the domain index is anchored at 1 (0 %) *before* day one,
       // so day one's execution→close move (and its fee drag) is genuine
@@ -1581,9 +1693,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // divide it out of every response. A range slice (1M/6M/1Y/5Y) IS
       // re-based to 0 % at the window start (#125): it shows the TWR of that
       // window, not an arbitrary offset. Compounding, not subtraction.
-      const perfSlice = sliceRange(payload.performance, range, today);
+      const perfSlice = sliceRange(timeWeightedReturn(series.points, series.flows), range, today);
       const performance = range === 'MAX' ? perfSlice : rebasePerformance(perfSlice);
-      if (!overlay) return { range, baseCurrency, points, performance };
+      if (!overlay) return { range, baseCurrency: fx.baseCurrency, points, performance };
 
       // Overlays share the curve's daily grid, so the same range slice keeps
       // them point-for-point aligned. An asset whose data lies entirely outside
@@ -1591,7 +1703,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const assets = payload.assets
         .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
         .filter((a) => a.points.length > 0);
-      return { range, baseCurrency, points, performance, assets };
+      return { range, baseCurrency: fx.baseCurrency, points, performance, assets };
     },
 
     invalidateHistory,

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { MeResponse, PortfolioSummary } from '@bettertrack/contracts';
 
@@ -19,6 +19,7 @@ vi.mock('../../lib/settingsApi', () => ({
 }));
 
 import { I18nProvider } from '../../i18n';
+import { getMoneyCurrency, setMoneyCurrency } from '../../lib/format';
 import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
@@ -70,21 +71,28 @@ beforeEach(() => {
   vi.mocked(getAccountSettings).mockResolvedValue({
     defaultPortfolioVisibility: 'private',
     locale: 'en',
+    baseCurrency: 'EUR',
   });
   vi.mocked(updateAccountSettings).mockResolvedValue({
     defaultPortfolioVisibility: 'friends',
     locale: 'en',
+    baseCurrency: 'EUR',
   });
 });
 
+// The default money currency is module-level state — restore EUR so tests
+// stay order-independent.
+afterEach(() => setMoneyCurrency('EUR'));
+
 describe('AccountSettingsPage', () => {
-  test('renders identity and the fixed EUR base-currency marker', async () => {
+  test('renders identity fields; the base currency moved to its own picker (V3-P10d)', async () => {
     renderPage();
 
     expect(await screen.findByText('ada')).toBeInTheDocument();
     expect(screen.getByText('ada@example.com')).toBeInTheDocument();
     expect(screen.getByText('Member since')).toBeInTheDocument();
-    expect(screen.getByText('EUR (fixed)')).toBeInTheDocument();
+    // The V2 "EUR (fixed)" identity marker is gone — the base is configurable now.
+    expect(screen.queryByText(/\(fixed\)/)).not.toBeInTheDocument();
   });
 
   test('change-password submit calls the client with current + new', async () => {
@@ -137,6 +145,7 @@ describe('AccountSettingsPage', () => {
     vi.mocked(updateAccountSettings).mockResolvedValue({
       defaultPortfolioVisibility: 'private',
       locale: 'de',
+      baseCurrency: 'EUR',
     });
     renderPage();
 
@@ -149,6 +158,33 @@ describe('AccountSettingsPage', () => {
     await waitFor(() => expect(updateAccountSettings).toHaveBeenCalledWith({ locale: 'de' }));
     // … and switches the app at runtime without a reload (German heading appears).
     expect(await screen.findByText('Konto')).toBeInTheDocument();
+  });
+
+  test('the base-currency picker persists the choice and flips the money formatter (V3-P10d)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateAccountSettings).mockResolvedValue({
+      defaultPortfolioVisibility: 'private',
+      locale: 'en',
+      baseCurrency: 'USD',
+    });
+    renderPage();
+
+    // Defaults to EUR (the migration/backfill default) with all four options.
+    const picker = await screen.findByLabelText('Base currency');
+    await waitFor(() => expect(picker).toHaveValue('EUR'));
+    for (const code of ['EUR', 'USD', 'CHF', 'GBP']) {
+      expect(screen.getByRole('option', { name: new RegExp(`^${code} — `) })).toBeInTheDocument();
+    }
+
+    await user.selectOptions(picker, 'USD');
+
+    // Persists the choice server-side …
+    await waitFor(() =>
+      expect(updateAccountSettings).toHaveBeenCalledWith({ baseCurrency: 'USD' }),
+    );
+    // … and immediately drives the display layer's default money currency, so
+    // every omitted-currency MoneyText re-renders in the new base.
+    await waitFor(() => expect(getMoneyCurrency()).toBe('USD'));
   });
 
   test('turning sharing on PATCHes the default portfolio to friends', async () => {

@@ -1,7 +1,12 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 
+import { setMoneyCurrency } from '../lib/format';
 import { MoneyText } from './MoneyText';
+
+// The default currency is module-level state driven by the auth runtime
+// (§5.4, V3-P10d) — reset it so tests stay order-independent.
+afterEach(() => setMoneyCurrency('EUR'));
 
 describe('MoneyText', () => {
   test('renders symbol-last "1.234,56 €" (PROJECTPLAN §7.1)', () => {
@@ -19,24 +24,43 @@ describe('MoneyText', () => {
     expect(container.textContent).toContain('100,00 $');
   });
 
-  test('shows the EUR equivalent in parens for a non-EUR amount', () => {
-    const { container } = render(<MoneyText amount={100} currency="USD" eurAmount={92.5} />);
+  test('shows the base-currency equivalent in parens for a non-base amount', () => {
+    const { container } = render(<MoneyText amount={100} currency="USD" convertedAmount={92.5} />);
     const inner = container.querySelector('span.ml-1');
     expect(inner?.textContent).toBe('(92,50 €)');
   });
 
-  test('hides the EUR equivalent when the native currency is already EUR', () => {
-    const { container } = render(<MoneyText amount={100} currency="EUR" eurAmount={100} />);
+  test('hides the equivalent when the native currency is already the base', () => {
+    const { container } = render(<MoneyText amount={100} currency="EUR" convertedAmount={100} />);
     expect(container.querySelector('span.ml-1')).not.toBeInTheDocument();
   });
 
-  test('hides the EUR equivalent when eurAmount is omitted', () => {
+  test('hides the equivalent when convertedAmount is omitted', () => {
     const { container } = render(<MoneyText amount={100} currency="USD" />);
     expect(container.querySelector('span.ml-1')).not.toBeInTheDocument();
   });
 
-  test('hides the EUR equivalent when eurAmount is null', () => {
-    const { container } = render(<MoneyText amount={100} currency="USD" eurAmount={null} />);
+  test('hides the equivalent when convertedAmount is null', () => {
+    const { container } = render(<MoneyText amount={100} currency="USD" convertedAmount={null} />);
+    expect(container.querySelector('span.ml-1')).not.toBeInTheDocument();
+  });
+
+  test('a USD base renders omitted-currency amounts in $ (§5.4, V3-P10d)', () => {
+    setMoneyCurrency('USD');
+    const { container } = render(<MoneyText amount={1234.56} />);
+    expect(container.textContent).toContain('1.234,56 $');
+  });
+
+  test('a USD base shows the parenthesised equivalent in $ for a EUR-native amount', () => {
+    setMoneyCurrency('USD');
+    const { container } = render(<MoneyText amount={100} currency="EUR" convertedAmount={108} />);
+    const inner = container.querySelector('span.ml-1');
+    expect(inner?.textContent).toBe('(108,00 $)');
+  });
+
+  test('a USD base hides the equivalent for a USD-native amount', () => {
+    setMoneyCurrency('USD');
+    const { container } = render(<MoneyText amount={100} currency="USD" convertedAmount={100} />);
     expect(container.querySelector('span.ml-1')).not.toBeInTheDocument();
   });
 

@@ -73,38 +73,59 @@ export type UpdateNotificationSettingsRequest = z.infer<
   typeof updateNotificationSettingsRequestSchema
 >;
 
-// --- Account settings (§6.9, §6.11, §13.2 V2-P9) ---------------------------
+// --- Account settings (§6.9, §6.11, §13.2 V2-P9, §13.3 V3-P10d) ------------
 
 /**
- * Settings → Account defaults (§6.9, V2-P9). Currently one field: the
- * **default portfolio visibility** applied when a new portfolio is created —
- * `private` (default) or `friends` (all of my friends). "Selected friends" is
- * future work; the enum is the shared two-value visibility so it can extend
- * later. Changing this only affects the *default* at creation time: existing
- * portfolios and explicit per-item toggles are untouched.
+ * The base currencies a user can pick (§5.4, §13.3 V3-P10d). EUR is the
+ * default; the initial set covers the owner-approved USD/CHF/GBP. Growing the
+ * set is a one-line change here — every conversion already routes through the
+ * §5.4 keystone with the base as a parameter, and FX crosses through EUR via
+ * Yahoo's `EUR{CCY}=X` pairs, so no per-currency code exists anywhere.
+ */
+export const BASE_CURRENCIES = ['EUR', 'USD', 'CHF', 'GBP'] as const;
+export type BaseCurrency = (typeof BASE_CURRENCIES)[number];
+export const baseCurrencySchema = z.enum(BASE_CURRENCIES);
+
+/**
+ * Settings → Account defaults (§6.9, V2-P9; §13.3 V3-P1 + V3-P10d):
+ *  - **default portfolio visibility** applied when a new portfolio is created —
+ *    `private` (default) or `friends`. Changing it only affects the *default*
+ *    at creation time: existing portfolios and per-item toggles are untouched.
+ *  - **locale** — the UI-language preference (§13.3 V3-P1); EN by default.
+ *  - **baseCurrency** — the currency every valuation/graph/report is rendered
+ *    in (§5.4: a read-time parameter only; stored amounts stay native).
  */
 export const accountSettingsResponseSchema = z
   .object({
     defaultPortfolioVisibility: portfolioVisibilitySchema,
     /** The user's UI-language preference (§13.3 V3-P1); EN by default. */
     locale: localeSchema,
+    /** The user's base currency (§13.3 V3-P10d); EUR by default. */
+    baseCurrency: baseCurrencySchema,
   })
   .strict();
 export type AccountSettingsResponse = z.infer<typeof accountSettingsResponseSchema>;
 
 /**
  * `PATCH /settings/account` body — a **partial** account-settings update: supply
- * the default portfolio visibility, the UI language, or both. At least one field
- * is required, mirroring the notification-matrix PATCH. Omitted fields are left
- * untouched.
+ * any of the default portfolio visibility, the UI language, or the base
+ * currency. At least one field is required, mirroring the notification-matrix
+ * PATCH. Omitted fields are left untouched.
  */
 export const updateAccountSettingsRequestSchema = z
   .object({
     defaultPortfolioVisibility: portfolioVisibilitySchema.optional(),
     locale: localeSchema.optional(),
+    baseCurrency: baseCurrencySchema.optional(),
   })
   .strict()
-  .refine((body) => body.defaultPortfolioVisibility !== undefined || body.locale !== undefined, {
-    message: 'At least one setting is required.',
-  });
+  .refine(
+    (body) =>
+      body.defaultPortfolioVisibility !== undefined ||
+      body.locale !== undefined ||
+      body.baseCurrency !== undefined,
+    {
+      message: 'At least one setting is required.',
+    },
+  );
 export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;

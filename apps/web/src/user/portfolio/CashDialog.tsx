@@ -191,13 +191,15 @@ export function CashDialog({
               t('portfolio.cash.calculating')
             ) : (
               <>
-                {t('portfolio.cash.available')} <MoneyText amount={preview.availableEur} /> &rarr;{' '}
+                {t('portfolio.cash.available')}{' '}
+                <MoneyText amount={preview.availableEur} currency="EUR" /> &rarr;{' '}
                 <span className={blockedByPreview ? 'text-red-400' : 'text-neutral-200'}>
-                  <MoneyText amount={preview.afterEur} />
+                  <MoneyText amount={preview.afterEur} currency="EUR" />
                 </span>
                 {blockedByPreview ? (
                   <span className="ml-1 text-red-400">
-                    ({t('portfolio.cash.short')} <MoneyText amount={preview.shortfallEur} />)
+                    ({t('portfolio.cash.short')}{' '}
+                    <MoneyText amount={preview.shortfallEur} currency="EUR" />)
                   </span>
                 ) : null}
               </>

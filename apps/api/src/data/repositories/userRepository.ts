@@ -182,6 +182,11 @@ export function createUserRepository(db: Database) {
       await db.update(users).set({ locale, updatedAt: new Date() }).where(eq(users.id, id));
     },
 
+    /** Set the user's base currency (§5.4, §13.3 V3-P10d). */
+    async setBaseCurrency(id: string, baseCurrency: string): Promise<void> {
+      await db.update(users).set({ baseCurrency, updatedAt: new Date() }).where(eq(users.id, id));
+    },
+
     async setLastLogin(id: string, when: Date): Promise<void> {
       await db
         .update(users)
