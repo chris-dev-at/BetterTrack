@@ -521,16 +521,16 @@ describe('backtestPreviewCacheKey — §14 mode separation', () => {
   };
 
   it('an omitted mode and an explicit clip share one memo entry', () => {
-    expect(backtestPreviewCacheKey('u1', input)).toBe(
-      backtestPreviewCacheKey('u1', { ...input, mode: 'clip' }),
+    expect(backtestPreviewCacheKey('u1', input, 'EUR')).toBe(
+      backtestPreviewCacheKey('u1', { ...input, mode: 'clip' }, 'EUR'),
     );
   });
 
   it('each mode gets its own memo entry on otherwise identical inputs', () => {
     const keys = new Set([
-      backtestPreviewCacheKey('u1', { ...input, mode: 'clip' }),
-      backtestPreviewCacheKey('u1', { ...input, mode: 'cash' }),
-      backtestPreviewCacheKey('u1', { ...input, mode: 'redistribute' }),
+      backtestPreviewCacheKey('u1', { ...input, mode: 'clip' }, 'EUR'),
+      backtestPreviewCacheKey('u1', { ...input, mode: 'cash' }, 'EUR'),
+      backtestPreviewCacheKey('u1', { ...input, mode: 'redistribute' }, 'EUR'),
     ]);
     expect(keys.size).toBe(3);
   });
