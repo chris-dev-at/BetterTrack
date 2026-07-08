@@ -6,10 +6,12 @@ import {
   idParamSchema,
   updateAccountSettingsRequestSchema,
   updateNotificationSettingsRequestSchema,
+  updateTaxSettingsRequestSchema,
   type CreateApiKeyRequest,
   type CreateOAuthClientRequest,
   type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
+  type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
@@ -60,6 +62,20 @@ export function createSettingsRouter(ctx: AppContext): Router {
       locale: body.locale,
       baseCurrency: body.baseCurrency,
     });
+    res.json(settings);
+  });
+
+  // GET /settings/taxes — the caller's tax mode (+ country), V3-P4 (§13.3).
+  router.get('/taxes', async (req, res) => {
+    const settings = await ctx.tax.getSettings(req.authUser!.id);
+    res.json(settings);
+  });
+
+  // PATCH /settings/taxes — switch the tax mode; applies forward only (§16
+  // 2026-07-08: existing sells/dividends are never recomputed).
+  router.patch('/taxes', validateBody(updateTaxSettingsRequestSchema), async (req, res) => {
+    const body = req.valid?.body as UpdateTaxSettingsRequest;
+    const settings = await ctx.tax.updateSettings(req.authUser!.id, body);
     res.json(settings);
   });
 

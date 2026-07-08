@@ -38,6 +38,10 @@ export interface CashMovementRecord {
   transferId: string | null;
   /** The other leg's source on a transfer leg; null otherwise (V3-P3). */
   counterpartSourceId: string | null;
+  /** The dividend a `dividend` inflow / its tax settlement belongs to (V3-P4). */
+  dividendId: string | null;
+  /** Vienna tax year of a `tax_withholding` / `tax_refund`; null otherwise (V3-P4). */
+  taxYear: number | null;
   executedAt: Date;
   note: string | null;
   createdAt: Date;
@@ -53,6 +57,8 @@ export interface NewCashMovement {
   transactionId?: string | null;
   transferId?: string | null;
   counterpartSourceId?: string | null;
+  dividendId?: string | null;
+  taxYear?: number | null;
 }
 
 function toRecord(row: CashMovementRow): CashMovementRecord {
@@ -65,6 +71,8 @@ function toRecord(row: CashMovementRow): CashMovementRecord {
     transactionId: row.transactionId ?? null,
     transferId: row.transferId ?? null,
     counterpartSourceId: row.counterpartSourceId ?? null,
+    dividendId: row.dividendId ?? null,
+    taxYear: row.taxYear ?? null,
     executedAt: row.executedAt,
     note: row.note ?? null,
     createdAt: row.createdAt,
@@ -80,6 +88,8 @@ function toInsertValues(portfolioId: string, movement: NewCashMovement) {
     transactionId: movement.transactionId ?? null,
     transferId: movement.transferId ?? null,
     counterpartSourceId: movement.counterpartSourceId ?? null,
+    dividendId: movement.dividendId ?? null,
+    taxYear: movement.taxYear ?? null,
     executedAt: movement.executedAt,
     note: movement.note,
   };

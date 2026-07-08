@@ -126,7 +126,8 @@ describe('cashBalance', () => {
   });
 
   it('rejects an unknown kind', () => {
-    expect(() => cashBalance([mv('dividend' as CashMovementKind, 10, '2026-01-05')])).toThrow(
+    // 'dividend' graduated to a real kind in V3-P4 — probe with true garbage.
+    expect(() => cashBalance([mv('jackpot' as CashMovementKind, 10, '2026-01-05')])).toThrow(
       CashLedgerError,
     );
   });

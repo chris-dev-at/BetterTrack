@@ -100,6 +100,7 @@ function buildInertContext(): AppContext {
     assets: inertService('assets'),
     search: inertService('search'),
     portfolio: inertService('portfolio'),
+    tax: inertService('tax'),
     customAssets: inertService('customAssets'),
     conglomerate: inertService('conglomerate'),
     backtest: inertService('backtest'),

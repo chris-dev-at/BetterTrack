@@ -19,6 +19,7 @@ import { createNotificationRepository } from '../data/repositories/notificationR
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
+import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
@@ -81,6 +82,7 @@ import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createSessionService } from '../services/sessions/sessionService';
 import { createSocialService, type SocialService } from '../services/social/socialService';
+import { createTaxService, type TaxService } from '../services/tax/taxService';
 import {
   createWorkboardService,
   type WorkboardService,
@@ -108,6 +110,8 @@ export interface AppContext {
   search: SearchService;
   /** Transactions, holdings/totals and the value-over-time series (§6.9). */
   portfolio: PortfolioService;
+  /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
+  tax: TaxService;
   /** Custom investments + their value-points editor (§6.9). */
   customAssets: CustomAssetService;
   /** Conglomerate CRUD — user-defined weighted asset baskets (§6.5). */
@@ -316,6 +320,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const transactionRepo = createTransactionRepository(db);
   const cashMovementRepo = createCashMovementRepository(db);
   const cashSourceRepo = createCashSourceRepository(db);
+  // Tax engine (V3-P4): built before the portfolio service, which folds its
+  // per-sell tax plans into transaction writes.
+  const taxRepo = createTaxRepository(db);
+  const tax = createTaxService({
+    taxRepo,
+    transactionRepo,
+    cashMovementRepo,
+    cashSourceRepo,
+    portfolioRepo,
+    currencyService: currency,
+    redis,
+    logger,
+  });
   const portfolio = createPortfolioService({
     portfolioRepo,
     transactionRepo,
@@ -326,6 +343,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     currencyService: currency,
     referenceBackfill,
     redis,
+    taxService: tax,
     friendshipRepo,
     events,
     logger,
@@ -424,6 +442,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     assets,
     search,
     portfolio,
+    tax,
     customAssets,
     conglomerate,
     backtest: backtestPreview,
