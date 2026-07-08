@@ -9,7 +9,28 @@ import * as portfolioApi from '../../lib/portfolioApi';
 
 import { CashDialog } from './CashDialog';
 
-function renderDialog(initialKind: 'deposit' | 'withdrawal' = 'deposit') {
+import type { CashSource } from '@bettertrack/contracts';
+
+function cashSource(over: Partial<CashSource>): CashSource {
+  return {
+    id: 'src-x',
+    name: 'Source',
+    type: 'cash',
+    isMain: false,
+    archivedAt: null,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    balanceEur: 0,
+    ...over,
+  };
+}
+
+const MAIN = cashSource({ id: 'src-main', name: 'Main', isMain: true, balanceEur: 1000 });
+const BANK = cashSource({ id: 'src-bank', name: 'Bank', type: 'bank', balanceEur: 500 });
+
+function renderDialog(
+  initialKind: 'deposit' | 'withdrawal' = 'deposit',
+  extra: Partial<React.ComponentProps<typeof CashDialog>> = {},
+) {
   const onClose = vi.fn();
   const onSubmitted = vi.fn();
   render(
@@ -19,6 +40,7 @@ function renderDialog(initialKind: 'deposit' | 'withdrawal' = 'deposit') {
       onClose={onClose}
       onSubmitted={onSubmitted}
       today="2026-07-02"
+      {...extra}
     />,
   );
   return { onClose, onSubmitted };
@@ -97,6 +119,47 @@ describe('CashDialog', () => {
     );
     expect(screen.getByText(/short/i)).toBeInTheDocument();
     expect(portfolioApi.withdrawCash).not.toHaveBeenCalled();
+  });
+
+  test('keeps the source picker out of the way when only Main exists', () => {
+    renderDialog('deposit', { sources: [MAIN] });
+    expect(screen.queryByLabelText('Cash source')).not.toBeInTheDocument();
+  });
+
+  test('offers a source picker (default Main) and posts the chosen source', async () => {
+    vi.mocked(portfolioApi.depositCash).mockResolvedValue({
+      movement: {
+        id: 'm1',
+        kind: 'deposit',
+        amountEur: 500,
+        sourceId: 'src-bank',
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-02T00:00:00.000Z',
+        note: null,
+        createdAt: '2026-07-02T00:00:00.000Z',
+      },
+      sourceBalanceEur: 1000,
+      balanceEur: 1500,
+    });
+    const user = userEvent.setup();
+    renderDialog('deposit', { sources: [MAIN, BANK] });
+
+    const picker = screen.getByLabelText('Cash source');
+    expect(picker).toHaveValue('src-main');
+    await user.selectOptions(picker, 'src-bank');
+    await user.type(screen.getByLabelText('Amount'), '500');
+    await user.click(screen.getByRole('button', { name: 'Deposit cash' }));
+
+    await waitFor(() =>
+      expect(portfolioApi.depositCash).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ amountEur: 500, sourceId: 'src-bank' }),
+      ),
+    );
   });
 
   test('surfaces the server insufficient-cash error if a race lets a bad withdrawal through', async () => {

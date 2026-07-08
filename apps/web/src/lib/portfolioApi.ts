@@ -2,6 +2,9 @@ import {
   cashMovementResponseSchema,
   cashMovementsResponseSchema,
   cashPreviewResponseSchema,
+  cashSourceListResponseSchema,
+  cashSourceResponseSchema,
+  cashTransferResponseSchema,
   createCustomAssetResponseSchema,
   customAssetSchema,
   portfolioHistoryResponseSchema,
@@ -9,6 +12,7 @@ import {
   portfolioMutationResponseSchema,
   portfolioResponseSchema,
   recategorizationStatusResponseSchema,
+  setCashBalanceResponseSchema,
   transactionListResponseSchema,
   transactionSchema,
   updatePortfolioResponseSchema,
@@ -18,6 +22,11 @@ import {
   type CashMovementsResponse,
   type CashPreviewRequest,
   type CashPreviewResponse,
+  type CashSource,
+  type CashSourceListResponse,
+  type CashTransferRequest,
+  type CashTransferResponse,
+  type CreateCashSourceRequest,
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
   type CustomAsset,
@@ -27,9 +36,12 @@ import {
   type PortfolioResponse,
   type PortfolioSummary,
   type RecategorizationStatusResponse,
+  type SetCashBalanceRequest,
+  type SetCashBalanceResponse,
   type Transaction,
   type TransactionInput,
   type TransactionListResponse,
+  type UpdateCashSourceRequest,
   type UpdateCustomAssetRequest,
   type UpdatePortfolioRequest,
   type UpdateTransactionRequest,
@@ -242,6 +254,111 @@ export async function previewCash(
     { method: 'POST', body, signal },
   );
   return cashPreviewResponseSchema.parse(data);
+}
+
+// --- Cash sources (V3-P3) ----------------------------------------------------
+
+/**
+ * `GET /portfolios/:id/cash/sources?includeArchived=` — the portfolio's cash
+ * sources (Main first) with per-source balances (V3-P3). Active only by default.
+ */
+export async function listCashSources(
+  portfolioId: string,
+  includeArchived = false,
+  signal?: AbortSignal,
+): Promise<CashSourceListResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources`,
+    { query: includeArchived ? { includeArchived: 'true' } : {}, signal },
+  );
+  return cashSourceListResponseSchema.parse(data);
+}
+
+/** `POST /portfolios/:id/cash/sources` — create a named cash source (V3-P3). */
+export async function createCashSource(
+  portfolioId: string,
+  body: CreateCashSourceRequest,
+): Promise<CashSource> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources`,
+    { method: 'POST', body },
+  );
+  return cashSourceResponseSchema.parse(data).source;
+}
+
+/** `PATCH /portfolios/:id/cash/sources/:sourceId` — rename / relabel a source (V3-P3). */
+export async function updateCashSource(
+  portfolioId: string,
+  sourceId: string,
+  patch: UpdateCashSourceRequest,
+): Promise<CashSource> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources/${encodeURIComponent(sourceId)}`,
+    { method: 'PATCH', body: patch },
+  );
+  return cashSourceResponseSchema.parse(data).source;
+}
+
+/** `POST /portfolios/:id/cash/sources/:sourceId/archive` — soft-archive a €0.00 source (V3-P3). */
+export async function archiveCashSource(
+  portfolioId: string,
+  sourceId: string,
+): Promise<CashSource> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources/${encodeURIComponent(
+      sourceId,
+    )}/archive`,
+    { method: 'POST' },
+  );
+  return cashSourceResponseSchema.parse(data).source;
+}
+
+/** `POST /portfolios/:id/cash/sources/:sourceId/restore` — undo an archive (V3-P3). */
+export async function restoreCashSource(
+  portfolioId: string,
+  sourceId: string,
+): Promise<CashSource> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources/${encodeURIComponent(
+      sourceId,
+    )}/restore`,
+    { method: 'POST' },
+  );
+  return cashSourceResponseSchema.parse(data).source;
+}
+
+/**
+ * `POST /portfolios/:id/cash/transfer` — move money between two active sources
+ * as an atomic paired movement; never a TWR external flow (V3-P3).
+ */
+export async function transferCash(
+  portfolioId: string,
+  body: CashTransferRequest,
+): Promise<CashTransferResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/transfer`,
+    { method: 'POST', body },
+  );
+  return cashTransferResponseSchema.parse(data);
+}
+
+/**
+ * `POST /portfolios/:id/cash/sources/:sourceId/set-balance` — "set balance to X"
+ * (V3-P3, §16): the server computes the signed delta and records it as a normal
+ * deposit / withdrawal movement, keeping the audit trail intact.
+ */
+export async function setCashBalance(
+  portfolioId: string,
+  sourceId: string,
+  body: SetCashBalanceRequest,
+): Promise<SetCashBalanceResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources/${encodeURIComponent(
+      sourceId,
+    )}/set-balance`,
+    { method: 'POST', body },
+  );
+  return setCashBalanceResponseSchema.parse(data);
 }
 
 // --- Custom assets ---------------------------------------------------------

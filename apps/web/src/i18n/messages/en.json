@@ -636,7 +636,8 @@
       "subnav": {
         "overview": "Overview",
         "transactions": "Transactions",
-        "customAssets": "Custom Assets"
+        "customAssets": "Custom Assets",
+        "cash": "Cash"
       },
       "transactionsComingSoon": {
         "description": "The full transaction ledger — every buy and sell, editable, with realized P/L — lands with the Portfolio phase."
@@ -694,7 +695,101 @@
       "amountRequired": "Enter an amount greater than 0.",
       "blockedError": "That would take the cash balance negative.",
       "invalidDate": "Pick a valid date.",
-      "saveError": "Could not save. Please try again."
+      "saveError": "Could not save. Please try again.",
+      "sourceLabel": "Cash source"
+    },
+    "cashSources": {
+      "title": "Cash sources",
+      "subtitle": "Split your liquidity across bank, retirement and cash accounts — each with its own balance and history.",
+      "addButton": "Add source",
+      "transferButton": "Transfer",
+      "depositButton": "Deposit",
+      "withdrawButton": "Withdraw",
+      "showArchived": "Show archived",
+      "hideArchived": "Hide archived",
+      "mainBadge": "Main",
+      "archivedBadge": "Archived",
+      "totalLabel": "Total liquid",
+      "shareLabel": "Share",
+      "balanceColumn": "Balance",
+      "typeColumn": "Type",
+      "nameColumn": "Source",
+      "actionsColumn": "Actions",
+      "empty": "No cash sources yet.",
+      "loadError": "Could not load cash sources. Please try again.",
+      "listAriaLabel": "Cash sources",
+      "setBalanceAction": "Set balance",
+      "renameAction": "Rename",
+      "archiveAction": "Archive",
+      "restoreAction": "Restore",
+      "archiveConfirm": "Archive?",
+      "actionError": "Could not update the source. Please try again.",
+      "type": {
+        "bank": "Bank",
+        "retirement": "Retirement",
+        "cash": "Cash",
+        "custom": "Custom"
+      },
+      "kind": {
+        "deposit": "Deposit",
+        "withdrawal": "Withdrawal",
+        "buy": "Buy",
+        "sell_proceeds": "Sale proceeds",
+        "transfer_out": "Transfer out",
+        "transfer_in": "Transfer in",
+        "dividend": "Dividend",
+        "tax_withholding": "Tax withheld",
+        "tax_refund": "Tax refund"
+      },
+      "history": {
+        "heading": "Movement history",
+        "sourceColumn": "Source",
+        "kindColumn": "Type",
+        "amountColumn": "Amount",
+        "dateColumn": "Date",
+        "noteColumn": "Note",
+        "empty": "No movements yet.",
+        "counterpart": "→ {{name}}"
+      },
+      "dialog": {
+        "createTitle": "Add cash source",
+        "renameTitle": "Edit cash source",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Bank account",
+        "typeLabel": "Type",
+        "createSubmit": "Create source",
+        "saveSubmit": "Save changes",
+        "nameRequired": "Enter a name.",
+        "saveError": "Could not save. Please try again."
+      },
+      "transfer": {
+        "title": "Transfer between sources",
+        "fromLabel": "From",
+        "toLabel": "To",
+        "amountLabel": "Amount (EUR)",
+        "noteLabel": "Note (optional)",
+        "submit": "Transfer",
+        "needTwoSources": "Create a second source to transfer money between them.",
+        "sameSourceError": "Pick two different sources.",
+        "amountRequired": "Enter an amount greater than 0.",
+        "insufficientError": "That source does not have enough cash.",
+        "saveError": "Could not transfer. Please try again."
+      },
+      "setBalance": {
+        "title": "Set balance",
+        "sourceLabel": "Source",
+        "currentLabel": "Current balance",
+        "targetLabel": "New balance (EUR)",
+        "targetAriaLabel": "New balance",
+        "adjustmentLabel": "Adjustment",
+        "recordsDeposit": "Records a deposit of {{amount}}.",
+        "recordsWithdrawal": "Records a withdrawal of {{amount}}.",
+        "noChange": "Already at this balance — nothing to record.",
+        "noteLabel": "Note (optional)",
+        "submit": "Set balance",
+        "amountRequired": "Enter a target balance of 0 or more.",
+        "saveError": "Could not set the balance. Please try again."
+      }
     },
     "customInvestment": {
       "title": "New custom investment",
