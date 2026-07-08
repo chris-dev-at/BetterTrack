@@ -45,6 +45,14 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'workboard:write': 'Create and edit your watchlist and conglomerates',
   'market:read': 'Search assets and read market data',
   'social:read': 'See your friends and the items shared with you',
+  // #361 additions — plain-language consent copy for the new platform scopes.
+  'social:write': 'Send and respond to friend requests and manage your friends',
+  'notifications:read': 'View your notifications',
+  'notifications:write': 'Mark your notifications as read and change your notification settings',
+  'chat:read': 'Read your messages',
+  'chat:write': 'Send messages on your behalf',
+  'account:security':
+    'Manage your account security: sign-in sessions, two-factor, password change and app PIN',
 };
 
 // ── Redirect URI validation ─────────────────────────────────────────────────

@@ -58,12 +58,20 @@ type PathPolicy =
   | { kind: 'session-only' }
   | { kind: 'scope'; read: string; write: string };
 
+/** The scope gating the account-security surface (2FA, sessions, password, PIN). */
+const ACCOUNT_SECURITY_SCOPE = 'account:security';
+
 /**
  * Coarse per-module scope map (§6.13). Read scopes gate safe methods; write
- * scopes gate mutations. Read-only modules (market, social) carry a write scope
- * string no key can hold, so any mutation is denied *and audited* through the
- * same path as a genuine missing-scope. Anything not matched here is
- * default-denied — a new user router is unreachable by API key until it opts in.
+ * scopes gate mutations. Read-only modules (market) carry a write scope string
+ * no key can hold, so any mutation is denied *and audited* through the same path
+ * as a genuine missing-scope. Anything not matched here is default-denied — a
+ * new user router is unreachable by API key until it opts in.
+ *
+ * The `/settings` catch-all keeps the coarse account/profile bucket on the
+ * social scope (unchanged since V2-P12); the more specific `/settings/notifications`
+ * prefs route is remapped to the notifications scope in {@link resolvePolicy}
+ * before this table is consulted (#361).
  */
 const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[] = [
   { prefix: '/portfolios', read: 'portfolio:read', write: 'portfolio:write' },
@@ -73,19 +81,59 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   { prefix: '/backtest', read: 'workboard:read', write: 'workboard:write' },
   { prefix: '/assets', read: 'market:read', write: 'market:write' },
   { prefix: '/search', read: 'market:read', write: 'market:write' },
+  // #361: `social:write` and `notifications:*` are now real, granularly-enforced
+  // scopes. GET the notifications inbox needs `notifications:read`; mutating it
+  // needs `notifications:write`; the social graph mutation needs `social:write`.
   { prefix: '/social', read: 'social:read', write: 'social:write' },
-  { prefix: '/notifications', read: 'social:read', write: 'social:write' },
+  { prefix: '/notifications', read: 'notifications:read', write: 'notifications:write' },
   { prefix: '/settings', read: 'social:read', write: 'social:write' },
 ];
+
+/**
+ * Bearer-callable sub-paths of the otherwise cookie-only `/auth/*` group (#361).
+ * The unified web+mobile API exposes identity, self-service logout/revocation and
+ * the account-security surface to a bearer; the rest of `/auth/*` (login,
+ * register, password reset, invites, the login-2FA challenge) stays
+ * cookie-session / public. `verify`/`email-code` are the public login-challenge
+ * endpoints — excluded here so they never read as bearer-callable.
+ */
+function resolveAuthPolicy(path: string): PathPolicy | null {
+  // Identity + self-service logout/self-revocation: any valid bearer, no scope.
+  if (path === '/auth/me' || path === '/auth/logout') return { kind: 'allow' };
+  // Public login-2FA challenge endpoints — never bearer (pending-token based).
+  if (path === '/auth/2fa/verify' || path === '/auth/2fa/email-code') {
+    return { kind: 'session-only' };
+  }
+  // Account-security surface, both safe + unsafe methods gated by one scope:
+  // the session manager, password change, PIN status/verify/manage, and 2FA
+  // management (enroll/confirm/disable/status/recovery-codes/email/*).
+  const accountSecurity =
+    path === '/auth/sessions' ||
+    path.startsWith('/auth/sessions/') ||
+    path === '/auth/change-password' ||
+    path === '/auth/pin' ||
+    path.startsWith('/auth/pin/') ||
+    path.startsWith('/auth/2fa/');
+  if (accountSecurity) {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
+  // Any other /auth path (login, register, password-reset, invite, accept-invite,
+  // /auth/session single, /auth/2fa bare) stays cookie-session / public.
+  if (path === '/auth' || path.startsWith('/auth/')) return { kind: 'session-only' };
+  return null;
+}
 
 function resolvePolicy(path: string): PathPolicy {
   // Admin is never reachable by API key regardless of scopes (account-kind
   // separation, §6.12) — 404 to disclose nothing.
   if (path === '/admin' || path.startsWith('/admin/')) return { kind: 'admin' };
-  // Key management + session lifecycle are cookie-session only: a delegated
-  // token must not mint/list/revoke keys, register OAuth apps, manage grants, or
-  // touch the session (no privilege escalation). Checked before the `/settings`
-  // module policy below, which would otherwise grant these to a social scope.
+  // /auth carve-outs (#361) — resolved before anything else in the group.
+  const authPolicy = resolveAuthPolicy(path);
+  if (authPolicy) return authPolicy;
+  // Key management + OAuth app/grant lifecycle are cookie-session only: a
+  // delegated token must not mint/list/revoke keys, register OAuth apps or manage
+  // grants (no privilege escalation). Checked before the `/settings` module
+  // policy below, which would otherwise grant these to a social scope.
   if (path === '/settings/api-keys' || path.startsWith('/settings/api-keys/')) {
     return { kind: 'session-only' };
   }
@@ -95,10 +143,14 @@ function resolvePolicy(path: string): PathPolicy {
   if (path === '/settings/oauth-grants' || path.startsWith('/settings/oauth-grants/')) {
     return { kind: 'session-only' };
   }
+  // Notification preferences live under /settings but belong to the notifications
+  // scope (#361), checked before the coarse `/settings` → social catch-all.
+  if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {
+    return { kind: 'scope', read: 'notifications:read', write: 'notifications:write' };
+  }
   // The OAuth authorize/consent + token endpoints are never reachable with a
   // bearer token — consent is a cookie-session page, token exchange is public.
   if (path === '/oauth' || path.startsWith('/oauth/')) return { kind: 'session-only' };
-  if (path === '/auth' || path.startsWith('/auth/')) return { kind: 'session-only' };
   if (path === '/health' || path.startsWith('/health')) return { kind: 'allow' };
   for (const p of MODULE_POLICIES) {
     if (path === p.prefix || path.startsWith(`${p.prefix}/`)) {
@@ -106,6 +158,21 @@ function resolvePolicy(path: string): PathPolicy {
     }
   }
   return { kind: 'session-only' };
+}
+
+/**
+ * Whether a mount-relative `/api/v1` path accepts a bearer token at the auth
+ * layer (a personal API key OR a delegated OAuth access token) — i.e. anything
+ * that is `allow` (identity/logout/health) or scope-gated. Session-only and
+ * admin paths do not. The OpenAPI document derives each route's `security`
+ * requirement from this so the spec can never drift from the real middleware
+ * policy (#361, fixes the doc's blanket sessionCookie-only claim). Method-
+ * independent: a scope path accepts a bearer for both reads and writes (the
+ * required scope differs, but acceptance does not).
+ */
+export function pathAcceptsBearer(path: string): boolean {
+  const kind = resolvePolicy(path).kind;
+  return kind === 'allow' || kind === 'scope';
 }
 
 /**

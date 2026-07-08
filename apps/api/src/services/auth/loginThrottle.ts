@@ -22,6 +22,16 @@ export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 export const TWO_FACTOR_ACCOUNT_NAMESPACE = 'two_factor_account';
 
 /**
+ * Per-account brute-force throttle for bearer PIN verification (#361, §6.1, §10).
+ * The session PIN gate (below) protects the cookie flow by destroying the
+ * session after {@link PIN_FALLBACK_THRESHOLD} wrong PINs; a bearer request has
+ * no session to drop, so the token PIN-verify endpoint gates a 4-digit PIN with
+ * its own {@link createProgressiveLimiter} under this namespace instead —
+ * independent of the per-IP HTTP limiter and of the session counter.
+ */
+export const PIN_TOKEN_ACCOUNT_NAMESPACE = 'pin_token_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

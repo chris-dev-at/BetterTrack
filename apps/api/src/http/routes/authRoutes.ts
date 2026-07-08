@@ -96,7 +96,24 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
+  // Logout is the unified sign-out for both clients (§6.1, §6.13, #361). A cookie
+  // session is destroyed and its cookie cleared. A **bearer** principal instead
+  // self-revokes the credential it presented — the personal API key, or (for a
+  // delegated OAuth token) its whole grant, which instantly kills that grant's
+  // access + refresh tokens (server-side revocation, not just a local wipe). No
+  // scope is required beyond a valid token: you may always revoke yourself.
   router.post('/logout', async (req, res) => {
+    if (req.apiKey) {
+      const userId = req.authUser!.id;
+      const ip = req.ip ?? null;
+      if (req.apiKey.kind === 'oauth') {
+        await ctx.oauth.revokeGrant({ userId, id: req.apiKey.id, ip });
+      } else {
+        await ctx.apiKeys.revoke({ userId, id: req.apiKey.id, ip });
+      }
+      res.json({ ok: true });
+      return;
+    }
     if (req.sessionId) await ctx.auth.logout(req.sessionId);
     clearSessionCookie(res, ctx.config);
     res.json({ ok: true });
@@ -164,10 +181,19 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // ── PIN gate (§6.1, §8) ────────────────────────────────────────────────────
+  // ── PIN gate (§6.1, §8, #361) ──────────────────────────────────────────────
+  // Status: whether a web PIN is set, so a client (the mobile app-lock) can hide
+  // "Use my BetterTrack PIN" until one exists. Callable by cookie session or by a
+  // bearer holding `account:security`; both read the caller's own flag only.
+  router.get('/pin/status', requireAuth, (req, res) => {
+    res.json({ pinSet: req.authUser!.pinEnabled });
+  });
+
   // Verify is rate-limited on the login schedule (per-IP) since it is a
-  // credential check; the auth service also falls the session back to full
-  // login after 5 consecutive wrong PINs.
+  // credential check. The cookie path renews the session and falls back to full
+  // login after 5 consecutive wrong PINs; the bearer path (#361) has no session,
+  // so it reuses the SAME pin_hash verify under a per-account brute-force throttle
+  // and returns a bare `{ ok: true }` — the app-lock reuses the one web PIN.
   router.post(
     '/pin/verify',
     requireAuth,
@@ -175,6 +201,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(pinVerifyRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as PinVerifyRequest;
+      if (req.apiKey) {
+        await ctx.auth.verifyPinForToken({ userId: req.authUser!.id, pin: body.pin, ip: req.ip });
+        res.json({ ok: true });
+        return;
+      }
       const user = await ctx.auth.verifyPin({
         userId: req.authUser!.id,
         sessionId: req.sessionId!,

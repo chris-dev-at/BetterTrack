@@ -15,7 +15,16 @@ import { z } from 'zod';
 /** The bearer token prefix — recognizable and greppable in logs/leak scans. */
 export const API_KEY_TOKEN_PREFIX = 'btk_';
 
-/** The grantable scopes (coarse per-module read/write over the user API). */
+/**
+ * The grantable scopes (coarse per-module read/write over the user API).
+ *
+ * Strictly additive over time: new scopes are appended, never reordered or
+ * removed, so a token minted before a scope existed keeps exactly the grants it
+ * was issued with (#361). The `social:write`, `notifications:*`, `chat:*` and
+ * `account:security` scopes were added for the unified web+mobile platform
+ * surface (#361); `chat:*` has no route group yet and is reserved for a future
+ * messaging module.
+ */
 export const API_KEY_SCOPES = [
   'portfolio:read',
   'portfolio:write',
@@ -23,6 +32,14 @@ export const API_KEY_SCOPES = [
   'workboard:write',
   'market:read',
   'social:read',
+  // #361 additions — unified web+mobile platform surface. Appended so existing
+  // tokens/grants are unaffected.
+  'social:write',
+  'notifications:read',
+  'notifications:write',
+  'chat:read',
+  'chat:write',
+  'account:security',
 ] as const;
 
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);

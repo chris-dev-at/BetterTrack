@@ -114,6 +114,15 @@ export const pinVerifyRequestSchema = z.object({ pin: pinSchema }).strict();
 export type PinVerifyRequest = z.infer<typeof pinVerifyRequestSchema>;
 
 /**
+ * `GET /auth/pin/status` — whether a web login PIN is set on the account (#361).
+ * Lets a bearer client (the mobile app-lock's "Use my BetterTrack PIN") hide the
+ * option until a PIN exists. Callable by cookie session or a bearer holding
+ * `account:security`; reflects the caller's own account only.
+ */
+export const pinStatusResponseSchema = z.object({ pinSet: z.boolean() }).strict();
+export type PinStatusResponse = z.infer<typeof pinStatusResponseSchema>;
+
+/**
  * `PUT /auth/pin` — enable the PIN or change it to a new value. New PINs are
  * constrained to exactly {@link PIN_LENGTH} digits (#288).
  */

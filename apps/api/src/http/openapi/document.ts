@@ -8,6 +8,7 @@ import * as contracts from '@bettertrack/contracts';
 import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
+import { pathAcceptsBearer } from '../middleware/bearerAuth';
 
 // zod-to-openapi augments the shared zod prototype with `.openapi()`, which the
 // registry uses to attach `$ref` ids. There is a single zod instance in the
@@ -47,6 +48,7 @@ const componentSchemas = {
   PasswordResetRequest: contracts.passwordResetRequestSchema,
   PasswordResetComplete: contracts.passwordResetCompleteSchema,
   PinVerifyRequest: contracts.pinVerifyRequestSchema,
+  PinStatusResponse: contracts.pinStatusResponseSchema,
   SetPinRequest: contracts.setPinRequestSchema,
   SetPinLockRequest: contracts.setPinLockRequestSchema,
   TwoFactorEnrollResponse: contracts.twoFactorEnrollResponseSchema,
@@ -363,6 +365,14 @@ const endpoints: EndpointDef[] = [
     body: R.ChangePasswordRequest,
     status: 200,
     response: R.MeResponse,
+  },
+  {
+    method: 'get',
+    path: '/auth/pin/status',
+    tag: 'Auth',
+    summary: 'Whether a login PIN is set (for the app-lock option).',
+    status: 200,
+    response: R.PinStatusResponse,
   },
   {
     method: 'post',
@@ -1568,12 +1578,24 @@ for (const ep of endpoints) {
   // Shared error envelope `{ error: { code, message, details? } }` (§8).
   responses['default'] = errorResponse('Error envelope.');
 
+  // Auth requirement per route (#361): public routes need none; every guarded
+  // route accepts the session cookie, and those the bearer middleware admits
+  // (identity, logout, scope-gated modules + the account-security surface) ALSO
+  // accept `Authorization: Bearer …`. Derived from the real middleware policy
+  // (`pathAcceptsBearer`) so the spec cannot drift from what the API enforces —
+  // fixing the prior blanket "sessionCookie only" claim on every route.
+  const security: Record<string, string[]>[] = ep.public
+    ? []
+    : pathAcceptsBearer(ep.path)
+      ? [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }]
+      : [{ [SESSION_SECURITY]: [] }];
+
   registry.registerPath({
     method: ep.method,
     path: ep.path,
     tags: [ep.tag],
     summary: ep.summary,
-    security: ep.public ? [] : [{ [SESSION_SECURITY]: [] }],
+    security,
     request: {
       ...(ep.params ? { params: ep.params } : {}),
       ...(ep.query ? { query: ep.query } : {}),

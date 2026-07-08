@@ -362,6 +362,30 @@
         "socialRead": {
           "label": "Sozial · lesen",
           "description": "Freunde, Freigaben und Benachrichtigungen lesen."
+        },
+        "socialWrite": {
+          "label": "Sozial · schreiben",
+          "description": "Freundschaftsanfragen senden/beantworten und Freunde verwalten."
+        },
+        "notificationsRead": {
+          "label": "Benachrichtigungen · lesen",
+          "description": "Ihren Benachrichtigungs-Posteingang lesen."
+        },
+        "notificationsWrite": {
+          "label": "Benachrichtigungen · schreiben",
+          "description": "Benachrichtigungen als gelesen markieren und Einstellungen ändern."
+        },
+        "chatRead": {
+          "label": "Chat · lesen",
+          "description": "Ihre Nachrichten lesen."
+        },
+        "chatWrite": {
+          "label": "Chat · schreiben",
+          "description": "Nachrichten in Ihrem Namen senden."
+        },
+        "accountSecurity": {
+          "label": "Kontosicherheit",
+          "description": "Sitzungen, Zwei-Faktor, Passwort und App-PIN verwalten."
         }
       },
       "keys": {

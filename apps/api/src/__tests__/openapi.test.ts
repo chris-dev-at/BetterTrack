@@ -115,9 +115,10 @@ describe('OpenAPI document', () => {
     );
     expect(operationCount).toBe(OPENAPI_ENDPOINT_COUNT);
 
-    // Session-guarded route: security requirement present, error envelope wired.
+    // Bearer-callable identity (#361): accepts the session cookie OR a bearer
+    // token; error envelope wired.
     const me = (paths['/auth/me'] as JsonObject).get as JsonObject;
-    expect(me.security).toEqual([{ sessionCookie: [] }]);
+    expect(me.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
     const meDefault = ((me.responses as JsonObject).default as JsonObject).content as JsonObject;
     expect((meDefault['application/json'] as JsonObject).schema).toEqual({
       $ref: '#/components/schemas/ApiError',
@@ -126,6 +127,20 @@ describe('OpenAPI document', () => {
     // Public route: explicitly no security requirement.
     const login = (paths['/auth/login'] as JsonObject).post as JsonObject;
     expect(login.security).toEqual([]);
+
+    // Cookie-only route (#361): key management is never bearer-callable, so its
+    // security stays the session cookie alone — the derived metadata is precise,
+    // not a blanket bearer marker.
+    const apiKeys = (paths['/settings/api-keys'] as JsonObject).get as JsonObject;
+    expect(apiKeys.security).toEqual([{ sessionCookie: [] }]);
+
+    // A scope-gated module route accepts both the cookie and a bearer token.
+    const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
+    expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+
+    // The bearer security scheme itself is documented.
+    const schemesForBearer = (doc.components as JsonObject).securitySchemes as JsonObject;
+    expect((schemesForBearer.apiKeyBearer as JsonObject).scheme).toBe('bearer');
 
     // The security scheme itself is the session cookie.
     const securitySchemes = (doc.components as JsonObject).securitySchemes as JsonObject;
