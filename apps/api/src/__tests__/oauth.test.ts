@@ -12,8 +12,10 @@ import {
   OAUTH_REFRESH_TOKEN_PREFIX,
   createOAuthClientResponseSchema,
   oauthAuthorizationDetailsResponseSchema,
+  oauthClientSummarySchema,
   oauthGrantListResponseSchema,
   oauthTokenResponseSchema,
+  type OAuthClientSummary,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -101,6 +103,73 @@ async function registerFirstPartyClient(
   expect(parsed.client.firstParty).toBe(true);
   return { clientId: parsed.client.clientId, clientSecret: parsed.clientSecret };
 }
+
+/**
+ * Register a first-party client AND keep the logged-in admin agent + the full
+ * client summary (incl. the internal id the edit route addresses) — the setup for
+ * the #341 edit / consent-safety tests.
+ */
+async function adminAndFirstPartyClient(
+  opts: { scopes?: string[]; redirectUris?: string[]; public?: boolean } = {},
+): Promise<{ adminAgent: Agent; client: OAuthClientSummary }> {
+  const admin = await harness.seedAdmin({
+    email: `fp-admin-${randomBytes(4).toString('hex')}@bettertrack.test`,
+    username: `fpadmin${randomBytes(4).toString('hex')}`,
+  });
+  const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+  const res = await adminAgent
+    .post('/api/v1/admin/oauth-clients')
+    .set(...XRW)
+    .send({
+      name: 'BetterTrack Mobile',
+      redirectUris: opts.redirectUris ?? [HTTPS_REDIRECT],
+      scopes: opts.scopes ?? ['portfolio:read'],
+      public: opts.public ?? true,
+    });
+  expect(res.status).toBe(201);
+  return { adminAgent, client: createOAuthClientResponseSchema.parse(res.body).client };
+}
+
+/** PATCH a first-party client through the admin edit route (#341). */
+function editFirstPartyClient(
+  adminAgent: Agent,
+  id: string,
+  body: { name: string; redirectUris: string[]; scopes: string[] },
+) {
+  return adminAgent
+    .patch(`/api/v1/admin/oauth-clients/${id}`)
+    .set(...XRW)
+    .send(body);
+}
+
+/** Full public-client consent → token exchange, returning the issued tokens. */
+async function consentAndToken(
+  agent: Agent,
+  clientId: string,
+  scope: string,
+  redirectUri = HTTPS_REDIRECT,
+): Promise<{ access: string; refresh: string }> {
+  const { verifier, challenge } = pkce();
+  const { code } = await approveAndGetCode(agent, {
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  });
+  const tokenRes = await tokenRequest({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    code_verifier: verifier,
+  });
+  expect(tokenRes.status).toBe(200);
+  const tokens = oauthTokenResponseSchema.parse(tokenRes.body);
+  return { access: tokens.access_token, refresh: tokens.refresh_token };
+}
+
+const bearer = (token: string) => ['Authorization', `Bearer ${token}`] as const;
 
 /** Approve consent as the session user and return the delivered authorization code. */
 async function approveAndGetCode(
@@ -604,5 +673,297 @@ describe('OAuth token boundaries', () => {
       .get('/api/v1/portfolios')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe('first-party app editing (#341) — consent-safe', () => {
+  it('renaming shows on the consent screen and grants list immediately, and is audited', async () => {
+    const { adminAgent, client } = await adminAndFirstPartyClient({ scopes: ['portfolio:read'] });
+    const user = await harness.seedUser();
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    // Establish a grant so the app appears on the user's authorized-apps list.
+    await consentAndToken(userAgent, client.clientId, 'portfolio:read');
+
+    const patch = await editFirstPartyClient(adminAgent, client.id, {
+      name: 'BetterTrack Mobile (renamed)',
+      redirectUris: client.redirectUris,
+      scopes: ['portfolio:read'],
+    });
+    expect(patch.status).toBe(200);
+    expect(oauthClientSummarySchema.parse(patch.body).name).toBe('BetterTrack Mobile (renamed)');
+
+    const { challenge } = pkce();
+    const details = oauthAuthorizationDetailsResponseSchema.parse(
+      (
+        await userAgent.get('/api/v1/oauth/authorization-details').query({
+          client_id: client.clientId,
+          redirect_uri: HTTPS_REDIRECT,
+          scope: 'portfolio:read',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        })
+      ).body,
+    );
+    expect(details.client.name).toBe('BetterTrack Mobile (renamed)');
+
+    const grants = oauthGrantListResponseSchema.parse(
+      (await userAgent.get('/api/v1/settings/oauth-grants')).body,
+    );
+    expect(grants.grants[0]!.appName).toBe('BetterTrack Mobile (renamed)');
+
+    expect(await auditActions()).toContain('oauth.client_updated');
+  });
+
+  it('widening an app’s scopes does NOT widen a pre-existing grant/token (fresh consent required)', async () => {
+    const { adminAgent, client } = await adminAndFirstPartyClient({ scopes: ['portfolio:read'] });
+    const user = await harness.seedUser();
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    const { access } = await consentAndToken(userAgent, client.clientId, 'portfolio:read');
+
+    // Baseline: the grant covers portfolio:read only.
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/portfolios')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/workboard')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(403);
+
+    // Admin WIDENS the app to also allow workboard:read.
+    const patch = await editFirstPartyClient(adminAgent, client.id, {
+      name: client.name,
+      redirectUris: client.redirectUris,
+      scopes: ['portfolio:read', 'workboard:read'],
+    });
+    expect(patch.status).toBe(200);
+    expect(oauthClientSummarySchema.parse(patch.body).scopes).toEqual([
+      'portfolio:read',
+      'workboard:read',
+    ]);
+
+    // The pre-existing token STILL cannot use the newly-allowed scope — widening
+    // the app never silently widened the live grant (token/resource layer).
+    const stillDenied = await request(harness.app)
+      .get('/api/v1/workboard')
+      .set(...bearer(access));
+    expect(stillDenied.status).toBe(403);
+
+    // …and the user's grant still records only the originally-consented scope.
+    const grants = oauthGrantListResponseSchema.parse(
+      (await userAgent.get('/api/v1/settings/oauth-grants')).body,
+    );
+    expect(grants.grants[0]!.scopes).toEqual(['portfolio:read']);
+
+    // Only a FRESH consent grants the added scope.
+    const { access: access2 } = await consentAndToken(
+      userAgent,
+      client.clientId,
+      'portfolio:read workboard:read',
+    );
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/workboard')
+          .set(...bearer(access2))
+      ).status,
+    ).toBe(200);
+  });
+
+  it('narrowing an app’s scopes strips the removed scope from live tokens/grants immediately', async () => {
+    const { adminAgent, client } = await adminAndFirstPartyClient({
+      scopes: ['portfolio:read', 'workboard:read'],
+    });
+    const user = await harness.seedUser();
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    const { access, refresh } = await consentAndToken(
+      userAgent,
+      client.clientId,
+      'portfolio:read workboard:read',
+    );
+
+    // Baseline: both scopes work.
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/portfolios')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/workboard')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(200);
+
+    // Admin NARROWS the app: remove workboard:read.
+    const patch = await editFirstPartyClient(adminAgent, client.id, {
+      name: client.name,
+      redirectUris: client.redirectUris,
+      scopes: ['portfolio:read'],
+    });
+    expect(patch.status).toBe(200);
+
+    // Immediately, on the SAME access token: workboard:read is gone, the rest stays.
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/workboard')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/portfolios')
+          .set(...bearer(access))
+      ).status,
+    ).toBe(200);
+
+    // The grants list reflects the reduced effective scope.
+    const grants = oauthGrantListResponseSchema.parse(
+      (await userAgent.get('/api/v1/settings/oauth-grants')).body,
+    );
+    expect(grants.grants[0]!.scopes).toEqual(['portfolio:read']);
+
+    // A refresh also yields a token without the removed scope.
+    const refreshed = oauthTokenResponseSchema.parse(
+      (
+        await tokenRequest({
+          grant_type: 'refresh_token',
+          refresh_token: refresh,
+          client_id: client.clientId,
+        })
+      ).body,
+    );
+    expect(refreshed.scope).toBe('portfolio:read');
+    expect(
+      (
+        await request(harness.app)
+          .get('/api/v1/workboard')
+          .set(...bearer(refreshed.access_token))
+      ).status,
+    ).toBe(403);
+  });
+
+  it('a redirect URI removed by an edit is rejected at authorize time (the survivor still works)', async () => {
+    const SECOND = 'https://second.example/callback';
+    const { adminAgent, client } = await adminAndFirstPartyClient({
+      scopes: ['portfolio:read'],
+      redirectUris: [HTTPS_REDIRECT, SECOND],
+    });
+    const user = await harness.seedUser();
+    const userAgent = await loginAgent(harness.app, user.email, user.password);
+    const { challenge } = pkce();
+    const detailsQuery = (redirectUri: string) => ({
+      client_id: client.clientId,
+      redirect_uri: redirectUri,
+      scope: 'portfolio:read',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+
+    // Before the edit, the second URI is a valid authorize target.
+    expect(
+      (await userAgent.get('/api/v1/oauth/authorization-details').query(detailsQuery(SECOND)))
+        .status,
+    ).toBe(200);
+
+    // Admin removes the second URI.
+    const patch = await editFirstPartyClient(adminAgent, client.id, {
+      name: client.name,
+      redirectUris: [HTTPS_REDIRECT],
+      scopes: ['portfolio:read'],
+    });
+    expect(patch.status).toBe(200);
+
+    // Now the removed URI is rejected — on both the consent read and the approve.
+    const rejectedRead = await userAgent
+      .get('/api/v1/oauth/authorization-details')
+      .query(detailsQuery(SECOND));
+    expect(rejectedRead.status).toBe(400);
+    expect(rejectedRead.body.error.code).toBe('INVALID_REDIRECT_URI');
+
+    const rejectedApprove = await userAgent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send(detailsQuery(SECOND));
+    expect(rejectedApprove.status).toBe(400);
+    expect(rejectedApprove.body.error.code).toBe('INVALID_REDIRECT_URI');
+
+    // The surviving URI still authorizes.
+    expect(
+      (
+        await userAgent
+          .get('/api/v1/oauth/authorization-details')
+          .query(detailsQuery(HTTPS_REDIRECT))
+      ).status,
+    ).toBe(200);
+  });
+
+  it('scopes the edit to first-party apps: a non-admin 404s and a user-owned client id 404s (and is untouched)', async () => {
+    const { client } = await adminAndFirstPartyClient({ scopes: ['portfolio:read'] });
+
+    // A user-owned (third-party) client cannot be edited via the admin route.
+    const third = await registerClient({ scopes: ['portfolio:read'] });
+    const [thirdRow] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, third.clientId));
+    const asUser = await editFirstPartyClient(third.agent, thirdRow!.id, {
+      name: 'hijacked',
+      redirectUris: [HTTPS_REDIRECT],
+      scopes: ['portfolio:read', 'portfolio:write'],
+    });
+    // Account-kind separation: the admin route is invisible to a user (404).
+    expect(asUser.status).toBe(404);
+
+    // Even a real admin cannot reach a user-owned app through this first-party route.
+    const admin = await harness.seedAdmin({
+      email: `edit-admin-${randomBytes(4).toString('hex')}@bettertrack.test`,
+      username: `editadmin${randomBytes(4).toString('hex')}`,
+    });
+    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const notFoundRes = await editFirstPartyClient(adminAgent, thirdRow!.id, {
+      name: 'hijacked',
+      redirectUris: [HTTPS_REDIRECT],
+      scopes: ['portfolio:read', 'portfolio:write'],
+    });
+    expect(notFoundRes.status).toBe(404);
+
+    // The third-party app is unchanged in the DB.
+    const [afterRow] = await harness.db
+      .select()
+      .from(schema.oauthClients)
+      .where(eq(schema.oauthClients.clientId, third.clientId));
+    expect(afterRow!.scopes).toEqual(['portfolio:read']);
+
+    // Sanity: the first-party client we made is a real, editable target.
+    expect(client.firstParty).toBe(true);
+  });
+
+  it('rejects an invalid redirect URI and an unknown scope on edit (validation mirrors creation)', async () => {
+    const { adminAgent, client } = await adminAndFirstPartyClient({ scopes: ['portfolio:read'] });
+
+    const badUri = await editFirstPartyClient(adminAgent, client.id, {
+      name: client.name,
+      redirectUris: ['http://evil.example/cb'], // plain-http non-loopback
+      scopes: ['portfolio:read'],
+    });
+    expect(badUri.status).toBe(400);
+
+    const badScope = await adminAgent
+      .patch(`/api/v1/admin/oauth-clients/${client.id}`)
+      .set(...XRW)
+      .send({ name: client.name, redirectUris: client.redirectUris, scopes: ['not:a:scope'] });
+    expect(badScope.status).toBe(400);
   });
 });

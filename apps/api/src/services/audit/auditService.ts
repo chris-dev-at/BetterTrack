@@ -40,6 +40,7 @@ export const AuditAction = {
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',
   OAuthClientRegistered: 'oauth.client_registered',
+  OAuthClientUpdated: 'oauth.client_updated',
   OAuthClientDeleted: 'oauth.client_deleted',
   OAuthGrantAuthorized: 'oauth.grant_authorized',
   OAuthGrantRevoked: 'oauth.grant_revoked',
