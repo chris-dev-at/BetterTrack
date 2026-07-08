@@ -118,6 +118,54 @@ describe('SharedPortfolioPage', () => {
     expect(screen.queryByRole('button', { name: /edit/i })).not.toBeInTheDocument();
   });
 
+  test('groups the By-type donut on the catalog category so a custom "stock" merges into Stocks (no Custom slice)', async () => {
+    const CUSTOM_ID = '00000000-0000-0000-0000-000000000004';
+    vi.mocked(getSharedPortfolio).mockResolvedValue({
+      ...detail,
+      holdings: [
+        ...detail.holdings,
+        {
+          asset: {
+            id: CUSTOM_ID,
+            symbol: 'MYSTOCK',
+            name: 'My Unlisted Stock',
+            exchange: null,
+            currency: 'EUR' as const,
+            // Custom assets carry type 'custom'; the V3-P2 category is the real
+            // taxonomy that must drive donut grouping.
+            type: 'custom' as const,
+            isCustom: true,
+            category: 'stock' as const,
+          },
+          quantity: 1,
+          avgCost: 100,
+          realizedPnl: 0,
+          price: 100,
+          marketValueEur: 100,
+          costBasisEur: 100,
+          unrealizedPnlEur: 0,
+          unrealizedPnlPct: 0,
+          dayChangeEur: 0,
+          dayChangePct: 0,
+        },
+      ],
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText("Jane's Main")).toBeInTheDocument());
+
+    // The custom "stock" merges into the market Stocks group; there is no
+    // separate "Custom" slice anywhere on the page (acceptance criterion).
+    expect(screen.getByLabelText(/Allocation by type/i)).toHaveAttribute(
+      'aria-label',
+      expect.stringContaining('Stocks'),
+    );
+    expect(screen.queryByText('Custom')).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/Allocation by type/i)?.getAttribute('aria-label'),
+    ).not.toContain('Custom');
+  });
+
   test('shows an empty state when the shared portfolio has no holdings', async () => {
     vi.mocked(getSharedPortfolio).mockResolvedValue({
       ...detail,

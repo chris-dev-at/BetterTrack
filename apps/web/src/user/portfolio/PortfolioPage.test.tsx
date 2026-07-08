@@ -17,8 +17,11 @@ vi.mock('../../lib/portfolioApi', () => ({
   updateTransaction: vi.fn(),
   updatePortfolio: vi.fn(),
   createCustomAsset: vi.fn(),
+  updateCustomAsset: vi.fn(),
   getValuePoints: vi.fn(),
   putValuePoints: vi.fn(),
+  getRecategorizationStatus: vi.fn(),
+  dismissRecategorization: vi.fn(),
   getCashMovements: vi.fn(),
   depositCash: vi.fn(),
   withdrawCash: vi.fn(),
@@ -78,8 +81,10 @@ import { ApiError } from '../../lib/apiClient';
 import {
   deleteTransaction,
   depositCash,
+  dismissRecategorization,
   getPortfolio,
   getPortfolioHistory,
+  getRecategorizationStatus,
   getValuePoints,
   listCashSources,
   listPortfolios,
@@ -138,6 +143,8 @@ const HOUSE = {
     currency: 'EUR',
     type: 'custom' as const,
     isCustom: true,
+    category: 'other' as const,
+    smoothing: false,
   },
   quantity: 1,
   avgCost: 300000,
@@ -241,6 +248,9 @@ beforeEach(() => {
   vi.mocked(listTransactions).mockResolvedValue(TXNS);
   vi.mocked(deleteTransaction).mockResolvedValue(undefined);
   vi.mocked(getValuePoints).mockResolvedValue({ points: [] });
+  // No pending re-categorization by default → the banner stays hidden.
+  vi.mocked(getRecategorizationStatus).mockResolvedValue({ pending: 0 });
+  vi.mocked(dismissRecategorization).mockResolvedValue(undefined);
   vi.mocked(previewCash).mockResolvedValue({
     availableEur: 5000,
     afterEur: 4000,
@@ -327,9 +337,53 @@ describe('PortfolioPage — holdings, totals & donuts', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('By asset')).toBeInTheDocument());
     expect(screen.getByText('By type')).toBeInTheDocument();
-    // The by-type donut groups the custom asset under "Custom".
-    expect(screen.getByText('Custom')).toBeInTheDocument();
+    // V3-P2: custom assets group by their catalog category, not a "Custom" slice.
+    // HOUSE carries category "other" → it lands in the Other group.
+    expect(screen.queryByText('Custom')).not.toBeInTheDocument();
+    expect(screen.getByText('Other')).toBeInTheDocument();
     expect(screen.getByText('Stocks')).toBeInTheDocument();
+  });
+
+  test('a custom asset with category "stock" groups under Stocks — no Custom slice (V3-P2)', async () => {
+    // A custom holding whose catalog category is "stock" must merge into the
+    // market Stocks group in the by-type donut, not spawn a separate slice.
+    const CUSTOM_STOCK = {
+      asset: {
+        id: 'c2',
+        symbol: 'ACME',
+        name: 'Acme Private Shares',
+        exchange: null,
+        currency: 'EUR' as const,
+        type: 'custom' as const,
+        isCustom: true,
+        category: 'stock' as const,
+        smoothing: false,
+      },
+      quantity: 100,
+      avgCost: 10,
+      realizedPnl: 0,
+      price: 12,
+      marketValueEur: 1200,
+      costBasisEur: 1000,
+      unrealizedPnlEur: 200,
+      unrealizedPnlPct: 20,
+      dayChangeEur: null,
+      dayChangePct: null,
+    };
+    vi.mocked(getPortfolio).mockResolvedValue({
+      baseCurrency: 'EUR' as const,
+      holdings: [STOCK, CUSTOM_STOCK],
+      totals: { ...TOTALS, cashEur: 0 },
+    });
+    renderPage();
+
+    const allocation = await screen.findByRole('region', { name: 'Allocation' });
+    // Exactly one "Stocks" legend entry per donut (by asset and by type); the
+    // custom stock folds into the market Stocks group, and no "Custom" appears.
+    await waitFor(() =>
+      expect(within(allocation).getAllByText('Stocks').length).toBeGreaterThan(0),
+    );
+    expect(within(allocation).queryByText('Custom')).not.toBeInTheDocument();
   });
 });
 
@@ -718,6 +772,34 @@ describe('PortfolioPage — top winners / losers', () => {
       .map((el) => el.textContent);
     expect(order).toEqual(['AAPL', 'TSLA', 'HOUSE']);
     expect(within(losersAfter).getByText('Nothing to show.')).toBeInTheDocument();
+  });
+});
+
+// ─── Re-categorize banner (V3-P2) ─────────────────────────────────────────────
+
+describe('PortfolioPage — re-categorize banner (V3-P2)', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('stays hidden when nothing is pending', async () => {
+    renderPage();
+    // Wait for the page to settle, then confirm no banner rendered.
+    await screen.findByRole('region', { name: 'Holdings' });
+    expect(screen.queryByText(/need a category/i)).not.toBeInTheDocument();
+  });
+
+  test('shows when pending > 0 and dismiss calls the endpoint then hides it', async () => {
+    // First status read reports pending; the refetch after dismiss returns 0.
+    vi.mocked(getRecategorizationStatus).mockResolvedValueOnce({ pending: 2 });
+    const user = userEvent.setup();
+    renderPage();
+
+    const banner = await screen.findByText(/need a category/i);
+    expect(banner).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(vi.mocked(dismissRecategorization)).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(screen.queryByText(/need a category/i)).not.toBeInTheDocument());
   });
 });
 

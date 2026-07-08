@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { newId } from '../ids';
@@ -29,6 +29,8 @@ export interface NewCustomAsset {
   currency: string;
   /** Custom-investment category, stored under `assets.meta.category` (§6.9). */
   category: string;
+  /** Value-smoothing toggle, stored under `assets.meta.smoothing` (V3-P2). */
+  smoothing: boolean;
 }
 
 export interface ValuePointRecord {
@@ -54,7 +56,7 @@ export function createCustomAssetRepository(db: Database) {
           name: input.name,
           exchange: null,
           currency: input.currency,
-          meta: { category: input.category },
+          meta: { category: input.category, smoothing: input.smoothing },
         })
         .returning();
       const row = rows[0];
@@ -117,6 +119,37 @@ export function createCustomAssetRepository(db: Database) {
         )
         .returning({ id: assets.id });
       return rows.length > 0;
+    },
+
+    /**
+     * How many of a user's custom assets still carry the one-time re-categorize
+     * flag (V3-P2) — the migration set `meta.recategorize = true` on every
+     * pre-existing custom asset. Drives the re-categorize banner.
+     */
+    async countNeedingRecategorization(userId: string): Promise<number> {
+      const rows = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(assets)
+        .where(
+          and(
+            eq(assets.ownerId, userId),
+            eq(assets.providerId, MANUAL_PROVIDER_ID),
+            sql`(${assets.meta} ->> 'recategorize') = 'true'`,
+          ),
+        );
+      return rows[0]?.n ?? 0;
+    },
+
+    /**
+     * Drop the re-categorize flag from every custom asset the user owns (banner
+     * dismissal, V3-P2). Re-categorizing a single asset clears its own flag in
+     * the service update path.
+     */
+    async clearRecategorization(userId: string): Promise<void> {
+      await db
+        .update(assets)
+        .set({ meta: sql`${assets.meta} - 'recategorize'` })
+        .where(and(eq(assets.ownerId, userId), eq(assets.providerId, MANUAL_PROVIDER_ID)));
     },
 
     /** Value points for a custom asset, ascending by date. */

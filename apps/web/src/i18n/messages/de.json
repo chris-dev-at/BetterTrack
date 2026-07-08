@@ -560,7 +560,8 @@
         "fx": "Devisen",
         "commodity": "Rohstoffe",
         "crypto": "Krypto",
-        "custom": "Individuell"
+        "cashLike": "Bargeldnah",
+        "other": "Sonstiges"
       },
       "winnersLosers": {
         "ariaLabel": "Top-Gewinner und -Verlierer",
@@ -773,6 +774,7 @@
       "categoryLabel": "Kategorie",
       "currencyLabel": "Währung",
       "currencyPlaceholder": "EUR",
+      "smoothingLabel": "Werte zwischen Punkten glätten",
       "recordPurchase": "Einen ersten Kauf erfassen",
       "quantityLabel": "Menge",
       "quantityAriaLabel": "Anfangsmenge",
@@ -792,11 +794,11 @@
       "creating": "Wird erstellt…",
       "submit": "Anlage erstellen",
       "category": {
-        "realEstate": "Immobilie",
-        "vehicle": "Fahrzeug",
-        "collectible": "Sammlerstück",
-        "cash": "Bargeld",
-        "unlistedStock": "Nicht notierte Aktie",
+        "stock": "Aktien",
+        "etf": "ETFs",
+        "crypto": "Krypto",
+        "commodity": "Rohstoffe",
+        "cashLike": "Bargeldnah",
         "other": "Sonstiges"
       }
     },
@@ -816,7 +818,12 @@
       "duplicateDate": "Nur ein Wert pro Tag — {{date}} ist doppelt.",
       "valueInvalid": "Der Wert für {{date}} muss 0 oder mehr sein.",
       "saveError": "Wertpunkte konnten nicht gespeichert werden. Bitte versuche es erneut.",
-      "saveButton": "Wertpunkte speichern"
+      "saveButton": "Wertpunkte speichern",
+      "smoothingLabel": "Werte zwischen Punkten glätten"
+    },
+    "recategorize": {
+      "message": "Einige eigene Anlagen brauchen eine Kategorie. Wir haben sie auf „Sonstiges“ verschoben — öffne eine und wähle eine passende Kategorie, damit sie korrekt gruppiert wird.",
+      "dismiss": "Ausblenden"
     }
   },
   "workboard": {

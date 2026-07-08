@@ -12,8 +12,10 @@ import type {
 
 import {
   deleteTransaction,
+  dismissRecategorization,
   getPortfolio,
   getPortfolioHistory,
+  getRecategorizationStatus,
   listCashSources,
   listPortfolios,
   listTransactions,
@@ -65,7 +67,8 @@ function assetTypeLabels(t: TranslateFn): Record<string, string> {
     fx: t('portfolio.overview.assetType.fx'),
     commodity: t('portfolio.overview.assetType.commodity'),
     crypto: t('portfolio.overview.assetType.crypto'),
-    custom: t('portfolio.overview.assetType.custom'),
+    cash_like: t('portfolio.overview.assetType.cashLike'),
+    other: t('portfolio.overview.assetType.other'),
   };
 }
 
@@ -268,10 +271,14 @@ function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur
     .filter((h) => h.marketValueEur != null && h.marketValueEur > 0)
     .map((h) => ({ label: h.asset.symbol, value: h.marketValueEur! }));
 
+  // Group by the catalog category when present (V3-P2): a custom "stock" merges
+  // into the market Stocks group, so there is no separate "Custom" slice — market
+  // assets carry no category and fall back to their asset type.
   const byTypeMap = new Map<string, number>();
   for (const h of holdings) {
     if (h.marketValueEur == null || h.marketValueEur <= 0) continue;
-    byTypeMap.set(h.asset.type, (byTypeMap.get(h.asset.type) ?? 0) + h.marketValueEur);
+    const key = h.asset.category ?? h.asset.type;
+    byTypeMap.set(key, (byTypeMap.get(key) ?? 0) + h.marketValueEur);
   }
   const byType: AllocationSegment[] = [...byTypeMap].map(([type, value]) => ({
     label: typeLabels[type] ?? type,
@@ -717,6 +724,10 @@ function HoldingRow({
                           symbol: asset.symbol,
                           name: asset.name,
                           currency: asset.currency,
+                          // Custom holdings always carry a category (V3-P2);
+                          // fall back defensively so the editor seeds cleanly.
+                          category: asset.category ?? 'other',
+                          smoothing: asset.smoothing ?? false,
                         })
                       }
                     >
@@ -896,6 +907,47 @@ function TransactionRow({
 type TxnDialogState =
   | { kind: 'create'; asset?: TransactionDialogAsset }
   | { kind: 'edit'; transaction: Transaction };
+
+// ─── Re-categorize banner (V3-P2) ─────────────────────────────────────────────
+
+/**
+ * One-time re-categorization notice (V3-P2). Migrated custom assets that lost
+ * their old category were parked in "Other"; while any still carry the flag the
+ * server reports `pending > 0` and we nudge the user to pick a real category.
+ * Dismiss clears the flag server-side; re-categorizing an asset does too, so the
+ * banner also fades on its own once the status query refetches.
+ */
+function RecategorizeBanner() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const statusQuery = useQuery({
+    queryKey: ['custom-assets', 'recategorization'],
+    queryFn: ({ signal }) => getRecategorizationStatus(signal),
+    staleTime: 60_000,
+  });
+  const dismissMutation = useMutation({
+    mutationFn: () => dismissRecategorization(),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['custom-assets', 'recategorization'] }),
+  });
+
+  if (!statusQuery.data || statusQuery.data.pending <= 0) return null;
+
+  return (
+    <Alert tone="info">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span>{t('portfolio.recategorize.message')}</span>
+        <Button
+          variant="secondary"
+          onClick={() => dismissMutation.mutate()}
+          disabled={dismissMutation.isPending}
+        >
+          {t('portfolio.recategorize.dismiss')}
+        </Button>
+      </div>
+    </Alert>
+  );
+}
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -1137,6 +1189,8 @@ export function PortfolioPage() {
         onRecord={() => setTxnDialog({ kind: 'create' })}
         onNewCustom={() => setCustomOpen(true)}
       />
+
+      <RecategorizeBanner />
 
       {isEmpty ? (
         <EmptyState

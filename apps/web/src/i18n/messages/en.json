@@ -560,7 +560,8 @@
         "fx": "FX",
         "commodity": "Commodities",
         "crypto": "Crypto",
-        "custom": "Custom"
+        "cashLike": "Cash-like",
+        "other": "Other"
       },
       "winnersLosers": {
         "ariaLabel": "Top winners and losers",
@@ -773,6 +774,7 @@
       "categoryLabel": "Category",
       "currencyLabel": "Currency",
       "currencyPlaceholder": "EUR",
+      "smoothingLabel": "Smooth values between marks",
       "recordPurchase": "Record an initial purchase",
       "quantityLabel": "Quantity",
       "quantityAriaLabel": "Initial quantity",
@@ -792,11 +794,11 @@
       "creating": "Creating…",
       "submit": "Create investment",
       "category": {
-        "realEstate": "Real estate",
-        "vehicle": "Vehicle",
-        "collectible": "Collectible",
-        "cash": "Cash",
-        "unlistedStock": "Unlisted stock",
+        "stock": "Stocks",
+        "etf": "ETFs",
+        "crypto": "Crypto",
+        "commodity": "Commodities",
+        "cashLike": "Cash-like",
         "other": "Other"
       }
     },
@@ -816,7 +818,12 @@
       "duplicateDate": "Only one value per day — {{date}} is repeated.",
       "valueInvalid": "Value for {{date}} must be 0 or more.",
       "saveError": "Could not save value points. Please try again.",
-      "saveButton": "Save value points"
+      "saveButton": "Save value points",
+      "smoothingLabel": "Smooth values between marks"
+    },
+    "recategorize": {
+      "message": "Some custom investments need a category. We moved them to “Other” — open one and pick a real category so it groups correctly.",
+      "dismiss": "Dismiss"
     }
   },
   "workboard": {

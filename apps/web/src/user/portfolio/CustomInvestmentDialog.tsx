@@ -7,10 +7,10 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import type { TranslateFn } from '../../i18n';
 import { createCustomAsset } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
+import { customCategoryLabels } from './customCategories';
 
 export interface CustomInvestmentDialogProps {
   onClose: () => void;
@@ -18,18 +18,6 @@ export interface CustomInvestmentDialogProps {
   onCreated: () => void;
   /** Today as ISO `YYYY-MM-DD`, injectable for deterministic tests. */
   today?: string;
-}
-
-/** Human labels for the §6.9 custom-investment categories. */
-function categoryLabels(t: TranslateFn): Record<CustomAssetCategory, string> {
-  return {
-    real_estate: t('portfolio.customInvestment.category.realEstate'),
-    vehicle: t('portfolio.customInvestment.category.vehicle'),
-    collectible: t('portfolio.customInvestment.category.collectible'),
-    cash: t('portfolio.customInvestment.category.cash'),
-    unlisted_stock: t('portfolio.customInvestment.category.unlistedStock'),
-    other: t('portfolio.customInvestment.category.other'),
-  };
 }
 
 const inputClass = cx(
@@ -52,8 +40,9 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
   const t = useT();
   const headingId = useId();
   const [name, setName] = useState('');
-  const [category, setCategory] = useState<CustomAssetCategory>('real_estate');
+  const [category, setCategory] = useState<CustomAssetCategory>('other');
   const [currency, setCurrency] = useState('EUR');
+  const [smoothing, setSmoothing] = useState(false);
 
   const [withPurchase, setWithPurchase] = useState(false);
   const [quantity, setQuantity] = useState('1');
@@ -64,7 +53,7 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const labels = categoryLabels(t);
+  const labels = customCategoryLabels(t);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -80,7 +69,12 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
       return;
     }
 
-    const body: CreateCustomAssetRequest = { name: trimmedName, category, currency: ccy };
+    const body: CreateCustomAssetRequest = {
+      name: trimmedName,
+      category,
+      currency: ccy,
+      smoothing,
+    };
 
     if (withPurchase) {
       const qty = Number(quantity);
@@ -183,6 +177,16 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
             />
           </label>
         </div>
+
+        <label className="flex items-center gap-2 text-sm text-neutral-300">
+          <input
+            type="checkbox"
+            checked={smoothing}
+            onChange={(e) => setSmoothing(e.target.checked)}
+            className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
+          />
+          {t('portfolio.customInvestment.smoothingLabel')}
+        </label>
 
         <label className="flex items-center gap-2 text-sm text-neutral-300">
           <input

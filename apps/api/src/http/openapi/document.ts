@@ -152,6 +152,7 @@ const componentSchemas = {
   CreateCustomAssetResponse: contracts.createCustomAssetResponseSchema,
   UpdateCustomAssetResponse: z.object({ asset: contracts.customAssetSchema }).strict(),
   ValuePointsResponse: contracts.valuePointsResponseSchema,
+  RecategorizationStatusResponse: contracts.recategorizationStatusResponseSchema,
 
   // Conglomerates (§6.5, §6.7)
   CreateConglomerateRequest: contracts.createConglomerateRequestSchema,
@@ -1071,6 +1072,21 @@ const endpoints: EndpointDef[] = [
   },
 
   // Custom assets (§6.9)
+  {
+    method: 'get',
+    path: '/custom-assets/recategorization',
+    tag: 'Custom Assets',
+    summary: 'How many custom assets still need re-categorizing (V3-P2 banner).',
+    status: 200,
+    response: R.RecategorizationStatusResponse,
+  },
+  {
+    method: 'post',
+    path: '/custom-assets/recategorization/dismiss',
+    tag: 'Custom Assets',
+    summary: 'Dismiss the re-categorize banner (clear every flag).',
+    status: 204,
+  },
   {
     method: 'post',
     path: '/custom-assets',

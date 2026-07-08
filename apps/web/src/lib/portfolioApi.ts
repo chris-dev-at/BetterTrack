@@ -11,6 +11,7 @@ import {
   portfolioListResponseSchema,
   portfolioMutationResponseSchema,
   portfolioResponseSchema,
+  recategorizationStatusResponseSchema,
   setCashBalanceResponseSchema,
   transactionListResponseSchema,
   transactionSchema,
@@ -34,6 +35,7 @@ import {
   type PortfolioListResponse,
   type PortfolioResponse,
   type PortfolioSummary,
+  type RecategorizationStatusResponse,
   type SetCashBalanceRequest,
   type SetCashBalanceResponse,
   type Transaction,
@@ -384,6 +386,23 @@ export async function updateCustomAsset(
 /** `DELETE /custom-assets/:id` — remove a custom asset (cascades txns + value points). */
 export async function deleteCustomAsset(id: string): Promise<void> {
   await apiRequest<unknown>(`/custom-assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/**
+ * `GET /custom-assets/recategorization` — how many of the caller's custom assets
+ * still carry the one-time V3-P2 migration flag (`pending`). The overview shows
+ * the re-categorize banner while it is `> 0`.
+ */
+export async function getRecategorizationStatus(
+  signal?: AbortSignal,
+): Promise<RecategorizationStatusResponse> {
+  const data = await apiRequest<unknown>('/custom-assets/recategorization', { signal });
+  return recategorizationStatusResponseSchema.parse(data);
+}
+
+/** `POST /custom-assets/recategorization/dismiss` — clear the migration flag on all assets (204). */
+export async function dismissRecategorization(): Promise<void> {
+  await apiRequest<unknown>('/custom-assets/recategorization/dismiss', { method: 'POST' });
 }
 
 // --- Value points ----------------------------------------------------------
