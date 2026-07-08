@@ -14,8 +14,11 @@ import type { Socket } from 'socket.io-client';
 import {
   REALTIME_CLIENT_EVENTS,
   REALTIME_SERVER_EVENTS,
+  realtimeLiveWatchAckSchema,
   realtimePortfolioChangedSchema,
   realtimeQuoteUpdatedSchema,
+  type LiveWindow,
+  type RealtimeLiveFrame,
   type RealtimeRoom,
 } from '@bettertrack/contracts';
 
@@ -39,6 +42,16 @@ export interface RealtimeContextValue {
    * after a reconnect for as long as any reference holds it.
    */
   joinRoom(room: RealtimeRoom): () => void;
+  /**
+   * Start (or re-window) a Live Mode watch on an asset (§6.3, V3-P7b).
+   * Resolves the requested window's backfill from the server's ring buffer,
+   * or `null` when the stream is unavailable (disconnected, gateway down,
+   * rejected) — the caller silently stays on the 60 s poll fallback. A repeat
+   * call with a new window only re-backfills; the upstream loop is untouched.
+   */
+  watchLive(assetId: string, window: LiveWindow): Promise<RealtimeLiveFrame[] | null>;
+  /** Release a Live Mode watch (fire-and-forget; disconnects also release it). */
+  unwatchLive(assetId: string): void;
 }
 
 /**
@@ -50,6 +63,8 @@ const NOOP_CONTEXT: RealtimeContextValue = {
   connected: false,
   on: () => () => {},
   joinRoom: () => () => {},
+  watchLive: () => Promise.resolve(null),
+  unwatchLive: () => {},
 };
 
 export const RealtimeContext = createContext<RealtimeContextValue>(NOOP_CONTEXT);
@@ -168,6 +183,27 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
     };
   }, []);
 
+  const watchLive = useCallback<RealtimeContextValue['watchLive']>(async (assetId, window) => {
+    const socket = socketRef.current;
+    if (!socket?.connected) return null;
+    try {
+      const ack: unknown = await socket
+        .timeout(5000)
+        .emitWithAck(REALTIME_CLIENT_EVENTS.liveWatch, { assetId, window });
+      const parsed = realtimeLiveWatchAckSchema.safeParse(ack);
+      if (!parsed.success || !parsed.data.ok) return null;
+      return parsed.data.frames ?? [];
+    } catch {
+      // No ack (gateway down mid-flight): silent — the poll fallback carries
+      // the chart, exactly like every other push in this layer (§4.5).
+      return null;
+    }
+  }, []);
+
+  const unwatchLive = useCallback<RealtimeContextValue['unwatchLive']>((assetId) => {
+    socketRef.current?.emit(REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId });
+  }, []);
+
   // Central cache sync for the pushes whose query keys are app-global.
   useEffect(() => {
     const offQuote = on(REALTIME_SERVER_EVENTS.quoteUpdated, (payload) => {
@@ -188,8 +224,8 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
   }, [on, queryClient]);
 
   const value = useMemo<RealtimeContextValue>(
-    () => ({ connected, on, joinRoom }),
-    [connected, on, joinRoom],
+    () => ({ connected, on, joinRoom, watchLive, unwatchLive }),
+    [connected, on, joinRoom, watchLive, unwatchLive],
   );
 
   return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;

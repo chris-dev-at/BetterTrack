@@ -1,7 +1,10 @@
 import { z } from 'zod';
 
+import { currencyCodeSchema } from './market';
+
 /**
- * Realtime gateway contracts (PROJECTPLAN.md §4.5, V3-P7a).
+ * Realtime gateway contracts (PROJECTPLAN.md §4.5, V3-P7a) and Live Mode
+ * (§6.3, V3-P7b).
  *
  * The Socket.IO endpoint lives at {@link REALTIME_PATH} on the API origin and is
  * authenticated via the session cookie on handshake. These schemas are the
@@ -54,7 +57,75 @@ export type RealtimeRoomAck = z.infer<typeof realtimeRoomAckSchema>;
 export const REALTIME_CLIENT_EVENTS = {
   roomJoin: 'room.join',
   roomLeave: 'room.leave',
+  liveWatch: 'live.watch',
+  liveUnwatch: 'live.unwatch',
 } as const;
+
+// ── Live Mode (§6.3, V3-P7b) ─────────────────────────────────────────────────
+
+/**
+ * The short real-time windows Live Mode offers on the asset chart (§6.3).
+ * A window only scopes how much ring-buffer history a viewer is backfilled
+ * with — switching it never touches the shared upstream polling loop.
+ */
+export const LIVE_WINDOWS = ['1m', '10m', '30m', '1h', '3h', '12h'] as const;
+
+export const liveWindowSchema = z.enum(LIVE_WINDOWS);
+export type LiveWindow = z.infer<typeof liveWindowSchema>;
+
+/** Each live window's span in milliseconds (backfill cutoff + client trim). */
+export const LIVE_WINDOW_MS: Record<LiveWindow, number> = {
+  '1m': 60_000,
+  '10m': 600_000,
+  '30m': 1_800_000,
+  '1h': 3_600_000,
+  '3h': 10_800_000,
+  '12h': 43_200_000,
+};
+
+/**
+ * One live price observation. Produced once per poll tick by the shared
+ * per-asset loop, appended to the Redis ring buffer, and fanned out as
+ * `live.frame` to the `asset:{id}` room — N viewers, one upstream stream (§5.3).
+ */
+export const realtimeLiveFrameSchema = z.object({
+  assetId: z.string().uuid(),
+  price: z.number(),
+  currency: currencyCodeSchema,
+  dayChangePct: z.number().nullable(),
+  /** When the loop observed this price (ISO-8601, producer-stamped). */
+  at: z.string().datetime(),
+});
+export type RealtimeLiveFrame = z.infer<typeof realtimeLiveFrameSchema>;
+
+/**
+ * Payload of `live.watch`. Idempotent per socket per asset: a repeat watch
+ * (e.g. a window switch) only re-backfills — the watcher count and the
+ * upstream loop are untouched.
+ */
+export const realtimeLiveWatchRequestSchema = z.object({
+  assetId: z.string().uuid(),
+  window: liveWindowSchema,
+});
+export type RealtimeLiveWatchRequest = z.infer<typeof realtimeLiveWatchRequestSchema>;
+
+/**
+ * Ack returned for `live.watch`: on success, the requested window backfilled
+ * from the ring buffer (oldest first); live frames stream after it.
+ */
+export const realtimeLiveWatchAckSchema = z.object({
+  ok: z.boolean(),
+  /** Machine-readable reason when `ok` is false (e.g. `NOT_FOUND`, `UNAVAILABLE`). */
+  error: z.string().optional(),
+  frames: z.array(realtimeLiveFrameSchema).optional(),
+});
+export type RealtimeLiveWatchAck = z.infer<typeof realtimeLiveWatchAckSchema>;
+
+/** Payload of `live.unwatch`. */
+export const realtimeLiveUnwatchRequestSchema = z.object({
+  assetId: z.string().uuid(),
+});
+export type RealtimeLiveUnwatchRequest = z.infer<typeof realtimeLiveUnwatchRequestSchema>;
 
 // ── Server → client ──────────────────────────────────────────────────────────
 
@@ -84,4 +155,6 @@ export const REALTIME_SERVER_EVENTS = {
   notificationNew: 'notification.new',
   quoteUpdated: 'quote.updated',
   portfolioChanged: 'portfolio.changed',
+  /** `live.frame` → the `asset:{id}` room, once per shared poll tick (§6.3). */
+  liveFrame: 'live.frame',
 } as const;

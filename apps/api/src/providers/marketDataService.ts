@@ -36,6 +36,16 @@ export interface MarketDataService {
    */
   search(query: string): Promise<AssetSearchResult[]>;
   getQuote(ref: AssetRef): Promise<CachedResult<Quote>>;
+  /**
+   * Fresh quote for the Live Mode poll loop (§6.3, V3-P7b): skips the §5.3
+   * freshness window (a 60 s-old cached quote is exactly what a live stream must
+   * beat) but goes upstream through the SAME budget → timeout → retry → breaker
+   * chain as every other call, and primes the regular quote cache with the
+   * result — so the 60 s poll fallback rides the live stream for free. While
+   * the provider's breaker is open this throws instead of hammering upstream;
+   * the loop stretches its interval, viewers keep the last frames.
+   */
+  pollQuote(ref: AssetRef): Promise<CachedResult<Quote>>;
   getHistory(
     ref: AssetRef,
     range: HistoryRange,
@@ -194,6 +204,23 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
         shouldRevalidate: revalidateGate(provider.id),
         loader: () => callUpstream(provider.id, () => provider.getQuote(ref)),
       });
+    },
+
+    async pollQuote(ref) {
+      const provider = registry.for(ref);
+      const load = (): Promise<Quote> => callUpstream(provider.id, () => provider.getQuote(ref));
+      if (provider.local) {
+        return load().then((value) => ({ value, stale: false, asOf: now() }));
+      }
+      const value = await load();
+      return cache.prime(
+        {
+          key: cacheKey(ref.providerId, ref.providerRef, 'quote', 'spot'),
+          ttlSeconds: QUOTE_TTL_SECONDS,
+          staleTtlSeconds,
+        },
+        value,
+      );
     },
 
     getHistory(ref, range, interval) {

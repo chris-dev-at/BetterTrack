@@ -78,6 +78,11 @@ import {
   createPortfolioService,
   type PortfolioService,
 } from '../services/portfolio/portfolioService';
+import {
+  createLiveModeService,
+  type LiveModeService,
+  type LiveModeServiceOptions,
+} from '../services/liveMode';
 import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createSessionService } from '../services/sessions/sessionService';
@@ -147,6 +152,13 @@ export interface AppContext {
    */
   realtime: RealtimeGateway;
   /**
+   * Live Mode core (§6.3, V3-P7b): hot-asset watcher counts, one shared poll
+   * loop per hot asset, Redis ring buffer. Driven entirely by the gateway's
+   * `live.watch`/`live.unwatch`; held on the context so shutdown can stop any
+   * remaining loops and tests can introspect watcher counts.
+   */
+  liveMode: LiveModeService;
+  /**
    * Typed domain event bus (§9, §4.5). Producers publish here; the notification
    * dispatcher subscribes. Held on the context so the process can close its Redis
    * pub/sub connections on shutdown.
@@ -167,6 +179,8 @@ export interface BuildContextDeps {
   backfill?: BackfillScheduler;
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
   passwordHasher?: PasswordHasher;
+  /** Test seam: fast poll cadence / small ring for Live Mode tests (V3-P7b). */
+  liveModeOptions?: LiveModeServiceOptions;
 }
 
 /** Composition root: repositories → services → context. */
@@ -417,6 +431,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
   // owner-or-shared with the same repository checks the shared-view HTTP
   // endpoints use (§6.9), recomputed at join time.
+  // Live Mode core (§6.3, V3-P7b). Hosted in the API process next to the
+  // gateway that drives its watcher counts — the ring buffer lives in Redis, so
+  // moving the loop into the worker later is wiring, not a data-path change.
+  const liveMode = createLiveModeService({
+    marketData,
+    redis,
+    logger,
+    options: deps.liveModeOptions,
+  });
+
   const realtime = createRealtimeGateway({
     config,
     bus: events,
@@ -425,6 +449,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     canViewPortfolio: async (userId, portfolioId) => {
       if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
       return Boolean(await friendshipRepo.findSharedPortfolioForViewer(userId, portfolioId));
+    },
+    liveMode,
+    // Global asset or the caller's own custom asset (§10) → provider ref for
+    // the shared loop; anything else is a NOT_FOUND-indistinguishable null.
+    resolveWatchableAsset: async (userId, assetId) => {
+      const row = await assetRepo.findByIdForUser(assetId, userId);
+      return row ? { providerId: row.providerId, providerRef: row.providerRef } : null;
     },
   });
 
@@ -453,6 +484,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     alerts,
     notificationDispatcher,
     realtime,
+    liveMode,
     events,
   };
 }

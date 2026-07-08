@@ -91,6 +91,17 @@ export interface MarketCache {
    */
   getOrLoad<T>(params: GetOrLoadParams<T>): Promise<CachedResult<T>>;
   /**
+   * Write a value the caller already fetched upstream (fresh + stale copies,
+   * clearing any negative entry) — exactly what a successful load stores. This
+   * is how the Live Mode poll loop (§6.3, V3-P7b) keeps the regular quote path
+   * served from cache while it streams: its fresh reads prime the same key the
+   * 60 s poll fallback hits, so N surfaces still cost one upstream stream.
+   */
+  prime<T>(
+    params: Pick<GetOrLoadParams<T>, 'key' | 'ttlSeconds' | 'staleTtlSeconds'>,
+    value: T,
+  ): Promise<CachedResult<T>>;
+  /**
    * Resolves once every background revalidation currently in flight has
    * finished (graceful shutdown, deterministic tests).
    */
@@ -192,7 +203,10 @@ export function createMarketCache(
     }
   }
 
-  async function store<T>(params: GetOrLoadParams<T>, value: T): Promise<CachedResult<T>> {
+  async function store<T>(
+    params: Pick<GetOrLoadParams<T>, 'key' | 'ttlSeconds' | 'staleTtlSeconds'>,
+    value: T,
+  ): Promise<CachedResult<T>> {
     const entry: StoredEntry<T> = { value, asOf: now() };
     const payload = JSON.stringify(entry);
     // Fresh copy expires at the §5.3 TTL; stale copy is retained much longer.
@@ -335,6 +349,10 @@ export function createMarketCache(
       });
       inflight.set(key, pending as Promise<CachedResult<unknown>>);
       return pending;
+    },
+
+    prime(params, value) {
+      return store(params, value);
     },
 
     async settled(): Promise<void> {

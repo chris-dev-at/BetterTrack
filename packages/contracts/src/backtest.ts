@@ -34,6 +34,19 @@ export const backtestBenchmarkSchema = z.enum(BACKTEST_BENCHMARKS);
 export type BacktestBenchmark = z.infer<typeof backtestBenchmarkSchema>;
 
 /**
+ * Late-listed-constituent modes (§14): what happens to a constituent younger
+ * than the requested window. `clip` (default) clips the window to the common
+ * history (the pre-§14 behavior); `cash` holds a late share as uninvested cash
+ * (0 % return) until its first trading day; `redistribute` splits it equally
+ * among the already-listed constituents and rebalances to the target weights on
+ * the entry day. In `cash`/`redistribute` the window runs the full requested
+ * span and the response carries one entry event per late constituent.
+ */
+export const BACKTEST_MODES = ['clip', 'cash', 'redistribute'] as const;
+export const backtestModeSchema = z.enum(BACKTEST_MODES);
+export type BacktestMode = z.infer<typeof backtestModeSchema>;
+
+/**
  * One inline basket member: which asset, and its relative weight. Weights are
  * relative (normalised across the basket by the engine so the index opens at
  * 100), so any positive number is valid — the Builder sends raw percentages.
@@ -52,6 +65,8 @@ export const backtestPreviewRequestSchema = z
     positions: z.array(backtestPreviewPositionSchema).min(1).max(50),
     range: backtestPreviewRangeSchema,
     benchmark: backtestBenchmarkSchema.nullish(),
+    /** Late-listing mode (§14); omitting it keeps the pre-§14 clip behavior. */
+    mode: backtestModeSchema.default('clip'),
   })
   .strict();
 export type BacktestPreviewRequest = z.infer<typeof backtestPreviewRequestSchema>;
@@ -89,7 +104,13 @@ export const backtestStatsSchema = z
   .strict();
 export type BacktestStats = z.infer<typeof backtestStatsSchema>;
 
-/** One position's share of the total return; `contributionPct` values sum to `totalReturnPct`. */
+/**
+ * One position's share of the total return; `contributionPct` values sum to
+ * `totalReturnPct` in every mode. In `clip`/`cash` mode a contribution is the
+ * weighted own return (`weight · returnPct`); in `redistribute` mode it is the
+ * money-weighted gain including temporarily redistributed capital, so it can
+ * differ from `weight · returnPct`.
+ */
 export const backtestContributionSchema = z
   .object({
     assetId: z.string(),
@@ -112,6 +133,21 @@ export const backtestBenchmarkResultSchema = z
   .strict();
 export type BacktestBenchmarkResult = z.infer<typeof backtestBenchmarkResultSchema>;
 
+/**
+ * A late constituent's entry into the running portfolio (§14): the trading day
+ * of its first available close on/after its listing date. Drawn as a chart
+ * marker ("X enters"). Empty in `clip` mode.
+ */
+export const backtestEntryEventSchema = z
+  .object({
+    assetId: z.string(),
+    symbol: z.string(),
+    /** ISO `YYYY-MM-DD` — the entry trading day. */
+    date: z.string(),
+  })
+  .strict();
+export type BacktestEntryEvent = z.infer<typeof backtestEntryEventSchema>;
+
 /** `POST /backtest/preview` response — mirrors the engine's `BacktestResult`. */
 export const backtestResponseSchema = z
   .object({
@@ -122,6 +158,15 @@ export const backtestResponseSchema = z
     contributions: z.array(backtestContributionSchema),
     notice: z.string().nullable(),
     benchmark: backtestBenchmarkResultSchema.nullable(),
+    /** The late-listing mode the backtest ran under (§14). */
+    mode: backtestModeSchema,
+    /** One entry per late constituent, ascending by date; empty in `clip` mode. */
+    entryEvents: z.array(backtestEntryEventSchema),
+    /**
+     * Cash mode only: mean share of the portfolio value sitting uninvested
+     * across the window, in percent ("avg. uninvested"); `null` in other modes.
+     */
+    idleCashAvgPct: z.number().nullable(),
   })
   .strict();
 export type BacktestResponse = z.infer<typeof backtestResponseSchema>;

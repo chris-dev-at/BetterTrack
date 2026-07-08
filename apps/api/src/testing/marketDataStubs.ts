@@ -24,6 +24,8 @@ export interface StubMarketDataControls {
   search?: (query: string) => Promise<AssetSearchResult[]> | AssetSearchResult[];
   /** Quote behaviour; throw to simulate a hard provider failure with no cache. */
   quote?: (ref: AssetRef) => Promise<CachedResult<Quote>> | CachedResult<Quote>;
+  /** Live-poll behaviour (V3-P7b); defaults to the `quote` control. */
+  poll?: (ref: AssetRef) => Promise<CachedResult<Quote>> | CachedResult<Quote>;
   /** History behaviour; throw to simulate a hard provider failure with no cache. */
   history?: (
     ref: AssetRef,
@@ -36,7 +38,7 @@ export interface StubMarketDataControls {
 
 export interface StubMarketData extends MarketDataService {
   /** Per-method call counts, for asserting coalescing / first-touch behaviour. */
-  readonly calls: { search: number; quote: number; history: number; meta: number };
+  readonly calls: { search: number; quote: number; history: number; meta: number; poll: number };
 }
 
 const notConfigured = (method: string) => (): never => {
@@ -44,9 +46,10 @@ const notConfigured = (method: string) => (): never => {
 };
 
 export function createStubMarketData(controls: StubMarketDataControls = {}): StubMarketData {
-  const calls = { search: 0, quote: 0, history: 0, meta: 0 };
+  const calls = { search: 0, quote: 0, history: 0, meta: 0, poll: 0 };
   const search = controls.search ?? (() => []);
   const quote = controls.quote ?? notConfigured('getQuote');
+  const poll = controls.poll ?? controls.quote ?? notConfigured('pollQuote');
   const history = controls.history ?? notConfigured('getHistory');
   const meta = controls.meta ?? notConfigured('getMeta');
 
@@ -59,6 +62,10 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     async getQuote(ref) {
       calls.quote += 1;
       return quote(ref);
+    },
+    async pollQuote(ref) {
+      calls.poll += 1;
+      return poll(ref);
     },
     async getHistory(ref, range, interval) {
       calls.history += 1;

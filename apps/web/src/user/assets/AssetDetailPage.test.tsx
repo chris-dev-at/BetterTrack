@@ -24,7 +24,11 @@ const chartMocks = vi.hoisted(() => {
   const remove = vi.fn();
   const fitContent = vi.fn();
   const applyOptions = vi.fn();
-  const addSeries = vi.fn((_def: unknown, _opts?: unknown) => ({ setData, applyOptions: vi.fn() }));
+  const addSeries = vi.fn((_def: unknown, _opts?: unknown) => ({
+    setData,
+    update: vi.fn(),
+    applyOptions: vi.fn(),
+  }));
   const createChart = vi.fn(() => ({
     addSeries,
     applyOptions,
@@ -257,6 +261,78 @@ describe('AssetDetailPage — range switching', () => {
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     // step mode uses LineSeries (not AreaSeries)
     await waitFor(() => expect(chartMocks.addSeries.mock.calls[0]?.[0]).toBe('LineSeries'));
+  });
+});
+
+describe('AssetDetailPage — Live Mode (§6.3, V3-P7b)', () => {
+  test('the LIVE toggle is real — no Coming-Soon marker — and off by default', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    const toggle = screen.getByRole('button', { name: 'Toggle live mode' });
+    expect(toggle).toBeEnabled();
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle).not.toHaveAttribute('title', 'Coming soon');
+  });
+
+  test('turning LIVE on swaps the range toggle for the six live windows; off restores it', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+    for (const w of ['1m', '10m', '30m', '1h', '3h', '12h']) {
+      expect(screen.getByRole('button', { name: w })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: '1D' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Max' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+    expect(screen.getByRole('button', { name: '1D' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '12h' })).not.toBeInTheDocument();
+  });
+
+  test('gateway absent (no realtime provider) ⇒ silent 60 s poll fallback, zero user-visible errors', async () => {
+    const user = userEvent.setup();
+    renderPage(); // no RealtimeProvider mounted — the noop context (§4.5)
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+
+    // The fallback note is informational; nothing error-toned renders and the
+    // polled quote keeps the page alive.
+    await waitFor(() =>
+      expect(
+        screen.getByText('Live updates every 60 s while the stream reconnects.'),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/live.*(unavailable|error|failed)/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Live price chart for BAYN.DE')).toBeInTheDocument();
+  });
+
+  test('a window switch stays in live mode with the picked window selected', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+    await user.click(screen.getByRole('button', { name: '12h' }));
+    expect(screen.getByRole('button', { name: '12h' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '10m' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Toggle live mode' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  test('custom assets get no LIVE toggle — there is nothing to stream (§6.3)', async () => {
+    vi.mocked(getAssetDetail).mockResolvedValue({
+      ...baseDetail,
+      asset: { ...baseDetail.asset, isCustom: true, providerId: 'manual' },
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Toggle live mode' })).not.toBeInTheDocument();
   });
 });
 

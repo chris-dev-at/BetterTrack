@@ -32,6 +32,13 @@ export interface BenchmarkSeries {
   series: ChartPoint[];
 }
 
+/** A labelled event marker pinned to one axis date — the §14 backtest entry
+ * markers ("X enters"). Drawn as a flag above the main series at its date. */
+export interface ChartMarker {
+  time: Time;
+  label: string;
+}
+
 /** One slice of an {@link AllocationDonut} (PROJECTPLAN.md §6.5/§6.9). */
 export interface AllocationSegment {
   label: string;

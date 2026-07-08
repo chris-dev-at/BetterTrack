@@ -835,8 +835,14 @@
         "dax": "DAX",
         "msciWorld": "MSCI World"
       },
+      "mode": {
+        "clip": "Auf gemeinsame Historie kürzen",
+        "cash": "Cash bis zur Notierung",
+        "redistribute": "Umverteilen bis zur Notierung"
+      },
       "rangeAriaLabel": "Backtest-Zeitraum auswählen",
       "benchmarkAriaLabel": "Benchmark-Overlay umschalten",
+      "modeAriaLabel": "Modus für spät notierte Werte wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
       "error": "Der Backtest konnte nicht ausgeführt werden. Bitte versuche es erneut.",
       "chartAriaLabel": "Konglomerat-Backtest-Diagramm",
@@ -846,8 +852,14 @@
         "maxDrawdown": "Maximaler Drawdown",
         "volatility": "Volatilität (p. a.)",
         "bestDay": "Bester Tag",
-        "worstDay": "Schlechtester Tag"
-      }
+        "worstDay": "Schlechtester Tag",
+        "idleCash": "Ø nicht investiert"
+      },
+      "modeNotice": {
+        "cash": "Voller angefragter Zeitraum — {{entries}}: Der Anteil eines spät notierten Werts liegt bis zu seinem ersten Handelstag als nicht investiertes Cash (0 % Rendite) bereit.",
+        "redistribute": "Voller angefragter Zeitraum — {{entries}}: Der Anteil eines spät notierten Werts wird bis zu seinem ersten Handelstag gleichmäßig auf die bereits notierten Werte verteilt und dann auf die Zielgewichte rebalanciert."
+      },
+      "entryMarker": "{{symbol}} steigt ein"
     },
     "alerts": {
       "title": "Preisalarme",
@@ -938,6 +950,19 @@
       "statLargest": "Größte",
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
       "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel."
+    }
+  },
+  "assets": {
+    "detail": {
+      "chartAriaLabel": "Kursdiagramm für {{symbol}}"
+    },
+    "live": {
+      "badge": "LIVE",
+      "toggleLabel": "Live-Modus umschalten",
+      "windowGroupLabel": "Live-Zeitfenster wählen",
+      "waiting": "Warte auf Live-Kurse…",
+      "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
+      "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}"
     }
   }
 }

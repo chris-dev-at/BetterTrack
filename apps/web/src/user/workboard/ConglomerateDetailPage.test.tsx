@@ -145,6 +145,9 @@ beforeEach(() => {
     contributions: [],
     notice: null,
     benchmark: null,
+    mode: 'clip',
+    entryEvents: [],
+    idleCashAvgPct: null,
   });
 });
 
@@ -181,6 +184,7 @@ describe('ConglomerateDetailPage', () => {
         ],
         '5Y',
         null,
+        'clip',
         expect.anything(),
       ),
     );

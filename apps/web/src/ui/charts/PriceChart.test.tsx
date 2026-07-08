@@ -6,11 +6,14 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 // contract is *how* it drives the lib (series type, setData, disposal).
 const mocks = vi.hoisted(() => {
   const setData = vi.fn();
+  const update = vi.fn();
   const remove = vi.fn();
   const fitContent = vi.fn();
   const applyOptions = vi.fn();
+  const setMarkers = vi.fn();
   const addSeries = vi.fn((_def: unknown, _opts?: unknown) => ({
     setData,
+    update,
     applyOptions: vi.fn(),
   }));
   const createChart = vi.fn((_el: unknown, _opts?: unknown) => ({
@@ -19,11 +22,23 @@ const mocks = vi.hoisted(() => {
     timeScale: () => ({ fitContent }),
     remove,
   }));
-  return { setData, remove, fitContent, applyOptions, addSeries, createChart };
+  const createSeriesMarkers = vi.fn(() => ({ setMarkers }));
+  return {
+    setData,
+    update,
+    remove,
+    fitContent,
+    applyOptions,
+    setMarkers,
+    addSeries,
+    createChart,
+    createSeriesMarkers,
+  };
 });
 
 vi.mock('lightweight-charts', () => ({
   createChart: mocks.createChart,
+  createSeriesMarkers: mocks.createSeriesMarkers,
   AreaSeries: 'AreaSeries',
   BaselineSeries: 'BaselineSeries',
   LineSeries: 'LineSeries',
@@ -68,6 +83,32 @@ describe('PriceChart', () => {
     expect(mocks.addSeries).toHaveBeenCalledTimes(2);
     expect(screen.getByText(sampleBenchmarkSeries.label)).toBeInTheDocument();
     expect(mocks.setData).toHaveBeenCalledWith(sampleBenchmarkSeries.series);
+  });
+
+  test('entry markers ride the main series as labelled flags (§14)', () => {
+    const markers = [
+      { time: '2024-06-14', label: 'SPACEX enters' },
+      { time: '2024-09-02', label: 'LATE enters' },
+    ];
+    render(<PriceChart series={samplePriceSeries} markers={markers} />);
+
+    expect(mocks.createSeriesMarkers).toHaveBeenCalledTimes(1);
+    expect(mocks.setMarkers).toHaveBeenCalledWith(
+      markers.map((m) => ({
+        time: m.time,
+        position: 'aboveBar',
+        shape: 'arrowDown',
+        color: expect.any(String),
+        text: m.label,
+      })),
+    );
+  });
+
+  test('without markers the marker plugin is never created', () => {
+    render(<PriceChart series={samplePriceSeries} />);
+
+    expect(mocks.createSeriesMarkers).not.toHaveBeenCalled();
+    expect(mocks.setMarkers).not.toHaveBeenCalled();
   });
 
   test('asset overlays draw one line each, switch the scale to percentage mode and show legend chips (#122)', () => {
@@ -160,5 +201,50 @@ describe('PriceChart', () => {
     expect(mocks.remove).not.toHaveBeenCalled();
     unmount();
     expect(mocks.remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PriceChart — live-append mode (§6.3, V3-P7b)', () => {
+  const base = [
+    { time: 1_700_000_000 as never, value: 100 },
+    { time: 1_700_000_010 as never, value: 101 },
+  ];
+
+  test('a pure tail-growth streams via series.update() instead of a full setData', () => {
+    const { rerender } = render(<PriceChart series={base} live showRangeToggle={false} />);
+    expect(mocks.setData).toHaveBeenCalledTimes(1); // initial draw
+
+    const grown = [...base, { time: 1_700_000_020 as never, value: 102 }];
+    rerender(<PriceChart series={grown} live showRangeToggle={false} />);
+
+    expect(mocks.setData).toHaveBeenCalledTimes(1); // no re-draw
+    // Appended from the last drawn point: re-affirm it, then the new one.
+    expect(mocks.update.mock.calls.map((c) => c[0])).toEqual([grown[1], grown[2]]);
+  });
+
+  test('a replaced series (window/asset switch) falls back to setData', () => {
+    const { rerender } = render(<PriceChart series={base} live showRangeToggle={false} />);
+    const replaced = [{ time: 1_700_000_005 as never, value: 99 }, ...base.slice(1)];
+    rerender(<PriceChart series={replaced} live showRangeToggle={false} />);
+
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.setData).toHaveBeenCalledTimes(2);
+  });
+
+  test('without live, growth still re-draws via setData', () => {
+    const { rerender } = render(<PriceChart series={base} showRangeToggle={false} />);
+    rerender(
+      <PriceChart
+        series={[...base, { time: 1_700_000_020 as never, value: 102 }]}
+        showRangeToggle={false}
+      />,
+    );
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.setData).toHaveBeenCalledTimes(2);
+  });
+
+  test('renders the custom empty message while waiting for the first frame', () => {
+    render(<PriceChart series={[]} live emptyMessage="Waiting for live prices…" />);
+    expect(screen.getByRole('status')).toHaveTextContent('Waiting for live prices…');
   });
 });

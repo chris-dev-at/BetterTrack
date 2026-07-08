@@ -21,6 +21,7 @@ import type { BackfillScheduler } from '../jobs';
 import { createLogger } from '../logger';
 import type { MarketDataService } from '../providers';
 import type { MailTransport } from '../services/email/transport';
+import type { LiveModeServiceOptions } from '../services/liveMode';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
 /**
@@ -167,6 +168,8 @@ export interface CreateTestAppOptions {
   marketData?: MarketDataService;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
+  /** Fast poll cadence / small ring for Live Mode tests (V3-P7b). */
+  liveModeOptions?: LiveModeServiceOptions;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -199,6 +202,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     marketData: options.marketData,
     backfill: options.backfill,
     passwordHasher: testPasswordHasher,
+    liveModeOptions: options.liveModeOptions,
   });
   const app = createApp(ctx);
 
