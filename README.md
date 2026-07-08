@@ -28,7 +28,7 @@ packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)
   config/     # Shared tsconfig, ESLint, Prettier
 infra/
-  docker-compose.yml            # Production: web + api + worker + db + redis (§4.6)
+  docker-compose.yml            # Production: web + api + worker + landing + db + redis (§4.6)
   docker-compose.subdomains.yml # Port overlay for BT_MODE=subdomains — layer via -f or override.yml
   docker-compose.ports.yml      # Port overlay for BT_MODE=ports — layer via -f or override.yml
   docker-compose.dev.yml        # Dev: Postgres 17 + Redis 7 only
@@ -111,11 +111,18 @@ body or secret.
 
 ## Production deploy
 
-The production topology runs five containers (nginx, api, worker, Postgres 17, Redis 7)
-via `infra/docker-compose.yml` — see PROJECTPLAN.md §4.6 for the full spec. `docker compose up -d`
-starts all five, including the BullMQ **worker** (`node dist/scripts/worker.js`) that runs the
-background jobs (§9): nightly quote refresh, on-demand backfill, hourly FX spot refresh, catalog
-enrichment for search misses, and notification/email dispatch.
+The production topology runs six containers (nginx, api, worker, the static `landing`
+site, Postgres 17, Redis 7) via `infra/docker-compose.yml` — see PROJECTPLAN.md §4.6 for the
+full spec. `docker compose up -d` starts them all, including the BullMQ **worker**
+(`node dist/scripts/worker.js`) that runs the background jobs (§9): nightly quote refresh,
+on-demand backfill, hourly FX spot refresh, catalog enrichment for search misses, and
+notification/email dispatch.
+
+One env scheme drives **five public origins** — `api` / `web` / `admin` plus the static
+**product** landing (the `BT_DOMAIN` apex) and the **mobile** placeholder (`mobile.`).
+The single `web` front proxy routes all five (by `server_name` in subdomains mode, by
+`listen` port in ports mode) and reverse-proxies the product/mobile origins to the `landing`
+container; the api/web/admin behavior is unchanged from the earlier three-origin layout.
 
 ### Prerequisites
 
@@ -156,10 +163,12 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.override.yml 
 Starting from a fresh server with a domain (`track.example.at`) and a TLS-terminating
 front proxy (Caddy/Traefik/Cloudflare Tunnel) already pointed at it:
 
-1. Create three DNS records, all pointing at the server: `api.track.example.at`,
-   `web.track.example.at`, `admin.track.example.at`.
+1. Create five DNS records, all pointing at the server: the apex `track.example.at`
+   (product landing), `web.track.example.at`, `admin.track.example.at`,
+   `api.track.example.at`, and `mobile.track.example.at`.
 2. Point your TLS proxy at this compose stack's `web` service, port 80
-   (`BT_HTTP_PORT`, default `80`) — it's a plain HTTP origin behind the proxy.
+   (`BT_HTTP_PORT`, default `80`) — it's a plain HTTP origin behind the proxy that
+   fronts all five origins.
 3. `infra/.env`:
    ```
    BT_MODE=subdomains
@@ -171,8 +180,9 @@ front proxy (Caddy/Traefik/Cloudflare Tunnel) already pointed at it:
    ```
 4. Run the **First-time setup** steps above, using `docker-compose.subdomains.yml`
    as the override in steps 2 and 6 — it publishes only `BT_HTTP_PORT` (default `80`).
-5. Verify: `https://api.track.example.at/api/v1/health`, `https://web.track.example.at`,
-   `https://admin.track.example.at` all resolve through the proxy.
+5. Verify: `https://track.example.at` (product), `https://web.track.example.at`,
+   `https://admin.track.example.at`, `https://api.track.example.at/api/v1/health`,
+   and `https://mobile.track.example.at` all resolve through the proxy.
 
 ### Worked example — Mode B: ports
 
@@ -187,19 +197,96 @@ front proxy — every service is exposed on its own port:
    BT_PORT_API=3000
    BT_PORT_WEB=8080
    BT_PORT_ADMIN=8081
+   BT_PORT_PRODUCT=8082
+   BT_PORT_MOBILE=8083
    POSTGRES_PASSWORD=<strong password>
    DATABASE_URL=postgres://bt:<strong password>@db:5432/bettertrack
    SESSION_SECRET=<openssl rand -hex 64>
    ```
-2. Open (or forward) ports `3000`, `8080`, `8081` on the host firewall.
+2. Open (or forward) ports `3000`, `8080`, `8081`, `8082`, `8083` on the host firewall.
 3. Run the **First-time setup** steps above, using `docker-compose.ports.yml` as
-   the override in steps 2 and 6 — it publishes `BT_PORT_API/WEB/ADMIN` only,
-   nothing binds port 80, so this is safe on a host already serving something
-   else there.
+   the override in steps 2 and 6 — it publishes `BT_PORT_API/WEB/ADMIN/PRODUCT/MOBILE`
+   on the `web` proxy (the product/mobile ports reverse-proxy to the internal
+   `landing` container); nothing binds port 80, so this is safe on a host already
+   serving something else there.
 4. Verify: `http://203.0.113.10:3000/api/v1/health`, `http://203.0.113.10:8080`,
-   `http://203.0.113.10:8081` are all reachable directly, no proxy required.
+   `http://203.0.113.10:8081`, `http://203.0.113.10:8082` (product),
+   `http://203.0.113.10:8083` (mobile) are all reachable directly, no proxy required.
    Put a TLS-terminating proxy in front and set `BT_TLS=true` once you're ready
    for HTTPS — cookies become `Secure` and require it.
+
+### Go-live — always-on-Mac host behind Cloudflare (5 origins)
+
+The reference production deployment is a single always-on Mac running the compose
+stack in **subdomains** mode, with **Cloudflare** in front terminating TLS for all
+five origins. The Mac never exposes a raw port to the internet; Cloudflare is the
+only public edge. Two ways to connect the Mac to Cloudflare — pick one (this is a
+go-live ops decision, both are supported):
+
+**DNS records** — one zone (`bettertrack.at`), five names, all reaching the same
+compose stack's `web` proxy on `BT_HTTP_PORT` (default `80`):
+
+| Origin         | Hostname                | Serves                                 |
+| -------------- | ----------------------- | -------------------------------------- |
+| Product (apex) | `bettertrack.at`        | Static product landing (`landing`)     |
+| Web app        | `web.bettertrack.at`    | User SPA (`web` → static)              |
+| Admin app      | `admin.bettertrack.at`  | Admin SPA (`web` → static, admin kind) |
+| API            | `api.bettertrack.at`    | Express API (`web` → `api:3000`)       |
+| Mobile         | `mobile.bettertrack.at` | Static mobile placeholder (`landing`)  |
+
+`infra/.env`: `BT_MODE=subdomains`, `BT_DOMAIN=bettertrack.at`, `BT_HTTP_PORT=80`,
+plus the DB/secret values from **First-time setup**. Leave `BT_TLS` blank — TLS is
+terminated at Cloudflare, and the `web` proxy speaks plain HTTP on the LAN. The
+session cookie is still `Secure` because the **derived** API origin is
+`https://api.bettertrack.at` (cookie `Secure` follows the origin scheme, not the
+hop to nginx).
+
+**Path A — Cloudflare Tunnel (recommended; no port-forward, no static IP).**
+Install `cloudflared` on the Mac and create a named tunnel; route every hostname
+to the local proxy:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create bettertrack
+# ~/.cloudflared/config.yml — all five hostnames → the compose web proxy on :80
+#   tunnel: <TUNNEL_ID>
+#   credentials-file: /Users/<you>/.cloudflared/<TUNNEL_ID>.json
+#   ingress:
+#     - hostname: bettertrack.at
+#       service: http://localhost:80
+#     - hostname: web.bettertrack.at
+#       service: http://localhost:80
+#     - hostname: admin.bettertrack.at
+#       service: http://localhost:80
+#     - hostname: api.bettertrack.at
+#       service: http://localhost:80
+#     - hostname: mobile.bettertrack.at
+#       service: http://localhost:80
+#     - service: http_status:404
+cloudflared tunnel route dns bettertrack bettertrack.at
+cloudflared tunnel route dns bettertrack web.bettertrack.at
+cloudflared tunnel route dns bettertrack admin.bettertrack.at
+cloudflared tunnel route dns bettertrack api.bettertrack.at
+cloudflared tunnel route dns bettertrack mobile.bettertrack.at
+cloudflared tunnel run bettertrack   # run under launchd to survive reboots
+```
+
+The `route dns` commands create the five proxied (orange-cloud) `CNAME`s at
+Cloudflare automatically; the tunnel is the only inbound path, so the Mac needs no
+open ports and no static IP.
+
+**Path B — port-forward (static/quasi-static IP).** Create five **proxied**
+(orange-cloud) DNS records at Cloudflare for the names above, all pointing at your
+public IP, and forward inbound `443` on the router to the Mac. Terminate TLS
+either at Cloudflare only (**Flexible** — Cloudflare→Mac is plain HTTP on
+`BT_HTTP_PORT`) or end-to-end (**Full (strict)** — front the `web` proxy with a
+local TLS terminator, e.g. Caddy, and set `BT_TLS` accordingly). Cloudflare's
+proxy is still the only public edge; keep the router forward scoped to it.
+
+Either path: run **First-time setup** (build → migrate → seed → `up -d`) with
+`docker-compose.subdomains.yml` as the override, then schedule nightly backups per
+**Backups & restore** below. Apply updates and re-run migrations exactly as in
+**Day-to-day commands** — the deploy path is identical; only the public edge differs.
 
 ### Day-to-day commands
 
@@ -231,9 +318,12 @@ docker compose up -d          # rolling restart
 | `BT_DOMAIN`                   | yes      | Base domain/host (`track.example.at`); origins are derived from it                          |
 | `BT_TLS`                      | no       | Force the derived scheme; blank = per-mode default (subdomains https, ports http)           |
 | `BT_SUB_API/WEB/ADMIN`        | no       | Subdomain labels in subdomains mode (default `api`/`web`/`admin`)                           |
+| `BT_SUB_MOBILE`               | no       | Mobile-placeholder subdomain label (default `mobile`; product has none — it's the apex)     |
 | `BT_PORT_API/WEB/ADMIN`       | no       | Public service ports in ports mode (default `3000`/`8080`/`8081`)                           |
+| `BT_PORT_PRODUCT/MOBILE`      | no       | Static product/mobile landing ports in ports mode (default `8082`/`8083`)                   |
 | `BT_HTTP_PORT`                | no       | Host port the front proxy binds in subdomains mode (default `80`; TLS in front)             |
 | `BT_API/WEB/ADMIN_ORIGIN`     | no       | Explicit origin overrides — win over derivation (`APP_ORIGIN` = legacy web alias)           |
+| `BT_PRODUCT/MOBILE_ORIGIN`    | no       | Explicit overrides for the static landing origins (never enter the CORS allowlist)          |
 | `SMTP_HOST/FROM`              | no       | Both required to enable email; app runs without them (Gmail preset in `.env`)               |
 | `ADMIN_EMAIL/PASSWORD`        | yes\*    | \*Required for `seed.js` (hard-exits without both, see `scripts/seed.ts`); no-op thereafter |
 | `BACKUP_RETENTION_DAYS`       | no       | Days of nightly dumps to keep in the `pgbackups` volume (default `14`)                      |
@@ -242,11 +332,13 @@ docker compose up -d          # rolling restart
 
 > **Deployment topology (§4.6, §11):** one env scheme drives every public origin,
 > and the CORS allowlist + session-cookie attributes are **derived** from it —
-> never hand-maintained. `subdomains` fronts `api.` / `web.` / `admin.` of
-> `BT_DOMAIN` behind a TLS proxy; `ports` puts each service on its own port of a
-> single host. The API validates & derives the origins in `apps/api/src/config/env.ts`;
-> the one web image renders the matching nginx layout from `infra/nginx/templates/`
-> and injects a per-origin `window.__BT__` (`config.js`) at container start. See
+> never hand-maintained. `subdomains` fronts the product landing at the `BT_DOMAIN`
+> apex plus `web.` / `admin.` / `api.` / `mobile.` behind a TLS proxy; `ports` puts
+> each of the five services on its own port of a single host. The API validates &
+> derives the origins in `apps/api/src/config/env.ts`; the one web image renders the
+> matching nginx layout from `infra/nginx/templates/` and injects a per-origin
+> `window.__BT__` (`config.js`) at container start. The static product/mobile pages
+> take no credentials, so they are **never** added to the CORS allowlist. See
 > `infra/.env.production.example` for a fully commented both-modes template.
 
 ### Worker (BullMQ)

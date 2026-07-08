@@ -4,9 +4,11 @@ import { loadConfig } from '../env';
 
 /**
  * Topology & derived-origin coverage (PROJECTPLAN.md §4.6, §10, §11). Proves the
- * single env scheme derives all three origins for both deployment modes plus
- * explicit overrides, and that CORS/cookie attributes fall out of those origins
- * with no hardcoded values.
+ * single env scheme derives all five origins (api/web/admin + the static product
+ * apex / mobile. landing pages) for both deployment modes plus explicit
+ * overrides, and that CORS/cookie attributes fall out of those origins with no
+ * hardcoded values — and that the credential-free product/mobile origins never
+ * enter the CORS allowlist.
  */
 
 const REQUIRED: NodeJS.ProcessEnv = {
@@ -51,6 +53,20 @@ describe('subdomains mode', () => {
     expect(c.topology.apiOrigin).toBe('http://api.lan.local');
     expect(c.cookie.secure).toBe(false);
   });
+
+  it('serves the product landing from the apex and mobile from its subdomain', () => {
+    const c = config({ BT_MODE: 'subdomains', BT_DOMAIN: 'track.example.at' });
+    // Product lives at the APEX — no subdomain label.
+    expect(c.topology.productOrigin).toBe('https://track.example.at');
+    expect(c.topology.mobileOrigin).toBe('https://mobile.track.example.at');
+  });
+
+  it('honours a configurable mobile subdomain label', () => {
+    const c = config({ BT_MODE: 'subdomains', BT_DOMAIN: 'example.com', BT_SUB_MOBILE: 'm' });
+    expect(c.topology.mobileOrigin).toBe('https://m.example.com');
+    // The apex product origin never carries a subdomain regardless.
+    expect(c.topology.productOrigin).toBe('https://example.com');
+  });
 });
 
 describe('ports mode', () => {
@@ -83,6 +99,23 @@ describe('ports mode', () => {
     expect(c.topology.apiOrigin).toBe('https://secure.host:3000');
     expect(c.cookie.secure).toBe(true);
   });
+
+  it('gives product/mobile their own symmetric ports', () => {
+    const c = config({ BT_MODE: 'ports', BT_DOMAIN: 'localhost' });
+    expect(c.topology.productOrigin).toBe('http://localhost:8082');
+    expect(c.topology.mobileOrigin).toBe('http://localhost:8083');
+  });
+
+  it('honours configurable product/mobile ports', () => {
+    const c = config({
+      BT_MODE: 'ports',
+      BT_DOMAIN: 'box.internal',
+      BT_PORT_PRODUCT: '9090',
+      BT_PORT_MOBILE: '9091',
+    });
+    expect(c.topology.productOrigin).toBe('http://box.internal:9090');
+    expect(c.topology.mobileOrigin).toBe('http://box.internal:9091');
+  });
 });
 
 describe('explicit overrides win over derivation', () => {
@@ -97,6 +130,17 @@ describe('explicit overrides win over derivation', () => {
     expect(c.topology.apiOrigin).toBe('https://api.custom.io');
     expect(c.topology.webOrigin).toBe('https://custom.io');
     expect(c.topology.adminOrigin).toBe('https://admin.custom.io');
+  });
+
+  it('applies BT_PRODUCT_ORIGIN / BT_MOBILE_ORIGIN and strips a trailing slash', () => {
+    const c = config({
+      BT_MODE: 'subdomains',
+      BT_DOMAIN: 'ignored.example',
+      BT_PRODUCT_ORIGIN: 'https://bettertrack.at/',
+      BT_MOBILE_ORIGIN: 'https://m.bettertrack.at',
+    });
+    expect(c.topology.productOrigin).toBe('https://bettertrack.at');
+    expect(c.topology.mobileOrigin).toBe('https://m.bettertrack.at');
   });
 
   it('treats APP_ORIGIN as a legacy alias for the web origin', () => {
@@ -118,6 +162,16 @@ describe('CORS & cookie derivation', () => {
     expect(c.corsOrigins).toEqual(['https://web.example.at', 'https://admin.example.at']);
     // The API origin is never in the allowlist (it is not a cross-origin caller).
     expect(c.corsOrigins).not.toContain(c.topology.apiOrigin);
+  });
+
+  it('never admits the static product/mobile origins to the credentialed allowlist', () => {
+    // Static landing pages carry no cookies and never call the API — admitting
+    // them would only widen the credentialed surface (§4.6). True in both modes.
+    for (const mode of ['subdomains', 'ports'] as const) {
+      const c = config({ BT_MODE: mode, BT_DOMAIN: 'example.at' });
+      expect(c.corsOrigins).not.toContain(c.topology.productOrigin);
+      expect(c.corsOrigins).not.toContain(c.topology.mobileOrigin);
+    }
   });
 
   it('derives cookie.secure from the API origin scheme, not NODE_ENV', () => {

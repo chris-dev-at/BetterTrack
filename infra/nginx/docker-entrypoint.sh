@@ -39,10 +39,17 @@ export BT_DOMAIN="$DOMAIN"
 export BT_SUB_API="${BT_SUB_API:-api}"
 export BT_SUB_WEB="${BT_SUB_WEB:-web}"
 export BT_SUB_ADMIN="${BT_SUB_ADMIN:-admin}"
+export BT_SUB_MOBILE="${BT_SUB_MOBILE:-mobile}"
 export BT_PORT_API="${BT_PORT_API:-3000}"
 export BT_PORT_WEB="${BT_PORT_WEB:-8080}"
 export BT_PORT_ADMIN="${BT_PORT_ADMIN:-8081}"
+export BT_PORT_PRODUCT="${BT_PORT_PRODUCT:-8082}"
+export BT_PORT_MOBILE="${BT_PORT_MOBILE:-8083}"
 export API_UPSTREAM="${API_UPSTREAM:-api:3000}"
+# Static product/mobile landing pages live in the separate `landing` container
+# (§13.3 V3-P12). The apex origin serves its product page, `mobile.` serves the
+# mobile placeholder — both proxied to this upstream over the internal network.
+export LANDING_UPSTREAM="${LANDING_UPSTREAM:-landing:80}"
 export API_ORIGIN
 
 TEMPLATE="/etc/nginx/bt-templates/${MODE}.conf.template"
@@ -52,7 +59,7 @@ if [ ! -f "$TEMPLATE" ]; then
 fi
 
 # Restrict envsubst to OUR vars so nginx runtime vars ($host, $uri, …) survive.
-VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${API_UPSTREAM} ${API_ORIGIN}'
+VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN}'
 envsubst "$VARS" < "$TEMPLATE" > /etc/nginx/conf.d/default.conf
 
 echo "bettertrack-web: mode=${MODE} apiOrigin=${API_ORIGIN}"
