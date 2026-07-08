@@ -3,7 +3,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { customAssetSchema, valuePointsResponseSchema } from '@bettertrack/contracts';
+import {
+  CUSTOM_ASSET_CATEGORIES,
+  customAssetSchema,
+  valuePointsResponseSchema,
+} from '@bettertrack/contracts';
 
 import { assets } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -321,6 +325,81 @@ describe('custom-asset categories (V3-P2)', () => {
       .set(...XRW)
       .send({ name: 'Old cat', category: 'real_estate', currency: 'EUR' });
     expect(res.status).toBe(400);
+  });
+});
+
+// Systematic guard for the V3-P2 acceptance criterion (issue #325): *"No CUSTOM
+// category/slice remains in any UI or API response."* Prior rounds patched one
+// donut surface at a time; this sweep asserts the property holds across the whole
+// category enum at the API boundary (the source every grouping surface reads),
+// complementing the static `taxonomy/no-custom-category-slice` lint gate.
+describe('CUSTOM taxonomy sweep — no legacy/CUSTOM category in any API holding (V3-P2 #325)', () => {
+  /** The dead category enum (migration 0022) plus the retired `custom` slice key. */
+  const LEGACY_TOKENS = ['real_estate', 'vehicle', 'collectible', 'custom'];
+
+  it('the catalog enum carries none of the legacy/CUSTOM tokens', () => {
+    const categories = CUSTOM_ASSET_CATEGORIES as readonly string[];
+    for (const token of LEGACY_TOKENS) {
+      expect(categories).not.toContain(token);
+    }
+  });
+
+  it('every catalog category surfaces on the holding as a real bucket (never a CUSTOM slice), and a custom "stock" groups like a market stock', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    // One custom asset per catalog category, each with an initial purchase so it
+    // becomes a holding on the default portfolio.
+    const assetIdByCategory = new Map<string, string>();
+    for (const category of CUSTOM_ASSET_CATEGORIES) {
+      const created = await agent
+        .post('/api/v1/custom-assets')
+        .set(...XRW)
+        .send({
+          name: `Custom ${category}`,
+          category,
+          currency: 'EUR',
+          initialPurchase: { quantity: 1, price: 1000, executedAt: tsOffset(-5) },
+        });
+      expect(created.status).toBe(201);
+      assetIdByCategory.set(category, created.body.asset.id);
+    }
+
+    const portfolios = await agent.get('/api/v1/portfolios');
+    const pid = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault).id;
+    const detail = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(detail.status).toBe(200);
+
+    type HoldingDto = {
+      asset: { id: string; type: string; category: string | null; isCustom: boolean };
+    };
+    const holdings = detail.body.holdings as HoldingDto[];
+    // Every category produced its holding — nothing dropped.
+    expect(holdings.length).toBe(CUSTOM_ASSET_CATEGORIES.length);
+
+    for (const h of holdings) {
+      // The exact grouping key every donut surface computes.
+      const groupingKey = h.asset.category ?? h.asset.type;
+      expect(LEGACY_TOKENS).not.toContain(h.asset.category);
+      expect(LEGACY_TOKENS).not.toContain(groupingKey);
+      // A custom holding's category is always a real catalog bucket.
+      if (h.asset.isCustom) {
+        expect(CUSTOM_ASSET_CATEGORIES as readonly string[]).toContain(h.asset.category);
+      }
+    }
+
+    // Each custom asset grouped under its own real catalog category.
+    for (const [category, assetId] of assetIdByCategory) {
+      const holding = holdings.find((h) => h.asset.id === assetId);
+      expect(holding, `holding for custom ${category} present`).toBeTruthy();
+      expect(holding!.asset.category).toBe(category);
+    }
+
+    // Phase invariant: a custom "stock" carries the same grouping key a market
+    // stock's `type` would ('stock'), so the two merge into one Stocks slice —
+    // never a separate CUSTOM slice.
+    const customStock = holdings.find((h) => h.asset.id === assetIdByCategory.get('stock'));
+    expect(customStock!.asset.category ?? customStock!.asset.type).toBe('stock');
   });
 });
 
