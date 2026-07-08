@@ -97,7 +97,8 @@ export function createConglomerateRouter(ctx: AppContext): Router {
     },
   );
 
-  // POST /conglomerates/:id/allocate — Invest Calculator: EUR budget → buy list (§6.7).
+  // POST /conglomerates/:id/allocate — Invest Calculator: budget → buy list (§6.7),
+  // denominated in the caller's base currency (§5.4, V3-P10d).
   router.post(
     '/:conglomerateId/allocate',
     validateParams(conglomerateIdParamSchema),
@@ -105,7 +106,9 @@ export function createConglomerateRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { conglomerateId } = req.valid?.params as { conglomerateId: string };
       const body = req.valid?.body as AllocateRequest;
-      const result = await ctx.conglomerate.allocate(req.authUser!.id, conglomerateId, body);
+      const result = await ctx.conglomerate.allocate(req.authUser!.id, conglomerateId, body, {
+        baseCurrency: req.authUser!.baseCurrency,
+      });
       res.json(result);
     },
   );

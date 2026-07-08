@@ -62,8 +62,18 @@ export interface ConglomerateService {
   ): Promise<ConglomerateDetail>;
   activate(ownerId: string, id: string): Promise<ConglomerateDetail>;
   remove(ownerId: string, id: string): Promise<void>;
-  /** Turn a EUR budget into a buy list over the Conglomerate's positions (§6.7). */
-  allocate(ownerId: string, id: string, req: AllocateRequest): Promise<AllocateResponse>;
+  /**
+   * Turn a budget into a buy list over the Conglomerate's positions (§6.7).
+   * The budget and every returned money figure are denominated in
+   * `opts.baseCurrency` (the caller's per-user base, §5.4/V3-P10d; EUR when
+   * omitted).
+   */
+  allocate(
+    ownerId: string,
+    id: string,
+    req: AllocateRequest,
+    opts?: { baseCurrency?: string },
+  ): Promise<AllocateResponse>;
 }
 
 /** §6.5: at most 50 positions per Conglomerate. */
@@ -250,7 +260,11 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
      *  4. Run the engine and shape its result to the wire contract; an
      *     {@link AllocationError} (e.g. a non-positive quote) becomes a 422.
      */
-    async allocate(ownerId, id, req) {
+    async allocate(ownerId, id, req, opts) {
+      const fx =
+        opts?.baseCurrency === undefined
+          ? currencyService
+          : currencyService.withBase(opts.baseCurrency);
       const conglo = await repo.findByIdForOwner(ownerId, id);
       if (!conglo) throw NOT_FOUND();
       if (conglo.positions.length === 0) {
@@ -288,8 +302,9 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
             price: cached.value.price,
             currency: asset.currency,
           });
-          // EUR-convert here, before the pure engine — the domain does no FX (§5.4).
-          priceEur = await currencyService.toBase(cached.value.price, asset.currency);
+          // Convert into the caller's base here, before the pure engine — the
+          // domain does no FX (§5.4); the budget is interpreted in the same base.
+          priceEur = await fx.toBase(cached.value.price, asset.currency);
         } catch {
           throw unprocessable(`No current quote available for ${asset.symbol}.`, 'NO_QUOTE');
         }
@@ -346,6 +361,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
         quoteNotice: anyStale
           ? 'Some quotes are stale (market closed or the data provider is unreachable); showing the last known prices.'
           : null,
+        baseCurrency: fx.baseCurrency,
       };
     },
   };

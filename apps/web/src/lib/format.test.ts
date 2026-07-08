@@ -11,7 +11,9 @@ import {
   formatSignedPercent,
   formatWeight,
   getFormatLocale,
+  getMoneyCurrency,
   setFormatLocale,
+  setMoneyCurrency,
 } from './format';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,39 @@ describe('formatMoney', () => {
     expect(formatMoney(NaN)).toBe(EM_DASH);
     expect(formatMoney(Infinity)).toBe(EM_DASH);
     expect(formatMoney(-Infinity)).toBe(EM_DASH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Base-currency default (§5.4, §13.3 V3-P10d)
+//
+// The auth runtime drives the default money currency from the signed-in user's
+// base currency; `afterEach` restores EUR so tests stay order-independent.
+
+describe('setMoneyCurrency', () => {
+  afterEach(() => setMoneyCurrency('EUR'));
+
+  test('defaults to EUR', () => {
+    expect(getMoneyCurrency()).toBe('EUR');
+  });
+
+  test('a USD base makes omitted-currency money render in $, still 2 dp symbol-last', () => {
+    setMoneyCurrency('USD');
+    expect(getMoneyCurrency()).toBe('USD');
+    expect(formatMoney(1234.56)).toBe('1.234,56 $');
+    expect(formatMoney(42)).toBe('42,00 $');
+  });
+
+  test('CHF and GBP hold the 2 dp symbol-last layout too (§5.4 display rules)', () => {
+    setMoneyCurrency('CHF');
+    expect(formatMoney(1234.5)).toBe('1.234,50 CHF');
+    setMoneyCurrency('GBP');
+    expect(formatMoney(-9.9)).toBe('-9,90 £');
+  });
+
+  test('an explicit currency still overrides the base default', () => {
+    setMoneyCurrency('USD');
+    expect(formatMoney(100, 'EUR')).toBe('100,00 €');
   });
 });
 

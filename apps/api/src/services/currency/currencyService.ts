@@ -75,6 +75,14 @@ export interface CurrencyService {
   convert(amount: number, from: string, to: string, opts?: ConvertOptions): Promise<number>;
   /** Convert `amount` from `currency` into the base currency. */
   toBase(amount: number, currency: string, opts?: ToBaseOptions): Promise<number>;
+  /**
+   * A view of this service whose default base is `base` — the per-user base
+   * currency passthrough §5.4 planned for (V3-P10d). Same {@link FxRateSource}
+   * (so the §5.3 caches, coalescing and cross-through-EUR rates are shared);
+   * only the default target of {@link toBase} changes. Returns `this` when
+   * `base` already is the service's base. Throws on an invalid code.
+   */
+  withBase(base: string): CurrencyService;
 }
 
 export interface CreateCurrencyServiceDeps {
@@ -132,6 +140,11 @@ export function createCurrencyService(deps: CreateCurrencyServiceDeps): Currency
     toBase(amount, currency, opts) {
       const base = opts?.base ?? baseCurrency;
       return service.convert(amount, currency, base, { date: opts?.date });
+    },
+
+    withBase(base) {
+      if (normalizeCurrency(base) === baseCurrency) return service;
+      return createCurrencyService({ source, baseCurrency: base });
     },
   };
 

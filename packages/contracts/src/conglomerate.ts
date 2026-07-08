@@ -154,8 +154,9 @@ export const conglomerateIdParamSchema = z.object({ conglomerateId: z.string().u
 // --- Allocate (Invest Calculator, §6.7) ------------------------------------
 
 /**
- * `POST /conglomerates/:id/allocate` body — turn a EUR budget into a buy list
- * (§6.7). `budgetEur` is a finite amount ≥ 0; `mode` chooses whole-share vs.
+ * `POST /conglomerates/:id/allocate` body — turn a budget into a buy list
+ * (§6.7). `budgetEur` is a finite amount ≥ 0, denominated in the caller's base
+ * currency (§5.4, V3-P10d — the field name predates per-user bases); `mode` chooses whole-share vs.
  * fractional buying; `step` is the fractional quantity granularity (e.g. 0.0001)
  * and is ignored in whole mode. `atLeastOneShare` is the opt-in §13.2 V2-P7
  * "at least one share" mode (default OFF / absent; whole mode only, ignored in
@@ -220,6 +221,12 @@ export const allocateResponseSchema = z
     warnings: z.array(z.string()),
     stale: z.boolean(),
     quoteNotice: z.string().nullable(),
+    /**
+     * The currency the budget was interpreted in and every `costEur` /
+     * `totalCostEur` / `leftoverEur` figure is denominated in — the caller's
+     * base currency (§5.4, V3-P10d; the field names predate per-user bases).
+     */
+    baseCurrency: currencyCodeSchema,
   })
   .strict();
 export type AllocateResponse = z.infer<typeof allocateResponseSchema>;
