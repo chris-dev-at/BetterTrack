@@ -4,10 +4,13 @@ import type { Time } from 'lightweight-charts';
 
 import {
   BACKTEST_BENCHMARKS,
+  BACKTEST_MODES,
   BACKTEST_PREVIEW_RANGES,
   type BacktestBenchmark,
+  type BacktestMode,
   type BacktestPreviewPosition,
   type BacktestPreviewRange,
+  type BacktestResponse,
 } from '@bettertrack/contracts';
 
 import { previewBacktest } from '../../lib/backtestApi';
@@ -16,7 +19,12 @@ import { formatDate, formatPercent, formatSignedPercent } from '../../lib/format
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
-import { PriceChart, type BenchmarkSeries, type ChartPoint } from '../../ui/charts';
+import {
+  PriceChart,
+  type BenchmarkSeries,
+  type ChartMarker,
+  type ChartPoint,
+} from '../../ui/charts';
 import { Alert } from '../components/ui';
 
 export interface BacktestPanelProps {
@@ -42,6 +50,28 @@ function benchmarkLabels(t: TranslateFn): Record<BacktestBenchmark, string> {
   };
 }
 
+function modeLabels(t: TranslateFn): Record<BacktestMode, string> {
+  return {
+    clip: t('workboard.backtest.mode.clip'),
+    cash: t('workboard.backtest.mode.cash'),
+    redistribute: t('workboard.backtest.mode.redistribute'),
+  };
+}
+
+/**
+ * The mode-adaptive notice (§14): in the full-window modes the clipping message
+ * gives way to a sentence naming each late constituent's entry and stating the
+ * chosen rule (uninvested cash, or the equal split + entry-day rebalance).
+ * `null` when nothing was late — the modes are then equivalent to `clip`.
+ */
+function modeNotice(t: TranslateFn, data: BacktestResponse): string | null {
+  if (data.mode === 'clip' || data.entryEvents.length === 0) return null;
+  const entries = data.entryEvents.map((e) => `${e.symbol} (${formatDate(e.date)})`).join(', ');
+  return data.mode === 'cash'
+    ? t('workboard.backtest.modeNotice.cash', { entries })
+    : t('workboard.backtest.modeNotice.redistribute', { entries });
+}
+
 function toChartPoints(series: Array<{ date: string; value: number }>): ChartPoint[] {
   return series.map((point) => ({ time: point.date as Time, value: point.value }));
 }
@@ -62,6 +92,45 @@ function RangeSelector({
       className="inline-flex rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
       {BACKTEST_PREVIEW_RANGES.map((token) => {
+        const selected = token === active;
+        return (
+          <button
+            key={token}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => onSelect(token)}
+            className={cx(
+              'rounded px-2 py-1 text-xs font-medium transition-colors',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+              selected
+                ? 'bg-sky-600 text-white'
+                : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+            )}
+          >
+            {labels[token]}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ModeSelector({
+  active,
+  onSelect,
+}: {
+  active: BacktestMode;
+  onSelect: (mode: BacktestMode) => void;
+}) {
+  const t = useT();
+  const labels = modeLabels(t);
+  return (
+    <div
+      role="group"
+      aria-label={t('workboard.backtest.modeAriaLabel')}
+      className="inline-flex flex-wrap rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+    >
+      {BACKTEST_MODES.map((token) => {
         const selected = token === active;
         return (
           <button
@@ -126,22 +195,24 @@ function BenchmarkToggle({
 
 /**
  * Reusable backtest panel (PROJECTPLAN.md §6.5 Right — live preview, §6.6
- * Backtest engine): range selector, benchmark overlay toggle, `PriceChart` of
- * the base-100 index, and headline stats. Takes the basket as props so it
- * drops into both the Conglomerate detail page (saved positions) and the
- * Builder's live preview (debounced draft weights) without change.
+ * Backtest engine, §14 late-listing modes): range + mode selectors, benchmark
+ * overlay toggle, `PriceChart` of the base-100 index with entry markers, and
+ * headline stats. Takes the basket as props so it drops into both the
+ * Conglomerate detail page (saved positions) and the Builder's live preview
+ * (debounced draft weights) without change.
  */
 export function BacktestPanel({ positions, className }: BacktestPanelProps) {
   const t = useT();
   const labels = benchmarkLabels(t);
   const [range, setRange] = useState<BacktestPreviewRange>('5Y');
+  const [mode, setMode] = useState<BacktestMode>('clip');
   const [benchmark, setBenchmark] = useState<BacktestBenchmark | null>(null);
 
   const hasPositions = positions.length > 0;
 
   const { data, isLoading, isFetching, isError } = useQuery({
-    queryKey: ['backtest-preview', positions, range, benchmark],
-    queryFn: ({ signal }) => previewBacktest(positions, range, benchmark, signal),
+    queryKey: ['backtest-preview', positions, range, benchmark, mode],
+    queryFn: ({ signal }) => previewBacktest(positions, range, benchmark, mode, signal),
     enabled: hasPositions,
   });
 
@@ -150,11 +221,22 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
     data?.benchmark && benchmark
       ? { label: labels[benchmark], series: toChartPoints(data.benchmark.series) }
       : null;
+  // One flag per §14 entry event — "X enters" at the late constituent's date.
+  const entryMarkers: ChartMarker[] = data
+    ? data.entryEvents.map((e) => ({
+        time: e.date as Time,
+        label: t('workboard.backtest.entryMarker', { symbol: e.symbol }),
+      }))
+    : [];
+  const notice = data ? modeNotice(t, data) : null;
 
   return (
     <div className={cx('flex flex-col gap-4', className)}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <RangeSelector active={range} onSelect={setRange} />
+        <div className="flex flex-wrap items-center gap-2">
+          <RangeSelector active={range} onSelect={setRange} />
+          <ModeSelector active={mode} onSelect={setMode} />
+        </div>
         <BenchmarkToggle active={benchmark} onSelect={setBenchmark} />
       </div>
 
@@ -166,10 +248,15 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
         <Alert tone="error">{t('workboard.backtest.error')}</Alert>
       ) : !data ? null : (
         <>
+          {notice ? <Alert tone="info">{notice}</Alert> : null}
+          {/* The server notice: the clip message in clip mode; in the §14 modes
+              it only appears when even the earliest constituent starts after
+              the requested window — a data limit no mode can widen. */}
           {data.notice ? <Alert tone="info">{data.notice}</Alert> : null}
           <PriceChart
             series={chartSeries}
             benchmark={benchmarkSeries}
+            markers={entryMarkers}
             showRangeToggle={false}
             loading={isFetching}
             ariaLabel={t('workboard.backtest.chartAriaLabel')}
@@ -201,6 +288,12 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
               value={formatSignedPercent(data.stats.worstDay?.returnPct)}
               subValue={formatDate(data.stats.worstDay?.date)}
             />
+            {data.mode === 'cash' && data.idleCashAvgPct !== null ? (
+              <StatCard
+                label={t('workboard.backtest.stats.idleCash')}
+                value={formatPercent(data.idleCashAvgPct)}
+              />
+            ) : null}
           </div>
         </>
       )}

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type {
   BacktestBenchmark,
+  BacktestMode,
   BacktestPreviewPosition,
   BacktestPreviewRange,
   BacktestResponse,
@@ -83,6 +84,8 @@ export interface BacktestPreviewInput {
   positions: BacktestPreviewPosition[];
   range: BacktestPreviewRange;
   benchmark?: BacktestBenchmark | null;
+  /** Late-listing mode (§14); defaults to `clip` (the pre-§14 behavior). */
+  mode?: BacktestMode;
 }
 
 export interface BacktestServiceDeps {
@@ -109,10 +112,12 @@ export interface BacktestService {
 }
 
 /**
- * Redis memo key for a preview — hash(positions+range+benchmark+base),
+ * Redis memo key for a preview — hash(positions+range+benchmark+mode+base),
  * namespaced by user id so a custom-asset basket's result never leaks across
- * users (§10). The base currency is part of the identity (V3-P10d): the same
- * basket backtested in USD is a different result, not a different rendering.
+ * users (§10). The mode is normalised to `clip` so an omitted mode and an
+ * explicit `clip` share one memo entry — and two different modes never collide.
+ * The base currency is part of the identity (V3-P10d): the same basket
+ * backtested in USD is a different result, not a different rendering.
  */
 export function backtestPreviewCacheKey(
   userId: string,
@@ -123,6 +128,7 @@ export function backtestPreviewCacheKey(
     positions: input.positions.map((p) => ({ assetId: p.assetId, weight: p.weight })),
     range: input.range,
     benchmark: input.benchmark ?? null,
+    mode: input.mode ?? 'clip',
     baseCurrency,
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
@@ -222,9 +228,17 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       //    notice). MAX has no explicit start, so anchor it at the basket's common
       //    start — otherwise every MAX preview would carry a spurious "Limited by
       //    …" notice for a request that asked for the full overlapping history.
+      //    In the §14 full-window modes "all available history" means the
+      //    EARLIEST first-available date instead (the engine only clips up to
+      //    that), so MAX anchors there and late constituents stay late.
+      const mode = input.mode ?? 'clip';
       const end = todayIso();
       const start =
-        input.range === 'MAX' ? commonStart(assets) : yearsBefore(end, RANGE_YEARS[input.range]);
+        input.range === 'MAX'
+          ? mode === 'clip'
+            ? commonStart(assets)
+            : earliestStart(assets)
+          : yearsBefore(end, RANGE_YEARS[input.range]);
 
       // 4. Run the pure engine, injecting the CurrencyService as the historical
       //    FX-at-date converter (§5.4). Data-state failures (no overlapping
@@ -244,6 +258,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           converter: fx,
           baseCurrency: fx.baseCurrency,
           benchmark: benchmarkAsset,
+          mode,
         });
       } catch (err) {
         if (err instanceof BacktestError) {
@@ -302,6 +317,22 @@ function commonStart(assets: readonly BacktestAsset[]): string {
   return start;
 }
 
+/**
+ * The basket's earliest first-available date across assets — the §14
+ * full-window analogue of {@link commonStart}: anchoring MAX here keeps the
+ * oldest constituent's entire history in the window (and every younger
+ * constituent late) without a spurious clip notice.
+ */
+function earliestStart(assets: readonly BacktestAsset[]): string {
+  let start = '';
+  for (const a of assets) {
+    for (const p of a.prices) {
+      if (start === '' || p.date < start) start = p.date;
+    }
+  }
+  return start;
+}
+
 /** ISO `YYYY-MM-DD` `years` calendar years before `today` (UTC). */
 function yearsBefore(today: string, years: number): string {
   const d = new Date(`${today}T00:00:00.000Z`);
@@ -344,5 +375,12 @@ function toResponse(r: BacktestResult): BacktestResponse {
           stats: toStats(r.benchmark.stats),
         }
       : null,
+    mode: r.mode,
+    entryEvents: r.entryEvents.map((e) => ({
+      assetId: e.assetId,
+      symbol: e.symbol,
+      date: e.date,
+    })),
+    idleCashAvgPct: r.idleCashAvgPct,
   };
 }

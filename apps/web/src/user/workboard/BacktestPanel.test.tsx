@@ -12,6 +12,7 @@ vi.mock('../../lib/backtestApi', () => ({
 // Mock the canvas-backed charting lib: jsdom can't draw (mirrors PriceChart.test.tsx).
 const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();
+  const setMarkers = vi.fn();
   const addSeries = vi.fn(() => ({ setData, applyOptions: vi.fn() }));
   const createChart = vi.fn(() => ({
     addSeries,
@@ -19,11 +20,13 @@ const chartMocks = vi.hoisted(() => {
     timeScale: () => ({ fitContent: vi.fn() }),
     remove: vi.fn(),
   }));
-  return { setData, addSeries, createChart };
+  const createSeriesMarkers = vi.fn(() => ({ setMarkers }));
+  return { setData, setMarkers, addSeries, createChart, createSeriesMarkers };
 });
 
 vi.mock('lightweight-charts', () => ({
   createChart: chartMocks.createChart,
+  createSeriesMarkers: chartMocks.createSeriesMarkers,
   AreaSeries: 'AreaSeries',
   LineSeries: 'LineSeries',
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
@@ -57,6 +60,9 @@ const RESPONSE: BacktestResponse = {
   contributions: [],
   notice: null,
   benchmark: null,
+  mode: 'clip',
+  entryEvents: [],
+  idleCashAvgPct: null,
 };
 
 function makeQueryClient() {
@@ -81,7 +87,13 @@ describe('BacktestPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(previewBacktest).toHaveBeenCalledWith(POSITIONS, '5Y', null, expect.anything()),
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '5Y',
+        null,
+        'clip',
+        expect.anything(),
+      ),
     );
     await waitFor(() => expect(chartMocks.createChart).toHaveBeenCalledTimes(1));
     expect(chartMocks.setData).toHaveBeenCalledWith(
@@ -106,13 +118,25 @@ describe('BacktestPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(previewBacktest).toHaveBeenCalledWith(POSITIONS, '5Y', null, expect.anything()),
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '5Y',
+        null,
+        'clip',
+        expect.anything(),
+      ),
     );
 
     await user.click(screen.getByRole('button', { name: '3Y' }));
 
     await waitFor(() =>
-      expect(previewBacktest).toHaveBeenCalledWith(POSITIONS, '3Y', null, expect.anything()),
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '3Y',
+        null,
+        'clip',
+        expect.anything(),
+      ),
     );
   });
 
@@ -133,20 +157,38 @@ describe('BacktestPanel', () => {
     renderPanel();
 
     await waitFor(() =>
-      expect(previewBacktest).toHaveBeenCalledWith(POSITIONS, '5Y', null, expect.anything()),
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '5Y',
+        null,
+        'clip',
+        expect.anything(),
+      ),
     );
 
     await user.click(screen.getByRole('button', { name: 'S&P 500' }));
 
     await waitFor(() =>
-      expect(previewBacktest).toHaveBeenCalledWith(POSITIONS, '5Y', '^GSPC', expect.anything()),
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '5Y',
+        '^GSPC',
+        'clip',
+        expect.anything(),
+      ),
     );
     await waitFor(() => expect(screen.getAllByText('S&P 500').length).toBeGreaterThan(1));
 
     // Toggling the same benchmark off removes the overlay again.
     await user.click(screen.getByRole('button', { name: 'S&P 500' }));
     await waitFor(() =>
-      expect(previewBacktest).toHaveBeenLastCalledWith(POSITIONS, '5Y', null, expect.anything()),
+      expect(previewBacktest).toHaveBeenLastCalledWith(
+        POSITIONS,
+        '5Y',
+        null,
+        'clip',
+        expect.anything(),
+      ),
     );
   });
 
@@ -177,5 +219,80 @@ describe('BacktestPanel', () => {
     await waitFor(() =>
       expect(screen.getByText(/Could not run the backtest/i)).toBeInTheDocument(),
     );
+  });
+
+  test('switching the late-listing mode re-requests with the mode param (§14)', async () => {
+    vi.mocked(previewBacktest).mockResolvedValue(RESPONSE);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await waitFor(() =>
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '5Y',
+        null,
+        'clip',
+        expect.anything(),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Cash until listing' }));
+
+    await waitFor(() =>
+      expect(previewBacktest).toHaveBeenCalledWith(
+        POSITIONS,
+        '5Y',
+        null,
+        'cash',
+        expect.anything(),
+      ),
+    );
+  });
+
+  test('cash mode renders the adaptive notice, entry flags and the idle-cash stat (§14)', async () => {
+    vi.mocked(previewBacktest).mockImplementation(async (_positions, _range, _benchmark, mode) =>
+      mode === 'cash'
+        ? {
+            ...RESPONSE,
+            mode: 'cash',
+            entryEvents: [{ assetId: 'a2', symbol: 'SPACEX', date: '2023-07-01' }],
+            idleCashAvgPct: 21.4,
+          }
+        : RESPONSE,
+    );
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: 'Cash until listing' }));
+
+    // The mode-adaptive notice replaces the clipping message and names the entry.
+    const notice = await screen.findByText(/uninvested cash \(0 % return\)/i);
+    expect(notice.textContent).toMatch(/SPACEX/);
+    // Idle-cash visibility: the "avg. uninvested" stat (cash mode only).
+    expect(screen.getByText('Avg. uninvested')).toBeInTheDocument();
+    expect(screen.getByText('21,4 %')).toBeInTheDocument();
+    // The entry marker rides the chart at the entry date ("X enters").
+    await waitFor(() =>
+      expect(chartMocks.setMarkers).toHaveBeenCalledWith([
+        expect.objectContaining({ time: '2023-07-01', text: 'SPACEX enters' }),
+      ]),
+    );
+  });
+
+  test('redistribute mode states the equal-split rule and shows no idle-cash stat (§14)', async () => {
+    vi.mocked(previewBacktest).mockResolvedValue({
+      ...RESPONSE,
+      mode: 'redistribute',
+      entryEvents: [{ assetId: 'a2', symbol: 'SPACEX', date: '2023-07-01' }],
+      idleCashAvgPct: null,
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: 'Redistribute until listing' }));
+
+    const notice = await screen.findByText(/split equally among the already-listed constituents/i);
+    expect(notice.textContent).toMatch(/SPACEX/);
+    expect(screen.queryByText('Avg. uninvested')).not.toBeInTheDocument();
   });
 });

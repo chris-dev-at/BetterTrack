@@ -5,6 +5,7 @@ export {
   PRICE_RANGES,
   type AllocationSegment,
   type BenchmarkSeries,
+  type ChartMarker,
   type ChartPoint,
   type PriceChartMode,
   type PriceRange,

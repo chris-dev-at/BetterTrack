@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   backtest,
   BacktestError,
+  rebalanceToTargets,
   type BacktestAsset,
   type BacktestInput,
   type CurrencyConverter,
@@ -795,5 +796,555 @@ describe('backtest — validation', () => {
         }),
       ),
     ).rejects.toThrow(/finite close/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rebalance primitive (§14) — shared with future scheduled rebalancing
+// ---------------------------------------------------------------------------
+
+describe('rebalanceToTargets — the §14 entry-day rebalance primitive', () => {
+  it('reallocates the total value to the normalised target weights', () => {
+    const out = rebalanceToTargets(
+      [
+        { key: 'A', value: 60 },
+        { key: 'B', value: 40 },
+      ],
+      [
+        { key: 'A', weight: 1 },
+        { key: 'B', weight: 1 },
+      ],
+    );
+    expect(out).toEqual([
+      { key: 'A', value: 50 },
+      { key: 'B', value: 50 },
+    ]);
+  });
+
+  it('normalises relative weights (they need not sum to 1 or 100) and conserves the total', () => {
+    const out = rebalanceToTargets(
+      [
+        { key: 'A', value: 123.45 },
+        { key: 'B', value: 0.55 },
+        { key: 'C', value: 76 },
+      ],
+      [
+        { key: 'A', weight: 3 },
+        { key: 'B', weight: 1 },
+      ],
+    );
+    const total = 123.45 + 0.55 + 76;
+    expect(out[0]?.value).toBeCloseTo(0.75 * total, 12);
+    expect(out[1]?.value).toBeCloseTo(0.25 * total, 12);
+    expect(out.reduce((s, h) => s + h.value, 0)).toBeCloseTo(total, 12);
+  });
+
+  it('a target key absent from the holdings enters with its full share (the entry case)', () => {
+    // SpaceX enters: it holds nothing yet but the targets now include it.
+    const out = rebalanceToTargets(
+      [
+        { key: 'BAYN', value: 40 },
+        { key: 'KO', value: 60 },
+      ],
+      [
+        { key: 'BAYN', weight: 25 },
+        { key: 'KO', weight: 25 },
+        { key: 'SPX', weight: 50 },
+      ],
+    );
+    expect(out).toEqual([
+      { key: 'BAYN', value: 25 },
+      { key: 'KO', value: 25 },
+      { key: 'SPX', value: 50 },
+    ]);
+  });
+
+  it('a holding key absent from the targets is liquidated into the pool (cash absorbs in)', () => {
+    const out = rebalanceToTargets(
+      [
+        { key: 'A', value: 50 },
+        { key: 'cash', value: 50 },
+      ],
+      [{ key: 'A', weight: 1 }],
+    );
+    expect(out).toEqual([{ key: 'A', value: 100 }]);
+  });
+
+  it('a zero total value is legal and yields all-zero holdings', () => {
+    const out = rebalanceToTargets(
+      [{ key: 'A', value: 0 }],
+      [
+        { key: 'A', weight: 1 },
+        { key: 'B', weight: 1 },
+      ],
+    );
+    expect(out).toEqual([
+      { key: 'A', value: 0 },
+      { key: 'B', value: 0 },
+    ]);
+  });
+
+  it('rejects duplicate holding or target keys', () => {
+    expect(() =>
+      rebalanceToTargets(
+        [
+          { key: 'A', value: 1 },
+          { key: 'A', value: 2 },
+        ],
+        [{ key: 'A', weight: 1 }],
+      ),
+    ).toThrow(/duplicate holding key/);
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 1 }],
+        [
+          { key: 'A', weight: 1 },
+          { key: 'A', weight: 2 },
+        ],
+      ),
+    ).toThrow(/duplicate target key/);
+  });
+
+  it('rejects negative or non-finite holding values (shorts are not modelled)', () => {
+    expect(() => rebalanceToTargets([{ key: 'A', value: -1 }], [{ key: 'A', weight: 1 }])).toThrow(
+      /finite non-negative value/,
+    );
+    expect(() =>
+      rebalanceToTargets([{ key: 'A', value: Number.NaN }], [{ key: 'A', weight: 1 }]),
+    ).toThrow(/finite non-negative value/);
+  });
+
+  it('rejects negative, non-finite, empty, or all-zero target weights', () => {
+    expect(() =>
+      rebalanceToTargets([{ key: 'A', value: 1 }], [{ key: 'A', weight: -0.1 }]),
+    ).toThrow(/finite non-negative weight/);
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 1 }],
+        [{ key: 'A', weight: Number.POSITIVE_INFINITY }],
+      ),
+    ).toThrow(/finite non-negative weight/);
+    expect(() => rebalanceToTargets([{ key: 'A', value: 1 }], [])).toThrow(
+      /sum to a positive number/,
+    );
+    expect(() =>
+      rebalanceToTargets(
+        [{ key: 'A', value: 1 }],
+        [
+          { key: 'A', weight: 0 },
+          { key: 'B', weight: 0 },
+        ],
+      ),
+    ).toThrow(/sum to a positive number/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Late-listing modes (§14)
+// ---------------------------------------------------------------------------
+
+describe('backtest — late-listing modes (§14)', () => {
+  /** 50/50 basket: A listed from day one, L lists on day 3 of 4. */
+  function lateFixture(): BacktestInput {
+    return {
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'L', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110, 120, 130]),
+        },
+        {
+          assetId: 'L',
+          symbol: 'L',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-03', close: 200 },
+            { date: '2026-01-04', close: 250 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+    };
+  }
+
+  it('defaults to clip, and an explicit clip returns an identical result (pre-§14 regression)', async () => {
+    const implicit = await backtest(lateFixture());
+    const explicit = await backtest({ ...lateFixture(), mode: 'clip' });
+
+    // The default mode carries the new fields in their clip shape …
+    expect(implicit.mode).toBe('clip');
+    expect(implicit.entryEvents).toEqual([]);
+    expect(implicit.idleCashAvgPct).toBeNull();
+    // … and is exactly the pre-§14 clipped result.
+    expect(implicit.notice).toBe('Limited by L (data since 2026-01-03)');
+    expect(implicit.startDate).toBe('2026-01-03');
+    expect(implicit.series.map((p) => p.date)).toEqual(['2026-01-03', '2026-01-04']);
+    expect(explicit).toEqual(implicit);
+  });
+
+  it('rejects an unknown mode (caller bug, not a data state)', async () => {
+    await expect(backtest({ ...lateFixture(), mode: 'yolo' as never })).rejects.toThrow(
+      /unknown mode/,
+    );
+  });
+
+  it('cash mode: the late share sits at 0 % return, buys in at the first close on/after listing, and reports idle cash', async () => {
+    // Hand-computed:
+    //   day    A value        L value                cash   index
+    //   01-01  0.5·1   = 0.5  —                      0.5    100
+    //   01-02  0.5·1.1 = 0.55 —                      0.5    105
+    //   01-03  0.5·1.2 = 0.6  0.5 (buys in at 200)   0      110
+    //   01-04  0.5·1.3 = 0.65 0.5·250/200 = 0.625    0      127.5
+    const res = await backtest({ ...lateFixture(), mode: 'cash' });
+
+    expect(res.mode).toBe('cash');
+    expect(res.startDate).toBe('2026-01-01');
+    expect(res.notice).toBeNull(); // the full window ran — no clipping message
+    expect(res.series.map((p) => p.date)).toEqual([
+      '2026-01-01',
+      '2026-01-02',
+      '2026-01-03',
+      '2026-01-04',
+    ]);
+    [100, 105, 110, 127.5].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+
+    expect(res.entryEvents).toEqual([{ assetId: 'L', symbol: 'L', date: '2026-01-03' }]);
+
+    // Mean uninvested share: 0.5 on 01-01, 0.5/1.05 on 01-02, 0 afterwards.
+    expect(res.idleCashAvgPct).toBeCloseTo(((0.5 + 0.5 / 1.05) / 4) * 100, 10);
+
+    // Attribution: A returns +30 % on half, L +25 % (from ITS entry) on half.
+    const a = res.contributions.find((c) => c.assetId === 'A');
+    const l = res.contributions.find((c) => c.assetId === 'L');
+    expect(a?.returnPct).toBeCloseTo(30, 9);
+    expect(a?.contributionPct).toBeCloseTo(15, 9);
+    expect(l?.returnPct).toBeCloseTo(25, 9);
+    expect(l?.contributionPct).toBeCloseTo(12.5, 9);
+    const summed = res.contributions.reduce((s, c) => s + c.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+  });
+
+  it('cash mode: an asset that never lists inside the window stays cash the whole way (no event)', async () => {
+    // Clip mode would throw here (common start after range end); cash mode keeps
+    // the never-listed share as a 0 %-return drag instead.
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'L', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 110]),
+        },
+        { assetId: 'L', symbol: 'L', currency: 'EUR', prices: [{ date: '2026-02-01', close: 5 }] },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-02' },
+      converter: stubConverter(),
+      mode: 'cash',
+    });
+    expect(res.entryEvents).toEqual([]);
+    expect(res.series.map((p) => p.value)).toEqual([100, 105]);
+    expect(res.idleCashAvgPct).toBeCloseTo(((0.5 + 0.5 / 1.05) / 2) * 100, 10);
+    const l = res.contributions.find((c) => c.assetId === 'L');
+    expect(l?.returnPct).toBe(0);
+    expect(l?.contributionPct).toBe(0);
+  });
+
+  it('cash mode: a late USD asset buys in at the entry day’s FX and revalues at each day’s rate', async () => {
+    // U enters 01-02 at 100 USD · 0.8 = 80 EUR; on 01-03 the same 100 USD is
+    // worth 100 EUR, so its half returns +25 % purely from FX.
+    const converter = datedConverter({
+      EUR: { '2026-01-01': 1, '2026-01-02': 1, '2026-01-03': 1 },
+      USD: { '2026-01-02': 0.8, '2026-01-03': 1.0 },
+    });
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'U', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 100, 100]),
+        },
+        {
+          assetId: 'U',
+          symbol: 'U',
+          currency: 'USD',
+          prices: [
+            { date: '2026-01-02', close: 100 },
+            { date: '2026-01-03', close: 100 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-03' },
+      converter,
+      mode: 'cash',
+    });
+    [100, 100, 112.5].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+    // FX still coalesced: EUR×3 days + USD×2 listed days = 5 distinct pairs.
+    expect(converter.toBase).toHaveBeenCalledTimes(5);
+  });
+
+  it('redistribute mode: equal split among listed constituents, entry-day rebalance per event, money-weighted attribution', async () => {
+    // A (w 0.5) trades flat throughout; B (w 0.3) lists on day 3; C (w 0.2)
+    // lists on day 5. Hand-computed:
+    //   day 1  targets A ← 1.0 (absorbs B+C)            V = 1      index 100
+    //   day 2  A flat                                   V = 1      index 100
+    //   day 3  B enters at 50 → rebalance to A .6 / B .4 (each of A,B absorbs
+    //          half of C's 0.2)                         V = 1      index 100
+    //   day 4  B 55: 0.4·1.1 = 0.44, A 0.6              V = 1.04   index 104
+    //   day 5  B 60 → 0.48; V pre = 1.08; C enters → rebalance to .5/.3/.2
+    //                                                   V = 1.08   index 108
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'B', weight: 30 },
+        { assetId: 'C', weight: 20 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [100, 100, 100, 100, 100]),
+        },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-03', close: 50 },
+            { date: '2026-01-04', close: 55 },
+            { date: '2026-01-05', close: 60 },
+          ],
+        },
+        { assetId: 'C', symbol: 'C', currency: 'EUR', prices: [{ date: '2026-01-05', close: 10 }] },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-05' },
+      converter: stubConverter(),
+      mode: 'redistribute',
+    });
+
+    expect(res.mode).toBe('redistribute');
+    expect(res.startDate).toBe('2026-01-01');
+    expect(res.notice).toBeNull();
+    expect(res.idleCashAvgPct).toBeNull();
+    [100, 100, 100, 104, 108].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+
+    // Two entry events, each late asset handled independently at its own date.
+    expect(res.entryEvents).toEqual([
+      { assetId: 'B', symbol: 'B', date: '2026-01-03' },
+      { assetId: 'C', symbol: 'C', date: '2026-01-05' },
+    ]);
+
+    // Money-weighted attribution: B carried 40 % (its 30 % target + half of
+    // C's missing 20 %) through its +20 % run, so it contributed the full 8 %
+    // — MORE than weight·returnPct (0.3·20 = 6). The flat assets contribute 0.
+    const a = res.contributions.find((c) => c.assetId === 'A');
+    const b = res.contributions.find((c) => c.assetId === 'B');
+    const c = res.contributions.find((c) => c.assetId === 'C');
+    expect(a?.contributionPct).toBeCloseTo(0, 9);
+    expect(b?.returnPct).toBeCloseTo(20, 9);
+    expect(b?.contributionPct).toBeCloseTo(8, 9);
+    expect(c?.contributionPct).toBeCloseTo(0, 9);
+    const summed = res.contributions.reduce((s, x) => s + x.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+  });
+
+  it('cash mode: two late assets enter independently, each at its own date', async () => {
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 40 },
+        { assetId: 'B', weight: 30 },
+        { assetId: 'C', weight: 30 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-01', [10, 10, 10, 10]),
+        },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: dailyCloses('2026-01-02', [20, 20, 20]),
+        },
+        { assetId: 'C', symbol: 'C', currency: 'EUR', prices: dailyCloses('2026-01-04', [30]) },
+      ],
+      range: { start: '2026-01-01', end: '2026-01-04' },
+      converter: stubConverter(),
+      mode: 'cash',
+    });
+    expect(res.entryEvents).toEqual([
+      { assetId: 'B', symbol: 'B', date: '2026-01-02' },
+      { assetId: 'C', symbol: 'C', date: '2026-01-04' },
+    ]);
+    // Everything is flat, so the index pins at 100 while cash steps 0.6 → 0.3 → 0.
+    expect(res.series.map((p) => p.value)).toEqual([100, 100, 100, 100]);
+    expect(res.idleCashAvgPct).toBeCloseTo(((0.6 + 0.3 + 0.3 + 0) / 4) * 100, 10);
+  });
+
+  it('clips a full-window mode only up to the EARLIEST first-available date, with the notice', async () => {
+    // Every constituent lists after the requested start — before A exists there
+    // is nothing to hold, so the window clips to A's listing and says so.
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'L', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: dailyCloses('2026-02-01', [100, 100, 100]),
+        },
+        { assetId: 'L', symbol: 'L', currency: 'EUR', prices: dailyCloses('2026-02-03', [50]) },
+      ],
+      range: { start: '2026-01-01', end: '2026-02-03' },
+      converter: stubConverter(),
+      mode: 'cash',
+    });
+    expect(res.notice).toBe('Limited by A (data since 2026-02-01)');
+    expect(res.startDate).toBe('2026-02-01');
+    expect(res.entryEvents).toEqual([{ assetId: 'L', symbol: 'L', date: '2026-02-03' }]);
+  });
+
+  it('the benchmark always runs the full requested window in the late-listing modes', async () => {
+    const benchmark: BacktestAsset = {
+      assetId: 'GSPC',
+      symbol: '^GSPC',
+      currency: 'EUR',
+      prices: dailyCloses('2026-01-01', [1000, 1010, 1020, 1030]),
+    };
+    const cash = await backtest({ ...lateFixture(), mode: 'cash', benchmark });
+    // Full axis: the overlay shares every one of the four window days …
+    expect(cash.benchmark?.series.map((p) => p.date)).toEqual([
+      '2026-01-01',
+      '2026-01-02',
+      '2026-01-03',
+      '2026-01-04',
+    ]);
+    expect(cash.benchmark?.series[0]?.value).toBe(100);
+    expect(cash.benchmark?.stats.totalReturnPct).toBeCloseTo(3, 9);
+
+    // … while clip mode on the same input clips the overlay with the basket.
+    const clip = await backtest({ ...lateFixture(), mode: 'clip', benchmark });
+    expect(clip.benchmark?.series.map((p) => p.date)).toEqual(['2026-01-03', '2026-01-04']);
+  });
+
+  it('SpaceX case: one late constituent, all three modes visibly differ, with entry markers (snapshot)', async () => {
+    // 25/25/25/25 basket over ten days; SPX lists on day 6 ("listed 18 months
+    // ago, backtest is 5Y", scaled down). BAYN rises, KO drifts up, BMW falls,
+    // SPX gains 20 % from its listing.
+    function spaceXCase(mode: 'clip' | 'cash' | 'redistribute'): BacktestInput {
+      return {
+        positions: [
+          { assetId: 'BAYN', weight: 25 },
+          { assetId: 'SPX', weight: 25 },
+          { assetId: 'KO', weight: 25 },
+          { assetId: 'BMW', weight: 25 },
+        ],
+        assets: [
+          {
+            assetId: 'BAYN',
+            symbol: 'BAYN',
+            currency: 'EUR',
+            prices: dailyCloses('2026-01-01', [100, 102, 104, 106, 108, 110, 112, 114, 116, 118]),
+          },
+          {
+            assetId: 'KO',
+            symbol: 'KO',
+            currency: 'EUR',
+            prices: dailyCloses('2026-01-01', [50, 50.5, 51, 51.5, 52, 52.5, 53, 53.5, 54, 54.5]),
+          },
+          {
+            assetId: 'BMW',
+            symbol: 'BMW',
+            currency: 'EUR',
+            prices: dailyCloses('2026-01-01', [80, 79, 78, 77, 76, 75, 74, 73, 72, 71]),
+          },
+          {
+            assetId: 'SPX',
+            symbol: 'SPX',
+            currency: 'EUR',
+            prices: dailyCloses('2026-01-06', [400, 420, 440, 460, 480]),
+          },
+        ],
+        range: { start: '2026-01-01', end: '2026-01-10' },
+        converter: stubConverter(),
+        mode,
+      };
+    }
+
+    const clip = await backtest(spaceXCase('clip'));
+    const cash = await backtest(spaceXCase('cash'));
+    const redistribute = await backtest(spaceXCase('redistribute'));
+
+    // Clip runs 01-06 → 01-10 with the clipping notice; the full-window modes
+    // run all ten days with an SPX entry event instead of the notice.
+    expect(clip.startDate).toBe('2026-01-06');
+    expect(clip.notice).toBe('Limited by SPX (data since 2026-01-06)');
+    expect(clip.entryEvents).toEqual([]);
+    for (const res of [cash, redistribute]) {
+      expect(res.startDate).toBe('2026-01-01');
+      expect(res.notice).toBeNull();
+      expect(res.entryEvents).toEqual([{ assetId: 'SPX', symbol: 'SPX', date: '2026-01-06' }]);
+    }
+    expect(cash.idleCashAvgPct).toBeGreaterThan(0);
+    expect(redistribute.idleCashAvgPct).toBeNull();
+
+    // Hand-computed end levels:
+    //   post-listing growth factor  G = (118/110 + 54.5/52.5 + 71/75 + 480/400)/4
+    //   clip          = 100 · G
+    //   cash          = 25 · (118/100 + 54.5/50 + 71/80 + 480/400) = 108.9375
+    //   redistribute  = 100 · G · V(01-06),  V(01-06) = (110/100 + 52.5/50 + 75/80)/3
+    const growth = (118 / 110 + 54.5 / 52.5 + 71 / 75 + 480 / 400) / 4;
+    const preEntry = (110 / 100 + 52.5 / 50 + 75 / 80) / 3;
+    expect(clip.series.at(-1)?.value).toBeCloseTo(100 * growth, 9);
+    expect(cash.series.at(-1)?.value).toBeCloseTo(108.9375, 9);
+    expect(redistribute.series.at(-1)?.value).toBeCloseTo(100 * growth * preEntry, 9);
+
+    // Visibly different results in all three modes.
+    const ends = [clip, cash, redistribute].map((r) => r.series.at(-1)!.value);
+    expect(Math.abs(ends[0]! - ends[1]!)).toBeGreaterThan(0.5);
+    expect(Math.abs(ends[1]! - ends[2]!)).toBeGreaterThan(0.5);
+    expect(Math.abs(ends[0]! - ends[2]!)).toBeGreaterThan(0.5);
+
+    // Pin the full series triple + events for regression.
+    const pick = ({
+      startDate,
+      endDate,
+      notice,
+      series,
+      entryEvents,
+      idleCashAvgPct,
+    }: typeof clip) => ({
+      startDate,
+      endDate,
+      notice,
+      series,
+      entryEvents,
+      idleCashAvgPct,
+    });
+    expect({
+      clip: pick(clip),
+      cash: pick(cash),
+      redistribute: pick(redistribute),
+    }).toMatchSnapshot();
   });
 });
