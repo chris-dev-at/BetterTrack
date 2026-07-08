@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 
 import type {
   CashPreviewResponse,
+  CashSource,
   SearchResultItem,
   Transaction,
   TransactionInput,
@@ -9,6 +10,7 @@ import type {
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import {
@@ -17,6 +19,7 @@ import {
   updatePortfolio,
   updateTransaction,
 } from '../../lib/portfolioApi';
+import { pickDefaultSourceId, sortSourcesMainFirst } from '../portfolio/cashSourceUtils';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
@@ -70,6 +73,13 @@ export interface TransactionDialogProps {
    * silently applied — the user still sees and can uncheck it before submit.
    */
   defaultPayFromCash?: boolean;
+  /**
+   * The portfolio's active cash sources (V3-P3). When a cash-linked buy/sell has
+   * more than one source to choose from, a picker appears next to the checkbox;
+   * with only Main it stays hidden and the flow funds/receives from Main. Omitted
+   * → no picker (the server defaults to Main).
+   */
+  cashSources?: CashSource[];
   /** Today as ISO `YYYY-MM-DD`, injectable for deterministic tests. */
   today?: string;
 }
@@ -328,9 +338,19 @@ function cashAmountForRow(row: Row): number | null {
  */
 export function TransactionDialog(props: TransactionDialogProps) {
   const { portfolioId, onClose, onSubmitted, transaction } = props;
+  const t = useT();
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
+
+  // Active cash sources for the cash-link picker (V3-P3). Only meaningful when
+  // more than one exists; otherwise every cash-linked flow uses Main.
+  const pickableSources = sortSourcesMainFirst(
+    (props.cashSources ?? []).filter((s) => !s.archivedAt),
+  );
+  const [cashSourceId, setCashSourceId] = useState<string | null>(() =>
+    pickDefaultSourceId(props.cashSources ?? []),
+  );
 
   const [rows, setRows] = useState<Row[]>(() => rowsFromProps(props, today));
   const [picking, setPicking] = useState<boolean>(rows.length === 0);
@@ -486,7 +506,11 @@ export function TransactionDialog(props: TransactionDialogProps) {
     setCashPreviewLoading(true);
     previewCash(
       portfolioId,
-      { kind: cashRowSide === 'sell' ? 'sell_proceeds' : 'buy', amountEur: debouncedCashAmount },
+      {
+        kind: cashRowSide === 'sell' ? 'sell_proceeds' : 'buy',
+        amountEur: debouncedCashAmount,
+        sourceId: cashSourceId ?? undefined,
+      },
       controller.signal,
     )
       .then((res) => {
@@ -499,7 +523,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
         if (!controller.signal.aborted) setCashPreviewLoading(false);
       });
     return () => controller.abort();
-  }, [portfolioId, cashRowLinked, cashRowSide, debouncedCashAmount]);
+  }, [portfolioId, cashRowLinked, cashRowSide, debouncedCashAmount, cashSourceId]);
 
   const cashInsufficient = cashRowLinked && cashPreview !== null && !cashPreview.sufficient;
 
@@ -533,6 +557,12 @@ export function TransactionDialog(props: TransactionDialogProps) {
       if (rowError) {
         setError(rowError);
         return;
+      }
+      // Route a cash-linked movement to the chosen source (V3-P3); only the
+      // single eligible create row carries a cash link, and only when a real
+      // source was resolved (else the server funds/receives from Main).
+      if (row.key === cashRow?.key && row.cashLinked && cashSourceId) {
+        input!.cashSourceId = cashSourceId;
       }
       inputs.push(input!);
     }
@@ -639,6 +669,10 @@ export function TransactionDialog(props: TransactionDialogProps) {
                     preview: cashPreview,
                     insufficient: cashInsufficient,
                     onToggle: toggleCashLinked,
+                    sources: pickableSources,
+                    sourceId: cashSourceId,
+                    sourceLabel: t('portfolio.cash.sourceLabel'),
+                    onSourceChange: setCashSourceId,
                   }
                 : undefined;
             return (
@@ -737,6 +771,13 @@ export interface RowCash {
   /** The checked amount would take the cash balance negative — block Record. */
   insufficient: boolean;
   onToggle: () => void;
+  /** Active cash sources; a picker shows only when more than one exists (V3-P3). */
+  sources: CashSource[];
+  /** The currently chosen source id (null when none resolved). */
+  sourceId: string | null;
+  /** Translated "Cash source" label for the picker. */
+  sourceLabel: string;
+  onSourceChange: (id: string) => void;
 }
 
 /** Small "auto" marker so a fetched value is never mistaken for a typed one. */
@@ -1013,6 +1054,23 @@ function RowFields({
               />
               {row.side === 'sell' ? 'Add proceeds to cash balance' : 'Pay from cash balance'}
             </label>
+            {cash.checked && cash.sources.length > 1 ? (
+              <label className="flex flex-col gap-1.5">
+                <span className="text-sm font-medium text-neutral-300">{cash.sourceLabel}</span>
+                <select
+                  value={cash.sourceId ?? ''}
+                  onChange={(e) => cash.onSourceChange(e.target.value)}
+                  aria-label={cash.sourceLabel}
+                  className={inputClass}
+                >
+                  {cash.sources.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             {cash.checked ? (
               <p className="text-xs text-neutral-400" role="status" aria-label="Cash-after preview">
                 {cash.loading || !cash.preview ? (

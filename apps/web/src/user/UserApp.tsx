@@ -17,6 +17,7 @@ import { LoginPage } from './auth/LoginPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { PortfolioPage } from './portfolio/PortfolioPage';
+import { CashSourcesPage } from './portfolio/CashSourcesPage';
 import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
 import { WorkboardPage } from './workboard/WorkboardPage';
 import {
@@ -113,6 +114,7 @@ function UserShell() {
             <Route index element={<PortfolioPage />} />
             <Route path="transactions" element={<TransactionsPage />} />
             <Route path="custom-assets" element={<CustomAssetsPage />} />
+            <Route path="cash" element={<CashSourcesPage />} />
           </Route>
 
           {/* ── Workboard ── */}

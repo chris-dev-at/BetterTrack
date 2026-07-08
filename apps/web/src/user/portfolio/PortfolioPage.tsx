@@ -16,6 +16,7 @@ import {
   getPortfolio,
   getPortfolioHistory,
   getRecategorizationStatus,
+  listCashSources,
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
@@ -1011,6 +1012,16 @@ export function PortfolioPage() {
     staleTime: 60_000,
   });
 
+  // Active cash sources (V3-P3): fed to the cash + transaction dialogs so their
+  // source picker appears once a second source exists (defaulting to Main).
+  const cashSourcesQuery = useQuery({
+    queryKey: ['portfolio', portfolioId, 'cash-sources', false],
+    queryFn: ({ signal }) => listCashSources(portfolioId!, false, signal),
+    enabled: portfolioId !== null,
+    staleTime: 30_000,
+  });
+  const cashSources = cashSourcesQuery.data?.sources ?? [];
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteTransaction(portfolioId!, id),
     onSuccess: () => {
@@ -1144,6 +1155,7 @@ export function PortfolioPage() {
             transaction={txnDialog.kind === 'edit' ? txnDialog.transaction : undefined}
             asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
             defaultPayFromCash={portfolio?.defaultPayFromCash ?? false}
+            cashSources={cashSources}
             onClose={() => setTxnDialog(null)}
             onSubmitted={refetchAll}
           />
@@ -1152,6 +1164,7 @@ export function PortfolioPage() {
           <CashDialog
             portfolioId={portfolioId}
             initialKind={cashDialogKind}
+            sources={cashSources}
             onClose={() => setCashDialogKind(null)}
             onSubmitted={refetchAll}
           />
