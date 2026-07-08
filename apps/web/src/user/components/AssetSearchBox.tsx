@@ -35,6 +35,11 @@ const SEARCH_STALE_MS = 30_000;
 const ENRICH_POLL_MS = 1_500;
 const ENRICH_TIMEOUT_MS = 10_000;
 
+// Search only ever returns catalog/provider (market) assets — a user's custom
+// off-market assets are not in the search index, so `type: 'custom'` can never
+// reach this badge. The former `custom` entry was dead (identical to the neutral
+// fallback below) and is dropped so no CUSTOM slice lingers in an asset-type map
+// (V3-P2, issue #325).
 const TYPE_BADGE: Record<string, string> = {
   stock: 'bg-sky-900/60 text-sky-300',
   etf: 'bg-violet-900/60 text-violet-300',
@@ -42,7 +47,6 @@ const TYPE_BADGE: Record<string, string> = {
   fx: 'bg-emerald-900/60 text-emerald-300',
   commodity: 'bg-amber-900/60 text-amber-300',
   crypto: 'bg-pink-900/60 text-pink-300',
-  custom: 'bg-neutral-800 text-neutral-400',
 };
 
 export interface AssetSearchBoxProps {

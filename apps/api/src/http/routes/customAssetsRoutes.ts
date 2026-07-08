@@ -20,6 +20,20 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
 
   router.use(requireUser);
 
+  // GET /custom-assets/recategorization — how many custom assets still carry the
+  // V3-P2 migration flag (drives the one-time re-categorize banner). Declared
+  // before `/:id`-style routes so the literal path is matched first.
+  router.get('/recategorization', async (req, res) => {
+    const status = await ctx.customAssets.recategorizationStatus(req.authUser!.id);
+    res.json(status);
+  });
+
+  // POST /custom-assets/recategorization/dismiss — clear every re-categorize flag.
+  router.post('/recategorization/dismiss', async (req, res) => {
+    await ctx.customAssets.dismissRecategorization(req.authUser!.id);
+    res.status(204).send();
+  });
+
   // POST /custom-assets — create a custom asset, optional initial BUY (§6.9).
   router.post('/', validateBody(createCustomAssetRequestSchema), async (req, res) => {
     const input = req.valid?.body as CreateCustomAssetRequest;

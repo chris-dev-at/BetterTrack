@@ -20,7 +20,8 @@ const TYPE_LABELS: Record<string, string> = {
   fx: 'FX',
   commodity: 'Commodities',
   crypto: 'Crypto',
-  custom: 'Custom',
+  cash_like: 'Cash-like',
+  other: 'Other',
 };
 
 function DeltaPct({ value }: { value: number | null }) {
@@ -59,10 +60,14 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
     .filter((h) => h.marketValueEur != null && h.marketValueEur > 0)
     .map((h) => ({ label: h.asset.symbol, value: h.marketValueEur! }));
 
+  // Group by the catalog category when present (V3-P2): a custom "stock" merges
+  // into the market Stocks group, so there is no separate "Custom" slice — market
+  // assets carry no category and fall back to their asset type.
   const byTypeMap = new Map<string, number>();
   for (const h of holdings) {
     if (h.marketValueEur == null || h.marketValueEur <= 0) continue;
-    byTypeMap.set(h.asset.type, (byTypeMap.get(h.asset.type) ?? 0) + h.marketValueEur);
+    const key = h.asset.category ?? h.asset.type;
+    byTypeMap.set(key, (byTypeMap.get(key) ?? 0) + h.marketValueEur);
   }
   const byType: AllocationSegment[] = [...byTypeMap].map(([type, value]) => ({
     label: TYPE_LABELS[type] ?? type,

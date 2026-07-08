@@ -38,15 +38,29 @@ export interface CustomAssetService {
   remove(userId: string, id: string): Promise<void>;
   getValuePoints(userId: string, id: string): Promise<ValuePoint[]>;
   putValuePoints(userId: string, id: string, points: ValuePoint[]): Promise<ValuePoint[]>;
+  /** How many of the user's custom assets still need re-categorizing (V3-P2). */
+  recategorizationStatus(userId: string): Promise<{ pending: number }>;
+  /** Dismiss the re-categorize banner: clear every flag the user owns (V3-P2). */
+  dismissRecategorization(userId: string): Promise<void>;
+}
+
+interface CustomAssetMeta {
+  category?: string;
+  smoothing?: boolean;
+  recategorize?: boolean;
+}
+
+function metaOf(row: AssetRow): CustomAssetMeta {
+  return (row.meta ?? {}) as CustomAssetMeta;
 }
 
 function categoryOf(row: AssetRow): CustomAssetCategory {
-  const meta = (row.meta ?? {}) as { category?: string };
-  const parsed = customAssetCategorySchema.safeParse(meta.category);
+  const parsed = customAssetCategorySchema.safeParse(metaOf(row).category);
   return parsed.success ? parsed.data : 'other';
 }
 
 function toDto(row: AssetRow): CustomAsset {
+  const meta = metaOf(row);
   return {
     id: row.id,
     symbol: row.symbol,
@@ -54,6 +68,8 @@ function toDto(row: AssetRow): CustomAsset {
     category: categoryOf(row),
     currency: row.currency,
     type: row.type,
+    smoothing: meta.smoothing === true,
+    needsRecategorization: meta.recategorize === true,
   };
 }
 
@@ -76,6 +92,7 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
         name: input.name,
         currency: input.currency,
         category: input.category,
+        smoothing: input.smoothing,
       });
 
       let transactionId: string | null = null;
@@ -104,13 +121,42 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
 
     async update(userId, id, patch) {
       const existing = await requireOwned(userId, id);
-      const meta =
-        patch.category !== undefined
-          ? { ...((existing.meta ?? {}) as object), category: patch.category }
-          : undefined;
+
+      // Merge category / smoothing into the stored meta only when the patch
+      // touches them (name-only edits leave meta untouched). Re-categorizing an
+      // asset clears its one-time migration flag so the banner fades (V3-P2).
+      let meta: CustomAssetMeta | undefined;
+      if (patch.category !== undefined || patch.smoothing !== undefined) {
+        meta = { ...metaOf(existing) };
+        if (patch.category !== undefined) {
+          meta.category = patch.category;
+          delete meta.recategorize;
+        }
+        if (patch.smoothing !== undefined) meta.smoothing = patch.smoothing;
+      }
+
       const updated = await repo.update(userId, id, { name: patch.name, meta });
       if (!updated) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
+
+      // Smoothing reshapes every reconstructed value series (§6.9), so a toggle
+      // must drop the cached portfolio history the same way a value-point edit
+      // does — otherwise the curve would serve the pre-toggle shape for up to 1 h.
+      if (
+        patch.smoothing !== undefined &&
+        patch.smoothing !== (metaOf(existing).smoothing === true)
+      ) {
+        await portfolio.invalidateHistory(await portfolio.getDefaultPortfolioId(userId));
+      }
+
       return toDto(updated);
+    },
+
+    async recategorizationStatus(userId) {
+      return { pending: await repo.countNeedingRecategorization(userId) };
+    },
+
+    async dismissRecategorization(userId) {
+      await repo.clearRecategorization(userId);
     },
 
     async remove(userId, id) {

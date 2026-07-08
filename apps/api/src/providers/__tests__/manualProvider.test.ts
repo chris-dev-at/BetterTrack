@@ -7,6 +7,7 @@ import { rangeStartMs } from '../historyWindow';
 import {
   createManualAssetSource,
   createManualProvider,
+  interpolateDailyMarks,
   type ManualAssetRecord,
   type ManualAssetSource,
   type ManualValuePoint,
@@ -22,7 +23,10 @@ const HOUSE: ManualAssetRecord = {
   exchange: null,
   currency: 'EUR',
   type: 'custom',
+  smoothing: false,
 };
+
+const HOUSE_SMOOTH: ManualAssetRecord = { ...HOUSE, smoothing: true };
 
 function fakeSource(
   asset: ManualAssetRecord | null,
@@ -126,6 +130,74 @@ describe('manualProvider.getHistory carry-forward (§5.1)', () => {
   it('returns an empty series when there are no value points', async () => {
     const provider = createManualProvider({ source: fakeSource(HOUSE, []), now: () => FIXED_NOW });
     expect(await provider.getHistory(REF, '1M', '30m')).toEqual([]);
+  });
+});
+
+describe('interpolateDailyMarks — value smoothing (V3-P2)', () => {
+  it('fills one point per calendar day, linear between marks', () => {
+    const out = interpolateDailyMarks([
+      { date: '2026-06-01', value: 100 },
+      { date: '2026-06-11', value: 200 },
+    ]);
+    expect(out).toHaveLength(11); // June 1..11 inclusive
+    expect(out[0]).toEqual({ date: '2026-06-01', value: 100 });
+    expect(out[5]).toEqual({ date: '2026-06-06', value: 150 }); // exact midpoint
+    expect(out[10]).toEqual({ date: '2026-06-11', value: 200 });
+    // strictly linear: +10/day
+    for (let i = 0; i < out.length; i += 1) expect(out[i]!.value).toBeCloseTo(100 + 10 * i, 9);
+  });
+
+  it('keeps every mark-day value exact across multiple segments', () => {
+    const marks: ManualValuePoint[] = [
+      { date: '2026-01-01', value: 300 },
+      { date: '2026-01-08', value: 90 }, // 7-day gap, not a round divisor
+      { date: '2026-01-20', value: 155.5 },
+    ];
+    const out = interpolateDailyMarks(marks);
+    const byDate = new Map(out.map((p) => [p.date, p.value]));
+    for (const m of marks) expect(byDate.get(m.date)).toBe(m.value);
+    // one point per day, no gaps, no duplicates
+    expect(out).toHaveLength(20); // Jan 1..20 inclusive
+    expect(new Set(out.map((p) => p.date)).size).toBe(20);
+  });
+
+  it('passes through a single mark (nothing to interpolate)', () => {
+    expect(interpolateDailyMarks([{ date: '2026-06-01', value: 100 }])).toEqual([
+      { date: '2026-06-01', value: 100 },
+    ]);
+    expect(interpolateDailyMarks([])).toEqual([]);
+  });
+});
+
+describe('manualProvider.getHistory value smoothing (V3-P2)', () => {
+  it('interpolates a daily series when smoothing is on; mark days stay exact', async () => {
+    const provider = createManualProvider({
+      source: fakeSource(HOUSE_SMOOTH, [
+        { date: '2026-06-01', value: 100 },
+        { date: '2026-06-11', value: 200 },
+      ]),
+      now: () => FIXED_NOW,
+    });
+    const history = await provider.getHistory(REF, 'MAX', '1d');
+    expect(history).toHaveLength(11);
+    expect(history[0]).toEqual({ time: '2026-06-01T00:00:00.000Z', close: 100 });
+    expect(history[5]).toEqual({ time: '2026-06-06T00:00:00.000Z', close: 150 });
+    expect(history[10]).toEqual({ time: '2026-06-11T00:00:00.000Z', close: 200 });
+  });
+
+  it('smoothing off is byte-identical to the step series (regression)', async () => {
+    const marks: ManualValuePoint[] = [
+      { date: '2026-06-01', value: 100 },
+      { date: '2026-06-11', value: 200 },
+    ];
+    const step = await createManualProvider({
+      source: fakeSource(HOUSE, marks),
+      now: () => FIXED_NOW,
+    }).getHistory(REF, 'MAX', '1d');
+    expect(step).toEqual([
+      { time: '2026-06-01T00:00:00.000Z', close: 100 },
+      { time: '2026-06-11T00:00:00.000Z', close: 200 },
+    ]);
   });
 });
 

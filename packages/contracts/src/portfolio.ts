@@ -279,6 +279,27 @@ export const updateTransactionRequestSchema = z
   .strict();
 export type UpdateTransactionRequest = z.infer<typeof updateTransactionRequestSchema>;
 
+/**
+ * Custom-investment categories (§6.9, V3-P2). The **catalog taxonomy** — a custom
+ * asset takes a real category so a custom "stock" counts as Stocks in donuts,
+ * category views and analytics filters (the old CUSTOM slice is gone). `stock` /
+ * `etf` / `crypto` / `commodity` mirror the market {@link ASSET_TYPES}; `cash_like`
+ * (savings/cash-equivalent) and `other` are custom-only catch-alls.
+ *
+ * Defined here (ahead of the custom-asset schemas below) because
+ * {@link portfolioAssetSchema} references it for allocation grouping.
+ */
+export const CUSTOM_ASSET_CATEGORIES = [
+  'stock',
+  'etf',
+  'crypto',
+  'commodity',
+  'cash_like',
+  'other',
+] as const;
+export const customAssetCategorySchema = z.enum(CUSTOM_ASSET_CATEGORIES);
+export type CustomAssetCategory = z.infer<typeof customAssetCategorySchema>;
+
 /** Asset metadata embedded in a transaction / holding row for display (§6.9). */
 export const portfolioAssetSchema = z
   .object({
@@ -289,6 +310,15 @@ export const portfolioAssetSchema = z
     currency: currencyCodeSchema,
     type: assetTypeSchema,
     isCustom: z.boolean(),
+    /**
+     * Custom-asset category (V3-P2) — the catalog taxonomy that drives allocation
+     * grouping. Present only for custom assets (`isCustom`); `null` for market
+     * assets, which group by {@link type}. A custom "stock" thus lands under
+     * Stocks with market stocks — no separate CUSTOM slice.
+     */
+    category: customAssetCategorySchema.nullish(),
+    /** Custom-asset value-smoothing toggle (V3-P2); absent/false for market assets. */
+    smoothing: z.boolean().optional(),
   })
   .strict();
 export type PortfolioAsset = z.infer<typeof portfolioAssetSchema>;
@@ -911,18 +941,6 @@ export const taxYearParamsSchema = z
 
 // --- Custom assets ---------------------------------------------------------
 
-/** Custom-investment categories (§6.9). */
-export const CUSTOM_ASSET_CATEGORIES = [
-  'real_estate',
-  'vehicle',
-  'collectible',
-  'cash',
-  'unlisted_stock',
-  'other',
-] as const;
-export const customAssetCategorySchema = z.enum(CUSTOM_ASSET_CATEGORIES);
-export type CustomAssetCategory = z.infer<typeof customAssetCategorySchema>;
-
 /** Optional initial purchase, recorded as a BUY transaction (§6.9). */
 export const initialPurchaseSchema = z
   .object({
@@ -941,6 +959,12 @@ export const createCustomAssetRequestSchema = z
     name: z.string().trim().min(1).max(120),
     category: customAssetCategorySchema,
     currency: currencyCodeSchema,
+    /**
+     * Value-smoothing toggle (V3-P2): interpolate linearly between value marks
+     * in every series reconstruction instead of the step/carry-forward default.
+     * Defaults off — the honest step treatment of sparse data.
+     */
+    smoothing: z.boolean().optional().default(false),
     initialPurchase: initialPurchaseSchema.optional(),
   })
   .strict();
@@ -956,6 +980,8 @@ export const updateCustomAssetRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     category: customAssetCategorySchema.optional(),
+    /** Toggle value smoothing any time (V3-P2); takes effect in every series. */
+    smoothing: z.boolean().optional(),
   })
   .strict();
 export type UpdateCustomAssetRequest = z.infer<typeof updateCustomAssetRequestSchema>;
@@ -969,6 +995,14 @@ export const customAssetSchema = z
     category: customAssetCategorySchema,
     currency: currencyCodeSchema,
     type: assetTypeSchema,
+    /** Value-smoothing toggle (V3-P2); false = step/carry-forward. */
+    smoothing: z.boolean(),
+    /**
+     * True while this asset still carries the one-time migration flag (V3-P2):
+     * it was auto-mapped to `other` and the owner hasn't re-categorized or
+     * dismissed the banner yet. Cleared on the first category edit or dismissal.
+     */
+    needsRecategorization: z.boolean(),
   })
   .strict();
 export type CustomAsset = z.infer<typeof customAssetSchema>;
@@ -1009,3 +1043,14 @@ export type PutValuePointsRequest = z.infer<typeof putValuePointsRequestSchema>;
 
 /** Route param for custom-asset operations. */
 export const customAssetIdParamSchema = z.object({ id: z.string().uuid() }).strict();
+
+/**
+ * `GET /custom-assets/recategorization` response (V3-P2). `pending` is how many
+ * of the caller's custom assets still carry the one-time migration flag — the
+ * web shows the re-categorize banner while it is `> 0`. `POST …/recategorization/
+ * dismiss` clears every flag (so does re-categorizing each asset).
+ */
+export const recategorizationStatusResponseSchema = z
+  .object({ pending: z.number().int().nonnegative() })
+  .strict();
+export type RecategorizationStatusResponse = z.infer<typeof recategorizationStatusResponseSchema>;

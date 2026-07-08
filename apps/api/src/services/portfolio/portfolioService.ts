@@ -30,6 +30,7 @@ import type {
   UpdatePortfolioRequest,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
+import { customAssetCategorySchema } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
 import type { AssetRow } from '../../data/schema';
@@ -383,6 +384,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   function assetToDto(row: AssetRow): TransactionDto['asset'] {
+    const isCustom = row.ownerId !== null;
+    // Custom assets carry their catalog category + smoothing flag (V3-P2) so the
+    // allocation donut groups a custom "stock" under Stocks and the value-point
+    // editor knows the current smoothing state. Market assets group by `type`.
+    const meta = (row.meta ?? {}) as { category?: string; smoothing?: boolean };
+    const parsedCategory = customAssetCategorySchema.safeParse(meta.category);
     return {
       id: row.id,
       symbol: row.symbol,
@@ -390,7 +397,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       exchange: row.exchange ?? null,
       currency: row.currency,
       type: row.type,
-      isCustom: row.ownerId !== null,
+      isCustom,
+      category: isCustom ? (parsedCategory.success ? parsedCategory.data : 'other') : null,
+      smoothing: isCustom ? meta.smoothing === true : undefined,
     };
   }
 

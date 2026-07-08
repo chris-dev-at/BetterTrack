@@ -3,7 +3,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { customAssetSchema, valuePointsResponseSchema } from '@bettertrack/contracts';
+import {
+  CUSTOM_ASSET_CATEGORIES,
+  customAssetSchema,
+  valuePointsResponseSchema,
+} from '@bettertrack/contracts';
 
 import { assets } from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -40,7 +44,7 @@ describe('POST /api/v1/custom-assets', () => {
     const res = await request(harness.app)
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'My House', category: 'real_estate', currency: 'EUR' });
+      .send({ name: 'My House', category: 'stock', currency: 'EUR' });
     expect(res.status).toBe(401);
   });
 
@@ -51,12 +55,12 @@ describe('POST /api/v1/custom-assets', () => {
     const res = await agent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'My House', category: 'real_estate', currency: 'EUR' });
+      .send({ name: 'My House', category: 'stock', currency: 'EUR' });
 
     expect(res.status).toBe(201);
     expect(customAssetSchema.safeParse(res.body.asset).success).toBe(true);
     expect(res.body.asset.type).toBe('custom');
-    expect(res.body.asset.category).toBe('real_estate');
+    expect(res.body.asset.category).toBe('stock');
     expect(res.body.transactionId).toBeNull();
   });
 
@@ -69,7 +73,7 @@ describe('POST /api/v1/custom-assets', () => {
       .set(...XRW)
       .send({
         name: 'Vintage Car',
-        category: 'vehicle',
+        category: 'commodity',
         currency: 'EUR',
         initialPurchase: { quantity: 1, price: 30000, executedAt: tsOffset(-10) },
       });
@@ -95,7 +99,7 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
     const created = await agent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'Coins', category: 'collectible', currency: 'EUR' });
+      .send({ name: 'Coins', category: 'stock', currency: 'EUR' });
     const id = created.body.asset.id;
 
     const res = await agent
@@ -113,7 +117,7 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
     const created = await agent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'Coins', category: 'collectible', currency: 'EUR' });
+      .send({ name: 'Coins', category: 'stock', currency: 'EUR' });
     const id = created.body.asset.id;
 
     // Simulate a row whose stored category predates/postdates the enum (seed,
@@ -139,7 +143,7 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
     const created = await agent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'Boat', category: 'vehicle', currency: 'EUR' });
+      .send({ name: 'Boat', category: 'commodity', currency: 'EUR' });
     const id = created.body.asset.id;
 
     const del = await agent.delete(`/api/v1/custom-assets/${id}`).set(...XRW);
@@ -155,7 +159,7 @@ describe('PATCH/DELETE /api/v1/custom-assets/:id', () => {
     const created = await ownerAgent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'Cottage', category: 'real_estate', currency: 'EUR' });
+      .send({ name: 'Cottage', category: 'stock', currency: 'EUR' });
     const id = created.body.asset.id;
 
     const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
@@ -179,7 +183,7 @@ describe('GET/PUT /api/v1/custom-assets/:id/value-points', () => {
     const created = await agent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'My House', category: 'real_estate', currency: 'EUR' });
+      .send({ name: 'My House', category: 'stock', currency: 'EUR' });
     const id = created.body.asset.id;
 
     const empty = await agent.get(`/api/v1/custom-assets/${id}/value-points`);
@@ -227,7 +231,7 @@ describe('GET/PUT /api/v1/custom-assets/:id/value-points', () => {
     const created = await agent
       .post('/api/v1/custom-assets')
       .set(...XRW)
-      .send({ name: 'My House', category: 'real_estate', currency: 'EUR' });
+      .send({ name: 'My House', category: 'stock', currency: 'EUR' });
     const id = created.body.asset.id;
 
     await agent
@@ -254,7 +258,7 @@ describe('GET/PUT /api/v1/custom-assets/:id/value-points', () => {
       .set(...XRW)
       .send({
         name: 'My House',
-        category: 'real_estate',
+        category: 'stock',
         currency: 'EUR',
         initialPurchase: { quantity: 1, price: 250000, executedAt: tsOffset(-5) },
       });
@@ -280,5 +284,227 @@ describe('GET/PUT /api/v1/custom-assets/:id/value-points', () => {
     const second = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(second.status).toBe(200);
     expect(second.body.points.at(-1).valueEur).toBeCloseTo(300000, 6);
+  });
+});
+
+describe('custom-asset categories (V3-P2)', () => {
+  it('carries the real catalog category onto the holding so grouping is by category', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({
+        name: 'Private Placing',
+        category: 'stock',
+        currency: 'EUR',
+        initialPurchase: { quantity: 1, price: 1000, executedAt: tsOffset(-5) },
+      });
+    expect(created.status).toBe(201);
+    expect(created.body.asset.smoothing).toBe(false);
+    expect(created.body.asset.needsRecategorization).toBe(false);
+
+    const portfolios = await agent.get('/api/v1/portfolios');
+    const pid = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault).id;
+    const detail = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(detail.status).toBe(200);
+    const holding = detail.body.holdings.find(
+      (h: { asset: { id: string } }) => h.asset.id === created.body.asset.id,
+    );
+    // A custom "stock" is grouped by its real category, not a CUSTOM slice.
+    expect(holding.asset.isCustom).toBe(true);
+    expect(holding.asset.category).toBe('stock');
+    expect(holding.asset.smoothing).toBe(false);
+  });
+
+  it('rejects a category outside the catalog taxonomy', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const res = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Old cat', category: 'real_estate', currency: 'EUR' });
+    expect(res.status).toBe(400);
+  });
+});
+
+// Systematic guard for the V3-P2 acceptance criterion (issue #325): *"No CUSTOM
+// category/slice remains in any UI or API response."* Prior rounds patched one
+// donut surface at a time; this sweep asserts the property holds across the whole
+// category enum at the API boundary (the source every grouping surface reads),
+// complementing the static `taxonomy/no-custom-category-slice` lint gate.
+describe('CUSTOM taxonomy sweep — no legacy/CUSTOM category in any API holding (V3-P2 #325)', () => {
+  /** The dead category enum (migration 0022) plus the retired `custom` slice key. */
+  const LEGACY_TOKENS = ['real_estate', 'vehicle', 'collectible', 'custom'];
+
+  it('the catalog enum carries none of the legacy/CUSTOM tokens', () => {
+    const categories = CUSTOM_ASSET_CATEGORIES as readonly string[];
+    for (const token of LEGACY_TOKENS) {
+      expect(categories).not.toContain(token);
+    }
+  });
+
+  it('every catalog category surfaces on the holding as a real bucket (never a CUSTOM slice), and a custom "stock" groups like a market stock', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    // One custom asset per catalog category, each with an initial purchase so it
+    // becomes a holding on the default portfolio.
+    const assetIdByCategory = new Map<string, string>();
+    for (const category of CUSTOM_ASSET_CATEGORIES) {
+      const created = await agent
+        .post('/api/v1/custom-assets')
+        .set(...XRW)
+        .send({
+          name: `Custom ${category}`,
+          category,
+          currency: 'EUR',
+          initialPurchase: { quantity: 1, price: 1000, executedAt: tsOffset(-5) },
+        });
+      expect(created.status).toBe(201);
+      assetIdByCategory.set(category, created.body.asset.id);
+    }
+
+    const portfolios = await agent.get('/api/v1/portfolios');
+    const pid = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault).id;
+    const detail = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(detail.status).toBe(200);
+
+    type HoldingDto = {
+      asset: { id: string; type: string; category: string | null; isCustom: boolean };
+    };
+    const holdings = detail.body.holdings as HoldingDto[];
+    // Every category produced its holding — nothing dropped.
+    expect(holdings.length).toBe(CUSTOM_ASSET_CATEGORIES.length);
+
+    for (const h of holdings) {
+      // The exact grouping key every donut surface computes.
+      const groupingKey = h.asset.category ?? h.asset.type;
+      expect(LEGACY_TOKENS).not.toContain(h.asset.category);
+      expect(LEGACY_TOKENS).not.toContain(groupingKey);
+      // A custom holding's category is always a real catalog bucket.
+      if (h.asset.isCustom) {
+        expect(CUSTOM_ASSET_CATEGORIES as readonly string[]).toContain(h.asset.category);
+      }
+    }
+
+    // Each custom asset grouped under its own real catalog category.
+    for (const [category, assetId] of assetIdByCategory) {
+      const holding = holdings.find((h) => h.asset.id === assetId);
+      expect(holding, `holding for custom ${category} present`).toBeTruthy();
+      expect(holding!.asset.category).toBe(category);
+    }
+
+    // Phase invariant: a custom "stock" carries the same grouping key a market
+    // stock's `type` would ('stock'), so the two merge into one Stocks slice —
+    // never a separate CUSTOM slice.
+    const customStock = holdings.find((h) => h.asset.id === assetIdByCategory.get('stock'));
+    expect(customStock!.asset.category ?? customStock!.asset.type).toBe('stock');
+  });
+});
+
+describe('value smoothing takes effect in every series reconstruction (V3-P2)', () => {
+  async function setup() {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({
+        name: 'Smoothed House',
+        category: 'other',
+        currency: 'EUR',
+        initialPurchase: { quantity: 1, price: 100, executedAt: tsOffset(-25) },
+      });
+    const id = created.body.asset.id;
+    await agent
+      .put(`/api/v1/custom-assets/${id}/value-points`)
+      .set(...XRW)
+      .send({
+        points: [
+          { date: dayOffset(-20), value: 100 },
+          { date: dayOffset(-10), value: 200 },
+        ],
+      });
+    const portfolios = await agent.get('/api/v1/portfolios');
+    const pid = portfolios.body.portfolios.find((p: { isDefault: boolean }) => p.isDefault).id;
+    return { agent, id, pid };
+  }
+
+  function valueOn(body: { points: { date: string; valueEur: number }[] }, date: string) {
+    return body.points.find((p) => p.date === date)?.valueEur;
+  }
+
+  it('steps between marks by default, interpolates once toggled on — mark days stay exact', async () => {
+    const { agent, id, pid } = await setup();
+
+    // Default (off): the mid-gap day carries the last mark forward (step = 100).
+    const step = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(step.status).toBe(200);
+    expect(valueOn(step.body, dayOffset(-15))).toBeCloseTo(100, 6);
+    expect(valueOn(step.body, dayOffset(-20))).toBeCloseTo(100, 6);
+    expect(valueOn(step.body, dayOffset(-10))).toBeCloseTo(200, 6);
+
+    // Toggle smoothing on: the mid-gap day is now the linear midpoint (150),
+    // and the cached series was invalidated so the change is visible at once.
+    const patch = await agent
+      .patch(`/api/v1/custom-assets/${id}`)
+      .set(...XRW)
+      .send({ smoothing: true });
+    expect(patch.status).toBe(200);
+    expect(patch.body.asset.smoothing).toBe(true);
+
+    const smooth = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(valueOn(smooth.body, dayOffset(-15))).toBeCloseTo(150, 4);
+    // Mark-day valuations are unchanged by smoothing.
+    expect(valueOn(smooth.body, dayOffset(-20))).toBeCloseTo(100, 6);
+    expect(valueOn(smooth.body, dayOffset(-10))).toBeCloseTo(200, 6);
+  });
+});
+
+describe('re-categorize banner status (V3-P2)', () => {
+  it('counts flagged assets, clears on re-categorize and on dismissal', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Legacy', category: 'other', currency: 'EUR' });
+    const id = created.body.asset.id;
+
+    // Fresh assets never carry the flag.
+    let status = await agent.get('/api/v1/custom-assets/recategorization');
+    expect(status.status).toBe(200);
+    expect(status.body.pending).toBe(0);
+
+    // Simulate what the 0022 migration does to pre-existing custom assets.
+    await harness.db
+      .update(assets)
+      .set({ meta: { category: 'other', recategorize: true } })
+      .where(eq(assets.id, id));
+
+    status = await agent.get('/api/v1/custom-assets/recategorization');
+    expect(status.body.pending).toBe(1);
+
+    // Re-categorizing the asset clears its own flag.
+    const patch = await agent
+      .patch(`/api/v1/custom-assets/${id}`)
+      .set(...XRW)
+      .send({ category: 'stock' });
+    expect(patch.status).toBe(200);
+    expect(patch.body.asset.needsRecategorization).toBe(false);
+    status = await agent.get('/api/v1/custom-assets/recategorization');
+    expect(status.body.pending).toBe(0);
+
+    // Re-flag, then dismiss the banner: the flag clears across the board.
+    await harness.db
+      .update(assets)
+      .set({ meta: { category: 'other', recategorize: true } })
+      .where(eq(assets.id, id));
+    expect((await agent.get('/api/v1/custom-assets/recategorization')).body.pending).toBe(1);
+
+    const dismiss = await agent.post('/api/v1/custom-assets/recategorization/dismiss').set(...XRW);
+    expect(dismiss.status).toBe(204);
+    expect((await agent.get('/api/v1/custom-assets/recategorization')).body.pending).toBe(0);
   });
 });
