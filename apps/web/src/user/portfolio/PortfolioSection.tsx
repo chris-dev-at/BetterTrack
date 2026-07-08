@@ -15,6 +15,7 @@ function portfolioSubNav(t: TranslateFn): readonly SubNavItem[] {
     { to: '/portfolio', label: t('portfolio.section.subnav.overview'), end: true },
     { to: '/portfolio/transactions', label: t('portfolio.section.subnav.transactions') },
     { to: '/portfolio/custom-assets', label: t('portfolio.section.subnav.customAssets') },
+    { to: '/portfolio/cash', label: t('portfolio.section.subnav.cash') },
   ];
 }
 

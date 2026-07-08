@@ -611,7 +611,8 @@
       "subnav": {
         "overview": "Übersicht",
         "transactions": "Transaktionen",
-        "customAssets": "Individuelle Anlagen"
+        "customAssets": "Individuelle Anlagen",
+        "cash": "Bargeld"
       },
       "transactionsComingSoon": {
         "description": "Das vollständige Transaktionsjournal — jeder Kauf und Verkauf, bearbeitbar, mit realisiertem G/V — kommt mit der Portfolio-Phase."
@@ -669,7 +670,101 @@
       "amountRequired": "Gib einen Betrag größer als 0 ein.",
       "blockedError": "Das würde den Bargeldbestand negativ werden lassen.",
       "invalidDate": "Wähle ein gültiges Datum.",
-      "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut."
+      "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut.",
+      "sourceLabel": "Geldquelle"
+    },
+    "cashSources": {
+      "title": "Geldquellen",
+      "subtitle": "Teile deine Liquidität auf Bank-, Vorsorge- und Bargeldkonten auf — jedes mit eigenem Bestand und Verlauf.",
+      "addButton": "Quelle hinzufügen",
+      "transferButton": "Umbuchen",
+      "depositButton": "Einzahlen",
+      "withdrawButton": "Abheben",
+      "showArchived": "Archivierte anzeigen",
+      "hideArchived": "Archivierte ausblenden",
+      "mainBadge": "Haupt",
+      "archivedBadge": "Archiviert",
+      "totalLabel": "Liquidität gesamt",
+      "shareLabel": "Anteil",
+      "balanceColumn": "Bestand",
+      "typeColumn": "Typ",
+      "nameColumn": "Quelle",
+      "actionsColumn": "Aktionen",
+      "empty": "Noch keine Geldquellen.",
+      "loadError": "Geldquellen konnten nicht geladen werden. Bitte versuche es erneut.",
+      "listAriaLabel": "Geldquellen",
+      "setBalanceAction": "Bestand setzen",
+      "renameAction": "Umbenennen",
+      "archiveAction": "Archivieren",
+      "restoreAction": "Wiederherstellen",
+      "archiveConfirm": "Archivieren?",
+      "actionError": "Die Quelle konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "type": {
+        "bank": "Bank",
+        "retirement": "Vorsorge",
+        "cash": "Bargeld",
+        "custom": "Individuell"
+      },
+      "kind": {
+        "deposit": "Einzahlung",
+        "withdrawal": "Abhebung",
+        "buy": "Kauf",
+        "sell_proceeds": "Verkaufserlös",
+        "transfer_out": "Umbuchung raus",
+        "transfer_in": "Umbuchung rein",
+        "dividend": "Dividende",
+        "tax_withholding": "Steuereinbehalt",
+        "tax_refund": "Steuererstattung"
+      },
+      "history": {
+        "heading": "Bewegungsverlauf",
+        "sourceColumn": "Quelle",
+        "kindColumn": "Art",
+        "amountColumn": "Betrag",
+        "dateColumn": "Datum",
+        "noteColumn": "Notiz",
+        "empty": "Noch keine Bewegungen.",
+        "counterpart": "→ {{name}}"
+      },
+      "dialog": {
+        "createTitle": "Geldquelle hinzufügen",
+        "renameTitle": "Geldquelle bearbeiten",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. Bankkonto",
+        "typeLabel": "Typ",
+        "createSubmit": "Quelle erstellen",
+        "saveSubmit": "Änderungen speichern",
+        "nameRequired": "Gib einen Namen ein.",
+        "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut."
+      },
+      "transfer": {
+        "title": "Zwischen Quellen umbuchen",
+        "fromLabel": "Von",
+        "toLabel": "Nach",
+        "amountLabel": "Betrag (EUR)",
+        "noteLabel": "Notiz (optional)",
+        "submit": "Umbuchen",
+        "needTwoSources": "Lege eine zweite Quelle an, um Geld zwischen ihnen umzubuchen.",
+        "sameSourceError": "Wähle zwei verschiedene Quellen.",
+        "amountRequired": "Gib einen Betrag größer als 0 ein.",
+        "insufficientError": "Diese Quelle hat nicht genug Bargeld.",
+        "saveError": "Umbuchung fehlgeschlagen. Bitte versuche es erneut."
+      },
+      "setBalance": {
+        "title": "Bestand setzen",
+        "sourceLabel": "Quelle",
+        "currentLabel": "Aktueller Bestand",
+        "targetLabel": "Neuer Bestand (EUR)",
+        "targetAriaLabel": "Neuer Bestand",
+        "adjustmentLabel": "Anpassung",
+        "recordsDeposit": "Erfasst eine Einzahlung von {{amount}}.",
+        "recordsWithdrawal": "Erfasst eine Abhebung von {{amount}}.",
+        "noChange": "Bereits auf diesem Bestand — nichts zu erfassen.",
+        "noteLabel": "Notiz (optional)",
+        "submit": "Bestand setzen",
+        "amountRequired": "Gib einen Zielbestand von 0 oder mehr ein.",
+        "saveError": "Der Bestand konnte nicht gesetzt werden. Bitte versuche es erneut."
+      }
     },
     "customInvestment": {
       "title": "Neue individuelle Anlage",

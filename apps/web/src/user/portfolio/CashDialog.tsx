@@ -1,6 +1,6 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 
-import type { CashMovementKind, CashPreviewResponse } from '@bettertrack/contracts';
+import type { CashMovementKind, CashPreviewResponse, CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
@@ -9,6 +9,7 @@ import { useDebounce } from '../hooks/useDebounce';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { MoneyText } from '../../ui';
+import { pickDefaultSourceId, sortSourcesMainFirst } from './cashSourceUtils';
 
 export interface CashDialogProps {
   portfolioId: string;
@@ -17,6 +18,15 @@ export interface CashDialogProps {
   onClose: () => void;
   /** Called after a successful deposit/withdraw so the page can refetch. */
   onSubmitted: () => void;
+  /**
+   * The portfolio's active cash sources (V3-P3). When more than one exists a
+   * source picker appears; with only Main it stays out of the way and the flow
+   * defaults to Main (the sticky per-portfolio default). Omitted → no picker,
+   * the server defaults every flow to Main.
+   */
+  sources?: CashSource[];
+  /** Preselect a source (e.g. a per-source "Deposit" on the sources page). */
+  initialSourceId?: string;
   /** Today as ISO `YYYY-MM-DD`, injectable for deterministic tests. */
   today?: string;
 }
@@ -45,6 +55,8 @@ export function CashDialog({
   initialKind,
   onClose,
   onSubmitted,
+  sources,
+  initialSourceId,
   today,
 }: CashDialogProps) {
   const t = useT();
@@ -55,6 +67,20 @@ export function CashDialog({
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // The picker only earns its place once a second source exists (V3-P3); with
+  // just Main it stays hidden and every flow defaults to Main server-side.
+  const pickable = useMemo(
+    () => sortSourcesMainFirst((sources ?? []).filter((s) => !s.archivedAt)),
+    [sources],
+  );
+  const showPicker = pickable.length > 1;
+  const [sourceId, setSourceId] = useState<string | null>(() =>
+    pickDefaultSourceId(sources ?? [], initialSourceId),
+  );
+  // Preview and writes are scoped to the chosen source; only send it when a
+  // real source was resolved (otherwise the server picks Main).
+  const scopedSourceId = sourceId ?? undefined;
 
   const parsedAmount = Number(amount);
   const amountValid = amount.trim() !== '' && Number.isFinite(parsedAmount) && parsedAmount > 0;
@@ -71,7 +97,11 @@ export function CashDialog({
     const controller = new AbortController();
     const previewKind: CashMovementKind = kind;
     setPreviewLoading(true);
-    previewCash(portfolioId, { kind: previewKind, amountEur: debouncedAmount }, controller.signal)
+    previewCash(
+      portfolioId,
+      { kind: previewKind, amountEur: debouncedAmount, sourceId: scopedSourceId },
+      controller.signal,
+    )
       .then((res) => {
         if (!controller.signal.aborted) setPreview(res);
       })
@@ -82,7 +112,7 @@ export function CashDialog({
         if (!controller.signal.aborted) setPreviewLoading(false);
       });
     return () => controller.abort();
-  }, [portfolioId, kind, debouncedAmount]);
+  }, [portfolioId, kind, debouncedAmount, scopedSourceId]);
 
   const blockedByPreview = kind === 'withdrawal' && preview !== null && !preview.sufficient;
 
@@ -106,6 +136,7 @@ export function CashDialog({
     try {
       const body = {
         amountEur: parsedAmount,
+        sourceId: scopedSourceId,
         executedAt: `${date}T00:00:00.000Z`,
         note: note.trim() === '' ? null : note.trim(),
       };
@@ -164,6 +195,26 @@ export function CashDialog({
             {t('portfolio.cash.withdrawTab')}
           </button>
         </div>
+
+        {showPicker ? (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-neutral-300">
+              {t('portfolio.cash.sourceLabel')}
+            </span>
+            <select
+              value={sourceId ?? ''}
+              onChange={(e) => setSourceId(e.target.value)}
+              aria-label={t('portfolio.cash.sourceLabel')}
+              className={inputClass}
+            >
+              {pickable.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         <label className="flex flex-col gap-1.5">
           <span className="text-sm font-medium text-neutral-300">

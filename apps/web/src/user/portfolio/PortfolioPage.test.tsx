@@ -23,6 +23,7 @@ vi.mock('../../lib/portfolioApi', () => ({
   depositCash: vi.fn(),
   withdrawCash: vi.fn(),
   previewCash: vi.fn(),
+  listCashSources: vi.fn(),
 }));
 
 vi.mock('../../lib/searchApi', () => ({ searchAssets: vi.fn() }));
@@ -80,6 +81,7 @@ import {
   getPortfolio,
   getPortfolioHistory,
   getValuePoints,
+  listCashSources,
   listPortfolios,
   listTransactions,
   previewCash,
@@ -244,6 +246,21 @@ beforeEach(() => {
     afterEur: 4000,
     sufficient: true,
     shortfallEur: 0,
+  });
+  // Only Main exists by default, so the cash/transaction dialogs render without
+  // a source picker — the existing dialog assertions are unaffected.
+  vi.mocked(listCashSources).mockResolvedValue({
+    sources: [
+      {
+        id: 'src-main',
+        name: 'Main',
+        type: 'cash',
+        isMain: true,
+        archivedAt: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        balanceEur: 5000,
+      },
+    ],
   });
 });
 
