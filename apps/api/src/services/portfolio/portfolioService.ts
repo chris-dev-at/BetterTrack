@@ -89,6 +89,7 @@ import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
+import type { TaxService } from '../tax/taxService';
 
 /**
  * Portfolio service (PROJECTPLAN.md §6.9). Owns the write-side validation and
@@ -121,6 +122,11 @@ export interface PortfolioServiceDeps {
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
   redis: Redis;
+  /**
+   * Tax engine (V3-P4): plans the per-sell tax facts + settlement movements a
+   * transaction write must carry, and the year corrections a delete posts.
+   */
+  taxService: TaxService;
   /** Social graph — used to resolve the owner's friends when a portfolio is shared (§6.10). */
   friendshipRepo: FriendshipRepository;
   /** Domain event bus — `portfolio.shared` is published here on a friends-transition (§6.10). */
@@ -333,6 +339,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     currencyService,
     referenceBackfill,
     redis,
+    taxService,
     friendshipRepo,
     events,
     logger,
@@ -504,6 +511,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       transactionId: r.transactionId,
       transferId: r.transferId,
       counterpartSourceId: r.counterpartSourceId,
+      dividendId: r.dividendId,
+      taxYear: r.taxYear,
       executedAt: r.executedAt.toISOString(),
       note: r.note,
       createdAt: r.createdAt.toISOString(),
@@ -1099,6 +1108,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         assertNoOversell([...existing.map(recordToDomain), ...pending]);
       }
 
+      // The mode active at this recording moment (V3-P4, §16 cutover
+      // semantics): it decides both the tax plan below and whether a bare
+      // cash source id is meaningful (it names the tax source of a sell).
+      const taxSettings = await taxService.getEffectiveSettings(userId);
+
       // Cash-ledger linkage (§14, #220; V3-P3): resolve each cash-flagged
       // buy/sell into a linked EUR movement against its cash source — the
       // explicitly requested one (must be active) or Main — then reject
@@ -1118,7 +1132,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const cashLinks = await Promise.all(
         inputs.map(async (input) => {
           if (!input.payFromCash && !input.addProceedsToCash) {
-            if (input.cashSourceId !== undefined) {
+            // Under an active tax mode a sell's settlement posts to a cash
+            // source even without the proceeds flag, so a bare source id is
+            // meaningful there (V3-P4); everywhere else it stays a 400 —
+            // `none` mode keeps the exact v2 behavior.
+            const namesTaxSource = taxSettings.mode !== 'none' && input.side === 'sell';
+            if (input.cashSourceId !== undefined && !namesTaxSource) {
               throw badRequest(
                 'A cash source applies only together with "pay from cash" or "add proceeds to cash".',
                 'CASH_FLAG_MISMATCH',
@@ -1132,27 +1151,46 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           return buildCashLink(input, asset, source.id);
         }),
       );
-      if (cashLinks.some((link) => link)) {
+
+      // Tax plan (V3-P4): per-sell frozen tax facts + settlement movements,
+      // plus unattached year corrections when the batch re-shapes history
+      // (e.g. a backdated buy shifting existing AT gains). Pure planning —
+      // written atomically with the rows below.
+      const taxPlan = await taxService.planTransactionTaxes({
+        userId,
+        portfolioId,
+        inputs,
+        assetsById,
+        resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
+      });
+
+      const proposed: SourcedCashMovement[] = cashLinks
+        .map((link, i): SourcedCashMovement | null =>
+          link
+            ? {
+                kind: link.kind,
+                amountEur: link.amountEur,
+                sourceId: link.sourceId,
+                occurredAt: new Date(inputs[i]!.executedAt).toISOString(),
+              }
+            : null,
+        )
+        .filter((m): m is SourcedCashMovement => m !== null)
+        .concat(taxPlan.proposed);
+      if (proposed.length > 0) {
         const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-        const proposed: SourcedCashMovement[] = cashLinks
-          .map((link, i): SourcedCashMovement | null =>
-            link
-              ? {
-                  kind: link.kind,
-                  amountEur: link.amountEur,
-                  sourceId: link.sourceId,
-                  occurredAt: new Date(inputs[i]!.executedAt).toISOString(),
-                }
-              : null,
-          )
-          .filter((m): m is SourcedCashMovement => m !== null);
         assertCashSolvent(existing, proposed);
       }
 
       const inserted = await transactionRepo.insertMany(
         portfolioId,
-        inputs.map(
-          (i, idx): NewTransaction => ({
+        inputs.map((i, idx): NewTransaction => {
+          const rowPlan = taxPlan.rows[idx];
+          const cashMovements = [
+            ...(cashLinks[idx] ? [cashLinks[idx]!] : []),
+            ...(rowPlan?.movement ? [rowPlan.movement] : []),
+          ];
+          return {
             assetId: i.assetId,
             side: i.side,
             quantity: i.quantity,
@@ -1160,9 +1198,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             fee: i.fee,
             executedAt: new Date(i.executedAt),
             note: i.note ?? null,
-            cashMovement: cashLinks[idx],
-          }),
-        ),
+            tax: rowPlan?.tax ?? null,
+            cashMovements,
+          };
+        }),
+        taxPlan.extras,
       );
 
       await invalidateHistory(portfolioId);
@@ -1203,6 +1243,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         patch.fee !== undefined ||
         patch.executedAt !== undefined;
       if (financialEdit) {
+        // A row carrying recorded tax is financially immutable (V3-P4): its
+        // frozen tax and settlement movement mirror the numbers it was
+        // recorded with, and the AT year ledger settled on them append-only.
+        // Note edits stay allowed; to change the numbers, delete and re-add
+        // (the delete re-settles the year with a correction movement).
+        if (existing.taxMode === 'manual_per_trade' || existing.taxMode === 'country_specific') {
+          throw badRequest(
+            'This transaction carries recorded tax. Delete and re-add it to change the numbers.',
+            'TRANSACTION_TAXED',
+          );
+        }
         const movements = await cashMovementRepo.listForPortfolio(portfolioId);
         if (movements.some((m) => m.transactionId === id)) {
           throw badRequest(
@@ -1214,6 +1265,23 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
       // Build the asset's set with the edited row swapped in, then re-validate.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
+
+      // Editing a BUY re-shapes the moving average every later sell realized
+      // against — and AT-taxed sells' gains are year-settled money (V3-P4).
+      // Reject rather than silently un-anchor a settled year; deleting and
+      // re-adding routes through the append-only correction path instead.
+      // (Sells never move another row's average, so editing an untaxed sell
+      // stays as permissive as v2.)
+      if (
+        financialEdit &&
+        existing.side === 'buy' &&
+        siblings.some((s) => s.side === 'sell' && s.taxMode === 'country_specific')
+      ) {
+        throw badRequest(
+          'Editing this buy would change the realized gains of tax-settled sells. Delete and re-add it instead.',
+          'TRANSACTION_AFFECTS_TAXED',
+        );
+      }
       const merged: TransactionRecord = {
         ...existing,
         side: patch.side ?? existing.side,
@@ -1255,18 +1323,36 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const replayed = siblings.filter((s) => s.id !== id).map(recordToDomain);
       assertNoOversell(replayed);
 
-      // Deleting a cash-linked buy/sell cascades away its cash movement (§14,
-      // schema onDelete: 'cascade'). If a later withdrawal/purchase relied on
-      // that cash, the *remaining* ledger would dip negative — and the solvency
+      // Deleting an AT-taxed sell — or a buy that feeds AT sells' averages —
+      // re-shapes settled year pools; the year re-settles append-only with a
+      // correction movement computed against the post-delete state (V3-P4,
+      // §16 2026-07-08). Planned up-front so the solvency replay below can
+      // include it.
+      const taxCorrections = await taxService.planTransactionDeleteCorrections(
+        portfolioId,
+        existing,
+      );
+
+      // Deleting a cash-linked buy/sell cascades away its cash movements (§14,
+      // V3-P4 settlements included; schema onDelete: 'cascade'). If a later
+      // withdrawal/purchase relied on that cash — or a correction must claw
+      // tax back — the *remaining* ledger would dip negative, and the solvency
       // gate replays the whole history, so from then on every cash write is
       // rejected. Enforce the no-negative invariant at the delete boundary too:
-      // replay the ledger (per source, V3-P3) without this txn's linked
-      // movement and refuse the delete if any point would go negative.
+      // replay the ledger (per source, V3-P3) without this txn's movements,
+      // with the corrections appended, and refuse the delete if any point
+      // would go negative.
       const cashMovements = await cashMovementRepo.listForPortfolio(portfolioId);
-      if (cashMovements.some((m) => m.transactionId === id)) {
+      if (cashMovements.some((m) => m.transactionId === id) || taxCorrections.length > 0) {
         const remaining = cashMovements.filter((m) => m.transactionId !== id).map(toDomainMovement);
+        const proposedCorrections: SourcedCashMovement[] = taxCorrections.map((c) => ({
+          kind: c.kind,
+          amountEur: c.amountEur,
+          occurredAt: c.executedAt.toISOString(),
+          sourceId: c.sourceId,
+        }));
         try {
-          projectCashLedgerBySource(remaining);
+          projectCashLedgerBySource([...remaining, ...proposedCorrections]);
         } catch (err) {
           if (err instanceof InsufficientCashError) {
             throw badRequest(
@@ -1281,6 +1367,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
       const deleted = await transactionRepo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
+
+      // Post the year corrections the delete necessitated (append-only §16).
+      for (const correction of taxCorrections) {
+        await cashMovementRepo.insert(portfolioId, correction);
+      }
 
       await invalidateHistory(portfolioId);
     },

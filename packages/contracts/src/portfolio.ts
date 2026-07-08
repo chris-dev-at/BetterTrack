@@ -117,6 +117,96 @@ export const portfolioTransactionParamsSchema = z
   .object({ portfolioId: z.string().uuid(), txId: z.string().uuid() })
   .strict();
 
+// --- Shared money bounds -----------------------------------------------------
+
+/**
+ * Upper bound on a single cash movement's EUR magnitude. The ledger column is
+ * `numeric(20,6)`, so an unbounded amount (or a non-finite `Infinity`, which zod
+ * `.number()` otherwise admits) would reach Postgres as an overflow/`Infinity`
+ * and surface as a 500 instead of a clean 400. A trillion-euro cap keeps every
+ * realistic entry while making the input fail loud and early.
+ */
+export const MAX_CASH_AMOUNT_EUR = 1_000_000_000_000;
+
+/** A positive, finite EUR magnitude within the ledger's representable range. */
+const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_EUR);
+
+// --- Taxes (V3-P4, §13.3) ----------------------------------------------------
+
+/**
+ * Tax mode (V3-P4): `none` (default — exact pre-V3-P4 behavior), `manual_per_trade`
+ * (optional user-entered tax on every sell/dividend, zero automation), or
+ * `country_specific` (automated per country; AT only). The mode active when a
+ * sell/dividend is *recorded* is frozen onto that row (§16 2026-07-08) —
+ * switching later applies forward only and never rewrites history.
+ */
+export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific'] as const;
+export const taxModeSchema = z.enum(TAX_MODES);
+export type TaxMode = z.infer<typeof taxModeSchema>;
+
+/** Countries `country_specific` mode ships for (V3-P4: Austria only, §13.3). */
+export const TAX_COUNTRIES = ['AT'] as const;
+export const taxCountrySchema = z.enum(TAX_COUNTRIES);
+export type TaxCountry = z.infer<typeof taxCountrySchema>;
+
+/** `GET /settings/taxes` + `PATCH /settings/taxes` response — the caller's tax mode. */
+export const taxSettingsResponseSchema = z
+  .object({
+    mode: taxModeSchema,
+    /** Set exactly when `mode` is `country_specific`. */
+    country: taxCountrySchema.nullable(),
+  })
+  .strict();
+export type TaxSettingsResponse = z.infer<typeof taxSettingsResponseSchema>;
+
+/**
+ * `PATCH /settings/taxes` body (Settings → Taxes, V3-P4). `country` is
+ * required with `country_specific` and rejected with any other mode — the
+ * pair is unrepresentable inconsistently, mirroring the DB CHECK.
+ */
+export const updateTaxSettingsRequestSchema = z
+  .object({
+    mode: taxModeSchema,
+    country: taxCountrySchema.optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (val.mode === 'country_specific' && val.country === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['country'],
+        message: 'country_specific mode requires a country.',
+      });
+    }
+    if (val.mode !== 'country_specific' && val.country !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['country'],
+        message: 'A country applies only to country_specific mode.',
+      });
+    }
+  });
+export type UpdateTaxSettingsRequest = z.infer<typeof updateTaxSettingsRequestSchema>;
+
+/**
+ * Reject a manual tax entry that states both an absolute amount and a rate —
+ * shared by the sell (transaction) and dividend inputs. Whether a manual entry
+ * is allowed at all depends on the caller's tax mode, which the service
+ * enforces (only `manual_per_trade` accepts one).
+ */
+const refineManualTaxEntry = (
+  val: { taxAmountEur?: number; taxRatePct?: number },
+  ctx: z.RefinementCtx,
+): void => {
+  if (val.taxAmountEur !== undefined && val.taxRatePct !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['taxAmountEur'],
+      message: 'Provide a manual tax amount OR a rate, not both.',
+    });
+  }
+};
+
 // --- Transactions ----------------------------------------------------------
 
 /** BUY adds to a position; SELL reduces it (§6.9). */
@@ -150,8 +240,18 @@ export const transactionInputSchema = z
     payFromCash: z.boolean().optional(),
     addProceedsToCash: z.boolean().optional(),
     cashSourceId: z.string().uuid().optional(),
+    /**
+     * Manual tax entry on a SELL (V3-P4, `manual_per_trade` mode only):
+     * absolute EUR amount OR a percentage of the sell's realized gain — at
+     * most one, both optional (no entry = no tax recorded). Rejected on buys,
+     * in `none` mode (v2 behavior unchanged) and in `country_specific` mode
+     * (the engine owns the computation there).
+     */
+    taxAmountEur: z.number().nonnegative().finite().max(MAX_CASH_AMOUNT_EUR).optional(),
+    taxRatePct: z.number().min(0).max(100).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine(refineManualTaxEntry);
 export type TransactionInput = z.infer<typeof transactionInputSchema>;
 
 /**
@@ -384,7 +484,10 @@ export type PortfolioHistoryResponse = z.infer<typeof portfolioHistoryResponseSc
  * `sell_proceeds` are internal (cash ↔ shares form change, TWR-neutral);
  * `transfer_out` / `transfer_in` are the paired legs of an internal transfer
  * between two cash sources (money moving *inside* the portfolio — NEVER a TWR
- * flow). Mirrors `domain/cashLedger.CASH_MOVEMENT_KINDS`.
+ * flow). `dividend` / `tax_withholding` / `tax_refund` (V3-P4) are the tax
+ * engine's postings — dividend income and its KESt/manual settlements — all
+ * internal too, so performance reads net of taxes and inclusive of income.
+ * Mirrors `domain/cashLedger.CASH_MOVEMENT_KINDS`.
  */
 export const cashMovementKindSchema = z.enum([
   'deposit',
@@ -393,6 +496,9 @@ export const cashMovementKindSchema = z.enum([
   'sell_proceeds',
   'transfer_out',
   'transfer_in',
+  'dividend',
+  'tax_withholding',
+  'tax_refund',
 ]);
 export type CashMovementKind = z.infer<typeof cashMovementKindSchema>;
 
@@ -486,6 +592,10 @@ export const cashMovementSchema = z
     transactionId: z.string().uuid().nullable(),
     transferId: z.string().uuid().nullable(),
     counterpartSourceId: z.string().uuid().nullable(),
+    /** The dividend a `dividend` inflow / its tax settlement belongs to (V3-P4). */
+    dividendId: z.string().uuid().nullable(),
+    /** Europe/Vienna tax year a `tax_withholding` / `tax_refund` settles (V3-P4). */
+    taxYear: z.number().int().nullable(),
     executedAt: z.string().datetime(),
     note: z.string().nullable(),
     createdAt: z.string().datetime(),
@@ -508,18 +618,6 @@ export const cashMovementsResponseSchema = z
   })
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
-
-/**
- * Upper bound on a single cash movement's EUR magnitude. The ledger column is
- * `numeric(20,6)`, so an unbounded amount (or a non-finite `Infinity`, which zod
- * `.number()` otherwise admits) would reach Postgres as an overflow/`Infinity`
- * and surface as a 500 instead of a clean 400. A trillion-euro cap keeps every
- * realistic entry while making the input fail loud and early.
- */
-export const MAX_CASH_AMOUNT_EUR = 1_000_000_000_000;
-
-/** A positive, finite EUR magnitude within the ledger's representable range. */
-const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_EUR);
 
 /**
  * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
@@ -643,6 +741,173 @@ export const setCashBalanceResponseSchema = z
   })
   .strict();
 export type SetCashBalanceResponse = z.infer<typeof setCashBalanceResponseSchema>;
+
+// --- Dividends (V3-P4, §13.3) ------------------------------------------------
+
+/**
+ * `POST /portfolios/:id/dividends` body — record a dividend on a held asset:
+ * gross EUR amount on a pay date, landing in `cashSourceId` (Main when
+ * omitted) as a `dividend` movement. Cash is EUR-only, so the gross amount is
+ * entered in EUR regardless of the asset's native currency. Taxed per the
+ * caller's mode at recording: the optional manual entry follows the same
+ * rules as on sells (`manual_per_trade` only, amount or rate, never both).
+ * `executedAt` defaults to now.
+ */
+export const createDividendRequestSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    grossAmountEur: cashAmountEurSchema,
+    executedAt: z.string().datetime().optional(),
+    cashSourceId: z.string().uuid().optional(),
+    note: z.string().max(1000).nullish(),
+    taxAmountEur: z.number().nonnegative().finite().max(MAX_CASH_AMOUNT_EUR).optional(),
+    taxRatePct: z.number().min(0).max(100).optional(),
+  })
+  .strict()
+  .superRefine(refineManualTaxEntry);
+export type CreateDividendRequest = z.infer<typeof createDividendRequestSchema>;
+
+/**
+ * One recorded dividend (V3-P4). The tax facts are frozen at recording time
+ * (§16 2026-07-08): `taxMode` is the mode that applied then and `taxAmountEur`
+ * the tax it produced (signed; `null` = none recorded) — later mode switches
+ * or corrections never rewrite them.
+ */
+export const dividendSchema = z
+  .object({
+    id: z.string().uuid(),
+    assetId: z.string().uuid(),
+    grossAmountEur: z.number(),
+    executedAt: z.string().datetime(),
+    note: z.string().nullable(),
+    taxMode: taxModeSchema,
+    taxCountry: taxCountrySchema.nullable(),
+    taxAmountEur: z.number().nullable(),
+    cashSourceId: z.string().uuid(),
+    createdAt: z.string().datetime(),
+    asset: portfolioAssetSchema,
+  })
+  .strict();
+export type Dividend = z.infer<typeof dividendSchema>;
+
+/** `GET /portfolios/:id/dividends` response, newest pay date first. */
+export const dividendListResponseSchema = z.object({ dividends: z.array(dividendSchema) }).strict();
+export type DividendListResponse = z.infer<typeof dividendListResponseSchema>;
+
+/**
+ * `POST /portfolios/:id/dividends` response — the dividend plus the cash
+ * movements it posted (the gross `dividend` inflow and, when taxed, its
+ * settlement), with the affected source's and the portfolio's balances.
+ */
+export const createDividendResponseSchema = z
+  .object({
+    dividend: dividendSchema,
+    movements: z.array(cashMovementSchema),
+    sourceBalanceEur: z.number(),
+    balanceEur: z.number(),
+  })
+  .strict();
+export type CreateDividendResponse = z.infer<typeof createDividendResponseSchema>;
+
+/** Route params for `/portfolios/:portfolioId/dividends/:dividendId`. */
+export const dividendParamsSchema = z
+  .object({ portfolioId: z.string().uuid(), dividendId: z.string().uuid() })
+  .strict();
+
+// --- Per-year tax report (V3-P4, §13.3) ---------------------------------------
+
+/**
+ * One Europe/Vienna calendar year of one portfolio (V3-P4d). `realizedPnlEur`
+ * and `dividendsGrossEur` are financial facts across ALL rows of the year
+ * regardless of tax mode (realized P/L in EUR at each trade's own date-FX);
+ * the tax figures are the *current* movement-level truth: `taxWithheldEur` /
+ * `taxRefundedEur` sum the year's settlement movements (corrections included)
+ * and `taxNetEur = taxWithheldEur − taxRefundedEur` is what the year holds.
+ */
+export const taxYearSummarySchema = z
+  .object({
+    year: z.number().int(),
+    realizedPnlEur: z.number(),
+    dividendsGrossEur: z.number(),
+    taxWithheldEur: z.number(),
+    taxRefundedEur: z.number(),
+    taxNetEur: z.number(),
+  })
+  .strict();
+export type TaxYearSummary = z.infer<typeof taxYearSummarySchema>;
+
+/** `GET /portfolios/:id/reports/tax-years` response — newest year first. */
+export const taxYearListResponseSchema = z
+  .object({ years: z.array(taxYearSummarySchema) })
+  .strict();
+export type TaxYearListResponse = z.infer<typeof taxYearListResponseSchema>;
+
+/**
+ * One sell inside the year drill-down: its EUR realization against the
+ * moving-average basis (current truth, recomputed) next to the tax facts
+ * frozen on the row at recording time (`taxMode` null = pre-engine row).
+ */
+export const taxYearSellSchema = z
+  .object({
+    transactionId: z.string().uuid(),
+    executedAt: z.string().datetime(),
+    quantity: z.number(),
+    proceedsEur: z.number(),
+    costBasisEur: z.number(),
+    realizedPnlEur: z.number(),
+    taxMode: taxModeSchema.nullable(),
+    taxAmountEur: z.number().nullable(),
+  })
+  .strict();
+export type TaxYearSell = z.infer<typeof taxYearSellSchema>;
+
+/** One dividend inside the year drill-down. */
+export const taxYearDividendSchema = z
+  .object({
+    dividendId: z.string().uuid(),
+    executedAt: z.string().datetime(),
+    grossAmountEur: z.number(),
+    taxMode: taxModeSchema,
+    taxAmountEur: z.number().nullable(),
+  })
+  .strict();
+export type TaxYearDividend = z.infer<typeof taxYearDividendSchema>;
+
+/**
+ * Per-position drill-down of a year (V3-P4d): the asset's realized P/L,
+ * dividends and the taxes *recorded on its rows* (`taxEur` — year-level
+ * corrections are portfolio-wide and appear only in the summary), plus every
+ * underlying sell/dividend.
+ */
+export const taxYearPositionSchema = z
+  .object({
+    asset: portfolioAssetSchema,
+    realizedPnlEur: z.number(),
+    dividendsGrossEur: z.number(),
+    taxEur: z.number(),
+    sells: z.array(taxYearSellSchema),
+    dividends: z.array(taxYearDividendSchema),
+  })
+  .strict();
+export type TaxYearPosition = z.infer<typeof taxYearPositionSchema>;
+
+/** `GET /portfolios/:id/reports/tax-years/:year` response. */
+export const taxYearReportResponseSchema = z
+  .object({
+    year: z.number().int(),
+    summary: taxYearSummarySchema,
+    positions: z.array(taxYearPositionSchema),
+  })
+  .strict();
+export type TaxYearReportResponse = z.infer<typeof taxYearReportResponseSchema>;
+
+/** Route params for `/portfolios/:portfolioId/reports/tax-years/:year`. */
+export const taxYearParamsSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    year: z.coerce.number().int().min(1900).max(3000),
+  })
+  .strict();
 
 // --- Custom assets ---------------------------------------------------------
 

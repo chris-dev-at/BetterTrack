@@ -493,6 +493,15 @@ export const portfolios = pgTable(
 
 export const transactionSideEnum = pgEnum('transaction_side', ['buy', 'sell']);
 
+/**
+ * Tax modes (V3-P4, §13.3): `none` = pre-V3-P4 behavior, `manual_per_trade` =
+ * user-entered tax per sell/dividend, `country_specific` = automated per
+ * country (AT only). Used both for the per-user setting (`user_tax_settings`)
+ * and — frozen at recording time (§16 2026-07-08 cutover semantics) — on each
+ * sell/dividend row.
+ */
+export const taxModeEnum = pgEnum('tax_mode', ['none', 'manual_per_trade', 'country_specific']);
+
 export const transactions = pgTable(
   'transactions',
   {
@@ -509,6 +518,16 @@ export const transactions = pgTable(
     fee: numeric('fee', { precision: 20, scale: 6 }).notNull().default('0'),
     executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
     note: text('note'),
+    // Tax facts frozen at recording time (V3-P4, §16 2026-07-08): the tax mode
+    // active when the row was created and the tax it produced then, in EUR
+    // (signed: positive = withheld, negative = refunded). NULL mode = recorded
+    // before the tax engine existed (behaves exactly like 'none'); NULL amount
+    // = no tax was computed/entered (buys, none mode, manual without entry).
+    // Mode switches and later corrections never rewrite these — the year's
+    // *current* truth lives in the tax movements, re-derived append-only.
+    taxMode: taxModeEnum('tax_mode'),
+    taxCountry: char('tax_country', { length: 2 }),
+    taxAmountEur: numeric('tax_amount_eur', { precision: 20, scale: 6 }),
   },
   (t) => [
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
@@ -537,6 +556,9 @@ export const cashMovementKindEnum = pgEnum('cash_movement_kind', [
   'sell_proceeds',
   'transfer_out',
   'transfer_in',
+  'dividend',
+  'tax_withholding',
+  'tax_refund',
 ]);
 
 /**
@@ -581,6 +603,45 @@ export const portfolioCashSources = pgTable(
   ],
 );
 
+/**
+ * Dividends (V3-P4, §13.3): income events on a held asset — gross EUR amount
+ * on a pay date, landing in a chosen cash source as a `dividend` movement,
+ * taxed per the mode active at recording (frozen on the row like transaction
+ * tax facts, §16 2026-07-08). Cash is EUR-only, so the gross amount is entered
+ * in EUR. `cash_source_id` has no cascade for the same reason movements'
+ * `source_id` has none: sources soft-archive, never hard-delete while rows
+ * exist (portfolio deletion cascades through `portfolio_id`). Deleting a
+ * dividend cascades its movements away (`portfolio_cash_movements.dividend_id`).
+ */
+export const dividends = pgTable(
+  'dividends',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id')
+      .notNull()
+      .references(() => assets.id, { onDelete: 'cascade' }),
+    cashSourceId: uuid('cash_source_id')
+      .notNull()
+      .references(() => portfolioCashSources.id),
+    grossAmountEur: numeric('gross_amount_eur', { precision: 20, scale: 6 }).notNull(),
+    executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
+    note: text('note'),
+    // Tax facts frozen at recording time — same semantics as the transaction
+    // columns (mode active when recorded; the tax it produced then, signed).
+    taxMode: taxModeEnum('tax_mode').notNull(),
+    taxCountry: char('tax_country', { length: 2 }),
+    taxAmountEur: numeric('tax_amount_eur', { precision: 20, scale: 6 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('dividends_portfolio_idx').on(t.portfolioId, t.executedAt),
+    check('dividends_gross_positive', sql`${t.grossAmountEur} > 0`),
+  ],
+);
+
 export const portfolioCashMovements = pgTable(
   'portfolio_cash_movements',
   {
@@ -610,6 +671,17 @@ export const portfolioCashMovements = pgTable(
     // display ("Transfer to Bank X") without a self-join. Null otherwise.
     transferId: uuid('transfer_id'),
     counterpartSourceId: uuid('counterpart_source_id').references(() => portfolioCashSources.id),
+    // Set on a dividend's movements (V3-P4): the gross `dividend` inflow and
+    // its tax settlement both link back to the dividend row; deleting the
+    // dividend cascades them away, mirroring the transaction linkage above.
+    dividendId: uuid('dividend_id').references(() => dividends.id, { onDelete: 'cascade' }),
+    // Set on every tax_withholding / tax_refund (V3-P4): the Europe/Vienna
+    // calendar year whose AT pool (or manual report bucket) this settlement
+    // belongs to. The movement's executed_at can differ — a backdated trade
+    // settles a past year with a movement dated at the trade, and a correction
+    // posted after a deletion settles it with a movement dated now — so the
+    // year attribution is explicit, never inferred from the timestamp.
+    taxYear: integer('tax_year'),
     executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
     note: text('note'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -621,14 +693,51 @@ export const portfolioCashMovements = pgTable(
     // amount's sign must match the kind, and never zero (the ledger never guesses).
     check(
       'portfolio_cash_movements_sign',
-      sql`(${t.kind} in ('deposit','sell_proceeds','transfer_in') and ${t.amountEur} > 0)
-          or (${t.kind} in ('withdrawal','buy','transfer_out') and ${t.amountEur} < 0)`,
+      sql`(${t.kind} in ('deposit','sell_proceeds','transfer_in','dividend','tax_refund') and ${t.amountEur} > 0)
+          or (${t.kind} in ('withdrawal','buy','transfer_out','tax_withholding') and ${t.amountEur} < 0)`,
     ),
     // Transfer legs always carry their pairing columns; other kinds never do.
     check(
       'portfolio_cash_movements_transfer_link',
       sql`(${t.kind} in ('transfer_out','transfer_in'))
           = (${t.transferId} is not null and ${t.counterpartSourceId} is not null)`,
+    ),
+    // Tax settlements always carry their year; nothing else ever does.
+    check(
+      'portfolio_cash_movements_tax_year',
+      sql`(${t.kind} in ('tax_withholding','tax_refund')) = (${t.taxYear} is not null)`,
+    ),
+    // A dividend inflow always links its dividend row (its tax settlement may).
+    check(
+      'portfolio_cash_movements_dividend_link',
+      sql`${t.kind} <> 'dividend' or ${t.dividendId} is not null`,
+    ),
+  ],
+);
+
+/**
+ * Per-user tax settings (V3-P4, §13.3): Settings → Taxes. One optional row per
+ * user — a missing row IS `none` mode (the pre-V3-P4 default), so the feature
+ * is additive by construction. `country` is set exactly when the mode is
+ * `country_specific` (AT is the only shipped country); the CHECK makes the
+ * pair unrepresentable any other way. The mode applies to sells/dividends at
+ * the moment they are *recorded* (§16 2026-07-08) — switching never rewrites
+ * existing rows.
+ */
+export const userTaxSettings = pgTable(
+  'user_tax_settings',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    mode: taxModeEnum('mode').notNull().default('none'),
+    country: char('country', { length: 2 }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'user_tax_settings_country',
+      sql`(${t.mode} = 'country_specific') = (${t.country} is not null)`,
     ),
   ],
 );
@@ -854,6 +963,9 @@ export type CashMovementRow = typeof portfolioCashMovements.$inferSelect;
 export type NewCashMovementRow = typeof portfolioCashMovements.$inferInsert;
 export type CashSourceRow = typeof portfolioCashSources.$inferSelect;
 export type NewCashSourceRow = typeof portfolioCashSources.$inferInsert;
+export type DividendRow = typeof dividends.$inferSelect;
+export type NewDividendRow = typeof dividends.$inferInsert;
+export type UserTaxSettingsRow = typeof userTaxSettings.$inferSelect;
 export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
@@ -902,7 +1014,9 @@ export const schema = {
   portfolios,
   transactions,
   portfolioCashSources,
+  dividends,
   portfolioCashMovements,
+  userTaxSettings,
   friendRequests,
   friendships,
   appSettings,
@@ -915,6 +1029,7 @@ export const schema = {
   emailStatusEnum,
   conglomerateStatusEnum,
   transactionSideEnum,
+  taxModeEnum,
   portfolioVisibilityEnum,
   cashMovementKindEnum,
   cashSourceTypeEnum,

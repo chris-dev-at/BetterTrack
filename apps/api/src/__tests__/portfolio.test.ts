@@ -1406,6 +1406,25 @@ describe('Portfolio cash ledger', () => {
     expect(res.status).toBe(401);
   });
 
+  it('classic movements carry the V3-P4 linkage fields as nulls (wire-shape stability)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const dep = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 100, executedAt: tsOffset(-1) });
+    expect(dep.status).toBe(201);
+    // A plain deposit is neither a dividend posting nor a tax settlement —
+    // the new nullable fields are present but null, so v2 consumers parse on.
+    expect(dep.body.movement).toMatchObject({ dividendId: null, taxYear: null });
+
+    const state = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+    expect(cashMovementsResponseSchema.safeParse(state.body).success).toBe(true);
+    expect(state.body.movements[0]).toMatchObject({ dividendId: null, taxYear: null });
+  });
+
   it('deposit → buy-from-cash → overview reconciles (cash == sum of signed movements)', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

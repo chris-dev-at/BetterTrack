@@ -70,6 +70,10 @@ import type { FlowPoint, ValuePoint } from './holdings';
  * Every cash-movement kind, external and internal. `transfer_out` /
  * `transfer_in` (V3-P3) are the paired legs of an internal transfer between two
  * cash sources of the same portfolio — see {@link pairedTransferMovements}.
+ * `dividend` / `tax_withholding` / `tax_refund` (V3-P4, §13.3) are the tax
+ * engine's postings: a dividend's gross amount landing in a source, and the
+ * KESt/manual tax settlements against it — all internal for TWR purposes (see
+ * {@link EXTERNAL_CASH_MOVEMENT_KINDS}).
  */
 export const CASH_MOVEMENT_KINDS = [
   'deposit',
@@ -78,6 +82,9 @@ export const CASH_MOVEMENT_KINDS = [
   'sell_proceeds',
   'transfer_out',
   'transfer_in',
+  'dividend',
+  'tax_withholding',
+  'tax_refund',
 ] as const;
 
 export type CashMovementKind = (typeof CASH_MOVEMENT_KINDS)[number];
@@ -91,9 +98,12 @@ export const CASH_MOVEMENT_SIGN: Readonly<Record<CashMovementKind, 1 | -1>> = {
   deposit: 1,
   sell_proceeds: 1,
   transfer_in: 1,
+  dividend: 1,
+  tax_refund: 1,
   withdrawal: -1,
   buy: -1,
   transfer_out: -1,
+  tax_withholding: -1,
 };
 
 /**
@@ -102,7 +112,12 @@ export const CASH_MOVEMENT_SIGN: Readonly<Record<CashMovementKind, 1 | -1>> = {
  * change) and deliberately absent — as are `transfer_out` / `transfer_in`
  * (V3-P3): a transfer moves money between two sources *inside* the portfolio,
  * so it is NEVER an external flow (its paired legs also cancel to zero in every
- * roll-up, keeping net worth unchanged).
+ * roll-up, keeping net worth unchanged). The V3-P4 tax kinds are internal too
+ * (§16 2026-07-08): a `dividend` is income the portfolio's assets *generated*
+ * — counting it as a deposit would neutralize it out of the performance curve
+ * and understate the true return — and `tax_withholding` / `tax_refund` are
+ * costs of holding the portfolio, kept inside the curve so performance reads
+ * net of taxes, exactly as it already reads net of fees.
  */
 export const EXTERNAL_CASH_MOVEMENT_KINDS: readonly CashMovementKind[] = ['deposit', 'withdrawal'];
 

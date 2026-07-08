@@ -7,13 +7,16 @@ import {
   cashSourceParamsSchema,
   cashTransferRequestSchema,
   createCashSourceRequestSchema,
+  createDividendRequestSchema,
   createPortfolioRequestSchema,
   createTransactionsRequestSchema,
+  dividendParamsSchema,
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
   portfolioListQuerySchema,
   portfolioTransactionParamsSchema,
   setCashBalanceRequestSchema,
+  taxYearParamsSchema,
   transactionListQuerySchema,
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
@@ -24,6 +27,7 @@ import {
   type CashSourceResponse,
   type CashTransferRequest,
   type CreateCashSourceRequest,
+  type CreateDividendRequest,
   type CreatePortfolioRequest,
   type CreateTransactionsRequest,
   type PortfolioHistoryQuery,
@@ -287,6 +291,70 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         body,
       );
       res.json(result);
+    },
+  );
+
+  // POST /portfolios/:portfolioId/dividends — record a dividend on a held
+  // asset into a cash source, tax-mode aware (V3-P4, §13.3).
+  router.post(
+    '/:portfolioId/dividends',
+    validateParams(portfolioIdParamSchema),
+    validateBody(createDividendRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CreateDividendRequest;
+      const result = await ctx.tax.recordDividend(req.authUser!.id, portfolioId, body);
+      res.status(201).json(result);
+    },
+  );
+
+  // GET /portfolios/:portfolioId/dividends — the recorded dividends (V3-P4).
+  router.get(
+    '/:portfolioId/dividends',
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const list = await ctx.tax.listDividends(req.authUser!.id, portfolioId);
+      res.json(list);
+    },
+  );
+
+  // DELETE /portfolios/:portfolioId/dividends/:dividendId — remove a dividend;
+  // its movements cascade and an AT year re-settles append-only (V3-P4).
+  router.delete(
+    '/:portfolioId/dividends/:dividendId',
+    validateParams(dividendParamsSchema),
+    async (req, res) => {
+      const { portfolioId, dividendId } = req.valid?.params as {
+        portfolioId: string;
+        dividendId: string;
+      };
+      await ctx.tax.deleteDividend(req.authUser!.id, portfolioId, dividendId);
+      res.status(204).send();
+    },
+  );
+
+  // GET /portfolios/:portfolioId/reports/tax-years — per-year realized P/L +
+  // dividends + taxes summaries, newest first (V3-P4d).
+  router.get(
+    '/:portfolioId/reports/tax-years',
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const report = await ctx.tax.getYearReports(req.authUser!.id, portfolioId);
+      res.json(report);
+    },
+  );
+
+  // GET /portfolios/:portfolioId/reports/tax-years/:year — one year with the
+  // per-position drill-down (V3-P4d).
+  router.get(
+    '/:portfolioId/reports/tax-years/:year',
+    validateParams(taxYearParamsSchema),
+    async (req, res) => {
+      const { portfolioId, year } = req.valid?.params as { portfolioId: string; year: number };
+      const report = await ctx.tax.getYearReport(req.authUser!.id, portfolioId, year);
+      res.json(report);
     },
   );
 

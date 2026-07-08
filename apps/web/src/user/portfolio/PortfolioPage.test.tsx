@@ -372,6 +372,8 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
         executedAt: '2024-06-01T00:00:00.000Z',
         note: null,
         createdAt: '2024-06-01T00:00:00.000Z',

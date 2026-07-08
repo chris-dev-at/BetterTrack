@@ -55,6 +55,8 @@ describe('CashDialog', () => {
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
         executedAt: '2026-07-02T00:00:00.000Z',
         note: null,
         createdAt: '2026-07-02T00:00:00.000Z',

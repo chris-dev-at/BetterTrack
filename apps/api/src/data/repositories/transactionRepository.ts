@@ -15,6 +15,7 @@ import type { AssetRow, TransactionRow } from '../schema';
  */
 
 type Side = TransactionRow['side'];
+type TaxMode = TransactionRow['taxMode'];
 
 /** A transaction with its money columns parsed to `number` (DB stores `numeric`). */
 export interface TransactionRecord {
@@ -27,6 +28,14 @@ export interface TransactionRecord {
   fee: number;
   executedAt: Date;
   note: string | null;
+  /**
+   * Tax facts frozen at recording time (V3-P4, §16 2026-07-08). `taxMode` null
+   * = recorded before the tax engine (behaves like 'none'); `taxAmountEur` is
+   * the signed tax the recording produced (null = none computed/entered).
+   */
+  taxMode: TaxMode;
+  taxCountry: string | null;
+  taxAmountEur: number | null;
 }
 
 /** A transaction row enriched with its asset metadata for the ledger view. */
@@ -44,16 +53,42 @@ export interface TransactionWithAsset extends TransactionRecord {
 
 /**
  * A linked EUR cash movement created atomically with its transaction (§14,
- * #220): a `buy` funded from cash (negative `amountEur`) or `sell_proceeds`
- * booked into cash (positive), against the given cash source (V3-P3). The
- * sign/kind invariant is enforced by the domain engine + a DB check; the caller
- * passes the already-signed EUR amount and a resolved, active source id.
+ * #220): a `buy` funded from cash (negative `amountEur`), `sell_proceeds`
+ * booked into cash (positive), or the sell's tax settlement (V3-P4:
+ * `tax_withholding` negative / `tax_refund` positive, carrying its Vienna
+ * `taxYear`), against the given cash source (V3-P3). The sign/kind invariant
+ * is enforced by the domain engine + a DB check; the caller passes the
+ * already-signed EUR amount and a resolved, active source id.
  */
 export interface LinkedCashMovement {
-  kind: 'buy' | 'sell_proceeds';
+  kind: 'buy' | 'sell_proceeds' | 'tax_withholding' | 'tax_refund';
   amountEur: number;
   sourceId: string;
   note: string | null;
+  /** Required on tax settlements, absent otherwise (DB CHECK enforced). */
+  taxYear?: number | null;
+}
+
+/**
+ * An unattached cash movement written atomically with a transaction batch
+ * (V3-P4): a year-settlement correction posted when the batch re-shapes
+ * history (e.g. a backdated buy shifting existing AT sells' gains). Not linked
+ * to any single row — it settles the *year*.
+ */
+export interface BatchCashMovement {
+  kind: 'tax_withholding' | 'tax_refund';
+  amountEur: number;
+  sourceId: string;
+  note: string | null;
+  taxYear: number;
+  executedAt: Date;
+}
+
+/** Tax facts frozen onto a row at recording time (V3-P4); absent on buys/none. */
+export interface NewTransactionTax {
+  mode: NonNullable<TaxMode>;
+  country: string | null;
+  amountEur: number | null;
 }
 
 /** Fields for a single insert; money values arrive as `number`s. */
@@ -65,8 +100,10 @@ export interface NewTransaction {
   fee: number;
   executedAt: Date;
   note: string | null;
-  /** Optional cash movement written in the same DB transaction as this row. */
-  cashMovement?: LinkedCashMovement | null;
+  /** Tax mode/amount recorded on the row (V3-P4); null = pre-engine shape. */
+  tax?: NewTransactionTax | null;
+  /** Cash movements written in the same DB transaction as this row (§14, V3-P4). */
+  cashMovements?: readonly LinkedCashMovement[];
 }
 
 function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
@@ -80,6 +117,9 @@ function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
     fee: Number(row.fee),
     executedAt: row.executedAt,
     note: row.note ?? null,
+    taxMode: row.taxMode ?? null,
+    taxCountry: row.taxCountry ?? null,
+    taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
   };
 }
 
@@ -87,15 +127,18 @@ export function createTransactionRepository(db: Database) {
   return {
     /**
      * Bulk insert (the buy flow, §6.9). Returns the inserted rows in input order.
-     * When any row carries a {@link LinkedCashMovement} (pay-from-cash /
-     * add-proceeds, §14), the transactions *and* their linked cash movements are
-     * written in one DB transaction so the ledger is never half-applied — a cash
-     * movement can never reference a transaction that failed to persist, and the
-     * cash balance reconciles atomically.
+     * When any row carries {@link LinkedCashMovement}s (pay-from-cash /
+     * add-proceeds, §14; tax settlements, V3-P4) — or the batch carries
+     * unattached {@link BatchCashMovement} year corrections — the transactions
+     * *and* every movement are written in one DB transaction so the ledger is
+     * never half-applied: a cash movement can never reference a transaction
+     * that failed to persist, and the cash balance + tax year reconcile
+     * atomically.
      */
     async insertMany(
       portfolioId: string,
       rows: readonly NewTransaction[],
+      extraMovements: readonly BatchCashMovement[] = [],
     ): Promise<TransactionRecord[]> {
       if (rows.length === 0) return [];
 
@@ -112,35 +155,47 @@ export function createTransactionRepository(db: Database) {
               fee: String(r.fee),
               executedAt: r.executedAt,
               note: r.note,
+              taxMode: r.tax?.mode ?? null,
+              taxCountry: r.tax?.country ?? null,
+              taxAmountEur:
+                r.tax?.amountEur === undefined || r.tax?.amountEur === null
+                  ? null
+                  : String(r.tax.amountEur),
             })),
           )
           .returning();
 
-      const hasCashLink = rows.some((r) => r.cashMovement);
-      if (!hasCashLink) {
+      const hasCashLink = rows.some((r) => (r.cashMovements?.length ?? 0) > 0);
+      if (!hasCashLink && extraMovements.length === 0) {
         const inserted = await insertTxns(db);
         return inserted.map(toRecord);
       }
 
       return db.transaction(async (tx) => {
         const inserted = await insertTxns(tx as unknown as Database);
-        const cashRows = inserted
-          .map((row, i) => {
-            const link = rows[i]?.cashMovement;
-            if (!link) return null;
-            return {
-              portfolioId,
-              sourceId: link.sourceId,
-              kind: link.kind,
-              amountEur: String(link.amountEur),
-              transactionId: row.id,
-              executedAt: row.executedAt,
-              note: link.note,
-            };
-          })
-          .filter((v): v is NonNullable<typeof v> => v !== null);
-        if (cashRows.length > 0) {
-          await tx.insert(portfolioCashMovements).values(cashRows);
+        const cashRows = inserted.flatMap((row, i) =>
+          (rows[i]?.cashMovements ?? []).map((link) => ({
+            portfolioId,
+            sourceId: link.sourceId,
+            kind: link.kind,
+            amountEur: String(link.amountEur),
+            transactionId: row.id,
+            taxYear: link.taxYear ?? null,
+            executedAt: row.executedAt,
+            note: link.note,
+          })),
+        );
+        const extraRows = extraMovements.map((extra) => ({
+          portfolioId,
+          sourceId: extra.sourceId,
+          kind: extra.kind,
+          amountEur: String(extra.amountEur),
+          taxYear: extra.taxYear,
+          executedAt: extra.executedAt,
+          note: extra.note,
+        }));
+        if (cashRows.length > 0 || extraRows.length > 0) {
+          await tx.insert(portfolioCashMovements).values([...cashRows, ...extraRows]);
         }
         return inserted.map(toRecord);
       });
@@ -184,6 +239,9 @@ export function createTransactionRepository(db: Database) {
           fee: transactions.fee,
           executedAt: transactions.executedAt,
           note: transactions.note,
+          taxMode: transactions.taxMode,
+          taxCountry: transactions.taxCountry,
+          taxAmountEur: transactions.taxAmountEur,
           assetSymbol: assets.symbol,
           assetName: assets.name,
           assetExchange: assets.exchange,
@@ -214,6 +272,9 @@ export function createTransactionRepository(db: Database) {
         fee: Number(row.fee),
         executedAt: row.executedAt,
         note: row.note ?? null,
+        taxMode: row.taxMode ?? null,
+        taxCountry: row.taxCountry ?? null,
+        taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
         asset: {
           id: row.assetId,
           symbol: row.assetSymbol,
@@ -240,6 +301,9 @@ export function createTransactionRepository(db: Database) {
           fee: transactions.fee,
           executedAt: transactions.executedAt,
           note: transactions.note,
+          taxMode: transactions.taxMode,
+          taxCountry: transactions.taxCountry,
+          taxAmountEur: transactions.taxAmountEur,
         })
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))

@@ -243,6 +243,50 @@ describe('Account settings — locale (§13.3 V3-P1)', () => {
   });
 });
 
+describe('Settings → Taxes (§13.3 V3-P4)', () => {
+  it('requires authentication', async () => {
+    expect((await request(harness.app).get('/api/v1/settings/taxes')).status).toBe(401);
+    expect(
+      (
+        await request(harness.app)
+          .patch('/api/v1/settings/taxes')
+          .set(...XRW)
+          .send({ mode: 'none' })
+      ).status,
+    ).toBe(401);
+  });
+
+  it('is strictly per user — one user’s mode never leaks to another', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+
+    const patched = await aliceAgent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'AT' });
+    expect(patched.status).toBe(200);
+
+    expect((await aliceAgent.get('/api/v1/settings/taxes')).body).toEqual({
+      mode: 'country_specific',
+      country: 'AT',
+    });
+    // Bob still reads the untouched default.
+    expect((await bobAgent.get('/api/v1/settings/taxes')).body).toEqual({
+      mode: 'none',
+      country: null,
+    });
+
+    // Persisted per user, not per session.
+    const freshAlice = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await freshAlice.get('/api/v1/settings/taxes')).body).toEqual({
+      mode: 'country_specific',
+      country: 'AT',
+    });
+  });
+});
+
 describe('Account settings — base currency (§5.4, §13.3 V3-P10d)', () => {
   it('defaults a fresh user to EUR, on both /settings/account and /auth/me', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
