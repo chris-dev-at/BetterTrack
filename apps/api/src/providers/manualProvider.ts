@@ -36,6 +36,8 @@ export interface ManualAssetRecord {
   exchange: string | null;
   currency: string;
   type: AssetMeta['type'];
+  /** Value-smoothing toggle (V3-P2): interpolate linearly between value marks. */
+  smoothing: boolean;
 }
 
 /** One stored value point of a custom asset: a value on a calendar day. */
@@ -69,6 +71,7 @@ export function createManualAssetSource(db: Database): ManualAssetSource {
           exchange: assets.exchange,
           currency: assets.currency,
           type: assets.type,
+          meta: assets.meta,
         })
         .from(assets)
         .where(and(eq(assets.providerId, PROVIDER_ID), eq(assets.providerRef, providerRef)))
@@ -82,6 +85,7 @@ export function createManualAssetSource(db: Database): ManualAssetSource {
         exchange: row.exchange ?? null,
         currency: row.currency,
         type: row.type,
+        smoothing: (row.meta as { smoothing?: boolean } | null)?.smoothing === true,
       };
     },
 
@@ -104,6 +108,8 @@ export interface CreateManualProviderDeps {
   now?: () => number;
 }
 
+const MS_PER_DAY = 86_400_000;
+
 /** Epoch ms at UTC midnight of a `YYYY-MM-DD` day. */
 function dayStartMs(date: string): number {
   return Date.parse(`${date}T00:00:00.000Z`);
@@ -112,6 +118,47 @@ function dayStartMs(date: string): number {
 /** ISO-8601 timestamp at UTC midnight of a `YYYY-MM-DD` day. */
 function dayIso(date: string): string {
   return `${date}T00:00:00.000Z`;
+}
+
+/** `YYYY-MM-DD` for a UTC-midnight epoch-ms. */
+function msToDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Value-smoothing (V3-P2): expand sparse value marks into **one point per
+ * calendar day** with the value linearly interpolated between consecutive marks.
+ *
+ * Endpoints are exact by construction — every original mark day reappears with
+ * its exact value (`t = 0` and `t = 1` of each segment) — so switching smoothing
+ * on never moves a mark-day valuation, only fills the gaps between them. Only the
+ * span `[firstMark, lastMark]` is densified; before/after the marks the caller's
+ * existing carry-forward windowing still applies. Input must be ascending by
+ * date with unique days (the value-point service guarantees both).
+ */
+export function interpolateDailyMarks(points: readonly ManualValuePoint[]): ManualValuePoint[] {
+  if (points.length <= 1) return points.map((p) => ({ date: p.date, value: p.value }));
+
+  const out: ManualValuePoint[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const aMs = dayStartMs(a.date);
+    const bMs = dayStartMs(b.date);
+    const spanDays = Math.round((bMs - aMs) / MS_PER_DAY);
+    // Emit the segment's left endpoint exactly, then each interior day.
+    out.push({ date: a.date, value: a.value });
+    for (let k = 1; k < spanDays; k += 1) {
+      out.push({
+        date: msToDay(aMs + k * MS_PER_DAY),
+        value: a.value + ((b.value - a.value) * k) / spanDays,
+      });
+    }
+  }
+  // The final mark closes the series exactly.
+  const last = points[points.length - 1]!;
+  out.push({ date: last.date, value: last.value });
+  return out;
 }
 
 export function createManualProvider(deps: CreateManualProviderDeps): AssetProvider {
@@ -161,8 +208,13 @@ export function createManualProvider(deps: CreateManualProviderDeps): AssetProvi
     _interval: HistoryInterval,
   ): Promise<PricePoint[]> {
     const asset = await requireAsset(ref);
-    const points = await source.valuePoints(asset.id);
-    if (points.length === 0) return [];
+    const marks = await source.valuePoints(asset.id);
+    if (marks.length === 0) return [];
+
+    // Value smoothing (V3-P2) densifies the marks into a daily interpolated
+    // series before windowing; off (the default) leaves the sparse marks exactly
+    // as stored, so the step/carry-forward series stays byte-identical.
+    const points = asset.smoothing ? interpolateDailyMarks(marks) : marks;
 
     const end = now();
     const startMs = rangeStartMs(end, range);

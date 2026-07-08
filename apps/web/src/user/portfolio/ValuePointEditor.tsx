@@ -1,20 +1,30 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { ValuePoint } from '@bettertrack/contracts';
+import {
+  CUSTOM_ASSET_CATEGORIES,
+  type CustomAssetCategory,
+  type UpdateCustomAssetRequest,
+  type ValuePoint,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { getValuePoints, putValuePoints } from '../../lib/portfolioApi';
+import { getValuePoints, putValuePoints, updateCustomAsset } from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
+import { customCategoryLabels } from './customCategories';
 
 export interface ValuePointEditorAsset {
   id: string;
   symbol: string;
   name: string;
   currency: string;
+  /** Current catalog category (V3-P2), editable here. */
+  category: CustomAssetCategory;
+  /** Current value-smoothing toggle (V3-P2), editable here. */
+  smoothing: boolean;
 }
 
 export interface ValuePointEditorProps {
@@ -85,8 +95,12 @@ function validate(t: TranslateFn, rows: EditRow[]): { points?: ValuePoint[]; err
 export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointEditorProps) {
   const t = useT();
   const [rows, setRows] = useState<EditRow[]>([]);
+  const [category, setCategory] = useState<CustomAssetCategory>(asset.category);
+  const [smoothing, setSmoothing] = useState(asset.smoothing);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const categoryLabels = customCategoryLabels(t);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['custom-asset', asset.id, 'value-points'],
@@ -121,6 +135,14 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
     setSaving(true);
     setError(null);
     try {
+      // Persist any metadata change first (category / smoothing), then replace the
+      // value points. Both must land before the page refetches.
+      const patch: UpdateCustomAssetRequest = {};
+      if (category !== asset.category) patch.category = category;
+      if (smoothing !== asset.smoothing) patch.smoothing = smoothing;
+      if (patch.category !== undefined || patch.smoothing !== undefined) {
+        await updateCustomAsset(asset.id, patch);
+      }
       await putValuePoints(asset.id, points!);
       onSaved();
       onClose();
@@ -146,6 +168,34 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
         <Alert tone="error">{t('portfolio.valuePoint.loadError')}</Alert>
       ) : (
         <div className="flex flex-col gap-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-neutral-300">
+              {t('portfolio.customInvestment.categoryLabel')}
+            </span>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as CustomAssetCategory)}
+              aria-label={t('portfolio.customInvestment.categoryLabel')}
+              className={inputClass}
+            >
+              {CUSTOM_ASSET_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {categoryLabels[c]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-2 text-sm text-neutral-300">
+            <input
+              type="checkbox"
+              checked={smoothing}
+              onChange={(e) => setSmoothing(e.target.checked)}
+              className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
+            />
+            {t('portfolio.valuePoint.smoothingLabel')}
+          </label>
+
           {rows.length === 0 ? (
             <p className="text-sm text-neutral-500">{t('portfolio.valuePoint.empty')}</p>
           ) : (
