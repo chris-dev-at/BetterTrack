@@ -28,8 +28,8 @@ import type { LiveModeService } from '../services/liveMode';
 
 /**
  * Realtime gateway (PROJECTPLAN.md §4.5, V3-P7a): a Socket.IO server at
- * {@link REALTIME_PATH} on the API origin, authenticated via the session cookie
- * on handshake, bridging the typed domain event bus into socket rooms:
+ * {@link REALTIME_PATH} on the API origin, bridging the typed domain event bus
+ * into socket rooms:
  *
  *   - `user:{id}`      — joined automatically at connect, never on request; a
  *                         socket only ever sits in its OWN user room.
@@ -37,6 +37,26 @@ import type { LiveModeService } from '../services/liveMode';
  *                         are not per-user data).
  *   - `portfolio:{id}` — shared-view invalidation; joins enforce owner-or-shared
  *                         access, recomputed at join time (§6.9).
+ *
+ * Handshake auth accepts EITHER of two credentials, resolved to the same user id
+ * that then owns the socket's `user:{id}` room:
+ *
+ *   - the **session cookie** — the web SPA path, resolved through the auth
+ *     service's cookie→user resolution (verbatim the HTTP session path); or
+ *   - a **bearer token** — the mobile app path (§6.13, §14). It holds no cookie,
+ *     so it presents a personal API key (`btk_…`) or a delegated OAuth access
+ *     token (`bto_…`) via the socket.io auth payload (`handshake.auth.token`)
+ *     and/or an `Authorization: Bearer …` upgrade header. The token is validated
+ *     through the SAME service the HTTP bearer middleware uses (revocation,
+ *     expiry and consent-scope clamping included), so socket auth can never
+ *     drift from — or widen — the HTTP surface. The gateway pushes invalidation
+ *     signals only (no data crosses the socket, §13.3), so an authenticated
+ *     user in their own room is the correct bar; per-event scope filtering would
+ *     over-engineer a socket that already carries nothing sensitive.
+ *
+ * Both transports are supported: a client may open the websocket transport
+ * directly (the mobile app dials `transport=websocket` with no prior polling
+ * handshake) or take the polling→websocket upgrade the web SPA performs.
  *
  * The gateway is a pure bus subscriber — producers are untouched — and a pure
  * enhancement layer: with `REALTIME_ENABLED=false` {@link RealtimeGateway.attach}
@@ -66,6 +86,18 @@ export interface RealtimeGatewayDeps {
   resolveSession(
     sessionId: string,
     userAgent?: string | null,
+  ): Promise<{ id: string; role: 'user' | 'admin'; mustChangePassword: boolean } | null>;
+  /**
+   * Bearer token → user resolution — the SAME path the HTTP bearer middleware
+   * uses ({@link import('../http/middleware/bearerAuth').loadBearerAuth}): a
+   * personal API key (`btk_…`) or a delegated OAuth access token (`bto_…`), with
+   * revocation, expiry and consent-scope clamping enforced inside the service.
+   * The mobile app authenticates its socket with a bearer because it holds no
+   * session cookie (§6.13, §14). Returns null for a missing, malformed, unknown,
+   * revoked or expired token — indistinguishable, exactly like the HTTP 401.
+   */
+  resolveBearer(
+    token: string,
   ): Promise<{ id: string; role: 'user' | 'admin'; mustChangePassword: boolean } | null>;
   /** Owner-or-shared access check backing `portfolio:{id}` joins (§6.9). */
   canViewPortfolio(userId: string, portfolioId: string): Promise<boolean>;
@@ -106,8 +138,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   // resolves identically to an HTTP request.
   const parseCookies: RequestHandler = cookieParser(config.sessionSecrets);
 
+  type ResolvedUser = { id: string; role: 'user' | 'admin'; mustChangePassword: boolean };
+  const BEARER_PREFIX = 'Bearer ';
+
   /** Resolve the handshake's session cookie to a user-app account, or null. */
-  async function authenticate(socket: Socket): Promise<string | null> {
+  async function resolveCookieUser(socket: Socket): Promise<ResolvedUser | null> {
     const request = socket.request as Parameters<RequestHandler>[0];
     await new Promise<void>((resolve, reject) => {
       parseCookies(request, {} as Parameters<RequestHandler>[1], (err?: unknown) =>
@@ -118,15 +153,48 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       config.cookie.name
     ];
     if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
+    return deps.resolveSession(sessionId, socket.handshake.headers['user-agent'] ?? null);
+  }
 
-    const user = await deps.resolveSession(
-      sessionId,
-      socket.handshake.headers['user-agent'] ?? null,
-    );
+  /**
+   * The bearer token the mobile app presents (§6.13, §14). The socket.io auth
+   * payload (`handshake.auth.token`) is preferred, falling back to an
+   * `Authorization: Bearer …` upgrade header — accept EITHER, mirroring how the
+   * client sends both best-effort. Null when neither carries a token.
+   */
+  function bearerTokenOf(socket: Socket): string | null {
+    const auth = socket.handshake.auth as Record<string, unknown> | undefined;
+    const fromPayload = auth?.token;
+    if (typeof fromPayload === 'string' && fromPayload.length > 0) return fromPayload;
+    const header = socket.handshake.headers.authorization;
+    if (typeof header === 'string' && header.startsWith(BEARER_PREFIX)) {
+      const token = header.slice(BEARER_PREFIX.length).trim();
+      if (token.length > 0) return token;
+    }
+    return null;
+  }
+
+  /** Resolve the handshake's bearer token to a user-app account, or null. */
+  async function resolveBearerUser(socket: Socket): Promise<ResolvedUser | null> {
+    const token = bearerTokenOf(socket);
+    if (!token) return null;
+    return deps.resolveBearer(token);
+  }
+
+  /**
+   * Resolve the handshake to a user id — the session cookie (web SPA) first,
+   * then a bearer token (mobile). The two are mutually exclusive in practice
+   * (the SPA holds only a cookie, the app only a token); trying the cookie first
+   * keeps the web path byte-identical and never touches the bearer services for
+   * a cookie request. Both credentials pass through ONE gate below.
+   */
+  async function authenticate(socket: Socket): Promise<string | null> {
+    const user = (await resolveCookieUser(socket)) ?? (await resolveBearerUser(socket));
     if (!user) return null;
-    // Mirror the user-app HTTP surface: admin-kind accounts have no user
-    // surface (§3, requireUser) and a forced-password-change session is locked
-    // out of everything except the change flow (§6.1).
+    // Mirror the user-app HTTP surface: admin-kind accounts have no user surface
+    // (§3, requireUser) and a forced-password-change principal is locked out of
+    // everything except the change flow (§6.1). Applied identically to cookie-
+    // and bearer-authenticated sockets so socket auth never widens HTTP auth.
     if (user.role !== 'user' || user.mustChangePassword) return null;
     return user.id;
   }
@@ -322,6 +390,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       io = new SocketIOServer(server, {
         path: REALTIME_PATH,
         serveClient: false,
+        // Accept a direct websocket first-connect (the mobile app dials the
+        // websocket transport with no prior polling handshake) AND the
+        // polling→websocket upgrade the web SPA's socket.io-client performs.
+        // This is the socket.io default, pinned explicitly so websocket-first is
+        // a supported, tested path that never rides on a library default (§4.5).
+        transports: ['polling', 'websocket'],
         // Engine.IO handles its own CORS (the Express middleware never sees
         // /ws): same credentialed allowlist as the API (§4.6, §10).
         cors: { origin: config.corsOrigins, credentials: true },
