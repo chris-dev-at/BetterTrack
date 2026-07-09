@@ -192,6 +192,14 @@ const componentSchemas = {
   UpdateProfileSettingsRequest: contracts.updateProfileSettingsRequestSchema,
   PublicProfileResponse: contracts.publicProfileResponseSchema,
 
+  // Friend chat (§13.3 V3-P8)
+  ChatConversationListResponse: contracts.chatConversationListResponseSchema,
+  OpenConversationRequest: contracts.openConversationRequestSchema,
+  ConversationResponse: contracts.conversationResponseSchema,
+  ChatThreadResponse: contracts.chatThreadResponseSchema,
+  SendChatMessageRequest: contracts.sendChatMessageRequestSchema,
+  SendChatMessageResponse: contracts.sendChatMessageResponseSchema,
+
   // Notifications & settings (§6.10, §6.11, §13.2 V2-P9)
   MarkReadRequest: contracts.markReadRequestSchema,
   NotificationListResponse: contracts.notificationListResponseSchema,
@@ -1392,7 +1400,8 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/social/my-shared',
     tag: 'Social',
-    summary: 'Everything I currently share — portfolios, conglomerates, watchlists.',
+    summary:
+      'My sharing surface — every portfolio I own (private included), plus shared conglomerates + watchlists.',
     status: 200,
     response: R.MySharedResponse,
   },
@@ -1476,6 +1485,55 @@ const endpoints: EndpointDef[] = [
     params: contracts.profileItemParamSchema,
     status: 200,
     response: R.SharedLinkResponse,
+  },
+
+  // Friend chat (§13.3 V3-P8)
+  {
+    method: 'get',
+    path: '/chat/conversations',
+    tag: 'Chat',
+    summary: 'The caller’s 1:1 conversations with unread counts, newest-active first.',
+    status: 200,
+    response: R.ChatConversationListResponse,
+  },
+  {
+    method: 'post',
+    path: '/chat/conversations',
+    tag: 'Chat',
+    summary: 'Open (or resolve) the conversation with a friend; a non-friend 404s (never data).',
+    body: R.OpenConversationRequest,
+    status: 201,
+    response: R.ConversationResponse,
+  },
+  {
+    method: 'get',
+    path: '/chat/conversations/{conversationId}/messages',
+    tag: 'Chat',
+    summary: 'A page of a thread (newest-first) + its summary. Non-participant 404s.',
+    params: contracts.conversationIdParamSchema,
+    query: contracts.chatThreadQuerySchema,
+    status: 200,
+    response: R.ChatThreadResponse,
+  },
+  {
+    method: 'post',
+    path: '/chat/conversations/{conversationId}/messages',
+    tag: 'Chat',
+    summary:
+      'Send text and/or a share chip. Non-participant 404s; a former friend 403s (thread closed).',
+    params: contracts.conversationIdParamSchema,
+    body: R.SendChatMessageRequest,
+    status: 201,
+    response: R.SendChatMessageResponse,
+  },
+  {
+    method: 'post',
+    path: '/chat/conversations/{conversationId}/read',
+    tag: 'Chat',
+    summary: 'Clear the caller’s unread badge for a thread (idempotent).',
+    params: contracts.conversationIdParamSchema,
+    status: 200,
+    response: R.OkResponse,
   },
 
   // Notifications (§6.10)

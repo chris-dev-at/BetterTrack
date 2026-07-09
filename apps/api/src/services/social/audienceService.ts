@@ -117,6 +117,19 @@ export interface AudienceService {
     kind: ShareKind,
     subjectId: string,
   ): Promise<{ name: string } | undefined>;
+  /**
+   * Whether `ownerId` owns the (kind, subjectId) subject. Reused by share-in-chat
+   * (§13.3 V3-P8) so a sender can only chip an item they own AND the sender sees
+   * their own chip as viewable — never a substitute for the audience check on a
+   * non-owner viewer.
+   */
+  ownsSubject(ownerId: string, kind: ShareKind, subjectId: string): Promise<boolean>;
+  /**
+   * The subject's display name, or `undefined` when it no longer exists. Only
+   * ever called AFTER ownership or an audience authorization has passed (§13.3
+   * V3-P8 chip resolution), so it discloses nothing on its own.
+   */
+  subjectIdentity(kind: ShareKind, subjectId: string): Promise<{ name: string } | undefined>;
   /** Drop a subject's audience row on subject deletion (hygiene; joins already gate). */
   clearForSubject(kind: ShareKind, subjectId: string): Promise<void>;
 }
@@ -235,6 +248,10 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
 
     authorizePublicItemRead: (ownerId, kind, subjectId) =>
       repo.authorizePublicItemRead(ownerId, kind, subjectId),
+
+    ownsSubject: (ownerId, kind, subjectId) => repo.ownsSubject(ownerId, kind, subjectId),
+
+    subjectIdentity: (kind, subjectId) => repo.getSubjectIdentity(kind, subjectId),
 
     clearForSubject: (kind, subjectId) => repo.clearForSubject(kind, subjectId),
   };

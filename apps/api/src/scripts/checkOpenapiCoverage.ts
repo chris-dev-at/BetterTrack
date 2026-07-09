@@ -105,6 +105,7 @@ function buildInertContext(): AppContext {
     conglomerate: inertService('conglomerate'),
     backtest: inertService('backtest'),
     social: inertService('social'),
+    chat: inertService('chat'),
     notifications: inertService('notifications'),
     notificationSettings: inertService('notificationSettings'),
     accountSettings: inertService('accountSettings'),

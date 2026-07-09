@@ -31,6 +31,7 @@ export interface NotificationEmailCopy {
   friendRequest: { subject: string; heading: string; body: string; button: string };
   friendAccepted: { subject: string; heading: string; body: string; button: string };
   portfolioShared: { subject: string; heading: string; body: string; button: string };
+  chatMessage: { subject: string; heading: string; body: string; button: string };
   /** Alert body sentence is supplied by the caller (the same phrasing as the bell). */
   alertTriggered: { subject: string; heading: string; button: string };
 }
@@ -57,6 +58,12 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       heading: 'Portfolio shared with you',
       body: '{actor} shared a portfolio with friends on BetterTrack. It is now visible to you under Shared With Me.',
       button: 'View shared portfolio',
+    },
+    chatMessage: {
+      subject: 'New message from {actor}',
+      heading: 'New message',
+      body: '{actor} sent you a new message on BetterTrack.',
+      button: 'Open chat',
     },
     alertTriggered: {
       subject: 'Price alert: {symbol}',
@@ -85,6 +92,12 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       heading: 'Portfolio mit dir geteilt',
       body: '{actor} hat ein Portfolio mit Freunden auf BetterTrack geteilt. Es ist jetzt unter „Mit mir geteilt“ sichtbar.',
       button: 'Geteiltes Portfolio ansehen',
+    },
+    chatMessage: {
+      subject: 'Neue Nachricht von {actor}',
+      heading: 'Neue Nachricht',
+      body: '{actor} hat dir eine neue Nachricht auf BetterTrack gesendet.',
+      button: 'Chat öffnen',
     },
     alertTriggered: {
       subject: 'Preisalarm: {symbol}',

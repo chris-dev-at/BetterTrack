@@ -74,10 +74,13 @@ function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }:
 }
 
 /**
- * My Shared Items (§6.9, §13.3 V3-P5/P6) — everything the caller currently shares
- * (portfolios, conglomerates, named watchlists), each with a per-item "who can see
- * this" summary and the reusable, elevated AudiencePicker to change or stop the
- * share. Every control here is wired to `PUT /social/audience/:kind/:subjectId`.
+ * My Shared Items (§6.9, §13.3 V3-P5/P6) — the caller's sharing-management surface.
+ * EVERY portfolio the caller owns is listed here (#377), including private ones,
+ * so each has its own entry point to the reusable AudiencePicker — a secondary
+ * portfolio is as shareable as the default, and a private one is simply shown
+ * dimmed until shared. Conglomerates and named watchlists appear once shared. Each
+ * row carries a per-item "who can see this" summary; every control here is wired
+ * to `PUT /social/audience/:kind/:subjectId`.
  */
 export function MySharedItemsPage() {
   const t = useT();
@@ -123,6 +126,10 @@ export function MySharedItemsPage() {
 
   return (
     <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-lg font-semibold text-neutral-100">{t('social.myShared.title')}</h2>
+        <p className="text-sm text-neutral-500">{t('social.myShared.subtitle')}</p>
+      </div>
       {data.portfolios.length > 0 ? (
         <section className="flex flex-col gap-2">
           <SectionHeading>{t('social.kind.portfolios')}</SectionHeading>

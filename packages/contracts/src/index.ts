@@ -10,6 +10,7 @@ export * from './portfolio';
 export * from './conglomerate';
 export * from './backtest';
 export * from './social';
+export * from './chat';
 export * from './notifications';
 export * from './settings';
 export * from './alerts';

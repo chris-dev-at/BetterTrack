@@ -12,6 +12,7 @@ import {
   realtimeLiveWatchRequestSchema,
   realtimeRoomRequestSchema,
   type AssetRef,
+  type RealtimeChatMessage,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
   type RealtimePortfolioChanged,
@@ -295,6 +296,22 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           .to(userRoom(event.userId))
           .to(portfolioRoom(event.portfolioId))
           .emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
+      }),
+    );
+    unsubscribers.push(
+      await bus.subscribe('chat.message', (event) => {
+        // → the RECIPIENT's own room only (§13.3 V3-P8). A lightweight
+        // invalidation signal: the body/chip never cross here, so the client's
+        // thread refetch re-resolves the chip through the enforcement layer.
+        // Independent of the notification matrix — a muted chat.message still
+        // arrives in the thread.
+        const payload: RealtimeChatMessage = {
+          conversationId: event.conversationId,
+          messageId: event.messageId,
+          senderId: event.senderId,
+          occurredAt: event.occurredAt,
+        };
+        server.to(userRoom(event.userId)).emit(REALTIME_SERVER_EVENTS.chatMessage, payload);
       }),
     );
   }

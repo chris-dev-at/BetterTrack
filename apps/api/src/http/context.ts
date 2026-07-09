@@ -18,6 +18,7 @@ import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createChatRepository } from '../data/repositories/chatRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
@@ -55,6 +56,7 @@ import {
 } from '../services/conglomerate/conglomerateService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
+import { createChatService, type ChatService } from '../services/chat';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createAudienceService } from '../services/social/audienceService';
 import {
@@ -128,6 +130,8 @@ export interface AppContext {
   backtest: BacktestService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
   social: SocialService;
+  /** 1:1 friend chat — conversations, threads, unread + share-in-chat (§13.3 V3-P8). */
+  chat: ChatService;
   /** User-scoped notification read/mark-read — the bell + Settings list (§6.10). */
   notifications: NotificationService;
   /** Per-user notification type × channel matrix — Settings → Notifications (§6.10, §6.11). */
@@ -410,6 +414,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
+  // routes through the SAME audience-enforcement layer (#332) as every other
+  // social read, and `asset` chips through the §10 asset-visibility rule, so a
+  // chip can never widen access. Publishes `chat.message` for the gateway push
+  // (in-thread delivery) and the notification dispatcher (matrix-routed bell/email).
+  const chat = createChatService({
+    repo: createChatRepository(db),
+    friendship: friendshipRepo,
+    audience,
+    assets: assetRepo,
+    events,
+    logger,
+  });
+
   // Notification read/mark-read (§6.10): user-scoped over the dispatcher's rows.
   const notificationRepo = createNotificationRepository(db);
   const notifications = createNotificationService({ repo: notificationRepo });
@@ -495,6 +513,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     conglomerate,
     backtest: backtestPreview,
     social,
+    chat,
     notifications,
     notificationSettings,
     accountSettings,

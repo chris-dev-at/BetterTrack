@@ -954,6 +954,89 @@ export const sharedItemActivityPrefs = pgTable(
   ],
 );
 
+// --- Friend chat (§13.3 V3-P8) ----------------------------------------------
+
+/**
+ * A chat share-chip's target kind. The three §13.3 shareable kinds resolve
+ * through the audience-enforcement layer; `asset` is a global market/custom
+ * reference resolved through the §10 asset-visibility rule.
+ */
+export const chatChipKindEnum = pgEnum('chat_chip_kind', [
+  'asset',
+  'portfolio',
+  'conglomerate',
+  'watchlist',
+]);
+
+/**
+ * 1:1 friend conversations (§13.3 V3-P8). One row per friend pair, stored with
+ * the canonical ordering `user_a < user_b` (like {@link friendships}) so a pair
+ * maps to a single conversation regardless of who opened it — the unique index
+ * makes "one conversation per pair" a schema invariant.
+ *
+ * Unread is **per-participant** and derived, not a stored counter: each side's
+ * `*_last_read_at` marks how far they've read, and the caller's unread count is
+ * the messages after their marker not sent by them (computed at list/thread
+ * time, so it always survives a reload). `last_message_at` is denormalized for
+ * cheap newest-first list ordering (null until the first message).
+ */
+export const chatConversations = pgTable(
+  'chat_conversations',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userA: uuid('user_a')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    userB: uuid('user_b')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // How far each side has read — the derived-unread markers (never a counter).
+    userALastReadAt: timestamp('user_a_last_read_at', { withTimezone: true }),
+    userBLastReadAt: timestamp('user_b_last_read_at', { withTimezone: true }),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('chat_conversations_pair_unique').on(t.userA, t.userB),
+    index('chat_conversations_user_a_idx').on(t.userA),
+    index('chat_conversations_user_b_idx').on(t.userB),
+  ],
+);
+
+/**
+ * One message in a conversation (§13.3 V3-P8). Carries text, a share chip, or
+ * both — a chip is stored as a bare `(chip_kind, chip_subject_id)` REFERENCE
+ * (polymorphic, no FK, mirroring {@link shareAudiences}), never a snapshot of the
+ * item, so every viewer's chip is re-resolved through the enforcement layer at
+ * read time and nothing can leak or go stale. The CHECK guarantees a message is
+ * never empty (text or chip). UUIDv7 ids give newest-first keyset pagination.
+ */
+export const chatMessages = pgTable(
+  'chat_messages',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => chatConversations.id, { onDelete: 'cascade' }),
+    senderId: uuid('sender_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    body: text('body'),
+    chipKind: chatChipKindEnum('chip_kind'),
+    chipSubjectId: uuid('chip_subject_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('chat_messages_conversation_idx').on(t.conversationId, t.id),
+    // A message is text, a chip, or both — never empty; and a chip is all-or-nothing.
+    check('chat_messages_not_empty', sql`${t.body} IS NOT NULL OR ${t.chipKind} IS NOT NULL`),
+    check(
+      'chat_messages_chip_complete',
+      sql`(${t.chipKind} IS NULL) = (${t.chipSubjectId} IS NULL)`,
+    ),
+  ],
+);
+
 /**
  * OAuth 2.0 provider — "API access as a product" part 2 (PROJECTPLAN.md §6.13,
  * §14, V2-P12). Authorization-code + PKCE, built on the personal-API-key model:

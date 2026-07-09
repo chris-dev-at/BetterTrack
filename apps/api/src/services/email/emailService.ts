@@ -4,6 +4,7 @@ import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
+  chatMessageEmail,
   friendAcceptedEmail,
   friendRequestEmail,
   inviteEmail,
@@ -112,6 +113,13 @@ export interface EmailService {
     body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: a friend sent `userId` a chat message (§13.3 V3-P8). No message content. */
+  sendChatMessage(params: {
+    to: string;
+    userId: string;
+    actorUsername: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
 }
 
 export interface EmailServiceDeps {
@@ -135,7 +143,8 @@ type EmailTemplateKind =
   | 'friend_request'
   | 'friend_accepted'
   | 'portfolio_shared'
-  | 'alert_triggered';
+  | 'alert_triggered'
+  | 'chat_message';
 
 /** Coarse, secret-free error tag for logs/audit. Never the raw SMTP response. */
 function errorCode(err: unknown): string {
@@ -298,6 +307,14 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         {
           userId,
         },
+      ),
+
+    sendChatMessage: ({ to, userId, actorUsername, locale }) =>
+      deliver(
+        'chat_message',
+        to,
+        chatMessageEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
       ),
   };
 }

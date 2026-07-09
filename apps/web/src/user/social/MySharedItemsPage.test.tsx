@@ -82,4 +82,38 @@ describe('MySharedItemsPage', () => {
     // The reusable AudiencePicker renders the audience ladder.
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
   });
+
+  test('lists a private (non-shared) portfolio so a secondary one can be shared here (#377)', async () => {
+    const SECONDARY_ID = '00000000-0000-0000-0000-000000000002';
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [
+        { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'all_friends', friendCount: 0 },
+        { portfolioId: SECONDARY_ID, name: 'Trading', audience: 'private', friendCount: 0 },
+      ],
+      conglomerates: [],
+      watchlists: [],
+    });
+    // The AudiencePicker seeds from the subject's current (private) audience.
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: SECONDARY_ID,
+      audience: 'private',
+      friendIds: [],
+      link: { active: false, createdAt: null },
+    });
+    renderPage();
+
+    // The private secondary portfolio is listed with the dimmed "Private" badge —
+    // the entry point that used to be missing, so it can now be shared.
+    await waitFor(() => expect(screen.getByText('Trading')).toBeInTheDocument());
+    expect(screen.getByText('Private')).toBeInTheDocument();
+
+    // Its own Share control opens the picker for THAT portfolio (private selected).
+    const user = userEvent.setup();
+    const shareButtons = screen.getAllByRole('button', { name: /share/i });
+    await user.click(shareButtons[shareButtons.length - 1]!);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: /only me/i })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
+  });
 });
