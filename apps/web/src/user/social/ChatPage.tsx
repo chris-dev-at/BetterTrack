@@ -191,6 +191,9 @@ function ConversationRow({
 }) {
   const t = useT();
   const unread = convo.unreadCount > 0;
+  // `user: null` = the other account was deleted (#362): the thread stays
+  // readable (anonymized) and renders under the localized placeholder name.
+  const displayName = convo.user?.username ?? t('social.chat.deletedUser');
   return (
     <button
       type="button"
@@ -200,16 +203,17 @@ function ConversationRow({
         active ? 'bg-neutral-800' : 'hover:bg-neutral-800/50',
       )}
     >
-      <Avatar name={convo.user.username} size="md" />
+      <Avatar name={displayName} size="md" />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-2">
           <span
             className={cx(
-              'truncate text-sm text-neutral-100',
+              'truncate text-sm',
+              convo.user ? 'text-neutral-100' : 'italic text-neutral-400',
               unread ? 'font-bold' : 'font-semibold',
             )}
           >
-            {convo.user.username}
+            {displayName}
           </span>
           {convo.lastMessageAt ? (
             <span className="ml-auto shrink-0 text-[0.65rem] text-neutral-500">
@@ -277,7 +281,13 @@ function NewChatDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ConversationListPane({ selectedUserId }: { selectedUserId: string | undefined }) {
+function ConversationListPane({
+  selectedUserId,
+  selectedConversationId,
+}: {
+  selectedUserId: string | undefined;
+  selectedConversationId: string | undefined;
+}) {
   const t = useT();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -321,9 +331,19 @@ function ConversationListPane({ selectedUserId }: { selectedUserId: string | und
             <li key={convo.id}>
               <ConversationRow
                 convo={convo}
-                active={convo.user.id === selectedUserId}
+                active={
+                  convo.user
+                    ? convo.user.id === selectedUserId
+                    : convo.id === selectedConversationId
+                }
                 selfId={user?.id}
-                onClick={() => navigate(`/social/chat/${convo.user.id}`)}
+                // A deleted partner has no user id to route by — the thread
+                // deep-links by conversation id instead (#362).
+                onClick={() =>
+                  navigate(
+                    convo.user ? `/social/chat/${convo.user.id}` : `/social/chat/c/${convo.id}`,
+                  )
+                }
               />
             </li>
           ))}
@@ -474,16 +494,29 @@ function MessageComposer({
   );
 }
 
-function ChatThreadPane({ userId }: { userId: string }) {
+function ChatThreadPane({
+  userId,
+  fixedConversationId,
+}: {
+  userId?: string;
+  fixedConversationId?: string;
+}) {
   const t = useT();
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   // Resolve (or open) the conversation with this friend. A non-friend 404s.
+  // A thread deep-linked by conversation id (a deleted partner, #362) skips the
+  // open call — its summary rides on the thread response instead.
   const convoQuery = useQuery<ChatConversation, Error>({
-    queryKey: ['chat', 'conversation-for-user', userId],
-    queryFn: () => openConversation(userId),
+    queryKey: userId
+      ? ['chat', 'conversation-for-user', userId]
+      : ['chat', 'conversation-by-id', fixedConversationId],
+    queryFn: () =>
+      userId
+        ? openConversation(userId)
+        : getThread(fixedConversationId!, { limit: 1 }).then((r) => r.conversation),
     retry: false,
   });
   const conversationId = convoQuery.data?.id;
@@ -551,6 +584,7 @@ function ChatThreadPane({ userId }: { userId: string }) {
   }
 
   const other = convoQuery.data!.user;
+  const otherName = other?.username ?? t('social.chat.deletedUser');
 
   return (
     <div className="flex h-full flex-col rounded-xl border border-neutral-800 bg-neutral-900/40">
@@ -562,8 +596,15 @@ function ChatThreadPane({ userId }: { userId: string }) {
         >
           ←
         </Link>
-        <Avatar name={other.username} size="sm" />
-        <span className="text-sm font-semibold text-neutral-100">{other.username}</span>
+        <Avatar name={otherName} size="sm" />
+        <span
+          className={cx(
+            'text-sm font-semibold',
+            other ? 'text-neutral-100' : 'italic text-neutral-400',
+          )}
+        >
+          {otherName}
+        </span>
       </div>
 
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
@@ -580,9 +621,9 @@ function ChatThreadPane({ userId }: { userId: string }) {
 
         {messages.length === 0 && !threadQuery.isLoading ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-            <Avatar name={other.username} size="lg" />
+            <Avatar name={otherName} size="lg" />
             <p className="text-base font-semibold text-neutral-100">
-              {t('social.chat.sayHi', { username: other.username })}
+              {t('social.chat.sayHi', { username: otherName })}
             </p>
             <p className="max-w-xs text-sm text-neutral-500">{t('social.chat.sayHiBody')}</p>
           </div>
@@ -600,13 +641,21 @@ function ChatThreadPane({ userId }: { userId: string }) {
         </div>
       ) : null}
 
-      <MessageComposer
-        disabled={!conversationId || sendMutation.isPending}
-        onSendText={(body) => sendMutation.mutate({ body })}
-        onSendChip={(item) =>
-          sendMutation.mutate({ chip: { kind: item.kind, subjectId: item.subjectId } })
-        }
-      />
+      {other ? (
+        <MessageComposer
+          disabled={!conversationId || sendMutation.isPending}
+          onSendText={(body) => sendMutation.mutate({ body })}
+          onSendChip={(item) =>
+            sendMutation.mutate({ chip: { kind: item.kind, subjectId: item.subjectId } })
+          }
+        />
+      ) : (
+        // The partner deleted their account (#362): history stays readable, the
+        // thread is closed to new messages — mirror the server's 403.
+        <p className="border-t border-neutral-800 px-4 py-3 text-center text-xs text-neutral-500">
+          {t('social.chat.deletedClosed')}
+        </p>
+      )}
     </div>
   );
 }
@@ -623,7 +672,10 @@ function ChatThreadPane({ userId }: { userId: string }) {
 export function ChatPage() {
   const t = useT();
   const queryClient = useQueryClient();
-  const { userId } = useParams<{ userId?: string }>();
+  // `/social/chat/:userId` opens by friend; `/social/chat/c/:conversationId`
+  // opens a thread directly — the only path to one whose partner was deleted (#362).
+  const { userId, conversationId } = useParams<{ userId?: string; conversationId?: string }>();
+  const selected = userId ?? conversationId;
 
   // A new-message push for the recipient → refetch the list + the affected thread.
   useRealtimeEvent(REALTIME_SERVER_EVENTS.chatMessage, (payload) => {
@@ -643,12 +695,12 @@ export function ChatPage() {
       </div>
 
       <div className="flex h-[70vh] gap-4">
-        <aside className={cx('w-full shrink-0 md:w-80', userId && 'hidden md:block')}>
-          <ConversationListPane selectedUserId={userId} />
+        <aside className={cx('w-full shrink-0 md:w-80', selected && 'hidden md:block')}>
+          <ConversationListPane selectedUserId={userId} selectedConversationId={conversationId} />
         </aside>
-        <section className={cx('min-w-0 flex-1', !userId && 'hidden md:block')}>
-          {userId ? (
-            <ChatThreadPane key={userId} userId={userId} />
+        <section className={cx('min-w-0 flex-1', !selected && 'hidden md:block')}>
+          {selected ? (
+            <ChatThreadPane key={selected} userId={userId} fixedConversationId={conversationId} />
           ) : (
             <div className="flex h-full items-center justify-center rounded-xl border border-neutral-800 bg-neutral-900/40 p-6">
               <EmptyState

@@ -32,6 +32,15 @@ export const TWO_FACTOR_ACCOUNT_NAMESPACE = 'two_factor_account';
 export const PIN_TOKEN_ACCOUNT_NAMESPACE = 'pin_token_account';
 
 /**
+ * Per-account brute-force throttle for the self-service account-deletion
+ * re-auth (§13.4 V4-P2c, #362). Deletion re-verifies a credential (password /
+ * TOTP / recovery code); wrong attempts accrue here — independent of the login
+ * and 2FA counters, and of the per-IP HTTP limiter — so the deletion endpoint
+ * can never be a lighter-weight oracle for password or code brute-forcing.
+ */
+export const ACCOUNT_DELETE_NAMESPACE = 'account_delete_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

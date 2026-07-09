@@ -525,6 +525,11 @@
       "title": "Portfolio sharing",
       "description": "Sharing lives in the Social tab now. Choose who can see each of your portfolios there — every portfolio stays private until you share it.",
       "link": "Manage sharing in Social →"
+    },
+    "dangerZone": {
+      "title": "Danger zone",
+      "description": "Deleting your account permanently removes all of your data. This cannot be undone.",
+      "link": "Delete my account…"
     }
   },
   "portfolio": {
@@ -1318,7 +1323,9 @@
         "title": "Share in chat",
         "disclaimer": "Sending never widens access — a friend only sees it if it's already shared with them.",
         "empty": "You have nothing to share yet."
-      }
+      },
+      "deletedUser": "Deleted user",
+      "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable."
     }
   },
   "profile": {
@@ -1341,5 +1348,29 @@
     "publicBadge": "Public profile",
     "notAvailable": "This profile isn't available.",
     "emptyPublic": "This profile has no public items yet."
+  },
+  "deleteAccount": {
+    "title": "Delete your account",
+    "subtitle": "This permanently deletes your BetterTrack account and all data that belongs to it.",
+    "warning": {
+      "headline": "This cannot be undone. Deleting your account removes:",
+      "data": "All portfolios, transactions, cash sources, custom assets, tax records and reports",
+      "social": "Your friendships, shared items, watchlists, conglomerates, alerts and notifications",
+      "access": "Every session, API key and connected app — you are signed out everywhere immediately",
+      "chat": "Your identity in chats — messages you sent stay visible to your friends as “Deleted user”"
+    },
+    "confirmLabel": "Type your username ({username}) to confirm",
+    "passwordLabel": "Current password",
+    "codeLabel": "Authenticator code",
+    "useCode": "Use an authenticator code instead",
+    "usePassword": "Use your password instead",
+    "submit": "Delete my account permanently",
+    "submitting": "Deleting…",
+    "error": {
+      "confirmMismatch": "The username you typed does not match your account.",
+      "wrongPassword": "That password is incorrect.",
+      "wrongCode": "That code is incorrect or has expired.",
+      "tooMany": "Too many attempts. Please wait a moment and try again."
+    }
   }
 }

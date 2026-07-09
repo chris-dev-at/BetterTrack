@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type { ChatChipKind } from '@bettertrack/contracts';
 
@@ -20,26 +20,28 @@ import { chatConversations, chatMessages, users } from '../schema';
  *    sent by them, computed per query — so it always survives a reload.
  */
 
-/** The two participants of a conversation — the participant/friend gate reads this. */
+/** The two participants of a conversation — the participant/friend gate reads this.
+ * A `null` side is a deleted account (#362): the thread survives, anonymized. */
 export interface ConversationParticipants {
   id: string;
-  userA: string;
-  userB: string;
+  userA: string | null;
+  userB: string | null;
 }
 
 /** The newest message of a thread, for the conversation-list preview. */
 export interface ChatMessagePreviewRow {
-  senderId: string;
+  senderId: string | null;
   body: string | null;
   chipKind: ChatChipKind | null;
   createdAt: Date;
 }
 
-/** One conversation as seen by a viewer — the other party + derived unread + preview. */
+/** One conversation as seen by a viewer — the other party + derived unread + preview.
+ * `otherUserId`/`otherUsername` are `null` when the other account was deleted (#362). */
 export interface ChatConversationRow {
   id: string;
-  otherUserId: string;
-  otherUsername: string;
+  otherUserId: string | null;
+  otherUsername: string | null;
   unreadCount: number;
   lastMessage: ChatMessagePreviewRow | null;
   lastMessageAt: Date | null;
@@ -49,7 +51,7 @@ export interface ChatConversationRow {
 export interface ChatMessageRow {
   id: string;
   conversationId: string;
-  senderId: string;
+  senderId: string | null;
   body: string | null;
   chipKind: ChatChipKind | null;
   chipSubjectId: string | null;
@@ -112,25 +114,30 @@ export function createChatRepository(db: Database) {
       conversationId?: string,
     ): Promise<ChatConversationRow[]> {
       // The other participant, and the caller's own read marker, chosen by side.
-      const otherId = sql<string>`case when ${chatConversations.userA} = ${userId} then ${chatConversations.userB} else ${chatConversations.userA} end`;
+      // `otherId` is NULL when that account was deleted (#362) — the LEFT JOIN
+      // below keeps the (anonymized) conversation in the list regardless, and
+      // IS DISTINCT FROM keeps a deleted sender's messages counted as unread.
+      const otherId = sql<
+        string | null
+      >`case when ${chatConversations.userA} = ${userId} then ${chatConversations.userB} else ${chatConversations.userA} end`;
       const viewerLastRead = sql`case when ${chatConversations.userA} = ${userId} then ${chatConversations.userALastReadAt} else ${chatConversations.userBLastReadAt} end`;
       const unreadCount = sql<number>`(
         select count(*)::int from chat_messages cm
         where cm.conversation_id = ${chatConversations.id}
-          and cm.sender_id <> ${userId}
+          and cm.sender_id is distinct from ${userId}
           and (${viewerLastRead} is null or cm.created_at > ${viewerLastRead})
       )`;
 
       const rows = await db
         .select({
           id: chatConversations.id,
-          otherUserId: sql<string>`${otherId}`,
+          otherUserId: sql<string | null>`${otherId}`,
           otherUsername: users.username,
           unreadCount,
           lastMessageAt: chatConversations.lastMessageAt,
         })
         .from(chatConversations)
-        .innerJoin(users, sql`${users.id} = ${otherId}`)
+        .leftJoin(users, sql`${users.id} = ${otherId}`)
         .where(
           and(
             or(eq(chatConversations.userA, userId), eq(chatConversations.userB, userId)),
@@ -251,6 +258,18 @@ export function createChatRepository(db: Database) {
      * conversation they participate in, so it can never touch the other party's
      * marker or a conversation that isn't theirs. Idempotent.
      */
+    /**
+     * Drop conversations whose BOTH participants are gone (#362): once the last
+     * account of a pair is deleted (each side having been SET NULL by its FK),
+     * nobody can ever read the thread again — messages cascade with the row.
+     * Global + idempotent housekeeping, called after each account deletion.
+     */
+    async purgeOrphanedConversations(): Promise<void> {
+      await db
+        .delete(chatConversations)
+        .where(and(isNull(chatConversations.userA), isNull(chatConversations.userB)));
+    },
+
     async markRead(userId: string, conversationId: string): Promise<void> {
       await db
         .update(chatConversations)

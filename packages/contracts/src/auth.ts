@@ -383,3 +383,31 @@ export const inviteValidationResponseSchema = z.object({
   email: z.string().nullable(),
 });
 export type InviteValidationResponse = z.infer<typeof inviteValidationResponseSchema>;
+
+/**
+ * `DELETE /account` body — self-service account deletion (§13.4 V4-P2c, #362).
+ * Two independent server-side gates:
+ *  - **Typed confirmation:** `confirmUsername` must match the account's username
+ *    (case-insensitive) — the same guard the admin delete uses.
+ *  - **Re-auth:** the current `password`, or — for a 2FA-enrolled account — a
+ *    fresh authenticator `code` or an unused `recoveryCode`. Exactly-one is not
+ *    required (password wins when several are sent), but at least one must be
+ *    present or the request is rejected before any credential check.
+ *
+ * Callable with a session cookie (web) or a bearer holding `account:security`
+ * (the mobile in-app flow) — deletion is irreversible either way.
+ */
+export const deleteAccountRequestSchema = z
+  .object({
+    confirmUsername: z.string().trim().min(1).max(40),
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
+    code: z.string().trim().min(4).max(16).optional(),
+    /** An unused recovery code — consumed on success AND on a failed match. */
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .refine((b) => b.password !== undefined || b.code !== undefined || b.recoveryCode !== undefined, {
+    message: 'Re-authentication is required: send your password or a two-factor code.',
+  });
+export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;

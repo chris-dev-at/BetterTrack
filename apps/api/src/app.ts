@@ -10,6 +10,7 @@ import { createCsrfGuard } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { enforcePasswordChange, loadSession } from './http/middleware/session';
 import { createOpenApiRouter } from './http/openapi';
+import { createAccountRouter } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAlertsRouter } from './http/routes/alertsRoutes';
 import { createAssetsRouter } from './http/routes/assetsRoutes';
@@ -76,6 +77,7 @@ export function createApp(ctx: AppContext) {
 
   app.use('/api/v1', healthRouter);
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
+  app.use('/api/v1/account', createAccountRouter(ctx, limiters));
   app.use('/api/v1/admin', createAdminRouter(ctx, limiters));
   app.use('/api/v1/workboard', createWorkboardRouter(ctx));
   app.use('/api/v1/search', createSearchRouter(ctx, limiters));
