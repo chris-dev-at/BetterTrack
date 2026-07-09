@@ -1067,6 +1067,22 @@ export const valuePointsResponseSchema = z.object({ points: z.array(valuePointSc
 export type ValuePointsResponse = z.infer<typeof valuePointsResponseSchema>;
 
 /**
+ * One entry of `GET /custom-assets`: a custom asset plus its most recent value
+ * point (`latestValue`), or `null` when the asset has no value points yet. Lets
+ * the mobile app list/manage custom assets even when there is no current holding.
+ */
+export const customAssetListItemSchema = customAssetSchema
+  .extend({ latestValue: valuePointSchema.nullable() })
+  .strict();
+export type CustomAssetListItem = z.infer<typeof customAssetListItemSchema>;
+
+/** `GET /custom-assets` response: every custom asset the caller owns. */
+export const customAssetListResponseSchema = z
+  .object({ assets: z.array(customAssetListItemSchema) })
+  .strict();
+export type CustomAssetListResponse = z.infer<typeof customAssetListResponseSchema>;
+
+/**
  * `PUT /custom-assets/:id/value-points` body — the full desired set, one row per
  * day (§6.9). A single replace expresses add / edit / delete at once. Duplicate
  * dates are rejected by the service.
