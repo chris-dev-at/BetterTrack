@@ -525,6 +525,11 @@
       "title": "Portfolio-Freigabe",
       "description": "Die Freigabe befindet sich jetzt im Tab „Social“. Lege dort fest, wer welches deiner Portfolios sehen kann – jedes Portfolio bleibt privat, bis du es teilst.",
       "link": "Freigabe im Tab „Social“ verwalten →"
+    },
+    "dangerZone": {
+      "title": "Gefahrenzone",
+      "description": "Wenn du dein Konto löschst, werden alle deine Daten dauerhaft entfernt. Das kann nicht rückgängig gemacht werden.",
+      "link": "Mein Konto löschen…"
     }
   },
   "portfolio": {
@@ -1318,7 +1323,9 @@
         "title": "Im Chat teilen",
         "disclaimer": "Das Senden erweitert nie den Zugriff — ein Freund sieht es nur, wenn es bereits mit ihm geteilt ist.",
         "empty": "Du hast noch nichts zum Teilen."
-      }
+      },
+      "deletedUser": "Gelöschtes Konto",
+      "deletedClosed": "Dieses Konto existiert nicht mehr. Die Unterhaltung ist geschlossen, dein Verlauf bleibt aber lesbar."
     }
   },
   "profile": {
@@ -1341,5 +1348,29 @@
     "publicBadge": "Öffentliches Profil",
     "notAvailable": "Dieses Profil ist nicht verfügbar.",
     "emptyPublic": "Dieses Profil hat noch keine öffentlichen Elemente."
+  },
+  "deleteAccount": {
+    "title": "Konto löschen",
+    "subtitle": "Dadurch werden dein BetterTrack-Konto und alle zugehörigen Daten dauerhaft gelöscht.",
+    "warning": {
+      "headline": "Das kann nicht rückgängig gemacht werden. Beim Löschen werden entfernt:",
+      "data": "Alle Portfolios, Transaktionen, Geldquellen, eigene Assets, Steuerdaten und Berichte",
+      "social": "Deine Freundschaften, geteilten Inhalte, Watchlists, Konglomerate, Alarme und Benachrichtigungen",
+      "access": "Alle Sitzungen, API-Schlüssel und verbundenen Apps — du wirst überall sofort abgemeldet",
+      "chat": "Deine Identität in Chats — von dir gesendete Nachrichten bleiben für deine Freunde als „Gelöschtes Konto“ sichtbar"
+    },
+    "confirmLabel": "Gib zur Bestätigung deinen Benutzernamen ({username}) ein",
+    "passwordLabel": "Aktuelles Passwort",
+    "codeLabel": "Authenticator-Code",
+    "useCode": "Stattdessen einen Authenticator-Code verwenden",
+    "usePassword": "Stattdessen dein Passwort verwenden",
+    "submit": "Mein Konto endgültig löschen",
+    "submitting": "Wird gelöscht…",
+    "error": {
+      "confirmMismatch": "Der eingegebene Benutzername stimmt nicht mit deinem Konto überein.",
+      "wrongPassword": "Dieses Passwort ist falsch.",
+      "wrongCode": "Dieser Code ist falsch oder abgelaufen.",
+      "tooMany": "Zu viele Versuche. Bitte warte kurz und versuch es erneut."
+    }
   }
 }

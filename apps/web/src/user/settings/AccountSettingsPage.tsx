@@ -322,6 +322,34 @@ export function AccountSettingsPage() {
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
         <SharingMovedNote />
       </section>
+
+      <section className="rounded-md border border-red-900/60 bg-neutral-900 p-5">
+        <DangerZone />
+      </section>
+    </div>
+  );
+}
+
+/**
+ * Danger zone (§13.4 V4-P2c, #362): the in-app entry to the standalone
+ * `/account/delete` flow — the same stable URL the Google Play listing points
+ * at. This is only a signpost; every gate (typed confirmation + re-auth) lives
+ * on the deletion page and server-side.
+ */
+function DangerZone() {
+  const t = useT();
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-red-400">{t('settings.dangerZone.title')}</h3>
+        <p className="text-xs text-neutral-500">{t('settings.dangerZone.description')}</p>
+      </div>
+      <Link
+        to="/account/delete"
+        className="w-fit text-sm font-medium text-red-400 hover:text-red-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+      >
+        {t('settings.dangerZone.link')}
+      </Link>
     </div>
   );
 }

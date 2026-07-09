@@ -71,12 +71,14 @@ export type ChatChip = z.infer<typeof chatChipSchema>;
  * One message in a thread. A message carries text, a share `chip`, or both — a
  * chip-only message has a `null` body. `chip` is the viewer-resolved shape above,
  * so the same stored message renders differently (and safely) to each side.
+ * `senderId` is `null` when the sender's account has been deleted (#362): the
+ * message stays readable for the remaining participant, anonymized.
  */
 export const chatMessageSchema = z
   .object({
     id: z.string().uuid(),
     conversationId: z.string().uuid(),
-    senderId: z.string().uuid(),
+    senderId: z.string().uuid().nullable(),
     body: z.string().nullable(),
     chip: chatChipSchema.nullable(),
     createdAt: z.string().datetime(),
@@ -92,7 +94,7 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
  */
 export const chatMessagePreviewSchema = z
   .object({
-    senderId: z.string().uuid(),
+    senderId: z.string().uuid().nullable(),
     body: z.string().nullable(),
     chipKind: chatChipKindSchema.nullable(),
     createdAt: z.string().datetime(),
@@ -104,12 +106,14 @@ export type ChatMessagePreview = z.infer<typeof chatMessagePreviewSchema>;
  * A conversation as seen by the caller: the OTHER participant (public-safe id +
  * username), the caller's unread count, and the last-message preview for the
  * list row. `lastMessage`/`lastMessageAt` are `null` for a freshly-opened,
- * empty thread.
+ * empty thread. `user` is `null` when the other participant deleted their
+ * account (#362): the thread's history stays readable, anonymized, and it is
+ * closed to new messages.
  */
 export const chatConversationSchema = z
   .object({
     id: z.string().uuid(),
-    user: friendUserSchema,
+    user: friendUserSchema.nullable(),
     unreadCount: z.number().int().nonnegative(),
     lastMessage: chatMessagePreviewSchema.nullable(),
     lastMessageAt: z.string().datetime().nullable(),

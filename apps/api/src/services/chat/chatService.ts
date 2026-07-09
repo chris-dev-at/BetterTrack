@@ -80,20 +80,27 @@ export interface ChatService {
 export function createChatService(deps: ChatServiceDeps): ChatService {
   const { repo, friendship, audience, assets, events, logger } = deps;
 
-  /** The other participant, or `undefined` when `userId` isn't in the conversation. */
-  function otherParticipant(
-    participants: ConversationParticipants,
-    userId: string,
-  ): string | undefined {
-    if (participants.userA === userId) return participants.userB;
-    if (participants.userB === userId) return participants.userA;
-    return undefined;
+  /** Whether `userId` is one of the conversation's participants. The gate keys on
+   * the CALLER's side only, so a deleted other side (#362) keeps history readable. */
+  function isParticipant(participants: ConversationParticipants, userId: string): boolean {
+    return participants.userA === userId || participants.userB === userId;
+  }
+
+  /** The other participant — `null` when that account was deleted (#362). Only
+   * meaningful after {@link isParticipant} has admitted the caller. */
+  function otherParticipant(participants: ConversationParticipants, userId: string): string | null {
+    return participants.userA === userId ? participants.userB : participants.userA;
   }
 
   function toConversation(row: ChatConversationRow): ChatConversation {
     return {
       id: row.id,
-      user: { id: row.otherUserId, username: row.otherUsername },
+      // A deleted other side serializes as `user: null` — the client renders its
+      // localized "Deleted user" state (#362); no identity survives.
+      user:
+        row.otherUserId !== null && row.otherUsername !== null
+          ? { id: row.otherUserId, username: row.otherUsername }
+          : null,
       unreadCount: row.unreadCount,
       lastMessage: row.lastMessage
         ? {
@@ -218,7 +225,7 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
 
     async getThread(userId, conversationId, params) {
       const participants = await repo.findParticipants(conversationId);
-      if (!participants || !otherParticipant(participants, userId)) {
+      if (!participants || !isParticipant(participants, userId)) {
         throw notFound('Conversation not found.');
       }
       const [summary] = await repo.getConversationSummaries(userId, conversationId);
@@ -235,12 +242,14 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
 
     async sendMessage(userId, conversationId, input) {
       const participants = await repo.findParticipants(conversationId);
-      const recipientId = participants ? otherParticipant(participants, userId) : undefined;
-      if (!participants || !recipientId) {
+      if (!participants || !isParticipant(participants, userId)) {
         throw notFound('Conversation not found.');
       }
-      // Unfriending closes the thread to new messages (history stays readable).
-      if (!(await friendship.areFriends(userId, recipientId))) {
+      // Unfriending closes the thread to new messages (history stays readable);
+      // a deleted other side (#362) closes it the same way — there is no one to
+      // deliver to, and friendship rows cascaded away with the account.
+      const recipientId = otherParticipant(participants, userId);
+      if (recipientId === null || !(await friendship.areFriends(userId, recipientId))) {
         throw forbidden('You can only message people you are currently friends with.');
       }
 
@@ -289,7 +298,7 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
 
     async markRead(userId, conversationId) {
       const participants = await repo.findParticipants(conversationId);
-      if (!participants || !otherParticipant(participants, userId)) {
+      if (!participants || !isParticipant(participants, userId)) {
         throw notFound('Conversation not found.');
       }
       await repo.markRead(userId, conversationId);

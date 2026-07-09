@@ -45,6 +45,7 @@ const componentSchemas = {
   RegisterRequest: contracts.registerRequestSchema,
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
   ChangePasswordRequest: contracts.changePasswordRequestSchema,
+  DeleteAccountRequest: contracts.deleteAccountRequestSchema,
   PasswordResetRequest: contracts.passwordResetRequestSchema,
   PasswordResetComplete: contracts.passwordResetCompleteSchema,
   PinVerifyRequest: contracts.pinVerifyRequestSchema,
@@ -156,6 +157,7 @@ const componentSchemas = {
   UpdateCustomAssetRequest: contracts.updateCustomAssetRequestSchema,
   PutValuePointsRequest: contracts.putValuePointsRequestSchema,
   CreateCustomAssetResponse: contracts.createCustomAssetResponseSchema,
+  CustomAssetListResponse: contracts.customAssetListResponseSchema,
   UpdateCustomAssetResponse: z.object({ asset: contracts.customAssetSchema }).strict(),
   ValuePointsResponse: contracts.valuePointsResponseSchema,
   RecategorizationStatusResponse: contracts.recategorizationStatusResponseSchema,
@@ -388,6 +390,16 @@ const endpoints: EndpointDef[] = [
     body: R.ChangePasswordRequest,
     status: 200,
     response: R.MeResponse,
+  },
+  {
+    method: 'delete',
+    path: '/account',
+    tag: 'Auth',
+    summary:
+      'Delete the account irreversibly (typed username confirmation + password or fresh 2FA). Revokes every session and credential; chat messages anonymize for the partner.',
+    body: R.DeleteAccountRequest,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',
@@ -1166,6 +1178,14 @@ const endpoints: EndpointDef[] = [
     tag: 'Custom Assets',
     summary: 'Dismiss the re-categorize banner (clear every flag).',
     status: 204,
+  },
+  {
+    method: 'get',
+    path: '/custom-assets',
+    tag: 'Custom Assets',
+    summary: 'List all custom assets the caller owns (with latest value point).',
+    status: 200,
+    response: R.CustomAssetListResponse,
   },
   {
     method: 'post',

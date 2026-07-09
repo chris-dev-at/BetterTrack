@@ -984,12 +984,12 @@ export const chatConversations = pgTable(
   'chat_conversations',
   {
     id: uuid('id').primaryKey().$defaultFn(newId),
-    userA: uuid('user_a')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
-    userB: uuid('user_b')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Nullable + ON DELETE SET NULL (#362, §16 2026-07-09): deleting an account
+    // must NOT destroy the partner's chat history. The deleted side nulls out
+    // ("Deleted user"), the thread stays readable for the survivor and is closed
+    // to new messages; a conversation with BOTH sides null is purged.
+    userA: uuid('user_a').references(() => users.id, { onDelete: 'set null' }),
+    userB: uuid('user_b').references(() => users.id, { onDelete: 'set null' }),
     // How far each side has read — the derived-unread markers (never a counter).
     userALastReadAt: timestamp('user_a_last_read_at', { withTimezone: true }),
     userBLastReadAt: timestamp('user_b_last_read_at', { withTimezone: true }),
@@ -1018,9 +1018,9 @@ export const chatMessages = pgTable(
     conversationId: uuid('conversation_id')
       .notNull()
       .references(() => chatConversations.id, { onDelete: 'cascade' }),
-    senderId: uuid('sender_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Nullable + ON DELETE SET NULL (#362): a deleted sender anonymizes their
+    // messages for the remaining participant instead of recalling them.
+    senderId: uuid('sender_id').references(() => users.id, { onDelete: 'set null' }),
     body: text('body'),
     chipKind: chatChipKindEnum('chip_kind'),
     chipSubjectId: uuid('chip_subject_id'),
