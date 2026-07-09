@@ -4,6 +4,7 @@ import {
   type CreateCustomAssetResponse,
   type CustomAsset,
   type CustomAssetCategory,
+  type CustomAssetListItem,
   type UpdateCustomAssetRequest,
   type ValuePoint,
 } from '@bettertrack/contracts';
@@ -33,6 +34,8 @@ export interface CustomAssetServiceDeps {
 }
 
 export interface CustomAssetService {
+  /** Every custom asset the user owns, each with its latest value point (§6.9). */
+  list(userId: string): Promise<CustomAssetListItem[]>;
   create(userId: string, input: CreateCustomAssetRequest): Promise<CreateCustomAssetResponse>;
   update(userId: string, id: string, patch: UpdateCustomAssetRequest): Promise<CustomAsset>;
   remove(userId: string, id: string): Promise<void>;
@@ -83,6 +86,18 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
   }
 
   return {
+    async list(userId) {
+      const rows = await repo.listForUser(userId);
+      const latest = await repo.latestValuePoints(rows.map((r) => r.id));
+      return rows.map((row) => {
+        const point = latest.get(row.id);
+        return {
+          ...toDto(row),
+          latestValue: point ? { date: point.date, value: point.value } : null,
+        };
+      });
+    },
+
     async create(userId, input) {
       const row = await repo.create({
         ownerId: userId,

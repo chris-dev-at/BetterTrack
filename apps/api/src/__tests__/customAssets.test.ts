@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CUSTOM_ASSET_CATEGORIES,
+  customAssetListResponseSchema,
   customAssetSchema,
   valuePointsResponseSchema,
 } from '@bettertrack/contracts';
@@ -506,5 +507,98 @@ describe('re-categorize banner status (V3-P2)', () => {
     const dismiss = await agent.post('/api/v1/custom-assets/recategorization/dismiss').set(...XRW);
     expect(dismiss.status).toBe(204);
     expect((await agent.get('/api/v1/custom-assets/recategorization')).body.pending).toBe(0);
+  });
+});
+
+describe('GET /api/v1/custom-assets', () => {
+  it('requires authentication', async () => {
+    const res = await request(harness.app).get('/api/v1/custom-assets');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists all custom assets, including ones with zero holdings and no value points', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    // Asset A: has value points → latestValue is the most recent one.
+    const a = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'House', category: 'stock', currency: 'EUR' });
+    await agent
+      .put(`/api/v1/custom-assets/${a.body.asset.id}/value-points`)
+      .set(...XRW)
+      .send({
+        points: [
+          { date: dayOffset(-2), value: 1000 },
+          { date: dayOffset(-1), value: 1200 },
+        ],
+      });
+
+    // Asset B: never bought, never valued → still listed, latestValue null.
+    const b = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Amp', category: 'other', currency: 'USD' });
+
+    const res = await agent.get('/api/v1/custom-assets').set(...XRW);
+    expect(res.status).toBe(200);
+    expect(customAssetListResponseSchema.safeParse(res.body).success).toBe(true);
+
+    const byId = new Map(
+      res.body.assets.map((it: { id: string }) => [it.id, it] as const),
+    );
+    expect(byId.size).toBe(2);
+
+    const itemA = byId.get(a.body.asset.id) as { latestValue: { date: string; value: number } };
+    expect(itemA.latestValue).toEqual({ date: dayOffset(-1), value: 1200 });
+
+    const itemB = byId.get(b.body.asset.id) as {
+      latestValue: unknown;
+      category: string;
+      currency: string;
+    };
+    expect(itemB.latestValue).toBeNull();
+    expect(itemB.category).toBe('other');
+    expect(itemB.currency).toBe('USD');
+  });
+
+  it('works with a portfolio:read bearer token', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Boat', category: 'commodity', currency: 'EUR' });
+
+    const key = await agent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'mobile', scopes: ['portfolio:read'] });
+    expect(key.status).toBe(201);
+    const token = key.body.token as string;
+
+    const res = await request(harness.app)
+      .get('/api/v1/custom-assets')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.assets).toHaveLength(1);
+    expect(res.body.assets[0].name).toBe('Boat');
+  });
+
+  it('never returns another user’s custom assets (cross-user isolation)', async () => {
+    const owner = await harness.seedUser({ email: 'owner2@bt.test', username: 'owner2' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    await ownerAgent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Secret House', category: 'stock', currency: 'EUR' });
+
+    const other = await harness.seedUser({ email: 'other2@bt.test', username: 'other2' });
+    const otherAgent = await loginAgent(harness.app, other.email, other.password);
+
+    const res = await otherAgent.get('/api/v1/custom-assets').set(...XRW);
+    expect(res.status).toBe(200);
+    expect(res.body.assets).toEqual([]);
   });
 });

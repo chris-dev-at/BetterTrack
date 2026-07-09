@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { newId } from '../ids';
@@ -62,6 +62,42 @@ export function createCustomAssetRepository(db: Database) {
       const row = rows[0];
       if (!row) throw new Error('Custom asset insert returned no row');
       return row;
+    },
+
+    /**
+     * Every custom (`manual`) asset the caller owns, name-ascending. Includes
+     * assets with no holdings and no value points — the mobile list surface needs
+     * all of them (owner-scoped, §10).
+     */
+    async listForUser(userId: string): Promise<AssetRow[]> {
+      return db
+        .select()
+        .from(assets)
+        .where(and(eq(assets.ownerId, userId), eq(assets.providerId, MANUAL_PROVIDER_ID)))
+        .orderBy(asc(assets.name));
+    },
+
+    /**
+     * The most recent value point for each of the given assets (by date), keyed
+     * by asset id. Assets without any value points are simply absent from the map.
+     */
+    async latestValuePoints(assetIds: readonly string[]): Promise<Map<string, ValuePointRecord>> {
+      const map = new Map<string, ValuePointRecord>();
+      if (assetIds.length === 0) return map;
+      const rows = await db
+        .selectDistinctOn([priceHistory.assetId], {
+          assetId: priceHistory.assetId,
+          date: priceHistory.date,
+          close: priceHistory.close,
+        })
+        .from(priceHistory)
+        .where(inArray(priceHistory.assetId, [...assetIds]))
+        .orderBy(priceHistory.assetId, desc(priceHistory.date));
+      for (const r of rows) {
+        const value = Number(r.close);
+        if (Number.isFinite(value)) map.set(r.assetId, { date: r.date, value });
+      }
+      return map;
     },
 
     /** The caller's own custom asset for `id`, or null (owner-scoped, §10). */
