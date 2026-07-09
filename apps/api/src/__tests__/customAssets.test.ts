@@ -545,9 +545,7 @@ describe('GET /api/v1/custom-assets', () => {
     expect(res.status).toBe(200);
     expect(customAssetListResponseSchema.safeParse(res.body).success).toBe(true);
 
-    const byId = new Map(
-      res.body.assets.map((it: { id: string }) => [it.id, it] as const),
-    );
+    const byId = new Map(res.body.assets.map((it: { id: string }) => [it.id, it] as const));
     expect(byId.size).toBe(2);
 
     const itemA = byId.get(a.body.asset.id) as { latestValue: { date: string; value: number } };
