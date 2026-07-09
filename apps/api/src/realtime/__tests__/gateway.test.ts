@@ -9,6 +9,7 @@ import {
   REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
+  type ApiKeyScope,
   type RealtimeNotificationNew,
   type RealtimeQuoteUpdated,
   type RealtimeRoomAck,
@@ -76,6 +77,36 @@ function connect(cookie?: string): Promise<ClientSocket> {
     socket.once('connect', () => resolve(socket));
     socket.once('connect_error', (err) => reject(err));
   });
+}
+
+/**
+ * Open a socket over the websocket transport with arbitrary handshake auth — a
+ * bearer via the socket.io auth payload (`auth.token`) and/or an
+ * `Authorization: Bearer …` upgrade header — the way the cookieless mobile app
+ * connects. Resolves on connect, rejects with the connect_error message.
+ */
+function connectWith(opts: {
+  auth?: Record<string, unknown>;
+  extraHeaders?: Record<string, string>;
+}): Promise<ClientSocket> {
+  const socket = ioClient(baseUrl, {
+    path: REALTIME_PATH,
+    transports: ['websocket'],
+    reconnection: false,
+    auth: opts.auth,
+    extraHeaders: opts.extraHeaders ?? {},
+  });
+  openSockets.push(socket);
+  return new Promise<ClientSocket>((resolve, reject) => {
+    socket.once('connect', () => resolve(socket));
+    socket.once('connect_error', (err) => reject(err));
+  });
+}
+
+/** Mint a personal API key (bearer token) for a user — the mobile credential. */
+async function mintKey(userId: string, scopes: ApiKeyScope[] = ['chat:read']): Promise<string> {
+  const { token } = await harness.ctx.apiKeys.create({ userId, name: 'mobile', scopes });
+  return token;
 }
 
 /** Resolve with the next `event` payload, or reject after `ms`. */
@@ -177,6 +208,82 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
     const { cookie } = await login(user.email, user.password);
     const socket = await connect(cookie);
     expect(socket.connected).toBe(true);
+  });
+});
+
+describe('realtime gateway — bearer handshake auth (mobile, §6.13/§14)', () => {
+  it('accepts a bearer via the socket.io auth payload and joins only its own user room', async () => {
+    await listenWithGateway();
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    // No cookie — the mobile credential is the bearer alone.
+    const aliceSocket = await connectWith({ auth: { token: await mintKey(alice.id) } });
+    const bobSocket = await connectWith({ auth: { token: await mintKey(bob.id) } });
+    expect(aliceSocket.connected).toBe(true);
+
+    // A push addressed to alice reaches alice's BEARER socket and never bob's —
+    // proving the bearer socket auto-joined `user:{alice}` exactly like a cookie
+    // socket, and only its own room.
+    const received = waitForEvent<RealtimeNotificationNew>(
+      aliceSocket,
+      REALTIME_SERVER_EVENTS.notificationNew,
+    );
+    const silence = expectSilence(bobSocket, REALTIME_SERVER_EVENTS.notificationNew);
+    await harness.ctx.events.publish({
+      type: 'notification.created',
+      userId: alice.id,
+      notificationId: SOME_UUID,
+      occurredAt: new Date().toISOString(),
+    });
+    expect(await received).toEqual({ notificationId: SOME_UUID, occurredAt: expect.any(String) });
+    await silence;
+  });
+
+  it('accepts a bearer via the Authorization: Bearer upgrade header', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const token = await mintKey(user.id);
+    const socket = await connectWith({ extraHeaders: { Authorization: `Bearer ${token}` } });
+    expect(socket.connected).toBe(true);
+  });
+
+  it('connects over the websocket transport directly (no polling handshake)', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const socket = await connectWith({ auth: { token: await mintKey(user.id) } });
+    // The client dialled transports:['websocket'] — a direct websocket first-
+    // connect with no polling handshake. Confirm the negotiated transport is ws.
+    expect(socket.io.engine.transport.name).toBe('websocket');
+    expect(socket.connected).toBe(true);
+  });
+
+  it('rejects an unknown / malformed bearer token', async () => {
+    await listenWithGateway();
+    await expect(connectWith({ auth: { token: 'btk_not-a-real-key' } })).rejects.toThrow(
+      /UNAUTHORIZED/,
+    );
+    await expect(
+      connectWith({ extraHeaders: { Authorization: 'Bearer garbage' } }),
+    ).rejects.toThrow(/UNAUTHORIZED/);
+  });
+
+  it('rejects a revoked bearer token (same revocation path as HTTP bearer auth)', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { key, token } = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'mobile',
+      scopes: ['chat:read'],
+    });
+    await harness.ctx.apiKeys.revoke({ userId: user.id, id: key.id });
+    await expect(connectWith({ auth: { token } })).rejects.toThrow(/UNAUTHORIZED/);
+  });
+
+  it('rejects a bearer for an admin-kind account — the gateway is a user-app surface (§3)', async () => {
+    await listenWithGateway();
+    const admin = await harness.seedAdmin();
+    const token = await mintKey(admin.id);
+    await expect(connectWith({ auth: { token } })).rejects.toThrow(/UNAUTHORIZED/);
   });
 });
 
