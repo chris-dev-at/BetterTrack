@@ -368,7 +368,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
-    userRepo,
     marketData,
     currencyService: currency,
     referenceBackfill,

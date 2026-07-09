@@ -19,7 +19,13 @@ import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Alert, Button, TextField, cx } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
-import { SharedItemRow, kindCountSummary, personFor, type SharedPerson } from './SharedPeople';
+import {
+  ActivityAlertToggle,
+  SharedItemRow,
+  kindCountSummary,
+  personFor,
+  type SharedPerson,
+} from './SharedPeople';
 
 /** Inline chat glyph — the chat entry point (routes to #349's future surface). */
 function ChatIcon({ className }: { className?: string }) {
@@ -295,7 +301,12 @@ function RemoveFriendDialog({
   );
 }
 
-/** The per-friend "what they share with me" list inside the overview (read-only links). */
+/**
+ * The per-friend "what they share with me" list inside the overview: each item is
+ * a read-only deep link carrying its own activity-alert control (relocated here
+ * from the retired Shared-with-me tab, #384) so you opt in to a friend's trades on
+ * the very item they share.
+ */
 function FriendShares({
   person,
   username,
@@ -318,6 +329,14 @@ function FriendShares({
           subjectId={p.portfolioId}
           name={p.name}
           secondary={<MoneyText amount={p.totalValueEur} />}
+          footer={
+            <ActivityAlertToggle
+              kind="portfolio"
+              subjectId={p.portfolioId}
+              enabled={p.activityAlertsEnabled}
+              friendName={username}
+            />
+          }
         />
       ))}
       {person.conglomerates.map((c) => (
@@ -327,6 +346,14 @@ function FriendShares({
           subjectId={c.conglomerateId}
           name={c.name}
           secondary={t('social.item.positions', { count: c.positionCount })}
+          footer={
+            <ActivityAlertToggle
+              kind="conglomerate"
+              subjectId={c.conglomerateId}
+              enabled={c.activityAlertsEnabled}
+              friendName={username}
+            />
+          }
         />
       ))}
       {person.watchlists.map((w) => (
@@ -336,6 +363,14 @@ function FriendShares({
           subjectId={w.watchlistId}
           name={w.name}
           secondary={t('social.item.assets', { count: w.itemCount })}
+          footer={
+            <ActivityAlertToggle
+              kind="watchlist"
+              subjectId={w.watchlistId}
+              enabled={w.activityAlertsEnabled}
+              friendName={username}
+            />
+          }
         />
       ))}
     </div>

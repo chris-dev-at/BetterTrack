@@ -172,7 +172,8 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     res.json(result);
   });
 
-  // GET /social/my-shared — everything I currently share (audience != private).
+  // GET /social/my-shared — every shareable item I own (portfolios, conglomerates
+  // and watchlists), shared or not, each with its current audience (#384).
   router.get('/my-shared', async (req, res) => {
     const result = await ctx.social.listMyShared(req.authUser!.id);
     res.json(result);

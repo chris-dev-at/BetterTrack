@@ -9,11 +9,11 @@ import { useT, type TranslateFn } from '../../i18n';
 import { cx } from '../components/ui';
 
 /**
- * Shared building blocks for the person-centric social surfaces (V3-P6): the
- * grouping of Shared-With-Me into people, the per-kind iconography and read-only
- * deep links, and the per-item activity-alert toggle. Reused by BOTH the Friends
- * overview (a friend's shares with me) and the Shared-With-Me tab (everyone who
- * shares, grouped by person) so the two never diverge.
+ * Shared building blocks for the person-centric social surfaces (V3-P6, #384):
+ * the grouping of Shared-With-Me into people, the per-kind iconography and
+ * read-only deep links, and the per-item activity-alert control. The standalone
+ * "Shared with me" tab was retired (#384) — these now live inside the **Friends**
+ * overview (a friend's shares with me), which is the single home for who-shares-what.
  */
 
 // ── Grouping ─────────────────────────────────────────────────────────────────
@@ -118,27 +118,27 @@ export function sharedItemHref(kind: ShareKind, subjectId: string): string {
 
 /**
  * One shared item as a row: a read-only deep link (icon + name + secondary line),
- * with an optional trailing control (e.g. the activity toggle) kept OUTSIDE the
- * link so it doesn't navigate.
+ * with an optional `footer` slot beneath it (e.g. the activity-alert control),
+ * kept OUTSIDE the link so it doesn't navigate.
  */
 export function SharedItemRow({
   kind,
   subjectId,
   name,
   secondary,
-  trailing,
+  footer,
 }: {
   kind: ShareKind;
   subjectId: string;
   name: string;
   secondary?: ReactNode;
-  trailing?: ReactNode;
+  footer?: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 pr-2 transition-colors hover:border-neutral-700">
+    <div className="overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40 transition-colors hover:border-neutral-700">
       <Link
         to={sharedItemHref(kind, subjectId)}
-        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-3 py-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+        className="flex min-w-0 items-center gap-3 px-3 py-2.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
       >
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-neutral-400">
           <KindIcon kind={kind} className="h-5 w-5" />
@@ -150,26 +150,33 @@ export function SharedItemRow({
           ) : null}
         </span>
       </Link>
-      {trailing}
+      {footer != null ? (
+        <div className="border-t border-neutral-800 px-3 py-2.5">{footer}</div>
+      ) : null}
     </div>
   );
 }
 
-// ── Activity-alert toggle (preference only; delivery is #368) ─────────────────
+// ── Activity-alert control (preference only; delivery is #368) ────────────────
 
 /**
- * The per-shared-item activity-alert opt-in (V3-P6). Persists the viewer's
- * preference immediately (optimistic); the friend-activity events that light it up
- * arrive with Notifications-v2 (#368), so today it stores intent and nothing more.
+ * The per-shared-item activity-alert opt-in (V3-P6, clarified in #384). A real
+ * label + honest subtext ("Get notified when {friend} buys, sells, or updates
+ * this" / "Activates when notifications go live") beside the switch, so the
+ * control says what it does. Persists the viewer's preference immediately
+ * (optimistic); the friend-activity events that light it up arrive with
+ * Notifications-v2 (#368), so today it stores intent and nothing more.
  */
 export function ActivityAlertToggle({
   kind,
   subjectId,
   enabled,
+  friendName,
 }: {
   kind: ShareKind;
   subjectId: string;
   enabled: boolean;
+  friendName: string;
 }) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -189,25 +196,35 @@ export function ActivityAlertToggle({
     mutation.mutate(next);
   };
 
+  const label = t('social.activity.notifyLabel', { username: friendName });
+
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={t('social.activity.toggleLabel')}
-      title={on ? t('social.activity.on') : t('social.activity.off')}
-      onClick={toggle}
-      className={cx(
-        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-        on ? 'bg-sky-600' : 'bg-neutral-700',
-      )}
-    >
-      <span
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 flex-col">
+        <span className="text-xs font-medium text-neutral-300">{label}</span>
+        <span className="text-[11px] leading-tight text-neutral-500">
+          {t('social.activity.dormantHint')}
+        </span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        title={on ? t('social.activity.on') : t('social.activity.off')}
+        onClick={toggle}
         className={cx(
-          'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
-          on ? 'translate-x-6' : 'translate-x-1',
+          'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+          on ? 'bg-sky-600' : 'bg-neutral-700',
         )}
-      />
-    </button>
+      >
+        <span
+          className={cx(
+            'inline-block h-4 w-4 transform rounded-full bg-white transition-transform',
+            on ? 'translate-x-6' : 'translate-x-1',
+          )}
+        />
+      </button>
+    </div>
   );
 }

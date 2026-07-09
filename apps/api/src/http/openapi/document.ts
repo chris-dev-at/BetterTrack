@@ -1401,7 +1401,7 @@ const endpoints: EndpointDef[] = [
     path: '/social/my-shared',
     tag: 'Social',
     summary:
-      'My sharing surface — every portfolio I own (private included), plus shared conglomerates + watchlists.',
+      'My items — every shareable item I own (all portfolios, conglomerates and watchlists), shared or not, each with its current audience.',
     status: 200,
     response: R.MySharedResponse,
   },

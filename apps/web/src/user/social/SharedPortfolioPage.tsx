@@ -211,10 +211,10 @@ export function SharedPortfolioPage() {
     <div className="flex flex-col gap-8">
       <div>
         <Link
-          to="/social/shared-with-me"
+          to="/social/friends"
           className="text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
-          ← Shared With Me
+          ← Friends
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-100">{name}</h1>
         <p className="mt-1 text-sm text-neutral-400">Shared by {owner.username} · read-only</p>

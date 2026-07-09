@@ -1,3 +1,4 @@
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -270,6 +271,27 @@ describe('POST /api/v1/portfolios (create)', () => {
     expect(list.body.portfolios).toHaveLength(2);
     const main = list.body.portfolios.find((p: { name: string }) => p.name === 'Main');
     expect(main.isDefault).toBe(true);
+  });
+
+  it('creates a private portfolio even for an account whose legacy default was friends (#384)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent); // materialise "Main"
+
+    // Simulate a legacy account whose stored default is `friends` (the Settings
+    // control that set it was removed in #377). The universal private-default
+    // ignores that column: a newly created portfolio is ALWAYS private (#384).
+    await harness.db
+      .update(schema.users)
+      .set({ defaultPortfolioVisibility: 'friends' })
+      .where(eq(schema.users.id, user.id));
+
+    const res = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(res.status).toBe(201);
+    expect(res.body.portfolio.visibility).toBe('private');
   });
 
   it('rejects a duplicate name (409)', async () => {

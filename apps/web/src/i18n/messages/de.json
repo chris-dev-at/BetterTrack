@@ -1244,7 +1244,8 @@
       "assets": "{{count}} Werte"
     },
     "activity": {
-      "toggleLabel": "Aktivitäts-Benachrichtigungen",
+      "notifyLabel": "Benachrichtigen, wenn {{username}} hier kauft, verkauft oder etwas ändert",
+      "dormantHint": "Wird aktiv, sobald Benachrichtigungen verfügbar sind",
       "on": "Aktivitäts-Benachrichtigungen an",
       "off": "Aktivitäts-Benachrichtigungen aus"
     },
@@ -1253,19 +1254,13 @@
       "conglomerates": "Konglomerate",
       "watchlists": "Watchlists"
     },
-    "sharedWithMe": {
-      "heading": "Mit dir geteilt",
-      "subhead": "Gruppiert nach Person. Öffne eine Person, um ihre Elemente zu sehen.",
-      "emptyTitle": "Noch nichts mit dir geteilt",
-      "emptyBody": "Wenn ein Freund ein Portfolio, Konglomerat oder eine Watchlist mit dir teilt, erscheint es hier.",
-      "error": "Geteilte Elemente konnten nicht geladen werden. Bitte lade die Seite neu."
-    },
     "myShared": {
-      "title": "Meine Freigaben",
-      "subtitle": "Jedes deiner Portfolios ist hier – lege fest, wer welches sehen kann. Neue Portfolios bleiben privat, bis du sie teilst.",
-      "emptyTitle": "Du teilst nichts",
-      "emptyBody": "Teile ein Portfolio, Konglomerat oder eine Watchlist, damit es hier erscheint.",
-      "error": "Deine geteilten Elemente konnten nicht geladen werden. Bitte lade die Seite neu."
+      "title": "Meine Elemente",
+      "subtitle": "Jedes Portfolio, Konglomerat und jede Watchlist, die dir gehört, ist hier – lege fest, wer welches sehen kann. Alles bleibt privat, bis du es teilst.",
+      "emptyTitle": "Du besitzt noch nichts",
+      "emptyBody": "Erstelle ein Portfolio, Konglomerat oder eine Watchlist, um hier die Freigabe zu verwalten.",
+      "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "publicProfileLink": "Öffentliches Profil verwalten"
     },
     "friend": {
       "since": "Befreundet seit {{date}}",

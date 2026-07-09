@@ -12,6 +12,7 @@ vi.mock('../../lib/socialApi', () => ({
   listFriends: vi.fn(),
   listSharedWithMe: vi.fn(),
   removeFriend: vi.fn(),
+  setActivityAlert: vi.fn(),
 }));
 
 import { MemoryRouter } from 'react-router-dom';
@@ -25,6 +26,7 @@ import {
   listSharedWithMe,
   removeFriend,
   sendFriendRequest,
+  setActivityAlert,
 } from '../../lib/socialApi';
 import { FriendsPage } from './FriendsPage';
 
@@ -195,5 +197,53 @@ describe('FriendsPage', () => {
       'href',
       '/social/chat/u5',
     );
+  });
+
+  test('the per-item activity toggle lives in the friend overview and persists (#384)', async () => {
+    const FRANK_ID = 'u6';
+    const SHARED_PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        { user: { id: FRANK_ID, username: 'frank' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+    // Frank shares one portfolio with me (surfaced in the friend overview).
+    vi.mocked(listSharedWithMe).mockResolvedValue({
+      portfolios: [
+        {
+          portfolioId: SHARED_PORTFOLIO_ID,
+          name: "Frank's Main",
+          owner: { id: FRANK_ID, username: 'frank' },
+          totalValueEur: 1000,
+          activityAlertsEnabled: false,
+        },
+      ],
+      conglomerates: [],
+      watchlists: [],
+    });
+    vi.mocked(setActivityAlert).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: SHARED_PORTFOLIO_ID,
+      enabled: true,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('frank')).toBeInTheDocument());
+    // Expand the friend → the overview reveals their shared item + activity control.
+    await user.click(screen.getByRole('button', { name: 'frank' }));
+    // The clarified label names the friend and states what it does.
+    expect(
+      screen.getByText(/get notified when frank buys, sells, or updates this/i),
+    ).toBeInTheDocument();
+    // The honest "dormant until notifications go live" hint is present.
+    expect(screen.getByText(/activates when notifications go live/i)).toBeInTheDocument();
+
+    // Toggling persists the preference immediately (optimistic + PUT).
+    const toggle = screen.getByRole('switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await user.click(toggle);
+    expect(setActivityAlert).toHaveBeenCalledWith('portfolio', SHARED_PORTFOLIO_ID, true);
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   });
 });

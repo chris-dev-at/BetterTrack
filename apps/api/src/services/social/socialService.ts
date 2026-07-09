@@ -425,18 +425,16 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         conglomerate.list(userId),
         workboard.listWatchlists(userId),
       ]);
-      // EVERY portfolio the caller owns is listed here — not just the ones
-      // currently at `friends` (#377). A private/secondary portfolio has no
-      // audience row, so it was previously invisible and thus un-shareable from
-      // the Socials tab; surfacing it (dimmed, audience=private) is the single
-      // entry point to give it any audience via the AudiencePicker. Conglomerates
-      // and watchlists keep the "currently shared" filter (managed on their own
-      // surfaces).
+      // EVERY shareable item the caller owns is listed here — all portfolios
+      // (#377) AND all conglomerates + watchlists, shared or not (#384). A
+      // private/never-shared item has no audience row, so it was previously
+      // invisible and thus un-shareable from the Social area; surfacing it
+      // (dimmed, audience=private) gives every item a single entry point to the
+      // AudiencePicker. This is one unified "My items" view; everything is
+      // private by default.
       const allPortfolios = portfolioList.portfolios;
-      const sharedConglomerates = conglomerateList.conglomerates.filter(
-        (c) => c.visibility === 'friends',
-      );
-      const sharedWatchlists = watchlists.filter((w) => w.audience !== 'private');
+      const allConglomerates = conglomerateList.conglomerates;
+      const allWatchlists = watchlists;
       // Batch the real audience + named-friend count off the single audience
       // model, so each row's "who can see this" summary is exactly what the
       // enforcement layer authorizes against (never the coarse legacy flag).
@@ -447,11 +445,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         ),
         audience.audienceSummariesForSubjects(
           'conglomerate',
-          sharedConglomerates.map((c) => c.id),
+          allConglomerates.map((c) => c.id),
         ),
         audience.audienceSummariesForSubjects(
           'watchlist',
-          sharedWatchlists.map((w) => w.id),
+          allWatchlists.map((w) => w.id),
         ),
       ]);
       const summary = (
@@ -473,8 +471,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             friendCount: s.friendCount,
           };
         }),
-        conglomerates: sharedConglomerates.map((c) => {
-          const s = summary(cAud, c.id, 'all_friends');
+        conglomerates: allConglomerates.map((c) => {
+          // Fall back off the legacy `visibility` only when no audience row
+          // exists yet: a `friends` basket predating the audience model reads as
+          // `all_friends`, a never-shared one as `private`.
+          const s = summary(cAud, c.id, c.visibility === 'friends' ? 'all_friends' : 'private');
           return {
             conglomerateId: c.id,
             name: c.name,
@@ -483,7 +484,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             friendCount: s.friendCount,
           };
         }),
-        watchlists: sharedWatchlists.map((w) => {
+        watchlists: allWatchlists.map((w) => {
           const s = summary(wAud, w.id, w.audience);
           return {
             watchlistId: w.id,
