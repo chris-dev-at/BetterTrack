@@ -63,6 +63,7 @@ function makeMatrix(overrides: Partial<NotificationMatrix> = {}): NotificationMa
     'account.invite': { inapp: true, email: true },
     'account.temp_password': { inapp: true, email: true },
     'alert.triggered': { inapp: true, email: true },
+    'chat.message': { inapp: true, email: true },
     ...overrides,
   };
 }

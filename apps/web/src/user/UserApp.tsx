@@ -53,7 +53,8 @@ import { MySharedItemsPage } from './social/MySharedItemsPage';
 import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfileViewPage } from './social/PublicProfileViewPage';
 import { ProfileSettingsPage } from './social/ProfileSettingsPage';
-import { ChatPlaceholderPage, SocialIdeasPage, SocialLayout } from './social/SocialSection';
+import { SocialIdeasPage, SocialLayout } from './social/SocialSection';
+import { ChatPage } from './social/ChatPage';
 import {
   AccountSettingsPage,
   ApiAccessPage,
@@ -165,10 +166,11 @@ function UserShell() {
             <Route path="my-shared" element={<MySharedItemsPage />} />
             <Route path="ideas" element={<SocialIdeasPage />} />
             <Route path="profile" element={<ProfileSettingsPage />} />
-            {/* Chat is issue #349 — the friend cards/overview link here; a calm
-                placeholder until #349 fills it (present, gracefully inert). */}
-            <Route path="chat" element={<ChatPlaceholderPage />} />
-            <Route path="chat/:userId" element={<ChatPlaceholderPage />} />
+            {/* Friend chat (§13.3 V3-P8): a master-detail conversation list +
+                thread. The friend cards/overview deep-link to /social/chat/:userId
+                (the friend's id); /social/chat opens the list with no thread. */}
+            <Route path="chat" element={<ChatPage />} />
+            <Route path="chat/:userId" element={<ChatPage />} />
           </Route>
 
           {/* ── Settings (reached from the profile menu) ── */}

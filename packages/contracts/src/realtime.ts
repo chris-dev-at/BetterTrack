@@ -150,11 +150,31 @@ export const realtimePortfolioChangedSchema = z.object({
 });
 export type RealtimePortfolioChanged = z.infer<typeof realtimePortfolioChangedSchema>;
 
+/**
+ * `chat.message` → the RECIPIENT's `user:{id}` room when a friend sends them a
+ * chat message (§13.3 V3-P8). Like every other push this is a lightweight
+ * invalidation signal — it carries the conversation + message ids only, never
+ * the body or a share chip, so the recipient's thread refetch re-resolves each
+ * chip through the sharing-enforcement layer (never a pushed snapshot). Delivery
+ * is independent of the notification matrix: a `chat.message` the recipient
+ * muted still pushes here (the message arrives in the thread) but produces no
+ * bell/email.
+ */
+export const realtimeChatMessageSchema = z.object({
+  conversationId: z.string().uuid(),
+  messageId: z.string().uuid(),
+  senderId: z.string().uuid(),
+  occurredAt: z.string(),
+});
+export type RealtimeChatMessage = z.infer<typeof realtimeChatMessageSchema>;
+
 /** Server → client event names. */
 export const REALTIME_SERVER_EVENTS = {
   notificationNew: 'notification.new',
   quoteUpdated: 'quote.updated',
   portfolioChanged: 'portfolio.changed',
+  /** `chat.message` → the recipient's `user:{id}` room on a new friend message (§13.3 V3-P8). */
+  chatMessage: 'chat.message',
   /** `live.frame` → the `asset:{id}` room, once per shared poll tick (§6.3). */
   liveFrame: 'live.frame',
 } as const;

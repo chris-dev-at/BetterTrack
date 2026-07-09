@@ -101,6 +101,33 @@ export interface PortfolioSharedEvent {
   occurredAt: string;
 }
 
+/**
+ * `chat.message` → a friend sent the recipient a chat message (§13.3 V3-P8).
+ * `userId` is the **recipient**; `senderId`/`senderUsername` identify the sender.
+ * Two independent subscribers consume it: the realtime gateway pushes it to the
+ * recipient's `user:{id}` room (always — the message lands in the thread), and
+ * the notification dispatcher fans it through the per-type × channel matrix (so a
+ * muted `chat.message` produces no bell/email while the push still fires). The
+ * `bodyPreview`/`hasChip` render the notification without a second lookup; the
+ * push itself carries neither, so the recipient's thread refetch re-resolves the
+ * chip through the enforcement layer.
+ */
+export interface ChatMessageEvent {
+  type: 'chat.message';
+  /** Recipient — the other participant, who receives the message. */
+  userId: string;
+  /** Actor — the sender. */
+  senderId: string;
+  senderUsername: string;
+  conversationId: string;
+  messageId: string;
+  /** A short text preview for the notification body; null for a chip-only message. */
+  bodyPreview: string | null;
+  /** Whether the message carries a share chip (drives "shared an item" copy). */
+  hasChip: boolean;
+  occurredAt: string;
+}
+
 /** The discriminated union of every domain event (§9). */
 export type DomainEvent =
   | AlertTriggeredEvent
@@ -110,7 +137,8 @@ export type DomainEvent =
   | PortfolioChangedEvent
   | FriendRequestEvent
   | FriendAcceptedEvent
-  | PortfolioSharedEvent;
+  | PortfolioSharedEvent
+  | ChatMessageEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
 export type DomainEventType = DomainEvent['type'];
@@ -128,4 +156,5 @@ export const DOMAIN_EVENT_TYPES = [
   'friend.request',
   'friend.accepted',
   'portfolio.shared',
+  'chat.message',
 ] as const satisfies readonly DomainEventType[];

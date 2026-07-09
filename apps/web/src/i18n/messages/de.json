@@ -195,6 +195,10 @@
         "alertTriggered": {
           "label": "Preisalarme",
           "description": "Wenn einer deiner Preisalarme auslöst."
+        },
+        "chatMessage": {
+          "label": "Chat-Nachrichten",
+          "description": "Wenn dir ein Freund eine Nachricht sendet."
         }
       },
       "routing": {
@@ -1221,7 +1225,53 @@
     },
     "chat": {
       "title": "Nachrichten",
-      "body": "Direktnachrichten mit deinen Freunden folgen bald."
+      "subhead": "Direktnachrichten mit deinen Freunden. Teile einen Wert oder eines deiner Elemente direkt im Chat.",
+      "new": "Neue Nachricht",
+      "newPrompt": "Wähle einen Freund zum Chatten aus.",
+      "noFriends": "Füge zuerst Freunde hinzu, um zu chatten.",
+      "error": "Deine Chats konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "empty": {
+        "title": "Noch keine Nachrichten",
+        "body": "Beginne ein Gespräch mit einem Freund, um zu chatten und Ideen zu teilen."
+      },
+      "noMessages": "Noch keine Nachrichten",
+      "youPrefix": "Du: ",
+      "preview": {
+        "shared": {
+          "asset": "Wert geteilt",
+          "portfolio": "Portfolio geteilt",
+          "conglomerate": "Konglomerat geteilt",
+          "watchlist": "Watchlist geteilt"
+        }
+      },
+      "selectTitle": "Deine Nachrichten",
+      "selectBody": "Wähle ein Gespräch aus oder starte ein neues, um zu chatten.",
+      "sayHi": "Sag Hallo zu {{username}}",
+      "sayHiBody": "Beginne das Gespräch — du kannst hier direkt einen Wert oder eines deiner Elemente teilen.",
+      "notFriend": {
+        "title": "Ihr seid nicht verbunden",
+        "body": "Du kannst nur mit deinen Freunden chatten. Sende zuerst eine Freundschaftsanfrage."
+      },
+      "loadEarlier": "Ältere Nachrichten laden",
+      "sendError": "Deine Nachricht konnte nicht gesendet werden. Bitte versuche es erneut.",
+      "composerPlaceholder": "Nachricht",
+      "send": "Senden",
+      "attach": "Element teilen",
+      "chip": {
+        "notShared": "Nicht mit dir geteilt",
+        "view": "Ansehen",
+        "kind": {
+          "asset": "Wert",
+          "portfolio": "Portfolio",
+          "conglomerate": "Konglomerat",
+          "watchlist": "Watchlist"
+        }
+      },
+      "share": {
+        "title": "Im Chat teilen",
+        "disclaimer": "Das Senden erweitert nie den Zugriff — ein Freund sieht es nur, wenn es bereits mit ihm geteilt ist.",
+        "empty": "Du hast noch nichts zum Teilen."
+      }
     }
   },
   "profile": {
