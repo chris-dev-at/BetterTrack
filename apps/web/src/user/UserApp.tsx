@@ -50,6 +50,7 @@ import { SharedPortfolioPage } from './social/SharedPortfolioPage';
 import { SharedConglomeratePage } from './social/SharedConglomeratePage';
 import { SharedWatchlistPage } from './social/SharedWatchlistPage';
 import { MySharedItemsPage } from './social/MySharedItemsPage';
+import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfilePage, SocialIdeasPage, SocialLayout } from './social/SocialSection';
 import {
   AccountSettingsPage,
@@ -93,6 +94,8 @@ function UserShell() {
       <Route path="forgot-password" element={<ForgotPasswordPage />} />
       <Route path="reset/:token" element={<ResetPasswordPage />} />
       <Route path="invite/:token" element={<InvitePage />} />
+      {/* Public share link (§14, V3-P5): a logged-out, read-only view. */}
+      <Route path="s/:token" element={<PublicSharePage />} />
       <Route element={<RequireUser />}>
         {/* OAuth consent (§6.13 part 2) — a full-screen, standalone card outside
             the AppLayout chrome. Sitting under RequireUser gives login-then-
@@ -148,7 +151,10 @@ function UserShell() {
             <Route path="friends" element={<FriendsPage />} />
             <Route path="shared-with-me" element={<SharedWithMePage />} />
             <Route path="shared-with-me/conglomerates/:id" element={<SharedConglomeratePage />} />
-            <Route path="shared-with-me/watchlists/:userId" element={<SharedWatchlistPage />} />
+            <Route
+              path="shared-with-me/watchlists/:watchlistId"
+              element={<SharedWatchlistPage />}
+            />
             <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
             <Route path="my-shared" element={<MySharedItemsPage />} />
             <Route path="ideas" element={<SocialIdeasPage />} />

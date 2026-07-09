@@ -77,6 +77,8 @@ describe('SharedWithMePage', () => {
       ],
       watchlists: [
         {
+          watchlistId: '00000000-0000-0000-0000-0000000000c1',
+          name: 'General',
           owner: { id: '00000000-0000-0000-0000-000000000003', username: 'bob' },
           itemCount: 2,
         },
@@ -89,9 +91,9 @@ describe('SharedWithMePage', () => {
       'href',
       '/social/shared-with-me/conglomerates/00000000-0000-0000-0000-0000000000c1',
     );
-    expect(screen.getByRole('link', { name: /bob.s watchlist/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /bob.s General/i })).toHaveAttribute(
       'href',
-      '/social/shared-with-me/watchlists/00000000-0000-0000-0000-000000000003',
+      '/social/shared-with-me/watchlists/00000000-0000-0000-0000-0000000000c1',
     );
   });
 

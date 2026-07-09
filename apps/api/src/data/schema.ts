@@ -305,6 +305,35 @@ export const priceHistory = pgTable(
 
 // --- Workboard & alerts ----------------------------------------------------
 
+/**
+ * Named watchlists (§13.3 V3-P5). Each user owns one or more lists; the
+ * auto-provisioned **General** list (`is_default`) is the default target for
+ * every add-to-watchlist flow and can never be renamed away or deleted. Names
+ * are unique per user (case-insensitive); a per-list share setting lives in the
+ * unified `share_audiences` model, not here. Cascades away with the owning user.
+ */
+export const watchlists = pgTable(
+  'watchlists',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    isDefault: boolean('is_default').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('watchlists_user_name_lower_unique').on(t.userId, sql`lower(${t.name})`),
+    // Exactly one default (General) list per user — the add-flow anchor.
+    uniqueIndex('watchlists_user_default_unique')
+      .on(t.userId)
+      .where(sql`${t.isDefault}`),
+  ],
+);
+
 export const workboardItems = pgTable(
   'workboard_items',
   {
@@ -312,13 +341,19 @@ export const workboardItems = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    // The named list this item belongs to (§13.3 V3-P5). Backfilled to each
+    // user's General list by the 0024 migration, then NOT NULL. The same asset
+    // may appear in different lists but not twice in one list (unique below).
+    watchlistId: uuid('watchlist_id')
+      .notNull()
+      .references(() => watchlists.id, { onDelete: 'cascade' }),
     assetId: uuid('asset_id')
       .notNull()
       .references(() => assets.id, { onDelete: 'cascade' }),
     sortOrder: integer('sort_order').notNull(),
     note: text('note'),
   },
-  (t) => [uniqueIndex('workboard_items_user_asset_unique').on(t.userId, t.assetId)],
+  (t) => [uniqueIndex('workboard_items_watchlist_asset_unique').on(t.watchlistId, t.assetId)],
 );
 
 export const alertKindEnum = pgEnum('alert_kind', [
@@ -801,6 +836,89 @@ export const friendships = pgTable(
 );
 
 /**
+ * Unified sharing audiences (§13.3 V3-P5) — ONE model + ONE enforcement layer
+ * over every shareable kind: each portfolio, each conglomerate, each named
+ * watchlist. Three tables:
+ *
+ * `share_audiences` — one row per (kind, subject) that has ever been shared: the
+ * owner, the current audience rung, and the subject's polymorphic id (a
+ * portfolio / conglomerate / watchlist id — deliberately no FK, so one table
+ * spans all kinds; the enforcement query INNER JOINs the concrete subject table,
+ * so a deleted/archived subject is unreadable even if a stale row lingers).
+ * A missing row means `private`.
+ *
+ * `share_audience_members` — the selected friends when audience =
+ * `specific_friends` (empty otherwise).
+ *
+ * `share_audience_links` — public-link tokens (§14): only the SHA-256 `token_hash`
+ * is stored, never the raw token; `revoked_at` kills a link instantly and the
+ * enforcement join also requires the audience still be `public_link`, so there
+ * is nowhere authorization can be cached. Everything cascades away with the
+ * owning audience row (and thus the owner).
+ */
+export const shareKindEnum = pgEnum('share_kind', ['portfolio', 'conglomerate', 'watchlist']);
+export const shareAudienceEnum = pgEnum('share_audience', [
+  'private',
+  'specific_friends',
+  'all_friends',
+  'public_link',
+]);
+
+export const shareAudiences = pgTable(
+  'share_audiences',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: shareKindEnum('kind').notNull(),
+    subjectId: uuid('subject_id').notNull(),
+    audience: shareAudienceEnum('audience').notNull().default('private'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('share_audiences_kind_subject_unique').on(t.kind, t.subjectId),
+    index('share_audiences_owner_idx').on(t.ownerId),
+  ],
+);
+
+export const shareAudienceMembers = pgTable(
+  'share_audience_members',
+  {
+    audienceId: uuid('audience_id')
+      .notNull()
+      .references(() => shareAudiences.id, { onDelete: 'cascade' }),
+    friendId: uuid('friend_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    primaryKey({ name: 'share_audience_members_pk', columns: [t.audienceId, t.friendId] }),
+    index('share_audience_members_friend_idx').on(t.friendId),
+  ],
+);
+
+export const shareAudienceLinks = pgTable(
+  'share_audience_links',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    audienceId: uuid('audience_id')
+      .notNull()
+      .references(() => shareAudiences.id, { onDelete: 'cascade' }),
+    // SHA-256 hash of the ≥128-bit token; the raw token is shown once and never
+    // persisted (§14). Enforcement matches on this hash + revoked_at IS NULL.
+    tokenHash: text('token_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('share_audience_links_token_hash_unique').on(t.tokenHash),
+    index('share_audience_links_audience_idx').on(t.audienceId),
+  ],
+);
+
+/**
  * OAuth 2.0 provider — "API access as a product" part 2 (PROJECTPLAN.md §6.13,
  * §14, V2-P12). Authorization-code + PKCE, built on the personal-API-key model:
  * only token/secret *hashes* are ever stored, scopes are the coarse #302
@@ -970,6 +1088,12 @@ export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
 export type NewFriendshipRow = typeof friendships.$inferInsert;
+export type WatchlistRow = typeof watchlists.$inferSelect;
+export type NewWatchlistRow = typeof watchlists.$inferInsert;
+export type ShareAudienceRow = typeof shareAudiences.$inferSelect;
+export type NewShareAudienceRow = typeof shareAudiences.$inferInsert;
+export type ShareAudienceMemberRow = typeof shareAudienceMembers.$inferSelect;
+export type ShareAudienceLinkRow = typeof shareAudienceLinks.$inferSelect;
 
 /**
  * Global admin settings (PROJECTPLAN.md §5.5, §6.12). A keyed settings store —
@@ -1003,6 +1127,7 @@ export const schema = {
   auditLog,
   assets,
   priceHistory,
+  watchlists,
   workboardItems,
   alerts,
   notifications,
@@ -1019,6 +1144,9 @@ export const schema = {
   userTaxSettings,
   friendRequests,
   friendships,
+  shareAudiences,
+  shareAudienceMembers,
+  shareAudienceLinks,
   appSettings,
   userRoleEnum,
   userStatusEnum,
@@ -1034,4 +1162,6 @@ export const schema = {
   cashMovementKindEnum,
   cashSourceTypeEnum,
   friendRequestStatusEnum,
+  shareKindEnum,
+  shareAudienceEnum,
 };

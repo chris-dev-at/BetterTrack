@@ -58,6 +58,16 @@ export function createConglomerateRouter(ctx: AppContext): Router {
       const { conglomerateId } = req.valid?.params as { conglomerateId: string };
       const patch = req.valid?.body as UpdateConglomerateRequest;
       const detail = await ctx.conglomerate.update(req.authUser!.id, conglomerateId, patch);
+      // Keep the legacy visibility toggle flowing into the single audience model
+      // (V3-P5): only after update confirmed ownership (else it 404s).
+      if (patch.visibility !== undefined) {
+        await ctx.social.applyAudienceVisibility(
+          req.authUser!.id,
+          'conglomerate',
+          conglomerateId,
+          patch.visibility,
+        );
+      }
       res.json(detail);
     },
   );

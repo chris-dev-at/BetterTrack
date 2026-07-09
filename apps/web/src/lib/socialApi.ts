@@ -1,17 +1,25 @@
 import {
+  audienceMutationResponseSchema,
+  audienceStateSchema,
   friendRequestListResponseSchema,
   friendsListResponseSchema,
   mySharedResponseSchema,
   okResponseSchema,
   sharedConglomerateDetailResponseSchema,
+  sharedLinkResponseSchema,
   sharedPortfolioDetailResponseSchema,
   sharedWatchlistDetailResponseSchema,
   sharedWithMeResponseSchema,
+  type AudienceMutationResponse,
+  type AudienceState,
   type CreateFriendRequestRequest,
   type FriendRequestListResponse,
   type FriendsListResponse,
   type MySharedResponse,
+  type SetAudienceRequest,
+  type ShareKind,
   type SharedConglomerateDetailResponse,
+  type SharedLinkResponse,
   type SharedPortfolioDetailResponse,
   type SharedWatchlistDetailResponse,
   type SharedWithMeResponse,
@@ -116,18 +124,62 @@ export async function getSharedConglomerate(
 }
 
 /**
- * `GET /social/shared/watchlists/:userId` — read-only view of one friend's shared
- * watchlist. 404s for a non-friend / not-sharing / unknown owner (§6.9, V2-P9).
+ * `GET /social/shared/watchlists/:watchlistId` — read-only view of one friend's
+ * shared named watchlist. 404s for a non-friend / not-shared / unknown list (§6.9).
  */
 export async function getSharedWatchlist(
-  ownerId: string,
+  watchlistId: string,
   signal?: AbortSignal,
 ): Promise<SharedWatchlistDetailResponse> {
   const data = await apiRequest<unknown>(
-    `/social/shared/watchlists/${encodeURIComponent(ownerId)}`,
+    `/social/shared/watchlists/${encodeURIComponent(watchlistId)}`,
     { signal },
   );
   return sharedWatchlistDetailResponseSchema.parse(data);
+}
+
+// --- Audiences (V3-P5): the reusable AudiencePicker's backend ----------------
+
+/** `GET /social/audience/:kind/:subjectId` — the owner's audience for one subject. */
+export async function getAudience(
+  kind: ShareKind,
+  subjectId: string,
+  signal?: AbortSignal,
+): Promise<AudienceState> {
+  const data = await apiRequest<unknown>(
+    `/social/audience/${kind}/${encodeURIComponent(subjectId)}`,
+    { signal },
+  );
+  return audienceStateSchema.parse(data);
+}
+
+/**
+ * `PUT /social/audience/:kind/:subjectId` — set a subject's audience. Selecting
+ * `public_link` requires `acknowledgePublic: true` (§16); minting one returns the
+ * raw token EXACTLY ONCE in `link` (hash-only storage server-side).
+ */
+export async function setAudience(
+  kind: ShareKind,
+  subjectId: string,
+  body: SetAudienceRequest,
+): Promise<AudienceMutationResponse> {
+  const data = await apiRequest<unknown>(
+    `/social/audience/${kind}/${encodeURIComponent(subjectId)}`,
+    { method: 'PUT', body },
+  );
+  return audienceMutationResponseSchema.parse(data);
+}
+
+/**
+ * `GET /social/links/:token` — resolve a public share link to its live read-only
+ * view. UNAUTHENTICATED (works logged-out); a revoked/unknown token 404s.
+ */
+export async function resolveShareLink(
+  token: string,
+  signal?: AbortSignal,
+): Promise<SharedLinkResponse> {
+  const data = await apiRequest<unknown>(`/social/links/${encodeURIComponent(token)}`, { signal });
+  return sharedLinkResponseSchema.parse(data);
 }
 
 /**

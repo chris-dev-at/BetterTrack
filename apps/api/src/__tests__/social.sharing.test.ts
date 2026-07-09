@@ -168,6 +168,14 @@ async function setConglomerateVisibility(
   expect(res.body.visibility).toBe(visibility);
 }
 
+/** The caller's default (General) watchlist id. */
+async function defaultWatchlistId(agent: Agent): Promise<string> {
+  const res = await agent.get('/api/v1/workboard/watchlists');
+  expect(res.status).toBe(200);
+  const def = res.body.watchlists.find((w: { isDefault: boolean }) => w.isDefault);
+  return def.id as string;
+}
+
 /** Toggle the caller's whole-watchlist friend-sharing on/off. */
 async function setWatchlistVisibility(
   agent: Agent,
@@ -385,7 +393,8 @@ describe('GET /api/v1/social/my-shared (My Shared Items)', () => {
     expect(res.status).toBe(200);
     expect(res.body.portfolios).toHaveLength(0);
     expect(res.body.conglomerates).toHaveLength(0);
-    expect(res.body.watchlist).toEqual({ visibility: 'private', itemCount: 0 });
+    // Named watchlists (V3-P5): nothing shared → no watchlist entries.
+    expect(res.body.watchlists).toEqual([]);
   });
 });
 
@@ -489,12 +498,12 @@ describe('conglomerate friend-sharing', () => {
 // --- Watchlist sharing (§13.2 V2-P9) ---------------------------------------
 
 describe('watchlist friend-sharing', () => {
-  /** Add `assetId` to `agent`'s watchlist. */
-  async function watch(agent: Agent, assetId: string): Promise<void> {
+  /** Add `assetId` to `agent`'s (default General) watchlist. */
+  async function watch(agent: Agent, assetId: string, watchlistId?: string): Promise<void> {
     const res = await agent
       .post('/api/v1/workboard')
       .set(...XRW)
-      .send({ assetId });
+      .send(watchlistId ? { assetId, watchlistId } : { assetId });
     expect(res.status).toBe(201);
   }
 
@@ -507,47 +516,52 @@ describe('watchlist friend-sharing', () => {
     expect(bobRes.status).toBe(200);
     expect(bobRes.body.watchlists).toHaveLength(1);
     expect(bobRes.body.watchlists[0].owner).toEqual({ id: expect.any(String), username: 'alice' });
+    expect(bobRes.body.watchlists[0].name).toBe('General');
+    expect(bobRes.body.watchlists[0].watchlistId).toEqual(expect.any(String));
     expect(bobRes.body.watchlists[0].itemCount).toBe(1);
 
     expect((await carolAgent.get('/api/v1/social/shared')).body.watchlists).toHaveLength(0);
   });
 
   it('serves the read-only detail to a friend and 404s everyone else', async () => {
-    const { alice, aliceAgent, bobAgent, carolAgent, assetId } = await scenario();
+    const { aliceAgent, bobAgent, carolAgent, assetId } = await scenario();
     await watch(aliceAgent, assetId);
     await setWatchlistVisibility(aliceAgent, 'friends');
+    const wlId = await defaultWatchlistId(aliceAgent);
 
-    const res = await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`);
+    const res = await bobAgent.get(`/api/v1/social/shared/watchlists/${wlId}`);
     expect(res.status).toBe(200);
     expect(sharedWatchlistDetailResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.owner.username).toBe('alice');
+    expect(res.body.name).toBe('General');
     expect(res.body.items).toHaveLength(1);
     expect(res.body.items[0].asset.symbol).toBe('BAYN.DE');
 
-    expect((await carolAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+    expect((await carolAgent.get(`/api/v1/social/shared/watchlists/${wlId}`)).status).toBe(404);
     expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${MISSING_ID}`)).status).toBe(404);
-    // The owner’s own id 404s: the shared surface is for friends.
-    expect((await aliceAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+    // The owner’s own list 404s on the shared surface (it's for friends).
+    expect((await aliceAgent.get(`/api/v1/social/shared/watchlists/${wlId}`)).status).toBe(404);
   });
 
   it('closes access instantly when sharing is turned off, and on unfriend', async () => {
     const { alice, aliceAgent, bobAgent, assetId } = await scenario();
     await watch(aliceAgent, assetId);
     await setWatchlistVisibility(aliceAgent, 'friends');
-    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(200);
+    const wlId = await defaultWatchlistId(aliceAgent);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${wlId}`)).status).toBe(200);
 
     await setWatchlistVisibility(aliceAgent, 'private');
-    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${wlId}`)).status).toBe(404);
     expect((await bobAgent.get('/api/v1/social/shared')).body.watchlists).toHaveLength(0);
 
     // Re-share, then unfriend — access closes again.
     await setWatchlistVisibility(aliceAgent, 'friends');
-    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(200);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${wlId}`)).status).toBe(200);
     await bobAgent
       .delete(`/api/v1/social/friends/${alice.id}`)
       .set(...XRW)
       .send();
-    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${alice.id}`)).status).toBe(404);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${wlId}`)).status).toBe(404);
   });
 
   it('reflects the owner’s state in My Shared Items', async () => {
@@ -557,7 +571,271 @@ describe('watchlist friend-sharing', () => {
 
     const res = await aliceAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
-    expect(res.body.watchlist).toEqual({ visibility: 'friends', itemCount: 1 });
+    expect(res.body.watchlists).toHaveLength(1);
+    expect(res.body.watchlists[0]).toMatchObject({
+      name: 'General',
+      audience: 'all_friends',
+      itemCount: 1,
+    });
+  });
+});
+
+// --- Audience model (V3-P5): one picker + one enforcement layer -------------
+
+/** PUT an audience for a subject via the unified endpoint. */
+async function putAudience(
+  agent: Agent,
+  kind: 'portfolio' | 'conglomerate' | 'watchlist',
+  subjectId: string,
+  body: { audience: string; friendIds?: string[]; acknowledgePublic?: boolean },
+): Promise<request.Response> {
+  return agent
+    .put(`/api/v1/social/audience/${kind}/${subjectId}`)
+    .set(...XRW)
+    .send(body);
+}
+
+/** Buy one 100-EUR share of `assetId` into `portfolioId` (worth 120 with the stub). */
+async function buyOneShare(agent: Agent, portfolioId: string, assetId: string): Promise<void> {
+  const res = await agent
+    .post(`/api/v1/portfolios/${portfolioId}/transactions`)
+    .set(...XRW)
+    .send({
+      assetId,
+      side: 'buy',
+      quantity: 1,
+      price: 100,
+      executedAt: `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`,
+    });
+  expect(res.status).toBe(201);
+}
+
+describe('audience model — specific friends (V3-P5)', () => {
+  it('shares to exactly the named friend; an un-named friend and non-friends 404', async () => {
+    const { alice, bob, aliceAgent, bobAgent, carolAgent, pid } = await scenario();
+    // carol is now a friend too — but NOT in the specific set.
+    await befriend(aliceAgent, carolAgent, 'carol');
+
+    const put = await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'specific_friends',
+      friendIds: [bob.id],
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.state.audience).toBe('specific_friends');
+    expect(put.body.state.friendIds).toEqual([bob.id]);
+
+    // Named friend sees it; un-named friend (carol) gets a 404, never 403.
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+    expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+
+    // Shared With Me: only bob has it.
+    expect((await bobAgent.get('/api/v1/social/shared')).body.portfolios).toHaveLength(1);
+    expect((await carolAgent.get('/api/v1/social/shared')).body.portfolios).toHaveLength(0);
+
+    // Unfriending bob instantly closes his specific-friend access (no cached auth).
+    await bobAgent
+      .delete(`/api/v1/social/friends/${alice.id}`)
+      .set(...XRW)
+      .send();
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+  });
+
+  it('drops a friend removed from the specific set on the very next read', async () => {
+    const { bob, carol, aliceAgent, bobAgent, carolAgent, pid } = await scenario();
+    await befriend(aliceAgent, carolAgent, 'carol');
+    await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'specific_friends',
+      friendIds: [bob.id],
+    });
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+
+    // Re-select the set to carol only — bob loses access immediately (no cached auth).
+    await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'specific_friends',
+      friendIds: [carol.id],
+    });
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+    expect((await carolAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(200);
+  });
+});
+
+describe('audience model — public links (V3-P5, §14)', () => {
+  it('renders a live read-only view logged-out, and revoke kills it instantly', async () => {
+    const { aliceAgent, pid } = await scenario();
+
+    const put = await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.state.audience).toBe('public_link');
+    expect(put.body.state.link.active).toBe(true);
+    const token = put.body.link.token as string;
+    const url = put.body.link.url as string;
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThanOrEqual(22); // ≥128-bit base64url
+    expect(url).toBe(`/api/v1/social/links/${token}`);
+
+    // A LOGGED-OUT visitor (no agent, no cookie) resolves the read-only view.
+    const anon = await request(harness.app).get(url);
+    expect(anon.status).toBe(200);
+    expect(anon.body.kind).toBe('portfolio');
+    expect(anon.body.portfolio.owner.username).toBe('alice');
+    expect(anon.body.portfolio.holdings).toHaveLength(1);
+    // Nothing beyond the shared item is reachable from the link payload.
+    expect(anon.body.portfolio).not.toHaveProperty('transactions');
+    expect(Object.keys(anon.body)).toEqual(['kind', 'portfolio']);
+
+    // Revoke by narrowing the audience — the token dies on the next request.
+    await putAudience(aliceAgent, 'portfolio', pid, { audience: 'private' });
+    expect((await request(harness.app).get(url)).status).toBe(404);
+  });
+
+  it('re-minting rotates the token; the old token stays dead', async () => {
+    const { aliceAgent, pid } = await scenario();
+    const first = await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+    const firstUrl = first.body.link.url as string;
+    expect((await request(harness.app).get(firstUrl)).status).toBe(200);
+
+    // Private, then public again → a fresh token; the first URL is dead.
+    await putAudience(aliceAgent, 'portfolio', pid, { audience: 'private' });
+    const second = await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+    const secondUrl = second.body.link.url as string;
+    expect(secondUrl).not.toBe(firstUrl);
+    expect((await request(harness.app).get(firstUrl)).status).toBe(404);
+    expect((await request(harness.app).get(secondUrl)).status).toBe(200);
+  });
+
+  it('an unknown token 404s (no existence leak)', async () => {
+    await scenario();
+    const res = await request(harness.app).get('/api/v1/social/links/not-a-real-token');
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects public_link without the explicit acknowledgment (§16 friction ladder)', async () => {
+    const { aliceAgent, pid } = await scenario();
+    const res = await putAudience(aliceAgent, 'portfolio', pid, { audience: 'public_link' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('PUBLIC_LINK_ACK_REQUIRED');
+    // No link was minted — the audience stays unchanged.
+    const state = await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`);
+    expect(state.body.audience).not.toBe('public_link');
+    expect(state.body.link.active).toBe(false);
+  });
+
+  it('serves a public conglomerate and watchlist link too', async () => {
+    const { aliceAgent, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    const cput = await putAudience(aliceAgent, 'conglomerate', cid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+    const cAnon = await request(harness.app).get(cput.body.link.url);
+    expect(cAnon.status).toBe(200);
+    expect(cAnon.body.kind).toBe('conglomerate');
+    expect(cAnon.body.conglomerate.positions).toHaveLength(1);
+  });
+});
+
+describe('audience model — a second (non-default) portfolio to one friend (V3-P5)', () => {
+  it('shares a non-default portfolio to exactly one friend end-to-end', async () => {
+    const { bob, aliceAgent, bobAgent, carolAgent, assetId, pid } = await scenario();
+    await befriend(aliceAgent, carolAgent, 'carol');
+    // The default portfolio stays private; a NEW second portfolio is the shared one.
+    await setVisibility(aliceAgent, pid, 'private');
+
+    const created = await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(created.status).toBe(201);
+    const secondPid = created.body.portfolio.id as string;
+    await buyOneShare(aliceAgent, secondPid, assetId);
+
+    await putAudience(aliceAgent, 'portfolio', secondPid, {
+      audience: 'specific_friends',
+      friendIds: [bob.id],
+    });
+
+    // Bob sees exactly the second portfolio; the default is private to everyone.
+    const bobShared = await bobAgent.get('/api/v1/social/shared');
+    expect(bobShared.body.portfolios).toHaveLength(1);
+    expect(bobShared.body.portfolios[0].portfolioId).toBe(secondPid);
+    expect(bobShared.body.portfolios[0].name).toBe('Trading');
+    expect((await bobAgent.get(`/api/v1/social/shared/${secondPid}`)).status).toBe(200);
+    expect((await bobAgent.get(`/api/v1/social/shared/${pid}`)).status).toBe(404);
+
+    // Carol (a friend, not named) sees nothing.
+    expect((await carolAgent.get('/api/v1/social/shared')).body.portfolios).toHaveLength(0);
+    expect((await carolAgent.get(`/api/v1/social/shared/${secondPid}`)).status).toBe(404);
+  });
+});
+
+describe('audience model — two watchlists behave independently (V3-P5)', () => {
+  it('two lists with different audiences are enforced separately', async () => {
+    const { aliceAgent, bobAgent, assetId } = await scenario();
+
+    const generalId = await defaultWatchlistId(aliceAgent);
+    const created = await aliceAgent
+      .post('/api/v1/workboard/watchlists')
+      .set(...XRW)
+      .send({ name: 'Tech' });
+    expect(created.status).toBe(201);
+    const techId = created.body.id as string;
+
+    // One asset in each list.
+    await aliceAgent
+      .post('/api/v1/workboard')
+      .set(...XRW)
+      .send({ assetId });
+    await aliceAgent
+      .post('/api/v1/workboard')
+      .set(...XRW)
+      .send({ assetId, watchlistId: techId });
+
+    // General → all friends; Tech → private.
+    await putAudience(aliceAgent, 'watchlist', generalId, { audience: 'all_friends' });
+    await putAudience(aliceAgent, 'watchlist', techId, { audience: 'private' });
+
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${generalId}`)).status).toBe(200);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${techId}`)).status).toBe(404);
+    let shared = await bobAgent.get('/api/v1/social/shared');
+    expect(shared.body.watchlists.map((w: { watchlistId: string }) => w.watchlistId)).toEqual([
+      generalId,
+    ]);
+
+    // Flip them — the enforcement follows each list independently.
+    await putAudience(aliceAgent, 'watchlist', generalId, { audience: 'private' });
+    await putAudience(aliceAgent, 'watchlist', techId, { audience: 'all_friends' });
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${generalId}`)).status).toBe(404);
+    expect((await bobAgent.get(`/api/v1/social/shared/watchlists/${techId}`)).status).toBe(200);
+    shared = await bobAgent.get('/api/v1/social/shared');
+    expect(shared.body.watchlists.map((w: { watchlistId: string }) => w.watchlistId)).toEqual([
+      techId,
+    ]);
+  });
+
+  it('the default General list cannot be deleted; a named list can', async () => {
+    const { aliceAgent } = await scenario();
+    const generalId = await defaultWatchlistId(aliceAgent);
+    const created = await aliceAgent
+      .post('/api/v1/workboard/watchlists')
+      .set(...XRW)
+      .send({ name: 'Tech' });
+    const techId = created.body.id as string;
+
+    expect(
+      (await aliceAgent.delete(`/api/v1/workboard/watchlists/${generalId}`).set(...XRW)).status,
+    ).toBe(400);
+    expect(
+      (await aliceAgent.delete(`/api/v1/workboard/watchlists/${techId}`).set(...XRW)).status,
+    ).toBe(204);
   });
 });
 

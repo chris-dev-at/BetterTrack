@@ -12,6 +12,7 @@ import { createConglomerateRepository } from '../data/repositories/conglomerateR
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
+import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
@@ -54,6 +55,7 @@ import {
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createCurrencyService } from '../services/currency/currencyService';
+import { createAudienceService } from '../services/social/audienceService';
 import {
   createCustomAssetService,
   type CustomAssetService,
@@ -228,6 +230,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // (the latter resolves the owner's friends when a portfolio is shared, §6.10).
   const friendshipRepo = createFriendshipRepository(db);
 
+  // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
+  // authorization-is-the-join queries behind every social read path, plus
+  // hash-only public-link minting. Injected into workboard/conglomerate/social
+  // and the realtime room-join check so authorization is decided in ONE place.
+  const shareAudienceRepo = createShareAudienceRepository(db);
+  const audience = createAudienceService({ repo: shareAudienceRepo });
+
   // Only open a real SMTP connection when the channel is configured (§11).
   const transport =
     deps.emailTransport !== undefined
@@ -321,7 +330,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const referenceBackfill = createReferenceBackfill({ assetRepo, backfill, logger });
 
   const workboardRepo = createWorkboardRepository(db);
-  const workboard = createWorkboardService({ repo: workboardRepo, referenceBackfill, userRepo });
+  const workboard = createWorkboardService({ repo: workboardRepo, referenceBackfill, audience });
 
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
@@ -372,6 +381,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     assetRepo,
     marketData,
     currencyService: currency,
+    audience,
   });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
@@ -388,6 +398,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Publishes friend.request / friend.accepted for the notification dispatcher.
   const social = createSocialService({
     repo: friendshipRepo,
+    audience,
     portfolio,
     conglomerate,
     workboard,
@@ -448,7 +459,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     resolveSession: (sessionId, userAgent) => auth.resolveSession(sessionId, userAgent),
     canViewPortfolio: async (userId, portfolioId) => {
       if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
-      return Boolean(await friendshipRepo.findSharedPortfolioForViewer(userId, portfolioId));
+      // Friend-share access goes through the SAME single enforcement layer the
+      // HTTP shared-view uses (§13.3 V3-P5), recomputed at join time (§6.9).
+      return Boolean(await audience.authorizePortfolioRead(userId, portfolioId));
     },
     liveMode,
     // Global asset or the caller's own custom asset (§10) → provider ref for

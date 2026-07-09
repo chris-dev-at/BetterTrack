@@ -2,9 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 
 import {
+  watchlistListResponseSchema,
   watchlistSharingResponseSchema,
+  watchlistSummarySchema,
   workboardListResponseSchema,
+  type WatchlistListResponse,
   type WatchlistSharingResponse,
+  type WatchlistSummary,
   type WatchlistVisibility,
   type WorkboardListResponse,
 } from '@bettertrack/contracts';
@@ -13,6 +17,40 @@ import { ApiError, apiRequest } from './apiClient';
 
 /** Shared TanStack Query key for watchlist membership — one source of truth for invalidation. */
 export const WORKBOARD_QUERY_KEY = ['workboard'] as const;
+
+/** Query key for the caller's named watchlists (V3-P5). */
+export const WATCHLISTS_QUERY_KEY = ['workboard', 'watchlists'] as const;
+
+/** `GET /workboard/watchlists` — the caller's named lists (General first) + audience. */
+export async function listWatchlists(signal?: AbortSignal): Promise<WatchlistListResponse> {
+  const data = await apiRequest<unknown>('/workboard/watchlists', { signal });
+  return watchlistListResponseSchema.parse(data);
+}
+
+/** `POST /workboard/watchlists` — create a named list. */
+export async function createWatchlist(name: string): Promise<WatchlistSummary> {
+  const data = await apiRequest<unknown>('/workboard/watchlists', {
+    method: 'POST',
+    body: { name },
+  });
+  return watchlistSummarySchema.parse(data);
+}
+
+/** `PATCH /workboard/watchlists/:id` — rename a list (never the default). */
+export async function renameWatchlist(id: string, name: string): Promise<WatchlistSummary> {
+  const data = await apiRequest<unknown>(`/workboard/watchlists/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: { name },
+  });
+  return watchlistSummarySchema.parse(data);
+}
+
+/** `DELETE /workboard/watchlists/:id` — delete a list (never the default). */
+export async function deleteWatchlist(id: string): Promise<void> {
+  await apiRequest<unknown>(`/workboard/watchlists/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
 
 /** Query key for the watchlist friend-sharing state (§6.9, V2-P9). */
 export const WATCHLIST_SHARING_QUERY_KEY = ['workboard', 'sharing'] as const;
@@ -34,17 +72,23 @@ export async function updateWatchlistSharing(
   return watchlistSharingResponseSchema.parse(data);
 }
 
-/** `GET /workboard` — user's watchlist in sort_order (PROJECTPLAN.md §6.4, §8). */
-export async function listWorkboard(signal?: AbortSignal): Promise<WorkboardListResponse> {
-  const data = await apiRequest<unknown>('/workboard', { signal });
+/** `GET /workboard[?watchlistId=]` — all items, or one named list's items (§6.4, §8). */
+export async function listWorkboard(
+  watchlistId?: string,
+  signal?: AbortSignal,
+): Promise<WorkboardListResponse> {
+  const data = await apiRequest<unknown>('/workboard', {
+    query: watchlistId ? { watchlistId } : undefined,
+    signal,
+  });
   return workboardListResponseSchema.parse(data);
 }
 
-/** `POST /workboard` — add an asset to the user's watchlist (PROJECTPLAN.md §6.4, §8). */
-export async function addToWorkboard(assetId: string): Promise<void> {
+/** `POST /workboard` — add an asset to a list (default General when omitted, §6.4, V3-P5). */
+export async function addToWorkboard(assetId: string, watchlistId?: string): Promise<void> {
   await apiRequest<unknown>('/workboard', {
     method: 'POST',
-    body: { assetId },
+    body: watchlistId ? { assetId, watchlistId } : { assetId },
   });
 }
 
@@ -72,7 +116,7 @@ export async function reorderWorkboard(itemIds: string[]): Promise<void> {
 export function useWatchlistMembership() {
   const query = useQuery({
     queryKey: WORKBOARD_QUERY_KEY,
-    queryFn: ({ signal }) => listWorkboard(signal),
+    queryFn: ({ signal }) => listWorkboard(undefined, signal),
     staleTime: 30_000,
   });
   const watchedIds = useMemo(
@@ -90,9 +134,13 @@ export function useWatchlistMembership() {
 export function useAddToWatchlist() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (assetId: string) => {
+    // Accept either a bare assetId (adds to General) or an explicit target list
+    // (V3-P5 list picker). A re-add of an already-watched asset resolves as success.
+    mutationFn: async (input: string | { assetId: string; watchlistId?: string }) => {
+      const { assetId, watchlistId } =
+        typeof input === 'string' ? { assetId: input, watchlistId: undefined } : input;
       try {
-        await addToWorkboard(assetId);
+        await addToWorkboard(assetId, watchlistId);
       } catch (err) {
         if (err instanceof ApiError && err.code === 'ALREADY_WATCHING') return;
         throw err;

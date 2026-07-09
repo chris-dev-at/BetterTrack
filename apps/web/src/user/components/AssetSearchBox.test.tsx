@@ -67,6 +67,7 @@ function workboardWith(assetId: string): WorkboardListResponse {
     items: [
       {
         id: 'item-1',
+        watchlistId: 'c0000000-0000-0000-0000-0000000000c1',
         assetId,
         sortOrder: 0,
         note: null,
@@ -273,7 +274,7 @@ describe('AssetSearchBox', () => {
       await screen.findByText('NVDA');
       await user.click(screen.getByRole('button', { name: /add nvda to watchlist/i }));
 
-      expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda');
+      expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda', undefined);
       expect(
         await screen.findByRole('button', { name: /nvda is on your watchlist/i }),
       ).toHaveAttribute('aria-pressed', 'true');
@@ -325,8 +326,14 @@ describe('AssetSearchBox', () => {
       expect(await screen.findByRole('button', { name: /retry adding nvda/i })).toBeInTheDocument();
     });
 
-    test('exposes a stub multiple-watchlists affordance', async () => {
+    test('the multiple-watchlists picker lists every named list (V3-P5)', async () => {
       vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(workboardApi.listWatchlists).mockResolvedValue({
+        watchlists: [
+          { id: 'wl-general', name: 'General', isDefault: true, itemCount: 0, audience: 'private' },
+          { id: 'wl-tech', name: 'Tech', isDefault: false, itemCount: 2, audience: 'private' },
+        ],
+      });
       const user = userEvent.setup();
       renderSearchBox();
 
@@ -334,8 +341,11 @@ describe('AssetSearchBox', () => {
       await screen.findByText('NVDA');
       await user.click(screen.getByRole('button', { name: /choose a watchlist for nvda/i }));
 
+      // Both lists are offered; picking "Tech" adds to that specific list.
       expect(await screen.findByText('General')).toBeInTheDocument();
-      expect(screen.getByText(/more lists coming soon/i)).toBeInTheDocument();
+      const techItem = await screen.findByText('Tech');
+      await user.click(techItem);
+      expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda', 'wl-tech');
     });
   });
 

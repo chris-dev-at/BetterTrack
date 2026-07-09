@@ -35,6 +35,7 @@ import { WorkboardPage } from './WorkboardPage';
 
 const ITEM_A = {
   id: '00000000-0000-0000-0000-000000000001',
+  watchlistId: 'c0000000-0000-0000-0000-0000000000c1',
   assetId: 'aa000000-0000-0000-0000-000000000001',
   sortOrder: 0,
   note: null,
@@ -49,6 +50,7 @@ const ITEM_A = {
 
 const ITEM_B = {
   id: '00000000-0000-0000-0000-000000000002',
+  watchlistId: 'c0000000-0000-0000-0000-0000000000c1',
   assetId: 'bb000000-0000-0000-0000-000000000002',
   sortOrder: 1,
   note: null,

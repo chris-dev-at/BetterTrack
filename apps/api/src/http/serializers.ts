@@ -94,6 +94,7 @@ export function toAdminInvite(row: InviteRow): AdminInvite {
 export function toWorkboardItem(item: WorkboardItemWithAsset): WorkboardItem {
   return {
     id: item.id,
+    watchlistId: item.watchlistId,
     assetId: item.assetId,
     sortOrder: item.sortOrder,
     note: item.note ?? null,

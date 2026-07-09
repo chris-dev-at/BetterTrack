@@ -239,7 +239,7 @@ function WatchlistZone() {
   // icon-add elsewhere in the app must never require a manual reload.
   const { data, isLoading, isError } = useQuery({
     queryKey: WORKBOARD_QUERY_KEY,
-    queryFn: ({ signal }) => listWorkboard(signal),
+    queryFn: ({ signal }) => listWorkboard(undefined, signal),
     staleTime: 30_000,
     refetchOnMount: 'always',
   });

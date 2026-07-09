@@ -19,7 +19,12 @@ import { useT } from '../../i18n';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
 import { useLiveFrames } from '../../lib/realtime';
-import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
+import {
+  WATCHLISTS_QUERY_KEY,
+  listWatchlists,
+  useAddToWatchlist,
+  useWatchlistMembership,
+} from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
 import { formatDateTime, formatSignedPercent } from '../../lib/format';
 import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
@@ -330,11 +335,19 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
   const containerRef = useRef<HTMLDivElement>(null);
   usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
 
+  // The caller's named lists — fetched only when the list picker opens (V3-P5).
+  const listsQuery = useQuery({
+    queryKey: WATCHLISTS_QUERY_KEY,
+    queryFn: ({ signal }) => listWatchlists(signal),
+    enabled: listPickerOpen,
+    staleTime: 30_000,
+  });
+
   const watched = watchedIds.has(assetId) || addMutation.isSuccess;
 
-  function handleAdd() {
-    if (watched || addMutation.isPending) return;
-    addMutation.mutate(assetId);
+  function handleAdd(watchlistId?: string) {
+    if (addMutation.isPending) return;
+    addMutation.mutate({ assetId, watchlistId });
   }
 
   return (
@@ -342,7 +355,9 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
       <div className="flex items-center rounded-md ring-1 ring-neutral-700" ref={containerRef}>
         <button
           type="button"
-          onClick={handleAdd}
+          onClick={() => {
+            if (!watched) handleAdd();
+          }}
           disabled={addMutation.isPending}
           aria-pressed={watched}
           aria-label={
@@ -384,19 +399,21 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           aria-label={`Watchlists for ${symbol}`}
           className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              handleAdd();
-              setListPickerOpen(false);
-            }}
-            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
-          >
-            General
-            {watched ? <span className="text-sky-400">✓</span> : null}
-          </button>
-          <p className="mt-1 px-2 text-neutral-600">More lists coming soon.</p>
+          {(listsQuery.data?.watchlists ?? []).map((list) => (
+            <button
+              key={list.id}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                handleAdd(list.isDefault ? undefined : list.id);
+                setListPickerOpen(false);
+              }}
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+            >
+              {list.name}
+            </button>
+          ))}
+          {listsQuery.isLoading ? <p className="px-2 py-1.5 text-neutral-600">…</p> : null}
         </div>
       ) : null}
 

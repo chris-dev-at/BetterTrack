@@ -12,10 +12,10 @@ const SHARED_STALE_MS = 30_000;
  * unknown owner 404s and surfaces the not-found affordance.
  */
 export function SharedWatchlistPage() {
-  const { userId = '' } = useParams<{ userId: string }>();
+  const { watchlistId = '' } = useParams<{ watchlistId: string }>();
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['social', 'shared', 'watchlist', userId],
-    queryFn: ({ signal }) => getSharedWatchlist(userId, signal),
+    queryKey: ['social', 'shared', 'watchlist', watchlistId],
+    queryFn: ({ signal }) => getSharedWatchlist(watchlistId, signal),
     staleTime: SHARED_STALE_MS,
     retry: false,
   });
@@ -46,7 +46,7 @@ export function SharedWatchlistPage() {
       <div className="flex flex-col gap-1">
         <BackLink />
         <h2 className="text-lg font-semibold text-neutral-100">
-          {data.owner.username}&rsquo;s watchlist
+          {data.owner.username}&rsquo;s {data.name}
         </h2>
       </div>
 
