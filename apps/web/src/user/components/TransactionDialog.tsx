@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
 import type {
   CashPreviewResponse,
@@ -10,7 +10,7 @@ import type {
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
+import { useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import {
@@ -19,7 +19,7 @@ import {
   updatePortfolio,
   updateTransaction,
 } from '../../lib/portfolioApi';
-import { pickDefaultSourceId, sortSourcesMainFirst } from '../portfolio/cashSourceUtils';
+import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
@@ -33,6 +33,12 @@ import {
   type DailyPoint,
 } from './priceDateLink';
 import { Alert, Button, cx } from './ui';
+
+/** Compact native-currency suffix for the Price field (falls back to the code). */
+function currencySuffix(code: string): string {
+  const map: Record<string, string> = { EUR: '€', USD: '$', GBP: '£', JPY: '¥' };
+  return map[code] ?? code;
+}
 
 /** The minimal asset identity a transaction row needs to display + post. */
 export interface TransactionDialogAsset {
@@ -80,6 +86,19 @@ export interface TransactionDialogProps {
    * → no picker (the server defaults to Main).
    */
   cashSources?: CashSource[];
+  /** The portfolio's display name, shown as the grey header subtitle (#378). */
+  portfolioName?: string;
+  /**
+   * The Main cash source's EUR balance, for the buy-from-cash "Max affordable"
+   * chip (#378). Web always funds from Main (no source picker), so this is the
+   * balance a pay-from-cash buy draws on. Omitted → no affordability Max.
+   */
+  availableCashEur?: number;
+  /**
+   * The quantity currently held of the locked/edited asset, for the sell "Max"
+   * chip (#378). Omitted → no held Max (e.g. a freshly searched asset).
+   */
+  heldQuantity?: number;
   /** Today as ISO `YYYY-MM-DD`, injectable for deterministic tests. */
   today?: string;
 }
@@ -111,6 +130,12 @@ interface Row {
    * drop the user's cash-link choice.
    */
   cashLinked: boolean;
+  /**
+   * Backdated pay-from-cash: settle the cash leg as of today (#378). Only sent
+   * on a cash-linked BUY whose cash was insufficient at the buy date — the
+   * acquisition keeps its past date, the withdrawal moves to today.
+   */
+  settleCashAsOfToday: boolean;
 }
 
 /**
@@ -157,11 +182,27 @@ function formatMoney(amount: number): string {
   return amount.toFixed(2);
 }
 
+/**
+ * Outlined field (#378 brand tokens): #171717 fill, #262626 border, tabular
+ * figures, and the one accent — a gold ring on focus. Paired with a `group`
+ * wrapper the label turns gold too (`group-focus-within`). Number spinners are
+ * suppressed so the €-suffix / link adornment sits flush.
+ */
 const inputClass = cx(
-  'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-  'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
-  'focus:outline-none focus:ring-2 focus:ring-sky-500',
+  'w-full rounded-lg bg-neutral-900 px-3 py-2.5 text-sm tabular-nums text-neutral-100',
+  'ring-1 ring-inset ring-neutral-800 placeholder:text-neutral-600',
+  'focus:outline-none focus:ring-2 focus:ring-[#F6B82E]',
+  '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&]:[-moz-appearance:textfield]',
 );
+
+/** Grey uppercase field label that turns gold while its field is focused. */
+function FieldLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-neutral-500 transition-colors group-focus-within:text-[#F6B82E]">
+      {children}
+    </span>
+  );
+}
 
 /** Local UTC-day so the default date matches the value-series day key (§6.9). */
 function isoToday(today?: string): string {
@@ -191,6 +232,7 @@ function makeRow(
     date: today,
     note: '',
     cashLinked: false,
+    settleCashAsOfToday: false,
     ...seed,
   };
 }
@@ -216,6 +258,7 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
         date: t.executedAt.slice(0, 10),
         note: t.note ?? '',
         cashLinked: false,
+        settleCashAsOfToday: false,
       },
     ];
   }
@@ -294,6 +337,9 @@ function validateRow(row: Row): { input?: TransactionInput; error?: string } {
       // §14: the checkbox's meaning follows the row's own side, never a stale one.
       payFromCash: row.cashLinked && row.side === 'buy' ? true : undefined,
       addProceedsToCash: row.cashLinked && row.side === 'sell' ? true : undefined,
+      // #378: only a cash-linked buy can settle its cash leg as of today.
+      settleCashAsOfToday:
+        row.cashLinked && row.side === 'buy' && row.settleCashAsOfToday ? true : undefined,
     },
   };
 }
@@ -332,6 +378,21 @@ function cashAmountForRow(row: Row): number | null {
 }
 
 /**
+ * The row's order value for the pinned footer Total (#378): cost on a buy
+ * (quantity·price + fee), proceeds on a sell (quantity·price − fee). Unlike
+ * {@link cashAmountForRow} it keeps non-positive values so the Total tracks
+ * live; `null` only while the row is incomplete.
+ */
+function orderTotalForRow(row: Row): number | null {
+  const resolved = resolveRowQuantityPrice(row);
+  if (!resolved) return null;
+  const feeInput = Number(row.fee);
+  const fee = row.fee.trim() !== '' && Number.isFinite(feeInput) && feeInput >= 0 ? feeInput : 0;
+  const gross = resolved.quantity * resolved.price;
+  return row.side === 'buy' ? gross + fee : gross - fee;
+}
+
+/**
  * Record / edit transactions (PROJECTPLAN.md §6.9, §7.3 `TransactionDialog`).
  * Single (locked asset or free search pick), edit, and bulk-prefilled in one
  * component; the buy flow always posts the `{ transactions: [...] }` batch.
@@ -343,14 +404,10 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const today = isoToday(props.today);
   const headingId = useId();
 
-  // Active cash sources for the cash-link picker (V3-P3). Only meaningful when
-  // more than one exists; otherwise every cash-linked flow uses Main.
-  const pickableSources = sortSourcesMainFirst(
-    (props.cashSources ?? []).filter((s) => !s.archivedAt),
-  );
-  const [cashSourceId, setCashSourceId] = useState<string | null>(() =>
-    pickDefaultSourceId(props.cashSources ?? []),
-  );
+  // Web funds/receives cash from the portfolio's Main source — no source picker
+  // (#378). The API still accepts `cashSourceId`, so send the resolved Main id
+  // when known; the server falls back to Main when it is omitted.
+  const cashSourceId = pickDefaultSourceId(props.cashSources ?? []);
 
   const [rows, setRows] = useState<Row[]>(() => rowsFromProps(props, today));
   const [picking, setPicking] = useState<boolean>(rows.length === 0);
@@ -485,14 +542,24 @@ export function TransactionDialog(props: TransactionDialogProps) {
     setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   }
 
-  // --- Cash-link preview (§14, #220) ----------------------------------------
+  // --- Cash-link preview (§14, #220; date-aware #378) -----------------------
   // Eligible only for the single-asset create row (bulk prefill is out of
   // scope — V2-P7 — and an edit doesn't carry cash flags at all).
   const cashRow = linkingEnabled && rows.length === 1 ? rows[0]! : null;
   const cashRowLinked = cashRow?.cashLinked ?? false;
   const cashRowSide = cashRow?.side ?? null;
+  const cashRowDate = cashRow?.date ?? null;
   const cashAmount = cashRowLinked && cashRow ? cashAmountForRow(cashRow) : null;
   const debouncedCashAmount = useDebounce(cashAmount, 400);
+  // A backdated pay-from-cash BUY asks the server for the cash spendable AS OF
+  // its date (#378), so the preview can warn "short back then" instead of
+  // checking only today's balance.
+  const asOfDateForPreview =
+    cashRowLinked && cashRowSide === 'buy' && cashRowDate && cashRowDate < today
+      ? cashRowDate
+      : undefined;
+  /** Set once the user picks the settle-as-of-today opt-in, so we stop defaulting it. */
+  const settleTouched = useRef(false);
 
   const [cashPreview, setCashPreview] = useState<CashPreviewResponse | null>(null);
   const [cashPreviewLoading, setCashPreviewLoading] = useState(false);
@@ -510,11 +577,24 @@ export function TransactionDialog(props: TransactionDialogProps) {
         kind: cashRowSide === 'sell' ? 'sell_proceeds' : 'buy',
         amountEur: debouncedCashAmount,
         sourceId: cashSourceId ?? undefined,
+        asOfDate: asOfDateForPreview,
       },
       controller.signal,
     )
       .then((res) => {
-        if (!controller.signal.aborted) setCashPreview(res);
+        if (controller.signal.aborted) return;
+        setCashPreview(res);
+        // Default the settle-as-of-today opt-in ON the first time the warning
+        // applies — affordable today, short as of the buy date — unless the user
+        // has already made a choice. They can still opt out (see the card).
+        if (
+          cashRowSide === 'buy' &&
+          res.sufficient &&
+          res.asOfSufficient === false &&
+          !settleTouched.current
+        ) {
+          setSingleRow({ settleCashAsOfToday: true });
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) setCashPreview(null);
@@ -523,13 +603,78 @@ export function TransactionDialog(props: TransactionDialogProps) {
         if (!controller.signal.aborted) setCashPreviewLoading(false);
       });
     return () => controller.abort();
-  }, [portfolioId, cashRowLinked, cashRowSide, debouncedCashAmount, cashSourceId]);
+  }, [
+    portfolioId,
+    cashRowLinked,
+    cashRowSide,
+    debouncedCashAmount,
+    cashSourceId,
+    asOfDateForPreview,
+  ]);
 
-  const cashInsufficient = cashRowLinked && cashPreview !== null && !cashPreview.sufficient;
+  const settleToday = cashRow?.settleCashAsOfToday ?? false;
+  // Affordable today but short as of the past buy date → the #378 warning path.
+  const backdatedShort =
+    cashRowLinked &&
+    cashRowSide === 'buy' &&
+    cashPreview !== null &&
+    cashPreview.sufficient &&
+    cashPreview.asOfSufficient === false;
+  // Not enough cash even today (the classic overdraw block).
+  const cashAfterNegative = cashRowLinked && cashPreview !== null && !cashPreview.sufficient;
+  // Record is blocked when it can't be funded: short today, or short back then
+  // with the user opting NOT to settle as of today.
+  const cashBlocksRecord = cashAfterNegative || (backdatedShort && !settleToday);
 
   function toggleCashLinked() {
     if (!cashRow) return;
-    setSingleRow({ cashLinked: !cashRow.cashLinked });
+    settleTouched.current = false;
+    setSingleRow({ cashLinked: !cashRow.cashLinked, settleCashAsOfToday: false });
+  }
+
+  function toggleSettleToday() {
+    if (!cashRow) return;
+    settleTouched.current = true;
+    setSingleRow({ settleCashAsOfToday: !cashRow.settleCashAsOfToday });
+  }
+
+  /** Max affordable/held for the current row, in the active entry unit (#378). */
+  function maxForRow(row: Row): number | null {
+    if (row.side === 'sell') {
+      if (props.heldQuantity == null || props.heldQuantity <= 0) return null;
+      if (row.entryMode === 'amount') {
+        const price = Number(row.price);
+        return row.price.trim() !== '' && Number.isFinite(price) && price > 0
+          ? props.heldQuantity * price
+          : null;
+      }
+      return props.heldQuantity;
+    }
+    // Buy: only when funding from cash and the amount is in EUR (Main is EUR, so
+    // an affordability estimate is exact only for a EUR-priced asset).
+    if (!row.cashLinked || props.availableCashEur == null || row.asset.currency !== 'EUR') {
+      return null;
+    }
+    if (row.entryMode === 'amount') {
+      return props.availableCashEur > 0 ? props.availableCashEur : null;
+    }
+    const price = Number(row.price);
+    if (row.price.trim() === '' || !Number.isFinite(price) || price <= 0) return null;
+    const feeInput = Number(row.fee);
+    const fee = row.fee.trim() !== '' && Number.isFinite(feeInput) && feeInput >= 0 ? feeInput : 0;
+    const qty = (props.availableCashEur - fee) / price;
+    return qty > 0 ? qty : null;
+  }
+
+  function fillMax(row: Row) {
+    const max = maxForRow(row);
+    if (max == null) return;
+    const patch: Partial<Row> =
+      row.entryMode === 'amount'
+        ? { amount: formatMoney(max) }
+        : { quantity: formatDerivedQuantity(max) };
+    if (row.key === cashRow?.key && linkAsset) handleLinkedChange(patch);
+    else updateRow(row.key, patch);
   }
 
   function pickAsset(item: SearchResultItem) {
@@ -539,6 +684,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       name: item.name,
       currency: item.currency,
     };
+    settleTouched.current = false;
     setRows([makeRow('picked', asset, today, { cashLinked: props.defaultPayFromCash ?? false })]);
     setPicking(false);
     setError(null);
@@ -547,7 +693,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (rows.length === 0) {
-      setError('Select an asset first.');
+      setError(t('portfolio.transaction.selectAssetFirst'));
       return;
     }
 
@@ -558,9 +704,9 @@ export function TransactionDialog(props: TransactionDialogProps) {
         setError(rowError);
         return;
       }
-      // Route a cash-linked movement to the chosen source (V3-P3); only the
-      // single eligible create row carries a cash link, and only when a real
-      // source was resolved (else the server funds/receives from Main).
+      // Route a cash-linked movement to the chosen source (V3-P3); web always
+      // funds/receives from Main (no picker, #378) but keeps the API's
+      // `cashSourceId` working by sending the resolved Main id when known.
       if (row.key === cashRow?.key && row.cashLinked && cashSourceId) {
         input!.cashSourceId = cashSourceId;
       }
@@ -568,9 +714,13 @@ export function TransactionDialog(props: TransactionDialogProps) {
     }
 
     // Never a silent negative (§14): the live preview already disables Record,
-    // but re-check here too — the same block a race or a stale preview relies on.
-    if (cashInsufficient) {
-      setError('That would take the cash balance negative.');
+    // but re-check here too — the block a race or a stale preview relies on.
+    if (cashBlocksRecord) {
+      setError(
+        backdatedShort
+          ? t('portfolio.transaction.backdatedBlocked')
+          : t('portfolio.transaction.cashNegative'),
+      );
       return;
     }
 
@@ -598,7 +748,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       } else {
         await createTransactions(portfolioId, inputs);
         // Sticky default (§14): remember this choice for next time, but only
-        // when it actually changed — the checkbox itself is always shown, never
+        // when it actually changed — the toggle itself is always shown, never
         // silently pre-applied.
         if (cashRow && cashRow.cashLinked !== (props.defaultPayFromCash ?? false)) {
           await updatePortfolio(portfolioId, { defaultPayFromCash: cashRow.cashLinked }).catch(
@@ -617,35 +767,79 @@ export function TransactionDialog(props: TransactionDialogProps) {
       ) {
         setError(err.message);
       } else {
-        setError('Could not save. Please try again.');
+        setError(t('portfolio.transaction.saveError'));
       }
       setSubmitting(false);
     }
   }
 
-  const title = isEdit ? 'Edit transaction' : 'Record transaction';
+  const title = isEdit
+    ? t('portfolio.transaction.titleEdit')
+    : t('portfolio.transaction.titleCreate');
+
+  // Footer total — the order value in the (first) row's native currency: cost on
+  // a buy, proceeds on a sell. Sparse rows sum for the bulk flow.
+  const totalCurrency = rows[0]?.asset.currency ?? 'EUR';
+  let total: number | null = null;
+  for (const row of rows) {
+    const rowTotal = orderTotalForRow(row);
+    if (rowTotal != null) total = (total ?? 0) + rowTotal;
+  }
+
+  const ctaLabel = isEdit
+    ? t('portfolio.transaction.saveChanges')
+    : rows.length === 1
+      ? rows[0]!.side === 'sell'
+        ? t('portfolio.transaction.recordSell')
+        : t('portfolio.transaction.recordBuy')
+      : t('portfolio.transaction.record');
+
+  const footer = picking ? undefined : (
+    <div className="flex flex-col gap-3">
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <div className="flex items-baseline justify-between">
+        <span className="text-sm text-neutral-400">{t('portfolio.transaction.total')}</span>
+        <span className="text-2xl font-bold tabular-nums text-[#F6B82E]">
+          {total == null ? '—' : <MoneyText amount={total} currency={totalCurrency} />}
+        </span>
+      </div>
+      <button
+        type="submit"
+        form={headingId}
+        disabled={submitting || cashBlocksRecord}
+        className={cx(
+          'w-full rounded-lg px-4 py-3 text-sm font-semibold text-black transition',
+          'bg-[#F6B82E] hover:bg-[#ffca4d] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E] focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900',
+          'disabled:cursor-not-allowed disabled:opacity-50',
+        )}
+      >
+        {submitting ? t('portfolio.transaction.saving') : ctaLabel}
+      </button>
+    </div>
+  );
 
   return (
     <Dialog
       title={title}
+      description={props.portfolioName}
       onClose={onClose}
-      widthClassName={rows.length > 1 ? 'max-w-2xl' : 'max-w-lg'}
+      footer={footer}
+      widthClassName="max-w-lg"
     >
       {picking ? (
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-neutral-400">Search for the asset you transacted.</p>
+          <p className="text-sm text-neutral-400">{t('portfolio.transaction.searchPrompt')}</p>
           <AssetSearchBox
             onSelect={pickAsset}
             autoFocus
-            placeholder="Search to record a buy/sell…"
+            placeholder={t('portfolio.transaction.searchPlaceholder')}
           />
+          <Button type="button" variant="secondary" onClick={onClose}>
+            {t('portfolio.transaction.cancel')}
+          </Button>
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4" aria-labelledby={headingId}>
-          <span id={headingId} className="sr-only">
-            {title}
-          </span>
-
+        <form onSubmit={handleSubmit} id={headingId} className="flex flex-col gap-5">
           {rows.map((row, index) => {
             // The link assist lives on the single-asset create row (see above).
             const link: RowLink | undefined =
@@ -660,58 +854,45 @@ export function TransactionDialog(props: TransactionDialogProps) {
                     onPriceBlur: handlePriceBlur,
                   }
                 : undefined;
-            // The cash-link checkbox lives on the same eligible row (see above).
+            // The cash-link toggle lives on the same eligible row (see above).
             const cash: RowCash | undefined =
               cashRow && cashRow.key === row.key
                 ? {
                     checked: row.cashLinked,
                     loading: cashPreviewLoading,
                     preview: cashPreview,
-                    insufficient: cashInsufficient,
+                    afterNegative: cashAfterNegative,
+                    backdatedShort,
+                    settleToday,
+                    buyDate: row.date,
                     onToggle: toggleCashLinked,
-                    sources: pickableSources,
-                    sourceId: cashSourceId,
-                    sourceLabel: t('portfolio.cash.sourceLabel'),
-                    onSourceChange: setCashSourceId,
+                    onToggleSettleToday: toggleSettleToday,
                   }
                 : undefined;
+            const canChangeAsset = !isEdit && !props.asset && !props.prefill && rows.length === 1;
             return (
               <RowFields
                 key={row.key}
                 row={row}
-                showAssetHeader={rows.length > 1 || isEdit || !!props.asset}
+                t={t}
+                showAssetHeader={rows.length > 1}
                 showDivider={index > 0}
+                onChangeAsset={
+                  canChangeAsset
+                    ? () => {
+                        setRows([]);
+                        setPicking(true);
+                        setError(null);
+                      }
+                    : undefined
+                }
                 onChange={link ? handleLinkedChange : (patch) => updateRow(row.key, patch)}
+                onFillMax={maxForRow(row) != null ? () => fillMax(row) : undefined}
                 link={link}
                 cash={cash}
               />
             );
           })}
-
-          {!isEdit && !props.asset && !props.prefill ? (
-            <button
-              type="button"
-              onClick={() => {
-                setRows([]);
-                setPicking(true);
-                setError(null);
-              }}
-              className="self-start text-xs text-neutral-500 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            >
-              ← Change asset
-            </button>
-          ) : null}
-
-          {error ? <Alert tone="error">{error}</Alert> : null}
-
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={submitting || cashInsufficient}>
-              {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Record'}
-            </Button>
-          </div>
         </form>
       )}
     </Dialog>
@@ -762,28 +943,28 @@ export interface RowLink {
   onPriceBlur: () => void;
 }
 
-/** "Pay from cash" / "add proceeds to cash" controls for the eligible row (§14). */
+/** Pay-from-cash card controls for the eligible row (§14; date-aware #378). */
 export interface RowCash {
   checked: boolean;
   /** The live preview is still loading. */
   loading: boolean;
   preview: CashPreviewResponse | null;
-  /** The checked amount would take the cash balance negative — block Record. */
-  insufficient: boolean;
+  /** The buy would take TODAY's cash balance negative — a hard overdraw. */
+  afterNegative: boolean;
+  /** Affordable today but short as of the past buy date — the #378 warning. */
+  backdatedShort: boolean;
+  /** The settle-as-of-today opt-in is on. */
+  settleToday: boolean;
+  /** The buy's date, for the backdated warning copy. */
+  buyDate: string;
   onToggle: () => void;
-  /** Active cash sources; a picker shows only when more than one exists (V3-P3). */
-  sources: CashSource[];
-  /** The currently chosen source id (null when none resolved). */
-  sourceId: string | null;
-  /** Translated "Cash source" label for the picker. */
-  sourceLabel: string;
-  onSourceChange: (id: string) => void;
+  onToggleSettleToday: () => void;
 }
 
 /** Small "auto" marker so a fetched value is never mistaken for a typed one. */
 function AutoHint() {
   return (
-    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide text-sky-400">
+    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide text-[#F6B82E]">
       auto
     </span>
   );
@@ -794,8 +975,8 @@ function LinkGlyph({ linked }: { linked: boolean }) {
   return (
     <svg
       viewBox="0 0 24 24"
-      width="14"
-      height="14"
+      width="15"
+      height="15"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
@@ -820,213 +1001,446 @@ function LinkGlyph({ linked }: { linked: boolean }) {
   );
 }
 
+/** Downward chevron for the asset-picker card (the one gold affordance there). */
+function Chevron() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  );
+}
+
+/** Emerald/red segmented Buy · Sell toggle (unselected: flat dark grey). */
+function SideToggle({
+  side,
+  symbol,
+  t,
+  onChange,
+}: {
+  side: TransactionSide;
+  symbol: string;
+  t: TranslateFn;
+  onChange: (side: TransactionSide) => void;
+}) {
+  const seg = (value: TransactionSide, selectedCls: string) =>
+    cx(
+      'flex-1 rounded-md px-3 py-2 text-sm font-semibold transition',
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
+      side === value ? selectedCls : 'text-neutral-400 hover:text-neutral-200',
+    );
+  return (
+    <div
+      role="group"
+      aria-label={t('portfolio.transaction.sideAria', { symbol })}
+      className="flex gap-2 rounded-lg bg-neutral-900 p-1 ring-1 ring-inset ring-neutral-800"
+    >
+      <button
+        type="button"
+        aria-pressed={side === 'buy'}
+        onClick={() => onChange('buy')}
+        className={seg(
+          'buy',
+          'bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/40',
+        )}
+      >
+        {t('portfolio.transaction.buy')}
+      </button>
+      <button
+        type="button"
+        aria-pressed={side === 'sell'}
+        onClick={() => onChange('sell')}
+        className={seg('sell', 'bg-red-500/10 text-red-400 ring-1 ring-inset ring-red-500/40')}
+      >
+        {t('portfolio.transaction.sell')}
+      </button>
+    </div>
+  );
+}
+
+/** The asset selector: dark card, grey label, bold symbol + name, gold chevron. */
+function AssetCard({
+  asset,
+  t,
+  onChangeAsset,
+}: {
+  asset: TransactionDialogAsset;
+  t: TranslateFn;
+  onChangeAsset?: () => void;
+}) {
+  const body = (
+    <>
+      <span className="flex flex-col text-left">
+        <span className="text-[0.7rem] font-medium uppercase tracking-wide text-neutral-500">
+          {t('portfolio.transaction.assetLabel')}
+        </span>
+        <span className="font-mono text-base font-semibold text-neutral-100">{asset.symbol}</span>
+        <span className="truncate text-xs text-neutral-500">{asset.name}</span>
+      </span>
+      {onChangeAsset ? (
+        <span className="shrink-0 text-[#F6B82E]">
+          <Chevron />
+        </span>
+      ) : null}
+    </>
+  );
+  if (!onChangeAsset) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-neutral-900 px-4 py-3 ring-1 ring-inset ring-neutral-800">
+        {body}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onChangeAsset}
+      aria-label={t('portfolio.transaction.changeAssetAria')}
+      className="flex items-center justify-between gap-3 rounded-lg bg-neutral-900 px-4 py-3 text-left ring-1 ring-inset ring-neutral-800 transition hover:ring-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]"
+    >
+      {body}
+    </button>
+  );
+}
+
+/** Gold "Max" chip that fills the max affordable/held into the active field. */
+function MaxChip({ symbol, t, onClick }: { symbol: string; t: TranslateFn; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={t('portfolio.transaction.maxAria', { symbol })}
+      className="rounded-md bg-[#F6B82E]/10 px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[#F6B82E] ring-1 ring-inset ring-[#F6B82E]/30 transition hover:bg-[#F6B82E]/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]"
+    >
+      {t('portfolio.transaction.max')}
+    </button>
+  );
+}
+
+/** A checkbox styled as a switch (keeps role=checkbox for a11y + tests). */
+function ToggleSwitch({
+  checked,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  ariaLabel: string;
+}) {
+  return (
+    <span className="relative inline-flex h-5 w-9 shrink-0 items-center">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onChange}
+        aria-label={ariaLabel}
+        className="peer absolute inset-0 z-10 m-0 cursor-pointer opacity-0"
+      />
+      <span
+        aria-hidden="true"
+        className="h-5 w-9 rounded-full bg-neutral-700 transition-colors peer-checked:bg-[#F6B82E] peer-focus-visible:ring-2 peer-focus-visible:ring-[#F6B82E] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-neutral-900"
+      />
+      <span
+        aria-hidden="true"
+        className="absolute left-0.5 h-4 w-4 rounded-full bg-white transition-transform peer-checked:translate-x-4"
+      />
+    </span>
+  );
+}
+
+/** The pay-from-cash card: toggle, live "Cash after", and the #378 warning. */
+function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn }) {
+  const isSell = row.side === 'sell';
+  const toggleLabel = isSell
+    ? t('portfolio.transaction.addProceedsToCash')
+    : t('portfolio.transaction.payFromCash');
+  const after = cash.preview?.afterEur ?? null;
+  return (
+    <div className="flex flex-col gap-3 rounded-lg bg-neutral-900 p-4 ring-1 ring-inset ring-neutral-800">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-neutral-200">{toggleLabel}</span>
+        <ToggleSwitch checked={cash.checked} onChange={cash.onToggle} ariaLabel={toggleLabel} />
+      </div>
+
+      {cash.checked ? (
+        <p
+          className="flex items-baseline justify-between text-sm"
+          role="status"
+          aria-label={t('portfolio.transaction.cashPreviewAria')}
+        >
+          {cash.loading || !cash.preview ? (
+            <span className="text-neutral-500">{t('portfolio.transaction.cashCalculating')}</span>
+          ) : (
+            <>
+              <span className="text-neutral-400">{t('portfolio.transaction.cashAfter')}</span>
+              <span className="flex items-center gap-2 tabular-nums">
+                <span className={cash.afterNegative ? 'text-red-400' : 'text-emerald-400'}>
+                  <MoneyText amount={after} currency="EUR" />
+                </span>
+                {cash.afterNegative ? (
+                  <span className="text-xs text-red-400">
+                    {t('portfolio.transaction.cashShort')}{' '}
+                    <MoneyText amount={cash.preview.shortfallEur} currency="EUR" />
+                  </span>
+                ) : null}
+              </span>
+            </>
+          )}
+        </p>
+      ) : null}
+
+      {cash.checked && cash.backdatedShort ? (
+        <div className="flex flex-col gap-2 rounded-md border border-[#F6B82E]/40 bg-[#F6B82E]/10 p-3">
+          <p className="text-xs leading-relaxed text-[#F6B82E]">
+            {t('portfolio.transaction.backdatedWarning', { date: cash.buyDate })}
+          </p>
+          <label className="flex items-center gap-2 text-xs font-medium text-neutral-200">
+            <input
+              type="checkbox"
+              checked={cash.settleToday}
+              onChange={cash.onToggleSettleToday}
+              aria-label={t('portfolio.transaction.deductToday')}
+              className="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-[#F6B82E] focus:ring-[#F6B82E]"
+            />
+            {t('portfolio.transaction.deductToday')}
+          </label>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RowFields({
   row,
+  t,
   showAssetHeader,
   showDivider,
+  onChangeAsset,
   onChange,
+  onFillMax,
   link,
   cash,
 }: {
   row: Row;
+  t: TranslateFn;
   showAssetHeader: boolean;
   showDivider: boolean;
+  onChangeAsset?: () => void;
   onChange: (patch: Partial<Row>) => void;
+  onFillMax?: () => void;
   link?: RowLink;
   cash?: RowCash;
 }) {
+  const symbol = row.asset.symbol;
   const isAmountMode = row.entryMode === 'amount';
   const derived =
     isAmountMode && row.price.trim() !== '' && row.amount.trim() !== ''
       ? deriveQuantityFromAmount(Number(row.price), Number(row.amount))
       : null;
-  const amountLabel = row.side === 'sell' ? 'Amount received' : 'Amount invested';
+  const amountLabel = isAmountMode
+    ? row.side === 'sell'
+      ? t('portfolio.transaction.amountReceivedLabel')
+      : t('portfolio.transaction.amountInvestedLabel')
+    : t('portfolio.transaction.quantityLabel');
+  const amountAria =
+    row.side === 'sell'
+      ? t('portfolio.transaction.amountReceivedAria', { symbol })
+      : t('portfolio.transaction.amountInvestedAria', { symbol });
 
-  const toggleBtn = (mode: EntryMode) =>
+  const modeBtn = (mode: EntryMode) =>
     cx(
       'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-      'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
       row.entryMode === mode
-        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-600'
+        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700'
         : 'text-neutral-400 hover:text-neutral-200',
     );
 
   return (
-    <div className={cx('flex flex-col gap-3', showDivider && 'border-t border-neutral-800 pt-4')}>
+    <div className={cx('flex flex-col gap-5', showDivider && 'border-t border-neutral-800 pt-5')}>
       {showAssetHeader ? (
         <div className="flex items-baseline gap-2">
-          <span className="font-mono text-sm font-semibold text-neutral-100">
-            {row.asset.symbol}
-          </span>
+          <span className="font-mono text-sm font-semibold text-neutral-100">{symbol}</span>
           <span className="truncate text-xs text-neutral-500">{row.asset.name}</span>
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Side</span>
-          <select
-            value={row.side}
-            onChange={(e) => onChange({ side: e.target.value as TransactionSide })}
-            aria-label={`Side for ${row.asset.symbol}`}
-            className={inputClass}
-          >
-            <option value="buy">Buy</option>
-            <option value="sell">Sell</option>
-          </select>
-        </label>
-
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            Date
+      {/* Buy · Sell segmented toggle + Date, at the top. */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex-1">
+          <SideToggle
+            side={row.side}
+            symbol={symbol}
+            t={t}
+            onChange={(side) => onChange({ side })}
+          />
+        </div>
+        <label className="group flex flex-col gap-1.5 sm:w-40">
+          <FieldLabel>
+            {t('portfolio.transaction.dateLabel')}
             {link?.dateAuto ? <AutoHint /> : null}
-          </span>
+          </FieldLabel>
           <input
             type="date"
             value={row.date}
             onChange={(e) => onChange({ date: e.target.value })}
-            aria-label={`Date for ${row.asset.symbol}`}
+            aria-label={t('portfolio.transaction.dateAria', { symbol })}
             className={inputClass}
           />
         </label>
+      </div>
 
-        {link ? (
-          <div className="col-span-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={link.onToggle}
-              disabled={link.loading}
-              aria-pressed={link.linked}
-              aria-label={link.linked ? 'Unlink date and price' : 'Link date and price'}
-              className={cx(
-                'inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition',
-                'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-50',
-                link.linked
-                  ? 'bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/40'
-                  : 'text-neutral-400 ring-1 ring-inset ring-neutral-700 hover:text-neutral-200',
-              )}
-            >
-              <LinkGlyph linked={link.linked} />
-              {link.linked ? 'Linked' : 'Unlinked'}
-            </button>
-            <span className="text-xs text-neutral-500" role="status">
-              {link.loading
-                ? 'Loading price history…'
-                : link.linked
-                  ? 'Date ↔ price auto-fill'
-                  : 'Manual — fields independent'}
-            </span>
-          </div>
-        ) : null}
+      {/* Asset selector card (single-asset flows). */}
+      {!showAssetHeader ? (
+        <AssetCard asset={row.asset} t={t} onChangeAsset={onChangeAsset} />
+      ) : null}
 
-        <div
-          className="col-span-2 flex gap-1 rounded-md bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-700"
-          role="group"
-          aria-label={`Entry mode for ${row.asset.symbol}`}
+      {/* Quantity ⇄ Amount toggle. */}
+      <div
+        className="flex gap-1 rounded-lg bg-neutral-900 p-1 ring-1 ring-inset ring-neutral-800"
+        role="group"
+        aria-label={t('portfolio.transaction.entryModeAria', { symbol })}
+      >
+        <button
+          type="button"
+          onClick={() => switchEntryMode(row, 'quantity', onChange)}
+          aria-pressed={!isAmountMode}
+          className={modeBtn('quantity')}
         >
-          <button
-            type="button"
-            onClick={() => switchEntryMode(row, 'quantity', onChange)}
-            aria-pressed={!isAmountMode}
-            className={toggleBtn('quantity')}
-          >
-            By quantity
-          </button>
-          <button
-            type="button"
-            onClick={() => switchEntryMode(row, 'amount', onChange)}
-            aria-pressed={isAmountMode}
-            className={toggleBtn('amount')}
-          >
-            By amount
-          </button>
-        </div>
+          {t('portfolio.transaction.byQuantity')}
+        </button>
+        <button
+          type="button"
+          onClick={() => switchEntryMode(row, 'amount', onChange)}
+          aria-pressed={isAmountMode}
+          className={modeBtn('amount')}
+        >
+          {t('portfolio.transaction.byAmount')}
+        </button>
+      </div>
 
-        {isAmountMode ? (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {amountLabel} ({row.asset.currency})
-            </span>
-            <input
-              type="number"
-              inputMode="decimal"
-              step="any"
-              min="0"
-              value={row.amount}
-              onChange={(e) => onChange({ amount: e.target.value })}
-              aria-label={`${amountLabel} for ${row.asset.symbol}`}
-              className={inputClass}
-            />
-          </label>
-        ) : (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">Quantity</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              step="any"
-              min="0"
-              value={row.quantity}
-              onChange={(e) => onChange({ quantity: e.target.value })}
-              aria-label={`Quantity for ${row.asset.symbol}`}
-              className={inputClass}
-            />
-          </label>
-        )}
-
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            Price ({row.asset.currency}){link?.priceAuto ? <AutoHint /> : null}
+      {/* Quantity | Price row. */}
+      <div className="grid grid-cols-2 gap-3">
+        <label className="group flex flex-col gap-1.5">
+          <span className="flex min-h-5 items-center justify-between gap-2">
+            <FieldLabel>{amountLabel}</FieldLabel>
+            {onFillMax ? <MaxChip symbol={symbol} t={t} onClick={onFillMax} /> : null}
           </span>
           <input
             type="number"
             inputMode="decimal"
             step="any"
             min="0"
-            value={row.price}
-            onChange={(e) => onChange({ price: e.target.value })}
-            onBlur={link ? link.onPriceBlur : undefined}
-            aria-label={`Price for ${row.asset.symbol}`}
+            value={isAmountMode ? row.amount : row.quantity}
+            onChange={(e) =>
+              onChange(isAmountMode ? { amount: e.target.value } : { quantity: e.target.value })
+            }
+            aria-label={
+              isAmountMode ? amountAria : t('portfolio.transaction.quantityAria', { symbol })
+            }
             className={inputClass}
           />
         </label>
 
-        {link?.note ? (
-          <p className="col-span-2 text-xs text-amber-400" role="status">
-            {link.note}
-          </p>
-        ) : null}
+        <label className="group flex flex-col gap-1.5">
+          <span className="flex min-h-5 items-center">
+            <FieldLabel>
+              {t('portfolio.transaction.priceLabel')}
+              {link?.priceAuto ? <AutoHint /> : null}
+            </FieldLabel>
+          </span>
+          <span className="relative">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              min="0"
+              value={row.price}
+              onChange={(e) => onChange({ price: e.target.value })}
+              onBlur={link ? link.onPriceBlur : undefined}
+              aria-label={t('portfolio.transaction.priceAria', { symbol })}
+              className={cx(inputClass, link ? 'pr-14' : 'pr-8')}
+            />
+            <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-1.5">
+              <span className="text-sm text-neutral-500">{currencySuffix(row.asset.currency)}</span>
+              {link ? (
+                <button
+                  type="button"
+                  onClick={link.onToggle}
+                  disabled={link.loading}
+                  aria-pressed={link.linked}
+                  aria-label={link.linked ? 'Unlink date and price' : 'Link date and price'}
+                  className={cx(
+                    'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]',
+                    link.linked ? 'text-[#F6B82E]' : 'text-neutral-500 hover:text-neutral-300',
+                  )}
+                >
+                  <LinkGlyph linked={link.linked} />
+                </button>
+              ) : null}
+            </span>
+          </span>
+        </label>
+      </div>
 
-        {isAmountMode ? (
-          <p
-            className="col-span-2 text-xs text-neutral-400"
-            role="status"
-            aria-label={`Derived quantity for ${row.asset.symbol}`}
-          >
-            {derived ? (
-              <>
-                ≈{' '}
-                <span className="font-mono text-neutral-200">
-                  {formatDerivedQuantity(derived.quantity)}
-                </span>{' '}
-                {row.asset.symbol} · records{' '}
-                <span className="font-mono text-neutral-200">
-                  {formatMoney(derived.recordedAmount)} {row.asset.currency}
-                </span>
-                {Math.abs(derived.residual) >= 0.005
-                  ? ` (${derived.residual > 0 ? '+' : '−'}${formatMoney(
-                      Math.abs(derived.residual),
-                    )} vs entered, from 8-decimal rounding)`
-                  : ''}
-              </>
-            ) : (
-              'Enter a price and amount above 0 to derive the quantity.'
-            )}
-          </p>
-        ) : null}
+      {link?.note ? (
+        <p className="-mt-2 text-xs text-amber-400" role="status">
+          {link.note}
+        </p>
+      ) : null}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Fee ({row.asset.currency})</span>
+      {link ? (
+        <p className="-mt-3 text-xs text-neutral-500" role="status">
+          {link.loading
+            ? 'Loading price history…'
+            : link.linked
+              ? t('portfolio.transaction.linkHint')
+              : t('portfolio.transaction.linkManualHint')}
+        </p>
+      ) : null}
+
+      {isAmountMode ? (
+        <p
+          className="-mt-2 text-xs text-neutral-400"
+          role="status"
+          aria-label={t('portfolio.transaction.derivedAria', { symbol })}
+        >
+          {derived ? (
+            <>
+              ≈{' '}
+              <span className="font-mono text-neutral-200">
+                {formatDerivedQuantity(derived.quantity)}
+              </span>{' '}
+              {symbol} · records{' '}
+              <span className="font-mono text-neutral-200">
+                {formatMoney(derived.recordedAmount)} {row.asset.currency}
+              </span>
+              {Math.abs(derived.residual) >= 0.005
+                ? ` (${derived.residual > 0 ? '+' : '−'}${formatMoney(
+                    Math.abs(derived.residual),
+                  )} vs entered, from 8-decimal rounding)`
+                : ''}
+            </>
+          ) : (
+            'Enter a price and amount above 0 to derive the quantity.'
+          )}
+        </p>
+      ) : null}
+
+      {/* Fee. */}
+      <label className="group flex flex-col gap-1.5">
+        <FieldLabel>{t('portfolio.transaction.feeLabel')}</FieldLabel>
+        <span className="relative">
           <input
             type="number"
             inputMode="decimal"
@@ -1034,77 +1448,31 @@ function RowFields({
             min="0"
             value={row.fee}
             onChange={(e) => onChange({ fee: e.target.value })}
-            aria-label={`Fee for ${row.asset.symbol}`}
+            aria-label={t('portfolio.transaction.feeAria', { symbol })}
             placeholder="0"
-            className={inputClass}
+            className={cx(inputClass, 'pr-8')}
           />
-        </label>
+          <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm text-neutral-500">
+            {currencySuffix(row.asset.currency)}
+          </span>
+        </span>
+      </label>
 
-        {cash ? (
-          <div className="col-span-2 flex flex-col gap-1.5">
-            <label className="flex items-center gap-2 text-sm text-neutral-300">
-              <input
-                type="checkbox"
-                checked={cash.checked}
-                onChange={cash.onToggle}
-                aria-label={
-                  row.side === 'sell' ? 'Add proceeds to cash balance' : 'Pay from cash balance'
-                }
-                className="h-4 w-4 rounded border-neutral-700 bg-neutral-950 text-sky-600 focus:ring-sky-500"
-              />
-              {row.side === 'sell' ? 'Add proceeds to cash balance' : 'Pay from cash balance'}
-            </label>
-            {cash.checked && cash.sources.length > 1 ? (
-              <label className="flex flex-col gap-1.5">
-                <span className="text-sm font-medium text-neutral-300">{cash.sourceLabel}</span>
-                <select
-                  value={cash.sourceId ?? ''}
-                  onChange={(e) => cash.onSourceChange(e.target.value)}
-                  aria-label={cash.sourceLabel}
-                  className={inputClass}
-                >
-                  {cash.sources.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            {cash.checked ? (
-              <p className="text-xs text-neutral-400" role="status" aria-label="Cash-after preview">
-                {cash.loading || !cash.preview ? (
-                  'Calculating…'
-                ) : (
-                  <>
-                    Available <MoneyText amount={cash.preview.availableEur} currency="EUR" /> &rarr;{' '}
-                    <span className={cash.insufficient ? 'text-red-400' : 'text-neutral-200'}>
-                      <MoneyText amount={cash.preview.afterEur} currency="EUR" />
-                    </span>
-                    {cash.insufficient ? (
-                      <span className="ml-1 text-red-400">
-                        (short <MoneyText amount={cash.preview.shortfallEur} currency="EUR" />)
-                      </span>
-                    ) : null}
-                  </>
-                )}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
+      {/* Pay-from-cash card (Main default, no source picker — #378). */}
+      {cash ? <CashCard row={row} cash={cash} t={t} /> : null}
 
-        <label className="col-span-2 flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">Note (optional)</span>
-          <input
-            type="text"
-            value={row.note}
-            maxLength={1000}
-            onChange={(e) => onChange({ note: e.target.value })}
-            aria-label={`Note for ${row.asset.symbol}`}
-            className={inputClass}
-          />
-        </label>
-      </div>
+      {/* Note. */}
+      <label className="group flex flex-col gap-1.5">
+        <FieldLabel>{t('portfolio.transaction.noteLabel')}</FieldLabel>
+        <input
+          type="text"
+          value={row.note}
+          maxLength={1000}
+          onChange={(e) => onChange({ note: e.target.value })}
+          aria-label={t('portfolio.transaction.noteAria', { symbol })}
+          className={inputClass}
+        />
+      </label>
     </div>
   );
 }

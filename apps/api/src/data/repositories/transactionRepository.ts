@@ -67,6 +67,14 @@ export interface LinkedCashMovement {
   note: string | null;
   /** Required on tax settlements, absent otherwise (DB CHECK enforced). */
   taxYear?: number | null;
+  /**
+   * The movement's own date, when it must differ from the transaction's
+   * `executedAt` (#378: a backdated pay-from-cash buy whose cash was insufficient
+   * at the buy date settles the cash leg **as of today** while the acquisition
+   * keeps its past date). Omitted → the movement inherits the row's `executedAt`,
+   * the invariant for every same-day cash-funded buy/sell and tax settlement.
+   */
+  occurredAt?: Date;
 }
 
 /**
@@ -181,7 +189,9 @@ export function createTransactionRepository(db: Database) {
             amountEur: String(link.amountEur),
             transactionId: row.id,
             taxYear: link.taxYear ?? null,
-            executedAt: row.executedAt,
+            // A cash leg dated apart from its transaction (#378 settle-as-of-today)
+            // carries its own date; every other leg inherits the row's.
+            executedAt: link.occurredAt ?? row.executedAt,
             note: link.note,
           })),
         );

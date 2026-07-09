@@ -1846,6 +1846,163 @@ describe('Portfolio cash ledger', () => {
   });
 });
 
+// ─── Backdated pay-from-cash: settle as of today (#378) ───────────────────────
+
+describe('Backdated pay-from-cash settle-as-of-today (#378)', () => {
+  /** Full cash movements incl. each movement's own `executedAt` day. */
+  async function cashMovements(agent: ReturnType<typeof request.agent>, pid: string) {
+    const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+    expect(res.status).toBe(200);
+    expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
+    return res.body as {
+      balanceEur: number;
+      movements: Array<{ kind: string; amountEur: number; executedAt: string }>;
+    };
+  }
+
+  it('WITH the flag: buy keeps its past date, cash leg dates today, ledger stays non-negative, holding present', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness); // EUR — no FX conversion
+
+    // Cash only arrives TODAY — as of the buy's date (30 days ago) there was €0.
+    const dep = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500, executedAt: tsOffset(0) });
+    expect(dep.status).toBe(201);
+
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 100, // €400 total
+        executedAt: tsOffset(-30),
+        payFromCash: true,
+        settleCashAsOfToday: true,
+      });
+    expect(buy.status).toBe(201);
+    // The acquisition itself keeps its correct PAST date.
+    expect(buy.body.transactions[0].executedAt.slice(0, 10)).toBe(dayOffset(-30));
+
+    const state = await cashMovements(agent, pid);
+    // Ledger reconciles (500 − 400) and is non-negative.
+    expect(state.balanceEur).toBeCloseTo(100, 6);
+    const buyLeg = state.movements.find((m) => m.kind === 'buy');
+    expect(buyLeg?.amountEur).toBeCloseTo(-400, 6);
+    // The CASH leg is dated TODAY, not the buy's past date — that is what keeps
+    // the historical ledger non-negative (cash existed only from today).
+    expect(buyLeg?.executedAt.slice(0, 10)).toBe(dayOffset(0));
+
+    // The holding shows from the past date (quantity acquired then).
+    const overview = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(overview.status).toBe(200);
+    const holding = overview.body.holdings.find(
+      (h: { asset: { id: string } }) => h.asset.id === asset.id,
+    );
+    expect(holding?.quantity).toBeCloseTo(4, 6);
+    expect(overview.body.totals.cashEur).toBeCloseTo(100, 6);
+
+    // History renders (no 500) with the compensating flow pair keeping TWR sane —
+    // the settle day is not read as a phantom loss.
+    const history = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(history.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(history.body).success).toBe(true);
+  });
+
+  it('WITHOUT the flag: an insufficient-at-date backdated buy returns a clear 400, not a 500', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500, executedAt: tsOffset(0) });
+
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 100,
+        executedAt: tsOffset(-30),
+        payFromCash: true,
+        // no settleCashAsOfToday
+      });
+    expect(buy.status).toBe(400);
+    expect(buy.body.error.code).toBe('INSUFFICIENT_CASH');
+    // Nothing was written — the ledger is untouched.
+    const state = await cashMovements(agent, pid);
+    expect(state.balanceEur).toBeCloseTo(500, 6);
+    expect(state.movements.every((m) => m.kind !== 'buy')).toBe(true);
+  });
+
+  it('the preview is date-aware: affordable today but not as of the past buy date', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500, executedAt: tsOffset(0) });
+
+    const preview = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/preview`)
+      .set(...XRW)
+      .send({ kind: 'buy', amountEur: 400, asOfDate: dayOffset(-30) });
+    expect(preview.status).toBe(200);
+    expect(cashPreviewResponseSchema.safeParse(preview.body).success).toBe(true);
+    // Today: €500 covers €400.
+    expect(preview.body.sufficient).toBe(true);
+    // As of 30 days ago: €0 — the exact warning signal for the form.
+    expect(preview.body.asOfSufficient).toBe(false);
+    expect(preview.body.asOfAvailableEur).toBeCloseTo(0, 6);
+  });
+
+  it('a buy with cash ALREADY sufficient at its date is unchanged even with the flag set', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    // Cash deposited BEFORE the buy date → sufficient as of the buy date.
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500, executedAt: tsOffset(-30) });
+
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 4,
+        price: 100,
+        executedAt: tsOffset(-10),
+        payFromCash: true,
+        settleCashAsOfToday: true, // set, but not needed → ignored
+      });
+    expect(buy.status).toBe(201);
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+    const buyLeg = (res.body.movements as Array<{ kind: string; executedAt: string }>).find(
+      (m) => m.kind === 'buy',
+    );
+    // The cash leg stays on the BUY date (sufficient then) — no move to today.
+    expect(buyLeg?.executedAt.slice(0, 10)).toBe(dayOffset(-10));
+  });
+});
+
 // ─── Cash counts toward portfolio worth (#311) ────────────────────────────────
 
 describe('Cash counts toward portfolio worth (#311)', () => {

@@ -149,7 +149,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.click(screen.getByRole('button', { name: /by amount/i }));
     await user.type(screen.getByLabelText(/price for btc/i), '54000');
     await user.type(screen.getByLabelText(/amount invested for btc/i), '1000');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
@@ -176,7 +176,7 @@ describe('TransactionDialog — amount entry mode', () => {
     let user = userEvent.setup();
     await user.type(screen.getByLabelText(/quantity for btc/i), '0.01851852');
     await user.type(screen.getByLabelText(/price for btc/i), '54000');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const byQuantity = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
     first.unmount();
@@ -189,7 +189,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.click(screen.getByRole('button', { name: /by amount/i }));
     await user.type(screen.getByLabelText(/price for btc/i), '54000');
     await user.type(screen.getByLabelText(/amount invested for btc/i), '1000');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const byAmount = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
 
@@ -204,7 +204,7 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.click(screen.getByRole('button', { name: /by amount/i }));
     await user.type(screen.getByLabelText(/amount invested for btc/i), '1000');
     await user.type(screen.getByLabelText(/price for btc/i), '0');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/price must be greater than 0/i);
     expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
@@ -217,7 +217,7 @@ describe('TransactionDialog — amount entry mode', () => {
 
     await user.click(screen.getByRole('button', { name: /by amount/i }));
     await user.type(screen.getByLabelText(/price for btc/i), '54000');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/amount must be greater than 0/i);
     expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
@@ -228,11 +228,11 @@ describe('TransactionDialog — amount entry mode', () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.selectOptions(screen.getByLabelText(/side for btc/i), 'sell');
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
     await user.click(screen.getByRole('button', { name: /by amount/i }));
     await user.type(screen.getByLabelText(/price for btc/i), '54000');
     await user.type(screen.getByLabelText(/amount received for btc/i), '1000');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
@@ -271,7 +271,7 @@ describe('TransactionDialog — quantity entry mode (regression)', () => {
 
     await user.type(screen.getByLabelText(/quantity for btc/i), '5');
     await user.type(screen.getByLabelText(/price for btc/i), '0');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
@@ -413,7 +413,7 @@ describe('TransactionDialog — linked date ↔ price fields', () => {
 
     await waitFor(() => expect(screen.getByLabelText(/price for btc/i)).toHaveValue(120));
     await user.type(screen.getByLabelText(/quantity for btc/i), '3');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     expect(vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1][0]).toMatchObject({
@@ -517,7 +517,7 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
     await user.type(screen.getByLabelText(/price for btc/i), '100');
     await user.click(checkbox);
 
-    expect(await screen.findByText(/Available/)).toBeInTheDocument();
+    expect(await screen.findByText(/cash after/i)).toBeInTheDocument();
     expect(vi.mocked(portfolioApi.previewCash)).toHaveBeenCalledWith(
       'p1',
       { kind: 'buy', amountEur: 100 },
@@ -529,7 +529,7 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.selectOptions(screen.getByLabelText(/side for btc/i), 'sell');
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
     expect(
       screen.getByRole('checkbox', { name: 'Add proceeds to cash balance' }),
     ).toBeInTheDocument();
@@ -566,7 +566,7 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
     await user.type(screen.getByLabelText(/price for btc/i), '100');
     await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /^record$/i })).toBeDisabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: /record buy/i })).toBeDisabled());
     expect(screen.getByText(/short/i)).toBeInTheDocument();
     expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
   });
@@ -579,8 +579,8 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
     await user.type(screen.getByLabelText(/quantity for btc/i), '1');
     await user.type(screen.getByLabelText(/price for btc/i), '100');
     await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
-    await waitFor(() => expect(screen.getByText(/Available/)).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await waitFor(() => expect(screen.getByText(/cash after/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
@@ -595,12 +595,12 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.selectOptions(screen.getByLabelText(/side for btc/i), 'sell');
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
     await user.type(screen.getByLabelText(/quantity for btc/i), '1');
     await user.type(screen.getByLabelText(/price for btc/i), '100');
     await user.click(screen.getByRole('checkbox', { name: 'Add proceeds to cash balance' }));
-    await waitFor(() => expect(screen.getByText(/Available/)).toBeInTheDocument());
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await waitFor(() => expect(screen.getByText(/cash after/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     const inputs = vi.mocked(portfolioApi.createTransactions).mock.calls[0]![1];
@@ -614,9 +614,123 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
 
     await user.type(screen.getByLabelText(/quantity for btc/i), '1');
     await user.type(screen.getByLabelText(/price for btc/i), '100');
-    await user.click(screen.getByRole('button', { name: /^record$/i }));
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
 
     await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
     expect(portfolioApi.updatePortfolio).not.toHaveBeenCalled();
+  });
+});
+
+// --- Dialog: redesign — segmented side, header, Max chip (#378 Part B) -------
+
+describe('TransactionDialog — redesigned form (#378 Part B)', () => {
+  test('shows the "New transaction" title and the portfolio name subtitle', () => {
+    renderDialog({ portfolioName: 'Main' });
+    expect(screen.getByText('New transaction')).toBeInTheDocument();
+    expect(screen.getByText('Main')).toBeInTheDocument();
+  });
+
+  test('the Buy/Sell segmented toggle switches side and flips the CTA label', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    expect(screen.getByRole('button', { name: 'Buy' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /record buy/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    expect(screen.getByRole('button', { name: 'Sell' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /record sell/i })).toBeInTheDocument();
+  });
+
+  test('Max on a sell fills the held quantity', async () => {
+    const user = userEvent.setup();
+    renderDialog({ heldQuantity: 2.5 });
+
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    await user.click(screen.getByRole('button', { name: /fill the maximum for btc/i }));
+    expect(screen.getByLabelText(/quantity for btc/i)).toHaveValue(2.5);
+  });
+
+  test('Max on a pay-from-cash buy fills the affordable quantity (cash ÷ price)', async () => {
+    const user = userEvent.setup();
+    renderDialog({ availableCashEur: 1000 });
+
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
+    await user.click(screen.getByRole('button', { name: /fill the maximum for btc/i }));
+    // 1000 € / 100 € = 10 shares.
+    expect(screen.getByLabelText(/quantity for btc/i)).toHaveValue(10);
+  });
+});
+
+// --- Dialog: backdated pay-from-cash warning (#378 Part A) -------------------
+
+describe('TransactionDialog — backdated pay-from-cash (#378 Part A)', () => {
+  test('warns when short at the buy date, defaults "deduct as of today" on, and submits the flag', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    // Affordable today (500 covers 400) but €0 as of the 2025 buy date.
+    vi.mocked(portfolioApi.previewCash).mockResolvedValue({
+      availableEur: 500,
+      afterEur: 100,
+      sufficient: true,
+      shortfallEur: 0,
+      asOfDate: '2025-06-01',
+      asOfAvailableEur: 0,
+      asOfAfterEur: -400,
+      asOfSufficient: false,
+    });
+    const user = userEvent.setup();
+    renderDialog();
+
+    fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2025-06-01' } });
+    await user.type(screen.getByLabelText(/quantity for btc/i), '4');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
+
+    // The date-aware warning appears and the settle-as-of-today opt-in defaults on.
+    expect(await screen.findByText(/deducted as of today/i)).toBeInTheDocument();
+    const deduct = screen.getByRole('checkbox', { name: /deduct from today’s cash instead/i });
+    await waitFor(() => expect(deduct).toBeChecked());
+
+    // The preview was asked for the balance AS OF the buy date.
+    expect(vi.mocked(portfolioApi.previewCash)).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ kind: 'buy', asOfDate: '2025-06-01' }),
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole('button', { name: /record buy/i }));
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const inputs = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(inputs[0]).toMatchObject({ payFromCash: true, settleCashAsOfToday: true });
+  });
+
+  test('opting out of "deduct as of today" blocks Record (short back then)', async () => {
+    vi.mocked(portfolioApi.previewCash).mockResolvedValue({
+      availableEur: 500,
+      afterEur: 100,
+      sufficient: true,
+      shortfallEur: 0,
+      asOfDate: '2025-06-01',
+      asOfAvailableEur: 0,
+      asOfAfterEur: -400,
+      asOfSufficient: false,
+    });
+    const user = userEvent.setup();
+    renderDialog();
+
+    fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2025-06-01' } });
+    await user.type(screen.getByLabelText(/quantity for btc/i), '4');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+    await user.click(screen.getByRole('checkbox', { name: 'Pay from cash balance' }));
+
+    const deduct = await screen.findByRole('checkbox', {
+      name: /deduct from today’s cash instead/i,
+    });
+    await waitFor(() => expect(deduct).toBeChecked());
+    await user.click(deduct); // opt out
+    await waitFor(() => expect(screen.getByRole('button', { name: /record buy/i })).toBeDisabled());
+    expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
   });
 });
