@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { roundCents as ledgerRoundCents } from '../cashLedger';
+import { floorCents as ledgerFloorCents } from '../cashLedger';
 import {
   AT_KEST_RATE,
   atYearTargetEur,
   manualTaxEur,
   realizedSellsEur,
-  roundCents,
+  floorCents,
   settleAtYear,
   TaxComputationError,
   taxMovementForDelta,
@@ -31,23 +31,27 @@ const T = (
   assetId = 'asset-1',
 ): TaxableTransaction => ({ id, assetId, side, quantity, priceEur, feeEur, executedAt });
 
-describe('roundCents (local mirror)', () => {
-  it('matches cashLedger.roundCents on the boundary cases exactly', () => {
-    const cases = [0, 0.005, -0.005, 1.005, -1.005, 2.675, 100.004999, 0.1 + 0.2, 123.456, -76.545];
+describe('floorCents (local mirror)', () => {
+  it('matches cashLedger.floorCents on the boundary cases exactly', () => {
+    const cases = [
+      0, 0.005, -0.005, 1.005, -1.005, 2.675, 100.004999, 100.006, 8.61, 0.1 + 0.2, 123.456,
+      -76.545,
+    ];
     for (const value of cases) {
-      expect(roundCents(value)).toBe(ledgerRoundCents(value));
+      expect(floorCents(value)).toBe(ledgerFloorCents(value));
     }
   });
 
-  it('rounds half away from zero despite float representation', () => {
-    expect(roundCents(1.005)).toBe(1.01);
-    expect(roundCents(-1.005)).toBe(-1.01);
-    expect(roundCents(0.1 + 0.2)).toBe(0.3);
+  it('floors down (never rounds up) despite float representation', () => {
+    expect(floorCents(1.005)).toBe(1.0);
+    expect(floorCents(-1.005)).toBe(-1.0);
+    expect(floorCents(100.006)).toBe(100.0);
+    expect(floorCents(0.1 + 0.2)).toBe(0.3);
   });
 
   it('rejects non-finite amounts', () => {
-    expect(() => roundCents(Number.NaN)).toThrow(TaxComputationError);
-    expect(() => roundCents(Infinity)).toThrow(TaxComputationError);
+    expect(() => floorCents(Number.NaN)).toThrow(TaxComputationError);
+    expect(() => floorCents(Infinity)).toThrow(TaxComputationError);
   });
 });
 
@@ -178,10 +182,12 @@ describe('atYearTargetEur', () => {
     expect(atYearTargetEur(0)).toBe(0);
   });
 
-  it('quantizes half away from zero at the cent boundary', () => {
-    // 0.275 · 0.02 = 0.0055 → 0.01.
-    expect(atYearTargetEur(0.02)).toBe(0.01);
+  it('floors the tax due to whole cents (#370 — never rounds up)', () => {
+    // 0.275 · 0.02 = 0.0055 → floors down to 0.00, not up to 0.01.
+    expect(atYearTargetEur(0.02)).toBe(0);
     expect(atYearTargetEur(0.01)).toBe(0);
+    // 0.275 · 0.5 = 0.1375 → floors to 0.13.
+    expect(atYearTargetEur(0.5)).toBe(0.13);
   });
 });
 
@@ -285,15 +291,15 @@ describe('settleAtYear', () => {
   });
 
   it('lands on exact cents even for awkward pools', () => {
-    // 0.275 · 33.33 = 9.16575 → 9.17 (half away from zero at the cent).
+    // 0.275 · 33.33 = 9.16575 → floors down to 9.16 (never up to 9.17, #370).
     const result = settleAtYear({
       existingGainsEur: [],
       existingDividendsEur: [],
       heldEur: 0,
       newEvents: [{ kind: 'sell_gain', amountEur: 33.33 }],
     });
-    expect(result.newEventDeltasEur).toEqual([9.17]);
-    expect(result.heldAfterEur).toBe(9.17);
+    expect(result.newEventDeltasEur).toEqual([9.16]);
+    expect(result.heldAfterEur).toBe(9.16);
   });
 
   it('rejects malformed events', () => {
@@ -331,9 +337,10 @@ describe('taxMovementForDelta', () => {
 });
 
 describe('manualTaxEur', () => {
-  it('records the entered amount as-is, cent-quantized', () => {
+  it('records the entered amount as-is, floored to whole cents (#370)', () => {
     expect(manualTaxEur({ taxAmountEur: 12.34, baseEur: 999 })).toBe(12.34);
-    expect(manualTaxEur({ taxAmountEur: 12.345, baseEur: 999 })).toBe(12.35);
+    // 12.345 floors down to 12.34 (never up to 12.35).
+    expect(manualTaxEur({ taxAmountEur: 12.345, baseEur: 999 })).toBe(12.34);
   });
 
   it('applies a rate to the positive base only — a loss records €0.00', () => {
