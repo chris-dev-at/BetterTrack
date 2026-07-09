@@ -62,7 +62,7 @@ import {
   netWorthSeries,
   pairedTransferMovements,
   projectCashLedgerBySource,
-  roundCents,
+  floorCents,
   setBalanceMovement,
   spendableAsOf,
   type CashTransferLegs,
@@ -541,13 +541,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * Current EUR cash balance = sum of signed movements (§14 reconciliation
    * invariant), quantized to whole cents. Movements enter the ledger already
    * cent-exact (deposit/withdraw and cash-linked buys/sells all pass through
-   * {@link roundCents}), so this only sheds FP summation dust — the reported
+   * {@link floorCents}), so this only sheds FP summation dust — the reported
    * balance is always exact cents, which is what lets a withdraw-all land at
    * exactly €0.00 (V3-P0, issue #322). Rolls up across ALL sources (V3-P3).
    */
   async function cashBalanceFor(portfolioId: string): Promise<number> {
     const records = await cashMovementRepo.listForPortfolio(portfolioId);
-    return roundCents(cashBalance(records.map(toDomainMovement)));
+    return floorCents(cashBalance(records.map(toDomainMovement)));
   }
 
   /**
@@ -562,11 +562,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     const records = await cashMovementRepo.listForPortfolio(portfolioId);
     const raw = cashBalancesBySource(records.map(toDomainMovement));
     const balanceBySource = new Map<string, number>();
-    for (const [sourceId, balance] of raw) balanceBySource.set(sourceId, roundCents(balance));
+    for (const [sourceId, balance] of raw) balanceBySource.set(sourceId, floorCents(balance));
     return {
       records,
       balanceBySource,
-      totalEur: roundCents(cashBalance(records.map(toDomainMovement))),
+      totalEur: floorCents(cashBalance(records.map(toDomainMovement))),
     };
   }
 
@@ -734,14 +734,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // (V3-P0 exact-cents fix, #322) — otherwise the sub-cent residue strands a
     // reported cent that can never be withdrawn.
     if (input.payFromCash && input.side === 'buy') {
-      const costEur = roundCents(
+      const costEur = floorCents(
         await toCashEur(input.quantity * input.price + input.fee, asset.currency, day),
       );
       if (costEur <= CASH_EPSILON) return null;
       return { kind: 'buy', amountEur: -costEur, sourceId, note: 'Paid from cash balance' };
     }
     if (input.addProceedsToCash && input.side === 'sell') {
-      const proceedsEur = roundCents(
+      const proceedsEur = floorCents(
         await toCashEur(input.quantity * input.price - input.fee, asset.currency, day),
       );
       if (proceedsEur <= CASH_EPSILON) return null;
@@ -1712,7 +1712,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       await requireOwnedPortfolio(userId, portfolioId);
       const source = await resolveFlowSource(portfolioId, sourceId);
       const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-      const currentEur = roundCents(
+      const currentEur = floorCents(
         cashBalance(existing.filter((m) => m.sourceId === source.id).map(toDomainMovement)),
       );
       // §16 (2026-07-07): the app computes the signed delta itself and records
@@ -1766,7 +1766,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const movement = await cashMovementRepo.insert(portfolioId, {
         sourceId: source.id,
         kind: 'deposit',
-        amountEur: roundCents(input.amountEur),
+        amountEur: floorCents(input.amountEur),
         executedAt,
         note: input.note ?? null,
       });
@@ -1787,7 +1787,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Cash is whole-cent money — quantize the entered amount to cents (#322),
       // so a withdraw-all (the cent-exact reported balance) cancels the ledger
       // to exactly €0.00 rather than stranding sub-cent residue.
-      const amountEur = roundCents(input.amountEur);
+      const amountEur = floorCents(input.amountEur);
       const existing = await cashMovementRepo.listForPortfolio(portfolioId);
       // Guard against an overdraw of THIS source at *any* point once this
       // (possibly back-dated) withdrawal is replayed — no silent negatives.
@@ -1823,12 +1823,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const source = await resolveFlowSource(portfolioId, input.sourceId);
       const records = await cashMovementRepo.listForPortfolio(portfolioId);
       const sourceMovements = records.filter((r) => r.sourceId === source.id).map(toDomainMovement);
-      const availableEur = roundCents(cashBalance(sourceMovements));
+      const availableEur = floorCents(cashBalance(sourceMovements));
       // Quantize the proposed amount to cents to mirror what the write path will
       // actually record (#322), so the "available → after" preview matches the
       // balance the user will land on — a withdraw-all previews exactly €0.00.
-      const amountEur = roundCents(input.amountEur);
-      const afterEur = roundCents(availableEur + amountEur * CASH_MOVEMENT_SIGN[input.kind]);
+      const amountEur = floorCents(input.amountEur);
+      const afterEur = floorCents(availableEur + amountEur * CASH_MOVEMENT_SIGN[input.kind]);
       const sufficient = afterEur >= -CASH_EPSILON;
       const base = {
         availableEur,
@@ -1842,10 +1842,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // allows — so the form can distinguish "insufficient back then but fine
       // today" (warn + offer settle-as-of-today) from "unaffordable even now".
       if (input.asOfDate !== undefined && input.kind === 'buy') {
-        const asOfAvailableEur = roundCents(
+        const asOfAvailableEur = floorCents(
           spendableAsOf(sourceMovements, `${input.asOfDate}T00:00:00.000Z`),
         );
-        const asOfAfterEur = roundCents(asOfAvailableEur - amountEur);
+        const asOfAfterEur = floorCents(asOfAvailableEur - amountEur);
         return {
           ...base,
           asOfDate: input.asOfDate,

@@ -39,7 +39,7 @@ import {
   cashBalancesBySource,
   InsufficientCashError,
   projectCashLedgerBySource,
-  roundCents,
+  floorCents,
   type SourcedCashMovement,
 } from '../../domain/cashLedger';
 import {
@@ -320,7 +320,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       if (m.transactionId !== null || m.dividendId !== null) continue;
       held += -m.amountEur;
     }
-    return roundCents(held);
+    return floorCents(held);
   }
 
   /** The year's already-persisted AT pool inputs, gains recomputed. */
@@ -807,8 +807,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const records = await cashMovementRepo.listForPortfolio(portfolioId);
     const raw = cashBalancesBySource(records.map(toDomainMovement));
     const balanceBySource = new Map<string, number>();
-    for (const [sourceId, balance] of raw) balanceBySource.set(sourceId, roundCents(balance));
-    return { balanceBySource, totalEur: roundCents(cashBalance(records.map(toDomainMovement))) };
+    for (const [sourceId, balance] of raw) balanceBySource.set(sourceId, floorCents(balance));
+    return { balanceBySource, totalEur: floorCents(cashBalance(records.map(toDomainMovement))) };
   }
 
   async function recordDividend(
@@ -841,7 +841,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const executedAtIso = executedAt.toISOString();
     const year = viennaYearOf(executedAtIso);
     // Cash is whole-cent money (#322): quantize the entered gross.
-    const grossEur = roundCents(input.grossAmountEur);
+    const grossEur = floorCents(input.grossAmountEur);
     if (grossEur <= 0) {
       throw badRequest('The dividend amount rounds to €0.00.', 'DIVIDEND_AMOUNT_TOO_SMALL');
     }
@@ -1132,15 +1132,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       if (m.kind === 'tax_withholding') taxWithheldEur += -m.amountEur;
       else if (m.kind === 'tax_refund') taxRefundedEur += m.amountEur;
     }
-    taxWithheldEur = roundCents(taxWithheldEur);
-    taxRefundedEur = roundCents(taxRefundedEur);
+    taxWithheldEur = floorCents(taxWithheldEur);
+    taxRefundedEur = floorCents(taxRefundedEur);
     return {
       year,
       realizedPnlEur,
       dividendsGrossEur,
       taxWithheldEur,
       taxRefundedEur,
-      taxNetEur: roundCents(taxWithheldEur - taxRefundedEur),
+      taxNetEur: floorCents(taxWithheldEur - taxRefundedEur),
     };
   }
 
@@ -1232,7 +1232,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         asset: assetToDto(asset),
         realizedPnlEur,
         dividendsGrossEur,
-        taxEur: roundCents(taxEur),
+        taxEur: floorCents(taxEur),
         sells,
         dividends,
       });
