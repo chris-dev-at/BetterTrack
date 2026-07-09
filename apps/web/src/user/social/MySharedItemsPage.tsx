@@ -7,7 +7,7 @@ import { listMyShared } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { AudiencePicker } from '../components/AudiencePicker';
-import { Alert, Button } from '../components/ui';
+import { Alert, Button, cx } from '../components/ui';
 
 const MY_SHARED_STALE_MS = 30_000;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -24,20 +24,60 @@ function SectionHeading({ children }: { children: string }) {
   );
 }
 
-/** A localized audience badge. */
-function AudienceBadge({ audience }: { audience: ShareAudience }) {
+/**
+ * The per-item "who can see this" summary (V3-P6) — the audience read straight off
+ * the single audience model, so it never disagrees with what is actually shared.
+ * A private item is dimmed; every shared tier is a tinted chip, with the named
+ * count for `specific_friends`.
+ */
+function WhoSeesThis({ audience, friendCount }: { audience: ShareAudience; friendCount: number }) {
   const t = useT();
+  const label =
+    audience === 'specific_friends' && friendCount > 0
+      ? `${t('sharing.badge.specific_friends')} · ${friendCount}`
+      : t(`sharing.badge.${audience}`);
+  const tone =
+    audience === 'private'
+      ? 'border-neutral-700 text-neutral-400'
+      : audience === 'public_link'
+        ? 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+        : 'border-sky-500/40 bg-sky-500/10 text-sky-200';
   return (
-    <span className="rounded-full border border-neutral-700 px-2 py-0.5 text-xs text-neutral-400">
-      {t(`sharing.badge.${audience}`)}
-    </span>
+    <span className={cx('rounded-full border px-2 py-0.5 text-xs font-medium', tone)}>{label}</span>
+  );
+}
+
+interface SharedRowProps {
+  name: string;
+  audience: ShareAudience;
+  friendCount: number;
+  detail?: string;
+  onShare: () => void;
+  shareLabel: string;
+}
+
+function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }: SharedRowProps) {
+  return (
+    <li className="flex items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="truncate text-sm font-medium text-neutral-100">{name}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <WhoSeesThis audience={audience} friendCount={friendCount} />
+          {detail ? <span className="text-xs text-neutral-500">{detail}</span> : null}
+        </div>
+      </div>
+      <Button variant="secondary" onClick={onShare}>
+        {shareLabel}
+      </Button>
+    </li>
   );
 }
 
 /**
- * My Shared Items (§6.9, §13.3 V3-P5) — everything the caller currently shares
- * (portfolios, conglomerates, named watchlists), each with the reusable
- * AudiencePicker to change or stop the share.
+ * My Shared Items (§6.9, §13.3 V3-P5/P6) — everything the caller currently shares
+ * (portfolios, conglomerates, named watchlists), each with a per-item "who can see
+ * this" summary and the reusable, elevated AudiencePicker to change or stop the
+ * share. Every control here is wired to `PUT /social/audience/:kind/:subjectId`.
  */
 export function MySharedItemsPage() {
   const t = useT();
@@ -64,7 +104,7 @@ export function MySharedItemsPage() {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">Could not load your shared items. Please refresh the page.</Alert>;
+    return <Alert tone="error">{t('social.myShared.error')}</Alert>;
   }
 
   const nothing =
@@ -73,28 +113,31 @@ export function MySharedItemsPage() {
   if (nothing) {
     return (
       <EmptyState
-        title="You're not sharing anything"
-        description="Share a portfolio, conglomerate or watchlist to have it appear here."
+        title={t('social.myShared.emptyTitle')}
+        description={t('social.myShared.emptyBody')}
       />
     );
   }
+
+  const shareLabel = t('sharing.shareButton');
 
   return (
     <div className="flex flex-col gap-8">
       {data.portfolios.length > 0 ? (
         <section className="flex flex-col gap-2">
-          <SectionHeading>Portfolios</SectionHeading>
-          <ul className="divide-y divide-neutral-800">
+          <SectionHeading>{t('social.kind.portfolios')}</SectionHeading>
+          <ul className="flex flex-col gap-2">
             {data.portfolios.map((p) => (
-              <li key={p.id} className="flex items-center justify-between gap-3 py-3">
-                <span className="text-sm font-medium text-neutral-100">{p.name}</span>
-                <Button
-                  variant="secondary"
-                  onClick={() => setPicker({ kind: 'portfolio', subjectId: p.id, label: p.name })}
-                >
-                  {t('sharing.shareButton')}
-                </Button>
-              </li>
+              <SharedRow
+                key={p.portfolioId}
+                name={p.name}
+                audience={p.audience}
+                friendCount={p.friendCount}
+                onShare={() =>
+                  setPicker({ kind: 'portfolio', subjectId: p.portfolioId, label: p.name })
+                }
+                shareLabel={shareLabel}
+              />
             ))}
           </ul>
         </section>
@@ -102,20 +145,20 @@ export function MySharedItemsPage() {
 
       {data.conglomerates.length > 0 ? (
         <section className="flex flex-col gap-2">
-          <SectionHeading>Conglomerates</SectionHeading>
-          <ul className="divide-y divide-neutral-800">
+          <SectionHeading>{t('social.kind.conglomerates')}</SectionHeading>
+          <ul className="flex flex-col gap-2">
             {data.conglomerates.map((c) => (
-              <li key={c.id} className="flex items-center justify-between gap-3 py-3">
-                <span className="text-sm font-medium text-neutral-100">{c.name}</span>
-                <Button
-                  variant="secondary"
-                  onClick={() =>
-                    setPicker({ kind: 'conglomerate', subjectId: c.id, label: c.name })
-                  }
-                >
-                  {t('sharing.shareButton')}
-                </Button>
-              </li>
+              <SharedRow
+                key={c.conglomerateId}
+                name={c.name}
+                audience={c.audience}
+                friendCount={c.friendCount}
+                detail={t('social.item.positions', { count: c.positionCount })}
+                onShare={() =>
+                  setPicker({ kind: 'conglomerate', subjectId: c.conglomerateId, label: c.name })
+                }
+                shareLabel={shareLabel}
+              />
             ))}
           </ul>
         </section>
@@ -123,23 +166,20 @@ export function MySharedItemsPage() {
 
       {data.watchlists.length > 0 ? (
         <section className="flex flex-col gap-2">
-          <SectionHeading>Watchlists</SectionHeading>
-          <ul className="divide-y divide-neutral-800">
+          <SectionHeading>{t('social.kind.watchlists')}</SectionHeading>
+          <ul className="flex flex-col gap-2">
             {data.watchlists.map((w) => (
-              <li key={w.watchlistId} className="flex items-center justify-between gap-3 py-3">
-                <span className="flex items-center gap-2 text-sm font-medium text-neutral-100">
-                  {w.name}
-                  <AudienceBadge audience={w.audience} />
-                </span>
-                <Button
-                  variant="secondary"
-                  onClick={() =>
-                    setPicker({ kind: 'watchlist', subjectId: w.watchlistId, label: w.name })
-                  }
-                >
-                  {t('sharing.shareButton')}
-                </Button>
-              </li>
+              <SharedRow
+                key={w.watchlistId}
+                name={w.name}
+                audience={w.audience}
+                friendCount={w.friendCount}
+                detail={t('social.item.assets', { count: w.itemCount })}
+                onShare={() =>
+                  setPicker({ kind: 'watchlist', subjectId: w.watchlistId, label: w.name })
+                }
+                shareLabel={shareLabel}
+              />
             ))}
           </ul>
         </section>

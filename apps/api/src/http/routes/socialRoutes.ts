@@ -7,12 +7,20 @@ import {
   createFriendRequestRequestSchema,
   idParamSchema,
   portfolioIdParamSchema,
+  profileItemParamSchema,
+  profileUsernameParamSchema,
+  setActivityAlertRequestSchema,
   setAudienceRequestSchema,
   tokenParamSchema,
+  updateProfileSettingsRequestSchema,
   watchlistIdParamSchema,
   type AudienceParam,
   type CreateFriendRequestRequest,
+  type ProfileItemParam,
+  type ProfileUsernameParam,
+  type SetActivityAlertRequest,
   type SetAudienceRequest,
+  type UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
 
 import type { RateLimiters } from '../middleware/rateLimit';
@@ -40,6 +48,33 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     const result = await ctx.social.getByPublicLink(token);
     res.json(result);
   });
+
+  // GET /social/profiles/:username — UNAUTHENTICATED public-profile read (§14,
+  // V3-P6). Composes ONLY the user's `public_link` items + bio. An opted-out /
+  // unknown / inactive user is a plain 404 (no leak); disabling the profile 404s
+  // the slug instantly. Mounted BEFORE `requireUser`; a safe GET.
+  router.get(
+    '/profiles/:username',
+    validateParams(profileUsernameParamSchema),
+    async (req, res) => {
+      const { username } = req.valid?.params as ProfileUsernameParam;
+      const result = await ctx.social.getPublicProfile(username);
+      res.json(result);
+    },
+  );
+
+  // GET /social/profiles/:username/:kind/:subjectId — UNAUTHENTICATED drill-in to
+  // one public item on a profile. Resolved through the SAME `public_link` audience
+  // gate as the listing, so a non-public / non-owned / dead item 404s.
+  router.get(
+    '/profiles/:username/:kind/:subjectId',
+    validateParams(profileItemParamSchema),
+    async (req, res) => {
+      const { username, kind, subjectId } = req.valid?.params as ProfileItemParam;
+      const result = await ctx.social.getPublicProfileItem(username, kind, subjectId);
+      res.json(result);
+    },
+  );
 
   // Everything below requires a (non-admin) session.
   router.use(requireUser);
@@ -169,6 +204,36 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
       res.json(result);
     },
   );
+
+  // PUT /social/shared/activity/:kind/:subjectId — the viewer's activity-alert
+  // opt-in for one shared item (V3-P6). Only the preference is stored; delivery is
+  // #368. 404 (never 403) when the viewer can't currently read the item.
+  router.put(
+    '/shared/activity/:kind/:subjectId',
+    validateParams(audienceParamSchema),
+    validateBody(setActivityAlertRequestSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.params as AudienceParam;
+      const { enabled } = req.valid?.body as SetActivityAlertRequest;
+      const result = await ctx.social.setActivityAlert(req.authUser!.id, kind, subjectId, enabled);
+      res.json(result);
+    },
+  );
+
+  // GET /social/profile — the caller's own public-profile settings (V3-P6).
+  router.get('/profile', async (req, res) => {
+    const result = await ctx.social.getProfileSettings(req.authUser!.id);
+    res.json(result);
+  });
+
+  // PUT /social/profile — update the caller's public-profile opt-in + bio.
+  // Enabling requires an explicit acknowledgment (§16); disabling unpublishes the
+  // slug instantly.
+  router.put('/profile', validateBody(updateProfileSettingsRequestSchema), async (req, res) => {
+    const body = req.valid?.body as UpdateProfileSettingsRequest;
+    const result = await ctx.social.updateProfileSettings(req.authUser!.id, body);
+    res.json(result);
+  });
 
   return router;
 }

@@ -97,6 +97,26 @@ export interface AudienceService {
     kind: ShareKind,
     subjectIds: readonly string[],
   ): Promise<Map<string, ShareAudience>>;
+  /** Audience + named-friend count per subject (missing = private/0) — the "who sees this" summary. */
+  audienceSummariesForSubjects(
+    kind: ShareKind,
+    subjectIds: readonly string[],
+  ): Promise<Map<string, { audience: ShareAudience; friendCount: number }>>;
+  /**
+   * The owner's own `public_link` items — the exact set a public profile composes
+   * (V3-P6). Reuses the audience model: a non-public item is structurally absent.
+   */
+  listPublicProfileItems(ownerId: string): Promise<{
+    portfolios: { portfolioId: string; name: string }[];
+    conglomerates: { conglomerateId: string; name: string; positionCount: number }[];
+    watchlists: { watchlistId: string; name: string; itemCount: number }[];
+  }>;
+  /** Authorize a logged-out drill-in to one of the owner's public items, or `undefined` (→ 404). */
+  authorizePublicItemRead(
+    ownerId: string,
+    kind: ShareKind,
+    subjectId: string,
+  ): Promise<{ name: string } | undefined>;
   /** Drop a subject's audience row on subject deletion (hygiene; joins already gate). */
   clearForSubject(kind: ShareKind, subjectId: string): Promise<void>;
 }
@@ -200,6 +220,21 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     },
 
     audiencesForSubjects: (kind, subjectIds) => repo.audiencesForSubjects(kind, subjectIds),
+
+    audienceSummariesForSubjects: (kind, subjectIds) =>
+      repo.audienceSummariesForSubjects(kind, subjectIds),
+
+    async listPublicProfileItems(ownerId) {
+      const [portfolios, conglomerates, watchlists] = await Promise.all([
+        repo.listPublicPortfolios(ownerId),
+        repo.listPublicConglomerates(ownerId),
+        repo.listPublicWatchlists(ownerId),
+      ]);
+      return { portfolios, conglomerates, watchlists };
+    },
+
+    authorizePublicItemRead: (ownerId, kind, subjectId) =>
+      repo.authorizePublicItemRead(ownerId, kind, subjectId),
 
     clearForSubject: (kind, subjectId) => repo.clearForSubject(kind, subjectId),
   };

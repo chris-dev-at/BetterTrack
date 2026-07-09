@@ -1133,7 +1133,11 @@
       "specific_friends": "Bestimmte Freunde",
       "all_friends": "Alle Freunde",
       "public_link": "Öffentlicher Link"
-    }
+    },
+    "friendsSearchPlaceholder": "Freunde suchen",
+    "friendsSelectedCount": "{{count}} ausgewählt",
+    "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
+    "share": "Teilen…"
   },
   "watchlists": {
     "title": "Merklisten",
@@ -1165,5 +1169,80 @@
     "positions": "Positionen",
     "watchedAssets": "Beobachtete Werte",
     "brand": "BetterTrack"
+  },
+  "social": {
+    "count": {
+      "portfolio": {
+        "one": "{{count}} Portfolio",
+        "other": "{{count}} Portfolios"
+      },
+      "conglomerate": {
+        "one": "{{count}} Konglomerat",
+        "other": "{{count}} Konglomerate"
+      },
+      "watchlist": {
+        "one": "{{count}} Watchlist",
+        "other": "{{count}} Watchlists"
+      }
+    },
+    "item": {
+      "positions": "{{count}} Positionen",
+      "assets": "{{count}} Werte"
+    },
+    "activity": {
+      "toggleLabel": "Aktivitäts-Benachrichtigungen",
+      "on": "Aktivitäts-Benachrichtigungen an",
+      "off": "Aktivitäts-Benachrichtigungen aus"
+    },
+    "kind": {
+      "portfolios": "Portfolios",
+      "conglomerates": "Konglomerate",
+      "watchlists": "Watchlists"
+    },
+    "sharedWithMe": {
+      "heading": "Mit dir geteilt",
+      "subhead": "Gruppiert nach Person. Öffne eine Person, um ihre Elemente zu sehen.",
+      "emptyTitle": "Noch nichts mit dir geteilt",
+      "emptyBody": "Wenn ein Freund ein Portfolio, Konglomerat oder eine Watchlist mit dir teilt, erscheint es hier.",
+      "error": "Geteilte Elemente konnten nicht geladen werden. Bitte lade die Seite neu."
+    },
+    "myShared": {
+      "emptyTitle": "Du teilst nichts",
+      "emptyBody": "Teile ein Portfolio, Konglomerat oder eine Watchlist, damit es hier erscheint.",
+      "error": "Deine geteilten Elemente konnten nicht geladen werden. Bitte lade die Seite neu."
+    },
+    "friend": {
+      "since": "Befreundet seit {{date}}",
+      "chat": "Chat",
+      "messageAria": "{{username}} eine Nachricht senden",
+      "remove": "Entfernen",
+      "sharesHeading": "Teilt mit dir",
+      "sharesEmpty": "{{username}} teilt noch nichts mit dir."
+    },
+    "chat": {
+      "title": "Nachrichten",
+      "body": "Direktnachrichten mit deinen Freunden folgen bald."
+    }
+  },
+  "profile": {
+    "title": "Mein öffentliches Profil",
+    "subtitle": "Eine optionale öffentliche Seite, die andere sehen können — sie zeigt nur die Elemente, die du per öffentlichem Link geteilt hast.",
+    "error": "Deine Profileinstellungen konnten nicht geladen werden. Bitte lade die Seite neu.",
+    "toggleLabel": "Mein Profil öffentlich machen",
+    "publicItemCount": "{{count}} deiner Elemente sind derzeit öffentlich.",
+    "warningTitle": "Das erstellt eine öffentliche Seite",
+    "warningBody": "Jeder mit deinem Profil-Link — auch Personen, die nicht deine Freunde sind — kann die von dir öffentlich gemachten Elemente sehen, einschließlich Bestände und Nettovermögen. Du kannst das jederzeit deaktivieren.",
+    "acknowledge": "Ich verstehe das und möchte ein öffentliches Profil.",
+    "bioLabel": "Bio",
+    "bioPlaceholder": "Eine kurze Zeile über dich (optional).",
+    "bioCount": "{{count}}/{{max}}",
+    "liveTitle": "Dein Profil ist online",
+    "view": "Ansehen",
+    "save": "Profil speichern",
+    "saveError": "Dein Profil konnte nicht gespeichert werden. Bitte versuche es erneut.",
+    "saved": "Profil gespeichert.",
+    "publicBadge": "Öffentliches Profil",
+    "notAvailable": "Dieses Profil ist nicht verfügbar.",
+    "emptyPublic": "Dieses Profil hat noch keine öffentlichen Elemente."
   }
 }

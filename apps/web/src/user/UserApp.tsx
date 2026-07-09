@@ -51,7 +51,9 @@ import { SharedConglomeratePage } from './social/SharedConglomeratePage';
 import { SharedWatchlistPage } from './social/SharedWatchlistPage';
 import { MySharedItemsPage } from './social/MySharedItemsPage';
 import { PublicSharePage } from './social/PublicSharePage';
-import { PublicProfilePage, SocialIdeasPage, SocialLayout } from './social/SocialSection';
+import { PublicProfileViewPage } from './social/PublicProfileViewPage';
+import { ProfileSettingsPage } from './social/ProfileSettingsPage';
+import { ChatPlaceholderPage, SocialIdeasPage, SocialLayout } from './social/SocialSection';
 import {
   AccountSettingsPage,
   ApiAccessPage,
@@ -96,6 +98,10 @@ function UserShell() {
       <Route path="invite/:token" element={<InvitePage />} />
       {/* Public share link (§14, V3-P5): a logged-out, read-only view. */}
       <Route path="s/:token" element={<PublicSharePage />} />
+      {/* Public profile (§14, V3-P6): the opt-in, username-slugged public page.
+          Logged-out and read-only; a not-opted-in / unknown user 404s in the API,
+          which the page renders as a friendly "not available". */}
+      <Route path="u/:username" element={<PublicProfileViewPage />} />
       <Route element={<RequireUser />}>
         {/* OAuth consent (§6.13 part 2) — a full-screen, standalone card outside
             the AppLayout chrome. Sitting under RequireUser gives login-then-
@@ -158,7 +164,11 @@ function UserShell() {
             <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
             <Route path="my-shared" element={<MySharedItemsPage />} />
             <Route path="ideas" element={<SocialIdeasPage />} />
-            <Route path="profile" element={<PublicProfilePage />} />
+            <Route path="profile" element={<ProfileSettingsPage />} />
+            {/* Chat is issue #349 — the friend cards/overview link here; a calm
+                placeholder until #349 fills it (present, gracefully inert). */}
+            <Route path="chat" element={<ChatPlaceholderPage />} />
+            <Route path="chat/:userId" element={<ChatPlaceholderPage />} />
           </Route>
 
           {/* ── Settings (reached from the profile menu) ── */}

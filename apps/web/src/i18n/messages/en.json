@@ -1133,7 +1133,11 @@
       "specific_friends": "Specific friends",
       "all_friends": "All friends",
       "public_link": "Public link"
-    }
+    },
+    "friendsSearchPlaceholder": "Search friends",
+    "friendsSelectedCount": "{{count}} selected",
+    "friendsNoMatch": "No friends match “{{query}}”.",
+    "share": "Share…"
   },
   "watchlists": {
     "title": "Watchlists",
@@ -1165,5 +1169,80 @@
     "positions": "Positions",
     "watchedAssets": "Watched assets",
     "brand": "BetterTrack"
+  },
+  "social": {
+    "count": {
+      "portfolio": {
+        "one": "{{count}} portfolio",
+        "other": "{{count}} portfolios"
+      },
+      "conglomerate": {
+        "one": "{{count}} conglomerate",
+        "other": "{{count}} conglomerates"
+      },
+      "watchlist": {
+        "one": "{{count}} watchlist",
+        "other": "{{count}} watchlists"
+      }
+    },
+    "item": {
+      "positions": "{{count}} positions",
+      "assets": "{{count}} assets"
+    },
+    "activity": {
+      "toggleLabel": "Activity alerts",
+      "on": "Activity alerts on",
+      "off": "Activity alerts off"
+    },
+    "kind": {
+      "portfolios": "Portfolios",
+      "conglomerates": "Conglomerates",
+      "watchlists": "Watchlists"
+    },
+    "sharedWithMe": {
+      "heading": "Shared with you",
+      "subhead": "Grouped by who's sharing. Expand a person to see their items.",
+      "emptyTitle": "Nothing shared with you yet",
+      "emptyBody": "When a friend shares a portfolio, conglomerate or watchlist with you, it appears here.",
+      "error": "Could not load shared items. Please refresh the page."
+    },
+    "myShared": {
+      "emptyTitle": "You're not sharing anything",
+      "emptyBody": "Share a portfolio, conglomerate or watchlist to have it appear here.",
+      "error": "Could not load your shared items. Please refresh the page."
+    },
+    "friend": {
+      "since": "Friends since {{date}}",
+      "chat": "Chat",
+      "messageAria": "Message {{username}}",
+      "remove": "Remove",
+      "sharesHeading": "Shares with you",
+      "sharesEmpty": "{{username}} isn't sharing anything with you yet."
+    },
+    "chat": {
+      "title": "Messages",
+      "body": "Direct messages with your friends are coming soon."
+    }
+  },
+  "profile": {
+    "title": "My Public Profile",
+    "subtitle": "An optional public page others can view — it shows only the items you've shared with a public link.",
+    "error": "Could not load your profile settings. Please refresh the page.",
+    "toggleLabel": "Make my profile public",
+    "publicItemCount": "{{count}} of your items are currently public.",
+    "warningTitle": "This makes a public page",
+    "warningBody": "Anyone with your profile link — even people who aren't your friends — can see the items you've made public, including holdings and net worth. You can turn this off any time.",
+    "acknowledge": "I understand and want a public profile.",
+    "bioLabel": "Bio",
+    "bioPlaceholder": "A short line about you (optional).",
+    "bioCount": "{{count}}/{{max}}",
+    "liveTitle": "Your profile is live",
+    "view": "View",
+    "save": "Save profile",
+    "saveError": "Could not save your profile. Please try again.",
+    "saved": "Profile saved.",
+    "publicBadge": "Public profile",
+    "notAvailable": "This profile isn't available.",
+    "emptyPublic": "This profile has no public items yet."
   }
 }
