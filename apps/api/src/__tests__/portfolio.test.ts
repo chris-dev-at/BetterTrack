@@ -1496,14 +1496,14 @@ describe('Portfolio cash ledger', () => {
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness); // EUR asset — no FX conversion needed
 
-    // A deposit with sub-cent precision is quantized to whole cents on the way
-    // in: 100.006 € becomes exactly 100.01 €.
+    // A deposit with sub-cent precision floors to whole cents on the way in
+    // (#370 — never rounds up): 100.006 € becomes exactly 100.00 €.
     const dep = await agent
       .post(`/api/v1/portfolios/${pid}/cash/deposit`)
       .set(...XRW)
       .send({ amountEur: 100.006, executedAt: tsOffset(-10) });
     expect(dep.status).toBe(201);
-    expect(dep.body.balanceEur).toBe(100.01);
+    expect(dep.body.balanceEur).toBe(100.0);
 
     // A cash-funded buy whose EUR cost is sub-cent (3 × 100.001 = 300.003) must
     // likewise be booked to the cent, so the running balance stays cent-exact.
@@ -1524,10 +1524,10 @@ describe('Portfolio cash ledger', () => {
       });
     expect(buy.status).toBe(201);
 
-    // Balance now reads a clean 800.01 € (100.01 + 1000 − 300.00) — the buy was
-    // rounded from 300.003 to 300.00. Withdrawing that exact balance drains to 0.
+    // Balance now reads a clean 800.00 € (100.00 + 1000 − 300.00) — the buy cost
+    // floored from 300.003 to 300.00. Withdrawing that exact balance drains to 0.
     const mid = await cashState(agent, pid);
-    expect(mid.balanceEur).toBe(800.01);
+    expect(mid.balanceEur).toBe(800.0);
 
     const withdrawAll = await agent
       .post(`/api/v1/portfolios/${pid}/cash/withdraw`)

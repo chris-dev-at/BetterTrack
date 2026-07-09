@@ -133,30 +133,43 @@ export const CASH_EPSILON = 1e-9;
 export const CASH_DECIMALS = 2;
 
 /**
- * Quantize a EUR amount to whole cents (V3-P0 withdraw-all fix, issue #322).
+ * Quantize a EUR amount **down** to whole cents — the money-rounding policy
+ * (#370, generalising the V3-P0 withdraw-all fix #322).
  *
  * Cash is **real money** — it exists only in whole cents. The pure engine above
  * sums at full FP precision (§5.4), but sub-cent residue must never survive to a
- * *stored* movement or a *reported* balance: a balance of `100.006 €` displays as
- * `100,01 €` yet can never be fully withdrawn (a `100,01 €` withdrawal overdraws
- * the true `100.006`), stranding the reported cent — exactly the reported bug.
- * The boundary fix is to round every amount that enters the ledger, and every
- * balance that leaves it, to cents here, so a withdraw-all lands at exactly
- * `0,00 €` with no float residue.
+ * *stored* movement or a *reported* balance.
  *
- * Rounds half away from zero (`0.005 → 0.01`, `−0.005 → −0.01`), nudging by one
- * ULP first so a value the decimal literal can't represent exactly (`1.005`,
- * stored as `1.00499999…`) still rounds the way a person reading cents expects.
- * This is a **boundary quantizer** for the service layer — the domain replay
- * functions themselves stay unrounded (§5.4).
+ * **Floor, never round up.** Every cash amount floors toward zero to 2 decimals;
+ * it is never rounded up. Flooring is the *conservative* direction: the amount
+ * deducted is always ≤ the true product, so a live-price cost carrying many
+ * decimals can never exceed the balance and cash never goes unexpectedly
+ * negative. A balance of `100.006 €` reports as `100,00 €`, which *can* be
+ * withdrawn in full — whereas rounding it up to `100,01 €` produces a withdrawal
+ * that overdraws the true `100.006`, stranding the reported cent (the original
+ * bug). This makes "max / spend-all" flows exact.
+ *
+ * Applies to money **amounts** only — transaction cost & proceeds, deposits,
+ * withdrawals, transfers, balances, tax-ledger postings and base-currency-
+ * converted cash — never to per-share prices, share quantities, percentages or
+ * FX rates (those keep full precision; floor the money *output*, not the price/
+ * qty inputs). It truncates the *magnitude* toward zero, so a `buy`'s negative
+ * amount shrinks too (`−100.006 → −100.00`: deduct less, never more).
+ *
+ * A value sitting a few ULPs below a cent boundary because its decimal literal
+ * isn't representable (`8.61 → 860.999…9`) is nudged back onto the boundary
+ * before truncating, so exact cents survive FP error while a genuine sub-cent
+ * residue (`100.006 → 10000.6`) still floors away. This is a **boundary
+ * quantizer** for the service layer — the domain replay functions themselves
+ * stay unrounded (§5.4).
  */
-export function roundCents(amountEur: number): number {
+export function floorCents(amountEur: number): number {
   if (!Number.isFinite(amountEur)) {
-    throw new CashLedgerError(`Cannot round a non-finite EUR amount, got ${amountEur}.`);
+    throw new CashLedgerError(`Cannot floor a non-finite EUR amount, got ${amountEur}.`);
   }
-  const scaled = amountEur * 100;
-  const nudged = scaled + Math.sign(scaled) * Number.EPSILON * Math.abs(scaled);
-  return Math.round(nudged) / 100;
+  const sign = amountEur < 0 ? -1 : 1;
+  const cents = Math.floor(Math.abs(amountEur) * 100 * (1 + Number.EPSILON * 8));
+  return cents === 0 ? 0 : (sign * cents) / 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,7 +464,7 @@ function assertSourced(movement: SourcedCashMovement, at?: number): void {
  * Current balance of **each** source: `Map` of `sourceId` → sum of its signed
  * movements (the §14 reconciliation invariant, per source). Sources with no
  * movements are absent — the caller supplies zeroes for freshly created ones.
- * Full FP precision (§5.4); quantize with {@link roundCents} at the boundary.
+ * Full FP precision (§5.4); quantize with {@link floorCents} at the boundary.
  * Throws {@link CashLedgerError} on any malformed movement.
  */
 export function cashBalancesBySource(
@@ -519,7 +532,7 @@ export interface CashTransferLegs {
  * transfer while every roll-up sums the pair to exactly zero (net worth
  * unchanged, and never a TWR flow — see
  * {@link EXTERNAL_CASH_MOVEMENT_KINDS}). The magnitude is quantized to whole
- * cents (#322: cash exists only in cents); an amount that rounds to zero, a
+ * cents (#322: cash exists only in cents); an amount that floors to zero, a
  * non-finite/negative amount, a same-source transfer, or an empty source id
  * fails loud with {@link CashLedgerError}. Solvency of the from-source is the
  * per-source projection's job, not this builder's.
@@ -540,10 +553,10 @@ export function pairedTransferMovements(input: CashTransferInput): CashTransferL
       `Transfer amountEur must be a strictly positive number, got ${input.amountEur}.`,
     );
   }
-  const amountEur = roundCents(input.amountEur);
+  const amountEur = floorCents(input.amountEur);
   if (amountEur === 0) {
     throw new CashLedgerError(
-      `Transfer amountEur rounds to €0.00 (got ${input.amountEur}); nothing to move.`,
+      `Transfer amountEur floors to €0.00 (got ${input.amountEur}); nothing to move.`,
     );
   }
   const outgoing: SourcedCashMovement = {
@@ -587,7 +600,7 @@ export function setBalanceDelta(currentBalanceEur: number, targetBalanceEur: num
   }
   // Quantize each operand, then the difference: 200.00 − 123.45 carries FP
   // noise (76.55000000000001) that must not survive into a stored amount.
-  return roundCents(roundCents(targetBalanceEur) - roundCents(currentBalanceEur));
+  return floorCents(floorCents(targetBalanceEur) - floorCents(currentBalanceEur));
 }
 
 /**

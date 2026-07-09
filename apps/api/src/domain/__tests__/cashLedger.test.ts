@@ -17,7 +17,7 @@ import {
   pairedTransferMovements,
   projectCashLedger,
   projectCashLedgerBySource,
-  roundCents,
+  floorCents,
   setBalanceDelta,
   setBalanceMovement,
   spendableAsOf,
@@ -44,47 +44,68 @@ function mixedSequence(): CashMovement[] {
 }
 
 // ---------------------------------------------------------------------------
-// roundCents — the whole-cent boundary quantizer (V3-P0, #322)
+// floorCents — the whole-cent boundary quantizer, floor policy (#370, #322)
 // ---------------------------------------------------------------------------
 
-describe('roundCents', () => {
+describe('floorCents', () => {
   it('is a no-op on values already expressible in whole cents', () => {
-    expect(roundCents(0)).toBe(0);
-    expect(roundCents(100)).toBe(100);
-    expect(roundCents(1234.56)).toBe(1234.56);
-    expect(roundCents(-99.99)).toBe(-99.99);
+    expect(floorCents(0)).toBe(0);
+    expect(floorCents(100)).toBe(100);
+    expect(floorCents(1234.56)).toBe(1234.56);
+    expect(floorCents(-99.99)).toBe(-99.99);
+    // Exact cents whose decimal literal underflows (8.61 → 860.999…9) survive
+    // rather than dropping a cent.
+    expect(floorCents(8.61)).toBe(8.61);
+    expect(floorCents(0.07)).toBe(0.07);
   });
 
-  it('quantizes sub-cent EUR to the nearest whole cent (half away from zero)', () => {
-    expect(roundCents(100.006)).toBe(100.01);
-    expect(roundCents(100.004)).toBe(100.0);
-    expect(roundCents(0.005)).toBe(0.01);
-    expect(roundCents(-0.005)).toBe(-0.01);
-    // 1.005 is stored as 1.00499999…; the ULP nudge rounds it the way a person
-    // reading cents expects rather than down to 1.00.
-    expect(roundCents(1.005)).toBe(1.01);
+  it('floors sub-cent EUR down (never rounds up — the #370 policy)', () => {
+    // Every sub-cent residue truncates toward zero, even one that half-away
+    // rounding would have carried up to the next cent.
+    expect(floorCents(100.006)).toBe(100.0);
+    expect(floorCents(100.004)).toBe(100.0);
+    expect(floorCents(0.005)).toBe(0.0);
+    expect(floorCents(0.009999)).toBe(0.0);
+    // 1.005 is stored as 1.00499999…; it floors down to 1.00, not up to 1.01.
+    expect(floorCents(1.005)).toBe(1.0);
+    expect(floorCents(2.675)).toBe(2.67);
+  });
+
+  it('truncates the magnitude toward zero for negative (outflow) amounts', () => {
+    // A buy/withdrawal stores a negative amount; flooring shrinks its magnitude
+    // so the deducted amount is ≤ the true cost, never more.
+    expect(floorCents(-100.006)).toBe(-100.0);
+    expect(floorCents(-0.005)).toBe(0);
+    expect(Object.is(floorCents(-0.005), 0)).toBe(true);
+    expect(floorCents(-1.005)).toBe(-1.0);
   });
 
   it('sheds FP summation dust so a reconciled balance is exactly zero cents', () => {
-    // 0.1 + 0.2 − 0.3 leaves ~5.5e-17 of float dust; quantizing lands it at 0.
+    // 0.1 + 0.2 − 0.3 leaves ~5.5e-17 of float dust; flooring lands it at 0.
     const dust = 0.1 + 0.2 - 0.3;
     expect(dust).not.toBe(0);
-    expect(roundCents(dust)).toBe(0);
+    expect(floorCents(dust)).toBe(0);
+    // A value a hair below a cent boundary from summation still floors onto it.
+    expect(floorCents(0.1 + 0.2)).toBe(0.3);
   });
 
-  it('makes a withdraw-all cancel to exactly €0.00 with no residue', () => {
-    // A sub-cent FX-converted buy leaves a balance the display rounds to cents;
-    // withdrawing that cent-exact balance must land at exactly 0 — the #322 bug.
-    const balance = roundCents(cashBalance([mv('deposit', 100.006, '2026-01-01T00:00:00Z')]));
-    expect(balance).toBe(100.01);
-    const after = roundCents(balance + -balance);
+  it('makes withdraw-all safe: the floored balance can be fully withdrawn', () => {
+    // A sub-cent FX-converted buy leaves a true balance of 100.006. The reported
+    // (floored) balance is 100.00 — withdrawing it leaves a true 0.006 that
+    // itself floors to exactly 0. Rounding UP to 100.01 would have overdrawn the
+    // true 100.006 (the #322/#370 bug flooring fixes).
+    const trueBalance = cashBalance([mv('deposit', 100.006, '2026-01-01T00:00:00Z')]);
+    const reported = floorCents(trueBalance);
+    expect(reported).toBe(100.0);
+    expect(reported).toBeLessThanOrEqual(trueBalance + CASH_EPSILON);
+    const after = floorCents(trueBalance - reported);
     expect(after).toBe(0);
     expect(Object.is(after, 0)).toBe(true);
   });
 
   it('throws on a non-finite amount', () => {
-    expect(() => roundCents(Number.POSITIVE_INFINITY)).toThrow(CashLedgerError);
-    expect(() => roundCents(Number.NaN)).toThrow(CashLedgerError);
+    expect(() => floorCents(Number.POSITIVE_INFINITY)).toThrow(CashLedgerError);
+    expect(() => floorCents(Number.NaN)).toThrow(CashLedgerError);
   });
 });
 
@@ -752,15 +773,16 @@ describe('pairedTransferMovements', () => {
     expect(cashBalance([outgoing, incoming])).toBe(0);
   });
 
-  it('quantizes the magnitude to whole cents (#322)', () => {
+  it('floors the magnitude to whole cents (#322/#370)', () => {
     const { outgoing, incoming } = pairedTransferMovements({
       fromSourceId: 'a',
       toSourceId: 'b',
       amountEur: 10.005,
       occurredAt: '2026-02-01T12:00:00Z',
     });
-    expect(incoming.amountEur).toBe(10.01);
-    expect(outgoing.amountEur).toBe(-10.01);
+    // 10.005 floors down to 10.00 (never up to 10.01); the legs mirror exactly.
+    expect(incoming.amountEur).toBe(10.0);
+    expect(outgoing.amountEur).toBe(-10.0);
   });
 
   it('rejects same-source, non-positive, sub-cent and malformed inputs', () => {
@@ -830,8 +852,9 @@ describe('setBalanceDelta / setBalanceMovement', () => {
     expect(200.0 + setBalanceDelta(200.0, 123.45)).toBe(123.45);
   });
 
-  it('quantizes both operands to cents before differencing', () => {
-    expect(setBalanceDelta(0, 100.006)).toBe(100.01);
+  it('floors both operands to cents before differencing (#370)', () => {
+    // 100.006 floors down to 100.00, so the recorded deposit is 100.00.
+    expect(setBalanceDelta(0, 100.006)).toBe(100.0);
     expect(setBalanceDelta(100.004, 100.004)).toBe(0);
   });
 

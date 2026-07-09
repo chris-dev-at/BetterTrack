@@ -40,8 +40,8 @@
  * **Rounding.** Averages, pools and gains stay at full FP precision (§5.4 —
  * no mid-computation rounding); only *settlement deltas* — amounts that
  * become stored movements — are quantized to whole cents via a local
- * {@link roundCents} (the V3-P0 lesson, #322). The quantizer mirrors
- * `cashLedger.roundCents` exactly; it is re-declared here because `domain/**`
+ * {@link floorCents} (the V3-P0 lesson, #322). The quantizer mirrors
+ * `cashLedger.floorCents` exactly; it is re-declared here because `domain/**`
  * modules import nothing (a value import would breach the purity rule), and
  * its parity is pinned by tests on both sides.
  */
@@ -96,22 +96,23 @@ export class TaxComputationError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Cent quantizer (local mirror of cashLedger.roundCents — see module header)
+// Cent quantizer (local mirror of cashLedger.floorCents — see module header)
 // ---------------------------------------------------------------------------
 
 /**
- * Quantize a EUR amount to whole cents, half away from zero, nudging by one
- * ULP first so decimal literals the float can't represent exactly (`1.005` →
- * `1.00499999…`) still round the way a person reading cents expects. Exact
- * mirror of `cashLedger.roundCents` (#322); parity is pinned by tests.
+ * Quantize a EUR amount **down** to whole cents — floor toward zero, never round
+ * up (the #370 money policy). Nudges a value a few ULPs below a cent boundary
+ * (`8.61 → 860.999…9`) back onto it before truncating, so exact cents survive
+ * float error while a genuine sub-cent residue still floors away. Exact mirror
+ * of `cashLedger.floorCents` (#322/#370); parity is pinned by tests.
  */
-export function roundCents(amountEur: number): number {
+export function floorCents(amountEur: number): number {
   if (!Number.isFinite(amountEur)) {
-    throw new TaxComputationError(`Cannot round a non-finite EUR amount, got ${amountEur}.`);
+    throw new TaxComputationError(`Cannot floor a non-finite EUR amount, got ${amountEur}.`);
   }
-  const scaled = amountEur * 100;
-  const nudged = scaled + Math.sign(scaled) * Number.EPSILON * Math.abs(scaled);
-  return Math.round(nudged) / 100;
+  const sign = amountEur < 0 ? -1 : 1;
+  const cents = Math.floor(Math.abs(amountEur) * 100 * (1 + Number.EPSILON * 8));
+  return cents === 0 ? 0 : (sign * cents) / 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +297,7 @@ export function atYearTargetEur(poolEur: number): number {
   if (!Number.isFinite(poolEur)) {
     throw new TaxComputationError(`Year pool must be a finite EUR amount, got ${poolEur}.`);
   }
-  return roundCents(AT_KEST_RATE * Math.max(0, poolEur));
+  return floorCents(AT_KEST_RATE * Math.max(0, poolEur));
 }
 
 /** One not-yet-recorded AT event entering a year's pool via {@link settleAtYear}. */
@@ -388,8 +389,8 @@ export function settleAtYear(input: AtYearSettlementInput): AtYearSettlementResu
     poolEur += dividend;
   }
 
-  const correctionDeltaEur = roundCents(atYearTargetEur(poolEur) - input.heldEur);
-  let heldEur = roundCents(input.heldEur + correctionDeltaEur);
+  const correctionDeltaEur = floorCents(atYearTargetEur(poolEur) - input.heldEur);
+  let heldEur = floorCents(input.heldEur + correctionDeltaEur);
 
   const newEventDeltasEur: number[] = [];
   for (const event of input.newEvents) {
@@ -404,9 +405,9 @@ export function settleAtYear(input: AtYearSettlementInput): AtYearSettlementResu
       throw new TaxComputationError(`Unknown AT event kind ${String(event.kind)}.`);
     }
     poolEur += event.amountEur;
-    const deltaEur = roundCents(atYearTargetEur(poolEur) - heldEur);
+    const deltaEur = floorCents(atYearTargetEur(poolEur) - heldEur);
     newEventDeltasEur.push(deltaEur);
-    heldEur = roundCents(heldEur + deltaEur);
+    heldEur = floorCents(heldEur + deltaEur);
   }
 
   return { correctionDeltaEur, newEventDeltasEur, heldAfterEur: heldEur };
@@ -431,7 +432,7 @@ export interface TaxMovementSpec {
  * (more tax due) is a `tax_withholding` carrying `−delta`, a negative one a
  * `tax_refund` carrying `+|delta|`, and a zero delta posts nothing (`null`).
  * The delta must already be cent-quantized (it always is — every delta above
- * passes through {@link roundCents}).
+ * passes through {@link floorCents}).
  */
 export function taxMovementForDelta(deltaEur: number): TaxMovementSpec | null {
   assertFiniteAmount(deltaEur, 'Settlement delta');
@@ -482,11 +483,11 @@ export function manualTaxEur(input: ManualTaxInput): number | null {
         `Manual tax amount must be a finite non-negative EUR amount, got ${amount}.`,
       );
     }
-    return roundCents(amount);
+    return floorCents(amount);
   }
   const rate = input.taxRatePct!;
   if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
     throw new TaxComputationError(`Manual tax rate must be between 0 and 100, got ${rate}.`);
   }
-  return roundCents((rate / 100) * Math.max(0, input.baseEur));
+  return floorCents((rate / 100) * Math.max(0, input.baseEur));
 }
