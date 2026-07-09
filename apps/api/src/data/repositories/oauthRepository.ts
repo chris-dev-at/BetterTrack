@@ -143,6 +143,28 @@ export function createOAuthRepository(db: Database) {
       return row;
     },
 
+    /**
+     * Boot-seed only (#395): converge a first-party client's allowed-scope ceiling
+     * and redirect URIs to the caller-supplied sets. The caller
+     * ({@link seedFirstPartyClients}) always passes the additive UNION of the
+     * stored values with the code-defined definition, so this never narrows an
+     * admin's manual additions. Scoped to `is_first_party` so it can never rewrite
+     * a user-owned app; the `client_id`, secret, name and public flag are
+     * deliberately not settable here. Returns the updated row, or undefined when
+     * the id isn't a first-party app.
+     */
+    async reconcileFirstPartyClient(
+      id: string,
+      input: { scopes: string[]; redirectUris: string[] },
+    ): Promise<OAuthClientRow | undefined> {
+      const [row] = await db
+        .update(oauthClients)
+        .set({ scopes: input.scopes, redirectUris: input.redirectUris })
+        .where(and(eq(oauthClients.id, id), eq(oauthClients.isFirstParty, true)))
+        .returning();
+      return row;
+    },
+
     /** Resolve a client by its public `btc_…` identifier (authorize/token flows). */
     async findClientByClientId(clientId: string): Promise<OAuthClientRow | undefined> {
       const [row] = await db

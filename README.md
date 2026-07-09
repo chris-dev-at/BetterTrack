@@ -150,7 +150,13 @@ docker compose -f infra/docker-compose.yml build
 # 4. Run database migrations
 docker compose -f infra/docker-compose.yml run --rm api node dist/scripts/migrate.js
 
-# 5. Seed the first admin account (first-boot only; safe to re-run — no-op if admin exists)
+# 5. Seed the first admin account (first-boot only; safe to re-run — no-op if admin exists).
+#    The same seed also idempotently upserts the built-in first-party OAuth clients
+#    (e.g. the BetterTrackMobile app) from their in-code definitions, so a FRESH
+#    install has the mobile OAuth client with its full scope ceiling — no manual
+#    admin-panel step, and no "unknown client" after a reset-without-restore. On an
+#    existing database it only widens each client's allowed scopes / redirect URIs
+#    toward the intended set and never narrows an admin's manual additions.
 docker compose -f infra/docker-compose.yml run --rm api node dist/scripts/seed.js
 
 # 6. Start all services in the background — the override file publishes only

@@ -3,9 +3,11 @@ import postgres from 'postgres';
 
 import { loadConfig } from '../config/env';
 import { createAssetRepository } from '../data/repositories/assetRepository';
+import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
+import { seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 import { COMMON_SYMBOLS_SEED, seedAssetCatalog } from '../services/search/catalogSeed';
 import { generateTempPassword } from '../services/password/tempPassword';
@@ -82,5 +84,18 @@ const catalogSeed = await seedAssetCatalog(assetRepo, COMMON_SYMBOLS_SEED);
 console.log(
   `Asset catalog seed: ${catalogSeed.created} created, ${catalogSeed.existing} already present.`,
 );
+
+// First-party OAuth clients (#395): idempotently upsert the known official apps
+// (currently BetterTrackMobile) from their code-defined single source of truth,
+// so a fresh database always has the mobile OAuth client — no manual admin step,
+// and no "unknown client" on a reset-without-restore. Never narrows an existing
+// row's scopes or redirect URIs (see seedFirstPartyClients).
+const oauthRepo = createOAuthRepository(db);
+const clientResults = await seedFirstPartyClients(oauthRepo);
+for (const result of clientResults) {
+  console.log(
+    `First-party OAuth client ${result.clientId}: ${result.action} (${result.scopes.length} scopes).`,
+  );
+}
 
 await client.end();
