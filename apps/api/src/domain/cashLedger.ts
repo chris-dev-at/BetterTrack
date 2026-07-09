@@ -357,6 +357,51 @@ export function projectCashLedger(movements: readonly CashMovement[]): CashLedge
 }
 
 /**
+ * The maximum outflow that can be applied at instant `occurredAt` on a **single
+ * source's** ledger while keeping it non-negative at **every** instant (#378,
+ * the backdated pay-from-cash bug). Inserting a spend of `C` at time `e` shifts
+ * the whole running-balance curve at and after `e` down by `C`, so the ledger
+ * stays valid exactly when `C ≤ min(runningBalance(t) : t ≥ e)`. This returns
+ * that minimum — the cash "available as of" `e` — which is precisely what
+ * {@link projectCashLedgerBySource} enforces at the write boundary, and the
+ * quantity a live preview must size a backdated buy against instead of today's
+ * (usually higher) balance.
+ *
+ * The write path replays chronologically and appends the proposed buy **last**
+ * among same-timestamp movements, so every existing movement dated **at** `e`
+ * (a same-day funding deposit included) is already booked when the buy applies —
+ * hence the floor is the balance at and before `e`, and only strictly-later
+ * movements can drag the surviving minimum below it. A spend dated at or after
+ * the newest movement simply yields the current balance, so "record a buy now"
+ * is unchanged. Malformed movements fail loud ({@link CashLedgerError}); the
+ * caller passes one source's movements (any order).
+ */
+export function spendableAsOf(movements: readonly CashMovement[], occurredAt: string): number {
+  movements.forEach((movement, i) => assertValidMovement(movement, i));
+  const eMs = occurredAtToMs(occurredAt);
+  // Ascending by time; ties settle credits (positive) before debits (negative),
+  // mirroring `projectCashLedger`'s replay order for same-instant movements.
+  const ordered = movements
+    .map((movement) => ({ ms: occurredAtToMs(movement.occurredAt), amountEur: movement.amountEur }))
+    .sort((a, b) => a.ms - b.ms || b.amountEur - a.amountEur);
+
+  // Floor: the balance at and before `e` (the buy applies after all of these).
+  let floor = 0;
+  for (const m of ordered) if (m.ms <= eMs) floor += m.amountEur;
+  // Then the lowest the balance dips at strictly-later instants — the spend,
+  // which shifts every one of them down by its cost, must clear the minimum.
+  let running = floor;
+  let minFromE = floor;
+  for (const m of ordered) {
+    if (m.ms > eMs) {
+      running += m.amountEur;
+      if (running < minFromE) minFromE = running;
+    }
+  }
+  return minFromE;
+}
+
+/**
  * End-of-day balance series: {@link projectCashLedger} condensed to the last
  * balance of each day with a movement (sparse, ascending) — the shape the
  * later overview wiring needs to add cash to a daily value curve. Validates

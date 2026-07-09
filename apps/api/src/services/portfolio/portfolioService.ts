@@ -65,6 +65,7 @@ import {
   projectCashLedgerBySource,
   roundCents,
   setBalanceMovement,
+  spendableAsOf,
   type CashTransferLegs,
   type SourcedCashMovement,
 } from '../../domain/cashLedger';
@@ -814,9 +815,24 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     const linkedTxnIds = new Set(
       cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
     );
+    // Backdated pay-from-cash settled as of today (#378): a linked `buy`
+    // movement whose day differs from its transaction's day. The acquisition sits
+    // on the past buy day, the cash withdrawal on the settle day — no longer
+    // cancelling within one day as a same-day cash-funded buy does, so TWR needs
+    // a compensating flow pair (see buildHoldingsLegs) to stay neutral across the
+    // split. (Cash-linked txns cannot have their date edited, so a day mismatch
+    // is always this deliberate split, never drift.)
+    const txnDayById = new Map(txns.map((t) => [t.id, t.executedAt.toISOString().slice(0, 10)]));
+    const splitCashBuys = cashRecords.flatMap((r) => {
+      if (r.kind !== 'buy' || r.transactionId === null) return [];
+      const buyDay = txnDayById.get(r.transactionId);
+      const settleDay = r.executedAt.toISOString().slice(0, 10);
+      if (buyDay === undefined || buyDay === settleDay) return [];
+      return [{ txnId: r.transactionId, buyDay, settleDay, amountEur: r.amountEur }];
+    });
     const legs =
       txns.length > 0
-        ? await buildHoldingsLegs(txns, linkedTxnIds, today)
+        ? await buildHoldingsLegs(txns, linkedTxnIds, splitCashBuys, today)
         : { points: [], flows: [], overlays: [] };
 
     // The absolute curve is the NET-WORTH curve (#311): holdings value plus
@@ -844,6 +860,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   async function buildHoldingsLegs(
     txns: TransactionRecord[],
     linkedTxnIds: ReadonlySet<string>,
+    splitCashBuys: ReadonlyArray<{
+      txnId: string;
+      buyDay: string;
+      settleDay: string;
+      amountEur: number;
+    }>,
     today: string,
   ): Promise<{
     points: Array<{ date: string; valueEur: number }>;
@@ -952,6 +974,25 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       currencyByAsset: new Map(valueAssets.map((a) => [a.assetId, a.currency])),
       converter: currencyService,
     });
+
+    // TWR neutraliser for a backdated buy settled as of today (#378). Its
+    // acquisition lands on the buy day (holdings ↑, no cash change that day) and
+    // its cash withdrawal on the settle day (cash ↓, holdings unchanged) — two
+    // steps a same-day cash-funded buy would cancel in one instant. Left alone
+    // the buy day reads as a phantom gain and the settle day as a phantom loss
+    // (net worth moves with no flow). Adding +cost on the buy day and −cost on
+    // the settle day makes each step flow-explained: the buy contributes exactly
+    // the return a same-day cash-funded buy would (execution→close move, fee
+    // drag), and the settle day is perfectly flat. The pair nets to zero, so
+    // total contribution is unchanged. Only for plotted (EUR-convertible) assets;
+    // the amount is the stored EUR cash leg (negative), so +cost = −amountEur.
+    const txnAssetById = new Map(txns.map((t) => [t.id, t.assetId]));
+    for (const split of splitCashBuys) {
+      const assetId = txnAssetById.get(split.txnId);
+      if (assetId === undefined || !usableIdSet.has(assetId)) continue;
+      flows.push({ date: split.buyDay, flowEur: -split.amountEur });
+      flows.push({ date: split.settleDay, flowEur: split.amountEur });
+    }
 
     // Overlay series (#122): each held asset's own daily closes over the same
     // window, expanded to the portfolio curve's daily grid (weekends/holidays
@@ -1173,22 +1214,51 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
       });
 
+      // Decide each cash leg's date (#378). A pay-from-cash BUY whose cash was
+      // insufficient AS OF the buy date and flagged `settleCashAsOfToday` settles
+      // its cash-withdrawal leg **as of today**: the asset acquisition still
+      // records on its past `executedAt` (cost basis / P&L / AT tax anchored
+      // there), but the linked `buy` movement is dated today so the historical
+      // ledger never dips negative. Every other leg — a buy with cash available at
+      // its date, a sell, a tax settlement — keeps its transaction date.
+      // `spendableAsOf` per source is exactly what the solvency gate below
+      // enforces, so a leg moves only when genuinely short; the gate then still
+      // rejects (INSUFFICIENT_CASH) a buy that cannot be covered even today.
+      const existingCash = await cashMovementRepo.listForPortfolio(portfolioId);
+      const existingBySource = new Map<string, SourcedCashMovement[]>();
+      for (const record of existingCash) {
+        const movement = toDomainMovement(record);
+        const list = existingBySource.get(movement.sourceId);
+        if (list) list.push(movement);
+        else existingBySource.set(movement.sourceId, [movement]);
+      }
+      const nowIso = new Date(now()).toISOString();
       const proposed: SourcedCashMovement[] = cashLinks
-        .map((link, i): SourcedCashMovement | null =>
-          link
-            ? {
-                kind: link.kind,
-                amountEur: link.amountEur,
-                sourceId: link.sourceId,
-                occurredAt: new Date(inputs[i]!.executedAt).toISOString(),
-              }
-            : null,
-        )
+        .map((link, i): SourcedCashMovement | null => {
+          if (!link) return null;
+          const naturalIso = new Date(inputs[i]!.executedAt).toISOString();
+          let occurredAt = naturalIso;
+          if (link.kind === 'buy' && inputs[i]!.settleCashAsOfToday) {
+            const available = spendableAsOf(existingBySource.get(link.sourceId) ?? [], naturalIso);
+            const costEur = -link.amountEur; // buy amounts are strictly negative
+            if (costEur > available + CASH_EPSILON) {
+              occurredAt = nowIso;
+              // Persist the moved date onto the stored leg too, so the recorded
+              // movement matches the solvency-checked one.
+              cashLinks[i] = { ...link, occurredAt: new Date(nowIso) };
+            }
+          }
+          return {
+            kind: link.kind,
+            amountEur: link.amountEur,
+            sourceId: link.sourceId,
+            occurredAt,
+          };
+        })
         .filter((m): m is SourcedCashMovement => m !== null)
         .concat(taxPlan.proposed);
       if (proposed.length > 0) {
-        const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-        assertCashSolvent(existing, proposed);
+        assertCashSolvent(existingCash, proposed);
       }
 
       const inserted = await transactionRepo.insertMany(
@@ -1754,21 +1824,40 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Solvency is per source (V3-P3): preview against the chosen source's
       // balance (Main when omitted), mirroring what the write path enforces.
       const source = await resolveFlowSource(portfolioId, input.sourceId);
-      const { balanceBySource } = await loadCashState(portfolioId);
-      const availableEur = balanceBySource.get(source.id) ?? 0;
+      const records = await cashMovementRepo.listForPortfolio(portfolioId);
+      const sourceMovements = records.filter((r) => r.sourceId === source.id).map(toDomainMovement);
+      const availableEur = roundCents(cashBalance(sourceMovements));
       // Quantize the proposed amount to cents to mirror what the write path will
       // actually record (#322), so the "available → after" preview matches the
       // balance the user will land on — a withdraw-all previews exactly €0.00.
-      const afterEur = roundCents(
-        availableEur + roundCents(input.amountEur) * CASH_MOVEMENT_SIGN[input.kind],
-      );
+      const amountEur = roundCents(input.amountEur);
+      const afterEur = roundCents(availableEur + amountEur * CASH_MOVEMENT_SIGN[input.kind]);
       const sufficient = afterEur >= -CASH_EPSILON;
-      return {
+      const base = {
         availableEur,
         afterEur,
         sufficient,
         shortfallEur: sufficient ? 0 : -afterEur,
       };
+      // Backdated pay-from-cash (#378): for a BUY with a past date, also report
+      // the cash spendable AS OF that date — the source's running-minimum balance
+      // from that instant on, exactly what the write-boundary solvency gate
+      // allows — so the form can distinguish "insufficient back then but fine
+      // today" (warn + offer settle-as-of-today) from "unaffordable even now".
+      if (input.asOfDate !== undefined && input.kind === 'buy') {
+        const asOfAvailableEur = roundCents(
+          spendableAsOf(sourceMovements, `${input.asOfDate}T00:00:00.000Z`),
+        );
+        const asOfAfterEur = roundCents(asOfAvailableEur - amountEur);
+        return {
+          ...base,
+          asOfDate: input.asOfDate,
+          asOfAvailableEur,
+          asOfAfterEur,
+          asOfSufficient: asOfAfterEur >= -CASH_EPSILON,
+        };
+      }
+      return base;
     },
 
     async getHistory(userId, portfolioId, range, opts) {

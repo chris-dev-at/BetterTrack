@@ -241,6 +241,16 @@ export const transactionInputSchema = z
     addProceedsToCash: z.boolean().optional(),
     cashSourceId: z.string().uuid().optional(),
     /**
+     * Backdated pay-from-cash settlement (#378). Only meaningful on a
+     * `payFromCash` BUY whose cash was insufficient **as of the buy date**. When
+     * set, the asset acquisition still records on its past `executedAt`, but the
+     * linked cash-withdrawal (`buy`) movement is dated **today** so the historical
+     * ledger never dips negative — cost basis / P&L / tax stay anchored to the buy
+     * date, only the cash leg moves. Ignored when the cash was already sufficient
+     * at the buy date (the leg is then dated at the buy date as usual).
+     */
+    settleCashAsOfToday: z.boolean().optional(),
+    /**
      * Manual tax entry on a SELL (V3-P4, `manual_per_trade` mode only):
      * absolute EUR amount OR a percentage of the sell's realized gain — at
      * most one, both optional (no entry = no tax recorded). Rejected on buys,
@@ -689,6 +699,18 @@ export const cashPreviewRequestSchema = z
     kind: cashMovementKindSchema,
     amountEur: cashAmountEurSchema,
     sourceId: z.string().uuid().optional(),
+    /**
+     * The proposed buy's date (ISO `YYYY-MM-DD`), for the backdated
+     * pay-from-cash preview (#378). When present on a `buy`, the response also
+     * carries the `asOf*` fields: the cash actually spendable **as of that date**
+     * (the source's running-minimum balance from that instant on, which is what
+     * the write path enforces), so the form can warn "insufficient back then" and
+     * offer to settle the cash as of today. Absent → only the today-balance view.
+     */
+    asOfDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'asOfDate must be an ISO YYYY-MM-DD day')
+      .optional(),
   })
   .strict();
 export type CashPreviewRequest = z.infer<typeof cashPreviewRequestSchema>;
@@ -705,6 +727,19 @@ export const cashPreviewResponseSchema = z
     afterEur: z.number(),
     sufficient: z.boolean(),
     shortfallEur: z.number(),
+    /**
+     * Backdated pay-from-cash view (#378), present only when the request carried
+     * `asOfDate` on a `buy`. `asOfAvailableEur` is the cash spendable **as of the
+     * buy date** — the source's running-minimum balance from that instant on, the
+     * exact quantity the write path's non-negative-at-every-instant gate allows —
+     * and `asOfAfterEur` the balance after the buy. `asOfSufficient: false` with
+     * `sufficient: true` (affordable today) is the signal to warn and offer
+     * "deduct as of today"; both false means it is unaffordable even now.
+     */
+    asOfDate: z.string().optional(),
+    asOfAvailableEur: z.number().optional(),
+    asOfAfterEur: z.number().optional(),
+    asOfSufficient: z.boolean().optional(),
   })
   .strict();
 export type CashPreviewResponse = z.infer<typeof cashPreviewResponseSchema>;

@@ -1149,17 +1149,34 @@ export function PortfolioPage() {
   function renderDialogs() {
     return (
       <>
-        {txnDialog && portfolioId ? (
-          <TransactionDialog
-            portfolioId={portfolioId}
-            transaction={txnDialog.kind === 'edit' ? txnDialog.transaction : undefined}
-            asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
-            defaultPayFromCash={portfolio?.defaultPayFromCash ?? false}
-            cashSources={cashSources}
-            onClose={() => setTxnDialog(null)}
-            onSubmitted={refetchAll}
-          />
-        ) : null}
+        {txnDialog && portfolioId
+          ? (() => {
+              // The dialog's asset (create-with-asset or edit), for the sell "Max"
+              // (held quantity) and to keep the Main-cash "Max" affordable (#378).
+              const dialogAssetId =
+                txnDialog.kind === 'edit'
+                  ? txnDialog.transaction.assetId
+                  : (txnDialog.asset?.id ?? undefined);
+              const heldQuantity = dialogAssetId
+                ? (portfolioQuery.data?.holdings ?? []).find((h) => h.asset.id === dialogAssetId)
+                    ?.quantity
+                : undefined;
+              return (
+                <TransactionDialog
+                  portfolioId={portfolioId}
+                  transaction={txnDialog.kind === 'edit' ? txnDialog.transaction : undefined}
+                  asset={txnDialog.kind === 'create' ? txnDialog.asset : undefined}
+                  defaultPayFromCash={portfolio?.defaultPayFromCash ?? false}
+                  cashSources={cashSources}
+                  portfolioName={portfolio?.name}
+                  availableCashEur={cashSources.find((s) => s.isMain)?.balanceEur}
+                  heldQuantity={heldQuantity}
+                  onClose={() => setTxnDialog(null)}
+                  onSubmitted={refetchAll}
+                />
+              );
+            })()
+          : null}
         {cashDialogKind && portfolioId ? (
           <CashDialog
             portfolioId={portfolioId}
