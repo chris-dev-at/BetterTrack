@@ -499,6 +499,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     bus: events,
     logger,
     resolveSession: (sessionId, userAgent) => auth.resolveSession(sessionId, userAgent),
+    // Bearer handshake auth for the cookieless mobile app (§6.13, §14): the SAME
+    // resolution the HTTP bearer middleware runs — a personal API key first,
+    // then a delegated OAuth access token; both enforce revocation, expiry and
+    // consent-scope clamping inside the service, so socket auth can never drift
+    // from HTTP auth. Returns the owning user, or null for an unknown token.
+    resolveBearer: async (token) => {
+      const principal =
+        (await apiKeys.authenticate(token)) ?? (await oauth.authenticateToken(token));
+      return principal?.user ?? null;
+    },
     canViewPortfolio: async (userId, portfolioId) => {
       if (await portfolioRepo.findByIdForUser(userId, portfolioId)) return true;
       // Friend-share access goes through the SAME single enforcement layer the

@@ -6,11 +6,37 @@ import { currencyCodeSchema } from './market';
  * Realtime gateway contracts (PROJECTPLAN.md §4.5, V3-P7a) and Live Mode
  * (§6.3, V3-P7b).
  *
- * The Socket.IO endpoint lives at {@link REALTIME_PATH} on the API origin and is
- * authenticated via the session cookie on handshake. These schemas are the
- * single source of truth for every payload crossing the socket in either
- * direction — the API validates client frames against them and the SPA derives
- * its types from them, exactly like the HTTP contracts.
+ * The Socket.IO endpoint lives at {@link REALTIME_PATH} on the API origin. These
+ * schemas are the single source of truth for every payload crossing the socket
+ * in either direction — the API validates client frames against them and the SPA
+ * derives its types from them, exactly like the HTTP contracts.
+ *
+ * ── Handshake auth ──────────────────────────────────────────────────────────
+ * The handshake authenticates with EITHER credential, resolved to the user id
+ * that owns the socket's `user:{id}` room:
+ *
+ *   - **Session cookie** — the web SPA path: the signed session cookie, resolved
+ *     through the auth service's cookie→user resolution (verbatim the HTTP path).
+ *   - **Bearer token** — the mobile path (§6.13, §14): the app holds no cookie,
+ *     so it presents a personal API key (`btk_…`) or a delegated OAuth access
+ *     token (`bto_…`) via the socket.io auth payload (`handshake.auth.token`)
+ *     and/or an `Authorization: Bearer …` upgrade header (either is accepted).
+ *     The token is validated through the SAME service the HTTP bearer middleware
+ *     uses — revocation, expiry and consent-scope clamping included — so socket
+ *     auth never drifts from, or widens, the HTTP surface. Because the gateway
+ *     pushes invalidation signals only (no data crosses the socket; the client
+ *     refetches each payload through the HTTP enforcement layer), an
+ *     authenticated user in their own room is the correct bar — the gateway does
+ *     no per-event scope filtering.
+ *
+ * ── Transports ──────────────────────────────────────────────────────────────
+ * Both Engine.IO transports are supported: a client may open the websocket
+ * transport directly (the mobile app dials `?EIO=4&transport=websocket` with no
+ * prior polling handshake) or take the polling→websocket upgrade the web SPA
+ * performs. A literal HTTP 400 (`{"code":3}`) on `transport=websocket` means the
+ * request reached Engine.IO WITHOUT a valid WebSocket upgrade (typically a
+ * reverse proxy not forwarding the `Upgrade`/`Connection` headers) — the gateway
+ * itself accepts websocket-first connections.
  *
  * The gateway is an enhancement layer: every push maps to a TanStack Query
  * cache invalidation on the client, and the SPA's poll/refetch behavior stays
