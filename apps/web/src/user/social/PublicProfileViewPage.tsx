@@ -1,11 +1,14 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
+import type { Time } from 'lightweight-charts';
 
 import type { ShareKind } from '@bettertrack/contracts';
 
 import { getPublicProfile, getPublicProfileItem } from '../../lib/socialApi';
 import { useT } from '../../i18n';
+import { Wordmark } from '../../components/Wordmark';
+import { PriceChart } from '../../ui/charts';
 import { Avatar } from '../components/Avatar';
 import { Splash } from '../components/ui';
 import { KindIcon } from './SharedPeople';
@@ -31,7 +34,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <header className="border-b border-neutral-800 px-6 py-4">
         <div className="mx-auto flex max-w-3xl items-center justify-between">
-          <span className="text-lg font-semibold">{t('publicShare.brand')}</span>
+          <Wordmark edition="Web" className="text-lg" />
           <span className="text-xs uppercase tracking-wide text-neutral-500">
             {t('profile.publicBadge')}
           </span>
@@ -108,19 +111,38 @@ function ProfileItemCard({
           ) : detail.isError || !detail.data ? (
             <p className="text-sm text-neutral-500">{t('publicShare.notFound')}</p>
           ) : detail.data.kind === 'portfolio' ? (
-            <ul className="divide-y divide-neutral-800">
-              {detail.data.portfolio.holdings.map((h) => (
-                <li key={h.asset.id} className="flex items-center justify-between gap-3 py-2">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{h.asset.symbol}</p>
-                    <p className="truncate text-xs text-neutral-500">{h.asset.name}</p>
-                  </div>
-                  <span className="shrink-0 text-sm text-neutral-300">
-                    {eur(h.marketValueEur ?? 0)}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div className="flex flex-col gap-4">
+              {detail.data.portfolio.history.points.length > 0 ? (
+                <section aria-label={t('publicShare.valueOverTime')}>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                    {t('publicShare.valueOverTime')}
+                  </h3>
+                  <PriceChart
+                    series={detail.data.portfolio.history.points.map((pt) => ({
+                      time: pt.date as Time,
+                      value: pt.valueEur,
+                    }))}
+                    mode="area"
+                    showRangeToggle={false}
+                    height={240}
+                    ariaLabel={t('publicShare.valueOverTime')}
+                  />
+                </section>
+              ) : null}
+              <ul className="divide-y divide-neutral-800">
+                {detail.data.portfolio.holdings.map((h) => (
+                  <li key={h.asset.id} className="flex items-center justify-between gap-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{h.asset.symbol}</p>
+                      <p className="truncate text-xs text-neutral-500">{h.asset.name}</p>
+                    </div>
+                    <span className="shrink-0 text-sm text-neutral-300">
+                      {eur(h.marketValueEur ?? 0)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : detail.data.kind === 'conglomerate' ? (
             <ul className="divide-y divide-neutral-800">
               {detail.data.conglomerate.positions.map((p) => (

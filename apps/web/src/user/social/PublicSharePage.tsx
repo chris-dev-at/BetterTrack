@@ -1,8 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
+import type { Time } from 'lightweight-charts';
 
 import { resolveShareLink } from '../../lib/socialApi';
 import { useT } from '../../i18n';
+import { Wordmark } from '../../components/Wordmark';
+import { PriceChart } from '../../ui/charts';
 import { Splash } from '../components/ui';
 
 /**
@@ -25,7 +28,7 @@ function Shell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       <header className="border-b border-neutral-800 px-6 py-4">
         <div className="mx-auto flex max-w-3xl items-center justify-between">
-          <span className="text-lg font-semibold">{t('publicShare.brand')}</span>
+          <Wordmark edition="Web" className="text-lg" />
           <span className="text-xs uppercase tracking-wide text-neutral-500">
             {t('publicShare.readOnly')}
           </span>
@@ -73,6 +76,22 @@ export function PublicSharePage() {
             </p>
             <p className="text-3xl font-semibold">{eur(p.totals.totalValueEur)}</p>
           </div>
+          {p.history.points.length > 0 ? (
+            <section aria-label={t('publicShare.valueOverTime')}>
+              <h2 className="mb-2 text-sm font-semibold text-neutral-300">
+                {t('publicShare.valueOverTime')}
+              </h2>
+              <PriceChart
+                series={p.history.points.map((pt) => ({
+                  time: pt.date as Time,
+                  value: pt.valueEur,
+                }))}
+                mode="area"
+                showRangeToggle={false}
+                ariaLabel={t('publicShare.valueOverTime')}
+              />
+            </section>
+          ) : null}
           <section>
             <h2 className="mb-2 text-sm font-semibold text-neutral-300">
               {t('publicShare.holdings')}

@@ -1166,6 +1166,7 @@
     "ownerLabel": "Shared by {{username}}",
     "readOnly": "Read-only shared view",
     "netWorth": "Net worth",
+    "valueOverTime": "Value over time",
     "holdings": "Holdings",
     "positions": "Positions",
     "watchedAssets": "Watched assets",

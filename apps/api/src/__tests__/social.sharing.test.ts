@@ -700,6 +700,32 @@ describe('audience model — public links (V3-P5, §14)', () => {
     expect((await request(harness.app).get(url)).status).toBe(404);
   });
 
+  it('serves the value/performance chart series over the public link, and a non-public portfolio 404s (no chart-data leak)', async () => {
+    const { aliceAgent, pid } = await scenario();
+    const put = await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+    const url = put.body.link.url as string;
+
+    // Public link → the value/performance chart series rides in the SAME
+    // read-only payload, built only AFTER the public_link gate is proven — the
+    // logged-out chart opens no data path around the enforcement layer.
+    const anon = await request(harness.app).get(url);
+    expect(anon.status).toBe(200);
+    expect(anon.body.kind).toBe('portfolio');
+    expect(anon.body.portfolio.history.range).toBe('MAX');
+    expect(Array.isArray(anon.body.portfolio.history.points)).toBe(true);
+
+    // Narrow the audience away from public_link → the same URL (and with it the
+    // chart's series) 404s: a non-public portfolio's chart data is never
+    // fetchable on the public route.
+    await putAudience(aliceAgent, 'portfolio', pid, { audience: 'all_friends' });
+    const narrowed = await request(harness.app).get(url);
+    expect(narrowed.status).toBe(404);
+    expect(narrowed.body).not.toHaveProperty('portfolio');
+  });
+
   it('re-minting rotates the token; the old token stays dead', async () => {
     const { aliceAgent, pid } = await scenario();
     const first = await putAudience(aliceAgent, 'portfolio', pid, {
