@@ -72,6 +72,10 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  // Reset call history + per-test implementations between cases; without this the
+  // mocked adminApi retains calls from a sibling test and `toHaveBeenCalledWith`
+  // matches (or reports) a stale mutation from the wrong test (#337).
+  vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
   vi.mocked(api.listUserAudit).mockResolvedValue({ entries: [auditEntry], nextCursor: null });
@@ -103,6 +107,9 @@ test('editing the username persists via updateUser', async () => {
   renderPage();
 
   const usernameField = await screen.findByLabelText('Username');
+  // Wait for the controlled value to settle before editing — otherwise a late
+  // hydration can re-fill the field after `clear` and the typed text appends (#337).
+  await waitFor(() => expect(usernameField).toHaveValue('jane'));
   await user.clear(usernameField);
   await user.type(usernameField, 'jane2');
   await user.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -118,6 +125,9 @@ test('editing the email persists via updateUser', async () => {
   renderPage();
 
   const emailField = await screen.findByLabelText('Email');
+  // Wait for the controlled value to settle before editing — otherwise a late
+  // hydration can re-fill the field after `clear` and the typed text appends (#337).
+  await waitFor(() => expect(emailField).toHaveValue('jane@bettertrack.test'));
   await user.clear(emailField);
   await user.type(emailField, 'jane.doe@bettertrack.test');
   await user.click(screen.getByRole('button', { name: 'Save changes' }));
