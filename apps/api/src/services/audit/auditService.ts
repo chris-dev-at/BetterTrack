@@ -29,6 +29,7 @@ export const AuditAction = {
   UserUsernameChanged: 'user.username_changed',
   UserEmailChanged: 'user.email_changed',
   UserDeleted: 'user.deleted',
+  AccountDeleteFail: 'account.delete_fail',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',

@@ -38,6 +38,10 @@ import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
+  createAccountDeletionService,
+  type AccountDeletionService,
+} from '../services/account/accountDeletionService';
+import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
@@ -138,6 +142,8 @@ export interface AppContext {
   notificationSettings: NotificationSettingsService;
   /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
   accountSettings: AccountSettingsService;
+  /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
+  accountDeletion: AccountDeletionService;
   /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
   alerts: AlertService;
   /**
@@ -418,8 +424,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // social read, and `asset` chips through the §10 asset-visibility rule, so a
   // chip can never widen access. Publishes `chat.message` for the gateway push
   // (in-thread delivery) and the notification dispatcher (matrix-routed bell/email).
+  const chatRepo = createChatRepository(db);
   const chat = createChatService({
-    repo: createChatRepository(db),
+    repo: chatRepo,
     friendship: friendshipRepo,
     audience,
     assets: assetRepo,
@@ -437,6 +444,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Account defaults (§6.9, V2-P9): Settings → Account default portfolio
   // visibility, applied by the portfolio service at create time.
   const accountSettings = createAccountSettingsService({ userRepo });
+
+  // Self-service account deletion (§13.4 V4-P2c, #362): re-auth + typed
+  // confirmation, then a hard delete the FK graph fans out — with the chat
+  // anonymize-and-purge exception handled through the chat repository.
+  const accountDeletion = createAccountDeletionService({
+    config,
+    redis,
+    userRepo,
+    chatRepo,
+    sessions,
+    audit,
+    passwordHasher,
+    twoFactor,
+  });
 
   // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
   // the worker fires them and publishes `alert.triggered`, which the dispatcher
@@ -516,6 +537,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notifications,
     notificationSettings,
     accountSettings,
+    accountDeletion,
     alerts,
     notificationDispatcher,
     realtime,

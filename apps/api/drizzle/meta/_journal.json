@@ -197,6 +197,13 @@
       "when": 1783492300000,
       "tag": "0027_mobile_chat_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1783492400000,
+      "tag": "0028_account_self_deletion",
+      "breakpoints": true
     }
   ]
 }

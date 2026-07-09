@@ -45,6 +45,7 @@ const componentSchemas = {
   RegisterRequest: contracts.registerRequestSchema,
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
   ChangePasswordRequest: contracts.changePasswordRequestSchema,
+  DeleteAccountRequest: contracts.deleteAccountRequestSchema,
   PasswordResetRequest: contracts.passwordResetRequestSchema,
   PasswordResetComplete: contracts.passwordResetCompleteSchema,
   PinVerifyRequest: contracts.pinVerifyRequestSchema,
@@ -388,6 +389,16 @@ const endpoints: EndpointDef[] = [
     body: R.ChangePasswordRequest,
     status: 200,
     response: R.MeResponse,
+  },
+  {
+    method: 'delete',
+    path: '/account',
+    tag: 'Auth',
+    summary:
+      'Delete the account irreversibly (typed username confirmation + password or fresh 2FA). Revokes every session and credential; chat messages anonymize for the partner.',
+    body: R.DeleteAccountRequest,
+    status: 200,
+    response: R.OkResponse,
   },
   {
     method: 'get',

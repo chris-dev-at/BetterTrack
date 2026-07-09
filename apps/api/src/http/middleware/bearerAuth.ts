@@ -130,6 +130,12 @@ function resolvePolicy(path: string): PathPolicy {
   // /auth carve-outs (#361) — resolved before anything else in the group.
   const authPolicy = resolveAuthPolicy(path);
   if (authPolicy) return authPolicy;
+  // Account lifecycle (#362): self-service deletion is part of the
+  // account-security surface — the mobile in-app flow calls it with a bearer
+  // holding `account:security` (deletion is additionally re-auth-gated).
+  if (path === '/account' || path.startsWith('/account/')) {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
   // Key management + OAuth app/grant lifecycle are cookie-session only: a
   // delegated token must not mint/list/revoke keys, register OAuth apps or manage
   // grants (no privilege escalation). Checked before the `/settings` module
