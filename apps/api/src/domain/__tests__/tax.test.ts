@@ -34,7 +34,17 @@ const T = (
 describe('floorCents (local mirror)', () => {
   it('matches cashLedger.floorCents on the boundary cases exactly', () => {
     const cases = [
-      0, 0.005, -0.005, 1.005, -1.005, 2.675, 100.004999, 100.006, 8.61, 0.1 + 0.2, 123.456,
+      0,
+      0.005,
+      -0.005,
+      1.005,
+      -1.005,
+      2.675,
+      100.004999,
+      100.006,
+      8.61,
+      0.1 + 0.2,
+      123.456,
       -76.545,
     ];
     for (const value of cases) {
