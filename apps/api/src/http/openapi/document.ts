@@ -157,6 +157,7 @@ const componentSchemas = {
   UpdateCustomAssetRequest: contracts.updateCustomAssetRequestSchema,
   PutValuePointsRequest: contracts.putValuePointsRequestSchema,
   CreateCustomAssetResponse: contracts.createCustomAssetResponseSchema,
+  CustomAssetListResponse: contracts.customAssetListResponseSchema,
   UpdateCustomAssetResponse: z.object({ asset: contracts.customAssetSchema }).strict(),
   ValuePointsResponse: contracts.valuePointsResponseSchema,
   RecategorizationStatusResponse: contracts.recategorizationStatusResponseSchema,
@@ -1177,6 +1178,14 @@ const endpoints: EndpointDef[] = [
     tag: 'Custom Assets',
     summary: 'Dismiss the re-categorize banner (clear every flag).',
     status: 204,
+  },
+  {
+    method: 'get',
+    path: '/custom-assets',
+    tag: 'Custom Assets',
+    summary: 'List all custom assets the caller owns (with latest value point).',
+    status: 200,
+    response: R.CustomAssetListResponse,
   },
   {
     method: 'post',

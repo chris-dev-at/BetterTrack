@@ -34,6 +34,13 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
     res.status(204).send();
   });
 
+  // GET /custom-assets — every custom asset the user owns, including ones with no
+  // holdings, each with its latest value point (mobile list surface).
+  router.get('/', async (req, res) => {
+    const list = await ctx.customAssets.list(req.authUser!.id);
+    res.json({ assets: list });
+  });
+
   // POST /custom-assets — create a custom asset, optional initial BUY (§6.9).
   router.post('/', validateBody(createCustomAssetRequestSchema), async (req, res) => {
     const input = req.valid?.body as CreateCustomAssetRequest;
