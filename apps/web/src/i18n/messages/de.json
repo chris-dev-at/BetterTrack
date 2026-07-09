@@ -1218,6 +1218,7 @@
     "ownerLabel": "Geteilt von {{username}}",
     "readOnly": "Schreibgeschützte geteilte Ansicht",
     "netWorth": "Nettovermögen",
+    "valueOverTime": "Wertverlauf",
     "holdings": "Positionen",
     "positions": "Positionen",
     "watchedAssets": "Beobachtete Werte",

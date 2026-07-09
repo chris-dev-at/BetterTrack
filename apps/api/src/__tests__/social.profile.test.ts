@@ -273,6 +273,37 @@ describe('public profile (V3-P6)', () => {
     ).toBe(404);
   });
 
+  it("serves a public portfolio's chart series on the profile drill-in, and a non-public one's chart 404s (no chart-data leak)", async () => {
+    const { aliceAgent, pid } = await scenario();
+    await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+    await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: true, acknowledgePublic: true });
+
+    // Public item → the value/performance chart series is present in the
+    // read-only drill-in payload, served behind the same public_link gate as
+    // the profile listing (no separate unauthenticated data path).
+    const pub = await request(harness.app).get(`/api/v1/social/profiles/alice/portfolio/${pid}`);
+    expect(pub.status).toBe(200);
+    expect(pub.body.kind).toBe('portfolio');
+    expect(pub.body.portfolio.history.range).toBe('MAX');
+    expect(Array.isArray(pub.body.portfolio.history.points)).toBe(true);
+
+    // Narrow the portfolio away from public_link → the whole drill-in payload
+    // (its chart series included) 404s: a non-public portfolio's chart data is
+    // never fetchable on the public route.
+    await putAudience(aliceAgent, 'portfolio', pid, { audience: 'all_friends' });
+    const narrowed = await request(harness.app).get(
+      `/api/v1/social/profiles/alice/portfolio/${pid}`,
+    );
+    expect(narrowed.status).toBe(404);
+    expect(narrowed.body).not.toHaveProperty('portfolio');
+  });
+
   it('disabling the profile unpublishes the slug instantly (404)', async () => {
     const { aliceAgent, pid } = await scenario();
     await putAudience(aliceAgent, 'portfolio', pid, {
