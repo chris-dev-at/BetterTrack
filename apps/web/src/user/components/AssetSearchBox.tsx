@@ -12,7 +12,12 @@ import {
 import { cx } from '../../lib/cx';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { searchAssets } from '../../lib/searchApi';
-import { addToWorkboard, listWorkboard } from '../../lib/workboardApi';
+import {
+  WATCHLISTS_QUERY_KEY,
+  addToWorkboard,
+  listWatchlists,
+  listWorkboard,
+} from '../../lib/workboardApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import {
@@ -111,7 +116,7 @@ export function AssetSearchBox({
   // the first render — not only after a click in this session (§13.2).
   const workboardQuery = useQuery({
     queryKey: ['workboard'],
-    queryFn: ({ signal }) => listWorkboard(signal),
+    queryFn: ({ signal }) => listWorkboard(undefined, signal),
     enabled: withDirectActions,
     staleTime: SEARCH_STALE_MS,
   });
@@ -157,11 +162,11 @@ export function AssetSearchBox({
     return 'idle';
   }
 
-  async function handleAddToWorkboard(item: SearchResultItem) {
+  async function handleAddToWorkboard(item: SearchResultItem, watchlistId?: string) {
     if (workboardStatusFor(item) !== 'idle') return;
     setWbState((s) => ({ ...s, [item.id]: 'pending' }));
     try {
-      await addToWorkboard(item.id);
+      await addToWorkboard(item.id, watchlistId);
       setWbState((s) => ({ ...s, [item.id]: 'done' }));
       void queryClient.invalidateQueries({ queryKey: ['workboard'] });
     } catch (err) {
@@ -314,7 +319,7 @@ export function AssetSearchBox({
                 key={item.id}
                 item={item}
                 wbStatus={workboardStatusFor(item)}
-                onWorkboard={() => void handleAddToWorkboard(item)}
+                onWorkboard={(watchlistId) => void handleAddToWorkboard(item, watchlistId)}
                 onOpen={() => handleOpenAsset(item)}
                 onConglomerate={() => handleConglomerate(item)}
                 conglomeratePickerOpen={conglomeratePickerFor === item.id}
@@ -350,7 +355,7 @@ function toTransactionAsset(item: SearchResultItem): TransactionDialogAsset {
 interface ResultRowProps {
   item: SearchResultItem;
   wbStatus: 'idle' | 'pending' | 'done' | 'error';
-  onWorkboard: () => void;
+  onWorkboard: (watchlistId?: string) => void;
   onOpen: () => void;
   onConglomerate: () => void;
   conglomeratePickerOpen: boolean;
@@ -472,18 +477,26 @@ function WatchlistControl({
 }: {
   item: SearchResultItem;
   status: 'idle' | 'pending' | 'done' | 'error';
-  onAdd: () => void;
+  onAdd: (watchlistId?: string) => void;
 }) {
   const [listPickerOpen, setListPickerOpen] = useState(false);
   const added = status === 'done';
   const containerRef = useRef<HTMLDivElement>(null);
   usePopoverDismiss(listPickerOpen, () => setListPickerOpen(false), containerRef);
 
+  // The caller's named lists — fetched only when the picker opens (V3-P5).
+  const listsQuery = useQuery({
+    queryKey: WATCHLISTS_QUERY_KEY,
+    queryFn: ({ signal }) => listWatchlists(signal),
+    enabled: listPickerOpen,
+    staleTime: 30_000,
+  });
+
   return (
     <div className="relative flex items-center" ref={containerRef}>
       <button
         type="button"
-        onClick={onAdd}
+        onClick={() => onAdd()}
         disabled={status === 'pending'}
         aria-pressed={added}
         aria-label={
@@ -522,19 +535,22 @@ function WatchlistControl({
           aria-label={`Watchlists for ${item.symbol}`}
           className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              onAdd();
-              setListPickerOpen(false);
-            }}
-            className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
-          >
-            General
-            {added ? <span className="text-sky-400">✓</span> : null}
-          </button>
-          <p className="mt-1 px-2 text-neutral-600">More lists coming soon.</p>
+          {(listsQuery.data?.watchlists ?? []).map((list) => (
+            <button
+              key={list.id}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onAdd(list.isDefault ? undefined : list.id);
+                setListPickerOpen(false);
+              }}
+              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-neutral-200 hover:bg-neutral-800"
+            >
+              {list.name}
+              {list.isDefault && added ? <span className="text-sky-400">✓</span> : null}
+            </button>
+          ))}
+          {listsQuery.isLoading ? <p className="px-2 py-1.5 text-neutral-600">…</p> : null}
         </div>
       ) : null}
     </div>

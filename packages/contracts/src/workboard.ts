@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { shareAudienceSchema } from './common';
 import { assetTypeSchema, currencyCodeSchema } from './market';
 
 /** Asset metadata embedded in every workboard item row (§6.4). */
@@ -14,10 +15,12 @@ export const workboardItemAssetSchema = z
   .strict();
 export type WorkboardItemAsset = z.infer<typeof workboardItemAssetSchema>;
 
-/** One row in the user's watchlist, enriched with its asset metadata (§6.4, §8). */
+/** One row in a watchlist, enriched with its asset metadata (§6.4, §8). */
 export const workboardItemSchema = z
   .object({
     id: z.string().uuid(),
+    /** The named list this item belongs to (V3-P5 multiple watchlists). */
+    watchlistId: z.string().uuid(),
     assetId: z.string().uuid(),
     sortOrder: z.number().int(),
     note: z.string().nullable(),
@@ -32,9 +35,61 @@ export const workboardListResponseSchema = z
   .strict();
 export type WorkboardListResponse = z.infer<typeof workboardListResponseSchema>;
 
-/** `POST /workboard` request body. */
-export const addToWorkboardRequestSchema = z.object({ assetId: z.string().uuid() }).strict();
+/**
+ * `POST /workboard` request body. `watchlistId` targets a specific named list
+ * (V3-P5); when omitted the asset lands in the caller's default **General** list,
+ * so every existing add-to-watchlist call keeps working unchanged.
+ */
+export const addToWorkboardRequestSchema = z
+  .object({ assetId: z.string().uuid(), watchlistId: z.string().uuid().optional() })
+  .strict();
 export type AddToWorkboardRequest = z.infer<typeof addToWorkboardRequestSchema>;
+
+// --- Named watchlists (V3-P5) ----------------------------------------------
+
+/**
+ * One named watchlist in the caller's own list of lists (V3-P5). **General** is
+ * the auto-provisioned default (`isDefault`) and can never be renamed away or
+ * deleted; `audience` is this list's share setting via the shared audience model.
+ */
+export const watchlistSummarySchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    isDefault: z.boolean(),
+    itemCount: z.number().int(),
+    audience: shareAudienceSchema,
+  })
+  .strict();
+export type WatchlistSummary = z.infer<typeof watchlistSummarySchema>;
+
+/** `GET /workboard/watchlists` response — the caller's named lists, General first. */
+export const watchlistListResponseSchema = z
+  .object({ watchlists: z.array(watchlistSummarySchema) })
+  .strict();
+export type WatchlistListResponse = z.infer<typeof watchlistListResponseSchema>;
+
+/** `POST /workboard/watchlists` body — create a named list. */
+export const createWatchlistRequestSchema = z
+  .object({ name: z.string().trim().min(1).max(60) })
+  .strict();
+export type CreateWatchlistRequest = z.infer<typeof createWatchlistRequestSchema>;
+
+/** `PATCH /workboard/watchlists/:watchlistId` body — rename a list (never the default). */
+export const updateWatchlistRequestSchema = z
+  .object({ name: z.string().trim().min(1).max(60) })
+  .strict();
+export type UpdateWatchlistRequest = z.infer<typeof updateWatchlistRequestSchema>;
+
+/** Route param for per-list operations. */
+export const watchlistIdParamSchema = z.object({ watchlistId: z.string().uuid() }).strict();
+export type WatchlistIdParam = z.infer<typeof watchlistIdParamSchema>;
+
+/** `GET /workboard` query — optionally scope the listing to one named list. */
+export const workboardListQuerySchema = z
+  .object({ watchlistId: z.string().uuid().optional() })
+  .strict();
+export type WorkboardListQuery = z.infer<typeof workboardListQuerySchema>;
 
 /** `PATCH /workboard/reorder` request body — ordered list of item UUIDs. */
 export const reorderWorkboardRequestSchema = z

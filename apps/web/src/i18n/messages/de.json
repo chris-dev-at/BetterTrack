@@ -1090,5 +1090,80 @@
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
       "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}"
     }
+  },
+  "sharing": {
+    "title": "„{{name}}“ teilen",
+    "subtitle": "Wähle, wer dies sehen kann.",
+    "audienceLabel": "Wer dies sehen kann",
+    "options": {
+      "private": {
+        "label": "Nur ich",
+        "desc": "Privat — niemand sonst sieht es."
+      },
+      "specific_friends": {
+        "label": "Bestimmte Freunde",
+        "desc": "Nur die von dir gewählten Freunde."
+      },
+      "all_friends": {
+        "label": "Alle Freunde",
+        "desc": "Alle, mit denen du befreundet bist."
+      },
+      "public_link": {
+        "label": "Öffentlicher Link",
+        "desc": "Jeder mit dem Link."
+      }
+    },
+    "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
+    "friendsSelect": "Freunde auswählen",
+    "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
+    "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Positionen und dein Nettovermögen.",
+    "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
+    "publicActive": "Ein öffentlicher Link ist aktiv. Aus Sicherheitsgründen wird die URL nur einmal bei der Erstellung angezeigt.",
+    "publicLinkReady": "Öffentlicher Link erstellt. Kopiere ihn jetzt — er wird nicht erneut angezeigt.",
+    "copy": "Link kopieren",
+    "copied": "Kopiert!",
+    "save": "Speichern",
+    "saving": "Speichern…",
+    "cancel": "Abbrechen",
+    "error": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+    "stopSharing": "Freigabe beenden",
+    "shareButton": "Teilen",
+    "badge": {
+      "private": "Privat",
+      "specific_friends": "Bestimmte Freunde",
+      "all_friends": "Alle Freunde",
+      "public_link": "Öffentlicher Link"
+    }
+  },
+  "watchlists": {
+    "title": "Merklisten",
+    "subtitle": "Ordne, was du verfolgst, in benannte Listen.",
+    "create": "Neue Merkliste",
+    "createTitle": "Neue Merkliste",
+    "namePlaceholder": "Name der Merkliste",
+    "rename": "Umbenennen",
+    "renameTitle": "Merkliste umbenennen",
+    "delete": "Löschen",
+    "defaultBadge": "Standard",
+    "deleteConfirm": "Diese Merkliste und ihren gesamten Inhalt löschen?",
+    "nameTaken": "Eine Merkliste mit diesem Namen existiert bereits.",
+    "addTo": "Zur Merkliste hinzufügen",
+    "pickList": "Liste wählen",
+    "itemsOne": "1 Eintrag",
+    "itemsOther": "{{count}} Einträge",
+    "empty": "Noch keine Merklisten.",
+    "manage": "Merklisten verwalten",
+    "loadError": "Deine Merklisten konnten nicht geladen werden. Bitte versuche es erneut."
+  },
+  "publicShare": {
+    "loading": "Geteilte Ansicht wird geladen…",
+    "notFound": "Dieser geteilte Link ist nicht mehr verfügbar.",
+    "ownerLabel": "Geteilt von {{username}}",
+    "readOnly": "Schreibgeschützte geteilte Ansicht",
+    "netWorth": "Nettovermögen",
+    "holdings": "Positionen",
+    "positions": "Positionen",
+    "watchedAssets": "Beobachtete Werte",
+    "brand": "BetterTrack"
   }
 }

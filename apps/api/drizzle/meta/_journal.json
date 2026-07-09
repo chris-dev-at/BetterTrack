@@ -169,6 +169,13 @@
       "when": 1783491000000,
       "tag": "0023_mobile_oauth_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783492000000,
+      "tag": "0024_share_audiences",
+      "breakpoints": true
     }
   ]
 }

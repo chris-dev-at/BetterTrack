@@ -4,6 +4,7 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
+import { WatchlistsPage } from './WatchlistsPage';
 
 /**
  * Workboard section shell (PROJECTPLAN.md §6.4, §7.2). Subnav: Overview ·
@@ -47,18 +48,9 @@ export function WorkboardLayout() {
 
 // ─── Not-yet-built surfaces (own feature issues) ──────────────────────────────
 
-/**
- * The dedicated watchlist view lands with the Workboard overview/watchlist split
- * (§7.3). Until then the working watchlist lives on the Workboard Overview.
- */
+/** Named watchlists — create/rename/delete + per-list audience (§13.3 V3-P5). */
 export function WatchlistPage() {
-  const t = useT();
-  return (
-    <ComingSoon
-      title={t('workboard.section.watchlist.title')}
-      description={t('workboard.section.watchlist.description')}
-    />
-  );
+  return <WatchlistsPage />;
 }
 
 export function BacktestsPage() {

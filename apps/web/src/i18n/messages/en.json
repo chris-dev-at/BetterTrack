@@ -1090,5 +1090,80 @@
       "fallbackNote": "Live updates every 60 s while the stream reconnects.",
       "chartAriaLabel": "Live price chart for {{symbol}}"
     }
+  },
+  "sharing": {
+    "title": "Share “{{name}}”",
+    "subtitle": "Choose who can see this.",
+    "audienceLabel": "Who can see this",
+    "options": {
+      "private": {
+        "label": "Only me",
+        "desc": "Private — nobody else can see it."
+      },
+      "specific_friends": {
+        "label": "Specific friends",
+        "desc": "Only the friends you choose."
+      },
+      "all_friends": {
+        "label": "All friends",
+        "desc": "Everyone you are friends with."
+      },
+      "public_link": {
+        "label": "Public link",
+        "desc": "Anyone with the link."
+      }
+    },
+    "friendsNone": "You have no friends yet. Add friends to share with specific people.",
+    "friendsSelect": "Select friends",
+    "allFriendsConfirm": "This shares a read-only view with everyone you are friends with.",
+    "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
+    "publicAcknowledge": "I understand that anyone with the link can see this.",
+    "publicActive": "A public link is active. For security the URL is shown only once, when it is created.",
+    "publicLinkReady": "Public link created. Copy it now — it will not be shown again.",
+    "copy": "Copy link",
+    "copied": "Copied!",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "error": "Could not update sharing. Please try again.",
+    "stopSharing": "Stop sharing",
+    "shareButton": "Share",
+    "badge": {
+      "private": "Private",
+      "specific_friends": "Specific friends",
+      "all_friends": "All friends",
+      "public_link": "Public link"
+    }
+  },
+  "watchlists": {
+    "title": "Watchlists",
+    "subtitle": "Organize what you follow into named lists.",
+    "create": "New watchlist",
+    "createTitle": "New watchlist",
+    "namePlaceholder": "Watchlist name",
+    "rename": "Rename",
+    "renameTitle": "Rename watchlist",
+    "delete": "Delete",
+    "defaultBadge": "Default",
+    "deleteConfirm": "Delete this watchlist and everything in it?",
+    "nameTaken": "A watchlist with this name already exists.",
+    "addTo": "Add to watchlist",
+    "pickList": "Choose a list",
+    "itemsOne": "1 item",
+    "itemsOther": "{{count}} items",
+    "empty": "No watchlists yet.",
+    "manage": "Manage watchlists",
+    "loadError": "Could not load your watchlists. Please try again."
+  },
+  "publicShare": {
+    "loading": "Loading shared view…",
+    "notFound": "This shared link is no longer available.",
+    "ownerLabel": "Shared by {{username}}",
+    "readOnly": "Read-only shared view",
+    "netWorth": "Net worth",
+    "holdings": "Holdings",
+    "positions": "Positions",
+    "watchedAssets": "Watched assets",
+    "brand": "BetterTrack"
   }
 }

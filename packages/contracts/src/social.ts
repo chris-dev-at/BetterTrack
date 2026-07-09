@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { shareAudienceSchema, shareKindSchema } from './common';
 import {
   conglomeratePositionWithAssetSchema,
   conglomerateStatusSchema,
@@ -12,7 +13,6 @@ import {
   portfolioHistoryRangeSchema,
   portfolioSummarySchema,
   portfolioTotalsSchema,
-  portfolioVisibilitySchema,
 } from './portfolio';
 import { workboardItemSchema } from './workboard';
 
@@ -137,6 +137,8 @@ export type SharedConglomerateSummary = z.infer<typeof sharedConglomerateSummary
  */
 export const sharedWatchlistSummarySchema = z
   .object({
+    watchlistId: z.string().uuid(),
+    name: z.string(),
     owner: friendUserSchema,
     itemCount: z.number().int(),
   })
@@ -187,6 +189,8 @@ export type SharedConglomerateDetailResponse = z.infer<
  */
 export const sharedWatchlistDetailResponseSchema = z
   .object({
+    watchlistId: z.string().uuid(),
+    name: z.string(),
     owner: friendUserSchema,
     items: z.array(workboardItemSchema),
   })
@@ -226,7 +230,9 @@ export type SharedPortfolioDetailResponse = z.infer<typeof sharedPortfolioDetail
  */
 export const mySharedWatchlistSchema = z
   .object({
-    visibility: portfolioVisibilitySchema,
+    watchlistId: z.string().uuid(),
+    name: z.string(),
+    audience: shareAudienceSchema,
     itemCount: z.number().int(),
   })
   .strict();
@@ -244,7 +250,93 @@ export const mySharedResponseSchema = z
   .object({
     portfolios: z.array(portfolioSummarySchema),
     conglomerates: z.array(conglomerateSummarySchema),
-    watchlist: mySharedWatchlistSchema,
+    watchlists: z.array(mySharedWatchlistSchema),
   })
   .strict();
 export type MySharedResponse = z.infer<typeof mySharedResponseSchema>;
+
+// --- Audience model (V3-P5): one picker + one enforcement layer --------------
+
+/**
+ * Live public-link status for one audience. Storage is **hash-only** (§14), so
+ * the raw URL is shown exactly once at creation and can never be re-read — the
+ * owner sees only whether a link is currently `active` and when it was minted.
+ */
+export const shareLinkStateSchema = z
+  .object({ active: z.boolean(), createdAt: z.string().datetime().nullable() })
+  .strict();
+export type ShareLinkState = z.infer<typeof shareLinkStateSchema>;
+
+/**
+ * `GET /social/audience/:kind/:subjectId` — the owner's current audience for one
+ * shareable item, feeding the reusable AudiencePicker. `friendIds` is populated
+ * only for `specific_friends`.
+ */
+export const audienceStateSchema = z
+  .object({
+    kind: shareKindSchema,
+    subjectId: z.string().uuid(),
+    audience: shareAudienceSchema,
+    friendIds: z.array(z.string().uuid()),
+    link: shareLinkStateSchema,
+  })
+  .strict();
+export type AudienceState = z.infer<typeof audienceStateSchema>;
+
+/**
+ * `PUT /social/audience/:kind/:subjectId` body. `friendIds` is honoured only for
+ * `specific_friends`. `acknowledgePublic` MUST be `true` to select `public_link`
+ * — the §16 explicit-acknowledgment gate, enforced server-side as well as in the
+ * picker: the confirm cannot submit ("anyone with the link sees your holdings and
+ * net worth") without it.
+ */
+export const setAudienceRequestSchema = z
+  .object({
+    audience: shareAudienceSchema,
+    friendIds: z.array(z.string().uuid()).max(1000).optional(),
+    acknowledgePublic: z.boolean().optional(),
+  })
+  .strict();
+export type SetAudienceRequest = z.infer<typeof setAudienceRequestSchema>;
+
+/**
+ * The raw public link, returned EXACTLY ONCE when a `public_link` audience is
+ * created (hash-only storage, §14). `url` is the relative resolution path
+ * (`/api/v1/social/links/:token`); the SPA composes the shareable absolute URL.
+ */
+export const shareLinkSecretSchema = z.object({ token: z.string(), url: z.string() }).strict();
+export type ShareLinkSecret = z.infer<typeof shareLinkSecretSchema>;
+
+/** `PUT /social/audience/:kind/:subjectId` response — new state, plus the link secret once on mint. */
+export const audienceMutationResponseSchema = z
+  .object({ state: audienceStateSchema, link: shareLinkSecretSchema.optional() })
+  .strict();
+export type AudienceMutationResponse = z.infer<typeof audienceMutationResponseSchema>;
+
+/** Route params for the unified audience endpoints. */
+export const audienceParamSchema = z
+  .object({ kind: shareKindSchema, subjectId: z.string().uuid() })
+  .strict();
+export type AudienceParam = z.infer<typeof audienceParamSchema>;
+
+/**
+ * `GET /social/links/:token` — the UNAUTHENTICATED public-link read view (§14).
+ * A live token resolves to the kind-specific read-only shape; a revoked/unknown
+ * token — or one whose owner narrowed the audience away from `public_link` — is a
+ * plain 404, so nothing about the item's existence leaks.
+ */
+export const sharedLinkResponseSchema = z.discriminatedUnion('kind', [
+  z
+    .object({ kind: z.literal('portfolio'), portfolio: sharedPortfolioDetailResponseSchema })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('conglomerate'),
+      conglomerate: sharedConglomerateDetailResponseSchema,
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal('watchlist'), watchlist: sharedWatchlistDetailResponseSchema })
+    .strict(),
+]);
+export type SharedLinkResponse = z.infer<typeof sharedLinkResponseSchema>;

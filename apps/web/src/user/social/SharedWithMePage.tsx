@@ -59,12 +59,12 @@ function WatchlistRow({ w }: { w: SharedWatchlistSummary }) {
   return (
     <li className="py-3">
       <Link
-        to={`/social/shared-with-me/watchlists/${w.owner.id}`}
+        to={`/social/shared-with-me/watchlists/${w.watchlistId}`}
         className="flex items-center justify-between gap-3 rounded px-1 py-1 hover:bg-neutral-900/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-neutral-100">
-            {w.owner.username}&rsquo;s watchlist
+            {w.owner.username}&rsquo;s {w.name}
           </p>
         </div>
         <span className="shrink-0 text-xs text-neutral-500">
@@ -142,7 +142,7 @@ export function SharedWithMePage() {
           <SectionHeading>Watchlists</SectionHeading>
           <ul className="divide-y divide-neutral-800">
             {data.watchlists.map((w) => (
-              <WatchlistRow key={w.owner.id} w={w} />
+              <WatchlistRow key={w.watchlistId} w={w} />
             ))}
           </ul>
         </section>

@@ -127,6 +127,15 @@ async function seedUser(db: Database): Promise<string> {
   return rows[0]!.id;
 }
 
+/** A default (General) watchlist for a user — workboard items require one (V3-P5). */
+async function seedWatchlist(db: Database, userId: string): Promise<string> {
+  const rows = await db
+    .insert(schema.watchlists)
+    .values({ userId, name: 'General', isDefault: true })
+    .returning({ id: schema.watchlists.id });
+  return rows[0]!.id;
+}
+
 interface AssetInput {
   providerRef: string;
   type: schema.AssetRow['type'];
@@ -192,7 +201,10 @@ describe('prices.refreshDaily', () => {
     const fxAsset = await seedAsset(db, { providerRef: 'EURUSD=X', type: 'fx', currency: 'USD' });
     const unrefAsset = await seedAsset(db, { providerRef: 'TSLA', type: 'stock' });
 
-    await db.insert(schema.workboardItems).values({ userId, assetId: wbAsset, sortOrder: 0 });
+    const wl1 = await seedWatchlist(db, userId);
+    await db
+      .insert(schema.workboardItems)
+      .values({ userId, watchlistId: wl1, assetId: wbAsset, sortOrder: 0 });
     const congRows = await db
       .insert(schema.conglomerates)
       .values({ ownerId: userId, name: 'C', status: 'active' })
@@ -253,7 +265,10 @@ describe('prices.refreshDaily', () => {
 
   it('is idempotent and corrects a revised close on re-run', async () => {
     const assetId = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
-    await db.insert(schema.workboardItems).values({ userId, assetId, sortOrder: 0 });
+    const wl2 = await seedWatchlist(db, userId);
+    await db
+      .insert(schema.workboardItems)
+      .values({ userId, watchlistId: wl2, assetId, sortOrder: 0 });
 
     const first = createPricesRefreshDailyJob({
       db,
@@ -278,9 +293,10 @@ describe('prices.refreshDaily', () => {
   it('writes the assets that succeed, then throws so the job retries/dead-letters', async () => {
     const okAsset = await seedAsset(db, { providerRef: 'AAPL', type: 'stock' });
     const badAsset = await seedAsset(db, { providerRef: 'BOOM', type: 'stock' });
+    const wl3 = await seedWatchlist(db, userId);
     await db.insert(schema.workboardItems).values([
-      { userId, assetId: okAsset, sortOrder: 0 },
-      { userId, assetId: badAsset, sortOrder: 1 },
+      { userId, watchlistId: wl3, assetId: okAsset, sortOrder: 0 },
+      { userId, watchlistId: wl3, assetId: badAsset, sortOrder: 1 },
     ]);
 
     const marketData = createStubMarketData({

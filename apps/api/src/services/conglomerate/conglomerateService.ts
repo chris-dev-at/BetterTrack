@@ -25,6 +25,7 @@ import {
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import type { CurrencyService } from '../currency/currencyService';
+import type { AudienceService } from '../social/audienceService';
 
 /**
  * Conglomerate orchestration + rule enforcement (PROJECTPLAN.md §6.5, §8).
@@ -44,6 +45,8 @@ export interface ConglomerateServiceDeps {
   marketData: MarketDataService;
   /** The single EUR-conversion keystone (§5.4); quotes are converted before the engine. */
   currencyService: CurrencyService;
+  /** Sharing-enforcement layer — a deleted basket's audience row is cleared here (§13.3 V3-P5). */
+  audience: AudienceService;
 }
 
 export interface ConglomerateService {
@@ -110,7 +113,7 @@ function toDetail(row: ConglomerateDetailRow): ConglomerateDetail {
 }
 
 export function createConglomerateService(deps: ConglomerateServiceDeps): ConglomerateService {
-  const { repo, assetRepo, marketData, currencyService } = deps;
+  const { repo, assetRepo, marketData, currencyService, audience } = deps;
 
   /** Fetch the detail after a mutation; the row must exist at this point. */
   async function detailOrThrow(ownerId: string, id: string): Promise<ConglomerateDetail> {
@@ -239,6 +242,9 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     async remove(ownerId, id) {
       const deleted = await repo.delete(ownerId, id);
       if (!deleted) throw NOT_FOUND();
+      // Drop the audience row for this now-deleted basket (polymorphic subject,
+      // no cascade). Hygiene only — the enforcement joins already exclude it.
+      await audience.clearForSubject('conglomerate', id);
     },
 
     /**

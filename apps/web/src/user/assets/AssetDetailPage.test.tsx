@@ -15,6 +15,8 @@ vi.mock('../../lib/assetApi', () => ({
 vi.mock('../../lib/workboardApi', () => ({
   useWatchlistMembership: vi.fn(),
   useAddToWatchlist: vi.fn(),
+  listWatchlists: vi.fn(),
+  WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
 }));
 
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
@@ -381,7 +383,10 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add BAYN.DE to watchlist' }));
 
-    expect(addToWatchlistMutate).toHaveBeenCalledWith(ASSET_ID);
+    expect(addToWatchlistMutate).toHaveBeenCalledWith({
+      assetId: ASSET_ID,
+      watchlistId: undefined,
+    });
     // Still on the asset page — the click never redirects.
     expect(screen.getByText('Bayer AG')).toBeInTheDocument();
   });

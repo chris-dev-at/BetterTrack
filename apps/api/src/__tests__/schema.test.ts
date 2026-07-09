@@ -139,8 +139,15 @@ describe('schema (§5.5)', () => {
         })
         .returning(),
     );
+    const victimWatchlist = one(
+      await h.db
+        .insert(schema.watchlists)
+        .values({ userId: victim.id, name: 'General', isDefault: true })
+        .returning({ id: schema.watchlists.id }),
+    );
     await h.db.insert(schema.workboardItems).values({
       userId: victim.id,
+      watchlistId: victimWatchlist.id,
       assetId: asset.id,
       sortOrder: 0,
     });
