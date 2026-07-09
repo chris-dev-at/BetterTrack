@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
@@ -239,10 +239,21 @@ function ProfileSection({
   const [email, setEmail] = useState(user.email);
   const [submitting, setSubmitting] = useState(false);
 
-  // Reset the fields whenever the underlying user changes (e.g. after a save).
+  // Re-hydrate the fields only when the server-side value actually changes (e.g.
+  // after a save reloads the list). Comparing against the last synced value —
+  // rather than re-setting on every render — means the initial mount and
+  // background refetches that return the same data never clobber in-progress
+  // edits (the source of the UserDetailPage email-edit flake, #337).
+  const lastSynced = useRef({ username: user.username, email: user.email });
   useEffect(() => {
-    setUsername(user.username);
-    setEmail(user.email);
+    if (lastSynced.current.username !== user.username) {
+      lastSynced.current.username = user.username;
+      setUsername(user.username);
+    }
+    if (lastSynced.current.email !== user.email) {
+      lastSynced.current.email = user.email;
+      setEmail(user.email);
+    }
   }, [user.username, user.email]);
 
   const dirty = username.trim() !== user.username || email.trim() !== user.email;
