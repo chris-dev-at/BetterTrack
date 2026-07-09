@@ -190,6 +190,13 @@
       "when": 1783492200000,
       "tag": "0026_friend_chat",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1783492300000,
+      "tag": "0027_mobile_chat_scopes",
+      "breakpoints": true
     }
   ]
 }
