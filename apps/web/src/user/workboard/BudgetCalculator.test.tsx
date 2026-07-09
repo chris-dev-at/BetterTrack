@@ -225,7 +225,7 @@ describe('BudgetCalculator', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add to Portfolio' }));
 
-    const dialog = await screen.findByRole('dialog', { name: /record transaction/i });
+    const dialog = await screen.findByRole('dialog', { name: /new transaction/i });
     expect(within(dialog).getByText('BAYN.DE')).toBeInTheDocument();
     expect(within(dialog).getByText('NVDA')).toBeInTheDocument();
     expect(within(dialog).queryByText('GOOGL')).not.toBeInTheDocument();
@@ -235,7 +235,8 @@ describe('BudgetCalculator', () => {
     // NVDA is USD-quoted: the prefilled price is the native 163.20 USD/share,
     // not the EUR-converted costEur/qty (150) — proves the buy flow records
     // cost basis in the asset's own currency, not a mis-currencied EUR amount.
-    expect(within(dialog).getByText('Price (USD)')).toBeInTheDocument();
+    // The native currency shows as a "$" field suffix (#378 redesign).
+    expect(within(dialog).getAllByText('$').length).toBeGreaterThan(0);
     expect(within(dialog).getByLabelText('Price for NVDA')).toHaveValue(163.2);
 
     await user.click(within(dialog).getByRole('button', { name: 'Record' }));

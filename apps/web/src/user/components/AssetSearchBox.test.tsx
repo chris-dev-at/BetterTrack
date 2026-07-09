@@ -360,9 +360,7 @@ describe('AssetSearchBox', () => {
       await screen.findByText('NVDA');
       await user.click(screen.getByRole('button', { name: /record a buy for nvda/i }));
 
-      expect(
-        await screen.findByRole('dialog', { name: /record transaction/i }),
-      ).toBeInTheDocument();
+      expect(await screen.findByRole('dialog', { name: /new transaction/i })).toBeInTheDocument();
       // The asset is locked, not re-searched: no second search box appears.
       expect(screen.getAllByRole('searchbox')).toHaveLength(1);
     });

@@ -20,6 +20,7 @@ import {
   roundCents,
   setBalanceDelta,
   setBalanceMovement,
+  spendableAsOf,
   type CashMovement,
   type CashMovementKind,
   type SourcedCashMovement,
@@ -891,5 +892,79 @@ describe('setBalanceDelta / setBalanceMovement', () => {
     expect(movement).not.toBeNull();
     expect(isExternalCashMovement(movement!.kind)).toBe(true);
     expect(externalCashFlowsForTwr([movement!])).toEqual([{ date: '2026-03-01', flowEur: 500 }]);
+  });
+});
+
+// --- spendableAsOf (backdated pay-from-cash, #378) --------------------------
+
+describe('spendableAsOf', () => {
+  /** The gate's own verdict: does inserting a buy of `cost` at `at` stay valid? */
+  function gateAccepts(movements: CashMovement[], cost: number, at: string): boolean {
+    try {
+      projectCashLedger([...movements, mv('buy', -cost, at)]);
+      return true;
+    } catch (err) {
+      if (err instanceof InsufficientCashError) return false;
+      throw err;
+    }
+  }
+
+  it('is 0 when the cash was only deposited AFTER the buy date (the #378 bug)', () => {
+    // Buy SIE.DE dated 2025 for €400, but cash was first added in 2026.
+    const movements = [mv('deposit', 500, '2026-02-01T00:00:00.000Z')];
+    expect(spendableAsOf(movements, '2025-06-01T00:00:00.000Z')).toBe(0);
+    // …and the gate agrees: a €400 buy backdated to 2025 would overdraw.
+    expect(gateAccepts(movements, 400, '2025-06-01T00:00:00.000Z')).toBe(false);
+  });
+
+  it('is the balance already present when the deposit predates the buy', () => {
+    const movements = [mv('deposit', 500, '2025-01-01T00:00:00.000Z')];
+    expect(spendableAsOf(movements, '2025-06-01T00:00:00.000Z')).toBe(500);
+    expect(gateAccepts(movements, 500, '2025-06-01T00:00:00.000Z')).toBe(true);
+    expect(gateAccepts(movements, 500.01, '2025-06-01T00:00:00.000Z')).toBe(false);
+  });
+
+  it('takes the running MINIMUM from the buy instant on — a later withdrawal binds', () => {
+    // €1000 in, then €900 withdrawn the next day: only €100 ever survives forward,
+    // so a buy dated on the deposit day may spend at most €100, not €1000.
+    const movements = [
+      mv('deposit', 1000, '2026-01-01T00:00:00.000Z'),
+      mv('withdrawal', -900, '2026-01-02T00:00:00.000Z'),
+    ];
+    expect(spendableAsOf(movements, '2026-01-01T00:00:00.000Z')).toBe(100);
+    expect(gateAccepts(movements, 100, '2026-01-01T00:00:00.000Z')).toBe(true);
+    expect(gateAccepts(movements, 150, '2026-01-01T00:00:00.000Z')).toBe(false);
+  });
+
+  it('counts a same-instant deposit as available to that instant (credits before debits)', () => {
+    // A funding deposit sharing the buy day's timestamp funds that day's buy.
+    const movements = [mv('deposit', 400, '2025-06-01T00:00:00.000Z')];
+    expect(spendableAsOf(movements, '2025-06-01T00:00:00.000Z')).toBe(400);
+    expect(gateAccepts(movements, 400, '2025-06-01T00:00:00.000Z')).toBe(true);
+  });
+
+  it('a buy dated at/after the newest movement yields the current balance (today path unchanged)', () => {
+    const movements = [
+      mv('deposit', 1000, '2026-01-01T00:00:00.000Z'),
+      mv('buy', -300, '2026-01-05T00:00:00.000Z'),
+    ];
+    expect(spendableAsOf(movements, '2026-07-01T00:00:00.000Z')).toBe(700);
+  });
+
+  it('is 0 for an empty ledger', () => {
+    expect(spendableAsOf([], '2025-06-01T00:00:00.000Z')).toBe(0);
+  });
+
+  it('matches the write-boundary gate across a mixed history (spendable is the exact cutover)', () => {
+    const movements = [
+      mv('deposit', 300, '2026-01-10T00:00:00.000Z'),
+      mv('deposit', 500, '2026-03-01T00:00:00.000Z'),
+      mv('withdrawal', -200, '2026-04-01T00:00:00.000Z'),
+    ];
+    const at = '2026-02-01T00:00:00.000Z'; // between the two deposits
+    const spend = spendableAsOf(movements, at); // 300 (min from Feb on: 300, 800, 600)
+    expect(spend).toBe(300);
+    expect(gateAccepts(movements, spend, at)).toBe(true);
+    expect(gateAccepts(movements, spend + 0.01, at)).toBe(false);
   });
 });

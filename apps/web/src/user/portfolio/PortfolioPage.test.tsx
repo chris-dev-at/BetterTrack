@@ -696,7 +696,7 @@ describe('PortfolioPage — dialogs', () => {
     );
 
     await user.click(screen.getByRole('button', { name: '+ Transaction' }));
-    expect(screen.getByRole('dialog', { name: /Record transaction/i })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: /New transaction/i })).toBeInTheDocument();
   });
 
   test('opens the value-point editor for a custom holding', async () => {
