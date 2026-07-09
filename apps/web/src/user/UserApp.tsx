@@ -33,6 +33,7 @@ import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
 import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
 import { ConsentPage } from './oauth/ConsentPage';
+import { DeleteAccountPage } from './settings/DeleteAccountPage';
 import { SearchPage } from './assets/SearchPage';
 import { AssetDetailPage } from './assets/AssetDetailPage';
 import {
@@ -109,6 +110,10 @@ function UserShell() {
             full `/oauth/authorize?…` URL (path + query) preserved, so the user
             lands back here with state + PKCE intact after signing in. */}
         <Route path="oauth/authorize" element={<ConsentPage />} />
+        {/* Self-service account deletion (§13.4 V4-P2c, #362) — the stable public
+            deletion URL Google Play requires. A standalone full-screen card;
+            an anonymous visit bounces to /login and lands back here. */}
+        <Route path="account/delete" element={<DeleteAccountPage />} />
         {/* The Conglomerate Builder is a full-screen surface (§6.5) — it sits
             outside the AppLayout chrome/subnav rather than inside the Workboard
             section. Both `/new` and `/:id/edit` render the same Builder. */}
@@ -173,6 +178,9 @@ function UserShell() {
                 thread. The friend cards/overview deep-link to /social/chat/:userId
                 (the friend's id); /social/chat opens the list with no thread. */}
             <Route path="chat" element={<ChatPage />} />
+            {/* Deep-link by conversation id — the only route to a thread whose
+                partner deleted their account (#362); declared before :userId. */}
+            <Route path="chat/c/:conversationId" element={<ChatPage />} />
             <Route path="chat/:userId" element={<ChatPage />} />
           </Route>
 

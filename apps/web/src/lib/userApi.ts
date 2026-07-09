@@ -7,6 +7,7 @@ import {
   sessionListResponseSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
+  type DeleteAccountRequest,
   type InviteValidationResponse,
   type LoginRequest,
   type LoginResponse,
@@ -206,4 +207,18 @@ export async function acceptInvite(body: AcceptInviteRequest): Promise<MeRespons
     suppressAuthRedirect: true,
   });
   return meResponseSchema.parse(data);
+}
+
+/**
+ * Self-service account deletion (§13.4 V4-P2c, #362): typed username
+ * confirmation + re-auth (password or fresh 2FA). Irreversible — on success the
+ * server has already revoked every session, so the caller resets local auth
+ * state. `suppressAuthRedirect`: a 401 (wrong credential) is an in-form error.
+ */
+export async function deleteAccount(body: DeleteAccountRequest): Promise<void> {
+  await apiRequest<unknown>('/account', {
+    method: 'DELETE',
+    body,
+    suppressAuthRedirect: true,
+  });
 }
