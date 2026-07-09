@@ -425,7 +425,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         conglomerate.list(userId),
         workboard.listWatchlists(userId),
       ]);
-      const sharedPortfolios = portfolioList.portfolios.filter((p) => p.visibility === 'friends');
+      // EVERY portfolio the caller owns is listed here — not just the ones
+      // currently at `friends` (#377). A private/secondary portfolio has no
+      // audience row, so it was previously invisible and thus un-shareable from
+      // the Socials tab; surfacing it (dimmed, audience=private) is the single
+      // entry point to give it any audience via the AudiencePicker. Conglomerates
+      // and watchlists keep the "currently shared" filter (managed on their own
+      // surfaces).
+      const allPortfolios = portfolioList.portfolios;
       const sharedConglomerates = conglomerateList.conglomerates.filter(
         (c) => c.visibility === 'friends',
       );
@@ -436,7 +443,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const [pAud, cAud, wAud] = await Promise.all([
         audience.audienceSummariesForSubjects(
           'portfolio',
-          sharedPortfolios.map((p) => p.id),
+          allPortfolios.map((p) => p.id),
         ),
         audience.audienceSummariesForSubjects(
           'conglomerate',
@@ -454,8 +461,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       ): { audience: ShareAudience; friendCount: number } =>
         map.get(id) ?? { audience: fallback, friendCount: 0 };
       return {
-        portfolios: sharedPortfolios.map((p) => {
-          const s = summary(pAud, p.id, 'all_friends');
+        portfolios: allPortfolios.map((p) => {
+          // Fall back off the legacy `visibility` column only when no audience
+          // row exists yet: a `friends` portfolio predating the audience model
+          // reads as `all_friends`, a private one as `private`.
+          const s = summary(pAud, p.id, p.visibility === 'friends' ? 'all_friends' : 'private');
           return {
             portfolioId: p.id,
             name: p.name,

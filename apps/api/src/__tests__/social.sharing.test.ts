@@ -367,32 +367,40 @@ describe('a disabled owner stops sharing (§6.9)', () => {
 });
 
 describe('GET /api/v1/social/my-shared (My Shared Items)', () => {
-  it('lists the caller’s own portfolios currently at visibility=friends', async () => {
+  it('lists every portfolio the caller owns, each with its real audience', async () => {
     const { aliceAgent, pid } = await scenario();
 
     const res = await aliceAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
     expect(mySharedResponseSchema.safeParse(res.body).success).toBe(true);
+    // Alice owns exactly one portfolio (Main), currently friends → all_friends.
     expect(res.body.portfolios).toHaveLength(1);
     expect(res.body.portfolios[0].portfolioId).toBe(pid);
     // V3-P6: the row carries the real audience (visibility=friends → all_friends).
     expect(res.body.portfolios[0].audience).toBe('all_friends');
   });
 
-  it('drops a portfolio after it is toggled back to private', async () => {
+  it('keeps a portfolio listed after it is toggled back to private (#377)', async () => {
     const { aliceAgent, pid } = await scenario();
     await setVisibility(aliceAgent, pid, 'private');
 
+    // Every owned portfolio stays enumerable so its audience is changeable from
+    // the Socials tab — a private one is no longer dropped, it just reads
+    // audience=private (the entry point the secondary-portfolio bug was missing).
     const res = await aliceAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
-    expect(res.body.portfolios).toHaveLength(0);
+    expect(res.body.portfolios).toHaveLength(1);
+    expect(res.body.portfolios[0].portfolioId).toBe(pid);
+    expect(res.body.portfolios[0].audience).toBe('private');
   });
 
-  it('is empty for a user sharing nothing', async () => {
+  it('lists the private default portfolio, and nothing else, for a user sharing nothing', async () => {
     const { bobAgent } = await scenario();
     const res = await bobAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
-    expect(res.body.portfolios).toHaveLength(0);
+    // Bob's auto-created default portfolio is always listed, at audience=private.
+    expect(res.body.portfolios).toHaveLength(1);
+    expect(res.body.portfolios[0].audience).toBe('private');
     expect(res.body.conglomerates).toHaveLength(0);
     // Named watchlists (V3-P5): nothing shared → no watchlist entries.
     expect(res.body.watchlists).toEqual([]);
@@ -741,6 +749,52 @@ describe('audience model — public links (V3-P5, §14)', () => {
     expect(cAnon.status).toBe(200);
     expect(cAnon.body.kind).toBe('conglomerate');
     expect(cAnon.body.conglomerate.positions).toHaveLength(1);
+  });
+});
+
+describe('audience model — a secondary portfolio is private by default and shareable (#377)', () => {
+  it('a new 2nd portfolio is private, then its audience changes, persists, enforces, and shows in my-shared', async () => {
+    const { aliceAgent, bobAgent, assetId } = await scenario();
+
+    // A newly created SECOND portfolio adopts the (private) default — no
+    // share-audience row means private, per #332.
+    const created = await aliceAgent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(created.status).toBe(201);
+    const secondPid = created.body.portfolio.id as string;
+    expect(created.body.portfolio.visibility).toBe('private');
+
+    // Private by default, three ways: the audience endpoint, enforcement (a
+    // friend 404s), and it is STILL enumerated in my-shared so it can be shared.
+    const initial = await aliceAgent.get(`/api/v1/social/audience/portfolio/${secondPid}`);
+    expect(initial.status).toBe(200);
+    expect(initial.body.audience).toBe('private');
+    expect((await bobAgent.get(`/api/v1/social/shared/${secondPid}`)).status).toBe(404);
+    let mine = await aliceAgent.get('/api/v1/social/my-shared');
+    expect(
+      mine.body.portfolios.find((p: { portfolioId: string }) => p.portfolioId === secondPid)
+        ?.audience,
+    ).toBe('private');
+
+    await buyOneShare(aliceAgent, secondPid, assetId);
+
+    // Change the SECONDARY (non-default) portfolio's audience → all friends.
+    const put = await putAudience(aliceAgent, 'portfolio', secondPid, { audience: 'all_friends' });
+    expect(put.status).toBe(200);
+
+    // Persists on the owner's audience state …
+    const after = await aliceAgent.get(`/api/v1/social/audience/portfolio/${secondPid}`);
+    expect(after.body.audience).toBe('all_friends');
+    // … enforces (the friend can now read the second portfolio) …
+    expect((await bobAgent.get(`/api/v1/social/shared/${secondPid}`)).status).toBe(200);
+    // … and my-shared reflects the new audience for that exact portfolio.
+    mine = await aliceAgent.get('/api/v1/social/my-shared');
+    expect(
+      mine.body.portfolios.find((p: { portfolioId: string }) => p.portfolioId === secondPid)
+        ?.audience,
+    ).toBe('all_friends');
   });
 });
 

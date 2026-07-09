@@ -521,13 +521,10 @@
       "currentWrong": "Your current password is incorrect.",
       "changeFailed": "Could not change your password. Please try again."
     },
-    "defaultSharing": {
-      "title": "Default portfolio sharing",
-      "description": "What sharing a *new* portfolio starts with. Changing this never affects portfolios you already have."
-    },
-    "sharing": {
-      "title": "Share with friends",
-      "description": "Share this portfolio with friends: friends can view it read-only. Private keeps it visible only to you."
+    "sharingMoved": {
+      "title": "Portfolio sharing",
+      "description": "Sharing lives in the Social tab now. Choose who can see each of your portfolios there — every portfolio stays private until you share it.",
+      "link": "Manage sharing in Social →"
     }
   },
   "portfolio": {
@@ -1211,6 +1208,8 @@
       "error": "Could not load shared items. Please refresh the page."
     },
     "myShared": {
+      "title": "My shares",
+      "subtitle": "Every portfolio you own is here — choose who can see each one. New portfolios stay private until you share them.",
       "emptyTitle": "You're not sharing anything",
       "emptyBody": "Share a portfolio, conglomerate or watchlist to have it appear here.",
       "error": "Could not load your shared items. Please refresh the page."

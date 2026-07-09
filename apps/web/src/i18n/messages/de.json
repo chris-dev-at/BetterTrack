@@ -521,13 +521,10 @@
       "currentWrong": "Dein aktuelles Passwort ist falsch.",
       "changeFailed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
     },
-    "defaultSharing": {
-      "title": "Standard-Portfolio-Freigabe",
-      "description": "Womit die Freigabe eines *neuen* Portfolios beginnt. Diese Änderung wirkt sich nie auf bereits vorhandene Portfolios aus."
-    },
-    "sharing": {
-      "title": "Mit Freunden teilen",
-      "description": "Teile dieses Portfolio mit Freunden: Freunde können es schreibgeschützt ansehen. Privat hält es nur für dich sichtbar."
+    "sharingMoved": {
+      "title": "Portfolio-Freigabe",
+      "description": "Die Freigabe befindet sich jetzt im Tab „Social“. Lege dort fest, wer welches deiner Portfolios sehen kann – jedes Portfolio bleibt privat, bis du es teilst.",
+      "link": "Freigabe im Tab „Social“ verwalten →"
     }
   },
   "portfolio": {
@@ -1211,6 +1208,8 @@
       "error": "Geteilte Elemente konnten nicht geladen werden. Bitte lade die Seite neu."
     },
     "myShared": {
+      "title": "Meine Freigaben",
+      "subtitle": "Jedes deiner Portfolios ist hier – lege fest, wer welches sehen kann. Neue Portfolios bleiben privat, bis du sie teilst.",
       "emptyTitle": "Du teilst nichts",
       "emptyBody": "Teile ein Portfolio, Konglomerat oder eine Watchlist, damit es hier erscheint.",
       "error": "Deine geteilten Elemente konnten nicht geladen werden. Bitte lade die Seite neu."

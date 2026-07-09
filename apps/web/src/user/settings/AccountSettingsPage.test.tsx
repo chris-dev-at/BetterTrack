@@ -1,17 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { MeResponse, PortfolioSummary } from '@bettertrack/contracts';
+import type { MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/userApi', () => ({
   getMe: vi.fn(),
   changePassword: vi.fn(),
-}));
-vi.mock('../../lib/portfolioApi', () => ({
-  listPortfolios: vi.fn(),
-  updatePortfolio: vi.fn(),
 }));
 vi.mock('../../lib/settingsApi', () => ({
   getAccountSettings: vi.fn(),
@@ -20,7 +17,6 @@ vi.mock('../../lib/settingsApi', () => ({
 
 import { I18nProvider } from '../../i18n';
 import { getMoneyCurrency, setMoneyCurrency } from '../../lib/format';
-import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
 import { AccountSettingsPage } from './AccountSettingsPage';
@@ -40,24 +36,16 @@ const ME: MeResponse = {
   createdAt: '2026-01-15T09:00:00.000Z',
 };
 
-const DEFAULT_PORTFOLIO: PortfolioSummary = {
-  id: '00000000-0000-0000-0000-0000000000aa',
-  name: 'Main',
-  visibility: 'private',
-  sortOrder: 0,
-  isDefault: true,
-  defaultPayFromCash: false,
-  archivedAt: null,
-};
-
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
-    <I18nProvider>
-      <QueryClientProvider client={client}>
-        <AccountSettingsPage />
-      </QueryClientProvider>
-    </I18nProvider>,
+    <MemoryRouter>
+      <I18nProvider>
+        <QueryClientProvider client={client}>
+          <AccountSettingsPage />
+        </QueryClientProvider>
+      </I18nProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -65,16 +53,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   vi.mocked(getMe).mockResolvedValue(ME);
-  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [DEFAULT_PORTFOLIO] });
   vi.mocked(changePassword).mockResolvedValue(ME);
-  vi.mocked(updatePortfolio).mockResolvedValue({ ...DEFAULT_PORTFOLIO, visibility: 'friends' });
   vi.mocked(getAccountSettings).mockResolvedValue({
     defaultPortfolioVisibility: 'private',
     locale: 'en',
     baseCurrency: 'EUR',
   });
   vi.mocked(updateAccountSettings).mockResolvedValue({
-    defaultPortfolioVisibility: 'friends',
+    defaultPortfolioVisibility: 'private',
     locale: 'en',
     baseCurrency: 'EUR',
   });
@@ -126,17 +112,22 @@ describe('AccountSettingsPage', () => {
     expect(changePassword).not.toHaveBeenCalled();
   });
 
-  test('setting the default portfolio sharing to Friends PATCHes account settings', async () => {
-    const user = userEvent.setup();
+  // Portfolio visibility moved to the Socials tab (#377): Settings no longer has
+  // any sharing toggle — neither the per-default-portfolio one nor the create-time
+  // default — only a signpost linking to where sharing now lives.
+  test('has no visibility toggle and links to sharing in the Social tab (#377)', async () => {
     renderPage();
 
-    const friends = await screen.findByRole('radio', { name: 'Friends' });
-    expect(screen.getByRole('radio', { name: 'Private' })).toHaveAttribute('aria-checked', 'true');
+    expect(await screen.findByText('Portfolio sharing')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /manage sharing in social/i });
+    expect(link).toHaveAttribute('href', '/social/my-shared');
 
-    await user.click(friends);
-
-    await waitFor(() =>
-      expect(updateAccountSettings).toHaveBeenCalledWith({ defaultPortfolioVisibility: 'friends' }),
+    // The retired controls are gone: no Private/Friends or Yes/No radios.
+    expect(screen.queryByRole('radio', { name: 'Friends' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Yes' })).not.toBeInTheDocument();
+    // …and Settings never writes a portfolio visibility any more.
+    expect(updateAccountSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ defaultPortfolioVisibility: expect.anything() }),
     );
   });
 
@@ -185,19 +176,5 @@ describe('AccountSettingsPage', () => {
     // … and immediately drives the display layer's default money currency, so
     // every omitted-currency MoneyText re-renders in the new base.
     await waitFor(() => expect(getMoneyCurrency()).toBe('USD'));
-  });
-
-  test('turning sharing on PATCHes the default portfolio to friends', async () => {
-    const user = userEvent.setup();
-    renderPage();
-
-    const yes = await screen.findByRole('radio', { name: 'Yes' });
-    expect(screen.getByRole('radio', { name: 'No' })).toHaveAttribute('aria-checked', 'true');
-
-    await user.click(yes);
-
-    await waitFor(() =>
-      expect(updatePortfolio).toHaveBeenCalledWith(DEFAULT_PORTFOLIO.id, { visibility: 'friends' }),
-    );
   });
 });
