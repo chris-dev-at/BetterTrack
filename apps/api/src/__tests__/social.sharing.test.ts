@@ -374,8 +374,9 @@ describe('GET /api/v1/social/my-shared (My Shared Items)', () => {
     expect(res.status).toBe(200);
     expect(mySharedResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.portfolios).toHaveLength(1);
-    expect(res.body.portfolios[0].id).toBe(pid);
-    expect(res.body.portfolios[0].visibility).toBe('friends');
+    expect(res.body.portfolios[0].portfolioId).toBe(pid);
+    // V3-P6: the row carries the real audience (visibility=friends → all_friends).
+    expect(res.body.portfolios[0].audience).toBe('all_friends');
   });
 
   it('drops a portfolio after it is toggled back to private', async () => {
@@ -473,7 +474,7 @@ describe('conglomerate friend-sharing', () => {
     let res = await aliceAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
     expect(res.body.conglomerates).toHaveLength(1);
-    expect(res.body.conglomerates[0].id).toBe(cid);
+    expect(res.body.conglomerates[0].conglomerateId).toBe(cid);
 
     await setConglomerateVisibility(aliceAgent, cid, 'private');
     res = await aliceAgent.get('/api/v1/social/my-shared');

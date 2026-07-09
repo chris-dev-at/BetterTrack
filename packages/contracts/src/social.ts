@@ -1,17 +1,12 @@
 import { z } from 'zod';
 
 import { shareAudienceSchema, shareKindSchema } from './common';
-import {
-  conglomeratePositionWithAssetSchema,
-  conglomerateStatusSchema,
-  conglomerateSummarySchema,
-} from './conglomerate';
+import { conglomeratePositionWithAssetSchema, conglomerateStatusSchema } from './conglomerate';
 import { currencyCodeSchema } from './market';
 import {
   holdingSchema,
   portfolioHistoryPointSchema,
   portfolioHistoryRangeSchema,
-  portfolioSummarySchema,
   portfolioTotalsSchema,
 } from './portfolio';
 import { workboardItemSchema } from './workboard';
@@ -106,6 +101,13 @@ export const sharedPortfolioSummarySchema = z
     name: z.string(),
     owner: friendUserSchema,
     totalValueEur: z.number(),
+    /**
+     * Whether the viewer has opted in to activity alerts for this shared item
+     * (V3-P6, §14): a per-viewer preference ("notify me when this friend trades
+     * here"). Persisted now; the actual friend-activity delivery ships with
+     * Notifications-v2 (#368). Defaults to `false`.
+     */
+    activityAlertsEnabled: z.boolean(),
   })
   .strict();
 export type SharedPortfolioSummary = z.infer<typeof sharedPortfolioSummarySchema>;
@@ -125,6 +127,8 @@ export const sharedConglomerateSummarySchema = z
     owner: friendUserSchema,
     status: conglomerateStatusSchema,
     positionCount: z.number().int(),
+    /** Per-viewer activity-alert opt-in (V3-P6, §14); delivery deferred to #368. */
+    activityAlertsEnabled: z.boolean(),
   })
   .strict();
 export type SharedConglomerateSummary = z.infer<typeof sharedConglomerateSummarySchema>;
@@ -141,6 +145,8 @@ export const sharedWatchlistSummarySchema = z
     name: z.string(),
     owner: friendUserSchema,
     itemCount: z.number().int(),
+    /** Per-viewer activity-alert opt-in (V3-P6, §14); delivery deferred to #368. */
+    activityAlertsEnabled: z.boolean(),
   })
   .strict();
 export type SharedWatchlistSummary = z.infer<typeof sharedWatchlistSummarySchema>;
@@ -223,33 +229,64 @@ export const sharedPortfolioDetailResponseSchema = z
 export type SharedPortfolioDetailResponse = z.infer<typeof sharedPortfolioDetailResponseSchema>;
 
 /**
+ * The per-item "who can see this" summary shared by every kind in **My Shared
+ * Items** (§6.9, §13.3 V3-P5/P6): the item's current `audience` and, for
+ * `specific_friends`, how many friends are named. This is read straight off the
+ * single audience model — the same rows the enforcement layer authorizes against
+ * — so the summary can never disagree with what is actually shared.
+ */
+const mySharedAudienceFields = {
+  audience: shareAudienceSchema,
+  /** Number of named friends — non-zero only for `specific_friends`. */
+  friendCount: z.number().int(),
+};
+
+/** One of the caller's shared portfolios in **My Shared Items**, with its audience. */
+export const mySharedPortfolioSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    name: z.string(),
+    ...mySharedAudienceFields,
+  })
+  .strict();
+export type MySharedPortfolio = z.infer<typeof mySharedPortfolioSchema>;
+
+/** One of the caller's shared conglomerates in **My Shared Items**, with its audience. */
+export const mySharedConglomerateSchema = z
+  .object({
+    conglomerateId: z.string().uuid(),
+    name: z.string(),
+    positionCount: z.number().int(),
+    ...mySharedAudienceFields,
+  })
+  .strict();
+export type MySharedConglomerate = z.infer<typeof mySharedConglomerateSchema>;
+
+/**
  * The caller's own watchlist sharing state for **My Shared Items** (§6.9, V2-P9):
- * whether it is currently shared with friends and how many assets it holds.
- * Toggling it off is done via `PATCH /workboard/sharing` (no mutation on the
- * social surface).
+ * its current audience and how many assets it holds.
  */
 export const mySharedWatchlistSchema = z
   .object({
     watchlistId: z.string().uuid(),
     name: z.string(),
-    audience: shareAudienceSchema,
     itemCount: z.number().int(),
+    ...mySharedAudienceFields,
   })
   .strict();
 export type MySharedWatchlist = z.infer<typeof mySharedWatchlistSchema>;
 
 /**
  * `GET /social/my-shared` response — everything the caller is *currently* sharing
- * with friends (the **My Shared Items** toggle-off list, §6.9 point 5, V2-P9):
- * their `visibility=friends` portfolios and conglomerates plus their watchlist
- * sharing state. Each item is toggled off through its own surface's existing PATCH
- * (`/portfolios/:id`, `/conglomerates/:id`, `/workboard/sharing`) — there is no
- * mutation on the social surface.
+ * (the **My Shared Items** list, §6.9 point 5, V2-P9/P6): every portfolio,
+ * conglomerate and watchlist whose audience is not `private`, each carrying the
+ * per-item "who can see this" summary. Sharing is changed in place through the
+ * reusable AudiencePicker (`PUT /social/audience/:kind/:subjectId`).
  */
 export const mySharedResponseSchema = z
   .object({
-    portfolios: z.array(portfolioSummarySchema),
-    conglomerates: z.array(conglomerateSummarySchema),
+    portfolios: z.array(mySharedPortfolioSchema),
+    conglomerates: z.array(mySharedConglomerateSchema),
     watchlists: z.array(mySharedWatchlistSchema),
   })
   .strict();
@@ -340,3 +377,119 @@ export const sharedLinkResponseSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 export type SharedLinkResponse = z.infer<typeof sharedLinkResponseSchema>;
+
+// --- Per-shared-item activity alerts (V3-P6): a viewer-side preference ---------
+
+/**
+ * `PUT /social/shared/activity/:kind/:subjectId` body — the viewer's opt-in for
+ * activity alerts on one item a friend shares with them ("notify me when this
+ * friend trades / adds a watchlist item"). Only the **preference** is stored now;
+ * the friend-activity events + delivery are Notifications-v2 (#368). Setting a
+ * pref requires the viewer still be authorized to read the item (enforcement
+ * layer) — otherwise a plain 404, so it can't be used to probe a private item.
+ */
+export const setActivityAlertRequestSchema = z.object({ enabled: z.boolean() }).strict();
+export type SetActivityAlertRequest = z.infer<typeof setActivityAlertRequestSchema>;
+
+/** `PUT /social/shared/activity/:kind/:subjectId` response — the stored pref. */
+export const activityAlertStateSchema = z
+  .object({ kind: shareKindSchema, subjectId: z.string().uuid(), enabled: z.boolean() })
+  .strict();
+export type ActivityAlertState = z.infer<typeof activityAlertStateSchema>;
+
+// --- Public profiles (V3-P6, §14) --------------------------------------------
+
+/**
+ * The owner-facing state of one's own public profile (`GET /social/profile`): the
+ * opt-in flag, the optional bio line, the username slug the profile lives at, and
+ * how many of the caller's items are currently `public_link` (what the profile
+ * would show). A disabled profile 404s for logged-out visitors instantly.
+ */
+export const profileSettingsResponseSchema = z
+  .object({
+    username: z.string(),
+    isPublic: z.boolean(),
+    bio: z.string().nullable(),
+    publicItemCount: z.number().int(),
+  })
+  .strict();
+export type ProfileSettingsResponse = z.infer<typeof profileSettingsResponseSchema>;
+
+/** The maximum length of a public-profile bio line. */
+export const PROFILE_BIO_MAX = 280;
+
+/**
+ * `PUT /social/profile` body. Enabling the profile (`isPublic: true`) requires an
+ * explicit `acknowledgePublic: true` — the §16 friction ladder, mirrored
+ * server-side: a public profile shows anyone the items you've made public. Turning
+ * it off unpublishes the page instantly (the slug 404s). `bio` is trimmed and
+ * capped at {@link PROFILE_BIO_MAX}; `null`/empty clears it.
+ */
+export const updateProfileSettingsRequestSchema = z
+  .object({
+    isPublic: z.boolean(),
+    bio: z.string().max(PROFILE_BIO_MAX).nullable().optional(),
+    acknowledgePublic: z.boolean().optional(),
+  })
+  .strict();
+export type UpdateProfileSettingsRequest = z.infer<typeof updateProfileSettingsRequestSchema>;
+
+/** One public item as it appears on a profile — kind, id and a headline stat. */
+export const publicProfilePortfolioSchema = z
+  .object({ portfolioId: z.string().uuid(), name: z.string(), totalValueEur: z.number() })
+  .strict();
+export type PublicProfilePortfolio = z.infer<typeof publicProfilePortfolioSchema>;
+
+export const publicProfileConglomerateSchema = z
+  .object({
+    conglomerateId: z.string().uuid(),
+    name: z.string(),
+    positionCount: z.number().int(),
+  })
+  .strict();
+export type PublicProfileConglomerate = z.infer<typeof publicProfileConglomerateSchema>;
+
+export const publicProfileWatchlistSchema = z
+  .object({ watchlistId: z.string().uuid(), name: z.string(), itemCount: z.number().int() })
+  .strict();
+export type PublicProfileWatchlist = z.infer<typeof publicProfileWatchlistSchema>;
+
+/**
+ * `GET /social/profiles/:username` — the UNAUTHENTICATED public-profile view
+ * (V3-P6, §14). Composes ONLY the owner's items whose audience is `public_link`
+ * (the same rung the enforcement layer treats as public) plus the bio. A profile
+ * that is not opted-in, or an unknown/inactive user, is a plain 404 — no leak, and
+ * a non-public item can never appear here because the composition filters on the
+ * audience model itself.
+ */
+export const publicProfileResponseSchema = z
+  .object({
+    username: z.string(),
+    bio: z.string().nullable(),
+    portfolios: z.array(publicProfilePortfolioSchema),
+    conglomerates: z.array(publicProfileConglomerateSchema),
+    watchlists: z.array(publicProfileWatchlistSchema),
+  })
+  .strict();
+export type PublicProfileResponse = z.infer<typeof publicProfileResponseSchema>;
+
+/** Route params for the public-profile read: a username slug. */
+export const profileUsernameParamSchema = z
+  .object({ username: z.string().min(1).max(40) })
+  .strict();
+export type ProfileUsernameParam = z.infer<typeof profileUsernameParamSchema>;
+
+/**
+ * Route params for the public-profile item drill-in
+ * (`GET /social/profiles/:username/:kind/:subjectId`) — a logged-out visitor
+ * opening one public item's read-only detail. Resolved through the SAME
+ * `public_link` audience check as the profile listing, so a non-public item 404s.
+ */
+export const profileItemParamSchema = z
+  .object({
+    username: z.string().min(1).max(40),
+    kind: shareKindSchema,
+    subjectId: z.string().uuid(),
+  })
+  .strict();
+export type ProfileItemParam = z.infer<typeof profileItemParamSchema>;

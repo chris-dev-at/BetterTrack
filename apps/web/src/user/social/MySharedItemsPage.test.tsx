@@ -50,29 +50,29 @@ describe('MySharedItemsPage', () => {
     );
   });
 
-  test('lists shared portfolios and watchlists and opens the AudiencePicker', async () => {
+  test('lists shared portfolios and watchlists with a who-sees-this summary and opens the AudiencePicker', async () => {
     vi.mocked(listMyShared).mockResolvedValue({
       portfolios: [
-        {
-          id: PORTFOLIO_ID,
-          name: 'Main',
-          sortOrder: 0,
-          isDefault: true,
-          visibility: 'friends',
-          defaultPayFromCash: false,
-          archivedAt: null,
-        },
+        { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'all_friends', friendCount: 0 },
       ],
       conglomerates: [],
       watchlists: [
-        { watchlistId: WATCHLIST_ID, name: 'General', audience: 'public_link', itemCount: 3 },
+        {
+          watchlistId: WATCHLIST_ID,
+          name: 'General',
+          audience: 'public_link',
+          itemCount: 3,
+          friendCount: 0,
+        },
       ],
     });
     renderPage();
 
     await waitFor(() => expect(screen.getByText('Main')).toBeInTheDocument());
     expect(screen.getByText('General')).toBeInTheDocument();
-    // The audience badge renders on the watchlist row.
+    // The per-item "who can see this" summary renders (portfolio → All friends,
+    // watchlist → Public link).
+    expect(screen.getByText('All friends')).toBeInTheDocument();
     expect(screen.getByText('Public link')).toBeInTheDocument();
 
     // Clicking Share opens the reusable picker dialog.

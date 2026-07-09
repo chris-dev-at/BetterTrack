@@ -12,6 +12,7 @@ import { createConglomerateRepository } from '../data/repositories/conglomerateR
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
+import { createProfileRepository } from '../data/repositories/profileRepository';
 import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
@@ -229,6 +230,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Social graph (§6.9): shared by the social service and the portfolio service
   // (the latter resolves the owner's friends when a portfolio is shared, §6.10).
   const friendshipRepo = createFriendshipRepository(db);
+  // Public-profile settings + per-viewer activity-alert prefs (§6.9, §14, V3-P6).
+  const profileRepo = createProfileRepository(db);
 
   // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
   // authorization-is-the-join queries behind every social read path, plus
@@ -398,6 +401,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Publishes friend.request / friend.accepted for the notification dispatcher.
   const social = createSocialService({
     repo: friendshipRepo,
+    profile: profileRepo,
     audience,
     portfolio,
     conglomerate,

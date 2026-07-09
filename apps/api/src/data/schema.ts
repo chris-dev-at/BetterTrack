@@ -96,6 +96,14 @@ export const users = pgTable(
     watchlistVisibility: portfolioVisibilityEnum('watchlist_visibility')
       .notNull()
       .default('private'),
+    // Opt-in public profile (§6.9, §14, V3-P6). When `profilePublic` is true a
+    // logged-out visitor can open `/u/<username>` and see a page composed from
+    // the user's items whose audience is `public_link`, plus `profileBio`.
+    // Flipping it off unpublishes the page instantly (the slug 404s). No item is
+    // ever exposed by the profile that isn't already `public_link` — the profile
+    // reads the same audience model the enforcement layer authorizes against.
+    profilePublic: boolean('profile_public').notNull().default(false),
+    profileBio: varchar('profile_bio', { length: 280 }),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -919,6 +927,34 @@ export const shareAudienceLinks = pgTable(
 );
 
 /**
+ * Per-viewer activity-alert preferences on shared items (§14, V3-P6). A row means
+ * "notify me about activity on this item a friend shares with me" — presence IS
+ * the opt-in (toggling off deletes the row). Keyed by (viewer, kind, subject);
+ * `subject_id` is polymorphic (no FK), matching {@link shareAudiences}. Only the
+ * **preference** lives here — the friend-activity events + delivery ship with
+ * Notifications-v2 (#368); until then the toggle simply persists and lights up.
+ * A pref is only writable while the viewer is actually authorized to read the
+ * item (checked through the enforcement layer at set-time).
+ */
+export const sharedItemActivityPrefs = pgTable(
+  'shared_item_activity_prefs',
+  {
+    viewerId: uuid('viewer_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: shareKindEnum('kind').notNull(),
+    subjectId: uuid('subject_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      name: 'shared_item_activity_prefs_pk',
+      columns: [t.viewerId, t.kind, t.subjectId],
+    }),
+  ],
+);
+
+/**
  * OAuth 2.0 provider — "API access as a product" part 2 (PROJECTPLAN.md §6.13,
  * §14, V2-P12). Authorization-code + PKCE, built on the personal-API-key model:
  * only token/secret *hashes* are ever stored, scopes are the coarse #302
@@ -1094,6 +1130,8 @@ export type ShareAudienceRow = typeof shareAudiences.$inferSelect;
 export type NewShareAudienceRow = typeof shareAudiences.$inferInsert;
 export type ShareAudienceMemberRow = typeof shareAudienceMembers.$inferSelect;
 export type ShareAudienceLinkRow = typeof shareAudienceLinks.$inferSelect;
+export type SharedItemActivityPrefRow = typeof sharedItemActivityPrefs.$inferSelect;
+export type NewSharedItemActivityPrefRow = typeof sharedItemActivityPrefs.$inferInsert;
 
 /**
  * Global admin settings (PROJECTPLAN.md §5.5, §6.12). A keyed settings store —
@@ -1147,6 +1185,7 @@ export const schema = {
   shareAudiences,
   shareAudienceMembers,
   shareAudienceLinks,
+  sharedItemActivityPrefs,
   appSettings,
   userRoleEnum,
   userStatusEnum,

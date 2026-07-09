@@ -10,8 +10,11 @@ vi.mock('../../lib/socialApi', () => ({
   declineFriendRequest: vi.fn(),
   cancelFriendRequest: vi.fn(),
   listFriends: vi.fn(),
+  listSharedWithMe: vi.fn(),
   removeFriend: vi.fn(),
 }));
+
+import { MemoryRouter } from 'react-router-dom';
 
 import {
   acceptFriendRequest,
@@ -19,6 +22,7 @@ import {
   declineFriendRequest,
   listFriendRequests,
   listFriends,
+  listSharedWithMe,
   removeFriend,
   sendFriendRequest,
 } from '../../lib/socialApi';
@@ -31,18 +35,22 @@ function makeQueryClient() {
 function renderPage() {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <FriendsPage />
+      <MemoryRouter>
+        <FriendsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
 const EMPTY_REQUESTS = { incoming: [], outgoing: [] };
 const EMPTY_FRIENDS = { friends: [] };
+const EMPTY_SHARED = { portfolios: [], conglomerates: [], watchlists: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listFriendRequests).mockResolvedValue(EMPTY_REQUESTS);
   vi.mocked(listFriends).mockResolvedValue(EMPTY_FRIENDS);
+  vi.mocked(listSharedWithMe).mockResolvedValue(EMPTY_SHARED);
 });
 
 describe('FriendsPage', () => {
@@ -155,7 +163,7 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(listFriendRequests).toHaveBeenCalledTimes(2));
   });
 
-  test('removes a friend after confirming in the dialog', async () => {
+  test('expands a friend and removes them after confirming in the dialog', async () => {
     vi.mocked(listFriends).mockResolvedValue({
       friends: [{ user: { id: 'u4', username: 'dave' }, createdAt: '2026-01-01T00:00:00.000Z' }],
     });
@@ -163,7 +171,9 @@ describe('FriendsPage', () => {
     const user = userEvent.setup();
     renderPage();
 
+    // The card is clean — Remove lives in the friend overview, revealed on expand.
     await waitFor(() => expect(screen.getByText('dave')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'dave' }));
     await user.click(screen.getByRole('button', { name: 'Remove' }));
 
     const dialog = screen.getByRole('dialog', { name: 'Remove friend?' });
@@ -172,5 +182,18 @@ describe('FriendsPage', () => {
 
     expect(removeFriend).toHaveBeenCalledWith('u4');
     await waitFor(() => expect(listFriends).toHaveBeenCalledTimes(2));
+  });
+
+  test('a friend card exposes a chat entry point that routes to the future chat surface', async () => {
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [{ user: { id: 'u5', username: 'erin' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('erin')).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: /message erin/i })).toHaveAttribute(
+      'href',
+      '/social/chat/u5',
+    );
   });
 });

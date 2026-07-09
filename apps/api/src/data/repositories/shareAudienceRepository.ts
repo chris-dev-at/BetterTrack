@@ -268,6 +268,146 @@ export function createShareAudienceRepository(db: Database) {
         .orderBy(asc(users.username), asc(watchlists.name));
     },
 
+    // ── Public-profile listings (owner's own `public_link` items, no viewer) ─
+
+    /**
+     * The owner's own items whose audience is `public_link` — the exact set a
+     * public profile composes (V3-P6). This reuses the SAME audience model the
+     * enforcement layer authorizes against: an item appears here iff its stored
+     * audience is `public_link` AND the subject is live, so a non-public item can
+     * never be surfaced by the profile. No friendship join — public is public.
+     */
+    async listPublicPortfolios(ownerId: string): Promise<{ portfolioId: string; name: string }[]> {
+      return db
+        .select({ portfolioId: portfolios.id, name: portfolios.name })
+        .from(portfolios)
+        .innerJoin(
+          shareAudiences,
+          and(
+            eq(shareAudiences.kind, 'portfolio'),
+            eq(shareAudiences.subjectId, portfolios.id),
+            eq(shareAudiences.audience, 'public_link'),
+          ),
+        )
+        .where(and(eq(portfolios.userId, ownerId), isNull(portfolios.archivedAt)))
+        .orderBy(asc(portfolios.name));
+    },
+
+    async listPublicConglomerates(
+      ownerId: string,
+    ): Promise<{ conglomerateId: string; name: string; positionCount: number }[]> {
+      return db
+        .select({
+          conglomerateId: conglomerates.id,
+          name: conglomerates.name,
+          positionCount: sql<number>`(
+            select count(*) from ${sql.identifier('conglomerate_positions')}
+            where ${sql.identifier('conglomerate_positions')}.${sql.identifier('conglomerate_id')} = ${conglomerates.id}
+          )`.mapWith(Number),
+        })
+        .from(conglomerates)
+        .innerJoin(
+          shareAudiences,
+          and(
+            eq(shareAudiences.kind, 'conglomerate'),
+            eq(shareAudiences.subjectId, conglomerates.id),
+            eq(shareAudiences.audience, 'public_link'),
+          ),
+        )
+        .where(eq(conglomerates.ownerId, ownerId))
+        .orderBy(asc(conglomerates.name));
+    },
+
+    async listPublicWatchlists(
+      ownerId: string,
+    ): Promise<{ watchlistId: string; name: string; itemCount: number }[]> {
+      return db
+        .select({
+          watchlistId: watchlists.id,
+          name: watchlists.name,
+          itemCount: sql<number>`(
+            select count(*) from ${workboardItems}
+            where ${workboardItems.watchlistId} = ${watchlists.id}
+          )`.mapWith(Number),
+        })
+        .from(watchlists)
+        .innerJoin(
+          shareAudiences,
+          and(
+            eq(shareAudiences.kind, 'watchlist'),
+            eq(shareAudiences.subjectId, watchlists.id),
+            eq(shareAudiences.audience, 'public_link'),
+          ),
+        )
+        .where(eq(watchlists.userId, ownerId))
+        .orderBy(asc(watchlists.name));
+    },
+
+    /**
+     * Authorize a logged-out drill-in to ONE of the owner's public items — the
+     * subject must be owned by `ownerId`, its audience `public_link`, and it must
+     * be live. Returns its display name, or `undefined` (→ 404). The same
+     * `public_link` gate as the profile listing, so a non-public item 404s.
+     */
+    async authorizePublicItemRead(
+      ownerId: string,
+      kind: ShareKind,
+      subjectId: string,
+    ): Promise<{ name: string } | undefined> {
+      if (kind === 'portfolio') {
+        const [row] = await db
+          .select({ name: portfolios.name })
+          .from(portfolios)
+          .innerJoin(
+            shareAudiences,
+            and(
+              eq(shareAudiences.kind, 'portfolio'),
+              eq(shareAudiences.subjectId, portfolios.id),
+              eq(shareAudiences.audience, 'public_link'),
+            ),
+          )
+          .where(
+            and(
+              eq(portfolios.id, subjectId),
+              eq(portfolios.userId, ownerId),
+              isNull(portfolios.archivedAt),
+            ),
+          )
+          .limit(1);
+        return row;
+      }
+      if (kind === 'conglomerate') {
+        const [row] = await db
+          .select({ name: conglomerates.name })
+          .from(conglomerates)
+          .innerJoin(
+            shareAudiences,
+            and(
+              eq(shareAudiences.kind, 'conglomerate'),
+              eq(shareAudiences.subjectId, conglomerates.id),
+              eq(shareAudiences.audience, 'public_link'),
+            ),
+          )
+          .where(and(eq(conglomerates.id, subjectId), eq(conglomerates.ownerId, ownerId)))
+          .limit(1);
+        return row;
+      }
+      const [row] = await db
+        .select({ name: watchlists.name })
+        .from(watchlists)
+        .innerJoin(
+          shareAudiences,
+          and(
+            eq(shareAudiences.kind, 'watchlist'),
+            eq(shareAudiences.subjectId, watchlists.id),
+            eq(shareAudiences.audience, 'public_link'),
+          ),
+        )
+        .where(and(eq(watchlists.id, subjectId), eq(watchlists.userId, ownerId)))
+        .limit(1);
+      return row;
+    },
+
     // ── Read authorization — public-link mode (token, no friendship) ────────
 
     /**
@@ -383,6 +523,35 @@ export function createShareAudienceRepository(db: Database) {
           and(eq(shareAudiences.kind, kind), inArray(shareAudiences.subjectId, [...subjectIds])),
         );
       for (const r of rows) out.set(r.subjectId, r.audience);
+      return out;
+    },
+
+    /**
+     * Per-subject audience + named-friend count, for a same-kind batch (missing
+     * row = `private`, 0 friends) — feeds the "who can see this" summary in **My
+     * Shared Items** without an N+1. One grouped query over the audience rows and
+     * their membership set.
+     */
+    async audienceSummariesForSubjects(
+      kind: ShareKind,
+      subjectIds: readonly string[],
+    ): Promise<Map<string, { audience: ShareAudience; friendCount: number }>> {
+      const out = new Map<string, { audience: ShareAudience; friendCount: number }>();
+      if (subjectIds.length === 0) return out;
+      const rows = await db
+        .select({
+          subjectId: shareAudiences.subjectId,
+          audience: shareAudiences.audience,
+          friendCount: sql<number>`count(${shareAudienceMembers.friendId})`.mapWith(Number),
+        })
+        .from(shareAudiences)
+        .leftJoin(shareAudienceMembers, eq(shareAudienceMembers.audienceId, shareAudiences.id))
+        .where(
+          and(eq(shareAudiences.kind, kind), inArray(shareAudiences.subjectId, [...subjectIds])),
+        )
+        .groupBy(shareAudiences.id, shareAudiences.subjectId, shareAudiences.audience);
+      for (const r of rows)
+        out.set(r.subjectId, { audience: r.audience, friendCount: r.friendCount });
       return out;
     },
 

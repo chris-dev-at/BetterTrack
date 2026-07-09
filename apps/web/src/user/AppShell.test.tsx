@@ -161,7 +161,8 @@ test.each([
   ['/assets/commodities', 'Commodities'],
   ['/assets/custom', 'Custom Assets'],
   ['/social/ideas', 'Ideas'],
-  ['/social/profile', 'My Public Profile'],
+  // /social/profile is now the live My Public Profile settings page (V3-P6),
+  // no longer Coming Soon.
   ['/settings/imports', 'Imports & Exports'],
   ['/settings/connections', 'Connections'],
   ['/settings/backups', 'Backups'],

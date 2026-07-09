@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 
 import type { FriendRequest, Friendship } from '@bettertrack/contracts';
 
@@ -9,12 +10,34 @@ import {
   declineFriendRequest,
   listFriendRequests,
   listFriends,
+  listSharedWithMe,
   removeFriend,
   sendFriendRequest,
 } from '../../lib/socialApi';
-import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, TextField } from '../components/ui';
+import { useT } from '../../i18n';
+import { EmptyState, MoneyText, Skeleton } from '../../ui';
+import { Alert, Button, TextField, cx } from '../components/ui';
+import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
+import { SharedItemRow, kindCountSummary, personFor, type SharedPerson } from './SharedPeople';
+
+/** Inline chat glyph — the chat entry point (routes to #349's future surface). */
+function ChatIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 5.5h16v10H9l-4 3.5v-3.5H4z" />
+    </svg>
+  );
+}
 
 const REQUESTS_STALE_MS = 15_000;
 const FRIENDS_STALE_MS = 30_000;
@@ -272,19 +295,156 @@ function RemoveFriendDialog({
   );
 }
 
-function FriendRow({
+/** The per-friend "what they share with me" list inside the overview (read-only links). */
+function FriendShares({
+  person,
+  username,
+}: {
+  person: SharedPerson | undefined;
+  username: string;
+}) {
+  const t = useT();
+  if (!person || person.total === 0) {
+    return (
+      <p className="text-sm text-neutral-500">{t('social.friend.sharesEmpty', { username })}</p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {person.portfolios.map((p) => (
+        <SharedItemRow
+          key={p.portfolioId}
+          kind="portfolio"
+          subjectId={p.portfolioId}
+          name={p.name}
+          secondary={<MoneyText amount={p.totalValueEur} />}
+        />
+      ))}
+      {person.conglomerates.map((c) => (
+        <SharedItemRow
+          key={c.conglomerateId}
+          kind="conglomerate"
+          subjectId={c.conglomerateId}
+          name={c.name}
+          secondary={t('social.item.positions', { count: c.positionCount })}
+        />
+      ))}
+      {person.watchlists.map((w) => (
+        <SharedItemRow
+          key={w.watchlistId}
+          kind="watchlist"
+          subjectId={w.watchlistId}
+          name={w.name}
+          secondary={t('social.item.assets', { count: w.itemCount })}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A clean friend card that expands in place to the **friend overview** (V3-P6):
+ * collapsed it shows only avatar + username + a chat shortcut; expanded it shows
+ * the friend's profile line, a Chat button, everything they share with me
+ * (read-only), and the per-friend actions (remove) that used to clutter the card.
+ */
+function FriendCard({
   friendship,
+  person,
   onRequestRemove,
 }: {
   friendship: Friendship;
+  person: SharedPerson | undefined;
   onRequestRemove: () => void;
 }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const { user } = friendship;
+  const panelId = `friend-${user.id}`;
+  const chatHref = `/social/chat/${user.id}`;
+  const countLine = person && person.total > 0 ? kindCountSummary(person, t) : null;
+
   return (
-    <li className="flex items-center justify-between gap-3 px-4 py-3">
-      <span className="text-sm font-medium text-neutral-100">{friendship.user.username}</span>
-      <Button variant="secondary" onClick={onRequestRemove}>
-        Remove
-      </Button>
+    <li className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
+      <div className="flex items-center gap-3 pr-3">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-controls={panelId}
+          aria-label={user.username}
+          className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+        >
+          <Avatar name={user.username} size="md" />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-sm font-semibold text-neutral-100">{user.username}</span>
+            {countLine ? (
+              <span className="truncate text-xs text-neutral-500">{countLine}</span>
+            ) : null}
+          </span>
+          <svg
+            className={cx(
+              'h-4 w-4 shrink-0 text-neutral-500 transition-transform',
+              open && 'rotate-90',
+            )}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+        <Link
+          to={chatHref}
+          aria-label={t('social.friend.messageAria', { username: user.username })}
+          title={t('social.friend.chat')}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+        >
+          <ChatIcon className="h-5 w-5" />
+        </Link>
+      </div>
+
+      {open ? (
+        <div id={panelId} className="flex flex-col gap-4 border-t border-neutral-800 p-4">
+          <div className="flex items-center gap-3">
+            <Avatar name={user.username} size="lg" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-base font-semibold text-neutral-100">{user.username}</p>
+              <p className="truncate text-xs text-neutral-500">
+                {t('social.friend.since', { date: friendship.createdAt.slice(0, 10) })}
+              </p>
+            </div>
+            <Link
+              to={chatHref}
+              className="inline-flex items-center gap-2 rounded-md bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-100 ring-1 ring-inset ring-neutral-700 transition-colors hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              <ChatIcon className="h-4 w-4" />
+              {t('social.friend.chat')}
+            </Link>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              {t('social.friend.sharesHeading')}
+            </h3>
+            <FriendShares person={person} username={user.username} />
+          </div>
+
+          <div className="flex justify-end border-t border-neutral-800 pt-3">
+            <Button
+              variant="secondary"
+              onClick={onRequestRemove}
+              className="text-red-300 hover:text-red-200"
+            >
+              {t('social.friend.remove')}
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -299,11 +459,20 @@ function FriendsListSection() {
     staleTime: FRIENDS_STALE_MS,
   });
 
+  // The friend overview reuses the SAME enforcement-derived Shared-With-Me data,
+  // grouped per person — no separate per-friend endpoint, no new privacy path.
+  const sharedQuery = useQuery({
+    queryKey: ['social', 'shared-with-me'],
+    queryFn: ({ signal }) => listSharedWithMe(signal),
+    staleTime: FRIENDS_STALE_MS,
+  });
+
   const removeMutation = useMutation({
     mutationFn: (userId: string) => removeFriend(userId),
     onSuccess: () => {
       setRemoveTarget(null);
       void queryClient.invalidateQueries({ queryKey: ['social', 'friends'] });
+      void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
     },
   });
 
@@ -330,11 +499,12 @@ function FriendsListSection() {
           description="Add a friend by username or email above to start sharing."
         />
       ) : (
-        <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+        <ul className="flex flex-col gap-3">
           {data.friends.map((friendship) => (
-            <FriendRow
+            <FriendCard
               key={friendship.user.id}
               friendship={friendship}
+              person={personFor(sharedQuery.data, friendship.user.id)}
               onRequestRemove={() => setRemoveTarget(friendship)}
             />
           ))}

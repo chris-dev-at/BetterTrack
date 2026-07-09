@@ -1,21 +1,27 @@
 import {
+  activityAlertStateSchema,
   audienceMutationResponseSchema,
   audienceStateSchema,
   friendRequestListResponseSchema,
   friendsListResponseSchema,
   mySharedResponseSchema,
   okResponseSchema,
+  profileSettingsResponseSchema,
+  publicProfileResponseSchema,
   sharedConglomerateDetailResponseSchema,
   sharedLinkResponseSchema,
   sharedPortfolioDetailResponseSchema,
   sharedWatchlistDetailResponseSchema,
   sharedWithMeResponseSchema,
+  type ActivityAlertState,
   type AudienceMutationResponse,
   type AudienceState,
   type CreateFriendRequestRequest,
   type FriendRequestListResponse,
   type FriendsListResponse,
   type MySharedResponse,
+  type ProfileSettingsResponse,
+  type PublicProfileResponse,
   type SetAudienceRequest,
   type ShareKind,
   type SharedConglomerateDetailResponse,
@@ -23,6 +29,7 @@ import {
   type SharedPortfolioDetailResponse,
   type SharedWatchlistDetailResponse,
   type SharedWithMeResponse,
+  type UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -189,4 +196,74 @@ export async function resolveShareLink(
 export async function listMyShared(signal?: AbortSignal): Promise<MySharedResponse> {
   const data = await apiRequest<unknown>('/social/my-shared', { signal });
   return mySharedResponseSchema.parse(data);
+}
+
+// --- Activity alerts (V3-P6): a per-viewer preference on a shared item --------
+
+/**
+ * `PUT /social/shared/activity/:kind/:subjectId` — set my activity-alert opt-in
+ * for one item a friend shares with me. Only the preference is stored; the
+ * friend-activity delivery ships with Notifications-v2 (#368). 404s if I can no
+ * longer read the item.
+ */
+export async function setActivityAlert(
+  kind: ShareKind,
+  subjectId: string,
+  enabled: boolean,
+): Promise<ActivityAlertState> {
+  const data = await apiRequest<unknown>(
+    `/social/shared/activity/${kind}/${encodeURIComponent(subjectId)}`,
+    { method: 'PUT', body: { enabled } },
+  );
+  return activityAlertStateSchema.parse(data);
+}
+
+// --- Public profiles (V3-P6) -------------------------------------------------
+
+/** `GET /social/profile` — my own public-profile settings. */
+export async function getProfileSettings(signal?: AbortSignal): Promise<ProfileSettingsResponse> {
+  const data = await apiRequest<unknown>('/social/profile', { signal });
+  return profileSettingsResponseSchema.parse(data);
+}
+
+/**
+ * `PUT /social/profile` — update my public-profile opt-in + bio. Enabling requires
+ * `acknowledgePublic: true`; disabling unpublishes the slug instantly.
+ */
+export async function updateProfileSettings(
+  body: UpdateProfileSettingsRequest,
+): Promise<ProfileSettingsResponse> {
+  const data = await apiRequest<unknown>('/social/profile', { method: 'PUT', body });
+  return profileSettingsResponseSchema.parse(data);
+}
+
+/**
+ * `GET /social/profiles/:username` — a user's public profile (UNAUTHENTICATED).
+ * A profile that isn't opted-in / unknown user 404s.
+ */
+export async function getPublicProfile(
+  username: string,
+  signal?: AbortSignal,
+): Promise<PublicProfileResponse> {
+  const data = await apiRequest<unknown>(`/social/profiles/${encodeURIComponent(username)}`, {
+    signal,
+  });
+  return publicProfileResponseSchema.parse(data);
+}
+
+/**
+ * `GET /social/profiles/:username/:kind/:subjectId` — read-only detail of one
+ * public item on a profile (UNAUTHENTICATED). A non-public item 404s.
+ */
+export async function getPublicProfileItem(
+  username: string,
+  kind: ShareKind,
+  subjectId: string,
+  signal?: AbortSignal,
+): Promise<SharedLinkResponse> {
+  const data = await apiRequest<unknown>(
+    `/social/profiles/${encodeURIComponent(username)}/${kind}/${encodeURIComponent(subjectId)}`,
+    { signal },
+  );
+  return sharedLinkResponseSchema.parse(data);
 }

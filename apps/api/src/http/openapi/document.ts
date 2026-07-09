@@ -186,6 +186,11 @@ const componentSchemas = {
   SetAudienceRequest: contracts.setAudienceRequestSchema,
   AudienceMutationResponse: contracts.audienceMutationResponseSchema,
   SharedLinkResponse: contracts.sharedLinkResponseSchema,
+  SetActivityAlertRequest: contracts.setActivityAlertRequestSchema,
+  ActivityAlertState: contracts.activityAlertStateSchema,
+  ProfileSettingsResponse: contracts.profileSettingsResponseSchema,
+  UpdateProfileSettingsRequest: contracts.updateProfileSettingsRequestSchema,
+  PublicProfileResponse: contracts.publicProfileResponseSchema,
 
   // Notifications & settings (§6.10, §6.11, §13.2 V2-P9)
   MarkReadRequest: contracts.markReadRequestSchema,
@@ -1420,6 +1425,57 @@ const endpoints: EndpointDef[] = [
     body: R.SetAudienceRequest,
     status: 200,
     response: R.AudienceMutationResponse,
+  },
+  {
+    method: 'put',
+    path: '/social/shared/activity/{kind}/{subjectId}',
+    tag: 'Social',
+    summary:
+      'Set my activity-alert preference for one shared item (preference only; delivery is #368).',
+    params: contracts.audienceParamSchema,
+    body: R.SetActivityAlertRequest,
+    status: 200,
+    response: R.ActivityAlertState,
+  },
+  {
+    method: 'get',
+    path: '/social/profile',
+    tag: 'Social',
+    summary: 'My public-profile settings — opt-in flag, bio, and how many items are public.',
+    status: 200,
+    response: R.ProfileSettingsResponse,
+  },
+  {
+    method: 'put',
+    path: '/social/profile',
+    tag: 'Social',
+    summary:
+      'Update my public-profile opt-in + bio; enabling requires an acknowledgment, disabling unpublishes instantly.',
+    body: R.UpdateProfileSettingsRequest,
+    status: 200,
+    response: R.ProfileSettingsResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/profiles/{username}',
+    tag: 'Social',
+    summary:
+      'A user’s public profile — bio + their public_link items (unauthenticated; 404 when not opted-in).',
+    public: true,
+    params: contracts.profileUsernameParamSchema,
+    status: 200,
+    response: R.PublicProfileResponse,
+  },
+  {
+    method: 'get',
+    path: '/social/profiles/{username}/{kind}/{subjectId}',
+    tag: 'Social',
+    summary:
+      'Read-only detail of one public item on a profile (unauthenticated; non-public item 404s).',
+    public: true,
+    params: contracts.profileItemParamSchema,
+    status: 200,
+    response: R.SharedLinkResponse,
   },
 
   // Notifications (§6.10)
