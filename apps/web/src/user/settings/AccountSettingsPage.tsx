@@ -2,19 +2,18 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 
 import {
   BASE_CURRENCIES,
   MIN_PASSWORD_LENGTH,
   type BaseCurrency,
   type ChangePasswordRequest,
-  type PortfolioSummary,
 } from '@bettertrack/contracts';
 
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDate, setMoneyCurrency } from '../../lib/format';
-import { listPortfolios, updatePortfolio } from '../../lib/portfolioApi';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
 import { changePassword, getMe } from '../../lib/userApi';
 import type { TranslateFn } from '../../i18n';
@@ -22,7 +21,6 @@ import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
-const PORTFOLIOS_KEY = ['portfolios'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 
 /** Friendly message for the codes `POST /auth/change-password` can return. */
@@ -235,147 +233,39 @@ function BaseCurrencyControl() {
 }
 
 /**
- * Default portfolio visibility (§6.9, §13.2 V2-P9): the private↔friends default
- * applied to *newly created* portfolios. Existing portfolios and explicit
- * per-item toggles are unaffected.
+ * Portfolio visibility moved out of Settings (#377). ALL sharing/audience
+ * management now lives in the Socials tab — My Shared Items lists EVERY portfolio
+ * the user owns, each with its own AudiencePicker, so a secondary portfolio is as
+ * shareable as the default and new portfolios stay private until explicitly
+ * shared. This is a signpost, not a control (the legacy private↔friends toggle
+ * and the create-time default toggle are retired; the audience model is the one
+ * source of truth, and existing shares are untouched).
  */
-function DefaultVisibilityControl() {
+function SharingMovedNote() {
   const t = useT();
-  const queryClient = useQueryClient();
-  const [error, setError] = useState(false);
-  const query = useQuery({
-    queryKey: ACCOUNT_SETTINGS_KEY,
-    queryFn: ({ signal }) => getAccountSettings(signal),
-    staleTime: 30_000,
-  });
-
-  const mutation = useMutation({
-    mutationFn: (defaultPortfolioVisibility: 'private' | 'friends') =>
-      updateAccountSettings({ defaultPortfolioVisibility }),
-    onSuccess: (res) => {
-      queryClient.setQueryData(ACCOUNT_SETTINGS_KEY, res);
-      setError(false);
-    },
-    onError: () => setError(true),
-  });
-
-  const value = query.data?.defaultPortfolioVisibility;
-  const shared = value === 'friends';
-
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold text-neutral-100">
-          {t('settings.defaultSharing.title')}
+          {t('settings.sharingMoved.title')}
         </h3>
-        <p className="text-xs text-neutral-500">{t('settings.defaultSharing.description')}</p>
+        <p className="text-xs text-neutral-500">{t('settings.sharingMoved.description')}</p>
       </div>
-      {query.isPending ? (
-        <Skeleton height="h-10" width="w-40" />
-      ) : (
-        <div
-          role="radiogroup"
-          aria-label={t('settings.defaultSharing.title')}
-          className="inline-flex w-fit rounded-md ring-1 ring-inset ring-neutral-700"
-        >
-          <SharingChoice
-            label={t('common.private')}
-            selected={!shared}
-            busy={mutation.isPending}
-            onSelect={() => shared && mutation.mutate('private')}
-          />
-          <SharingChoice
-            label={t('common.friends')}
-            selected={shared}
-            busy={mutation.isPending}
-            onSelect={() => !shared && mutation.mutate('friends')}
-          />
-        </div>
-      )}
-      {error ? <Alert tone="error">{t('settings.saveError')}</Alert> : null}
-    </div>
-  );
-}
-
-function SharingToggle({ portfolio }: { portfolio: PortfolioSummary }) {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const [error, setError] = useState(false);
-  const shared = portfolio.visibility === 'friends';
-
-  const mutation = useMutation({
-    mutationFn: (visibility: PortfolioSummary['visibility']) =>
-      updatePortfolio(portfolio.id, { visibility }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: PORTFOLIOS_KEY });
-      setError(false);
-    },
-    onError: () => setError(true),
-  });
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-0.5">
-        <h3 className="text-sm font-semibold text-neutral-100">{t('settings.sharing.title')}</h3>
-        <p className="text-xs text-neutral-500">{t('settings.sharing.description')}</p>
-      </div>
-      <div
-        role="radiogroup"
-        aria-label={t('settings.sharing.title')}
-        className="inline-flex w-fit rounded-md ring-1 ring-inset ring-neutral-700"
+      <Link
+        to="/social/my-shared"
+        className="w-fit text-sm font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
-        <SharingChoice
-          label={t('common.no')}
-          selected={!shared}
-          busy={mutation.isPending}
-          onSelect={() => shared && mutation.mutate('private')}
-        />
-        <SharingChoice
-          label={t('common.yes')}
-          selected={shared}
-          busy={mutation.isPending}
-          onSelect={() => !shared && mutation.mutate('friends')}
-        />
-      </div>
-      {error ? <Alert tone="error">{t('settings.saveError')}</Alert> : null}
+        {t('settings.sharingMoved.link')}
+      </Link>
     </div>
-  );
-}
-
-function SharingChoice({
-  label,
-  selected,
-  busy,
-  onSelect,
-}: {
-  label: string;
-  selected: boolean;
-  busy: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      disabled={busy}
-      onClick={onSelect}
-      className={
-        'px-4 py-2 text-sm font-medium transition-colors first:rounded-l-md last:rounded-r-md ' +
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:cursor-not-allowed ' +
-        (selected ? 'bg-sky-600 text-white' : 'text-neutral-300 hover:bg-neutral-800')
-      }
-    >
-      {label}
-    </button>
   );
 }
 
 /**
  * Settings → Account (PROJECTPLAN.md §6.11, §13.3 V3-P1). Shows the identity read
- * from `GET /auth/me` (username, email, member-since, the fixed EUR base
- * currency), a change-password form, the display-language picker, and the default
- * portfolio's private↔friends sharing toggle (§6.8). All shapes derive from
+ * from `GET /auth/me` (username, email, member-since), a change-password form, the
+ * display-language and base-currency pickers, and a signpost to the Socials tab
+ * where ALL portfolio sharing now lives (#377). All shapes derive from
  * `@bettertrack/contracts`; all copy from the i18n layer.
  */
 export function AccountSettingsPage() {
@@ -385,14 +275,6 @@ export function AccountSettingsPage() {
     queryFn: ({ signal }) => getMe(signal),
     staleTime: 30_000,
   });
-  const portfolios = useQuery({
-    queryKey: PORTFOLIOS_KEY,
-    queryFn: ({ signal }) => listPortfolios(signal),
-    staleTime: 30_000,
-  });
-
-  const defaultPortfolio =
-    portfolios.data?.portfolios.find((p) => p.isDefault) ?? portfolios.data?.portfolios[0];
 
   return (
     <div className="flex flex-col gap-8">
@@ -437,20 +319,7 @@ export function AccountSettingsPage() {
       </section>
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        <DefaultVisibilityControl />
-      </section>
-
-      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
-        {portfolios.isPending ? (
-          <Skeleton height="h-16" />
-        ) : portfolios.isError || !defaultPortfolio ? (
-          <EmptyState
-            title={t('settings.account.portfolioError.title')}
-            description={t('settings.account.portfolioError.description')}
-          />
-        ) : (
-          <SharingToggle portfolio={defaultPortfolio} />
-        )}
+        <SharingMovedNote />
       </section>
     </div>
   );
