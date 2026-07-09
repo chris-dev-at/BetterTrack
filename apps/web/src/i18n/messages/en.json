@@ -195,6 +195,10 @@
         "alertTriggered": {
           "label": "Price alerts",
           "description": "When one of your price alerts fires."
+        },
+        "chatMessage": {
+          "label": "Chat messages",
+          "description": "When a friend sends you a message."
         }
       },
       "routing": {
@@ -1221,7 +1225,53 @@
     },
     "chat": {
       "title": "Messages",
-      "body": "Direct messages with your friends are coming soon."
+      "subhead": "Direct messages with your friends. Share an asset or one of your items right in the chat.",
+      "new": "New message",
+      "newPrompt": "Pick a friend to chat with.",
+      "noFriends": "Add friends first to start chatting.",
+      "error": "Couldn't load your chats. Please refresh the page.",
+      "empty": {
+        "title": "No messages yet",
+        "body": "Start a conversation with a friend to chat and share ideas."
+      },
+      "noMessages": "No messages yet",
+      "youPrefix": "You: ",
+      "preview": {
+        "shared": {
+          "asset": "Shared an asset",
+          "portfolio": "Shared a portfolio",
+          "conglomerate": "Shared a conglomerate",
+          "watchlist": "Shared a watchlist"
+        }
+      },
+      "selectTitle": "Your messages",
+      "selectBody": "Select a conversation, or start a new one to begin chatting.",
+      "sayHi": "Say hi to {{username}}",
+      "sayHiBody": "Start the conversation — you can share an asset or one of your items right here.",
+      "notFriend": {
+        "title": "You're not connected",
+        "body": "You can only chat with people you're friends with. Send them a friend request first."
+      },
+      "loadEarlier": "Load earlier messages",
+      "sendError": "Couldn't send your message. Please try again.",
+      "composerPlaceholder": "Message",
+      "send": "Send",
+      "attach": "Share an item",
+      "chip": {
+        "notShared": "Not shared with you",
+        "view": "View",
+        "kind": {
+          "asset": "Asset",
+          "portfolio": "Portfolio",
+          "conglomerate": "Conglomerate",
+          "watchlist": "Watchlist"
+        }
+      },
+      "share": {
+        "title": "Share in chat",
+        "disclaimer": "Sending never widens access — a friend only sees it if it's already shared with them.",
+        "empty": "You have nothing to share yet."
+      }
     }
   },
   "profile": {

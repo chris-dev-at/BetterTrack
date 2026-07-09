@@ -1,6 +1,7 @@
 import type { EventBus, Unsubscribe } from '../../events';
 import type {
   AlertTriggeredEvent,
+  ChatMessageEvent,
   FriendAcceptedEvent,
   FriendRequestEvent,
   PortfolioSharedEvent,
@@ -37,14 +38,15 @@ import type { Logger } from '../../logger';
 /** The social events the dispatcher fans out to in-app notifications. */
 export type SocialDispatchEvent = FriendRequestEvent | FriendAcceptedEvent | PortfolioSharedEvent;
 
-/** Every event the dispatcher turns into a matrix-routed notification (§6.10, §14). */
-export type DispatchableEvent = SocialDispatchEvent | AlertTriggeredEvent;
+/** Every event the dispatcher turns into a matrix-routed notification (§6.10, §14, §13.3 V3-P8). */
+export type DispatchableEvent = SocialDispatchEvent | AlertTriggeredEvent | ChatMessageEvent;
 
 const DISPATCHED_EVENT_TYPES = [
   'friend.request',
   'friend.accepted',
   'portfolio.shared',
   'alert.triggered',
+  'chat.message',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 /**
@@ -258,9 +260,66 @@ export function createNotificationDispatcher(
     }
   }
 
+  /**
+   * Fan out a new chat message (§13.3 V3-P8). Deduped per message (the messageId
+   * is the event key) and matrix-routed like every other type: a **muted**
+   * `chat.message` writes no in-app row and sends no email. That never suppresses
+   * in-thread delivery — the realtime `chat.message` push is emitted by the
+   * gateway as a SEPARATE subscriber of the same bus event, so the message still
+   * arrives in the recipient's thread even when the bell/email are muted.
+   */
+  async function dispatchChat(event: ChatMessageEvent): Promise<void> {
+    const eventKey = `chat.message:${event.messageId}`;
+    if (await repo.existsForEventKey(event.userId, eventKey)) return;
+
+    const title = 'New message';
+    const body = event.bodyPreview
+      ? `${event.senderUsername}: ${event.bodyPreview}`
+      : event.hasChip
+        ? `${event.senderUsername} shared an item with you.`
+        : `${event.senderUsername} sent you a message.`;
+    const payload = {
+      eventKey,
+      conversationId: event.conversationId,
+      messageId: event.messageId,
+      senderId: event.senderId,
+      senderUsername: event.senderUsername,
+    };
+
+    if (await repo.typeChannelEnabled(event.userId, 'chat.message', 'inapp')) {
+      const notificationId = await repo.insert({
+        userId: event.userId,
+        type: 'chat.message',
+        title,
+        body,
+        payload,
+      });
+      await publishCreated(event.userId, notificationId);
+    }
+
+    if (email && users && (await repo.typeChannelEnabled(event.userId, 'chat.message', 'email'))) {
+      const recipient = await users.findById(event.userId);
+      if (recipient?.email) {
+        // Deliberately no message content in the email (privacy) — just that a
+        // new message is waiting, with a link into the app.
+        await email.sendChatMessage({
+          to: recipient.email,
+          userId: recipient.id,
+          actorUsername: event.senderUsername,
+          locale: recipient.locale,
+        });
+      }
+    }
+  }
+
   async function dispatch(event: DispatchableEvent): Promise<void> {
     if (event.type === 'alert.triggered') {
       await dispatchAlert(event);
+      return;
+    }
+
+    if (event.type === 'chat.message') {
+      await dispatchChat(event);
       return;
     }
 

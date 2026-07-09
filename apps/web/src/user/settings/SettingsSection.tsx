@@ -87,6 +87,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.alertTriggered.label'),
       description: t('settings.notifications.types.alertTriggered.description'),
     },
+    'chat.message': {
+      label: t('settings.notifications.types.chatMessage.label'),
+      description: t('settings.notifications.types.chatMessage.description'),
+    },
   };
 }
 

@@ -11,7 +11,8 @@ import { z } from 'zod';
  * The V1 notification types (PROJECTPLAN.md §6.10). Each is a distinct row a
  * user can independently route to in-app / email / both / muted through the
  * Settings → Notifications matrix (`settings.ts`). `alert.triggered` arrives with
- * alerts, post-v1.
+ * alerts, post-v1; `chat.message` arrives with friend chat (§13.3 V3-P8) — a
+ * muted row silences the bell/email while the message still lands in the thread.
  */
 export const NOTIFICATION_TYPES = [
   'friend.request',
@@ -20,6 +21,7 @@ export const NOTIFICATION_TYPES = [
   'account.invite',
   'account.temp_password',
   'alert.triggered',
+  'chat.message',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);

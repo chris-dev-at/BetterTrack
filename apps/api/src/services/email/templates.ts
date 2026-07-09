@@ -281,6 +281,35 @@ export function portfolioSharedEmail(params: {
 }
 
 /**
+ * New chat-message notification email (PROJECTPLAN.md §13.3 V3-P8). Sent by the
+ * dispatcher when the recipient routes `chat.message` to email. Carries no
+ * message content by design (privacy) — just that a new message is waiting and a
+ * link into the app.
+ */
+export function chatMessageEmail(params: {
+  actorUsername: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.chatMessage;
+  return {
+    subject: fillText(c.subject, { actor: actorUsername }),
+    html: layout(
+      c.heading,
+      [
+        `<p>${fillHtml(c.body, { actor: actorUsername })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, { actor: actorUsername }), '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/**
  * Login 2FA email-code (PROJECTPLAN.md §6.1, §13.2 V2-P5). One of the two second-
  * factor channels: a short-lived, single-use numeric code the user enters at the
  * login challenge. Carries no link and no account data beyond the code itself.
