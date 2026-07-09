@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 
 import type { ShareAudience, ShareKind } from '@bettertrack/contracts';
 
@@ -74,13 +75,13 @@ function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }:
 }
 
 /**
- * My Shared Items (§6.9, §13.3 V3-P5/P6) — the caller's sharing-management surface.
- * EVERY portfolio the caller owns is listed here (#377), including private ones,
- * so each has its own entry point to the reusable AudiencePicker — a secondary
- * portfolio is as shareable as the default, and a private one is simply shown
- * dimmed until shared. Conglomerates and named watchlists appear once shared. Each
- * row carries a per-item "who can see this" summary; every control here is wired
- * to `PUT /social/audience/:kind/:subjectId`.
+ * My items (§6.9, §13.3 V3-P5/P6; #384) — the caller's ONE unified
+ * sharing-management surface. EVERY shareable item the caller owns is listed here:
+ * all portfolios, conglomerates and watchlists, shared OR not, each with its own
+ * entry point to the reusable AudiencePicker. Everything is private by default —
+ * a never-shared item is simply shown dimmed until shared. Each row carries a
+ * per-item "who can see this" summary; every control here is wired to
+ * `PUT /social/audience/:kind/:subjectId`.
  */
 export function MySharedItemsPage() {
   const t = useT();
@@ -191,6 +192,16 @@ export function MySharedItemsPage() {
           </ul>
         </section>
       ) : null}
+
+      <div className="border-t border-neutral-800 pt-5">
+        <Link
+          to="/social/profile"
+          className="inline-flex items-center gap-1.5 rounded text-sm font-medium text-sky-400 transition-colors hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+        >
+          {t('social.myShared.publicProfileLink')}
+          <span aria-hidden="true">→</span>
+        </Link>
+      </div>
 
       {picker ? (
         <AudiencePicker

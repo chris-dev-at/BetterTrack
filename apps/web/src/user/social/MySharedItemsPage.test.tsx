@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { MySharedResponse } from '@bettertrack/contracts';
@@ -16,6 +17,7 @@ import { getAudience, listFriends, listMyShared } from '../../lib/socialApi';
 import { MySharedItemsPage } from './MySharedItemsPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
+const CONGLOMERATE_ID = '00000000-0000-0000-0000-0000000000e1';
 const WATCHLIST_ID = '00000000-0000-0000-0000-0000000000c1';
 
 const EMPTY: MySharedResponse = { portfolios: [], conglomerates: [], watchlists: [] };
@@ -24,7 +26,9 @@ function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MySharedItemsPage />
+      <MemoryRouter>
+        <MySharedItemsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -42,12 +46,10 @@ beforeEach(() => {
 });
 
 describe('MySharedItemsPage', () => {
-  test('shows an empty state when nothing is shared', async () => {
+  test('shows an empty state when the caller owns nothing', async () => {
     vi.mocked(listMyShared).mockResolvedValue(EMPTY);
     renderPage();
-    await waitFor(() =>
-      expect(screen.getByText("You're not sharing anything")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText("You don't own anything yet")).toBeInTheDocument());
   });
 
   test('lists shared portfolios and watchlists with a who-sees-this summary and opens the AudiencePicker', async () => {
@@ -80,6 +82,61 @@ describe('MySharedItemsPage', () => {
     await user.click(screen.getAllByRole('button', { name: /share/i })[0]!);
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     // The reusable AudiencePicker renders the audience ladder.
+    expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
+  });
+
+  test('lists all three kinds including a never-shared conglomerate + watchlist, each settable (#384)', async () => {
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [
+        { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'private', friendCount: 0 },
+      ],
+      conglomerates: [
+        {
+          conglomerateId: CONGLOMERATE_ID,
+          name: 'Tech basket',
+          positionCount: 3,
+          audience: 'private',
+          friendCount: 0,
+        },
+      ],
+      watchlists: [
+        {
+          watchlistId: WATCHLIST_ID,
+          name: 'General',
+          itemCount: 2,
+          audience: 'private',
+          friendCount: 0,
+        },
+      ],
+    });
+    // The picker seeds from the conglomerate's current (private) audience.
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'conglomerate',
+      subjectId: CONGLOMERATE_ID,
+      audience: 'private',
+      friendIds: [],
+      link: { active: false, createdAt: null },
+    });
+    renderPage();
+
+    // Every kind is present — a private portfolio, a never-shared conglomerate
+    // and a never-shared watchlist — under its own section heading.
+    await waitFor(() => expect(screen.getByText('Tech basket')).toBeInTheDocument());
+    expect(screen.getByText('Main')).toBeInTheDocument();
+    expect(screen.getByText('General')).toBeInTheDocument();
+    expect(screen.getByText('Portfolios')).toBeInTheDocument();
+    expect(screen.getByText('Conglomerates')).toBeInTheDocument();
+    expect(screen.getByText('Watchlists')).toBeInTheDocument();
+    // All three read Private (never shared).
+    expect(screen.getAllByText('Private')).toHaveLength(3);
+
+    // The conglomerate has its own Share entry point → the picker for THAT basket.
+    const user = userEvent.setup();
+    const shareButtons = screen.getAllByRole('button', { name: /share/i });
+    expect(shareButtons).toHaveLength(3);
+    await user.click(shareButtons[1]!);
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: /only me/i })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
   });
 

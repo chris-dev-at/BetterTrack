@@ -45,7 +45,6 @@ import {
   StocksPage,
 } from './assets/AssetsSection';
 import { FriendsPage } from './social/FriendsPage';
-import { SharedWithMePage } from './social/SharedWithMePage';
 import { SharedPortfolioPage } from './social/SharedPortfolioPage';
 import { SharedConglomeratePage } from './social/SharedConglomeratePage';
 import { SharedWatchlistPage } from './social/SharedWatchlistPage';
@@ -156,7 +155,11 @@ function UserShell() {
           <Route path="social" element={<SocialLayout />}>
             <Route index element={<Navigate to="/social/friends" replace />} />
             <Route path="friends" element={<FriendsPage />} />
-            <Route path="shared-with-me" element={<SharedWithMePage />} />
+            {/* The standalone "Shared with me" tab was retired (#384): it folded
+                into the Friends overview. The old index path redirects there;
+                the read-only item detail routes below stay — they're the deep
+                links a friend's shared item opens to. */}
+            <Route path="shared-with-me" element={<Navigate to="/social/friends" replace />} />
             <Route path="shared-with-me/conglomerates/:id" element={<SharedConglomeratePage />} />
             <Route
               path="shared-with-me/watchlists/:watchlistId"

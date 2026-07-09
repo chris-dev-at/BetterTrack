@@ -394,16 +394,39 @@ describe('GET /api/v1/social/my-shared (My Shared Items)', () => {
     expect(res.body.portfolios[0].audience).toBe('private');
   });
 
-  it('lists the private default portfolio, and nothing else, for a user sharing nothing', async () => {
+  it('lists the private default portfolio + General watchlist for a user sharing nothing', async () => {
     const { bobAgent } = await scenario();
     const res = await bobAgent.get('/api/v1/social/my-shared');
     expect(res.status).toBe(200);
     // Bob's auto-created default portfolio is always listed, at audience=private.
     expect(res.body.portfolios).toHaveLength(1);
     expect(res.body.portfolios[0].audience).toBe('private');
+    // He owns no conglomerates.
     expect(res.body.conglomerates).toHaveLength(0);
-    // Named watchlists (V3-P5): nothing shared → no watchlist entries.
-    expect(res.body.watchlists).toEqual([]);
+    // #384: the always-present General watchlist now lists here too (private),
+    // so it can be shared from My items even before it is ever shared.
+    expect(res.body.watchlists).toHaveLength(1);
+    expect(res.body.watchlists[0].audience).toBe('private');
+  });
+
+  it('lists every shareable item the caller owns — all three kinds, never-shared, each private (#384)', async () => {
+    const { bobAgent, assetId } = await scenario();
+    // Bob shares nothing; give him a conglomerate but leave it private (never shared).
+    const cid = await seedConglomerate(bobAgent, assetId);
+
+    const res = await bobAgent.get('/api/v1/social/my-shared');
+    expect(res.status).toBe(200);
+    expect(mySharedResponseSchema.safeParse(res.body).success).toBe(true);
+    // Portfolio (Main), conglomerate and watchlist (General) are ALL present,
+    // each at audience=private — every kind gets an entry point to sharing even
+    // when it has never been shared.
+    expect(res.body.portfolios).toHaveLength(1);
+    expect(res.body.portfolios[0].audience).toBe('private');
+    expect(res.body.conglomerates).toHaveLength(1);
+    expect(res.body.conglomerates[0].conglomerateId).toBe(cid);
+    expect(res.body.conglomerates[0].audience).toBe('private');
+    expect(res.body.watchlists).toHaveLength(1);
+    expect(res.body.watchlists[0].audience).toBe('private');
   });
 });
 
@@ -474,7 +497,7 @@ describe('conglomerate friend-sharing', () => {
     expect((await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`)).status).toBe(404);
   });
 
-  it('lists the owner’s shared basket in My Shared Items with a toggle-off', async () => {
+  it('lists the owner’s basket in My items — shared, then still listed (private) after a toggle-off (#384)', async () => {
     const { aliceAgent, assetId } = await scenario();
     const cid = await seedConglomerate(aliceAgent, assetId);
     await setConglomerateVisibility(aliceAgent, cid, 'friends');
@@ -483,10 +506,16 @@ describe('conglomerate friend-sharing', () => {
     expect(res.status).toBe(200);
     expect(res.body.conglomerates).toHaveLength(1);
     expect(res.body.conglomerates[0].conglomerateId).toBe(cid);
+    expect(res.body.conglomerates[0].audience).toBe('all_friends');
 
+    // #384: every conglomerate you own is enumerable in My items, so it stays
+    // listed after being toggled back to private — it just reads audience=private
+    // (the entry point to re-share it), rather than dropping out of the list.
     await setConglomerateVisibility(aliceAgent, cid, 'private');
     res = await aliceAgent.get('/api/v1/social/my-shared');
-    expect(res.body.conglomerates).toHaveLength(0);
+    expect(res.body.conglomerates).toHaveLength(1);
+    expect(res.body.conglomerates[0].conglomerateId).toBe(cid);
+    expect(res.body.conglomerates[0].audience).toBe('private');
   });
 
   it('cannot be mutated by a friend (read-only) — no write path exists', async () => {
@@ -920,19 +949,11 @@ describe('audience model — two watchlists behave independently (V3-P5)', () =>
   });
 });
 
-// --- Default portfolio visibility (§13.2 V2-P9) ----------------------------
+// --- Universal private-default: new portfolios are always private (#384) ----
 
-describe('default portfolio visibility (Settings → Account)', () => {
-  it('defaults to private and a new portfolio adopts it', async () => {
+describe('default portfolio visibility', () => {
+  it('a newly created portfolio is private by default', async () => {
     const { aliceAgent } = await scenario();
-
-    const get = await aliceAgent.get('/api/v1/settings/account');
-    expect(get.status).toBe(200);
-    expect(get.body).toEqual({
-      defaultPortfolioVisibility: 'private',
-      locale: 'en',
-      baseCurrency: 'EUR',
-    });
 
     const created = await aliceAgent
       .post('/api/v1/portfolios')
@@ -942,39 +963,31 @@ describe('default portfolio visibility (Settings → Account)', () => {
     expect(created.body.portfolio.visibility).toBe('private');
   });
 
-  it('applies friends default to newly created portfolios only', async () => {
+  it('ignores a stored friends default — a new portfolio is ALWAYS private (#384)', async () => {
     const { aliceAgent, pid } = await scenario();
 
+    // The legacy per-user default can still be stored via Settings → Account…
     const patch = await aliceAgent
       .patch('/api/v1/settings/account')
       .set(...XRW)
       .send({ defaultPortfolioVisibility: 'friends' });
     expect(patch.status).toBe(200);
-    expect(patch.body).toEqual({
-      defaultPortfolioVisibility: 'friends',
-      locale: 'en',
-      baseCurrency: 'EUR',
-    });
+    expect(patch.body.defaultPortfolioVisibility).toBe('friends');
 
-    // A newly created portfolio adopts the friends default.
+    // …but portfolio creation no longer honours it (#384): the new portfolio is
+    // private, even for an account whose stored default is `friends`. The Settings
+    // control that set it was removed in #377; the column is retired/ignored here.
     const created = await aliceAgent
       .post('/api/v1/portfolios')
       .set(...XRW)
       .send({ name: 'Growth' });
     expect(created.status).toBe(201);
-    expect(created.body.portfolio.visibility).toBe('friends');
+    expect(created.body.portfolio.visibility).toBe('private');
 
-    // The existing "Main" portfolio is untouched by the default change: it was
-    // explicitly set to friends in the scenario, so it stays friends — but the
-    // point is the default never rewrites existing rows. Flip it private and
-    // confirm changing the default again does not touch it.
-    await setVisibility(aliceAgent, pid, 'private');
-    await aliceAgent
-      .patch('/api/v1/settings/account')
-      .set(...XRW)
-      .send({ defaultPortfolioVisibility: 'friends' });
+    // Existing rows are untouched: Main was explicitly set to friends in the
+    // scenario and stays friends regardless of the default.
     const list = await aliceAgent.get('/api/v1/portfolios');
     const main = list.body.portfolios.find((p: { id: string }) => p.id === pid);
-    expect(main.visibility).toBe('private');
+    expect(main.visibility).toBe('friends');
   });
 });

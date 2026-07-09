@@ -277,13 +277,14 @@ export const mySharedWatchlistSchema = z
 export type MySharedWatchlist = z.infer<typeof mySharedWatchlistSchema>;
 
 /**
- * `GET /social/my-shared` response — the caller's sharing-management list (the
- * **My Shared Items** list, §6.9 point 5, V2-P9/P6). Portfolios list in FULL —
- * every portfolio the caller owns, including private ones (#377), so each has a
- * per-portfolio entry point to set its audience; a private portfolio simply reads
- * `audience: 'private'`. Conglomerates and watchlists list only what is currently
- * shared (audience not `private`). Each row carries the per-item "who can see
- * this" summary; sharing is changed in place through the reusable AudiencePicker
+ * `GET /social/my-shared` response — the caller's unified sharing-management list
+ * (the **My items** list, §6.9 point 5, V2-P9/P6; #384). ALL three kinds list in
+ * FULL — every portfolio, conglomerate and watchlist the caller owns, shared OR
+ * not (#377 did this for portfolios; #384 widened it to conglomerates +
+ * watchlists), so each item has a per-item entry point to set its audience; a
+ * never-shared item simply reads `audience: 'private'`. Everything is private by
+ * default. Each row carries the per-item "who can see this" summary; sharing is
+ * changed in place through the reusable AudiencePicker
  * (`PUT /social/audience/:kind/:subjectId`).
  */
 export const mySharedResponseSchema = z

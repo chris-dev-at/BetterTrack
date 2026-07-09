@@ -77,10 +77,10 @@ export function SharedConglomeratePage() {
 function BackLink() {
   return (
     <Link
-      to="/social/shared-with-me"
+      to="/social/friends"
       className="w-fit text-xs text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
     >
-      ← Shared With Me
+      ← Friends
     </Link>
   );
 }

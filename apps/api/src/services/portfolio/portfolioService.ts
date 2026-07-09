@@ -45,7 +45,6 @@ import type {
 } from '../../data/repositories/cashSourceRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
-import type { UserRepository } from '../../data/repositories/userRepository';
 import type {
   LinkedCashMovement,
   NewTransaction,
@@ -118,8 +117,6 @@ export interface PortfolioServiceDeps {
   transactionRepo: TransactionRepository;
   cashMovementRepo: CashMovementRepository;
   cashSourceRepo: CashSourceRepository;
-  /** Reads the owner's default portfolio visibility, applied at create (§6.9, V2-P9). */
-  userRepo: UserRepository;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -336,7 +333,6 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
-    userRepo,
     marketData,
     currencyService,
     referenceBackfill,
@@ -1039,12 +1035,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (await portfolioRepo.nameExists(userId, name)) {
         throw conflict('A portfolio with that name already exists.', 'PORTFOLIO_NAME_TAKEN');
       }
-      // A newly created portfolio adopts the owner's default visibility (§6.9,
-      // V2-P9). The auto-created "Main" is provisioned before any preference
-      // exists (getOrCreateMain above), so it always stays `private`; only an
-      // explicit create honours the default. Existing portfolios are untouched.
-      const visibility = await userRepo.getDefaultPortfolioVisibility(userId);
-      return portfolioRepo.createPortfolio(userId, name, visibility);
+      // Universal private-default (#384): a newly created portfolio is ALWAYS
+      // private, for every user. The legacy per-user `default_portfolio_visibility`
+      // is retired/ignored here — the Settings control that set it was removed in
+      // #377, so new portfolios start private and are shared deliberately from the
+      // Social area's "My items" via the AudiencePicker. Existing portfolios and
+      // the auto-created "Main" (always private) are untouched.
+      return portfolioRepo.createPortfolio(userId, name, 'private');
     },
 
     async archivePortfolio(userId, portfolioId) {

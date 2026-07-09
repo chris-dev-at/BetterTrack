@@ -1244,7 +1244,8 @@
       "assets": "{{count}} assets"
     },
     "activity": {
-      "toggleLabel": "Activity alerts",
+      "notifyLabel": "Get notified when {{username}} buys, sells, or updates this",
+      "dormantHint": "Activates when notifications go live",
       "on": "Activity alerts on",
       "off": "Activity alerts off"
     },
@@ -1253,19 +1254,13 @@
       "conglomerates": "Conglomerates",
       "watchlists": "Watchlists"
     },
-    "sharedWithMe": {
-      "heading": "Shared with you",
-      "subhead": "Grouped by who's sharing. Expand a person to see their items.",
-      "emptyTitle": "Nothing shared with you yet",
-      "emptyBody": "When a friend shares a portfolio, conglomerate or watchlist with you, it appears here.",
-      "error": "Could not load shared items. Please refresh the page."
-    },
     "myShared": {
-      "title": "My shares",
-      "subtitle": "Every portfolio you own is here — choose who can see each one. New portfolios stay private until you share them.",
-      "emptyTitle": "You're not sharing anything",
-      "emptyBody": "Share a portfolio, conglomerate or watchlist to have it appear here.",
-      "error": "Could not load your shared items. Please refresh the page."
+      "title": "My items",
+      "subtitle": "Every portfolio, conglomerate and watchlist you own is here — choose who can see each one. Everything stays private until you share it.",
+      "emptyTitle": "You don't own anything yet",
+      "emptyBody": "Create a portfolio, conglomerate or watchlist and it appears here to manage its sharing.",
+      "error": "Could not load your items. Please refresh the page.",
+      "publicProfileLink": "Manage your public profile"
     },
     "friend": {
       "since": "Friends since {{date}}",

@@ -186,7 +186,7 @@ function WatchlistRow({
 /**
  * Whole-watchlist friend-sharing toggle (§6.9, V2-P9): mirrors the portfolio
  * private↔friends model. Sharing exposes a read-only copy of the watchlist to
- * the owner's friends via Shared With Me; revoking closes access immediately.
+ * the owner's friends via their Friends overview; revoking closes access immediately.
  */
 function WatchlistSharingToggle() {
   const t = useT();

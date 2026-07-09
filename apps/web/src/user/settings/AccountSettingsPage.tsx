@@ -234,12 +234,13 @@ function BaseCurrencyControl() {
 
 /**
  * Portfolio visibility moved out of Settings (#377). ALL sharing/audience
- * management now lives in the Socials tab — My Shared Items lists EVERY portfolio
- * the user owns, each with its own AudiencePicker, so a secondary portfolio is as
- * shareable as the default and new portfolios stay private until explicitly
- * shared. This is a signpost, not a control (the legacy private↔friends toggle
- * and the create-time default toggle are retired; the audience model is the one
- * source of truth, and existing shares are untouched).
+ * management now lives in the Social area — "My items" lists EVERY shareable item
+ * the user owns (portfolios, conglomerates, watchlists), each with its own
+ * AudiencePicker, so a secondary portfolio is as shareable as the default and new
+ * portfolios stay private until explicitly shared (#384). This is a signpost, not
+ * a control (the legacy private↔friends toggle and the create-time default toggle
+ * are retired; the audience model is the one source of truth, and existing shares
+ * are untouched).
  */
 function SharingMovedNote() {
   const t = useT();
