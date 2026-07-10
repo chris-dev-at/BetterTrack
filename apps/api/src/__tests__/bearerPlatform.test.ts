@@ -538,6 +538,16 @@ describe('#371 write-implies-read at the scope-enforcement rail', () => {
     expect(res.status, JSON.stringify(res.body)).not.toBe(403);
   });
 
+  it('a read-only OAuth token still cannot reach the write endpoint (one-way holds for delegated tokens too)', async () => {
+    const { token } = await mintOAuthToken(['portfolio:read']);
+    const post = await request(harness.app)
+      .post('/api/v1/portfolios')
+      .set(bearer(token))
+      .send({ name: 'R' });
+    expect(post.status).toBe(403);
+    expect(post.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
   it('the consent screen surfaces the implied read for a write-only request', async () => {
     const user = await seedFreshUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
