@@ -40,14 +40,15 @@ const inputClass = cx(
 
 /**
  * Selectable stepper granularities for the budget amount (V3-P0, #322): "how far
- * off the comma you want" — whole euros down to a tenth of a cent. The default
+ * off the comma you want" — whole euros down to a hundred-thousandth. The default
  * (1) reproduces the plain whole-euro stepping; finer picks let the owner nudge
- * the budget by cents without retyping.
+ * the budget by cents (or, for high-priced fractional assets like BTC-EUR, by a
+ * fraction of a cent) without retyping. Fractional mode only — see #363.
  */
-const BUDGET_STEPS = [1, 0.1, 0.01, 0.001] as const;
+const BUDGET_STEPS = [1, 0.1, 0.01, 0.001, 0.0001, 0.00001] as const;
 type BudgetStep = (typeof BUDGET_STEPS)[number];
 
-/** Decimal places a step implies (1 → 0, 0.1 → 1, 0.01 → 2, 0.001 → 3). */
+/** Decimal places a step implies (1 → 0, 0.1 → 1, 0.01 → 2, … 0.00001 → 5). */
 function decimalsForStep(step: number): number {
   return Math.max(0, Math.round(-Math.log10(step)));
 }
@@ -283,7 +284,6 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   const [budget, setBudget] = useState('1000');
   const [budgetStep, setBudgetStep] = useState<BudgetStep>(1);
   const [mode, setMode] = useState<AllocateMode>('whole');
-  const [step, setStep] = useState('');
   const [atLeastOneShare, setAtLeastOneShare] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [lastBudgetEur, setLastBudgetEur] = useState<number | null>(null);
@@ -299,21 +299,20 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   }, [portfoliosQuery.data]);
 
   const mutation = useMutation({
-    mutationFn: (vars: { budgetEur: number; atLeastOneShare: boolean }) => {
-      const stepValue = Number(step);
-      const hasStep =
-        mode === 'fractional' && step.trim() !== '' && Number.isFinite(stepValue) && stepValue > 0;
-      return allocateConglomerate(conglomerateId, {
+    mutationFn: (vars: { budgetEur: number; atLeastOneShare: boolean }) =>
+      allocateConglomerate(conglomerateId, {
         budgetEur: vars.budgetEur,
         mode,
-        ...(hasStep ? { step: stepValue } : {}),
         ...(mode === 'whole' && vars.atLeastOneShare ? { atLeastOneShare: true } : {}),
-      });
-    },
+      }),
   });
 
   const budgetValue = Number(budget);
   const budgetValid = budget.trim() !== '' && Number.isFinite(budgetValue) && budgetValue >= 0;
+
+  // Sub-integer step precision is meaningless in whole-shares mode (#363): the
+  // picker is hidden there, so the stepper always moves by whole euros.
+  const activeStep: BudgetStep = mode === 'whole' ? 1 : budgetStep;
 
   function handleCalculate(e: React.FormEvent) {
     e.preventDefault();
@@ -343,8 +342,8 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
           <div className="flex items-stretch gap-1">
             <button
               type="button"
-              aria-label={t('workboard.calculator.decreaseBudgetAriaLabel', { step: budgetStep })}
-              onClick={() => setBudget((b) => stepBudget(b, -budgetStep, budgetStep))}
+              aria-label={t('workboard.calculator.decreaseBudgetAriaLabel', { step: activeStep })}
+              onClick={() => setBudget((b) => stepBudget(b, -activeStep, activeStep))}
               className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               −
@@ -352,7 +351,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
             <input
               type="number"
               inputMode="decimal"
-              step={budgetStep}
+              step={activeStep}
               min="0"
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
@@ -361,8 +360,8 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
             />
             <button
               type="button"
-              aria-label={t('workboard.calculator.increaseBudgetAriaLabel', { step: budgetStep })}
-              onClick={() => setBudget((b) => stepBudget(b, budgetStep, budgetStep))}
+              aria-label={t('workboard.calculator.increaseBudgetAriaLabel', { step: activeStep })}
+              onClick={() => setBudget((b) => stepBudget(b, activeStep, activeStep))}
               className="rounded-md bg-neutral-900 px-2.5 text-neutral-300 ring-1 ring-inset ring-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               +
@@ -370,47 +369,30 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
           </div>
         </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-sm font-medium text-neutral-300">
-            {t('workboard.calculator.stepSizeLabel')}
-          </span>
-          <select
-            value={budgetStep}
-            onChange={(e) => setBudgetStep(Number(e.target.value) as BudgetStep)}
-            aria-label={t('workboard.calculator.stepPrecisionAriaLabel')}
-            className={cx(inputClass, 'w-24')}
-          >
-            {BUDGET_STEPS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
+        {mode === 'fractional' ? (
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-neutral-300">
+              {t('workboard.calculator.stepSizeLabel')}
+            </span>
+            <select
+              value={budgetStep}
+              onChange={(e) => setBudgetStep(Number(e.target.value) as BudgetStep)}
+              aria-label={t('workboard.calculator.stepPrecisionAriaLabel')}
+              className={cx(inputClass, 'w-24')}
+            >
+              {BUDGET_STEPS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         <ModeToggle active={mode} onSelect={setMode} />
 
         {mode === 'whole' ? (
           <AtLeastOneShareToggle checked={atLeastOneShare} onChange={handleAtLeastOneShareChange} />
-        ) : null}
-
-        {mode === 'fractional' ? (
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">
-              {t('workboard.calculator.stepLabel')}
-            </span>
-            <input
-              type="number"
-              inputMode="decimal"
-              step="any"
-              min="0"
-              placeholder="0.0001"
-              value={step}
-              onChange={(e) => setStep(e.target.value)}
-              aria-label={t('workboard.calculator.stepAriaLabel')}
-              className={cx(inputClass, 'w-28')}
-            />
-          </label>
         ) : null}
 
         <Button type="submit" disabled={!budgetValid || mutation.isPending}>
