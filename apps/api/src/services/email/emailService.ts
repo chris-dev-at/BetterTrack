@@ -5,7 +5,9 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  conglomerateSharedEmail,
   friendAcceptedEmail,
+  friendActivityEmail,
   friendRequestEmail,
   inviteEmail,
   passwordResetEmail,
@@ -13,6 +15,7 @@ import {
   tempPasswordEmail,
   testEmail,
   twoFactorCodeEmail,
+  watchlistSharedEmail,
   welcomeEmail,
   type EmailContent,
 } from './templates';
@@ -105,6 +108,27 @@ export interface EmailService {
     actorUsername: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: a watchlist was shared with `userId` (#368). */
+  sendWatchlistShared(params: {
+    to: string;
+    userId: string;
+    actorUsername: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /** Notification email: a conglomerate was shared with `userId` (#368). */
+  sendConglomerateShared(params: {
+    to: string;
+    userId: string;
+    actorUsername: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /** Notification email: friend activity on a shared item `userId` follows (#368). */
+  sendFriendActivity(params: {
+    to: string;
+    userId: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /** Notification email: a price alert `userId` set fired (§14). */
   sendAlertTriggered(params: {
     to: string;
@@ -143,6 +167,9 @@ type EmailTemplateKind =
   | 'friend_request'
   | 'friend_accepted'
   | 'portfolio_shared'
+  | 'watchlist_shared'
+  | 'conglomerate_shared'
+  | 'friend_activity'
   | 'alert_triggered'
   | 'chat_message';
 
@@ -296,6 +323,30 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'portfolio_shared',
         to,
         portfolioSharedEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendWatchlistShared: ({ to, userId, actorUsername, locale }) =>
+      deliver(
+        'watchlist_shared',
+        to,
+        watchlistSharedEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendConglomerateShared: ({ to, userId, actorUsername, locale }) =>
+      deliver(
+        'conglomerate_shared',
+        to,
+        conglomerateSharedEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendFriendActivity: ({ to, userId, body, locale }) =>
+      deliver(
+        'friend_activity',
+        to,
+        friendActivityEmail({ body, appUrl: config.appOrigin, locale }),
         { userId },
       ),
 

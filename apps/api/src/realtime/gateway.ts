@@ -11,8 +11,10 @@ import {
   REALTIME_SERVER_EVENTS,
   realtimeLiveUnwatchRequestSchema,
   realtimeLiveWatchRequestSchema,
+  realtimePresenceRequestSchema,
   realtimeRoomRequestSchema,
   type AssetRef,
+  type PresenceSurface,
   type RealtimeChatMessage,
   type RealtimeLiveWatchAck,
   type RealtimeNotificationNew,
@@ -26,6 +28,7 @@ import type { AppConfig } from '../config/env';
 import type { EventBus, Unsubscribe } from '../events';
 import type { Logger } from '../logger';
 import type { LiveModeService } from '../services/liveMode';
+import type { PresenceStore } from '../services/notifications/presence';
 
 /**
  * Realtime gateway (PROJECTPLAN.md §4.5, V3-P7a): a Socket.IO server at
@@ -114,6 +117,13 @@ export interface RealtimeGatewayDeps {
    * indistinguishable, exactly like the HTTP 404 (§10 no-leak rule).
    */
   resolveWatchableAsset(userId: string, assetId: string): Promise<AssetRef | null>;
+  /**
+   * Active-view presence store (#368): `presence.enter`/`presence.leave` write
+   * here, the notification dispatcher reads it (cross-process, via Redis) to
+   * suppress notifying a user about the surface they're looking at. One
+   * protocol for web AND mobile — both are just sockets on this gateway.
+   */
+  presence: PresenceStore;
 }
 
 export interface RealtimeGateway {
@@ -333,6 +343,53 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     respond({ ok: true, frames });
   }
 
+  /**
+   * The presence declarations this socket currently holds, as
+   * `"<surface>:<id>"` keys — cleared on explicit leave and on disconnect, so
+   * a closed tab can never suppress notifications for up to the TTL (the
+   * companion tab's next heartbeat restores its own claim within seconds).
+   */
+  const presenceOf = (socket: Socket): Set<string> =>
+    (socket.data.presence as Set<string> | undefined) ?? (socket.data.presence = new Set<string>());
+
+  async function handlePresence(
+    socket: Socket,
+    userId: string,
+    payload: unknown,
+    ack: unknown,
+    mode: 'enter' | 'leave',
+  ): Promise<void> {
+    const respond = (result: RealtimeRoomAck): void => {
+      if (typeof ack === 'function') (ack as (result: RealtimeRoomAck) => void)(result);
+    };
+    const parsed = realtimePresenceRequestSchema.safeParse(payload);
+    if (!parsed.success) {
+      respond({ ok: false, error: 'BAD_REQUEST' });
+      return;
+    }
+    const { surface, id } = parsed.data;
+    if (mode === 'enter') {
+      // Idempotent — a re-enter IS the heartbeat that keeps the TTL alive.
+      await deps.presence.enter(userId, surface, id);
+      presenceOf(socket).add(`${surface}:${id}`);
+    } else {
+      await deps.presence.leave(userId, surface, id);
+      presenceOf(socket).delete(`${surface}:${id}`);
+    }
+    respond({ ok: true });
+  }
+
+  /** Drop every presence claim a vanished socket still holds (best-effort —
+   *  the TTL is the backstop when even this cleanup is unreachable). */
+  async function clearPresence(socket: Socket, userId: string): Promise<void> {
+    const held = presenceOf(socket);
+    for (const key of held) {
+      const [surface, id] = key.split(/:(.+)/, 2) as [PresenceSurface, string];
+      await deps.presence.leave(userId, surface, id).catch(() => undefined);
+    }
+    held.clear();
+  }
+
   async function handleLiveUnwatch(socket: Socket, payload: unknown, ack: unknown): Promise<void> {
     const respond = (result: RealtimeRoomAck): void => {
       if (typeof ack === 'function') (ack as (result: RealtimeRoomAck) => void)(result);
@@ -464,10 +521,25 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             logger.warn({ err, userId }, 'live unwatch failed');
           });
         });
+        socket.on(REALTIME_CLIENT_EVENTS.presenceEnter, (payload: unknown, ack: unknown) => {
+          void handlePresence(socket, userId, payload, ack, 'enter').catch((err) => {
+            logger.warn({ err, userId }, 'presence enter failed');
+          });
+        });
+        socket.on(REALTIME_CLIENT_EVENTS.presenceLeave, (payload: unknown, ack: unknown) => {
+          void handlePresence(socket, userId, payload, ack, 'leave').catch((err) => {
+            logger.warn({ err, userId }, 'presence leave failed');
+          });
+        });
         // A vanished socket must release its live watches, or a closed tab
         // would keep an upstream loop hot forever (§6.3 auto-stop). Queued so
         // it runs AFTER any in-flight watch registers what it must release.
+        // Presence claims clear too — a closed tab must never keep suppressing
+        // notifications for the rest of the TTL (#368).
         socket.on('disconnect', () => {
+          void clearPresence(socket, userId).catch((err) => {
+            logger.warn({ err, userId }, 'presence cleanup failed');
+          });
           void enqueueLiveOp(socket, async () => {
             for (const [assetId, entry] of liveAssetsOf(socket)) {
               deps.liveMode?.unwatch(assetId, entry.rateMs);

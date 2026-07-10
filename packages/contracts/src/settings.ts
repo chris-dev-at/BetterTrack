@@ -5,31 +5,30 @@ import { NOTIFICATION_TYPES, type NotificationType } from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
 
 /**
- * User-facing notification settings (PROJECTPLAN.md §6.10, §6.11, §8). The
- * `GET/PATCH /settings/notifications` surface exposes a **per-type × channel
- * matrix**: each notification type (`friend.request`, `friend.accepted`,
- * `portfolio.shared`, `account.invite`, `account.temp_password`, and the V3
- * `alert.triggered` price alert) can be routed independently to the **in-app
- * bell**, **email**, both, or neither (muted).
+ * User-facing notification settings (PROJECTPLAN.md §6.10, §6.11, §8; #368
+ * Notifications v2). The `GET/PATCH /settings/notifications` surface exposes a
+ * **per-type × channel matrix**: each {@link NOTIFICATION_TYPES} entry routes
+ * independently to the **in-app bell**, **email**, **phone push** (FCM) and
+ * **browser push** (web-push/VAPID), every cell defaulting to *on*.
  *
- * V1 ships two channels: **in-app** and **email**, each defaulting to *on* for a
- * type that has no override. The stored overrides live in the existing
- * `notification_settings.config` jsonb column (per (userId, channel) row), so this
- * surface needs no schema migration. The other `notification_channel` values
- * (telegram, discord) are post-v1 and not represented here.
+ * The push channels are deployment-gated: `channels` reports which are actually
+ * configured on the server (SMTP for email, `BT_FCM_SERVICE_ACCOUNT_FILE` for
+ * push, VAPID keys for webpush) so the UI only renders live columns — matrix
+ * cells for an unconfigured channel still persist, they just deliver nothing
+ * until the channel comes online. `muted` is the global kill switch: while set,
+ * the dispatcher suppresses every channel regardless of the matrix.
  */
 
-/** The V1 user-toggleable notification channels (matrix columns). */
-export const NOTIFICATION_SETTING_CHANNELS = ['inapp', 'email'] as const;
+/** The user-toggleable notification channels (grid columns), in display order. */
+export const NOTIFICATION_SETTING_CHANNELS = ['inapp', 'email', 'push', 'webpush'] as const;
 export type NotificationSettingChannel = (typeof NOTIFICATION_SETTING_CHANNELS)[number];
 
 /**
- * One notification type's routing: whether it reaches the in-app bell and/or
- * email. `{ inapp: true, email: true }` = both; `{ inapp: false, email: false }` =
- * muted; the mixed forms are bell-only / email-only.
+ * One notification type's routing: which channels it fans out to. All-false =
+ * muted for that type.
  */
 export const notificationTypeRoutingSchema = z
-  .object({ inapp: z.boolean(), email: z.boolean() })
+  .object({ inapp: z.boolean(), email: z.boolean(), push: z.boolean(), webpush: z.boolean() })
   .strict();
 export type NotificationTypeRouting = z.infer<typeof notificationTypeRoutingSchema>;
 
@@ -49,25 +48,43 @@ export const notificationMatrixSchema = z.object(requiredMatrixShape).strict();
 export type NotificationMatrix = z.infer<typeof notificationMatrixSchema>;
 
 /**
+ * Which channels the deployment can actually deliver on. `inapp` is always
+ * true; the rest reflect server config (SMTP / FCM service account / VAPID).
+ */
+export const notificationChannelAvailabilitySchema = z
+  .object({ inapp: z.boolean(), email: z.boolean(), push: z.boolean(), webpush: z.boolean() })
+  .strict();
+export type NotificationChannelAvailability = z.infer<typeof notificationChannelAvailabilitySchema>;
+
+/**
  * `GET /settings/notifications` response — the session user's full type × channel
- * matrix. Every type is present; a type with no stored override reads at the
- * channel default (in-app on, email on).
+ * matrix (every type present, defaults applied), the global-mute flag, which
+ * channels this deployment has configured, and — when browser push is live —
+ * the VAPID public key the SPA needs for `PushManager.subscribe`.
  */
 export const notificationSettingsResponseSchema = z
-  .object({ matrix: notificationMatrixSchema })
+  .object({
+    matrix: notificationMatrixSchema,
+    muted: z.boolean(),
+    channels: notificationChannelAvailabilitySchema,
+    webPushPublicKey: z.string().nullable(),
+  })
   .strict();
 export type NotificationSettingsResponse = z.infer<typeof notificationSettingsResponseSchema>;
 
 /**
- * `PATCH /settings/notifications` body — a partial matrix; only the supplied types
- * are updated and at least one type is required. Each supplied type carries its
- * full routing (`inapp` + `email`).
+ * `PATCH /settings/notifications` body — a partial matrix and/or the global-mute
+ * flag; at least one of the two is required. Each supplied type carries its full
+ * four-channel routing.
  */
 export const updateNotificationSettingsRequestSchema = z
-  .object({ matrix: z.object(partialMatrixShape).strict() })
+  .object({
+    matrix: z.object(partialMatrixShape).strict().optional(),
+    muted: z.boolean().optional(),
+  })
   .strict()
-  .refine((body) => Object.keys(body.matrix).length > 0, {
-    message: 'At least one notification type is required.',
+  .refine((body) => body.muted !== undefined || Object.keys(body.matrix ?? {}).length > 0, {
+    message: 'At least one notification type or the muted flag is required.',
   });
 export type UpdateNotificationSettingsRequest = z.infer<
   typeof updateNotificationSettingsRequestSchema

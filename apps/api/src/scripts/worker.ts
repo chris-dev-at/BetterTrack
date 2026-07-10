@@ -11,11 +11,19 @@
  */
 import { loadConfig } from '../config/env';
 import { createDatabase } from '../data/db';
+import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAuditRepository } from '../data/repositories/auditRepository';
+import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
+import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
+import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
+import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
   createDeadLetter,
   createJobDefinitions,
   createJobWorkers,
+  createNotificationsDispatchJob,
   createQueueRegistry,
   jobConnectionFactory,
   registerSchedules,
@@ -23,6 +31,14 @@ import {
 } from '../jobs';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
+import { createAuditService } from '../services/audit/auditService';
+import { createEmailService } from '../services/email/emailService';
+import { createSmtpTransport } from '../services/email/transport';
+import { createFcmChannel } from '../services/notifications/fcm';
+import { createNotificationCenter } from '../services/notifications/notificationCenter';
+import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
+import { createPresenceStore } from '../services/notifications/presence';
+import { createWebPushChannel } from '../services/notifications/webPush';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -58,14 +74,64 @@ const { registry: providerRegistry, service: marketData } = createMarketData({
       logger.warn({ key, err }, 'market-data background refresh failed'),
   },
 });
-const definitions = createJobDefinitions({
-  db,
-  marketData,
-  // Custom assets (the `manual` provider) are durable in our own DB; the price
-  // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
-  isLocalProvider: (providerId) =>
-    providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+// The notification delivery core (#368): the worker is the ONE owner of
+// notification fan-out. Every source (API or worker) enqueues onto the durable
+// `notifications.dispatch` queue; the job below hands each event to this
+// dispatcher — matrix resolve → inbox row / email / FCM push / web-push, with
+// the (user, eventKey) marker keeping BullMQ's at-least-once retries idempotent.
+const audit = createAuditService(createAuditRepository(db));
+const email = createEmailService({
+  config,
+  logger,
+  audit,
+  emailLog: createEmailLogRepository(db),
+  transport: config.email.enabled ? createSmtpTransport(config.email) : null,
 });
+const notificationRepo = createNotificationRepository(db);
+const alertRepo = createAlertRepository(db);
+const dispatcher = createNotificationDispatcher({
+  bus: events,
+  repo: notificationRepo,
+  users: createUserRepository(db),
+  email,
+  resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
+  // Push channels are env-gated (#421): unset/missing config ⇒ null + one warn
+  // log here at boot; the worker runs on either way.
+  fcm: createFcmChannel({
+    serviceAccountFile: config.push.fcmServiceAccountFile,
+    devices: createDeviceTokenRepository(db),
+    logger,
+  }),
+  webPush: createWebPushChannel({
+    vapid: config.webPush,
+    subscriptions: createPushSubscriptionRepository(db),
+    logger,
+  }),
+  presence: createPresenceStore({ redis: deadLetterConnection }),
+  logger,
+});
+
+// Worker-side sources (the alert evaluator) emit through the same durable
+// center as the API — one pipeline, no source ever talks to a channel (#368).
+const notify = createNotificationCenter({
+  enqueue: async (event) => {
+    await registry.enqueue('notifications.dispatch', { event });
+  },
+  logger,
+});
+
+const definitions = [
+  ...createJobDefinitions({
+    db,
+    marketData,
+    notify,
+    // Custom assets (the `manual` provider) are durable in our own DB; the price
+    // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
+    isLocalProvider: (providerId) =>
+      providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
+  }),
+  createNotificationsDispatchJob({ dispatcher }),
+];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
 
@@ -75,10 +141,6 @@ const running = createJobWorkers({
   ctx,
   logger,
 });
-
-// Notification fan-out (§9, §6.10) is owned by the API process — its dispatcher
-// subscribes to the same Redis pub/sub bus, so the worker no longer runs one (a
-// single owner avoids double-dispatch; see server.ts / http/context.ts).
 
 const scheduled = await registerSchedules(registry, definitions);
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');

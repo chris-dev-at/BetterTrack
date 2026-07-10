@@ -575,10 +575,17 @@ describe('fx.refreshSpot', () => {
 
 // ---- registration ---------------------------------------------------------
 
+// Inert notification center — the registration tests never dispatch (#368).
+const inertNotify = { emit: async () => undefined };
+
 describe('createJobDefinitions registration', () => {
   it('builds the heartbeat + market-data jobs + the alerts evaluator', async () => {
     const db = await makeDb();
-    const defs = createJobDefinitions({ db, marketData: createStubMarketData() });
+    const defs = createJobDefinitions({
+      db,
+      marketData: createStubMarketData(),
+      notify: inertNotify,
+    });
     expect(defs.map((d) => d.name)).toEqual([
       'system.heartbeat',
       'prices.refreshDaily',
@@ -590,7 +597,11 @@ describe('createJobDefinitions registration', () => {
 
   it('registers the scheduled jobs and skips the on-demand backfill', async () => {
     const db = await makeDb();
-    const defs = createJobDefinitions({ db, marketData: createStubMarketData() });
+    const defs = createJobDefinitions({
+      db,
+      marketData: createStubMarketData(),
+      notify: inertNotify,
+    });
 
     const calls: { id: string; opts: unknown }[] = [];
     const queue: SchedulableQueue = {

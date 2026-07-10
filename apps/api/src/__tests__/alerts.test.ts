@@ -20,8 +20,8 @@ import {
 } from '../services/alerts/alertEvaluator';
 import { createStubMarketData, type StubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
-import type { EventBus } from '../events';
-import type { DomainEvent, DomainEventType, EventHandler, Unsubscribe } from '../events';
+import type { NotificationCenter } from '../services/notifications/notificationCenter';
+import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import type { Logger } from '../logger';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -91,30 +91,25 @@ async function createAlert(
     .send(body);
 }
 
-/** Minimal in-process bus that records what the evaluator publishes. */
-function recordingBus(): EventBus & { published: DomainEvent[] } {
-  const published: DomainEvent[] = [];
+/** Recording notification center (#368) — captures what the evaluator emits. */
+function recordingCenter(): NotificationCenter & { published: DispatchableEvent[] } {
+  const published: DispatchableEvent[] = [];
   return {
     published,
-    async publish(event) {
+    async emit(event) {
       published.push(event);
     },
-    async subscribe<T extends DomainEventType>(_type: T, _handler: EventHandler<T>) {
-      const unsub: Unsubscribe = async () => {};
-      return unsub;
-    },
-    async close() {},
   };
 }
 
 interface EvaluatorSetup {
-  bus: ReturnType<typeof recordingBus>;
+  bus: ReturnType<typeof recordingCenter>;
   market: StubMarketData;
   run: (nowMs?: number) => Promise<{ evaluated: number; fired: number }>;
 }
 
 function evaluator(h: TestHarness, market: StubMarketData, nowMs: number): EvaluatorSetup {
-  const bus = recordingBus();
+  const bus = recordingCenter();
   const alertRepo = createAlertRepository(h.db);
   return {
     bus,
@@ -124,7 +119,7 @@ function evaluator(h: TestHarness, market: StubMarketData, nowMs: number): Evalu
         alertRepo,
         marketData: market,
         redis: h.ctx.redis,
-        events: bus,
+        notify: bus,
         logger: silentLogger,
         now: () => at,
       }),
@@ -553,7 +548,7 @@ describe('alert.triggered delivery through the notification matrix (§6.10, §14
 
     // Mute the email channel for alert.triggered, keep in-app.
     await harnessWithEmail.ctx.notificationSettings.update(user.id, {
-      matrix: { 'alert.triggered': { inapp: true, email: false } },
+      matrix: { 'alert.triggered': { inapp: true, email: false, push: true, webpush: true } },
     });
     await dispatch('2026-07-07T11:00:00.000Z');
     expect(sent).toHaveLength(1); // no new email

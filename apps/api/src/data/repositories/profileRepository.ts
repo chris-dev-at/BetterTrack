@@ -101,6 +101,25 @@ export function createProfileRepository(db: Database) {
       return new Set(rows.map((r) => `${r.kind}:${r.subjectId}`));
     },
 
+    /**
+     * Every viewer who opted into activity alerts for one item (#368 — the
+     * friend-activity producer's fan-out set). The pref alone never authorizes:
+     * the producer re-checks each viewer against the audience layer at emit
+     * time, so a pref that outlived a revoked share notifies nobody.
+     */
+    async viewersWithActivityAlerts(kind: ShareKind, subjectId: string): Promise<string[]> {
+      const rows = await db
+        .select({ viewerId: sharedItemActivityPrefs.viewerId })
+        .from(sharedItemActivityPrefs)
+        .where(
+          and(
+            eq(sharedItemActivityPrefs.kind, kind),
+            eq(sharedItemActivityPrefs.subjectId, subjectId),
+          ),
+        );
+      return rows.map((r) => r.viewerId);
+    },
+
     /** Whether the viewer currently has an activity-alert pref for one item. */
     async hasActivityPref(viewerId: string, kind: ShareKind, subjectId: string): Promise<boolean> {
       const [row] = await db

@@ -75,7 +75,12 @@ describe('GET /api/v1/settings/notifications', () => {
     const settings = await getSettings(agent);
     expect(Object.keys(settings!.matrix).sort()).toEqual([...NOTIFICATION_TYPES].sort());
     for (const type of NOTIFICATION_TYPES) {
-      expect(settings!.matrix[type]).toEqual({ inapp: true, email: true });
+      expect(settings!.matrix[type]).toEqual({
+        inapp: true,
+        email: true,
+        push: true,
+        webpush: true,
+      });
     }
   });
 });
@@ -87,15 +92,30 @@ describe('PATCH /api/v1/settings/notifications', () => {
 
     // Route friend requests to email-only, leaving every other type at default.
     const patched = await patchSettings(agent, {
-      matrix: { 'friend.request': { inapp: false, email: true } },
+      matrix: { 'friend.request': { inapp: false, email: true, push: true, webpush: true } },
     });
     expect(patched.status).toBe(200);
-    expect(patched.body.matrix['friend.request']).toEqual({ inapp: false, email: true });
+    expect(patched.body.matrix['friend.request']).toEqual({
+      inapp: false,
+      email: true,
+      push: true,
+      webpush: true,
+    });
     // Untouched types keep the default.
-    expect(patched.body.matrix['friend.accepted']).toEqual({ inapp: true, email: true });
+    expect(patched.body.matrix['friend.accepted']).toEqual({
+      inapp: true,
+      email: true,
+      push: true,
+      webpush: true,
+    });
 
     const settings = await getSettings(agent);
-    expect(settings!.matrix['friend.request']).toEqual({ inapp: false, email: true });
+    expect(settings!.matrix['friend.request']).toEqual({
+      inapp: false,
+      email: true,
+      push: true,
+      webpush: true,
+    });
 
     // Stored in the existing config jsonb (no new columns).
     expect((await channelConfig(alice.id, 'inapp'))?.['friend.request']).toBe(false);
@@ -106,14 +126,33 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
-    await patchSettings(agent, { matrix: { 'friend.request': { inapp: true, email: false } } });
-    await patchSettings(agent, { matrix: { 'portfolio.shared': { inapp: false, email: false } } });
+    await patchSettings(agent, {
+      matrix: { 'friend.request': { inapp: true, email: false, push: true, webpush: true } },
+    });
+    await patchSettings(agent, {
+      matrix: { 'portfolio.shared': { inapp: false, email: false, push: false, webpush: false } },
+    });
 
     const settings = await getSettings(agent);
     // Both overrides persist independently; the first is not clobbered by the second.
-    expect(settings!.matrix['friend.request']).toEqual({ inapp: true, email: false });
-    expect(settings!.matrix['portfolio.shared']).toEqual({ inapp: false, email: false });
-    expect(settings!.matrix['friend.accepted']).toEqual({ inapp: true, email: true });
+    expect(settings!.matrix['friend.request']).toEqual({
+      inapp: true,
+      email: false,
+      push: true,
+      webpush: true,
+    });
+    expect(settings!.matrix['portfolio.shared']).toEqual({
+      inapp: false,
+      email: false,
+      push: false,
+      webpush: false,
+    });
+    expect(settings!.matrix['friend.accepted']).toEqual({
+      inapp: true,
+      email: true,
+      push: true,
+      webpush: true,
+    });
   });
 
   it('rejects an empty body (no type routing)', async () => {
@@ -129,7 +168,7 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
     const res = await patchSettings(agent, {
-      matrix: { 'not.a.type': { inapp: true, email: true } },
+      matrix: { 'not.a.type': { inapp: true, email: true, push: true, webpush: true } },
     });
     expect(res.status).toBe(400);
   });
@@ -139,17 +178,29 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
 
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
-    await patchSettings(bobAgent, { matrix: { 'friend.request': { inapp: false, email: false } } });
+    await patchSettings(bobAgent, {
+      matrix: { 'friend.request': { inapp: false, email: false, push: false, webpush: false } },
+    });
 
     // Alice's matrix is untouched by Bob's write.
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const aliceSettings = await getSettings(aliceAgent);
-    expect(aliceSettings!.matrix['friend.request']).toEqual({ inapp: true, email: true });
+    expect(aliceSettings!.matrix['friend.request']).toEqual({
+      inapp: true,
+      email: true,
+      push: true,
+      webpush: true,
+    });
     expect(await channelConfig(alice.id, 'inapp')).toBeUndefined();
 
     // Bob still sees his own change.
     const bobSettings = await getSettings(bobAgent);
-    expect(bobSettings!.matrix['friend.request']).toEqual({ inapp: false, email: false });
+    expect(bobSettings!.matrix['friend.request']).toEqual({
+      inapp: false,
+      email: false,
+      push: false,
+      webpush: false,
+    });
   });
 });
 

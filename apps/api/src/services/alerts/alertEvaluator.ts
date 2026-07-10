@@ -2,9 +2,9 @@ import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
 import type { AlertRepository } from '../../data/repositories/alertRepository';
-import type { EventBus } from '../../events';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 
 /**
  * The price-alert evaluator (PROJECTPLAN.md §14, V3-P10 arc b). A BullMQ
@@ -20,9 +20,14 @@ import type { MarketDataService } from '../../providers';
  *    alerts flip to `triggered` and drop out of the active set; repeat alerts
  *    stay active but honour a 24 h cooldown.
  *
- * A fire only publishes `alert.triggered` on the bus; the notification
- * dispatcher (a bus subscriber) turns it into the matrix-routed in-app + email
- * fan-out — this module never touches the notification tables directly.
+ * A fire only emits `alert.triggered` through the notification center, which
+ * enqueues it on the DURABLE `notifications.dispatch` queue (#368/#367: the
+ * old pub/sub hand-off was at-most-once — a fire published while the
+ * dispatcher was down/redeploying was silently lost although the alert was
+ * already on cooldown; the queue survives restarts and retries). The emit
+ * happens BEFORE the alert's own state flips, so a crash between the two can
+ * only ever re-fire (deduped downstream), never lose the notification. This
+ * module never touches the notification tables directly.
  */
 
 /** Repeat-alert cooldown between fires (§14: 24 h). */
@@ -87,7 +92,8 @@ export interface AlertsEvaluatorDeps {
   alertRepo: AlertRepository;
   marketData: Pick<MarketDataService, 'getQuote'>;
   redis: Redis;
-  events: Pick<EventBus, 'publish'>;
+  /** The central notification pipeline (#368) — fires enter the durable queue here. */
+  notify: NotificationCenter;
   logger: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -112,7 +118,7 @@ function errorMessage(err: unknown): string {
 export async function runAlertsEvaluation(
   deps: AlertsEvaluatorDeps,
 ): Promise<AlertsEvaluationResult> {
-  const { alertRepo, marketData, redis, events, logger } = deps;
+  const { alertRepo, marketData, redis, notify, logger } = deps;
   const now = deps.now ? deps.now() : Date.now();
 
   const active = await alertRepo.listActiveWithAsset();
@@ -182,15 +188,19 @@ export async function runAlertsEvaluation(
       );
       if (acquired !== 'OK') continue;
 
-      const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
-      await alertRepo.recordTriggered(alert.id, status, new Date(now));
-      await events.publish({
+      // Emit FIRST, then flip the alert's state: if the process dies between
+      // the two, the worst case is a re-fire next window (deduped by the
+      // dispatcher's eventKey), never a triggered-but-never-delivered alert —
+      // the exact #367 failure this ordering kills.
+      await notify.emit({
         type: 'alert.triggered',
         userId: alert.userId,
         alertId: alert.id,
         assetId: alert.assetId,
         occurredAt,
       });
+      const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
+      await alertRepo.recordTriggered(alert.id, status, new Date(now));
       fired += 1;
     }
   }

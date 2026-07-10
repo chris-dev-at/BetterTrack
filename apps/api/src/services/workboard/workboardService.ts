@@ -1,11 +1,15 @@
 import type { WatchlistSharingResponse, WatchlistSummary } from '@bettertrack/contracts';
 
+import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
+import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type {
   WorkboardRepository,
   WorkboardItemWithAsset,
 } from '../../data/repositories/workboardRepository';
 import { badRequest, conflict, notFound } from '../../errors';
+import type { Logger } from '../../logger';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 
 export interface WorkboardServiceDeps {
@@ -13,6 +17,13 @@ export interface WorkboardServiceDeps {
   referenceBackfill: ReferenceBackfill;
   /** The single sharing-enforcement layer — per-list audiences run through it (§13.3 V3-P5). */
   audience: AudienceService;
+  /** Per-viewer activity-alert prefs (V3-P6) — the friend-activity opt-in set (#368). */
+  profile: ProfileRepository;
+  /** Username lookup for the friend-activity actor line (#368). */
+  friendship: Pick<FriendshipRepository, 'getUsername'>;
+  /** The central notification pipeline (#368) — watchlist-add activity events. */
+  notify: NotificationCenter;
+  logger?: Logger;
 }
 
 export interface WorkboardService {
@@ -38,7 +49,7 @@ export interface WorkboardService {
 }
 
 export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardService {
-  const { repo, referenceBackfill, audience } = deps;
+  const { repo, referenceBackfill, audience, profile, friendship, notify, logger } = deps;
 
   /** Resolve + assert ownership of the target list, defaulting to General. */
   async function resolveTargetList(userId: string, watchlistId?: string): Promise<string> {
@@ -46,6 +57,45 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
     const found = await repo.findWatchlist(userId, watchlistId);
     if (!found) throw notFound('Watchlist not found.', 'WATCHLIST_NOT_FOUND');
     return found.id;
+  }
+
+  /**
+   * Friend-activity fan-out (#368): a new item on a shared watchlist notifies
+   * every viewer who opted in via the V3-P6 toggle AND still passes the
+   * audience layer at emit time (a revoked share notifies nobody). Best-effort.
+   */
+  async function emitWatchlistActivity(
+    ownerId: string,
+    watchlistId: string,
+    item: WorkboardItemWithAsset,
+  ): Promise<void> {
+    try {
+      const viewers = await profile.viewersWithActivityAlerts('watchlist', watchlistId);
+      const optedIn = viewers.filter((v) => v !== ownerId);
+      if (optedIn.length === 0) return;
+      const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
+      const occurredAt = new Date().toISOString();
+      for (const viewerId of optedIn) {
+        const authorized = await audience
+          .authorizeWatchlistRead(viewerId, watchlistId)
+          .catch(() => undefined);
+        if (!authorized) continue;
+        await notify.emit({
+          type: 'friend.activity',
+          userId: viewerId,
+          actorId: ownerId,
+          actorUsername,
+          itemKind: 'watchlist',
+          itemId: watchlistId,
+          activity: 'watchlist_add',
+          assetSymbol: item.asset.symbol,
+          refId: `wl:${item.id}`,
+          occurredAt,
+        });
+      }
+    } catch (err) {
+      logger?.error({ err, watchlistId }, 'friend.activity emit failed');
+    }
   }
 
   return {
@@ -77,6 +127,10 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
 
       const item = await repo.findOneWithAsset(userId, row.id);
       if (!item) throw new Error('Workboard item vanished after insert');
+
+      // Friend-activity (#368): opted-in viewers of this shared list hear about
+      // the add. Best-effort, post-commit.
+      await emitWatchlistActivity(userId, targetList, item);
       return item;
     },
 

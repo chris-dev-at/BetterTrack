@@ -211,6 +211,13 @@
       "when": 1783492500000,
       "tag": "0029_first_party_client_reconcile",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1783719318199,
+      "tag": "0030_notifications_v2",
+      "breakpoints": true
     }
   ]
 }

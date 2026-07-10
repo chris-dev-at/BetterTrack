@@ -260,6 +260,8 @@ describe('NotificationBell', () => {
       joinRoom: () => () => {},
       watchLive: () => Promise.resolve(null),
       unwatchLive: () => {},
+      presenceEnter: () => {},
+      presenceLeave: () => {},
     };
     render(
       <QueryClientProvider client={makeQueryClient()}>

@@ -19,7 +19,7 @@ import {
 } from '../../lib/chatApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
-import { useRealtimeEvent } from '../../lib/realtime';
+import { usePresence, useRealtimeEvent } from '../../lib/realtime';
 import { listFriends } from '../../lib/socialApi';
 import { formatDateTime } from '../../lib/format';
 import { useT, type TranslateFn } from '../../i18n';
@@ -540,6 +540,12 @@ function ChatThreadPane({
     retry: false,
   });
   const conversationId = convoQuery.data?.id;
+
+  // Presence (#368): while this thread is open + the tab focused, tell the
+  // gateway we're viewing it — the dispatcher then suppresses the bell/email/
+  // push for messages that land right here in front of us. Heartbeated with a
+  // server-side TTL, cleared on blur/close, so it can never go stale.
+  usePresence('chat', conversationId ?? null);
 
   const threadQuery = useInfiniteQuery({
     queryKey: conversationId ? threadKey(conversationId) : ['chat', 'thread', 'pending'],

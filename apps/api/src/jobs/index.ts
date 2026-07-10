@@ -44,6 +44,8 @@ export {
   createAlertsEvaluateJob,
   ALERTS_EVALUATE_SCHEDULER_ID,
   ALERTS_EVALUATE_INTERVAL_MS,
+  createNotificationsDispatchJob,
+  type NotificationsDispatchJobDeps,
   createPricesRefreshDailyJob,
   createPricesBackfillJob,
   createFxRefreshSpotJob,

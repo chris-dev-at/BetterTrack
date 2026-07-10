@@ -21,6 +21,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
 import type { EmailSendResult, EmailService } from '../email/emailService';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { generateTempPassword } from '../password/tempPassword';
 import type { SessionService } from '../sessions/sessionService';
@@ -37,6 +38,8 @@ export interface AdminServiceDeps {
   email: EmailService;
   emailLog: EmailLogRepository;
   appSettings: AppSettingsService;
+  /** The central notification pipeline (#368) — `account.temp_password` notices. */
+  notify: NotificationCenter;
 }
 
 export interface AdminActor {
@@ -59,6 +62,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     email,
     emailLog,
     appSettings,
+    notify,
   } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
@@ -309,12 +313,20 @@ export function createAdminService(deps: AdminServiceDeps) {
       const user = await loadUser(id);
 
       // Best-effort, post-commit: the admin already holds the temp password.
+      // The credential email is TRANSACTIONAL and sent directly — it must never
+      // ride the notification queue (#368: no secrets in Redis-persisted jobs).
       await email.sendTempPassword({
         to: user.email,
         username: user.username,
         tempPassword,
         reason: 'reset',
         audit: { actorId: actor.id, targetType: 'user', targetId: user.id, ip: actor.ip },
+      });
+      // The matrix-routed informational notice (inbox/push) carries NO secret.
+      await notify.emit({
+        type: 'account.temp_password',
+        userId: user.id,
+        occurredAt: new Date().toISOString(),
       });
 
       return { user, tempPassword };

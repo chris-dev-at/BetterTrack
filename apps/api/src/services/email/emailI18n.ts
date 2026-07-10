@@ -31,9 +31,13 @@ export interface NotificationEmailCopy {
   friendRequest: { subject: string; heading: string; body: string; button: string };
   friendAccepted: { subject: string; heading: string; body: string; button: string };
   portfolioShared: { subject: string; heading: string; body: string; button: string };
+  watchlistShared: { subject: string; heading: string; body: string; button: string };
+  conglomerateShared: { subject: string; heading: string; body: string; button: string };
   chatMessage: { subject: string; heading: string; body: string; button: string };
   /** Alert body sentence is supplied by the caller (the same phrasing as the bell). */
   alertTriggered: { subject: string; heading: string; button: string };
+  /** Friend-activity body sentence is supplied by the caller (same as the bell). */
+  friendActivity: { subject: string; heading: string; button: string };
 }
 
 export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy> = {
@@ -59,6 +63,18 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       body: '{actor} shared a portfolio with friends on BetterTrack. It is now visible to you under Shared With Me.',
       button: 'View shared portfolio',
     },
+    watchlistShared: {
+      subject: '{actor} shared a watchlist with you',
+      heading: 'Watchlist shared with you',
+      body: '{actor} shared a watchlist with you on BetterTrack. It is now visible to you under Shared With Me.',
+      button: 'View shared watchlist',
+    },
+    conglomerateShared: {
+      subject: '{actor} shared a conglomerate with you',
+      heading: 'Conglomerate shared with you',
+      body: '{actor} shared a conglomerate with you on BetterTrack. It is now visible to you under Shared With Me.',
+      button: 'View shared conglomerate',
+    },
     chatMessage: {
       subject: 'New message from {actor}',
       heading: 'New message',
@@ -68,6 +84,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     alertTriggered: {
       subject: 'Price alert: {symbol}',
       heading: 'Price alert: {symbol}',
+      button: 'Open BetterTrack',
+    },
+    friendActivity: {
+      subject: 'Friend activity on BetterTrack',
+      heading: 'Friend activity',
       button: 'Open BetterTrack',
     },
   },
@@ -93,6 +114,18 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       body: '{actor} hat ein Portfolio mit Freunden auf BetterTrack geteilt. Es ist jetzt unter „Mit mir geteilt“ sichtbar.',
       button: 'Geteiltes Portfolio ansehen',
     },
+    watchlistShared: {
+      subject: '{actor} hat eine Watchlist mit dir geteilt',
+      heading: 'Watchlist mit dir geteilt',
+      body: '{actor} hat eine Watchlist auf BetterTrack mit dir geteilt. Sie ist jetzt unter „Mit mir geteilt“ sichtbar.',
+      button: 'Geteilte Watchlist ansehen',
+    },
+    conglomerateShared: {
+      subject: '{actor} hat ein Konglomerat mit dir geteilt',
+      heading: 'Konglomerat mit dir geteilt',
+      body: '{actor} hat ein Konglomerat auf BetterTrack mit dir geteilt. Es ist jetzt unter „Mit mir geteilt“ sichtbar.',
+      button: 'Geteiltes Konglomerat ansehen',
+    },
     chatMessage: {
       subject: 'Neue Nachricht von {actor}',
       heading: 'Neue Nachricht',
@@ -102,6 +135,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     alertTriggered: {
       subject: 'Preisalarm: {symbol}',
       heading: 'Preisalarm: {symbol}',
+      button: 'BetterTrack öffnen',
+    },
+    friendActivity: {
+      subject: 'Aktivität von Freunden auf BetterTrack',
+      heading: 'Aktivität von Freunden',
       button: 'BetterTrack öffnen',
     },
   },

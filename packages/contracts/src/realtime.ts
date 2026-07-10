@@ -85,7 +85,40 @@ export const REALTIME_CLIENT_EVENTS = {
   roomLeave: 'room.leave',
   liveWatch: 'live.watch',
   liveUnwatch: 'live.unwatch',
+  presenceEnter: 'presence.enter',
+  presenceLeave: 'presence.leave',
 } as const;
+
+// ── Active-view presence (#368 Notifications v2) ─────────────────────────────
+
+/**
+ * Surfaces a client can declare itself actively viewing. The notification
+ * dispatcher suppresses sends about a surface its recipient currently has open
+ * (v1: a chat conversation — no bell/email/push for the thread you're reading).
+ */
+export const PRESENCE_SURFACES = ['chat'] as const;
+export const presenceSurfaceSchema = z.enum(PRESENCE_SURFACES);
+export type PresenceSurface = z.infer<typeof presenceSurfaceSchema>;
+
+/**
+ * Server-side TTL of one presence signal. A client that vanishes without
+ * `presence.leave` (crash, dropped socket, backgrounded app) auto-clears when
+ * the TTL lapses — the dispatcher can never suppress on presence staler than
+ * this. Clients keep it alive by re-emitting `presence.enter` (idempotent)
+ * every {@link PRESENCE_HEARTBEAT_MS} while the surface stays open + focused.
+ */
+export const PRESENCE_TTL_SECONDS = 60;
+export const PRESENCE_HEARTBEAT_MS = 25_000;
+
+/**
+ * `presence.enter` / `presence.leave` payload: the surface the authed user is
+ * viewing (enter = viewing + focused, re-emitted as heartbeat; leave = closed
+ * or blurred). Both are per-user + per-subject; both ack `{ok}`.
+ */
+export const realtimePresenceRequestSchema = z
+  .object({ surface: presenceSurfaceSchema, id: z.string().uuid() })
+  .strict();
+export type RealtimePresenceRequest = z.infer<typeof realtimePresenceRequestSchema>;
 
 // ── Live Mode (§6.3, V3-P7b) ─────────────────────────────────────────────────
 

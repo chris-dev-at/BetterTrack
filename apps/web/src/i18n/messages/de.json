@@ -167,7 +167,7 @@
     },
     "notifications": {
       "title": "Benachrichtigungen",
-      "subtitle": "Lege fest, wie BetterTrack dich zu jeder Art von Aktivität benachrichtigt — Glocke in der App, E-Mail, beides oder stummgeschaltet.",
+      "subtitle": "Lege für jede Art von Aktivität fest, über welche Kanäle du benachrichtigt wirst — Glocke in der App, E-Mail, Handy-Push, Browser-Push — oder schalte alles auf einmal stumm.",
       "loadError": {
         "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
       },
@@ -199,6 +199,18 @@
         "chatMessage": {
           "label": "Chat-Nachrichten",
           "description": "Wenn dir ein Freund eine Nachricht sendet."
+        },
+        "watchlistShared": {
+          "label": "Geteilte Watchlists",
+          "description": "Wenn Freunde eine Watchlist mit dir teilen."
+        },
+        "conglomerateShared": {
+          "label": "Geteilte Konglomerate",
+          "description": "Wenn Freunde ein Konglomerat mit dir teilen."
+        },
+        "friendActivity": {
+          "label": "Aktivität von Freunden",
+          "description": "Käufe, Verkäufe und Watchlist-Einträge bei geteilten Elementen, denen du folgst."
         }
       },
       "routing": {
@@ -218,7 +230,41 @@
         "description": "Aktivitäten wie Freundschaftsanfragen und Freigaben erscheinen hier."
       },
       "refreshError": "Benachrichtigungen konnten nicht aktualisiert werden. Die zuletzt geladene Liste wird angezeigt.",
-      "loadMore": "Mehr laden"
+      "loadMore": "Mehr laden",
+      "channels": {
+        "inapp": "In der App",
+        "email": "E-Mail",
+        "push": "Handy-Push",
+        "webpush": "Browser-Push"
+      },
+      "categories": {
+        "social": "Freunde",
+        "sharing": "Teilen & Aktivität",
+        "chat": "Chat",
+        "alerts": "Preisalarme",
+        "account": "Konto"
+      },
+      "grid": {
+        "categoryToggleAria": "Alle Benachrichtigungen in {{category}} umschalten",
+        "cellAria": "{{type}} per {{channel}}",
+        "saveError": "Die Änderung konnte nicht gespeichert werden. Bitte versuche es erneut.",
+        "inviteHint": "Einladungs-E-Mails gehen an Personen ohne Konto — hier gibt es nichts zu steuern.",
+        "tempPasswordEmailHint": "Die E-Mail mit dem temporären Passwort wird immer gesendet — sie enthält deine Zugangsdaten."
+      },
+      "mute": {
+        "label": "Alle Benachrichtigungen stummschalten",
+        "description": "Solange stummgeschaltet, wird auf keinem Kanal etwas zugestellt. Deine Auswahl unten bleibt erhalten."
+      },
+      "webPush": {
+        "title": "Browser-Push in diesem Browser",
+        "description": "Erhalte Desktop-Benachrichtigungen auch bei geschlossenem Tab. Pro Browser aktivieren; die Spalte unten bestimmt, was gepusht wird.",
+        "enable": "In diesem Browser aktivieren",
+        "disable": "In diesem Browser deaktivieren",
+        "enabled": "In diesem Browser aktiviert",
+        "unsupported": "Dieser Browser unterstützt keine Push-Benachrichtigungen.",
+        "denied": "Benachrichtigungen sind für diese Seite in deinen Browser-Einstellungen blockiert.",
+        "error": "Browser-Push konnte nicht geändert werden. Bitte versuche es erneut."
+      }
     },
     "security": {
       "title": "Sicherheit",

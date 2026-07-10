@@ -309,6 +309,81 @@ export function chatMessageEmail(params: {
   };
 }
 
+/** `watchlist.shared` notification email (#368) — mirrors the portfolio one. */
+export function watchlistSharedEmail(params: {
+  actorUsername: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.watchlistShared;
+  return {
+    subject: fillText(c.subject, { actor: actorUsername }),
+    html: layout(
+      c.heading,
+      [
+        `<p>${fillHtml(c.body, { actor: actorUsername })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, { actor: actorUsername }), '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/** `conglomerate.shared` notification email (#368) — mirrors the portfolio one. */
+export function conglomerateSharedEmail(params: {
+  actorUsername: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.conglomerateShared;
+  return {
+    subject: fillText(c.subject, { actor: actorUsername }),
+    html: layout(
+      c.heading,
+      [
+        `<p>${fillHtml(c.body, { actor: actorUsername })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, { actor: actorUsername }), '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/**
+ * `friend.activity` notification email (#368). `body` is the same one-sentence
+ * phrasing the in-app bell item carries ("X bought AAPL."), like the alert one.
+ */
+export function friendActivityEmail(params: {
+  body: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { body, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.friendActivity;
+  return {
+    subject: c.subject,
+    html: layout(
+      c.heading,
+      [
+        `<p>${escapeHtml(body)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [body, '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
 /**
  * Login 2FA email-code (PROJECTPLAN.md §6.1, §13.2 V2-P5). One of the two second-
  * factor channels: a short-lived, single-use numeric code the user enters at the

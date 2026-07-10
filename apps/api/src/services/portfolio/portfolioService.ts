@@ -44,6 +44,7 @@ import type {
   CashSourceRepository,
 } from '../../data/repositories/cashSourceRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
+import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type {
   LinkedCashMovement,
@@ -85,11 +86,11 @@ import {
   type ValueOverTimeAsset,
 } from '../../domain/holdings';
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
-import type { EventBus } from '../../events';
 import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 import type { TaxService } from '../tax/taxService';
 
@@ -133,10 +134,13 @@ export interface PortfolioServiceDeps {
    * The sharing-enforcement layer (§13.3 V3-P5): on hard-delete, its
    * `clearForSubject` drops the portfolio's polymorphic audience row (and the
    * cascade — members + public links), which carries no FK to the portfolio.
+   * Also the per-viewer authorization gate for friend-activity emits (#368).
    */
   audience: AudienceService;
-  /** Domain event bus — `portfolio.shared` is published here on a friends-transition (§6.10). */
-  events: EventBus;
+  /** Per-viewer activity-alert prefs (V3-P6) — the friend-activity opt-in set (#368). */
+  profile: ProfileRepository;
+  /** The central notification pipeline (#368): portfolio.shared + friend.activity. */
+  notify: NotificationCenter;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -358,7 +362,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     taxService,
     friendshipRepo,
     audience,
-    events,
+    profile,
+    notify,
     logger,
   } = deps;
   const now = deps.now ?? Date.now;
@@ -469,9 +474,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /**
-   * Publish one `portfolio.shared` per current friend of the owner (§6.10) so the
-   * notification dispatcher can tell each friend the portfolio is now shared.
-   * Best-effort: resolving friends or a bus failure never fails the update.
+   * Emit one `portfolio.shared` per current friend of the owner (§6.10) through
+   * the durable notification center (#368) so each friend learns the portfolio
+   * is now shared. Best-effort: a resolve failure never fails the update.
    */
   async function emitPortfolioShared(ownerId: string, portfolioId: string): Promise<void> {
     try {
@@ -481,7 +486,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       ]);
       const occurredAt = new Date(now()).toISOString();
       for (const friend of friends) {
-        await events.publish({
+        await notify.emit({
           type: 'portfolio.shared',
           userId: friend.id,
           actorId: ownerId,
@@ -491,7 +496,50 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         });
       }
     } catch (err) {
-      logger?.error({ err, portfolioId }, 'portfolio.shared event publish failed');
+      logger?.error({ err, portfolioId }, 'portfolio.shared event emit failed');
+    }
+  }
+
+  /**
+   * Friend-activity fan-out (#368): after a transaction batch commits, notify
+   * every viewer who (a) opted into activity alerts for THIS portfolio via the
+   * V3-P6 toggle AND (b) is still authorized to see it — the audience layer is
+   * re-checked per viewer at emit time, so a pref that outlived a revoked share
+   * notifies nobody. Best-effort: never fails the write it trails.
+   */
+  async function emitFriendActivity(
+    ownerId: string,
+    portfolioId: string,
+    trades: { refId: string; side: 'buy' | 'sell'; symbol: string }[],
+  ): Promise<void> {
+    try {
+      const viewers = await profile.viewersWithActivityAlerts('portfolio', portfolioId);
+      const optedIn = viewers.filter((v) => v !== ownerId);
+      if (optedIn.length === 0) return;
+      const actorUsername = (await friendshipRepo.getUsername(ownerId)) ?? '';
+      const occurredAt = new Date(now()).toISOString();
+      for (const viewerId of optedIn) {
+        const authorized = await audience
+          .authorizePortfolioRead(viewerId, portfolioId)
+          .catch(() => undefined);
+        if (!authorized) continue;
+        for (const trade of trades) {
+          await notify.emit({
+            type: 'friend.activity',
+            userId: viewerId,
+            actorId: ownerId,
+            actorUsername,
+            itemKind: 'portfolio',
+            itemId: portfolioId,
+            activity: trade.side,
+            assetSymbol: trade.symbol,
+            refId: trade.refId,
+            occurredAt,
+          });
+        }
+      }
+    } catch (err) {
+      logger?.error({ err, portfolioId }, 'friend.activity emit failed');
     }
   }
 
@@ -1342,6 +1390,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       for (const assetId of assetIds) {
         await referenceBackfill.ensureHistory(assetId);
       }
+
+      // Friend-activity (#368): tell opted-in, still-authorized viewers about
+      // the new buys/sells on this shared portfolio. Best-effort, after commit.
+      await emitFriendActivity(
+        userId,
+        portfolioId,
+        inserted.map((r) => ({
+          refId: `txn:${r.id}`,
+          side: r.side,
+          symbol: assetsById.get(r.assetId)?.symbol ?? '',
+        })),
+      );
 
       return inserted.map((r) => {
         const asset = assetsById.get(r.assetId);

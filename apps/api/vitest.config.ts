@@ -11,5 +11,11 @@ export default defineConfig({
     // fails at this bound.
     testTimeout: 20000,
     hookTimeout: 20000,
+    // Each forked worker boots its own PGlite (WASM Postgres) — several hundred
+    // MB apiece once the suite warms up. Unbounded forks scale with CPU count,
+    // so a many-core/moderate-RAM machine (e.g. 10 cores / 8 GB) gets its
+    // workers OOM-killed mid-run ("Channel closed" pool errors). Four forks
+    // matches the GitHub-runner shape CI uses and keeps peak memory ~2 GB.
+    maxWorkers: 4,
   },
 });

@@ -112,6 +112,8 @@ function buildInertContext(): AppContext {
     accountDeletion: inertService('accountDeletion'),
     alerts: inertService('alerts'),
     notificationDispatcher: inertService('notificationDispatcher'),
+    notify: inertService('notify'),
+    presence: inertService('presence'),
     realtime: inertService('realtime'),
     liveMode: inertService('liveMode'),
   };

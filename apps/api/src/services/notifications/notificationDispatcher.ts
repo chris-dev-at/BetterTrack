@@ -1,150 +1,180 @@
-import type { EventBus, Unsubscribe } from '../../events';
+import type { EventBus } from '../../events';
 import type {
+  AccountTempPasswordEvent,
   AlertTriggeredEvent,
   ChatMessageEvent,
+  ConglomerateSharedEvent,
   FriendAcceptedEvent,
+  FriendActivityEvent,
   FriendRequestEvent,
   PortfolioSharedEvent,
+  WatchlistSharedEvent,
 } from '../../events';
-import type { NotificationRepository } from '../../data/repositories/notificationRepository';
+import type {
+  NotificationRepository,
+  TypeRouting,
+} from '../../data/repositories/notificationRepository';
 import type { AlertNotificationContext } from '../../data/repositories/alertRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { alertBody, alertTitle } from '../alerts/alertMessages';
 import type { EmailService } from '../email/emailService';
 import type { Logger } from '../../logger';
 
+import type { FcmChannel, PushMessage } from './fcm';
+import type { PresenceStore } from './presence';
+import type { WebPushChannel } from './webPush';
+
 /**
- * Notification dispatcher (PROJECTPLAN.md §9, §6.10). Subscribes to the V1
- * social domain events and fans each out to the recipient's enabled channels:
- * an **in-app** notification row and, when the email channel is enabled, an
- * email via {@link EmailService} (which writes the `email_log` row).
+ * The central notification dispatcher (#368 Notifications v2; PROJECTPLAN.md
+ * §6.10, §9, §14). ONE delivery core every notification-producing subsystem
+ * feeds — never a per-source fork: an event arrives (via the durable
+ * `notifications.dispatch` BullMQ job in production, directly in tests), the
+ * dispatcher resolves the recipient's per-type × per-channel matrix and fans
+ * out to the enabled channels: in-app inbox row, email, phone push (FCM),
+ * browser push (web-push). Sources NEVER talk to channels directly.
  *
- * Rules from §6.10:
- *  - **In-app and email are on by default.** A user with no
- *    `notification_settings` row for a channel still gets it; only an explicit
- *    `enabled = false` suppresses that channel.
- *  - **Deduped per (user, event key).** Each event has a deterministic
- *    {@link eventKeyFor} key stamped into the in-app row's `payload.eventKey`;
- *    an at-least-once redelivery finds the row and no-ops, so neither a
- *    duplicate row nor a duplicate email is produced.
- *  - **Email is best-effort.** {@link EmailService} never throws (it logs the
- *    attempt as sent/failed/suppressed), so a mail problem never blocks the
- *    in-app row or the consumer.
+ * Delivery rules:
+ *  - **Idempotent under at-least-once.** Every dispatch writes exactly one
+ *    `notifications` row per (recipient, eventKey) — visible when in-app is
+ *    routed, `hidden` (a pure dedupe marker) when it isn't — so a BullMQ retry
+ *    or a duplicate emit re-reads the marker and no-ops. Channels after the
+ *    marker are best-effort by design (the §6.10 email philosophy, extended to
+ *    push): a transport failure logs and never throws back into the job.
+ *  - **Global mute** (`users.notifications_muted`) suppresses every channel;
+ *    only the hidden dedupe marker is written.
+ *  - **Presence suppression** (#368 owner mandate): when the recipient is
+ *    actively viewing the surface an event belongs to (v1: the chat
+ *    conversation of a `chat.message`, TTL-bounded via {@link PresenceStore}),
+ *    nothing notifies — the row persists already-read (no unread bump, no
+ *    bell push, no email/push) and the message simply lands in the open thread.
+ *  - **Defaults on.** A user with no settings row gets every channel; only an
+ *    explicit override (or mute/presence) suppresses.
  *
- * A new consumer subscribes without touching producers (§9): the dispatcher is a
- * pure subscriber over the typed bus.
+ * The dispatcher is NOT a bus subscriber anymore: the Redis pub/sub bus stays
+ * strictly ephemeral (realtime fan-out — it still carries the
+ * `notification.created` bell push this dispatcher publishes after a visible
+ * insert). Durable event transport is the BullMQ queue (`notificationCenter`).
  */
 
-/** The social events the dispatcher fans out to in-app notifications. */
-export type SocialDispatchEvent = FriendRequestEvent | FriendAcceptedEvent | PortfolioSharedEvent;
+/** Every event the center turns into a matrix-routed notification. */
+export type DispatchableEvent =
+  | FriendRequestEvent
+  | FriendAcceptedEvent
+  | PortfolioSharedEvent
+  | WatchlistSharedEvent
+  | ConglomerateSharedEvent
+  | FriendActivityEvent
+  | AccountTempPasswordEvent
+  | AlertTriggeredEvent
+  | ChatMessageEvent;
 
-/** Every event the dispatcher turns into a matrix-routed notification (§6.10, §14, §13.3 V3-P8). */
-export type DispatchableEvent = SocialDispatchEvent | AlertTriggeredEvent | ChatMessageEvent;
-
-const DISPATCHED_EVENT_TYPES = [
+/** The `type` strings the dispatcher accepts (guards the job payload). */
+export const DISPATCHABLE_EVENT_TYPES = [
   'friend.request',
   'friend.accepted',
   'portfolio.shared',
+  'watchlist.shared',
+  'conglomerate.shared',
+  'friend.activity',
+  'account.temp_password',
   'alert.triggered',
   'chat.message',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
+export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
+  return (DISPATCHABLE_EVENT_TYPES as readonly string[]).includes(event.type);
+}
+
 /**
  * Resolves an `alert.triggered` event's display context (asset + rule) at
- * dispatch time (§14). Injected so the dispatcher stays a thin bus subscriber
- * and doesn't own the alert tables. Returns null if the alert is already gone.
+ * dispatch time (§14). Injected so the dispatcher doesn't own the alert tables.
+ * Returns null if the alert is already gone.
  */
 export type AlertContextResolver = (alertId: string) => Promise<AlertNotificationContext | null>;
 
-/** The rendered in-app notification for a dispatchable event. */
+/** The rendered notification for one event, shared by all channels. */
 interface RenderedNotification {
   eventKey: string;
   title: string;
   body: string;
+  /** Inbox payload (carries `eventKey` — the §6.10 dedupe key). */
   payload: Record<string, unknown>;
+  /** String-valued deep-link ids for the push channels' data message. */
+  data: Record<string, string>;
+  /** The alert's symbol — only set for `alert.triggered` (email subject). */
+  alertSymbol?: string;
 }
 
 /**
- * The dedupe key for an event: type + the identifier that makes the *logical*
- * event unique. Combined with the recipient `userId` (applied by the repository)
- * this is the "(user, event key)" of §6.10.
+ * The dedupe key per event: type + what makes the *logical* event unique.
+ * Combined with the recipient userId (repo-side) this is §6.10's
+ * "(user, event key)".
  */
-function eventKeyFor(event: SocialDispatchEvent): string {
+function eventKeyFor(event: DispatchableEvent): string {
   switch (event.type) {
     case 'friend.request':
       return `friend.request:${event.requestId}`;
     case 'friend.accepted':
       return `friend.accepted:${event.requestId}`;
     case 'portfolio.shared':
-      // Same portfolio shared by the same owner is one logical event per friend;
+      // Same item shared by the same owner is one logical event per friend;
       // the recipient userId (repo-side) keeps friends' rows distinct.
       return `portfolio.shared:${event.portfolioId}:${event.actorId}`;
+    case 'watchlist.shared':
+      return `watchlist.shared:${event.watchlistId}:${event.actorId}`;
+    case 'conglomerate.shared':
+      return `conglomerate.shared:${event.conglomerateId}:${event.actorId}`;
+    case 'friend.activity':
+      return `friend.activity:${event.refId}`;
+    case 'account.temp_password':
+      // Every reset is a fresh notice — the timestamp keys the occurrence.
+      return `account.temp_password:${event.occurredAt}`;
+    case 'alert.triggered':
+      // Deduped per (alert, trigger window): the occurredAt minute folds in, so
+      // a redelivered fire no-ops while a repeat alert's next window is fresh.
+      return `alert.triggered:${event.alertId}:${event.occurredAt.slice(0, 16)}`;
+    case 'chat.message':
+      return `chat.message:${event.messageId}`;
   }
 }
 
-/** Render the human-readable in-app notification for a social event (§6.10). */
-function render(event: SocialDispatchEvent): RenderedNotification {
-  const eventKey = eventKeyFor(event);
-  switch (event.type) {
-    case 'friend.request':
-      return {
-        eventKey,
-        title: 'New friend request',
-        body: `${event.actorUsername} sent you a friend request.`,
-        payload: {
-          eventKey,
-          actorId: event.actorId,
-          actorUsername: event.actorUsername,
-          requestId: event.requestId,
-        },
-      };
-    case 'friend.accepted':
-      return {
-        eventKey,
-        title: 'Friend request accepted',
-        body: `${event.actorUsername} accepted your friend request.`,
-        payload: {
-          eventKey,
-          actorId: event.actorId,
-          actorUsername: event.actorUsername,
-          requestId: event.requestId,
-        },
-      };
-    case 'portfolio.shared':
-      return {
-        eventKey,
-        title: 'Portfolio shared',
-        body: `${event.actorUsername} shared their portfolio with friends.`,
-        payload: {
-          eventKey,
-          actorId: event.actorId,
-          actorUsername: event.actorUsername,
-          portfolioId: event.portfolioId,
-        },
-      };
+/** The friend-activity body sentence (EN — inbox strings are stored rendered). */
+function friendActivityBody(event: FriendActivityEvent): string {
+  switch (event.activity) {
+    case 'buy':
+      return `${event.actorUsername} bought ${event.assetSymbol}.`;
+    case 'sell':
+      return `${event.actorUsername} sold ${event.assetSymbol}.`;
+    case 'watchlist_add':
+      return `${event.actorUsername} added ${event.assetSymbol} to a shared watchlist.`;
   }
 }
 
 export interface NotificationDispatcherDeps {
-  bus: EventBus;
+  /** Publishes the ephemeral `notification.created` bell push (§4.5). */
+  bus: Pick<EventBus, 'publish'>;
   repo: NotificationRepository;
+  /** Recipient lookup: email address, locale, global mute. */
+  users: Pick<UserRepository, 'findById'>;
   /** Email channel (§6.10). Omit to disable email fan-out (e.g. in-app-only tests). */
   email?: EmailService;
-  /** Resolves the recipient's address for the email channel. Required with `email`. */
-  users?: Pick<UserRepository, 'findById'>;
   /** Resolves `alert.triggered` display context (§14). Omit to ignore alert events. */
   resolveAlert?: AlertContextResolver;
+  /** Phone-push channel; null/omitted = not configured (#368). */
+  fcm?: FcmChannel | null;
+  /** Browser-push channel; null/omitted = not configured (#368/#350). */
+  webPush?: WebPushChannel | null;
+  /** Active-view presence (#368). Omit to disable suppression (never suppresses). */
+  presence?: PresenceStore;
   logger?: Logger;
 }
 
 export interface NotificationDispatcher {
-  /** Subscribe to the dispatchable events. Idempotent — a second call re-subscribes only once. */
-  start(): Promise<void>;
-  /** Drop all subscriptions. */
-  stop(): Promise<void>;
   /**
-   * Handle a single event: resolve the recipient's in-app setting, dedupe, and
-   * insert. Exposed for direct/synchronous testing without a pub/sub round-trip.
+   * Deliver a single event through the matrix: dedupe, write the inbox row /
+   * marker, fan out to the enabled channels. Safe under at-least-once
+   * redelivery. Throws only when even the dedupe marker could not be written
+   * (so the durable queue retries); channel failures never propagate.
    */
   dispatch(event: DispatchableEvent): Promise<void>;
 }
@@ -152,44 +182,171 @@ export interface NotificationDispatcher {
 export function createNotificationDispatcher(
   deps: NotificationDispatcherDeps,
 ): NotificationDispatcher {
-  const { bus, repo, email, users, resolveAlert, logger } = deps;
-  const unsubscribers: Unsubscribe[] = [];
+  const { bus, repo, users, email, resolveAlert, fcm, webPush, presence, logger } = deps;
 
   /**
-   * Announce a freshly-written in-app row on the bus (§4.5): the realtime
-   * gateway maps `notification.created` to a `notification.new` push in the
-   * recipient's `user:{id}` room. Published only when the matrix actually
-   * produced a row, so a bell-muted type never pushes. Best-effort — the row is
-   * already persisted and the SPA's poll fallback catches up regardless.
+   * Render an event to its channel-shared strings. Async because the alert
+   * context resolves at dispatch time; returns null when the event has nothing
+   * to render (alert vanished, or alerts not wired here).
    */
-  async function publishCreated(userId: string, notificationId: string): Promise<void> {
-    try {
-      await bus.publish({
-        type: 'notification.created',
-        userId,
-        notificationId,
-        occurredAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      logger?.warn({ err, notificationId }, 'notification.created publish failed');
+  async function render(event: DispatchableEvent): Promise<RenderedNotification | null> {
+    const eventKey = eventKeyFor(event);
+    switch (event.type) {
+      case 'friend.request':
+        return {
+          eventKey,
+          title: 'New friend request',
+          body: `${event.actorUsername} sent you a friend request.`,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            requestId: event.requestId,
+          },
+          data: { requestId: event.requestId },
+        };
+      case 'friend.accepted':
+        return {
+          eventKey,
+          title: 'Friend request accepted',
+          body: `${event.actorUsername} accepted your friend request.`,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            requestId: event.requestId,
+          },
+          data: { requestId: event.requestId },
+        };
+      case 'portfolio.shared':
+        return {
+          eventKey,
+          title: 'Portfolio shared',
+          body: `${event.actorUsername} shared their portfolio with friends.`,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            portfolioId: event.portfolioId,
+          },
+          data: { portfolioId: event.portfolioId },
+        };
+      case 'watchlist.shared':
+        return {
+          eventKey,
+          title: 'Watchlist shared',
+          body: `${event.actorUsername} shared a watchlist with you.`,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            watchlistId: event.watchlistId,
+          },
+          data: { watchlistId: event.watchlistId },
+        };
+      case 'conglomerate.shared':
+        return {
+          eventKey,
+          title: 'Conglomerate shared',
+          body: `${event.actorUsername} shared a conglomerate with you.`,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            conglomerateId: event.conglomerateId,
+          },
+          data: { conglomerateId: event.conglomerateId },
+        };
+      case 'friend.activity':
+        return {
+          eventKey,
+          title: 'Friend activity',
+          body: friendActivityBody(event),
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            itemKind: event.itemKind,
+            itemId: event.itemId,
+            activity: event.activity,
+            assetSymbol: event.assetSymbol,
+          },
+          data: { itemKind: event.itemKind, itemId: event.itemId },
+        };
+      case 'account.temp_password':
+        return {
+          eventKey,
+          title: 'Password was reset',
+          body: 'An administrator reset your password. Check your email for the temporary password.',
+          payload: { eventKey },
+          data: {},
+        };
+      case 'alert.triggered': {
+        if (!resolveAlert) return null;
+        const context = await resolveAlert(event.alertId);
+        if (!context) return null;
+        return {
+          eventKey,
+          title: alertTitle(context.symbol),
+          body: alertBody({
+            kind: context.kind,
+            symbol: context.symbol,
+            threshold: context.threshold,
+            currency: context.currency,
+          }),
+          payload: {
+            eventKey,
+            alertId: event.alertId,
+            assetId: event.assetId,
+            kind: context.kind,
+          },
+          data: { alertId: event.alertId, assetId: event.assetId },
+          alertSymbol: context.symbol,
+        };
+      }
+      case 'chat.message':
+        return {
+          eventKey,
+          title: 'New message',
+          body: event.bodyPreview
+            ? `${event.senderUsername}: ${event.bodyPreview}`
+            : event.hasChip
+              ? `${event.senderUsername} shared an item with you.`
+              : `${event.senderUsername} sent you a message.`,
+          payload: {
+            eventKey,
+            conversationId: event.conversationId,
+            messageId: event.messageId,
+            senderId: event.senderId,
+            senderUsername: event.senderUsername,
+          },
+          data: { conversationId: event.conversationId, messageId: event.messageId },
+        };
     }
   }
 
-  /** Send the event's email on the recipient's enabled email channel (§6.10). */
-  async function sendEmail(event: SocialDispatchEvent): Promise<void> {
-    if (!email || !users) return;
-    // Per-type × channel matrix (§6.10): email fans out only when this type is
-    // routed to email. Defaults on; an explicit per-type override (or a
-    // channel-wide off) suppresses it.
-    if (!(await repo.typeChannelEnabled(event.userId, event.type, 'email'))) return;
-    const recipient = await users.findById(event.userId);
-    if (!recipient?.email) return;
+  /**
+   * The surface an event belongs to for presence suppression. v1: only chat —
+   * extend here to generalize ("actively viewing it → don't notify").
+   */
+  function presenceTarget(event: DispatchableEvent): { surface: 'chat'; id: string } | null {
+    if (event.type === 'chat.message') return { surface: 'chat', id: event.conversationId };
+    return null;
+  }
 
-    const to = recipient.email;
-    const userId = recipient.id;
-    // Render the notification email in the recipient's stored UI language (§13.3
-    // V3-P1); the template falls back to EN for any code it can't translate.
-    const locale = recipient.locale;
+  /**
+   * Send the event's email in the recipient's stored locale (§13.3 V3-P1).
+   * `account.temp_password` deliberately has NO dispatcher email: the
+   * transactional mail carrying the credential is sent directly at the source
+   * (never through the queue) and would only be duplicated here.
+   */
+  async function sendEmail(
+    event: DispatchableEvent,
+    rendered: RenderedNotification,
+    recipient: { id: string; email: string; locale: string },
+  ): Promise<void> {
+    if (!email) return;
+    const { email: to, id: userId, locale } = recipient;
     switch (event.type) {
       case 'friend.request':
         await email.sendFriendRequest({ to, userId, actorUsername: event.actorUsername, locale });
@@ -200,169 +357,133 @@ export function createNotificationDispatcher(
       case 'portfolio.shared':
         await email.sendPortfolioShared({ to, userId, actorUsername: event.actorUsername, locale });
         return;
-    }
-  }
-
-  /**
-   * Fan out a fired price alert (§14). Deduped per (user, trigger window):
-   * the event's `occurredAt` minute is folded into the event key, so an
-   * at-least-once redelivery of the same fire no-ops while a genuinely later
-   * fire (a repeat alert's next 24 h window) still produces a fresh row.
-   */
-  async function dispatchAlert(event: AlertTriggeredEvent): Promise<void> {
-    if (!resolveAlert) return;
-    const context = await resolveAlert(event.alertId);
-    if (!context) return;
-
-    const eventKey = `alert.triggered:${event.alertId}:${event.occurredAt.slice(0, 16)}`;
-    if (await repo.existsForEventKey(event.userId, eventKey)) return;
-
-    const title = alertTitle(context.symbol);
-    const body = alertBody({
-      kind: context.kind,
-      symbol: context.symbol,
-      threshold: context.threshold,
-      currency: context.currency,
-    });
-    const payload = {
-      eventKey,
-      alertId: event.alertId,
-      assetId: event.assetId,
-      kind: context.kind,
-    };
-
-    if (await repo.typeChannelEnabled(event.userId, 'alert.triggered', 'inapp')) {
-      const notificationId = await repo.insert({
-        userId: event.userId,
-        type: 'alert.triggered',
-        title,
-        body,
-        payload,
-      });
-      await publishCreated(event.userId, notificationId);
-    }
-
-    if (
-      email &&
-      users &&
-      (await repo.typeChannelEnabled(event.userId, 'alert.triggered', 'email'))
-    ) {
-      const recipient = await users.findById(event.userId);
-      if (recipient?.email) {
+      case 'watchlist.shared':
+        await email.sendWatchlistShared({ to, userId, actorUsername: event.actorUsername, locale });
+        return;
+      case 'conglomerate.shared':
+        await email.sendConglomerateShared({
+          to,
+          userId,
+          actorUsername: event.actorUsername,
+          locale,
+        });
+        return;
+      case 'friend.activity':
+        await email.sendFriendActivity({ to, userId, body: rendered.body, locale });
+        return;
+      case 'alert.triggered':
         await email.sendAlertTriggered({
-          to: recipient.email,
-          userId: recipient.id,
-          symbol: context.symbol,
-          body,
-          locale: recipient.locale,
+          to,
+          userId,
+          symbol: rendered.alertSymbol ?? '',
+          body: rendered.body,
+          locale,
         });
-      }
-    }
-  }
-
-  /**
-   * Fan out a new chat message (§13.3 V3-P8). Deduped per message (the messageId
-   * is the event key) and matrix-routed like every other type: a **muted**
-   * `chat.message` writes no in-app row and sends no email. That never suppresses
-   * in-thread delivery — the realtime `chat.message` push is emitted by the
-   * gateway as a SEPARATE subscriber of the same bus event, so the message still
-   * arrives in the recipient's thread even when the bell/email are muted.
-   */
-  async function dispatchChat(event: ChatMessageEvent): Promise<void> {
-    const eventKey = `chat.message:${event.messageId}`;
-    if (await repo.existsForEventKey(event.userId, eventKey)) return;
-
-    const title = 'New message';
-    const body = event.bodyPreview
-      ? `${event.senderUsername}: ${event.bodyPreview}`
-      : event.hasChip
-        ? `${event.senderUsername} shared an item with you.`
-        : `${event.senderUsername} sent you a message.`;
-    const payload = {
-      eventKey,
-      conversationId: event.conversationId,
-      messageId: event.messageId,
-      senderId: event.senderId,
-      senderUsername: event.senderUsername,
-    };
-
-    if (await repo.typeChannelEnabled(event.userId, 'chat.message', 'inapp')) {
-      const notificationId = await repo.insert({
-        userId: event.userId,
-        type: 'chat.message',
-        title,
-        body,
-        payload,
-      });
-      await publishCreated(event.userId, notificationId);
-    }
-
-    if (email && users && (await repo.typeChannelEnabled(event.userId, 'chat.message', 'email'))) {
-      const recipient = await users.findById(event.userId);
-      if (recipient?.email) {
-        // Deliberately no message content in the email (privacy) — just that a
-        // new message is waiting, with a link into the app.
-        await email.sendChatMessage({
-          to: recipient.email,
-          userId: recipient.id,
-          actorUsername: event.senderUsername,
-          locale: recipient.locale,
-        });
-      }
+        return;
+      case 'chat.message':
+        // Deliberately no message content (privacy) — just that one is waiting.
+        await email.sendChatMessage({ to, userId, actorUsername: event.senderUsername, locale });
+        return;
+      case 'account.temp_password':
+        return;
     }
   }
 
   async function dispatch(event: DispatchableEvent): Promise<void> {
-    if (event.type === 'alert.triggered') {
-      await dispatchAlert(event);
-      return;
+    const rendered = await render(event);
+    if (!rendered) return;
+
+    const recipient = await users.findById(event.userId);
+    if (!recipient) return;
+
+    // At-least-once delivery: the (user, eventKey) row — visible or hidden — is
+    // the durable dedupe marker for EVERY channel (§6.10, #368).
+    if (await repo.existsForEventKey(event.userId, rendered.eventKey)) return;
+
+    const muted = recipient.notificationsMuted;
+    const routing: TypeRouting = await repo.routingFor(event.userId, event.type);
+
+    // Presence suppression (#368): never on stale data — the store's TTL bounds
+    // it. Errors fail open (deliver rather than swallow) and log.
+    let suppressedByPresence = false;
+    const target = presenceTarget(event);
+    if (!muted && target && presence) {
+      try {
+        suppressedByPresence = await presence.isPresent(event.userId, target.surface, target.id);
+      } catch (err) {
+        logger?.warn({ err, type: event.type }, 'presence check failed; delivering normally');
+      }
     }
 
-    if (event.type === 'chat.message') {
-      await dispatchChat(event);
-      return;
+    // The inbox row doubles as the dedupe marker, so ONE row is always written:
+    //  - routed + live      → visible, unread, bell push
+    //  - presence-suppressed → visible, already read (it's on their screen)
+    //  - in-app off / muted → hidden marker, already read
+    const visible = !muted && (routing.inapp || suppressedByPresence);
+    const alreadyRead = muted || suppressedByPresence || !routing.inapp;
+    const notificationId = await repo.insert({
+      userId: event.userId,
+      type: event.type,
+      title: rendered.title,
+      body: rendered.body,
+      payload: rendered.payload,
+      hidden: !visible,
+      readAt: alreadyRead ? new Date() : null,
+    });
+
+    if (visible && !alreadyRead) {
+      // Ephemeral bell push (§4.5) — best-effort; the SPA poll catches up.
+      try {
+        await bus.publish({
+          type: 'notification.created',
+          userId: event.userId,
+          notificationId,
+          occurredAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        logger?.warn({ err, notificationId }, 'notification.created publish failed');
+      }
     }
 
-    const { eventKey, title, body, payload } = render(event);
-    // At-least-once delivery: a redelivered event must not fan out twice — the
-    // in-app row is the dedupe marker for both channels (§6.10).
-    if (await repo.existsForEventKey(event.userId, eventKey)) return;
+    if (muted || suppressedByPresence) return;
 
-    // Per-type × channel matrix (§6.10): the in-app bell row is written only when
-    // this type is routed to in-app. Defaults on; an explicit per-type override
-    // (bell-off / muted) suppresses it.
-    if (await repo.typeChannelEnabled(event.userId, event.type, 'inapp')) {
-      const notificationId = await repo.insert({
-        userId: event.userId,
-        type: event.type,
-        title,
-        body,
-        payload,
-      });
-      await publishCreated(event.userId, notificationId);
+    // Channel fan-out past the marker is best-effort: each channel isolates its
+    // own failure (§6.10 email philosophy) so one bad transport never blocks
+    // the others — and never re-throws into the queue (the marker exists; a
+    // retry would no-op anyway).
+    if (routing.email && email && recipient.email) {
+      try {
+        await sendEmail(event, rendered, {
+          id: recipient.id,
+          email: recipient.email,
+          locale: recipient.locale,
+        });
+      } catch (err) {
+        logger?.warn({ err, type: event.type }, 'notification email fan-out failed');
+      }
     }
 
-    await sendEmail(event);
+    const pushMessage: PushMessage = {
+      type: event.type,
+      title: rendered.title,
+      body: rendered.body,
+      data: rendered.data,
+    };
+    if (routing.push && fcm) {
+      try {
+        await fcm.deliver(event.userId, pushMessage);
+      } catch (err) {
+        logger?.warn({ err, type: event.type }, 'FCM fan-out failed');
+      }
+    }
+    if (routing.webpush && webPush) {
+      try {
+        await webPush.deliver(event.userId, pushMessage);
+      } catch (err) {
+        logger?.warn({ err, type: event.type }, 'web-push fan-out failed');
+      }
+    }
   }
 
-  return {
-    async start(): Promise<void> {
-      if (unsubscribers.length > 0) return;
-      for (const type of DISPATCHED_EVENT_TYPES) {
-        const unsubscribe = await bus.subscribe(type, (event) => {
-          void dispatch(event as DispatchableEvent).catch((err) => {
-            logger?.error({ err, type }, 'notification dispatch failed');
-          });
-        });
-        unsubscribers.push(unsubscribe);
-      }
-    },
-
-    async stop(): Promise<void> {
-      const pending = unsubscribers.splice(0, unsubscribers.length);
-      await Promise.allSettled(pending.map((unsubscribe) => unsubscribe()));
-    },
-
-    dispatch,
-  };
+  return { dispatch };
 }

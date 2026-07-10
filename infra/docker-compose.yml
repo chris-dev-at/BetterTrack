@@ -112,6 +112,14 @@ services:
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
       RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
       RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+      # Push channels (#368) — both optional, SMTP-style gating: unset ⇒ the
+      # channel is disabled with one boot warn, nothing crashes. The FCM path
+      # points at a MOUNTED service-account JSON (compose.override.yml adds the
+      # volume; see the #421 go-live runbook) — the key never enters an image.
+      BT_FCM_SERVICE_ACCOUNT_FILE: '${BT_FCM_SERVICE_ACCOUNT_FILE:-}'
+      BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
+      BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
+      BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
     depends_on:
       db:
         condition: service_healthy
@@ -168,6 +176,14 @@ services:
       ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
       RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
       RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+      # Push channels (#368) — both optional, SMTP-style gating: unset ⇒ the
+      # channel is disabled with one boot warn, nothing crashes. The FCM path
+      # points at a MOUNTED service-account JSON (compose.override.yml adds the
+      # volume; see the #421 go-live runbook) — the key never enters an image.
+      BT_FCM_SERVICE_ACCOUNT_FILE: '${BT_FCM_SERVICE_ACCOUNT_FILE:-}'
+      BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
+      BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
+      BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
     depends_on:
       db:
         condition: service_healthy

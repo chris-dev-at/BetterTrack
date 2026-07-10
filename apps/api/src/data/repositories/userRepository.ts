@@ -187,6 +187,14 @@ export function createUserRepository(db: Database) {
       await db.update(users).set({ baseCurrency, updatedAt: new Date() }).where(eq(users.id, id));
     },
 
+    /** Set the global notification mute (#368) — the dispatcher's kill switch. */
+    async setNotificationsMuted(id: string, muted: boolean): Promise<void> {
+      await db
+        .update(users)
+        .set({ notificationsMuted: muted, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
     async setLastLogin(id: string, when: Date): Promise<void> {
       await db
         .update(users)

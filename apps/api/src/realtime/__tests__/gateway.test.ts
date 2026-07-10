@@ -30,7 +30,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   for (const socket of openSockets.splice(0, openSockets.length)) socket.disconnect();
-  await harness.ctx.notificationDispatcher.stop();
   await harness.ctx.realtime.close();
   if (server) {
     await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -427,9 +426,8 @@ describe('realtime gateway — rooms (§4.5)', () => {
 describe('realtime gateway — bell push end-to-end (§4.5 "done when")', () => {
   it('a friend request pops the recipient socket without any refetch', async () => {
     await listenWithGateway();
-    // The dispatcher is the producer of notification.created — start it exactly
-    // as the API bootstrap does.
-    await harness.ctx.notificationDispatcher.start();
+    // The dispatcher is the producer of notification.created — under test the
+    // center delivers through it synchronously (#368), nothing to start.
 
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });

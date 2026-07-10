@@ -167,7 +167,7 @@
     },
     "notifications": {
       "title": "Notifications",
-      "subtitle": "Choose how BetterTrack notifies you for each kind of activity — the in-app bell, email, both, or muted.",
+      "subtitle": "Route each kind of activity to the channels you want — in-app bell, email, phone push, browser push — or mute everything at once.",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },
@@ -199,6 +199,18 @@
         "chatMessage": {
           "label": "Chat messages",
           "description": "When a friend sends you a message."
+        },
+        "watchlistShared": {
+          "label": "Shared watchlists",
+          "description": "When a friend shares a watchlist with you."
+        },
+        "conglomerateShared": {
+          "label": "Shared conglomerates",
+          "description": "When a friend shares a conglomerate with you."
+        },
+        "friendActivity": {
+          "label": "Friend activity",
+          "description": "Buys, sells and watchlist additions on shared items you follow."
         }
       },
       "routing": {
@@ -218,7 +230,41 @@
         "description": "Activity like friend requests and shares will show up here."
       },
       "refreshError": "Couldn't refresh notifications. Showing the last loaded list.",
-      "loadMore": "Load more"
+      "loadMore": "Load more",
+      "channels": {
+        "inapp": "In-app",
+        "email": "Email",
+        "push": "Phone push",
+        "webpush": "Browser push"
+      },
+      "categories": {
+        "social": "Friends",
+        "sharing": "Sharing & activity",
+        "chat": "Chat",
+        "alerts": "Price alerts",
+        "account": "Account"
+      },
+      "grid": {
+        "categoryToggleAria": "Toggle all {{category}} notifications",
+        "cellAria": "{{type}} via {{channel}}",
+        "saveError": "Couldn't save that change. Please try again.",
+        "inviteHint": "Invite emails go to people without an account yet, so there is nothing to route here.",
+        "tempPasswordEmailHint": "The email with the temporary password is always sent — it carries your credentials."
+      },
+      "mute": {
+        "label": "Mute all notifications",
+        "description": "While muted, nothing is delivered on any channel. Your choices below are kept."
+      },
+      "webPush": {
+        "title": "Browser push in this browser",
+        "description": "Get desktop notifications even with the tab closed. Enable per browser; the column below chooses what is pushed.",
+        "enable": "Enable in this browser",
+        "disable": "Disable in this browser",
+        "enabled": "Enabled in this browser",
+        "unsupported": "This browser does not support push notifications.",
+        "denied": "Notifications are blocked for this site in your browser settings.",
+        "error": "Couldn't update browser push. Please try again."
+      }
     },
     "security": {
       "title": "Security",
