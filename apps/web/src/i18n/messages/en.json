@@ -390,7 +390,8 @@
         "accountSecurity": {
           "label": "Account security",
           "description": "Manage sign-in sessions, two-factor, password and app PIN."
-        }
+        },
+        "impliedByWrite": "Included automatically with write access."
       },
       "keys": {
         "tokenModal": {

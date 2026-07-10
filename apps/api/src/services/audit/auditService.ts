@@ -14,6 +14,7 @@ export const AuditAction = {
   PinVerifyFail: 'pin.verify_fail',
   PinLockIdleChanged: 'pin.lock_idle_changed',
   TwoFactorEnrolled: 'two_factor.enrolled',
+  TwoFactorEnrollCanceled: 'two_factor.enroll_canceled',
   TwoFactorConfirmed: 'two_factor.confirmed',
   TwoFactorDisabled: 'two_factor.disabled',
   TwoFactorRecoveryRegenerated: 'two_factor.recovery_regenerated',

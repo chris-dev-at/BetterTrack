@@ -390,7 +390,8 @@
         "accountSecurity": {
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor, Passwort und App-PIN verwalten."
-        }
+        },
+        "impliedByWrite": "Wird automatisch mit dem Schreibzugriff gewährt."
       },
       "keys": {
         "tokenModal": {

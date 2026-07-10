@@ -1,5 +1,7 @@
 import type { Request, RequestHandler } from 'express';
 
+import { scopeSatisfies } from '@bettertrack/contracts';
+
 import { forbidden, notFound, unauthorized } from '../../errors';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
@@ -213,7 +215,11 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     const required = SAFE_METHODS.has(req.method) ? policy.read : policy.write;
-    if (req.apiKey.scopes.includes(required)) {
+    // Write-implies-read (#371): a held `:write` satisfies the corresponding
+    // `:read` requirement, so no read-only route is unreachable to a write-scoped
+    // token. Enforced here at check time — the single authoritative point that
+    // also covers tokens minted before the rule.
+    if (scopeSatisfies(req.apiKey.scopes, required)) {
       next();
       return;
     }

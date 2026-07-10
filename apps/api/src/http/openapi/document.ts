@@ -463,6 +463,15 @@ const endpoints: EndpointDef[] = [
     response: R.TwoFactorEnrollResponse,
   },
   {
+    method: 'delete',
+    path: '/auth/2fa/enroll',
+    tag: 'Auth',
+    summary:
+      'Cancel a pending (unconfirmed) TOTP enrollment. 409 when TOTP is already enabled, 404 when nothing is pending.',
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
     method: 'post',
     path: '/auth/2fa/confirm',
     tag: 'Auth',
