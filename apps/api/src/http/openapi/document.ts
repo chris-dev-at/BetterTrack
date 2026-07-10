@@ -39,6 +39,7 @@ const componentSchemas = {
   ApiError: contracts.apiErrorSchema,
   OkResponse: contracts.okResponseSchema,
   HealthResponse: contracts.healthResponseSchema,
+  VersionResponse: contracts.versionResponseSchema,
 
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
@@ -298,6 +299,15 @@ const endpoints: EndpointDef[] = [
     public: true,
     status: 200,
     response: R.HealthResponse,
+  },
+  {
+    method: 'get',
+    path: '/version',
+    tag: 'Meta',
+    summary: 'Deployed build marker (commit + build time) for deploy verification.',
+    public: true,
+    status: 200,
+    response: R.VersionResponse,
   },
 
   // Auth (§6.1)

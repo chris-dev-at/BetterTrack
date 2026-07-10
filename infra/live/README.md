@@ -26,6 +26,12 @@ What this canonical copy adds over the historical control-dir script:
   through the same `compose run` mechanism. The seed is idempotent by design
   (#398), so this converges the first-party OAuth client scope ceiling on every
   deploy — not only on `start.sh` — without narrowing anything already present.
+- **Deploy marker.** Right after the fast-forward and before the build, it stamps
+  the deployed commit and a UTC build time into `GIT_SHA` / `GIT_BUILD_TIME` and
+  exports them, so compose bakes them into the web + api images (build args → the
+  Dockerfiles). The live API then reports them at the public, no-auth
+  `GET /api/v1/version`, and the admin login page shows a `web <sha> · api <sha>`
+  footer — so anyone can verify exactly which commit is live.
 
 All prior behavior and safety semantics are preserved exactly: the poll loop,
 fast-forward, db+redis brought up before migrate, `deployed.sha` written on
@@ -43,3 +49,18 @@ docker restart bettertrack-live-updater-1
 
 The script is read once at container start, so the restart is what picks up the
 new version.
+
+### Deploy marker on `start.sh`-driven builds
+
+The updater stamps the deploy marker (`GIT_SHA` / `GIT_BUILD_TIME`) on every
+auto-deploy. Manual bring-ups driven by the control-dir `start.sh` (first boot,
+or a hand-run rebuild) will still report `unknown` for both `web` and `api` at
+`GET /api/v1/version` and in the login footer until `start.sh` exports the same
+two vars before its `docker compose build` / `up`. Paste these two lines into
+`start.sh` before the build step (the app clone lives at `./app` under the
+control dir):
+
+```sh
+export GIT_SHA="$(git -C app rev-parse HEAD 2>/dev/null || echo unknown)"
+export GIT_BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+```

@@ -4,6 +4,7 @@ import helmet from 'helmet';
 
 import { createErrorHandler } from './http/errorHandler';
 import { healthRouter } from './http/healthRouter';
+import { versionRouter } from './http/versionRouter';
 import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth';
 import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
@@ -53,6 +54,14 @@ export function createApp(ctx: AppContext) {
   // /api/v1 session/CSRF/password-change chain, so `GET /openapi.json` and
   // `GET /docs` are reachable with no session. The API itself stays guarded.
   app.use(createOpenApiRouter());
+
+  // Public deploy-verification marker (§5 Meta): which commit is live. Mounted
+  // in the public-meta zone alongside the docs, BEFORE the /api/v1 bearer/
+  // session/rate-limit/CSRF chain below, so anyone (human or script, no auth)
+  // can read GET /api/v1/version without a session, without a CSRF header, and
+  // without spending the API rate limit. Only `/version` matches; every other
+  // /api/v1 path falls through to the guarded chain.
+  app.use('/api/v1', versionRouter);
 
   const limiters = createRateLimiters(ctx);
 

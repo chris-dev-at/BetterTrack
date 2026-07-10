@@ -14,6 +14,14 @@ RUN pnpm install --frozen-lockfile
 # ── build: Vite production build → apps/web/dist/ ───────────────────────────
 COPY packages/ ./packages/
 COPY apps/web/ ./apps/web/
+# Deploy marker baked into the bundle (admin-login footer). Vite only exposes
+# VITE_-prefixed vars to the client and reads them from the build environment,
+# so these must be set as ENV BEFORE `pnpm build`. Passed as build args by
+# compose (GIT_SHA/GIT_BUILD_TIME); default to "unknown" for a bare build.
+ARG GIT_SHA=unknown
+ARG GIT_BUILD_TIME=unknown
+ENV VITE_BUILD_SHA=$GIT_SHA \
+    VITE_BUILD_TIME=$GIT_BUILD_TIME
 RUN pnpm --filter @bettertrack/web build
 
 # ── runner: nginx front proxy — fronts web/admin/api origins, both modes ─────
