@@ -5,6 +5,7 @@ import type { RequestHandler } from 'express';
 import { Server as SocketIOServer, type Socket } from 'socket.io';
 
 import {
+  LIVE_RATE_MS,
   REALTIME_CLIENT_EVENTS,
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
@@ -242,10 +243,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     respond({ ok: true });
   }
 
-  /** The assets this socket holds a live watch on (one count each, §6.3). */
-  const liveAssetsOf = (socket: Socket): Set<string> =>
-    (socket.data.liveAssets as Set<string> | undefined) ??
-    (socket.data.liveAssets = new Set<string>());
+  /**
+   * The assets this socket holds a live watch on (one registration each,
+   * §6.3): the resolved provider ref (re-watches and stitched backfills reuse
+   * it without re-resolving) and the rate registered with the shared loop —
+   * an unwatch must release exactly the rate it registered (#372).
+   */
+  type LiveWatchEntry = { ref: AssetRef; rateMs: number | undefined };
+  const liveAssetsOf = (socket: Socket): Map<string, LiveWatchEntry> =>
+    (socket.data.liveAssets as Map<string, LiveWatchEntry> | undefined) ??
+    (socket.data.liveAssets = new Map<string, LiveWatchEntry>());
 
   /**
    * Serialize a socket's live-mode ops. `live.watch` awaits an asset resolve
@@ -266,10 +273,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   }
 
   /**
-   * `live.watch` (§6.3, V3-P7b): first watch per socket registers with the
-   * shared loop and joins the `asset:{id}` room for `live.frame` fan-out; a
-   * repeat watch (window switch) only re-backfills — the loop never restarts.
-   * The ack carries the requested window from the ring buffer, oldest first.
+   * `live.watch` (§6.3, V3-P7b; rates per #372): first watch per socket
+   * registers its requested rate with the shared loop and joins the
+   * `asset:{id}` room for `live.frame` fan-out; a repeat watch (window or rate
+   * switch) only re-backfills and — when the rate changed — re-registers this
+   * socket's rate (new first, then old, so the loop never dips to zero and
+   * restarts). The ack carries the requested window, oldest first: ring frames
+   * preceded by a history-stitched seed when the ring falls short.
    */
   async function handleLiveWatch(
     socket: Socket,
@@ -291,8 +301,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     const { assetId, window } = parsed.data;
+    // No requested rate ⇒ undefined, so the live-mode service's configured
+    // default applies (contract {@link DEFAULT_LIVE_RATE} in production).
+    const rateMs = parsed.data.rate === undefined ? undefined : LIVE_RATE_MS[parsed.data.rate];
     const watched = liveAssetsOf(socket);
-    if (!watched.has(assetId)) {
+    let entry = watched.get(assetId);
+    if (!entry) {
       const ref = await deps.resolveWatchableAsset(userId, assetId).catch(() => null);
       if (!ref) {
         // Missing and someone-else's-custom look identical (§10). Fails closed.
@@ -306,11 +320,16 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         respond({ ok: false, error: 'GONE' });
         return;
       }
-      liveMode.watch(assetId, ref);
-      watched.add(assetId);
+      liveMode.watch(assetId, ref, rateMs);
+      entry = { ref, rateMs };
+      watched.set(assetId, entry);
       await socket.join(assetRoom(assetId));
+    } else if (entry.rateMs !== rateMs) {
+      liveMode.watch(assetId, entry.ref, rateMs);
+      liveMode.unwatch(assetId, entry.rateMs);
+      entry.rateMs = rateMs;
     }
-    const frames = await liveMode.backfill(assetId, window);
+    const frames = await liveMode.backfill(assetId, entry.ref, window);
     respond({ ok: true, frames });
   }
 
@@ -324,9 +343,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       return;
     }
     const { assetId } = parsed.data;
-    // Idempotent: only a held watch releases a count (and the room seat).
-    if (liveAssetsOf(socket).delete(assetId)) {
-      deps.liveMode?.unwatch(assetId);
+    // Idempotent: only a held watch releases its registration (and room seat).
+    const entry = liveAssetsOf(socket).get(assetId);
+    if (entry) {
+      liveAssetsOf(socket).delete(assetId);
+      deps.liveMode?.unwatch(assetId, entry.rateMs);
       await socket.leave(assetRoom(assetId));
     }
     respond({ ok: true });
@@ -448,7 +469,9 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         // it runs AFTER any in-flight watch registers what it must release.
         socket.on('disconnect', () => {
           void enqueueLiveOp(socket, async () => {
-            for (const assetId of liveAssetsOf(socket)) deps.liveMode?.unwatch(assetId);
+            for (const [assetId, entry] of liveAssetsOf(socket)) {
+              deps.liveMode?.unwatch(assetId, entry.rateMs);
+            }
             liveAssetsOf(socket).clear();
           });
         });

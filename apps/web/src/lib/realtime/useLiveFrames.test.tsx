@@ -52,7 +52,7 @@ describe('useLiveFrames', () => {
     ];
     const { value, push } = makeContext({ watchLive: vi.fn(async () => backfill) });
 
-    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '10m', true), {
+    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '10m', '10s', true), {
       wrapper: wrapperFor(value),
     });
 
@@ -72,7 +72,7 @@ describe('useLiveFrames', () => {
     const watchLive = vi.fn(async () => null);
     const { value } = makeContext({ watchLive });
 
-    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '1m', true), {
+    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '1m', '10s', true), {
       wrapper: wrapperFor(value),
     });
 
@@ -87,13 +87,13 @@ describe('useLiveFrames', () => {
     const { value } = makeContext({ watchLive, unwatchLive });
 
     const { rerender, unmount } = renderHook(
-      ({ window }: { window: '1m' | '12h' }) => useLiveFrames(ASSET_ID, window, true),
+      ({ window }: { window: '1m' | '12h' }) => useLiveFrames(ASSET_ID, window, '10s', true),
       { wrapper: wrapperFor(value), initialProps: { window: '1m' } as { window: '1m' | '12h' } },
     );
-    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '1m'));
+    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '1m', '10s'));
 
     rerender({ window: '12h' as const });
-    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '12h'));
+    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '12h', '10s'));
     expect(unwatchLive).not.toHaveBeenCalled(); // the loop must survive the switch
 
     unmount();
@@ -105,18 +105,95 @@ describe('useLiveFrames', () => {
     const watchLive = vi.fn(async () => [] as RealtimeLiveFrame[]);
     const { value } = makeContext({ watchLive });
 
-    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '10m', false), {
+    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '10m', '10s', false), {
       wrapper: wrapperFor(value),
     });
     expect(watchLive).not.toHaveBeenCalled();
     expect(result.current).toEqual({ frames: [], streaming: false });
   });
 
+  test('a coarser viewer downsamples a finer shared stream to its own rate (#372)', async () => {
+    // The shared loop runs at some finer viewer's 1 s; this viewer asked for
+    // 10 s — it keeps the first frame of each of its own 10 s buckets.
+    const backfill = [
+      frame('2026-07-08T10:00:00.000Z', 100),
+      frame('2026-07-08T10:00:01.000Z', 101), // same 10 s bucket: dropped
+      frame('2026-07-08T10:00:11.000Z', 102),
+    ];
+    const { value, push } = makeContext({ watchLive: vi.fn(async () => backfill) });
+
+    const { result } = renderHook(() => useLiveFrames(ASSET_ID, '10m', '10s', true), {
+      wrapper: wrapperFor(value),
+    });
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+    expect(result.current.frames.map((f) => f.price)).toEqual([100, 102]);
+
+    act(() => {
+      push(frame('2026-07-08T10:00:12.000Z', 103)); // still bucket of 102: dropped
+      push(frame('2026-07-08T10:00:21.000Z', 104)); // next bucket: kept
+      push(frame('2026-07-08T10:00:22.000Z', 105)); // same bucket: dropped
+    });
+    expect(result.current.frames.map((f) => f.price)).toEqual([100, 102, 104]);
+  });
+
+  test('a rate switch re-watches at the new rate without releasing (#372)', async () => {
+    const watchLive = vi.fn(async () => [] as RealtimeLiveFrame[]);
+    const unwatchLive = vi.fn();
+    const { value } = makeContext({ watchLive, unwatchLive });
+
+    const { rerender } = renderHook(
+      ({ rate }: { rate: '1s' | '10s' }) => useLiveFrames(ASSET_ID, '10m', rate, true),
+      { wrapper: wrapperFor(value), initialProps: { rate: '10s' } as { rate: '1s' | '10s' } },
+    );
+    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '10m', '10s'));
+
+    rerender({ rate: '1s' as const });
+    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '10m', '1s'));
+    expect(unwatchLive).not.toHaveBeenCalled(); // the shared loop survives the switch
+  });
+
+  test('hiding the tab releases the watch (presence gating); showing re-establishes it (#372)', async () => {
+    const watchLive = vi.fn(async () => [] as RealtimeLiveFrame[]);
+    const unwatchLive = vi.fn();
+    const { value } = makeContext({ watchLive, unwatchLive });
+
+    const setVisibility = (state: 'visible' | 'hidden') => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => state,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+
+    try {
+      const { result } = renderHook(() => useLiveFrames(ASSET_ID, '10m', '10s', true), {
+        wrapper: wrapperFor(value),
+      });
+      await waitFor(() => expect(result.current.streaming).toBe(true));
+      expect(unwatchLive).not.toHaveBeenCalled();
+
+      // Nobody is looking: the watch is released so the shared upstream loop
+      // can go cold — polling is presence-gated.
+      act(() => setVisibility('hidden'));
+      expect(unwatchLive).toHaveBeenCalledTimes(1);
+      expect(unwatchLive).toHaveBeenCalledWith(ASSET_ID);
+      expect(result.current.streaming).toBe(false);
+
+      // Back to the tab: watch + backfill resume without a remount.
+      watchLive.mockClear();
+      act(() => setVisibility('visible'));
+      await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '10m', '10s'));
+      await waitFor(() => expect(result.current.streaming).toBe(true));
+    } finally {
+      setVisibility('visible');
+    }
+  });
+
   test('while disconnected it waits; a reconnect re-establishes the watch', async () => {
     const watchLive = vi.fn(async () => [] as RealtimeLiveFrame[]);
     const disconnected = makeContext({ connected: false, watchLive });
 
-    const { result, rerender } = renderHook(() => useLiveFrames(ASSET_ID, '10m', true), {
+    const { result, rerender } = renderHook(() => useLiveFrames(ASSET_ID, '10m', '10s', true), {
       wrapper: wrapperFor(disconnected.value),
     });
     expect(watchLive).not.toHaveBeenCalled();
@@ -125,6 +202,6 @@ describe('useLiveFrames', () => {
     // The socket comes (back) up: same context surface, connected flips true.
     disconnected.value.connected = true;
     rerender();
-    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '10m'));
+    await waitFor(() => expect(watchLive).toHaveBeenCalledWith(ASSET_ID, '10m', '10s'));
   });
 });

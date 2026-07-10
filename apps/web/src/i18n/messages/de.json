@@ -1157,6 +1157,8 @@
       "badge": "LIVE",
       "toggleLabel": "Live-Modus umschalten",
       "windowGroupLabel": "Live-Zeitfenster wählen",
+      "rateGroupLabel": "Aktualisierungsrate wählen",
+      "rateGroupHint": "Wie oft sich der Live-Kurs aktualisiert. Alle Betrachter teilen sich einen Update-Stream mit der schnellsten angefragten Rate.",
       "waiting": "Warte auf Live-Kurse…",
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
       "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}"
