@@ -35,8 +35,13 @@ function AdminShell() {
         <Route path="audit" element={<AuditPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
-      {/* Unknown admin paths fall back to the users page (or login if anonymous). */}
-      <Route path="*" element={<Navigate to="users" replace />} />
+      {/* Unknown admin paths fall back to the users page (or login if anonymous).
+          The target MUST be absolute (`/admin/users`): a relative `to="users"`
+          resolves against the splat's full matched pathname, so from an unmatched
+          `/admin/blabla` it appends (`/admin/blabla/users`) — which only re-matches
+          this same `*` route and appends again, looping forever. An absolute path
+          lands on the home route in exactly one hop. */}
+      <Route path="*" element={<Navigate to="/admin/users" replace />} />
     </Routes>
   );
 }

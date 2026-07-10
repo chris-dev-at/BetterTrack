@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { AdminStats, AdminUser, MeResponse } from '@bettertrack/contracts';
@@ -46,6 +46,22 @@ const stats: AdminStats = {
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/admin/*" element={<AdminApp />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+/** Mirrors the live URL into the DOM so tests can assert where routing settled. */
+function LocationProbe() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
+function renderAtWithLocation(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <LocationProbe />
       <Routes>
         <Route path="/admin/*" element={<AdminApp />} />
       </Routes>
@@ -105,4 +121,22 @@ test('a reset admin is trapped into the forced change, then recovers into the co
   // Recovered on the same session — the console opens up.
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
   expect(api.changePassword).toHaveBeenCalledWith({ newPassword: 'ops-recovered-strong-9' });
+});
+
+test('an unknown nested admin path lands on the users home in one hop, without appending segments', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(admin);
+
+  // Deep, unmatched sub-path. A relative catch-all redirect would resolve against
+  // the splat's full pathname and append endlessly (/admin/blabla/users/users/…);
+  // the absolute fallback must instead land squarely on the home route.
+  renderAtWithLocation('/admin/blabla');
+
+  // We reached the guarded users page (jane), i.e. the redirect resolved to a
+  // real route rather than looping on the fallback.
+  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+
+  // Exactly the absolute home — no 'blabla', no duplicated segments.
+  const pathname = screen.getByTestId('location').textContent;
+  expect(pathname).toBe('/admin/users');
+  expect(pathname).not.toContain('blabla');
 });
