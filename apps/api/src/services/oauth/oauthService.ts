@@ -13,6 +13,7 @@ import {
   OAUTH_REFRESH_TOKEN_TTL_SECONDS,
   OAUTH_SCOPE_LABELS,
   isValidRedirectUri,
+  withImpliedReadScopes,
   type ApiKeyScope,
   type CreateOAuthClientResponse,
   type OAuthApproveRequest,
@@ -504,7 +505,13 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
           firstParty: client.isFirstParty,
           logoUrl: client.isFirstParty ? null : (client.logoUrl ?? null),
         },
-        scopes: scopes.map((scope) => ({ scope, label: OAUTH_SCOPE_LABELS[scope] })),
+        // Write-implies-read (#371): show every implied read on the consent
+        // screen so the user sees the true effective access an approval grants
+        // (the middleware lets a `:write` satisfy its `:read` at request time).
+        scopes: withImpliedReadScopes(scopes).map((scope) => ({
+          scope,
+          label: OAUTH_SCOPE_LABELS[scope],
+        })),
         redirectUri: query.redirect_uri,
         state: query.state ?? null,
       };
