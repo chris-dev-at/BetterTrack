@@ -3,6 +3,7 @@ export {
   LIVE_POLL_INTERVAL_MS,
   LIVE_POLL_MAX_INTERVAL_MS,
   LIVE_RING_RETENTION_MS,
+  LIVE_SEED_MIN_GAP_MS,
   createLiveModeService,
   type LiveModeService,
   type LiveModeServiceDeps,

@@ -10,6 +10,8 @@ import {
   REALTIME_PATH,
   REALTIME_SERVER_EVENTS,
   type CachedResult,
+  type LiveRate,
+  type PricePoint,
   type Quote,
   type RealtimeLiveFrame,
   type RealtimeLiveWatchAck,
@@ -40,11 +42,15 @@ const quoteResult = (price: number): CachedResult<Quote> => ({
   asOf: Date.now(),
 });
 
+let historyBars: PricePoint[] = [];
+
 beforeEach(async () => {
   let price = 100;
+  historyBars = [];
   stub = createStubMarketData({
     quote: () => quoteResult(price),
     poll: () => quoteResult(price++),
+    history: () => ({ value: historyBars, stale: false, asOf: Date.now() }),
   });
   harness = await createTestApp({
     marketData: stub,
@@ -110,12 +116,13 @@ function watch(
   socket: ClientSocket,
   assetId: string,
   window: string,
+  rate?: LiveRate,
 ): Promise<RealtimeLiveWatchAck> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('timed out waiting for live.watch ack')), 3000);
     socket.emit(
       REALTIME_CLIENT_EVENTS.liveWatch,
-      { assetId, window },
+      rate === undefined ? { assetId, window } : { assetId, window, rate },
       (ack: RealtimeLiveWatchAck) => {
         clearTimeout(timer);
         resolve(ack);
@@ -249,8 +256,92 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
       );
     });
     expect(badWindow).toEqual({ ok: false, error: 'BAD_REQUEST' });
+
+    const badRate = await new Promise<RealtimeLiveWatchAck>((resolve) => {
+      alice.emit(
+        REALTIME_CLIENT_EVENTS.liveWatch,
+        { assetId, window: '10m', rate: '7s' },
+        (ack: RealtimeLiveWatchAck) => resolve(ack),
+      );
+    });
+    expect(badRate).toEqual({ ok: false, error: 'BAD_REQUEST' });
     expect(alice.connected).toBe(true);
     expect(stub.calls.poll).toBe(0); // nothing above ever reached the provider
+  });
+
+  it('the shared loop runs at the finest ACTIVE rate — min of the viewers, never faster (#372)', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    const bob = await connectUser('bob@bt.test', 'bob');
+
+    // Alice at 2 s alone.
+    expect(await watch(alice, assetId, '10m', '2s')).toMatchObject({ ok: true });
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(2000);
+
+    // Bob at 1 s: ONE loop for both, at min(2 s, 1 s) = 1 s — never a divisor
+    // below what the fastest viewer asked for.
+    expect(await watch(bob, assetId, '10m', '1s')).toMatchObject({ ok: true });
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(2);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(1000);
+
+    // The finest viewer leaves: the loop coarsens to the survivors' rate.
+    await unwatch(bob, assetId);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(2000);
+  });
+
+  it('a re-watch with a new rate moves this socket to it without double-counting (#372)', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+
+    expect(await watch(alice, assetId, '10m', '1s')).toMatchObject({ ok: true });
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(1000);
+
+    expect(await watch(alice, assetId, '10m', '5s')).toMatchObject({ ok: true });
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(1);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(5000);
+
+    // One unwatch fully releases the moved registration: loop goes cold.
+    await unwatch(alice, assetId);
+    expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(0);
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBeNull();
+  });
+
+  it('a watch without a rate keeps the default cadence (pre-#372 clients)', async () => {
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+
+    await watch(alice, assetId, '10m');
+    expect(harness.ctx.liveMode.pollIntervalMs(assetId)).toBe(POLL_MS);
+  });
+
+  it('the watch ack stitches provider history ahead of the ring when it falls short (#372)', async () => {
+    const minute = 60_000;
+    const start = Date.now();
+    historyBars = Array.from({ length: 15 }, (_, i) => ({
+      time: new Date(start - (15 - i) * minute).toISOString(),
+      close: 200 + i,
+    }));
+
+    const assetId = await seedAsset();
+    const alice = await connectUser('alice@bt.test', 'alice');
+    const ack = await watch(alice, assetId, '10m');
+    expect(ack.ok).toBe(true);
+
+    // The freshly-hot ring cannot reach 10 minutes back: the ack leads with
+    // seed frames from the cached 1 m provider bars, oldest first…
+    const seeds = ack.frames!.filter((f) => f.seed);
+    expect(seeds.length).toBeGreaterThanOrEqual(9);
+    expect(seeds.map((f) => f.at)).toEqual([...seeds.map((f) => f.at)].sort());
+    expect(seeds.every((f) => f.currency === 'EUR' && f.dayChangePct === null)).toBe(true);
+    // …and every real (non-seed) frame is newer than every seed.
+    const lastSeedAt = seeds[seeds.length - 1]!.at;
+    expect(ack.frames!.filter((f) => !f.seed).every((f) => f.at > lastSeedAt)).toBe(true);
+
+    // Live streaming continues on top of the stitched start.
+    const frames = collectFrames(alice);
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(1));
+    expect(frames.every((f) => f.seed === undefined)).toBe(true);
   });
 
   it('two un-acked watches for the same asset register ONE count (TOCTOU regression)', async () => {

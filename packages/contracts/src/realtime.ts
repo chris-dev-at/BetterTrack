@@ -110,6 +110,32 @@ export const LIVE_WINDOW_MS: Record<LiveWindow, number> = {
 };
 
 /**
+ * The refresh rates a viewer may request for a live watch (#372), down to 1 s.
+ * The rate is a REQUEST, not a promise: one shared per-asset loop serves all
+ * viewers and polls at the finest rate any ACTIVE viewer requested — the
+ * minimum, never a common divisor (4 s + 2 s viewers ⇒ one 2 s loop, NOT 1 s).
+ * Viewers coarser than the loop downsample client-side; nobody's request ever
+ * makes upstream calls faster than the fastest active viewer needs.
+ */
+export const LIVE_RATES = ['1s', '2s', '5s', '10s', '30s', '60s'] as const;
+
+export const liveRateSchema = z.enum(LIVE_RATES);
+export type LiveRate = z.infer<typeof liveRateSchema>;
+
+/** Each live rate's poll interval in milliseconds. */
+export const LIVE_RATE_MS: Record<LiveRate, number> = {
+  '1s': 1_000,
+  '2s': 2_000,
+  '5s': 5_000,
+  '10s': 10_000,
+  '30s': 30_000,
+  '60s': 60_000,
+};
+
+/** Applied when a watch omits `rate` (pre-#372 clients keep today's cadence). */
+export const DEFAULT_LIVE_RATE: LiveRate = '10s';
+
+/**
  * One live price observation. Produced once per poll tick by the shared
  * per-asset loop, appended to the Redis ring buffer, and fanned out as
  * `live.frame` to the `asset:{id}` room — N viewers, one upstream stream (§5.3).
@@ -121,17 +147,27 @@ export const realtimeLiveFrameSchema = z.object({
   dayChangePct: z.number().nullable(),
   /** When the loop observed this price (ISO-8601, producer-stamped). */
   at: z.string().datetime(),
+  /**
+   * True on a history-stitched seed frame (#372): the watch ack prepends the
+   * tail of provider history when the ring buffer does not reach back to the
+   * requested window's start. Seeds never stream — live ticks age them out of
+   * the window until it is 100 % real observations.
+   */
+  seed: z.boolean().optional(),
 });
 export type RealtimeLiveFrame = z.infer<typeof realtimeLiveFrameSchema>;
 
 /**
  * Payload of `live.watch`. Idempotent per socket per asset: a repeat watch
- * (e.g. a window switch) only re-backfills — the watcher count and the
- * upstream loop are untouched.
+ * (e.g. a window switch) only re-backfills — the watcher count is untouched.
+ * A repeat watch MAY carry a new `rate`; the socket's registered rate moves
+ * with it and the shared loop re-derives its finest-active cadence (#372).
+ * `rate` omitted ⇒ {@link DEFAULT_LIVE_RATE}.
  */
 export const realtimeLiveWatchRequestSchema = z.object({
   assetId: z.string().uuid(),
   window: liveWindowSchema,
+  rate: liveRateSchema.optional(),
 });
 export type RealtimeLiveWatchRequest = z.infer<typeof realtimeLiveWatchRequestSchema>;
 

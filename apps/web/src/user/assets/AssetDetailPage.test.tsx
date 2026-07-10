@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -321,6 +321,38 @@ describe('AssetDetailPage — Live Mode (§6.3, V3-P7b)', () => {
     await user.click(screen.getByRole('button', { name: '12h' }));
     expect(screen.getByRole('button', { name: '12h' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: '10m' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Toggle live mode' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  test('live mode offers refresh rates down to 1 s; picking one stays selected (#372)', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+    const rateGroup = screen.getByRole('group', { name: 'Select refresh rate' });
+    for (const rate of ['1s', '2s', '5s', '10s', '30s', '60s']) {
+      expect(within(rateGroup).getByRole('button', { name: rate })).toBeInTheDocument();
+    }
+    // Default rate is 10 s (the pre-overhaul cadence).
+    expect(within(rateGroup).getByRole('button', { name: '10s' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    await user.click(within(rateGroup).getByRole('button', { name: '1s' }));
+    expect(within(rateGroup).getByRole('button', { name: '1s' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(within(rateGroup).getByRole('button', { name: '10s' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    // Still live, window selection untouched.
     expect(screen.getByRole('button', { name: 'Toggle live mode' })).toHaveAttribute(
       'aria-pressed',
       'true',

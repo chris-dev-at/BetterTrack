@@ -17,6 +17,7 @@ import {
   realtimeLiveWatchAckSchema,
   realtimePortfolioChangedSchema,
   realtimeQuoteUpdatedSchema,
+  type LiveRate,
   type LiveWindow,
   type RealtimeLiveFrame,
   type RealtimeRoom,
@@ -43,13 +44,19 @@ export interface RealtimeContextValue {
    */
   joinRoom(room: RealtimeRoom): () => void;
   /**
-   * Start (or re-window) a Live Mode watch on an asset (§6.3, V3-P7b).
-   * Resolves the requested window's backfill from the server's ring buffer,
-   * or `null` when the stream is unavailable (disconnected, gateway down,
-   * rejected) — the caller silently stays on the 60 s poll fallback. A repeat
-   * call with a new window only re-backfills; the upstream loop is untouched.
+   * Start (or re-window / re-rate) a Live Mode watch on an asset (§6.3,
+   * V3-P7b, #372). Resolves the requested window's backfill from the server
+   * (ring buffer, history-stitched when it falls short), or `null` when the
+   * stream is unavailable (disconnected, gateway down, rejected) — the caller
+   * silently stays on the 60 s poll fallback. A repeat call only re-backfills
+   * and re-registers this client's rate; the shared upstream loop keeps
+   * running at the finest active rate.
    */
-  watchLive(assetId: string, window: LiveWindow): Promise<RealtimeLiveFrame[] | null>;
+  watchLive(
+    assetId: string,
+    window: LiveWindow,
+    rate: LiveRate,
+  ): Promise<RealtimeLiveFrame[] | null>;
   /** Release a Live Mode watch (fire-and-forget; disconnects also release it). */
   unwatchLive(assetId: string): void;
 }
@@ -183,22 +190,25 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
     };
   }, []);
 
-  const watchLive = useCallback<RealtimeContextValue['watchLive']>(async (assetId, window) => {
-    const socket = socketRef.current;
-    if (!socket?.connected) return null;
-    try {
-      const ack: unknown = await socket
-        .timeout(5000)
-        .emitWithAck(REALTIME_CLIENT_EVENTS.liveWatch, { assetId, window });
-      const parsed = realtimeLiveWatchAckSchema.safeParse(ack);
-      if (!parsed.success || !parsed.data.ok) return null;
-      return parsed.data.frames ?? [];
-    } catch {
-      // No ack (gateway down mid-flight): silent — the poll fallback carries
-      // the chart, exactly like every other push in this layer (§4.5).
-      return null;
-    }
-  }, []);
+  const watchLive = useCallback<RealtimeContextValue['watchLive']>(
+    async (assetId, window, rate) => {
+      const socket = socketRef.current;
+      if (!socket?.connected) return null;
+      try {
+        const ack: unknown = await socket
+          .timeout(5000)
+          .emitWithAck(REALTIME_CLIENT_EVENTS.liveWatch, { assetId, window, rate });
+        const parsed = realtimeLiveWatchAckSchema.safeParse(ack);
+        if (!parsed.success || !parsed.data.ok) return null;
+        return parsed.data.frames ?? [];
+      } catch {
+        // No ack (gateway down mid-flight): silent — the poll fallback carries
+        // the chart, exactly like every other push in this layer (§4.5).
+        return null;
+      }
+    },
+    [],
+  );
 
   const unwatchLive = useCallback<RealtimeContextValue['unwatchLive']>((assetId) => {
     socketRef.current?.emit(REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId });

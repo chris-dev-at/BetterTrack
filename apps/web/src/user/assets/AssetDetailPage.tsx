@@ -4,12 +4,15 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import {
+  DEFAULT_LIVE_RATE,
+  LIVE_RATES,
   LIVE_WINDOWS,
   LIVE_WINDOW_MS,
   type Alert as AlertType,
   type AssetDetailResponse,
   type HistoryInterval,
   type HistoryRange,
+  type LiveRate,
   type LiveWindow,
   type PricePoint,
   type QuoteResponse,
@@ -427,20 +430,26 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
 // ─── Live Mode (§6.3, V3-P7b) ────────────────────────────────────────────────
 
 /**
- * The chart's LIVE controls: the toggle (a Coming-Soon marker until V3-P7b —
- * now real) plus, while live, the six short window tokens. Window switches only
- * re-backfill; the shared upstream poll loop never restarts (§5.3).
+ * The chart's LIVE controls: the toggle plus, while live, the six short window
+ * tokens and the refresh-rate tokens (#372, down to 1 s). Window and rate
+ * switches only re-backfill / re-register this viewer's rate; the shared
+ * upstream poll loop never restarts and never polls faster than the fastest
+ * active viewer needs (§5.3).
  */
 function LiveControls({
   live,
   window,
+  rate,
   onToggle,
   onWindowChange,
+  onRateChange,
 }: {
   live: boolean;
   window: LiveWindow;
+  rate: LiveRate;
   onToggle: () => void;
   onWindowChange: (window: LiveWindow) => void;
+  onRateChange: (rate: LiveRate) => void;
 }) {
   const t = useT();
   return (
@@ -469,32 +478,61 @@ function LiveControls({
       </button>
 
       {live ? (
-        <div
-          role="group"
-          aria-label={t('assets.live.windowGroupLabel')}
-          className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
-        >
-          {LIVE_WINDOWS.map((token) => {
-            const selected = token === window;
-            return (
-              <button
-                key={token}
-                type="button"
-                aria-pressed={selected}
-                onClick={() => onWindowChange(token)}
-                className={cx(
-                  'rounded px-2.5 py-1 text-xs font-medium transition-colors',
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                  selected
-                    ? 'bg-sky-600 text-white'
-                    : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
-                )}
-              >
-                {token}
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div
+            role="group"
+            aria-label={t('assets.live.windowGroupLabel')}
+            className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+          >
+            {LIVE_WINDOWS.map((token) => {
+              const selected = token === window;
+              return (
+                <button
+                  key={token}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => onWindowChange(token)}
+                  className={cx(
+                    'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                    selected
+                      ? 'bg-sky-600 text-white'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+                  )}
+                >
+                  {token}
+                </button>
+              );
+            })}
+          </div>
+          <div
+            role="group"
+            aria-label={t('assets.live.rateGroupLabel')}
+            title={t('assets.live.rateGroupHint')}
+            className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+          >
+            {LIVE_RATES.map((token) => {
+              const selected = token === rate;
+              return (
+                <button
+                  key={token}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => onRateChange(token)}
+                  className={cx(
+                    'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                    selected
+                      ? 'bg-emerald-700 text-white'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+                  )}
+                >
+                  {token}
+                </button>
+              );
+            })}
+          </div>
+        </>
       ) : null}
     </div>
   );
@@ -571,6 +609,7 @@ export function AssetDetailPage() {
   const [range, setRange] = useState<PriceRange>('1M');
   const [live, setLive] = useState(false);
   const [liveWindow, setLiveWindow] = useState<LiveWindow>('10m');
+  const [liveRate, setLiveRate] = useState<LiveRate>(DEFAULT_LIVE_RATE);
 
   const historyRange = toHistoryRange(range);
 
@@ -604,7 +643,7 @@ export function AssetDetailPage() {
   // is reachable; otherwise the 60 s quote poll above doubles as the source.
   const isCustom = detailQuery.data?.asset.isCustom ?? false;
   const liveActive = live && !isCustom && !!id;
-  const { frames: streamedFrames, streaming } = useLiveFrames(id, liveWindow, liveActive);
+  const { frames: streamedFrames, streaming } = useLiveFrames(id, liveWindow, liveRate, liveActive);
   const fallbackFrames = usePollFallbackFrames(id ?? '', quoteQuery.data, liveActive && !streaming);
 
   if (!id) return null;
@@ -665,8 +704,10 @@ export function AssetDetailPage() {
             <LiveControls
               live={liveActive}
               window={liveWindow}
+              rate={liveRate}
               onToggle={() => setLive((v) => !v)}
               onWindowChange={setLiveWindow}
+              onRateChange={setLiveRate}
             />
             {liveActive && !streaming ? (
               <span className="text-xs text-neutral-500">{t('assets.live.fallbackNote')}</span>
