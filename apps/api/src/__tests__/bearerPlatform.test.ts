@@ -11,6 +11,7 @@ import {
   createApiKeyResponseSchema,
   createOAuthClientResponseSchema,
   meResponseSchema,
+  oauthAuthorizationDetailsResponseSchema,
   oauthTokenResponseSchema,
   pinStatusResponseSchema,
   sendChatMessageResponseSchema,
@@ -504,5 +505,61 @@ describe('#396 bearer /chat coverage — the mobile chat 403 root cause', () => 
     const res = await request(harness.app).get('/api/v1/chat/conversations').set(bearer(token));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(chatConversationListResponseSchema.safeParse(res.body).success).toBe(true);
+  });
+});
+
+describe('#371 write-implies-read at the scope-enforcement rail', () => {
+  it('a personal key with only portfolio:write reaches the read-only GET too', async () => {
+    const { token } = await mintKey(['portfolio:write']);
+    // The write scope satisfies the GET's portfolio:read requirement.
+    const res = await request(harness.app).get('/api/v1/portfolios').set(bearer(token));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // …and the write endpoint it actually holds is of course reachable.
+    const post = await request(harness.app)
+      .post('/api/v1/portfolios')
+      .set(bearer(token))
+      .send({ name: 'W' });
+    expect(post.status).not.toBe(403);
+  });
+
+  it('a read-only key still cannot reach the write endpoint (implication is one-way)', async () => {
+    const { token } = await mintKey(['portfolio:read']);
+    const post = await request(harness.app)
+      .post('/api/v1/portfolios')
+      .set(bearer(token))
+      .send({ name: 'R' });
+    expect(post.status).toBe(403);
+    expect(post.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('a delegated OAuth token scoped to notifications:write can read the inbox', async () => {
+    const { token } = await mintOAuthToken(['notifications:write']);
+    const res = await request(harness.app).get('/api/v1/notifications').set(bearer(token));
+    expect(res.status, JSON.stringify(res.body)).not.toBe(403);
+  });
+
+  it('the consent screen surfaces the implied read for a write-only request', async () => {
+    const user = await seedFreshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const reg = await agent
+      .post('/api/v1/settings/oauth-clients')
+      .set(...XRW)
+      .send({ name: 'WriteOnly', redirectUris: [REDIRECT], scopes: ['portfolio:write'], public: true });
+    expect(reg.status, JSON.stringify(reg.body)).toBe(201);
+    const clientId = createOAuthClientResponseSchema.parse(reg.body).client.clientId;
+
+    const { challenge } = pkce();
+    const details = await agent.get('/api/v1/oauth/authorization-details').query({
+      client_id: clientId,
+      redirect_uri: REDIRECT,
+      scope: 'portfolio:write',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    expect(details.status, JSON.stringify(details.body)).toBe(200);
+    const parsed = oauthAuthorizationDetailsResponseSchema.parse(details.body);
+    const shown = parsed.scopes.map((s) => s.scope);
+    expect(shown).toContain('portfolio:write');
+    expect(shown).toContain('portfolio:read');
   });
 });

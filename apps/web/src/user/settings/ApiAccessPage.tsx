@@ -6,6 +6,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   API_KEY_SCOPES,
   OAUTH_SCOPE_LABELS,
+  impliedReadScope,
+  withImpliedReadScopes,
+  writeScopeForRead,
   type ApiKeyScope,
   type ApiKeySummary,
   type CreateApiKeyResponse,
@@ -152,8 +155,17 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
   function toggle(scope: ApiKeyScope) {
     setScopes((prev) => {
       const next = new Set(prev);
-      if (next.has(scope)) next.delete(scope);
-      else next.add(scope);
+      if (next.has(scope)) {
+        // A read implied by a still-selected write is locked on — leave it.
+        const write = writeScopeForRead(scope);
+        if (write && next.has(write)) return prev;
+        next.delete(scope);
+      } else {
+        next.add(scope);
+        // Write-implies-read (#371): selecting a write auto-selects its read.
+        const read = impliedReadScope(scope);
+        if (read) next.add(read);
+      }
       return next;
     });
   }
@@ -168,7 +180,7 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
       setError(t('settings.api.scopeRequired'));
       return;
     }
-    mutation.mutate({ name: name.trim(), scopes: [...scopes] });
+    mutation.mutate({ name: name.trim(), scopes: withImpliedReadScopes([...scopes]) });
   }
 
   return (
@@ -190,23 +202,34 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
         <legend className="text-sm font-medium text-neutral-300">
           {t('settings.api.scopesLegend')}
         </legend>
-        {API_KEY_SCOPES.map((scope) => (
-          <label
-            key={scope}
-            className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
-          >
-            <input
-              type="checkbox"
-              checked={scopes.has(scope)}
-              onChange={() => toggle(scope)}
-              className="mt-1 h-4 w-4 accent-sky-500"
-            />
-            <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-medium text-neutral-100">{meta[scope].label}</span>
-              <span className="text-xs text-neutral-500">{meta[scope].description}</span>
-            </span>
-          </label>
-        ))}
+        {API_KEY_SCOPES.map((scope) => {
+          // A read whose implying write is selected is auto-included and locked.
+          const impliedByWrite = writeScopeForRead(scope);
+          const locked = impliedByWrite !== undefined && scopes.has(impliedByWrite);
+          return (
+            <label
+              key={scope}
+              className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
+            >
+              <input
+                type="checkbox"
+                checked={scopes.has(scope) || locked}
+                disabled={locked}
+                onChange={() => toggle(scope)}
+                className="mt-1 h-4 w-4 accent-sky-500 disabled:opacity-60"
+              />
+              <span className="flex flex-col gap-0.5">
+                <span className="text-sm font-medium text-neutral-100">{meta[scope].label}</span>
+                <span className="text-xs text-neutral-500">{meta[scope].description}</span>
+                {locked ? (
+                  <span className="text-xs text-neutral-600">
+                    {t('settings.api.scope.impliedByWrite')}
+                  </span>
+                ) : null}
+              </span>
+            </label>
+          );
+        })}
       </fieldset>
       <div>
         <Button type="submit" disabled={mutation.isPending}>

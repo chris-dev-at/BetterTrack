@@ -46,6 +46,66 @@ export const API_KEY_SCOPES = [
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
+/**
+ * Write-implies-read (#371, owner refinement 2026-07-09). A `<module>:write`
+ * scope always confers its `<module>:read` — granting or holding the write can
+ * never leave the read unreachable. The map is derived from the taxonomy itself:
+ * each `:write` pairs with the `:read` of the same module when that read exists
+ * in {@link API_KEY_SCOPES}. `account:security` is a single combined scope (no
+ * read/write split) and therefore has no implied partner.
+ */
+export const IMPLIED_READ_SCOPE: Readonly<Partial<Record<ApiKeyScope, ApiKeyScope>>> =
+  Object.freeze(
+    Object.fromEntries(
+      API_KEY_SCOPES.filter((s) => s.endsWith(':write'))
+        .map((write) => [write, write.replace(/:write$/, ':read')] as const)
+        .filter(([, read]) => (API_KEY_SCOPES as readonly string[]).includes(read)),
+    ) as Partial<Record<ApiKeyScope, ApiKeyScope>>,
+  );
+
+/** The `:read` scope implied by holding `scope` (a `:write`), or `undefined`. */
+export function impliedReadScope(scope: ApiKeyScope): ApiKeyScope | undefined {
+  return IMPLIED_READ_SCOPE[scope];
+}
+
+/** The `:write` scope whose grant would imply `scope` (a `:read`), or `undefined`. */
+export function writeScopeForRead(scope: ApiKeyScope): ApiKeyScope | undefined {
+  for (const [write, read] of Object.entries(IMPLIED_READ_SCOPE)) {
+    if (read === scope) return write as ApiKeyScope;
+  }
+  return undefined;
+}
+
+/**
+ * Expand a granted/held scope set with every implied read, deduped and returned
+ * in canonical {@link API_KEY_SCOPES} order. Grant-time normalization so a stored
+ * or displayed set never carries a `:write` without its `:read`.
+ */
+export function withImpliedReadScopes(scopes: readonly ApiKeyScope[]): ApiKeyScope[] {
+  const set = new Set<ApiKeyScope>(scopes);
+  for (const scope of scopes) {
+    const read = IMPLIED_READ_SCOPE[scope];
+    if (read) set.add(read);
+  }
+  return API_KEY_SCOPES.filter((s) => set.has(s));
+}
+
+/**
+ * Check-time rule for write-implies-read (#371): does a held scope set satisfy a
+ * required scope? True when the set holds the scope directly, or holds the
+ * `:write` that implies a required `:read`. This is the authoritative
+ * enforcement point — it covers even tokens minted before the rule existed, so
+ * no data migration is needed. Operates on raw scope strings because the bearer
+ * middleware gates some read-only modules with a sentinel `:write` no key holds.
+ */
+export function scopeSatisfies(held: readonly string[], required: string): boolean {
+  if (held.includes(required)) return true;
+  if (required.endsWith(':read')) {
+    return held.includes(required.replace(/:read$/, ':write'));
+  }
+  return false;
+}
+
 /** `POST /settings/api-keys` — name + at least one scope. */
 export const createApiKeyRequestSchema = z
   .object({
