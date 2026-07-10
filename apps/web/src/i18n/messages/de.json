@@ -1013,8 +1013,6 @@
       "budgetAriaLabel": "Budget in EUR",
       "stepSizeLabel": "Schrittgröße",
       "stepPrecisionAriaLabel": "Budget-Schrittgenauigkeit",
-      "stepLabel": "Schritt",
-      "stepAriaLabel": "Fraktionierter Mengenschritt",
       "calculating": "Wird berechnet…",
       "calculate": "Berechnen",
       "calcError": "Kaufliste konnte nicht berechnet werden. Bitte versuche es erneut.",
