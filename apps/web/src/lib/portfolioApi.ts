@@ -100,6 +100,18 @@ export async function restorePortfolio(portfolioId: string): Promise<PortfolioSu
   return portfolioMutationResponseSchema.parse(data).portfolio;
 }
 
+/**
+ * `DELETE /portfolios/:id` — permanently delete a portfolio and everything in it
+ * (transactions, cash ledger + sources, dividends, shares + public links). The
+ * hard option beside archive; irreversible. 204 on success, 404 if it is already
+ * gone, 400 (`LAST_ACTIVE_PORTFOLIO`) when it is the caller's only active one.
+ */
+export async function deletePortfolio(portfolioId: string): Promise<void> {
+  await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}`, {
+    method: 'DELETE',
+  });
+}
+
 /** `PATCH /portfolios/:id` — rename and/or change visibility (e.g. the Shared Items toggle-off). */
 export async function updatePortfolio(
   portfolioId: string,

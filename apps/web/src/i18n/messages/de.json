@@ -732,7 +732,22 @@
       "createError": "Das Portfolio konnte nicht erstellt werden. Bitte versuche es erneut.",
       "renameError": "Das Portfolio konnte nicht umbenannt werden. Bitte versuche es erneut.",
       "archiveError": "Das Portfolio konnte nicht archiviert werden. Bitte versuche es erneut.",
-      "restoreError": "Das Portfolio konnte nicht wiederhergestellt werden. Bitte versuche es erneut."
+      "restoreError": "Das Portfolio konnte nicht wiederhergestellt werden. Bitte versuche es erneut.",
+      "deleteCurrent": "Aktuelles löschen",
+      "deleteDisabledHint": "Du kannst dein einziges Portfolio nicht löschen",
+      "deleteDialogTitle": "Portfolio löschen",
+      "deleteDialogDescription": "„{{name}}“ und alles darin endgültig löschen. Dies kann nicht rückgängig gemacht werden.",
+      "deleteWarningHeadline": "Dies kann nicht rückgängig gemacht werden. Das Löschen dieses Portfolios entfernt:",
+      "deleteWarningTransactions": "Alle Transaktionen und Positionen in diesem Portfolio",
+      "deleteWarningCash": "Den gesamten Bargeldbestand und alle Bargeldquellen",
+      "deleteWarningShares": "Alle Freigaben und öffentlichen Links dazu — sie funktionieren sofort nicht mehr",
+      "deleteWarningTax": "Deine bisherigen Steuerbericht-Zahlen ändern sich, da die Historie der realisierten Gewinne/Verluste dieses Portfolios entfernt wird",
+      "deletePromotesDefault": "„{{name}}“ wird dein neues Standard-Portfolio.",
+      "deleteConfirmLabel": "Gib den Portfolionamen ({{name}}) zur Bestätigung ein",
+      "deleteConfirmAriaLabel": "Bestätigung des Portfolionamens",
+      "deleting": "Wird gelöscht…",
+      "delete": "Endgültig löschen",
+      "deleteError": "Das Portfolio konnte nicht gelöscht werden. Bitte versuche es erneut."
     },
     "cash": {
       "title": "Bargeldbestand",

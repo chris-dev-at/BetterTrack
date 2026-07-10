@@ -368,6 +368,50 @@ describe('chat — share-in-chat chip enforcement (reuses #332)', () => {
     expect((await bob.agent.get(`/api/v1/social/shared/${alicePortfolio}`)).status).toBe(200);
   });
 
+  it('a chip for a portfolio the owner later hard-deletes resolves to the not-available state', async () => {
+    const alice = await seedPerson('alice');
+    const bob = await seedPerson('bob');
+    await befriend(alice, bob);
+    const { body } = await openConversation(alice.agent, bob.id);
+    const conversationId = body.conversation.id as string;
+
+    // A second portfolio, so hard-deleting it is not blocked as the last active one.
+    await defaultPortfolioId(alice.agent);
+    const created = await alice.agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Trading' });
+    expect(created.status).toBe(201);
+    const tradingPid = created.body.portfolio.id as string;
+
+    // Alice shares it with all friends and chips it to Bob; Bob sees it resolved.
+    expect(
+      (await putAudience(alice.agent, 'portfolio', tradingPid, { audience: 'all_friends' })).status,
+    ).toBe(200);
+    await sendMessage(alice.agent, conversationId, {
+      chip: { kind: 'portfolio', subjectId: tradingPid },
+    });
+    const before = await getThread(bob.agent, conversationId);
+    expect(before.body.messages[0].chip.viewable).toBe(true);
+    expect(before.body.messages[0].chip.title).not.toBeNull();
+
+    // Alice permanently deletes the portfolio (she still has Main).
+    expect((await alice.agent.delete(`/api/v1/portfolios/${tradingPid}`).set(...XRW)).status).toBe(
+      204,
+    );
+
+    // The chat share-chip now resolves gracefully to the not-available state —
+    // the #349/#332 bare-ref design: the enforcement joins exclude the vanished
+    // subject, so the chip renders as unavailable rather than erroring.
+    const after = await getThread(bob.agent, conversationId);
+    const chip = after.body.messages[0].chip;
+    expect(chip.kind).toBe('portfolio');
+    expect(chip.subjectId).toBe(tradingPid);
+    expect(chip.viewable).toBe(false);
+    expect(chip.title).toBeNull();
+    expect(chip.subtitle).toBeNull();
+  });
+
   it('an asset chip (global market data) is viewable by the recipient', async () => {
     const alice = await seedPerson('alice');
     const bob = await seedPerson('bob');

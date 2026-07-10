@@ -9,6 +9,7 @@ import { ApiError } from '../../lib/apiClient';
 import {
   archivePortfolio,
   createPortfolio,
+  deletePortfolio,
   listPortfolios,
   restorePortfolio,
   updatePortfolio,
@@ -22,7 +23,9 @@ import { Alert, Button, cx } from '../components/ui';
  * "Coming soon" placeholder with real multi-portfolio management: it lists the
  * user's **active** portfolios, switches the active one via the `?portfolio=`
  * routing param (so every scoped view below the layout follows), and offers
- * New / Rename / Archive plus an Archived list to restore from.
+ * New / Rename / Archive / Delete plus an Archived list to restore from.
+ * Archive is the soft, restorable option; Delete is the hard, permanent one —
+ * a type-to-confirm dialog (the #362 account-deletion pattern) gates it.
  *
  * The active portfolio lives in the URL, not in component state, so it survives
  * navigation across the section subnav and is shared with {@link PortfolioPage}
@@ -49,6 +52,24 @@ export function resolveActivePortfolio(
   );
 }
 
+/**
+ * When the portfolio about to be deleted is the current default, the name of the
+ * active portfolio that will auto-promote to default in its place: the oldest
+ * remaining active row (lowest `sortOrder`, then oldest id), mirroring the API's
+ * derived-default rule (§6.8) so the dialog can name it. Null when the target is
+ * not the default (nothing promotes) or nothing remains.
+ */
+export function promotedDefaultName(
+  portfolios: readonly PortfolioSummary[],
+  deleting: PortfolioSummary,
+): string | null {
+  if (!deleting.isDefault) return null;
+  const remaining = portfolios
+    .filter((p) => p.id !== deleting.id && p.archivedAt === null)
+    .sort((a, b) => a.sortOrder - b.sortOrder || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return remaining[0]?.name ?? null;
+}
+
 const inputClass = cx(
   'w-full rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
   'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
@@ -65,6 +86,7 @@ export function PortfolioSwitcher() {
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState<PortfolioSummary | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<PortfolioSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -175,6 +197,25 @@ export function PortfolioSwitcher() {
         err instanceof ApiError && err.code === 'LAST_ACTIVE_PORTFOLIO'
           ? err.message
           : t('portfolio.switcher.archiveError'),
+      ),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deletePortfolio(id),
+    onSuccess: (_res, id) => {
+      setActionError(null);
+      setConfirmDelete(null);
+      // The portfolio is gone: if it was the active one, drop the param so the
+      // view navigates away to the (auto-promoted) default — the switcher
+      // re-resolves it below.
+      if (param === id) clearActive();
+      refetchLists();
+    },
+    onError: (err) =>
+      setActionError(
+        err instanceof ApiError && err.code === 'LAST_ACTIVE_PORTFOLIO'
+          ? err.message
+          : t('portfolio.switcher.deleteError'),
       ),
   });
 
@@ -291,6 +332,25 @@ export function PortfolioSwitcher() {
             >
               {t('portfolio.switcher.archiveCurrent')}
             </button>
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!active || onlyOneActive}
+              title={onlyOneActive ? t('portfolio.switcher.deleteDisabledHint') : undefined}
+              onClick={() => {
+                if (!active) return;
+                setActionError(null);
+                setConfirmDelete(active);
+                setOpen(false);
+              }}
+              className={cx(
+                itemClass,
+                'text-red-300 hover:bg-red-950/60 focus:bg-red-950/60',
+                'disabled:cursor-not-allowed disabled:text-neutral-600 disabled:hover:bg-transparent',
+              )}
+            >
+              {t('portfolio.switcher.deleteCurrent')}
+            </button>
           </div>
 
           <div className="border-t border-neutral-800 py-1">
@@ -310,7 +370,7 @@ export function PortfolioSwitcher() {
         </div>
       ) : null}
 
-      {actionError && !nameDialog && !confirmArchive && !archivedOpen ? (
+      {actionError && !nameDialog && !confirmArchive && !confirmDelete && !archivedOpen ? (
         <div className="absolute left-0 top-full z-30 mt-2 w-64">
           <Alert tone="error">{actionError}</Alert>
         </div>
@@ -369,6 +429,20 @@ export function PortfolioSwitcher() {
             </div>
           </div>
         </Dialog>
+      ) : null}
+
+      {confirmDelete ? (
+        <DeletePortfolioDialog
+          portfolio={confirmDelete}
+          promotedDefault={promotedDefaultName(portfolios, confirmDelete)}
+          submitting={deleteMutation.isPending}
+          error={actionError}
+          onClose={() => {
+            setConfirmDelete(null);
+            setActionError(null);
+          }}
+          onConfirm={() => deleteMutation.mutate(confirmDelete.id)}
+        />
       ) : null}
 
       {archivedOpen ? (
@@ -482,6 +556,98 @@ function NameDialog({
               : mode === 'create'
                 ? t('portfolio.switcher.create')
                 : t('common.save')}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+/**
+ * Permanent-delete confirmation (the #362 account-deletion safety pattern): an
+ * explicit consequence list plus a field where the exact portfolio name must be
+ * typed before the destructive button enables. When the deleted portfolio is the
+ * current default, it also names the portfolio that auto-promotes to default.
+ */
+function DeletePortfolioDialog({
+  portfolio,
+  promotedDefault,
+  submitting,
+  error,
+  onClose,
+  onConfirm,
+}: {
+  portfolio: PortfolioSummary;
+  promotedDefault: string | null;
+  submitting: boolean;
+  error: string | null;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const t = useT();
+  const [typed, setTyped] = useState('');
+  // Exact, case-sensitive match on the trimmed input — the destructive button
+  // stays disabled until the name is typed verbatim.
+  const confirmed = typed.trim() === portfolio.name;
+
+  return (
+    <Dialog
+      title={t('portfolio.switcher.deleteDialogTitle')}
+      description={t('portfolio.switcher.deleteDialogDescription', { name: portfolio.name })}
+      onClose={onClose}
+      widthClassName="max-w-md"
+    >
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (confirmed && !submitting) onConfirm();
+        }}
+        className="flex flex-col gap-4"
+      >
+        <Alert tone="error">
+          <span className="font-semibold">{t('portfolio.switcher.deleteWarningHeadline')}</span>
+          <ul className="mt-2 list-disc pl-5 text-sm">
+            <li>{t('portfolio.switcher.deleteWarningTransactions')}</li>
+            <li>{t('portfolio.switcher.deleteWarningCash')}</li>
+            <li>{t('portfolio.switcher.deleteWarningShares')}</li>
+            <li>{t('portfolio.switcher.deleteWarningTax')}</li>
+          </ul>
+        </Alert>
+
+        {promotedDefault ? (
+          <p className="text-sm text-neutral-400">
+            {t('portfolio.switcher.deletePromotesDefault', { name: promotedDefault })}
+          </p>
+        ) : null}
+
+        <label className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium text-neutral-300">
+            {t('portfolio.switcher.deleteConfirmLabel', { name: portfolio.name })}
+          </span>
+          <input
+            type="text"
+            value={typed}
+            autoFocus
+            autoComplete="off"
+            onChange={(e) => setTyped(e.target.value)}
+            aria-label={t('portfolio.switcher.deleteConfirmAriaLabel')}
+            className={inputClass}
+          />
+        </label>
+
+        {error ? <Alert tone="error">{error}</Alert> : null}
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={submitting}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            type="submit"
+            variant="secondary"
+            className="text-red-300 ring-red-900 hover:bg-red-950"
+            disabled={!confirmed || submitting}
+          >
+            {submitting ? t('portfolio.switcher.deleting') : t('portfolio.switcher.delete')}
           </Button>
         </div>
       </form>
