@@ -127,6 +127,59 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     expect(await auditCount(user.id, 'two_factor.disabled')).toBe(1);
   });
 
+  it('cancels a pending TOTP enrollment via DELETE, clearing the provisional secret', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(user.email, user.password);
+
+    // Enroll to arm a pending (unconfirmed) secret.
+    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    expect(enroll.status).toBe(200);
+    let status = twoFactorStatusResponseSchema.parse(
+      (await agent.get('/api/v1/auth/2fa/status')).body,
+    );
+    expect(status).toMatchObject({ totpEnabled: false, totpPending: true });
+
+    // Cancel wipes it; status returns to no pending enrollment.
+    const cancel = await agent.delete('/api/v1/auth/2fa/enroll').set(...XRW);
+    expect(cancel.status).toBe(200);
+    expect(cancel.body).toEqual({ ok: true });
+    status = twoFactorStatusResponseSchema.parse((await agent.get('/api/v1/auth/2fa/status')).body);
+    expect(status).toMatchObject({ totpEnabled: false, totpPending: false });
+    expect(await auditCount(user.id, 'two_factor.enroll_canceled')).toBe(1);
+  });
+
+  it('DELETE /2fa/enroll 404s when nothing is pending', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(user.email, user.password);
+
+    const cancel = await agent.delete('/api/v1/auth/2fa/enroll').set(...XRW);
+    expect(cancel.status).toBe(404);
+    expect(cancel.body.error.code).toBe('TWO_FACTOR_NOT_PENDING');
+  });
+
+  it('DELETE /2fa/enroll leaves armed TOTP untouched with a 409', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(user.email, user.password);
+
+    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
+    const confirm = await agent
+      .post('/api/v1/auth/2fa/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirm.status).toBe(200);
+
+    const cancel = await agent.delete('/api/v1/auth/2fa/enroll').set(...XRW);
+    expect(cancel.status).toBe(409);
+    expect(cancel.body.error.code).toBe('TWO_FACTOR_ALREADY_ENABLED');
+
+    // Armed TOTP is still on.
+    const status = twoFactorStatusResponseSchema.parse(
+      (await agent.get('/api/v1/auth/2fa/status')).body,
+    );
+    expect(status).toMatchObject({ totpEnabled: true, totpPending: false });
+  });
+
   it('regenerates recovery codes and audit-logs it', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(user.email, user.password);
