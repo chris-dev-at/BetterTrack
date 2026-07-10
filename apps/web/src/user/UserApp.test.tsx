@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse } from '@bettertrack/contracts';
@@ -43,6 +43,22 @@ const member: MeResponse = {
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/*" element={<UserApp />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+/** Mirrors the live URL into the DOM so tests can assert where routing settled. */
+function LocationProbe() {
+  return <div data-testid="location">{useLocation().pathname}</div>;
+}
+
+function renderAtWithLocation(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <LocationProbe />
       <Routes>
         <Route path="/*" element={<UserApp />} />
       </Routes>
@@ -278,4 +294,24 @@ test('invite accept: an invalid token is rejected with a clear message and no fo
     await screen.findByText(/invalid, expired, or has already been used/i),
   ).toBeInTheDocument();
   expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
+});
+
+test('an unknown path lands on the portfolio home in one hop, without appending segments', async () => {
+  // The user catch-all already redirects to the absolute `/` (never a relative
+  // target), so it cannot loop the way the admin one did. This locks that in:
+  // an unknown deep path resolves straight to the home route, not /blabla/….
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+
+  renderAtWithLocation('/blabla');
+
+  // Reached the authenticated shell (home → /portfolio), not a redirect loop.
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+
+  // Settled exactly on the absolute home — no 'blabla', no duplicated segments.
+  // (The `*` → `/` → `/portfolio` chain is all absolute, so it terminates.)
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/portfolio'));
+  const pathname = screen.getByTestId('location').textContent;
+  expect(pathname).toBe('/portfolio');
+  expect(pathname).not.toContain('blabla');
 });
