@@ -196,6 +196,38 @@ describe('ApiAccessPage', () => {
     expect(screen.getByText(/won't be shown again/i)).toBeInTheDocument();
   });
 
+  test('registering an OAuth app with a write scope auto-selects and stores its read (#371)', async () => {
+    vi.mocked(listApiKeys).mockResolvedValue(EMPTY);
+    vi.mocked(createOAuthClient).mockResolvedValue(CREATED_CLIENT);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.type(await screen.findByLabelText('App name'), 'Writer app');
+    await user.type(screen.getByLabelText('Redirect URI 1'), 'https://example.com/callback');
+    // Select the write scope — the implied read should auto-select and lock on.
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: /create and edit portfolios, transactions, custom assets and cash/i,
+      }),
+    );
+    const readCheckbox = screen.getByRole('checkbox', {
+      name: /view your portfolios, holdings, transactions and cash balances/i,
+    });
+    expect(readCheckbox).toBeChecked();
+    expect(readCheckbox).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Register app' }));
+
+    await waitFor(() =>
+      expect(createOAuthClient).toHaveBeenCalledWith({
+        name: 'Writer app',
+        redirectUris: ['https://example.com/callback'],
+        scopes: ['portfolio:read', 'portfolio:write'],
+        public: false,
+      }),
+    );
+  });
+
   test('lists an authorized app in plain language and revokes it after confirmation', async () => {
     vi.mocked(listApiKeys).mockResolvedValue(EMPTY);
     vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
