@@ -428,20 +428,39 @@ function MessageComposer({
   onSendChip,
   disabled,
 }: {
-  onSendText: (body: string) => void;
+  onSendText: (body: string) => Promise<unknown>;
   onSendChip: (item: Attachable) => void;
   disabled: boolean;
 }) {
   const t = useT();
   const [text, setText] = useState('');
   const [shareOpen, setShareOpen] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Desktop-only surface: put the caret in the composer as soon as the thread
+  // opens, and return it whenever the input re-enables. The field is disabled
+  // while a send is in-flight (which drops focus and, on the click path, the
+  // send button steals it); one effect covers both cases because the input is
+  // enabled on mount and again once each send settles — so a rerender or the
+  // disabled→enabled toggle never leaves the user re-clicking the field.
+  useEffect(() => {
+    if (!disabled) inputRef.current?.focus();
+  }, [disabled]);
 
   function submit(e: FormEvent) {
     e.preventDefault();
     const trimmed = text.trim();
-    if (!trimmed) return;
-    onSendText(trimmed);
-    setText('');
+    if (!trimmed || disabled) return;
+    // Clear the field only once the send resolves; a failed send keeps the
+    // draft in place so it can be retried without retyping.
+    void (async () => {
+      try {
+        await onSendText(trimmed);
+        setText('');
+      } catch {
+        // Send failed — leave the text so the user can retry.
+      }
+    })();
   }
 
   return (
@@ -468,6 +487,7 @@ function MessageComposer({
         </svg>
       </button>
       <textarea
+        ref={inputRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
@@ -644,7 +664,7 @@ function ChatThreadPane({
       {other ? (
         <MessageComposer
           disabled={!conversationId || sendMutation.isPending}
-          onSendText={(body) => sendMutation.mutate({ body })}
+          onSendText={(body) => sendMutation.mutateAsync({ body })}
           onSendChip={(item) =>
             sendMutation.mutate({ chip: { kind: item.kind, subjectId: item.subjectId } })
           }
