@@ -64,3 +64,27 @@ control dir):
 export GIT_SHA="$(git -C app rev-parse HEAD 2>/dev/null || echo unknown)"
 export GIT_BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 ```
+
+## `edge/bt-live-edge.conf`
+
+The go-live edge overlay for the `web` nginx container: Cloudflare real-IP
+recovery, the edge-secret gate, the SEO fence, the legacy-sites reroute, and an
+`api.bettertrack.at` server block that **shadows** the repo template's api block.
+It loads from the control dir alongside the template render (`conf.d`), so its
+api block is the one actually serving `api.bettertrack.at` — which is why the
+WebSocket upgrade forwarding (#396) has to live here too, under its own
+`$bt_connection_upgrade` map so it never collides with the template's
+`$connection_upgrade` (a duplicate map name makes nginx refuse to boot).
+
+### Adopt (on the prod host)
+
+From the control dir (the app clone lives at `./app` under it):
+
+```sh
+cp app/infra/live/edge/bt-live-edge.conf ./edge/bt-live-edge.conf   # over the old copy
+docker exec bettertrack-live-web-1 nginx -s reload                  # or: docker restart bettertrack-live-web-1
+```
+
+Unlike the updater, this file is read by nginx at (re)load, so the reload is what
+picks up the change. `nginx -s reload` is zero-downtime; the restart is the
+fallback if a reload is refused.
