@@ -53,6 +53,9 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'chat:write': 'Send messages on your behalf',
   'account:security':
     'Manage your account security: sign-in sessions, two-factor, password change and app PIN',
+  // #405 — plain-language consent copy for the price-alerts scopes.
+  'alerts:read': 'View your price alerts',
+  'alerts:write': 'Create, edit, re-arm and delete your price alerts',
 };
 
 // ── Redirect URI validation ─────────────────────────────────────────────────

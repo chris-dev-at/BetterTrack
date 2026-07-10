@@ -24,7 +24,9 @@ export const API_KEY_TOKEN_PREFIX = 'btk_';
  * `account:security` scopes were added for the unified web+mobile platform
  * surface (#361); `chat:*` gates the friend-chat module (V3-P8) under `/chat/*`
  * (#396 — the module-policy row was missed when chat shipped, leaving these
- * scopes granted but unusable by bearers).
+ * scopes granted but unusable by bearers). `alerts:*` gates the price-alerts
+ * module (V3-P10) under `/alerts/*`, added for the same reason (#405 — alerts
+ * shipped without a bearer scope, so mobile could never reach it).
  */
 export const API_KEY_SCOPES = [
   'portfolio:read',
@@ -41,6 +43,10 @@ export const API_KEY_SCOPES = [
   'chat:read',
   'chat:write',
   'account:security',
+  // #405 addition — price alerts (V3-P10) under `/alerts/*`. Appended (never
+  // reordered) so existing tokens/grants keep exactly the grants they hold.
+  'alerts:read',
+  'alerts:write',
 ] as const;
 
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);

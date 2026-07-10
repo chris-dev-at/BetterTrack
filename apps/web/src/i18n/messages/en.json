@@ -391,6 +391,14 @@
           "label": "Account security",
           "description": "Manage sign-in sessions, two-factor, password and app PIN."
         },
+        "alertsRead": {
+          "label": "Alerts · read",
+          "description": "Read your price alerts."
+        },
+        "alertsWrite": {
+          "label": "Alerts · write",
+          "description": "Create, edit, re-arm and delete your price alerts."
+        },
         "impliedByWrite": "Included automatically with write access."
       },
       "keys": {

@@ -32,6 +32,31 @@ const CLIENT_ID = MOBILE.clientId;
 const CEILING = [...MOBILE.scopeCeiling];
 const CANONICAL_URI = MOBILE.redirectUris[0]!;
 
+/**
+ * The exact scope payload migration 0029 hard-codes — the canonical ceiling as of
+ * #398, frozen in SQL. Scopes appended to the definition AFTER 0029 (alerts:read /
+ * alerts:write, #405) are deliberately NOT carried by this historical migration:
+ * the boot-seed, which the prod updater now runs right after migrate on every
+ * deploy (infra/live/updater.sh, #398), carries them. So 0029 converges a row to
+ * THIS set and the idempotent seed does the last mile — the two together reach the
+ * full live {@link CEILING} without ever fighting. Kept as a literal (not derived
+ * from the live definition) precisely so it stays pinned to what 0029 wrote.
+ */
+const RECONCILE_SCOPES = [
+  'portfolio:read',
+  'portfolio:write',
+  'workboard:read',
+  'workboard:write',
+  'market:read',
+  'social:read',
+  'social:write',
+  'notifications:read',
+  'notifications:write',
+  'chat:read',
+  'chat:write',
+  'account:security',
+];
+
 interface JournalEntry {
   idx: number;
   tag: string;
@@ -108,7 +133,7 @@ describe(`migration ${TARGET} — first-party client reconcile (union-only)`, ()
     const row = (await readClient(client, CLIENT_ID))!;
     expect(row).not.toBeNull();
     expect(row.name).toBe('BetterTrackMobile');
-    expect(row.scopes).toEqual(CEILING); // full 12-scope ceiling, canonical order
+    expect(row.scopes).toEqual(RECONCILE_SCOPES); // 0029's frozen canonical payload
     expect(row.redirect_uris).toEqual([CANONICAL_URI]);
     expect(row.is_public).toBe(true); // public / PKCE
     expect(row.is_first_party).toBe(true);
@@ -136,8 +161,8 @@ describe(`migration ${TARGET} — first-party client reconcile (union-only)`, ()
     await applyMigration(client, TARGET);
 
     const row = (await readClient(client, CLIENT_ID))!;
-    // Never narrows: every ceiling scope is now present…
-    for (const scope of CEILING) expect(row.scopes).toContain(scope);
+    // Never narrows: every scope 0029 carries is now present…
+    for (const scope of RECONCILE_SCOPES) expect(row.scopes).toContain(scope);
     // …the admin extra survived…
     expect(row.scopes).toContain('experimental:beta');
     // …existing entries kept their positions (append-only union)…
@@ -175,15 +200,29 @@ describe(`migration ${TARGET} — first-party client reconcile (union-only)`, ()
     expect(count.rows[0]!.n).toBe(1);
   });
 
-  it('leaves the #398 boot-seed a no-op afterwards (migration and seed converge)', async () => {
-    // The whole point: the migration is the prod-reachable channel that produces
-    // exactly the state seedFirstPartyClients considers already converged, so the
-    // two never fight. Run the REAL seed against the post-migration DB.
+  it('the boot-seed carries post-0029 scopes on top, then is a no-op (migrate+seed converge on deploy)', async () => {
+    // On every prod deploy the updater runs migrate.js THEN seed.js (#398,
+    // infra/live/updater.sh). 0029 converges the row to its frozen ceiling; the
+    // seed then adds any scope appended to the canonical definition since —
+    // alerts:read/alerts:write (#405) — reaching the full live CEILING. A second
+    // seed run changes nothing, so migration + seed never fight on a steady deploy.
     await applyMigration(client, TARGET);
 
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
-    const results = await seedFirstPartyClients(repo);
+    const firstResult = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
 
-    expect(results.find((r) => r.clientId === CLIENT_ID)!.action).toBe('unchanged');
+    if (CEILING.length > RECONCILE_SCOPES.length) {
+      // The definition has scopes newer than 0029 → the seed adds exactly them and
+      // the row reaches the full live ceiling in canonical order.
+      expect(firstResult.action).toBe('converged');
+      expect(firstResult.scopes).toEqual(CEILING);
+    } else {
+      // 0029 is itself at the full ceiling → the seed is already a no-op.
+      expect(firstResult.action).toBe('unchanged');
+    }
+
+    // Once the seed has run the row is fully converged; a re-run is a true no-op.
+    const secondResult = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(secondResult.action).toBe('unchanged');
   });
 });
