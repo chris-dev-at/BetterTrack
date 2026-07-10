@@ -954,6 +954,14 @@ const endpoints: EndpointDef[] = [
     response: R.PortfolioMutationResponse,
   },
   {
+    method: 'delete',
+    path: '/portfolios/{portfolioId}',
+    tag: 'Portfolios',
+    summary: 'Permanently delete a portfolio and all its data (rejects the only active one).',
+    params: contracts.portfolioIdParamSchema,
+    status: 204,
+  },
+  {
     method: 'get',
     path: '/portfolios/{portfolioId}',
     tag: 'Portfolios',

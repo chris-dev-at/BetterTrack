@@ -380,6 +380,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     taxService: tax,
     friendshipRepo,
+    audience,
     events,
     logger,
   });

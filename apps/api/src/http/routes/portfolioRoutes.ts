@@ -89,6 +89,19 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     res.json(response);
   });
 
+  // DELETE /portfolios/:portfolioId — permanently delete a portfolio and its
+  // entire dependent-row graph (transactions, cash ledger + sources, dividends,
+  // sharing audience + public links, graph cache). The hard option beside
+  // archive: owner-scoped (404 on a foreign/unknown id, and on a second call),
+  // rejects deleting the only active portfolio (400 LAST_ACTIVE_PORTFOLIO). The
+  // deliberate type-to-confirm lives in the client; the API is an authenticated
+  // DELETE gated by ownership (bearer needs portfolio:write).
+  router.delete('/:portfolioId', validateParams(portfolioIdParamSchema), async (req, res) => {
+    const { portfolioId } = req.valid?.params as { portfolioId: string };
+    await ctx.portfolio.deletePortfolio(req.authUser!.id, portfolioId);
+    res.status(204).send();
+  });
+
   // GET /portfolios/:portfolioId — holdings + totals (§6.8).
   router.get('/:portfolioId', validateParams(portfolioIdParamSchema), async (req, res) => {
     const { portfolioId } = req.valid?.params as { portfolioId: string };

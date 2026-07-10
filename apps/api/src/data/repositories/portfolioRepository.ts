@@ -279,6 +279,30 @@ export function createPortfolioRepository(db: Database) {
     },
 
     /**
+     * Hard-delete an owned portfolio and everything the schema cascades with it
+     * (portfolio hard-delete, beside soft-archive §13.2). `transactions`,
+     * `portfolio_cash_sources`, `dividends` and `portfolio_cash_movements` all
+     * carry `ON DELETE CASCADE` on `portfolio_id`, so this single ownership-scoped
+     * DELETE removes the entire dependent-row graph in one statement (the
+     * `source_id`/`counterpart_source_id` `NO ACTION` FKs resolve because every
+     * referencing movement/dividend is deleted in the same statement — the design
+     * the `dividends`/`portfolio_cash_movements` schema comments describe).
+     *
+     * Scoped to the owner at the DB layer (§8): a foreign/unknown id deletes
+     * nothing and returns false, so the caller 404s without leaking existence — no
+     * IDOR, never a 403. Polymorphic bare-ref rows that carry NO FK to the
+     * portfolio (the sharing audience + its public links) are cleared by the
+     * service after this returns, mirroring conglomerate/watchlist deletion.
+     */
+    async deletePortfolio(userId: string, portfolioId: string): Promise<boolean> {
+      const rows = await db
+        .delete(portfolios)
+        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)))
+        .returning({ id: portfolios.id });
+      return rows.length > 0;
+    },
+
+    /**
      * A single portfolio scoped to its owner (§8): returns null when the id is
      * unknown *or* belongs to another user, so callers 404 without leaking
      * existence — no IDOR by construction.

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -437,6 +437,226 @@ describe('POST /api/v1/portfolios/:id/archive + /restore', () => {
 
     const res = await intruderAgent.post(`/api/v1/portfolios/${ownerPid}/archive`).set(...XRW);
     expect(res.status).toBe(404);
+  });
+});
+
+// ─── Hard-delete (permanent, beside archive) ──────────────────────────────────
+
+describe('DELETE /api/v1/portfolios/:id (hard-delete, full cascade)', () => {
+  async function createPortfolio(agent: ReturnType<typeof request.agent>, name: string) {
+    const res = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name });
+    expect(res.status).toBe(201);
+    return res.body.portfolio.id as string;
+  }
+
+  /** Give a portfolio a transaction, a cash deposit, and a second cash source. */
+  async function fill(agent: ReturnType<typeof request.agent>, pid: string, assetId: string) {
+    const buy = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId, side: 'buy', quantity: 2, price: 10, executedAt: tsOffset(-3) });
+    expect(buy.status).toBe(201);
+    const dep = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 500 });
+    expect(dep.status).toBe(201);
+    const src = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/sources`)
+      .set(...XRW)
+      .send({ name: 'Bank', type: 'bank' });
+    expect(src.status).toBe(201);
+  }
+
+  const txnsOf = (pid: string) =>
+    harness.db.select().from(schema.transactions).where(eq(schema.transactions.portfolioId, pid));
+  const movesOf = (pid: string) =>
+    harness.db
+      .select()
+      .from(schema.portfolioCashMovements)
+      .where(eq(schema.portfolioCashMovements.portfolioId, pid));
+  const sourcesOf = (pid: string) =>
+    harness.db
+      .select()
+      .from(schema.portfolioCashSources)
+      .where(eq(schema.portfolioCashSources.portfolioId, pid));
+  const divsOf = (pid: string) =>
+    harness.db.select().from(schema.dividends).where(eq(schema.dividends.portfolioId, pid));
+
+  it('permanently deletes the portfolio and every dependent row; other portfolios untouched', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    const victim = await createPortfolio(agent, 'Trading');
+    const keep = await createPortfolio(agent, 'Other');
+    await fill(agent, victim, asset.id);
+    await fill(agent, keep, asset.id);
+
+    // A dividend on the victim (references its Main source; cascades via portfolio_id).
+    const [victimMain] = await harness.db
+      .select()
+      .from(schema.portfolioCashSources)
+      .where(
+        and(
+          eq(schema.portfolioCashSources.portfolioId, victim),
+          eq(schema.portfolioCashSources.isMain, true),
+        ),
+      );
+    await harness.db.insert(schema.dividends).values({
+      portfolioId: victim,
+      assetId: asset.id,
+      cashSourceId: victimMain!.id,
+      grossAmountEur: '25',
+      executedAt: new Date(),
+      taxMode: 'none',
+    });
+
+    // A public-link share of the victim (polymorphic bare-ref, no FK to the portfolio).
+    const [aud] = await harness.db
+      .insert(schema.shareAudiences)
+      .values({ ownerId: user.id, kind: 'portfolio', subjectId: victim, audience: 'public_link' })
+      .returning();
+    await harness.db
+      .insert(schema.shareAudienceLinks)
+      .values({ audienceId: aud!.id, tokenHash: 'cascade-test-hash' });
+
+    // Sanity: the victim's rows exist before the delete.
+    expect((await txnsOf(victim)).length).toBeGreaterThan(0);
+    expect((await movesOf(victim)).length).toBeGreaterThan(0);
+    expect((await sourcesOf(victim)).length).toBeGreaterThan(0);
+    expect((await divsOf(victim)).length).toBe(1);
+
+    const del = await agent.delete(`/api/v1/portfolios/${victim}`).set(...XRW);
+    expect(del.status).toBe(204);
+
+    // Everything scoped to the victim is gone…
+    expect(await txnsOf(victim)).toHaveLength(0);
+    expect(await movesOf(victim)).toHaveLength(0);
+    expect(await sourcesOf(victim)).toHaveLength(0);
+    expect(await divsOf(victim)).toHaveLength(0);
+    const audiences = await harness.db
+      .select()
+      .from(schema.shareAudiences)
+      .where(
+        and(
+          eq(schema.shareAudiences.kind, 'portfolio'),
+          eq(schema.shareAudiences.subjectId, victim),
+        ),
+      );
+    expect(audiences).toHaveLength(0);
+    const links = await harness.db
+      .select()
+      .from(schema.shareAudienceLinks)
+      .where(eq(schema.shareAudienceLinks.audienceId, aud!.id));
+    expect(links).toHaveLength(0);
+    const gone = await harness.db
+      .select()
+      .from(schema.portfolios)
+      .where(eq(schema.portfolios.id, victim));
+    expect(gone).toHaveLength(0);
+
+    // …but the sibling portfolio and Main are entirely untouched.
+    expect((await txnsOf(keep)).length).toBeGreaterThan(0);
+    expect((await movesOf(keep)).length).toBeGreaterThan(0);
+    const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios.map((p: { name: string }) => p.name).sort()).toEqual([
+      'Main',
+      'Other',
+    ]);
+  });
+
+  it('deleting the default auto-promotes the oldest remaining active portfolio', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent);
+    const tradingPid = await createPortfolio(agent, 'Trading');
+
+    // Main is the derived default; deleting it hands the default to Trading.
+    const del = await agent.delete(`/api/v1/portfolios/${mainPid}`).set(...XRW);
+    expect(del.status).toBe(204);
+
+    const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios).toHaveLength(1);
+    const [remaining] = list.body.portfolios;
+    expect(remaining.id).toBe(tradingPid);
+    expect(remaining.isDefault).toBe(true);
+  });
+
+  it('rejects deleting the only active portfolio (a user always keeps ≥1)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const mainPid = await defaultPortfolioId(agent);
+
+    const del = await agent.delete(`/api/v1/portfolios/${mainPid}`).set(...XRW);
+    expect(del.status).toBe(400);
+    expect(del.body.error.code).toBe('LAST_ACTIVE_PORTFOLIO');
+
+    // Still there.
+    const list = await agent.get('/api/v1/portfolios');
+    expect(list.body.portfolios).toHaveLength(1);
+  });
+
+  it('is idempotent-ish: a second delete of the same portfolio 404s', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent);
+    const tradingPid = await createPortfolio(agent, 'Trading');
+
+    expect((await agent.delete(`/api/v1/portfolios/${tradingPid}`).set(...XRW)).status).toBe(204);
+    expect((await agent.delete(`/api/v1/portfolios/${tradingPid}`).set(...XRW)).status).toBe(404);
+  });
+
+  it('404s deleting another user’s portfolio and leaves it intact (no IDOR)', async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    await defaultPortfolioId(ownerAgent);
+    const ownerPid = await createPortfolio(ownerAgent, 'Trading');
+
+    const intruder = await harness.seedUser({ email: 'evil@bt.test', username: 'evil' });
+    const intruderAgent = await loginAgent(harness.app, intruder.email, intruder.password);
+
+    const res = await intruderAgent.delete(`/api/v1/portfolios/${ownerPid}`).set(...XRW);
+    expect(res.status).toBe(404);
+    const still = await harness.db
+      .select()
+      .from(schema.portfolios)
+      .where(eq(schema.portfolios.id, ownerPid));
+    expect(still).toHaveLength(1);
+  });
+
+  it('a bearer key with portfolio:write can delete; without it → 403 INSUFFICIENT_SCOPE', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    await defaultPortfolioId(agent);
+    const readerPid = await createPortfolio(agent, 'ReaderTarget');
+    const writerPid = await createPortfolio(agent, 'WriterTarget');
+
+    async function mintKey(scopes: string[]): Promise<string> {
+      const res = await agent
+        .post('/api/v1/settings/api-keys')
+        .set(...XRW)
+        .send({ name: 'k', scopes });
+      expect(res.status).toBe(201);
+      return res.body.token as string;
+    }
+
+    const readOnly = await mintKey(['portfolio:read']);
+    const denied = await request(harness.app)
+      .delete(`/api/v1/portfolios/${readerPid}`)
+      .set('Authorization', `Bearer ${readOnly}`);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+
+    const writer = await mintKey(['portfolio:read', 'portfolio:write']);
+    const ok = await request(harness.app)
+      .delete(`/api/v1/portfolios/${writerPid}`)
+      .set('Authorization', `Bearer ${writer}`);
+    expect(ok.status).toBe(204);
   });
 });
 

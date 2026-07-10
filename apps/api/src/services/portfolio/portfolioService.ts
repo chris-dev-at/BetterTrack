@@ -90,6 +90,7 @@ import type { Logger } from '../../logger';
 import { rangeStartMs, type MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
+import type { AudienceService } from '../social/audienceService';
 import type { TaxService } from '../tax/taxService';
 
 /**
@@ -128,6 +129,12 @@ export interface PortfolioServiceDeps {
   taxService: TaxService;
   /** Social graph — used to resolve the owner's friends when a portfolio is shared (§6.10). */
   friendshipRepo: FriendshipRepository;
+  /**
+   * The sharing-enforcement layer (§13.3 V3-P5): on hard-delete, its
+   * `clearForSubject` drops the portfolio's polymorphic audience row (and the
+   * cascade — members + public links), which carries no FK to the portfolio.
+   */
+  audience: AudienceService;
   /** Domain event bus — `portfolio.shared` is published here on a friends-transition (§6.10). */
   events: EventBus;
   logger?: Logger;
@@ -155,6 +162,17 @@ export interface PortfolioService {
   archivePortfolio(userId: string, portfolioId: string): Promise<PortfolioSummary>;
   /** Restore an archived portfolio; 404/400 otherwise (§13.2 V2-P8). */
   restorePortfolio(userId: string, portfolioId: string): Promise<PortfolioSummary>;
+  /**
+   * Permanently delete an owned portfolio and its entire dependent-row graph —
+   * the hard option beside archive. Transactions, holdings, the cash ledger +
+   * sources, dividends, snapshots (graph cache) and the sharing audience +
+   * public links all die with it. Rejects (400 `LAST_ACTIVE_PORTFOLIO`) deleting
+   * the caller's only *active* portfolio so a user is never left with zero usable
+   * ones; deleting the current default silently auto-promotes the next active row
+   * (the default is derived from the active set, §6.8). 404 when the id is
+   * unknown or another user's — and on a second call, so delete is idempotent-ish.
+   */
+  deletePortfolio(userId: string, portfolioId: string): Promise<void>;
   /** Rename / change visibility of an owned portfolio; 404 otherwise (§8). */
   updatePortfolio(
     userId: string,
@@ -339,6 +357,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     redis,
     taxService,
     friendshipRepo,
+    audience,
     events,
     logger,
   } = deps;
@@ -1075,6 +1094,40 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const restored = await portfolioRepo.restorePortfolio(userId, portfolioId);
       if (!restored) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
       return restored;
+    },
+
+    async deletePortfolio(userId, portfolioId) {
+      const portfolio = await portfolioRepo.findByIdForUser(userId, portfolioId);
+      if (!portfolio) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      // The default-portfolio invariant, mirrored from archive (§13.2 V2-P8): a
+      // user always keeps ≥1 usable portfolio. Deleting an *active* portfolio is
+      // rejected when it is the only active one; deleting the current default is
+      // fine while another active row exists — the default recomputes to the
+      // oldest remaining active row automatically (it is derived, not stored,
+      // §6.8), so no explicit promotion is needed. An *archived* portfolio never
+      // counts toward the active set, so deleting one is always allowed.
+      if (!portfolio.archivedAt) {
+        const activeCount = await portfolioRepo.countActive(userId);
+        if (activeCount <= 1) {
+          throw badRequest(
+            'You cannot delete your only active portfolio.',
+            'LAST_ACTIVE_PORTFOLIO',
+          );
+        }
+      }
+      // Hard-delete the row; the FK graph cascades transactions, cash sources +
+      // movements and dividends away in one statement. A concurrent delete that
+      // raced us to gone → treat as already deleted (404), so a second call 404s.
+      const deleted = await portfolioRepo.deletePortfolio(userId, portfolioId);
+      if (!deleted) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      // Clear the polymorphic sharing audience (+ members + public links) — it
+      // carries no FK to the portfolio, so the cascade never reaches it. Mirrors
+      // conglomerate/watchlist deletion; hygiene only, as the authorization joins
+      // already exclude a vanished subject (a lingering chat share-chip resolves
+      // to the not-available state via those same joins, #349/#332).
+      await audience.clearForSubject('portfolio', portfolioId);
+      // Drop the orphaned value-over-time graph cache for the now-gone portfolio.
+      await invalidateHistory(portfolioId);
     },
 
     async updatePortfolio(userId, portfolioId, patch) {

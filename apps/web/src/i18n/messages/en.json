@@ -732,7 +732,22 @@
       "createError": "Could not create the portfolio. Please try again.",
       "renameError": "Could not rename the portfolio. Please try again.",
       "archiveError": "Could not archive the portfolio. Please try again.",
-      "restoreError": "Could not restore the portfolio. Please try again."
+      "restoreError": "Could not restore the portfolio. Please try again.",
+      "deleteCurrent": "Delete current",
+      "deleteDisabledHint": "You cannot delete your only portfolio",
+      "deleteDialogTitle": "Delete portfolio",
+      "deleteDialogDescription": "Permanently delete \"{{name}}\" and everything in it. This cannot be undone.",
+      "deleteWarningHeadline": "This cannot be undone. Deleting this portfolio removes:",
+      "deleteWarningTransactions": "All transactions and holdings in this portfolio",
+      "deleteWarningCash": "Its entire cash balance and all cash sources",
+      "deleteWarningShares": "Any shares and public links to it — they stop working immediately",
+      "deleteWarningTax": "Your past tax-report figures will change, because this portfolio's realized-profit/loss history is removed",
+      "deletePromotesDefault": "\"{{name}}\" will become your new default portfolio.",
+      "deleteConfirmLabel": "Type the portfolio name ({{name}}) to confirm",
+      "deleteConfirmAriaLabel": "Portfolio name confirmation",
+      "deleting": "Deleting…",
+      "delete": "Delete permanently",
+      "deleteError": "Could not delete the portfolio. Please try again."
     },
     "cash": {
       "title": "Cash balance",
