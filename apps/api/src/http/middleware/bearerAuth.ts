@@ -86,6 +86,11 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   // needs `notifications:write`; the social graph mutation needs `social:write`.
   { prefix: '/social', read: 'social:read', write: 'social:write' },
   { prefix: '/notifications', read: 'notifications:read', write: 'notifications:write' },
+  // #396: friend chat (V3-P8) shipped without a row here, so every bearer
+  // request to /chat/* fell through to the session-only default — a 403 no
+  // matter which scopes the token held. Cookie sessions bypass this map, which
+  // is why web chat worked and only bearer clients (mobile, #349) hit it.
+  { prefix: '/chat', read: 'chat:read', write: 'chat:write' },
   { prefix: '/settings', read: 'social:read', write: 'social:write' },
 ];
 
