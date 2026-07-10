@@ -544,7 +544,12 @@ describe('#371 write-implies-read at the scope-enforcement rail', () => {
     const reg = await agent
       .post('/api/v1/settings/oauth-clients')
       .set(...XRW)
-      .send({ name: 'WriteOnly', redirectUris: [REDIRECT], scopes: ['portfolio:write'], public: true });
+      .send({
+        name: 'WriteOnly',
+        redirectUris: [REDIRECT],
+        scopes: ['portfolio:write'],
+        public: true,
+      });
     expect(reg.status, JSON.stringify(reg.body)).toBe(201);
     const clientId = createOAuthClientResponseSchema.parse(reg.body).client.clientId;
 
