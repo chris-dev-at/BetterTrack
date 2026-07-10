@@ -88,7 +88,17 @@ while true; do
         # seed runs right after migrate — it is idempotent by design (#398), so
         # running it on every deploy (not just start.sh) converges the first-party
         # OAuth client ceiling without narrowing anything already there.
+        #
+        # Deploy marker: after fast-forwarding, stamp the deployed commit + UTC
+        # build time and export them so compose resolves the GIT_SHA/GIT_BUILD_TIME
+        # build args (infra/docker-compose.yml → the web/api Dockerfiles), so
+        # GET /api/v1/version and the admin-login footer report exactly what is
+        # live. Both assignments always succeed (|| echo unknown / date), so the
+        # && chain's success semantics are unchanged.
         if git -C "$APP" reset --hard "$REMOTE" >>"$LOG" 2>&1 &&
+          GIT_SHA="$(git -C "$APP" rev-parse HEAD 2>/dev/null || echo unknown)" &&
+          GIT_BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" &&
+          export GIT_SHA GIT_BUILD_TIME &&
           dc build web api >>"$LOG" 2>&1 &&
           dc up -d db redis >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/migrate.js >>"$LOG" 2>&1 &&

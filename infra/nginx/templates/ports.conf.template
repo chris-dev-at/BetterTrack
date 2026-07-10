@@ -5,6 +5,17 @@
 # terminator) for https.
 # Generated at container start from env by docker-entrypoint.sh (envsubst).
 
+# WebSocket upgrade forwarding (realtime gateway, /ws). Maps the request's
+# Upgrade header to the Connection value the upstream needs: "upgrade" for a
+# websocket handshake, "close" otherwise. Declared at http level — this file is
+# rendered into conf.d/default.conf, included inside nginx's http{} — so the api
+# server block can reference $connection_upgrade. envsubst leaves these nginx
+# runtime vars untouched (they are not in the entrypoint's substitution list).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 # ── API port → Express service ──────────────────────────────────────────────
 server {
     listen ${BT_PORT_API};
@@ -12,10 +23,17 @@ server {
     location / {
         proxy_pass http://${API_UPSTREAM};
         proxy_http_version 1.1;
+        # Forward the WebSocket upgrade (realtime gateway /ws); without these two
+        # headers nginx strips the handshake and socket.io falls back to polling (#396).
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Long-lived sockets: engine.io pings every ~25s — keep the upstream read
+        # open well past that so idle connections are not torn down mid-session.
+        proxy_read_timeout 300s;
     }
 }
 

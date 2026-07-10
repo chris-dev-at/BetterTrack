@@ -17,6 +17,7 @@ import {
   okResponseSchema,
   resetPasswordResponseSchema,
   testEmailResponseSchema,
+  versionResponseSchema,
   type AdminInviteListResponse,
   type AdminStats,
   type AdminUser,
@@ -44,6 +45,7 @@ import {
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
   type UpdateUserRequest,
+  type VersionResponse,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -79,6 +81,18 @@ export async function changePassword(body: ChangePasswordRequest): Promise<MeRes
 export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/me', { signal });
   return meResponseSchema.parse(data);
+}
+
+// --- Meta ------------------------------------------------------------------
+
+/**
+ * Public deploy marker (`GET /api/v1/version`) — no auth. The admin login footer
+ * uses it to show which API commit is live; callers treat any failure as "marker
+ * unavailable" and fail silent.
+ */
+export async function getVersion(signal?: AbortSignal): Promise<VersionResponse> {
+  const data = await apiRequest<unknown>('/version', { signal });
+  return versionResponseSchema.parse(data);
 }
 
 // --- Admin: users ---------------------------------------------------------

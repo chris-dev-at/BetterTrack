@@ -17,6 +17,11 @@ services:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
+      # Deploy marker baked into the SPA at build time (admin-login footer). The
+      # live updater (infra/live/updater.sh) exports GIT_SHA/GIT_BUILD_TIME.
+      args:
+        GIT_SHA: '${GIT_SHA:-unknown}'
+        GIT_BUILD_TIME: '${GIT_BUILD_TIME:-unknown}'
     restart: unless-stopped
     environment:
       # Topology (§11) — the same scheme the api derives its origins from.
@@ -68,6 +73,11 @@ services:
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
+      # Deploy marker baked into the runtime env (GET /api/v1/version). The live
+      # updater (infra/live/updater.sh) exports GIT_SHA/GIT_BUILD_TIME.
+      args:
+        GIT_SHA: '${GIT_SHA:-unknown}'
+        GIT_BUILD_TIME: '${GIT_BUILD_TIME:-unknown}'
     restart: unless-stopped
     environment:
       NODE_ENV: production

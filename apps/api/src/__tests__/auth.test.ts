@@ -1,7 +1,11 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { healthResponseSchema, meResponseSchema } from '@bettertrack/contracts';
+import {
+  healthResponseSchema,
+  meResponseSchema,
+  versionResponseSchema,
+} from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -19,6 +23,19 @@ describe('GET /api/v1/health', () => {
     const res = await request(harness.app).get('/api/v1/health');
     expect(res.status).toBe(200);
     expect(healthResponseSchema.safeParse(res.body).success).toBe(true);
+  });
+});
+
+describe('GET /api/v1/version', () => {
+  it('returns the deploy marker unauthenticated, with three string fields', async () => {
+    // No cookie, no bearer, no CSRF header — the marker is fully public so any
+    // script can verify which commit is live.
+    const res = await request(harness.app).get('/api/v1/version');
+    expect(res.status).toBe(200);
+    expect(versionResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(typeof res.body.commit).toBe('string');
+    expect(typeof res.body.shortCommit).toBe('string');
+    expect(typeof res.body.builtAt).toBe('string');
   });
 });
 
