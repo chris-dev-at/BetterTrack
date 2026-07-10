@@ -204,6 +204,13 @@
       "when": 1783492400000,
       "tag": "0028_account_self_deletion",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1783492500000,
+      "tag": "0029_first_party_client_reconcile",
+      "breakpoints": true
     }
   ]
 }
