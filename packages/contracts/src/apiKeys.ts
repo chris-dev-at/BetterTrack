@@ -22,8 +22,9 @@ export const API_KEY_TOKEN_PREFIX = 'btk_';
  * removed, so a token minted before a scope existed keeps exactly the grants it
  * was issued with (#361). The `social:write`, `notifications:*`, `chat:*` and
  * `account:security` scopes were added for the unified web+mobile platform
- * surface (#361); `chat:*` has no route group yet and is reserved for a future
- * messaging module.
+ * surface (#361); `chat:*` gates the friend-chat module (V3-P8) under `/chat/*`
+ * (#396 — the module-policy row was missed when chat shipped, leaving these
+ * scopes granted but unusable by bearers).
  */
 export const API_KEY_SCOPES = [
   'portfolio:read',

@@ -6,11 +6,14 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  chatConversationListResponseSchema,
+  conversationResponseSchema,
   createApiKeyResponseSchema,
   createOAuthClientResponseSchema,
   meResponseSchema,
   oauthTokenResponseSchema,
   pinStatusResponseSchema,
+  sendChatMessageResponseSchema,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -30,6 +33,7 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const REDIRECT = 'https://app.example/callback';
+const MISSING_ID = '00000000-0000-0000-0000-000000000000';
 
 let harness: TestHarness;
 
@@ -205,6 +209,21 @@ describe('#361 route × scope matrix', () => {
       scope: 'social:write',
       body: { username: 'someone-else' },
     },
+    // #396: /chat was missing from MODULE_POLICIES, so both rows used to hit the
+    // session-only default (403 API_KEY_FORBIDDEN) even WITH the chat scopes.
+    {
+      name: 'chat conversations list',
+      method: 'get',
+      path: '/chat/conversations',
+      scope: 'chat:read',
+    },
+    {
+      name: 'chat open conversation (mutate)',
+      method: 'post',
+      path: '/chat/conversations',
+      scope: 'chat:write',
+      body: { userId: MISSING_ID },
+    },
     { name: '2fa status', method: 'get', path: '/auth/2fa/status', scope: 'account:security' },
     { name: 'sessions list', method: 'get', path: '/auth/sessions', scope: 'account:security' },
     {
@@ -361,5 +380,129 @@ describe('#361 self-revocation on logout', () => {
       .from(schema.oauthGrants)
       .where(eq(schema.oauthGrants.id, grantId));
     expect(grant!.revokedAt).not.toBeNull();
+  });
+});
+
+describe('#396 bearer /chat coverage — the mobile chat 403 root cause', () => {
+  /**
+   * Seed a key owner (personal key with the given scopes) and a second user,
+   * friend them via the cookie-session social flow (same as chat.test.ts), and
+   * hand back the bearer token plus the friend's id + logged-in agent.
+   */
+  async function seedChatPair(scopes: string[]): Promise<{
+    token: string;
+    friendId: string;
+    friendAgent: Agent;
+  }> {
+    const ownerSeed = await seedFreshUser();
+    const ownerAgent = await loginAgent(harness.app, ownerSeed.email, ownerSeed.password);
+    const keyRes = await ownerAgent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'mobile-chat', scopes });
+    expect(keyRes.status, JSON.stringify(keyRes.body)).toBe(201);
+    const token = createApiKeyResponseSchema.parse(keyRes.body).token;
+
+    const friendSeed = await seedFreshUser();
+    const friendAgent = await loginAgent(harness.app, friendSeed.email, friendSeed.password);
+
+    const sent = await ownerAgent
+      .post('/api/v1/social/requests')
+      .set(...XRW)
+      .send({ identifier: friendSeed.username });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(202);
+    const inbox = await friendAgent.get('/api/v1/social/requests');
+    const incoming = inbox.body.incoming.find(
+      (r: { user: { id: string } }) => r.user.id === ownerSeed.id,
+    );
+    const accepted = await friendAgent
+      .post(`/api/v1/social/requests/${incoming.id}/accept`)
+      .set(...XRW)
+      .send();
+    expect(accepted.status).toBe(200);
+
+    return { token, friendId: friendSeed.id, friendAgent };
+  }
+
+  it('a chat-scoped key walks the full flow: list → open → message; the cookie side sees it', async () => {
+    const { token, friendId, friendAgent } = await seedChatPair(['chat:read', 'chat:write']);
+
+    // GET /chat/conversations — the exact request the mobile app failed on
+    // (#349/#386): pre-fix this was 403 API_KEY_FORBIDDEN despite chat:read.
+    const list = await request(harness.app).get('/api/v1/chat/conversations').set(bearer(token));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(chatConversationListResponseSchema.safeParse(list.body).success).toBe(true);
+
+    const opened = await request(harness.app)
+      .post('/api/v1/chat/conversations')
+      .set(bearer(token))
+      .send({ userId: friendId });
+    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+    expect(conversationResponseSchema.safeParse(opened.body).success).toBe(true);
+    const conversationId = opened.body.conversation.id as string;
+
+    const sent = await request(harness.app)
+      .post(`/api/v1/chat/conversations/${conversationId}/messages`)
+      .set(bearer(token))
+      .send({ body: 'hello from mobile' });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(201);
+    expect(sendChatMessageResponseSchema.safeParse(sent.body).success).toBe(true);
+
+    // The cookie-session path through the SAME conversation is unchanged: the
+    // friend reads the thread with their session and sees the bearer's message.
+    const thread = await friendAgent.get(`/api/v1/chat/conversations/${conversationId}/messages`);
+    expect(thread.status).toBe(200);
+    expect(thread.body.messages).toHaveLength(1);
+    expect(thread.body.messages[0].body).toBe('hello from mobile');
+  });
+
+  it('403 INSUFFICIENT_SCOPE (scope-gated, not API_KEY_FORBIDDEN) without chat scopes', async () => {
+    // A broadly-scoped platform token that merely lacks chat:* — the pre-fix
+    // failure was a blanket API_KEY_FORBIDDEN regardless of scopes; the module
+    // must now deny on the missing scope like every other mapped module.
+    const { token, friendId } = await seedChatPair([
+      'portfolio:read',
+      'social:read',
+      'notifications:read',
+    ]);
+
+    const list = await request(harness.app).get('/api/v1/chat/conversations').set(bearer(token));
+    expect(list.status).toBe(403);
+    expect(list.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(list.body.error.message).toContain('chat:read');
+
+    const open = await request(harness.app)
+      .post('/api/v1/chat/conversations')
+      .set(bearer(token))
+      .send({ userId: friendId });
+    expect(open.status).toBe(403);
+    expect(open.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(open.body.error.message).toContain('chat:write');
+
+    const send = await request(harness.app)
+      .post(`/api/v1/chat/conversations/${MISSING_ID}/messages`)
+      .set(bearer(token))
+      .send({ body: 'nope' });
+    expect(send.status).toBe(403);
+    expect(send.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('chat:read alone lists but cannot open or send (read/write split holds)', async () => {
+    const { token, friendId } = await seedChatPair(['chat:read']);
+    await request(harness.app).get('/api/v1/chat/conversations').set(bearer(token)).expect(200);
+
+    const open = await request(harness.app)
+      .post('/api/v1/chat/conversations')
+      .set(bearer(token))
+      .send({ userId: friendId });
+    expect(open.status).toBe(403);
+    expect(open.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('a delegated OAuth token with chat scopes reaches chat too (the rail the mobile app rides)', async () => {
+    const { token } = await mintOAuthToken(['chat:read', 'chat:write']);
+    const res = await request(harness.app).get('/api/v1/chat/conversations').set(bearer(token));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(chatConversationListResponseSchema.safeParse(res.body).success).toBe(true);
   });
 });
