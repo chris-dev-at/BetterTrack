@@ -20,8 +20,13 @@ export LOG_TAG="[w$WORKER_ID]"
 export MF_EVENTLOG=$LOGS/events.log
 export WORKER_ID
 
-. /work/mf/lib.sh
-. /work/mf/mflib.sh
+# Pure helpers below (salvage_branch) are unit-tested on the host: test.sh sets
+# MF_SOURCE_ONLY=1, stubs gh/log/git, and sources this file (lib.sh + boot + main
+# loop skipped).
+if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
+  . /work/mf/lib.sh
+  . /work/mf/mflib.sh
+fi
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"; }
@@ -39,7 +44,7 @@ wstatus(){ # $1=phase $2=issue-or-null $3=pr-or-null
 HB_PID=""
 hb_start(){ ( while :; do date -Is >"$HB" 2>/dev/null || true; sleep 300; done ) & HB_PID=$!; }
 hb_stop(){ [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; return 0; }
-trap 'hb_stop' EXIT
+[ "${MF_SOURCE_ONLY:-0}" = 1 ] || trap 'hb_stop' EXIT
 
 enqueue_merge(){ # $1=pr $2=issue — claims copied from the assignment file
   ls "$QUEUE" 2>/dev/null | grep -q -- "-pr$1\.json$" && return 0
@@ -143,6 +148,50 @@ $(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
   esac
 }
 
+# ---- salvage — never lose the writer's output (issues #328/#332/#370) ------------
+# After the writer returns (success OR failure), before any verdict handling: if the
+# clone has uncommitted work or the task branch carries commits not on main and no
+# PR exists yet, commit + push the branch. A retry/relocate/checker or the next
+# run's reviewer can then pick it up instead of the work evaporating in the worker's
+# volume (salvage-from-volume, PR #393, is manual COD labor otherwise). Sets the
+# global SALVAGED=1 and logs `salvaged branch task/N` when it fires; a normal happy
+# path (the writer opened its own PR) is a no-op.
+salvage_branch(){ # $1=issue
+  local n=$1
+  local branch="task/$n" dirty="" ahead=0 cur
+  SALVAGED=0
+  cd "$REPO_DIR" 2>/dev/null || return 0
+  # Happy path: the writer already opened a PR — nothing to salvage.
+  if [ -n "$(gh pr list --head "$branch" --state open --json number -q '.[0].number' 2>/dev/null)" ]; then
+    return 0
+  fi
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && dirty=1
+  if git rev-parse --verify -q "refs/heads/$branch" >/dev/null 2>&1; then
+    ahead=$(git rev-list --count "origin/main..$branch" 2>/dev/null || echo 0)
+  fi
+  # Clean tree and no unpushed commits ⇒ the writer left nothing behind.
+  [ -z "$dirty" ] && [ "${ahead:-0}" -eq 0 ] && return 0
+  # Land any uncommitted work on the task branch (create it if the writer never did).
+  cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+  if [ "$cur" != "$branch" ]; then
+    if git rev-parse --verify -q "refs/heads/$branch" >/dev/null 2>&1; then
+      git checkout -q "$branch" 2>>"$LOG" || { log "salvage: cannot switch to $branch"; return 0; }
+    else
+      git checkout -q -b "$branch" 2>>"$LOG" || { log "salvage: cannot create $branch"; return 0; }
+    fi
+  fi
+  if [ -n "$dirty" ]; then
+    git add -A 2>>"$LOG"
+    git commit -q -m "chore(salvage): writer output for #$n (auto-committed by worker $WORKER_ID)" 2>>"$LOG" || true
+  fi
+  if git push -u origin "$branch" 2>>"$LOG"; then
+    SALVAGED=1; log "salvaged branch $branch"
+  else
+    log "salvage push failed for $branch"
+  fi
+  return 0
+}
+
 # ---- one full assignment cycle — mirrors run.sh's issue cycle -1:1 where possible
 run_cycle(){ # $1=issue $2=relocated
   local n=$1 reloc=$2 pr
@@ -175,8 +224,14 @@ run_cycle(){ # $1=issue $2=relocated
     log "writer attempt $w_try/${WRITER_RETRIES:-2} failed"
     [ "$w_try" -lt "${WRITER_RETRIES:-2}" ] && sleep "${WRITER_RETRY_SLEEP:-60}"
   done
+  # Never lose the writer's output: commit + push the task branch if there's work
+  # sitting in the clone and no PR exists yet (success OR failure path).
+  salvage_branch "$n"
+  local salvage_note=""
+  [ "${SALVAGED:-0}" = 1 ] && salvage_note=" (writer output salvaged to branch task/$n)"
+
   if [ "$writer_ok" -ne 1 ]; then
-    mark_human "$n" "writer failed after ${WRITER_RETRIES:-2} attempts"
+    mark_human "$n" "writer failed after ${WRITER_RETRIES:-2} attempts$salvage_note"
     gh issue edit "$n" --remove-label "mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
     wstatus failed "$n"; hb_stop; return 1
   fi
@@ -203,7 +258,7 @@ run_cycle(){ # $1=issue $2=relocated
       log "issue #$n self-resolved by writer (no PR needed)"; issue_cost "$n"
       wstatus done "$n"; hb_stop; return 0
     fi
-    mark_human "$n" "no PR appeared"
+    mark_human "$n" "no PR appeared$salvage_note"
     gh issue edit "$n" --remove-label "mf:worker-$WORKER_ID" >/dev/null 2>&1 || true
     wstatus failed "$n"; hb_stop; return 1
   fi
@@ -235,6 +290,7 @@ run_cycle(){ # $1=issue $2=relocated
 }
 
 # ---- boot ------------------------------------------------------------------------
+if [ "${MF_SOURCE_ONLY:-0}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 mkdir -p "$ASSIGN" "$STATUS" "$QUEUE" "$LOGS"
 [ -f "$PROMPTS/writer.md" ] || { notify "FATAL: factory prompts missing in $PROMPTS (worker $WORKER_ID)"; exit 1; }
 [ -d "$REPO_DIR/.git" ] || git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$REPO_DIR"

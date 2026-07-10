@@ -84,7 +84,7 @@ A1=$(jq -r '.issue' "$MFSTATE/assignments/worker-1.json" 2>/dev/null || echo non
 A2=$(jq -r '.issue' "$MFSTATE/assignments/worker-2.json" 2>/dev/null || echo none)
 check "worker 1 gets lowest runnable (#201)" "201" "$A1"
 check "worker 2 skips conflicting #202, gets #203" "203" "$A2"
-check "conflicting #202 stays unassigned" "" "$(grep -l 202 "$MFSTATE"/assignments/*.json 2>/dev/null || true)"
+check "conflicting #202 stays unassigned" "" "$(grep -l '"issue":202' "$MFSTATE"/assignments/*.json 2>/dev/null || true)"
 
 echo "— scheduler: missing mf-meta serializes (runs alone)"
 rm -f "$MFSTATE"/assignments/*.json
@@ -222,6 +222,42 @@ rm -f "$MFSTATE/control/models.json"
 check "cfg: missing file → builtin default" "claude|claude-sonnet-5|high" "$(diff_cfg easy)"
 check "cfg: missing file → role default hard" "hard" "$(role_diff checker)"
 check "cfg: missing file → floor default intermediate" "intermediate" "$(review_floor)"
+
+echo "— worker salvage: never lose writer output (#394)"
+# Offline git sandbox: a bare 'origin' + a working clone, no network. Source
+# worker.sh in MF_SOURCE_ONLY mode (lib.sh + boot skipped) and drive salvage_branch
+# directly. worker.sh hard-assigns REPO_DIR/LOG at source time, so override AFTER.
+SB=$T/salvage; mkdir -p "$SB"
+git init -q --bare "$SB/origin.git"
+git clone -q "$SB/origin.git" "$SB/clone" 2>/dev/null
+( cd "$SB/clone"
+  git config user.email t@t.test; git config user.name tester; git config commit.gpgsign false
+  git commit -q --allow-empty -m init && git branch -M main && git push -q -u origin main )
+export WORKER_ID=9
+MF_SOURCE_ONLY=1 . ./worker.sh
+REPO_DIR=$SB/clone; LOG=$SB/log; MF_EVENTLOG=$SB/events; : >"$MF_EVENTLOG"
+# Stubs: gh pr list prints $GH_PR (a number ⇒ PR exists); log captures event lines.
+gh(){ case "$1 $2" in "pr list") printf '%s' "${GH_PR:-}";; *) : ;; esac; }
+log(){ printf '%s\n' "$*" >>"$MF_EVENTLOG"; }
+cd "$SB/clone"
+bare(){ git --git-dir="$SB/origin.git" branch --list "$1" --format='%(refname:short)'; }
+
+# Case 1: clean tree, no task branch, no PR ⇒ nothing to salvage.
+GH_PR="" salvage_branch 500
+check "salvage: clean tree is a no-op" "0" "${SALVAGED}"
+check "salvage: no branch pushed for clean tree" "" "$(bare task/500)"
+
+# Case 2: happy path — writer opened its own PR ⇒ salvage skipped even if dirty.
+echo happy >happy.txt
+GH_PR="777" salvage_branch 502
+check "salvage: skipped when PR exists (happy path)" "0" "${SALVAGED}"
+check "salvage: no branch pushed when PR exists" "" "$(bare task/502)"
+
+# Case 3: dirty tree, no PR ⇒ commit + push the task branch + event line.
+GH_PR="" salvage_branch 503
+check "salvage: fires on dirty tree with no PR" "1" "${SALVAGED}"
+check "salvage: branch landed on origin" "task/503" "$(bare task/503)"
+check "salvage: event line logged" "1" "$(grep -c 'salvaged branch task/503' "$MF_EVENTLOG")"
 
 echo
 echo "passed: $PASS, failed: $FAIL"

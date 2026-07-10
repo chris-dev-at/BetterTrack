@@ -253,6 +253,15 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     res.json(await ctx.twoFactor.enrollTotp(req.authUser!.id, req.ip));
   });
 
+  // Cancel a pending (unconfirmed) TOTP enrollment (#401). Armed 2FA is
+  // untouchable here — 409 when TOTP is already on, 404 when nothing is pending.
+  // Session + bearer (`account:security`, gated by the /auth/2fa/ policy in
+  // bearerAuth); rate-limited by the shared /api/v1 limiter like its siblings.
+  router.delete('/2fa/enroll', requireUser, async (req, res) => {
+    await ctx.twoFactor.cancelTotpEnrollment(req.authUser!.id, req.ip);
+    res.json({ ok: true });
+  });
+
   router.post(
     '/2fa/confirm',
     requireUser,

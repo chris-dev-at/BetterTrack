@@ -1014,8 +1014,6 @@
       "budgetAriaLabel": "Budget in EUR",
       "stepSizeLabel": "Step size",
       "stepPrecisionAriaLabel": "Budget step precision",
-      "stepLabel": "Step",
-      "stepAriaLabel": "Fractional quantity step",
       "calculating": "Calculating…",
       "calculate": "Calculate",
       "calcError": "Could not calculate a buy list. Please try again.",
