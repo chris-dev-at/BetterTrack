@@ -89,6 +89,16 @@ written back into the issue's mf-meta), or `NEEDS_HUMAN` (a distilled A-or-B
 question lands on the issue). Caps: one checker pass, one escalated retry,
 relocate chain depth 1. `needs-human` means "only a human can answer this".
 
+**Branch salvage (never lose writer output).** Right after the writer returns
+(success OR failure), before any verdict handling, the worker checks its clone: if
+the working tree is dirty or `task/N` carries commits not on `main` **and no PR
+exists yet**, it commits (`chore(salvage): …`) and pushes `task/N` to origin,
+logging a `salvaged branch task/N` event line. The failure paths then point at the
+pushed branch, so a retry/relocate/checker or the next run's reviewer can pick the
+work up instead of it evaporating in the worker's clone volume (the manual
+salvage-from-volume drill after `needs-human`). The normal happy path — where the
+writer opened its own PR — is a no-op (a PR already exists).
+
 ## The protocol dir (`multi-factory/state/`, bind-mounted at `/work/mfstate`)
 
 - `assignments/worker-N.json` — master-written (atomic tmp+mv), removed on ack
