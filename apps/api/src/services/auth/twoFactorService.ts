@@ -15,7 +15,7 @@ import type {
   TwoFactorState,
 } from '../../data/repositories/twoFactorRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
-import { badRequest, unauthorized } from '../../errors';
+import { badRequest, conflict, notFound, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
@@ -56,6 +56,14 @@ export interface TwoFactorService {
    * for the authenticator QR. Re-enrolling while TOTP is already on is rejected.
    */
   enrollTotp(userId: string, ip?: string | null): Promise<TwoFactorEnrollResponse>;
+  /**
+   * Cancel a pending (unconfirmed) TOTP enrollment (#401): wipe the provisional
+   * secret so a client's "cancel" on the enroll screen cleans up server-side.
+   * Armed TOTP is untouchable here — a 409 `TWO_FACTOR_ALREADY_ENABLED` protects
+   * it (disabling needs a valid factor via {@link disableTotp}); a 404
+   * `TWO_FACTOR_NOT_PENDING` when there is nothing pending to cancel.
+   */
+  cancelTotpEnrollment(userId: string, ip?: string | null): Promise<void>;
   /**
    * Confirm TOTP enrollment (§6.1): a valid current code flips the TOTP method on.
    * Recovery codes are issued only when this is the FIRST method enabled (returned
@@ -210,6 +218,29 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         }),
         secret,
       };
+    },
+
+    async cancelTotpEnrollment(userId, ip) {
+      const state = await twoFactorRepo.getState(userId);
+      if (!state) throw unauthorized();
+      // Armed TOTP is never cleared by this route — that path needs a valid
+      // factor (disableTotp). A pending secret exists only while not enabled.
+      if (state.enabled) throw conflict(alreadyEnabled().message, 'TWO_FACTOR_ALREADY_ENABLED');
+      if (!state.secret) {
+        throw notFound(
+          'There is no pending two-factor enrollment to cancel.',
+          'TWO_FACTOR_NOT_PENDING',
+        );
+      }
+
+      await twoFactorRepo.clearTotpSecret(userId);
+      await audit.record({
+        actorId: userId,
+        action: AuditAction.TwoFactorEnrollCanceled,
+        targetType: 'user',
+        targetId: userId,
+        ip,
+      });
     },
 
     async confirmTotp(userId, code, ip) {
