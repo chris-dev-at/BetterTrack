@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/chatApi', () => ({
@@ -21,11 +22,23 @@ import {
   listConversations,
   markConversationRead,
   openConversation,
+  sendChatMessage,
 } from '../../lib/chatApi';
 import { ChatPage } from './ChatPage';
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+}
+
+/** A promise whose settlement the test controls, to hold a send in-flight. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function renderAt(path: string) {
@@ -154,5 +167,88 @@ describe('ChatPage — thread + share chip enforcement', () => {
     vi.mocked(openConversation).mockRejectedValue(new Error('not found'));
     renderAt('/social/chat/u2');
     await waitFor(() => expect(screen.getByText("You're not connected")).toBeInTheDocument());
+  });
+});
+
+describe('ChatPage — composer focus', () => {
+  const convo = {
+    id: 'c1',
+    user: { id: 'u2', username: 'bob' },
+    unreadCount: 0,
+    lastMessage: null,
+    lastMessageAt: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [], unreadTotal: 0 });
+    vi.mocked(openConversation).mockResolvedValue(convo);
+    vi.mocked(getThread).mockResolvedValue({ conversation: convo, nextCursor: null, messages: [] });
+  });
+
+  test('opening a conversation puts the caret in the message input', async () => {
+    renderAt('/social/chat/u2');
+
+    const input = await screen.findByPlaceholderText('Message');
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  test('a resolved send clears the input and returns focus for the next message', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof sendChatMessage>>>();
+    vi.mocked(sendChatMessage).mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+    const input = await screen.findByPlaceholderText('Message');
+
+    await user.type(input, 'hello');
+    // Send via the button — that moves focus off the input (the real click path);
+    // while in-flight the field is disabled, which is what drops focus today.
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(sendChatMessage).toHaveBeenCalledWith('c1', { body: 'hello' }));
+    await waitFor(() => expect(input).toBeDisabled());
+
+    await act(async () => {
+      pending.resolve({
+        id: 'm1',
+        conversationId: 'c1',
+        senderId: 'me',
+        body: 'hello',
+        chip: null,
+        createdAt: '2026-01-01T10:00:00.000Z',
+      });
+    });
+
+    // Once the send resolves the input clears and focus lands back on it —
+    // surviving the re-enable and the success invalidation/refetch.
+    await waitFor(() => {
+      expect(input).toHaveValue('');
+      expect(document.activeElement).toBe(input);
+    });
+  });
+
+  test('a failed send keeps the text and the focus so it can be retried', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof sendChatMessage>>>();
+    vi.mocked(sendChatMessage).mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+    const input = await screen.findByPlaceholderText('Message');
+
+    await user.type(input, 'retry me');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() => expect(input).toBeDisabled());
+
+    await act(async () => {
+      pending.reject(new Error('send failed'));
+    });
+
+    // The error surfaces, but the draft is preserved and the caret stays put.
+    await waitFor(() =>
+      expect(screen.getByText(/couldn't send your message/i)).toBeInTheDocument(),
+    );
+    await waitFor(() => {
+      expect(input).toHaveValue('retry me');
+      expect(document.activeElement).toBe(input);
+    });
   });
 });
