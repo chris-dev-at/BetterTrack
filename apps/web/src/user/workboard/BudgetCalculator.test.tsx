@@ -113,36 +113,63 @@ beforeEach(() => {
 });
 
 describe('BudgetCalculator', () => {
-  test('the budget stepper steps at a selectable decimal precision (V3-P0 #322)', async () => {
+  test('whole-shares mode hides the fractional step-precision selector, and steps by whole euros (#363)', async () => {
     const user = userEvent.setup();
     renderCalculator();
 
     const budget = screen.getByLabelText('Budget in EUR') as HTMLInputElement;
     expect(budget.value).toBe('1000');
+    // Sub-integer precision is meaningless with whole shares — no selector here.
+    expect(screen.queryByLabelText('Budget step precision')).not.toBeInTheDocument();
+    expect(budget).toHaveAttribute('step', '1');
 
-    // Default granularity is whole euros: + steps by 1.
     await user.click(screen.getByRole('button', { name: 'Increase budget by 1' }));
     expect(budget.value).toBe('1001');
+  });
+
+  test('fractional mode exposes the step-precision selector down to 0.00001, stepping in cents (V3-P0 #322, #363)', async () => {
+    const user = userEvent.setup();
+    renderCalculator();
+
+    await user.click(screen.getByRole('button', { name: 'Fractional' }));
+
+    const budget = screen.getByLabelText('Budget in EUR') as HTMLInputElement;
 
     // Selecting 0.01 makes the stepper move in cents and rewrites the input
     // `step` so keyboard/native stepping matches — "how far off the comma".
-    await user.selectOptions(screen.getByLabelText('Budget step precision'), '0.01');
+    const precision = screen.getByLabelText('Budget step precision');
+    expect(
+      within(precision as HTMLElement).getByRole('option', { name: '0.00001' }),
+    ).toBeInTheDocument();
+    await user.selectOptions(precision, '0.01');
     expect(budget).toHaveAttribute('step', '0.01');
 
     await user.click(screen.getByRole('button', { name: 'Increase budget by 0.01' }));
-    expect(budget.value).toBe('1001.01');
+    expect(budget.value).toBe('1000.01');
     await user.click(screen.getByRole('button', { name: 'Decrease budget by 0.01' }));
-    expect(budget.value).toBe('1001.00');
+    expect(budget.value).toBe('1000.00');
+  });
 
-    // Cents feed straight into the allocate call — no rounding back to whole euros.
-    vi.mocked(allocateConglomerate).mockResolvedValue(RESPONSE);
-    await calculate(user);
-    await waitFor(() =>
-      expect(allocateConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID, {
-        budgetEur: 1001,
-        mode: 'whole',
-      }),
-    );
+  test('a BTC-EUR-scale fractional step of 0.0001 accumulates with no floating-point dust (#363)', async () => {
+    const user = userEvent.setup();
+    renderCalculator();
+
+    await user.click(screen.getByRole('button', { name: 'Fractional' }));
+
+    const budget = screen.getByLabelText('Budget in EUR') as HTMLInputElement;
+    await user.clear(budget);
+    await user.type(budget, '0');
+
+    await user.selectOptions(screen.getByLabelText('Budget step precision'), '0.0001');
+    expect(budget).toHaveAttribute('step', '0.0001');
+
+    // Three 0.0001 steps: naive float addition gives 0.00030000000000000003;
+    // the re-quantizing stepper must land on exactly "0.0003".
+    const up = screen.getByRole('button', { name: 'Increase budget by 0.0001' });
+    await user.click(up);
+    await user.click(up);
+    await user.click(up);
+    expect(budget.value).toBe('0.0003');
   });
 
   test('calculating renders the deviation table and a totals footer with total cost ≤ budget', async () => {
