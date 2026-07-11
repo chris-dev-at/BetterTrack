@@ -10,6 +10,7 @@ import {
   type UpdateCustomAssetRequest,
 } from '@bettertrack/contracts';
 
+import { createIdempotency } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -19,6 +20,11 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  // Idempotency (§13.4 V4-P2a, #417): the opt-in `Idempotency-Key` middleware for
+  // the value-points full-replace below. Built once; a request without the header
+  // passes straight through.
+  const idempotency = createIdempotency(ctx);
 
   // GET /custom-assets/recategorization — how many custom assets still carry the
   // V3-P2 migration flag (drives the one-time re-categorize banner). Declared
@@ -79,6 +85,7 @@ export function createCustomAssetsRouter(ctx: AppContext): Router {
   router.put(
     '/:id/value-points',
     validateParams(customAssetIdParamSchema),
+    idempotency,
     validateBody(putValuePointsRequestSchema),
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };

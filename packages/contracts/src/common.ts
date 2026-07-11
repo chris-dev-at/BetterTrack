@@ -18,6 +18,36 @@ export const idParamSchema = z.object({ id: z.string().uuid() }).strict();
 export const tokenParamSchema = z.object({ token: z.string().min(1).max(256) }).strict();
 
 /**
+ * Idempotency on portfolio mutation endpoints (V4-P2a, #417) — the backbone for
+ * the app's offline FIFO queue (mobile SPEC §7). A client MAY send this header
+ * carrying a UUID on a mutating request; the server persists key→response per
+ * user (≥ 48 h) and replays the stored response on a duplicate, so a retried
+ * request never repeats the side effect. Opt-in: a request WITHOUT the header
+ * behaves exactly as before, so the web SPA keeps working unchanged.
+ */
+export const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
+
+/** The header value must be a UUID; anything else is a 400 IDEMPOTENCY_KEY_INVALID. */
+export const idempotencyKeySchema = z.string().uuid();
+
+/**
+ * Typed error codes the idempotency layer raises in the standard `{ error }`
+ * envelope (§8):
+ *  - `IDEMPOTENCY_KEY_INVALID` (400): the header is present but not a UUID.
+ *  - `IDEMPOTENCY_KEY_MISMATCH` (409): the key was already used for a *different*
+ *    request (different endpoint or body) — never replayed, always rejected.
+ *  - `IDEMPOTENCY_IN_PROGRESS` (409): a concurrent request with the same key is
+ *    still executing; the client may retry once it settles.
+ */
+export const IDEMPOTENCY_ERROR_CODES = {
+  invalidKey: 'IDEMPOTENCY_KEY_INVALID',
+  mismatch: 'IDEMPOTENCY_KEY_MISMATCH',
+  inProgress: 'IDEMPOTENCY_IN_PROGRESS',
+} as const;
+export type IdempotencyErrorCode =
+  (typeof IDEMPOTENCY_ERROR_CODES)[keyof typeof IDEMPOTENCY_ERROR_CODES];
+
+/**
  * The three shareable kinds one audience model governs (V3-P5, §13.3): each
  * portfolio, each conglomerate, each watchlist. Defined here — the neutral,
  * import-free contracts root — so both `social.ts` and `workboard.ts` reference

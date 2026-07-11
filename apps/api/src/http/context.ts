@@ -12,6 +12,10 @@ import { createConglomerateRepository } from '../data/repositories/conglomerateR
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
+import {
+  createIdempotencyKeyRepository,
+  type IdempotencyKeyRepository,
+} from '../data/repositories/idempotencyKeyRepository';
 import { createProfileRepository } from '../data/repositories/profileRepository';
 import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
@@ -195,6 +199,12 @@ export interface AppContext {
    * pub/sub connections on shutdown.
    */
   events: EventBus;
+  /**
+   * Idempotency-key store (§13.4 V4-P2a, #417) — the backing store for the
+   * reusable idempotency middleware applied to portfolio mutation routes. Held on
+   * the context so the middleware can be built from it in the router layer.
+   */
+  idempotency: IdempotencyKeyRepository;
 }
 
 export interface BuildContextDeps {
@@ -577,6 +587,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // notification queue (#368), which the worker's dispatch job fans out.
   const alerts = createAlertService({ repo: alertRepo, assetRepo, marketData, logger });
 
+  // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
+  // store for the reusable idempotency middleware on the portfolio mutation routes.
+  const idempotency = createIdempotencyKeyRepository(db);
+
   // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
   // owner-or-shared with the same repository checks the shared-view HTTP
@@ -655,5 +669,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     realtime,
     liveMode,
     events,
+    idempotency,
   };
 }

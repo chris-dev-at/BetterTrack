@@ -239,6 +239,13 @@
       "when": 1783900000000,
       "tag": "0033_uncovered_sell",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1783773333277,
+      "tag": "0034_idempotency_keys",
+      "breakpoints": true
     }
   ]
 }
