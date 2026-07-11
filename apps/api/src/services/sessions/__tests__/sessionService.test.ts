@@ -3,7 +3,7 @@ import RedisMock from 'ioredis-mock';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { sha256Base64Url } from '../../crypto/tokens';
-import { createSessionService } from '../sessionService';
+import { createSessionService, isPersistent } from '../sessionService';
 
 /**
  * Session-window semantics (PROJECTPLAN.md §6.1, owner directive #79). The
@@ -225,5 +225,160 @@ describe('sessionService — session manager (V3-P11a)', () => {
     await sessions.destroyAllForUser('user-1');
     expect(await redis.get(`sess_meta:${a}`)).toBeNull();
     expect(await sessions.listForUser('user-1', null)).toHaveLength(0);
+  });
+});
+
+/**
+ * Ephemeral sessions (V4-P2b, owner spec #399 §A; PROJECTPLAN.md §16). An
+ * unticked "stay signed in" (or a PIN-less OAuth) login mints an ephemeral
+ * session: a sliding idle window hard-capped from creation, versus a persistent
+ * session's fixed 30-day window. An injected clock drives the idle/cap math
+ * independently of ioredis-mock's real-time key TTL.
+ */
+describe('sessionService — ephemeral sessions (V4-P2b, §399 §A)', () => {
+  let redis: Redis;
+  let now: number;
+  const clock = () => now;
+  const sessKey = (id: string) => `sess:${id}`;
+  // Small, distinguishable windows: 100s idle, 1000s cap, 5000s persistent.
+  const make = () =>
+    createSessionService(redis, 5000, {
+      ephemeralIdleMs: 100_000,
+      ephemeralCapMs: 1_000_000,
+      now: clock,
+    });
+
+  beforeEach(async () => {
+    redis = new RedisMock() as unknown as Redis;
+    await redis.flushall();
+    now = 1_700_000_000_000;
+  });
+
+  afterEach(async () => {
+    await redis.quit?.();
+  });
+
+  it('mints a persistent session with the full fixed window', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', true);
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(4900);
+    expect(ttl).toBeLessThanOrEqual(5000);
+    expect((await sessions.get(id))?.persistent).toBe(true);
+  });
+
+  it('mints an ephemeral session with the idle window, NOT the 30-day window', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', false);
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(90);
+    expect(ttl).toBeLessThanOrEqual(100);
+    expect((await sessions.get(id))?.persistent).toBe(false);
+  });
+
+  it('slides the ephemeral idle window forward on activity', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', false);
+    // 70s on (past the last-seen throttle): activity re-arms the full idle window.
+    now += 70_000;
+    await sessions.touchLastSeen(id, 'UA');
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(90);
+    expect(ttl).toBeLessThanOrEqual(100);
+  });
+
+  it('never slides the ephemeral window past the hard cap', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', false);
+    // 970s in — only 30s below the 1000s cap: the slide is capped to ~30s.
+    now += 970_000;
+    await sessions.touchLastSeen(id, 'UA');
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(31);
+  });
+
+  it('a persistent session is not slid by activity (fixed window)', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', true);
+    await redis.expire(sessKey(id), 40); // simulate elapsed real TTL
+    now += 70_000;
+    await sessions.touchLastSeen(id, 'UA');
+    // The fixed window is untouched — never reset toward the full 5000s.
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(40);
+  });
+
+  it('renew resets an ephemeral session to a fresh idle window, not the 30-day window', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', false);
+    await redis.expire(sessKey(id), 10);
+    now += 200_000; // 200s in, still far under the cap
+    expect(await sessions.renew(id)).toBe(true);
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(90);
+    expect(ttl).toBeLessThanOrEqual(100);
+  });
+
+  it('setPersistent upgrades an ephemeral session to the full fixed window', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', false);
+    expect(await sessions.setPersistent(id, true)).toBe(true);
+    expect((await sessions.get(id))?.persistent).toBe(true);
+    const ttl = await redis.ttl(sessKey(id));
+    expect(ttl).toBeGreaterThan(4900);
+    expect(ttl).toBeLessThanOrEqual(5000);
+  });
+
+  it('setPersistent is a no-op-false on a session that is already gone', async () => {
+    const sessions = make();
+    const id = await sessions.create('u', false);
+    await sessions.destroy(id);
+    expect(await sessions.setPersistent(id, true)).toBe(false);
+  });
+
+  it('listForUser reports persistence per session; a legacy (unmarked) session reads persistent', async () => {
+    const sessions = make();
+    const persistentId = await sessions.create('u', true);
+    const ephemeralId = await sessions.create('u', false);
+    // A pre-V4-P2b session written with no `persistent` marker.
+    const legacyId = 'legacy-session-id';
+    await redis.set(
+      sessKey(legacyId),
+      JSON.stringify({ userId: 'u', createdAt: now, renewedAt: now }),
+      'EX',
+      5000,
+    );
+    await redis.sadd('user_sessions:u', legacyId);
+
+    const list = await sessions.listForUser('u', persistentId);
+    const byHandle = (id: string) => list.find((e) => e.id === sha256Base64Url(id));
+    expect(byHandle(persistentId)?.persistent).toBe(true);
+    expect(byHandle(ephemeralId)?.persistent).toBe(false);
+    expect(byHandle(legacyId)?.persistent).toBe(true);
+  });
+
+  it('isPersistent treats an unmarked session as persistent (back-compat)', () => {
+    expect(isPersistent({})).toBe(true);
+    expect(isPersistent({ persistent: false })).toBe(false);
+    expect(isPersistent({ persistent: true })).toBe(true);
+  });
+
+  it('expiresAtFor: persistent → renewedAt + fixed window; ephemeral → the hard cap from creation', () => {
+    const sessions = make();
+    const createdAt = now;
+    const renewedAt = now + 123_000; // a later PIN verify moves the window
+    // Persistent: the fixed window (here 5000s) past the LAST renew.
+    expect(sessions.expiresAtFor({ createdAt, renewedAt, persistent: true })).toBe(
+      renewedAt + 5_000_000,
+    );
+    // A legacy unmarked session is treated as persistent (back-compat).
+    expect(sessions.expiresAtFor({ createdAt, renewedAt })).toBe(renewedAt + 5_000_000);
+    // Ephemeral: the hard cap from CREATION — a stable upper bound, unaffected
+    // by renew or the sliding idle window (never the 30-day window).
+    expect(sessions.expiresAtFor({ createdAt, renewedAt, persistent: false })).toBe(
+      createdAt + 1_000_000,
+    );
   });
 });

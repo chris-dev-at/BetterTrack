@@ -58,6 +58,7 @@ import { SecuritySettingsPage } from './SecuritySettingsPage';
 const SESSION: SessionInfoResponse = {
   signedInAt: '2026-06-01T08:00:00.000Z',
   renewedAt: '2026-07-01T08:00:00.000Z',
+  persistent: true,
   expiresAt: '2026-07-31T08:00:00.000Z',
 };
 
@@ -106,6 +107,7 @@ const SESSIONS: SessionSummary[] = [
     createdAt: '2026-07-01T08:00:00.000Z',
     lastSeenAt: '2026-07-07T09:00:00.000Z',
     current: true,
+    persistent: true,
   },
   {
     id: 'handle-other',
@@ -113,6 +115,7 @@ const SESSIONS: SessionSummary[] = [
     createdAt: '2026-06-20T08:00:00.000Z',
     lastSeenAt: '2026-07-05T10:00:00.000Z',
     current: false,
+    persistent: false,
   },
 ];
 
@@ -139,6 +142,16 @@ describe('SecuritySettingsPage', () => {
     expect(screen.getByText(/expires after 30 days of inactivity/i)).toBeInTheDocument();
   });
 
+  test('an ephemeral session reports its real lifetime, not "30 days" (V4-P2b, §399 §A)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getSession).mockResolvedValue({ ...SESSION, persistent: false });
+    renderPage();
+
+    // The browser-only copy, never the persistent 30-day claim.
+    expect(await screen.findByText(/signs out when you close it/i)).toBeInTheDocument();
+    expect(screen.queryByText(/expires after 30 days of inactivity/i)).not.toBeInTheDocument();
+  });
+
   test('lists active sessions with device labels and a current-device marker (V3-P11a)', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe(false));
     renderPage();
@@ -150,6 +163,15 @@ describe('SecuritySettingsPage', () => {
     expect(screen.getByText('This device')).toBeInTheDocument();
     // Exactly one per-row "Log out" (the non-current device).
     expect(screen.getAllByRole('button', { name: 'Log out' })).toHaveLength(1);
+  });
+
+  test('marks each session persistent vs ephemeral (V4-P2b, §399 §A)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    renderPage();
+
+    // The current session is persistent; the other was a browser-session login.
+    expect(await screen.findByText('Stays signed in')).toBeInTheDocument();
+    expect(screen.getByText('This browser only')).toBeInTheDocument();
   });
 
   test('logs out one device via revokeSession (V3-P11a)', async () => {

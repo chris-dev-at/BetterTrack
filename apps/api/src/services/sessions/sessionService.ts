@@ -7,9 +7,21 @@ import { sha256Base64Url } from '../crypto/tokens';
 export interface SessionData {
   userId: string;
   createdAt: number;
-  /** Last time the 30-day window was reset — on login (create) or PIN verify (renew). */
+  /** Last time the window was reset — on login (create) or PIN verify (renew). */
   renewedAt: number;
+  /**
+   * Persistence model (V4-P2b, owner spec #399 §A). `true` = a persistent
+   * "stay signed in" session: the fixed 30-day window. `false` = an ephemeral
+   * session: a sliding idle window (config.cookie.ephemeralIdleMs) hard-capped
+   * at config.cookie.ephemeralCapMs from {@link createdAt}. Absent on sessions
+   * created before this shipped — treated as persistent (see {@link isPersistent}).
+   */
+  persistent?: boolean;
 }
+
+/** Back-compat default: a session with no marker is persistent (pre-V4-P2b). */
+export const isPersistent = (data: Pick<SessionData, 'persistent'>): boolean =>
+  data.persistent !== false;
 
 /** Device metadata for the session manager (V3-P11a). Stored beside the session,
  * NOT inside `SessionData`, so writing it never touches the fixed-window TTL. */
@@ -30,15 +42,38 @@ export interface SessionListEntry {
   lastSeenAt: number;
   /** True when this is the caller's own session. */
   current: boolean;
+  /** True = persistent ("stay signed in"); false = ephemeral (V4-P2b, §399 §A). */
+  persistent: boolean;
 }
 
 export interface SessionService {
   /** The fixed 30-day window length in seconds (config.cookie.maxAgeMs / 1000). */
   readonly ttlSeconds: number;
-  create(userId: string): Promise<string>;
+  /**
+   * Absolute expiry (ms epoch) for display (§6.11 Security). Persistent → the
+   * fixed 30-day window from the last renew (`renewedAt` + `ttlSeconds`).
+   * Ephemeral → the hard cap from creation (`createdAt` + `ephemeralCapMs`): a
+   * stable upper bound the session can never outlive, since the sliding idle
+   * window only ever expires it sooner. Never overstates — unlike a flat
+   * 30-day claim on an ephemeral session (V4-P2b, §399 §A).
+   */
+  expiresAtFor(data: Pick<SessionData, 'createdAt' | 'renewedAt' | 'persistent'>): number;
+  /**
+   * Mint a session. `persistent` (default true) picks the TTL model: a
+   * persistent session gets the fixed 30-day window; an ephemeral one gets a
+   * sliding idle window hard-capped from now (V4-P2b, §399 §A).
+   */
+  create(userId: string, persistent?: boolean): Promise<string>;
   get(sessionId: string): Promise<SessionData | null>;
-  /** Reset the session's 30-day window (login / PIN verify). False if it's already gone. */
+  /** Reset the session's window (login / PIN verify), honouring its persistence. False if already gone. */
   renew(sessionId: string): Promise<boolean>;
+  /**
+   * Flip a live session's persistence (V4-P2b, §399 §A) and reset its window to
+   * match: persistent → the fixed 30-day window; ephemeral → a fresh idle
+   * window (capped). The OAuth-login "stay signed in — your PIN protects this"
+   * upgrade routes through here. False when the session is already gone.
+   */
+  setPersistent(sessionId: string, persistent: boolean): Promise<boolean>;
   destroy(sessionId: string): Promise<void>;
   destroyAllForUser(userId: string): Promise<void>;
   /**
@@ -92,19 +127,65 @@ const publicHandle = (sessionId: string) => sha256Base64Url(sessionId);
  * days unless you log in or enter your PIN" hold. `ttlSeconds` is the 30-day
  * window (config.cookie.maxAgeMs / 1000).
  */
-export function createSessionService(redis: Redis, ttlSeconds: number): SessionService {
-  // Refresh the per-user index to at least the session TTL so destroyAllForUser
-  // can always find live sessions. A longer-than-needed index TTL is harmless:
-  // dead ids in the set just no-op on del.
+/** Ephemeral-session bounds + an injectable clock (V4-P2b, §399 §A). */
+export interface SessionServiceOptions {
+  /** Sliding idle window for ephemeral sessions, in ms (default 45 min). */
+  ephemeralIdleMs?: number;
+  /** Hard cap on an ephemeral session from creation, in ms (default 6 h). */
+  ephemeralCapMs?: number;
+  /** Injectable clock (default Date.now) — lets tests drive the idle/cap math. */
+  now?: () => number;
+}
+
+const DEFAULT_EPHEMERAL_IDLE_MS = 45 * 60 * 1000;
+const DEFAULT_EPHEMERAL_CAP_MS = 6 * 60 * 60 * 1000;
+
+export function createSessionService(
+  redis: Redis,
+  ttlSeconds: number,
+  options: SessionServiceOptions = {},
+): SessionService {
+  const ephemeralIdleMs = options.ephemeralIdleMs ?? DEFAULT_EPHEMERAL_IDLE_MS;
+  const ephemeralCapMs = options.ephemeralCapMs ?? DEFAULT_EPHEMERAL_CAP_MS;
+  const clock = options.now ?? Date.now;
+
+  // Refresh the per-user index to at least the (persistent) session TTL so
+  // destroyAllForUser can always find live sessions. A longer-than-needed index
+  // TTL is harmless: dead ids in the set just no-op on del.
   const touchIndex = (userId: string) => redis.expire(userIndexKey(userId), ttlSeconds);
+
+  /**
+   * TTL in seconds for a session key, by persistence (V4-P2b). Persistent = the
+   * fixed 30-day window. Ephemeral = the sliding idle window, but never past the
+   * hard cap measured from `createdAt` — so continuous activity still expires the
+   * session at `createdAt + ephemeralCapMs`, and idleness expires it sooner. The
+   * capped value alone enforces both bounds; no clock-timed sweep is needed. At
+   * least 1s so a still-valid session is never written with a non-positive TTL.
+   */
+  const ttlSecondsFor = (
+    data: Pick<SessionData, 'createdAt' | 'persistent'>,
+    now: number,
+  ): number => {
+    if (isPersistent(data)) return ttlSeconds;
+    const cappedMs = Math.min(ephemeralIdleMs, data.createdAt + ephemeralCapMs - now);
+    return Math.max(1, Math.ceil(cappedMs / 1000));
+  };
 
   const service: SessionService = {
     ttlSeconds,
-    async create(userId) {
+    expiresAtFor(data) {
+      // Persistent: the fixed window past the last renew — exactly what the key
+      // TTL enforces (`get` never slides it). Ephemeral: the hard cap from
+      // creation, a stable upper bound (idleness / browser-close end it sooner).
+      return isPersistent(data)
+        ? data.renewedAt + ttlSeconds * 1000
+        : data.createdAt + ephemeralCapMs;
+    },
+    async create(userId, persistent = true) {
       const sessionId = randomBytes(32).toString('base64url');
-      const now = Date.now();
-      const data: SessionData = { userId, createdAt: now, renewedAt: now };
-      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSeconds);
+      const now = clock();
+      const data: SessionData = { userId, createdAt: now, renewedAt: now, persistent };
+      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await redis.sadd(userIndexKey(userId), sessionId);
       await touchIndex(userId);
       return sessionId;
@@ -131,9 +212,31 @@ export function createSessionService(redis: Redis, ttlSeconds: number): SessionS
         await redis.del(sessionKey(sessionId));
         return false;
       }
-      data.renewedAt = Date.now();
-      // Rewrite the payload AND reset the TTL to a fresh full 30-day window.
-      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSeconds);
+      const now = clock();
+      data.renewedAt = now;
+      // Rewrite the payload AND reset the TTL to a fresh window for this session's
+      // persistence: the full 30-day window when persistent, a fresh (capped)
+      // idle window when ephemeral (V4-P2b) — PIN verify never changes persistence.
+      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
+      await touchIndex(data.userId);
+      return true;
+    },
+
+    async setPersistent(sessionId, persistent) {
+      const raw = await redis.get(sessionKey(sessionId));
+      if (!raw) return false;
+      let data: SessionData;
+      try {
+        data = JSON.parse(raw) as SessionData;
+      } catch {
+        await redis.del(sessionKey(sessionId));
+        return false;
+      }
+      const now = clock();
+      data.persistent = persistent;
+      data.renewedAt = now;
+      // Flip persistence and reset the window to match the new model (V4-P2b).
+      await redis.set(sessionKey(sessionId), JSON.stringify(data), 'EX', ttlSecondsFor(data, now));
       await touchIndex(data.userId);
       return true;
     },
@@ -168,8 +271,14 @@ export function createSessionService(redis: Redis, ttlSeconds: number): SessionS
       // Only stamp a live session — never resurrect metadata for a dead one.
       const rawSession = await redis.get(sessionKey(sessionId));
       if (!rawSession) return;
+      let session: SessionData | null = null;
+      try {
+        session = JSON.parse(rawSession) as SessionData;
+      } catch {
+        session = null;
+      }
 
-      const now = Date.now();
+      const now = clock();
       let meta: SessionMeta | null = null;
       const rawMeta = await redis.get(sessionMetaKey(sessionId));
       if (rawMeta) {
@@ -187,14 +296,25 @@ export function createSessionService(redis: Redis, ttlSeconds: number): SessionS
       // the first time — keeps this off the per-request hot path.
       if (!stale && !needsUaBackfill) return;
 
+      // Ephemeral sessions (V4-P2b): this throttled activity write is also where
+      // the sliding idle window advances — refresh the session key's TTL to the
+      // capped idle window. The throttle interval (≤60s) is far under the idle
+      // window, so an active session never lapses; only a genuinely idle one
+      // stops getting slid and expires. A persistent session's fixed window is
+      // deliberately never touched here (§6.1).
+      if (session && !isPersistent(session)) {
+        await redis.expire(sessionKey(sessionId), ttlSecondsFor(session, now));
+      }
+
       const next: SessionMeta = {
         userAgent: incomingUa ?? meta?.userAgent ?? null,
         lastSeenAt: now,
       };
-      // Rolling TTL on the metadata key only. It may briefly outlive the session
-      // it describes, but `listForUser` intersects against live sessions and
-      // prunes stragglers, and the fixed-window session key is never touched.
-      await redis.set(sessionMetaKey(sessionId), JSON.stringify(next), 'EX', ttlSeconds);
+      // Rolling TTL on the metadata key, aligned to the session's own TTL so it
+      // never long-outlives the session it describes. `listForUser` still
+      // intersects against live sessions and prunes any straggler regardless.
+      const metaTtl = session ? ttlSecondsFor(session, now) : ttlSeconds;
+      await redis.set(sessionMetaKey(sessionId), JSON.stringify(next), 'EX', metaTtl);
     },
 
     async listForUser(userId, currentSessionId) {
@@ -235,6 +355,7 @@ export function createSessionService(redis: Redis, ttlSeconds: number): SessionS
           createdAt: data.createdAt,
           lastSeenAt: meta?.lastSeenAt ?? data.createdAt,
           current: sessionId === currentSessionId,
+          persistent: isPersistent(data),
         });
       }
       // Current session first, then most-recently-seen; stable for the UI.

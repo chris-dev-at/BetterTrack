@@ -103,7 +103,12 @@ test('after signing in, the user returns to the originally requested route', asy
   expect(
     await screen.findByText('Your watched assets, alerts and conglomerates at a glance.'),
   ).toBeInTheDocument();
-  expect(api.login).toHaveBeenCalledWith({ identifier: 'jane', password: 'correct horse' });
+  expect(api.login).toHaveBeenCalledWith({
+    identifier: 'jane',
+    password: 'correct horse',
+    staySignedIn: true,
+    oauthLogin: false,
+  });
 });
 
 test('bad credentials show a single generic, non-enumerating error', async () => {

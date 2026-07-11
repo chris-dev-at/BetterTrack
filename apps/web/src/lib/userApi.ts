@@ -84,6 +84,19 @@ export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
 }
 
 /**
+ * Promote the current session to persistent — the OAuth-login "stay signed in —
+ * your PIN protects this" choice (V4-P2b, §399 §A). The server PIN-gates it and
+ * re-issues the session cookie with a Max-Age. `suppressAuthRedirect`: this is
+ * part of the login surface.
+ */
+export async function persistSession(): Promise<void> {
+  await apiRequest<unknown>('/auth/session/persist', {
+    method: 'POST',
+    suppressAuthRedirect: true,
+  });
+}
+
+/**
  * `GET /auth/session` — the caller's own session timestamps (§6.11 Security):
  * when it was created, last renewed, and when the 30-day window lapses. Consumed
  * by Settings → Security.

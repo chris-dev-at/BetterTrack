@@ -26,15 +26,20 @@ export function loadSession(ctx: AppContext): RequestHandler {
       }
       // Pass the request's User-Agent so the session manager can stamp
       // last-seen (throttled) and capture the device on first-seen (V3-P11a).
-      const user = await ctx.auth.resolveSession(sessionId, req.get('user-agent') ?? null);
-      if (!user) {
+      const resolved = await ctx.auth.resolveSession(sessionId, req.get('user-agent') ?? null);
+      if (!resolved) {
         clearSessionCookie(res, ctx.config);
         next();
         return;
       }
       req.sessionId = sessionId;
-      req.authUser = toAuthUser(user);
-      setSessionCookie(res, ctx.config, sessionId);
+      // Carry the session's persistence (V4-P2b) so the rolling cookie refresh
+      // below — and the PIN-verify handler — re-issue the SAME cookie flavour
+      // (Max-Age for persistent, browser-session for ephemeral) rather than
+      // silently upgrading an ephemeral session to a persistent cookie.
+      req.sessionPersistent = resolved.persistent;
+      req.authUser = toAuthUser(resolved.user);
+      setSessionCookie(res, ctx.config, sessionId, resolved.persistent);
       next();
     } catch (err) {
       next(err);

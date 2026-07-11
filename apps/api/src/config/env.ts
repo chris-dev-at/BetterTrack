@@ -105,6 +105,12 @@ const envSchema = z.object({
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+// Ephemeral session bounds (V4-P2b, owner spec #399 §A). An "unticked stay
+// signed in" login gets a browser-session cookie (no Max-Age) backed by a
+// server session that is NOT immortal: a sliding 45-minute idle window, hard-
+// capped at 6 hours from creation. See PROJECTPLAN.md §16.
+const FORTY_FIVE_MINUTES_MS = 45 * 60 * 1000;
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 
 export type DeploymentMode = 'subdomains' | 'ports';
 
@@ -263,7 +269,18 @@ export interface AppConfig {
      */
     sameSite: 'lax';
     domain?: string;
+    /** Persistent-session cookie/window length: the fixed 30-day window (§6.1). */
     maxAgeMs: number;
+    /**
+     * Ephemeral-session sliding idle window, in ms (V4-P2b, §399 §A). An
+     * ephemeral session's server TTL is refreshed to this on each activity but
+     * never past {@link ephemeralCapMs} from creation. The cookie itself is
+     * browser-session-scoped (no Max-Age), so both the browser and the server
+     * bound the session. See PROJECTPLAN.md §16.
+     */
+    ephemeralIdleMs: number;
+    /** Hard cap on an ephemeral session's lifetime from creation, in ms (§399 §A). */
+    ephemeralCapMs: number;
   };
   email: {
     enabled: boolean;
@@ -391,6 +408,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       secure: cookieSecure,
       sameSite: 'lax',
       maxAgeMs: THIRTY_DAYS_MS,
+      ephemeralIdleMs: FORTY_FIVE_MINUTES_MS,
+      ephemeralCapMs: SIX_HOURS_MS,
     },
     email: {
       enabled: Boolean(e.SMTP_HOST && e.SMTP_FROM),
