@@ -14,3 +14,12 @@ export const SESSION_SECRET =
 export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'e2e-admin@bettertrack.local';
 export const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? 'Sup3rSecret!Passw0rd1';
 export const ACCOUNT_PASSWORD = 'Sup3rSecret!Passw0rd2';
+
+/**
+ * The alerts worker wrapper's health port/url (issue #426, flow 6). The wrapper
+ * (`e2e/support/workerServer.mjs`) serves this so Playwright's `webServer` poll
+ * can detect the BullMQ worker's boot — the worker itself has no HTTP surface.
+ */
+export const WORKER_HEALTH_PORT = process.env.E2E_WORKER_HEALTH_PORT ?? '3100';
+export const WORKER_HEALTH_URL =
+  process.env.E2E_WORKER_HEALTH_URL ?? `http://localhost:${WORKER_HEALTH_PORT}`;
