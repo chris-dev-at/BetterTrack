@@ -121,6 +121,24 @@ export interface Transaction {
   fee: number;
   /** ISO-8601 timestamp. */
   executedAt: string;
+  /**
+   * Uncovered sell (issue #369). When true, a SELL exceeding the held quantity
+   * (including a zero holding) is **permitted** instead of throwing
+   * {@link OversellError}: the covered shares realize against the running
+   * average, the uncovered remainder against {@link uncoveredEntryPrice} (or the
+   * sale price when that is absent → 0 realized on that portion), and the
+   * position closes at exactly 0 — **no shorts**. Ignored on buys and on covered
+   * sells (where quantity ≤ held). Absent → the historical strict behavior
+   * (an oversell throws).
+   */
+  allowUncovered?: boolean;
+  /**
+   * Native per-unit cost basis for the uncovered portion of an
+   * {@link allowUncovered} SELL (issue #369). `null`/absent → the sale `price`
+   * is used, so the uncovered shares realize 0. Ignored unless the sell is
+   * genuinely uncovered (quantity exceeds held).
+   */
+  uncoveredEntryPrice?: number | null;
 }
 
 /** Realized P/L attributed to a single SELL, by its index in the input list. */
@@ -213,16 +231,37 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
       held = newHeld;
     } else {
       if (t.quantity > held + QTY_EPSILON) {
-        throw new OversellError(t.quantity, held, assetId);
-      }
-      const pnl = t.quantity * (t.price - avg) - t.fee;
-      realizedPnl += pnl;
-      realizations.push({ index, realizedPnl: pnl });
-      held -= t.quantity;
-      // Clamp float dust: a sell-everything leaves held at ~±1e-15, not 0.
-      if (Math.abs(held) <= QTY_EPSILON) {
+        // Over-selling the held quantity: rejected unless the caller explicitly
+        // acknowledged an uncovered sell (issue #369).
+        if (!t.allowUncovered) {
+          throw new OversellError(t.quantity, held, assetId);
+        }
+        // Uncovered sell: the covered shares (the whole held position, ≥ 0)
+        // realize against the running average; the uncovered remainder realizes
+        // against its supplied entry price, or the sale price when none is given
+        // (→ 0 on that portion). The fee applies once to the whole sell. No
+        // shorts — the position closes at exactly 0.
+        const covered = held;
+        const uncovered = t.quantity - covered;
+        const uncoveredBasis = t.uncoveredEntryPrice ?? t.price;
+        if (t.uncoveredEntryPrice != null) {
+          assertFiniteNonNegative(t.uncoveredEntryPrice, 'Transaction uncovered entry price');
+        }
+        const pnl = covered * (t.price - avg) + uncovered * (t.price - uncoveredBasis) - t.fee;
+        realizedPnl += pnl;
+        realizations.push({ index, realizedPnl: pnl });
         held = 0;
         avg = 0;
+      } else {
+        const pnl = t.quantity * (t.price - avg) - t.fee;
+        realizedPnl += pnl;
+        realizations.push({ index, realizedPnl: pnl });
+        held -= t.quantity;
+        // Clamp float dust: a sell-everything leaves held at ~±1e-15, not 0.
+        if (Math.abs(held) <= QTY_EPSILON) {
+          held = 0;
+          avg = 0;
+        }
       }
     }
   }
@@ -596,6 +635,11 @@ export async function valueOverTime(input: ValueOverTimeInput): Promise<ValuePoi
         const txn = c.txns[c.txnIdx];
         if (txn === undefined || dayOf(txn.executedAt) > day) break;
         c.qty += txn.side === 'buy' ? txn.quantity : -txn.quantity;
+        // No shorts (issue #369): an uncovered sell closes the position at 0, it
+        // never goes negative — so a later buy rebuilds from 0, not from a
+        // phantom debt. This also folds away the sell-everything float dust
+        // (~±1e-15) that the display clamp below would otherwise handle.
+        if (c.qty < QTY_EPSILON) c.qty = 0;
         c.txnIdx += 1;
       }
       // Advance the price to the latest close on or before today (carry forward).

@@ -36,6 +36,17 @@ export interface TransactionRecord {
   taxMode: TaxMode;
   taxCountry: string | null;
   taxAmountEur: number | null;
+  /**
+   * Uncovered sell (issue #369). `allowUncovered` is true when this SELL was
+   * recorded against an insufficient/zero holding behind the explicit
+   * acknowledgment — persisted so replays (holdings, tax, oversell re-checks on
+   * edit/delete) don't reject an already-accepted oversell. `uncoveredEntryPrice`
+   * is the native per-unit basis the user supplied for the uncovered shares
+   * (null = the sale price is used → 0 realized on that portion). Both are the
+   * covered-sell defaults (false / null) on every other row.
+   */
+  allowUncovered: boolean;
+  uncoveredEntryPrice: number | null;
 }
 
 /** A transaction row enriched with its asset metadata for the ledger view. */
@@ -110,6 +121,13 @@ export interface NewTransaction {
   note: string | null;
   /** Tax mode/amount recorded on the row (V3-P4); null = pre-engine shape. */
   tax?: NewTransactionTax | null;
+  /**
+   * Uncovered sell (issue #369): the persisted acknowledgment + the native
+   * per-unit basis for the uncovered shares (null/absent = a covered sell, or
+   * the sale-price default on the uncovered portion).
+   */
+  allowUncovered?: boolean;
+  uncoveredEntryPrice?: number | null;
   /** Cash movements written in the same DB transaction as this row (§14, V3-P4). */
   cashMovements?: readonly LinkedCashMovement[];
 }
@@ -128,6 +146,8 @@ function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
     taxMode: row.taxMode ?? null,
     taxCountry: row.taxCountry ?? null,
     taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+    allowUncovered: row.allowUncovered,
+    uncoveredEntryPrice: row.uncoveredEntryPrice === null ? null : Number(row.uncoveredEntryPrice),
   };
 }
 
@@ -169,6 +189,11 @@ export function createTransactionRepository(db: Database) {
                 r.tax?.amountEur === undefined || r.tax?.amountEur === null
                   ? null
                   : String(r.tax.amountEur),
+              allowUncovered: r.allowUncovered ?? false,
+              uncoveredEntryPrice:
+                r.uncoveredEntryPrice === undefined || r.uncoveredEntryPrice === null
+                  ? null
+                  : String(r.uncoveredEntryPrice),
             })),
           )
           .returning();
@@ -252,6 +277,8 @@ export function createTransactionRepository(db: Database) {
           taxMode: transactions.taxMode,
           taxCountry: transactions.taxCountry,
           taxAmountEur: transactions.taxAmountEur,
+          allowUncovered: transactions.allowUncovered,
+          uncoveredEntryPrice: transactions.uncoveredEntryPrice,
           assetSymbol: assets.symbol,
           assetName: assets.name,
           assetExchange: assets.exchange,
@@ -285,6 +312,9 @@ export function createTransactionRepository(db: Database) {
         taxMode: row.taxMode ?? null,
         taxCountry: row.taxCountry ?? null,
         taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+        allowUncovered: row.allowUncovered,
+        uncoveredEntryPrice:
+          row.uncoveredEntryPrice === null ? null : Number(row.uncoveredEntryPrice),
         asset: {
           id: row.assetId,
           symbol: row.assetSymbol,
@@ -314,6 +344,8 @@ export function createTransactionRepository(db: Database) {
           taxMode: transactions.taxMode,
           taxCountry: transactions.taxCountry,
           taxAmountEur: transactions.taxAmountEur,
+          allowUncovered: transactions.allowUncovered,
+          uncoveredEntryPrice: transactions.uncoveredEntryPrice,
         })
         .from(transactions)
         .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))

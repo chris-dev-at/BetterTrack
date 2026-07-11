@@ -197,6 +197,8 @@ const TXNS = {
       fee: 0,
       executedAt: '2024-01-15T00:00:00.000Z',
       note: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
       asset: STOCK.asset,
     },
     {
@@ -208,6 +210,8 @@ const TXNS = {
       fee: 0,
       executedAt: '2024-02-01T00:00:00.000Z',
       note: 'Down payment',
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
       asset: HOUSE.asset,
     },
   ],

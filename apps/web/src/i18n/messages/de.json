@@ -638,7 +638,18 @@
       "saveChanges": "Änderungen speichern",
       "saving": "Wird gespeichert…",
       "cancel": "Abbrechen",
-      "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut."
+      "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut.",
+      "uncoveredWarning": "Du hältst nur {{held}} {{symbol}} — beim Verkauf von {{quantity}} gehören dir {{uncovered}} nicht.",
+      "uncoveredNoShorts": "Die Position schließt bei 0 — es entsteht keine Short-Position. Der Erlös wird wie üblich dem Bargeld gutgeschrieben.",
+      "uncoveredAck": "Trotzdem fortfahren — mehr verkaufen, als ich halte",
+      "uncoveredBasisLabel": "Einstandswert für die nicht gehaltenen Stücke",
+      "uncoveredBasisZero": "Als 0 % zählen (kein Gewinn)",
+      "uncoveredBasisEntry": "Kaufpreis eingeben",
+      "uncoveredEntryPriceLabel": "Ursprünglicher Kaufpreis",
+      "uncoveredEntryPriceAria": "Ursprünglicher Kaufpreis für die nicht gedeckten {{symbol}}",
+      "uncoveredNudge": "Erfasse für eine korrekte Historie besser den ursprünglichen Kauf.",
+      "uncoveredBlocked": "Bestätige den Verkauf über deinen Bestand hinaus, um fortzufahren.",
+      "uncoveredEntryPriceInvalid": "Gib einen gültigen Kaufpreis ein oder zähle die Stücke als 0 %."
     },
     "overview": {
       "title": "Portfolio",

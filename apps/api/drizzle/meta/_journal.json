@@ -232,6 +232,13 @@
       "when": 1783733000000,
       "tag": "0032_notifications_event_key_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1783900000000,
+      "tag": "0033_uncovered_sell",
+      "breakpoints": true
     }
   ]
 }

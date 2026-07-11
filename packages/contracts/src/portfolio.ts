@@ -207,6 +207,41 @@ const refineManualTaxEntry = (
   }
 };
 
+/**
+ * Guard the uncovered-sell fields (issue #369): they are sell-only, and a
+ * user-supplied entry price is meaningless without the acknowledgment that lets
+ * the sell go uncovered in the first place.
+ */
+const refineUncoveredSell = (
+  val: { side: TransactionSide; allowUncovered?: boolean; uncoveredEntryPrice?: number },
+  ctx: z.RefinementCtx,
+): void => {
+  if (val.side === 'buy') {
+    if (val.allowUncovered) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['allowUncovered'],
+        message: 'allowUncovered applies only to a sell.',
+      });
+    }
+    if (val.uncoveredEntryPrice !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['uncoveredEntryPrice'],
+        message: 'uncoveredEntryPrice applies only to a sell.',
+      });
+    }
+    return;
+  }
+  if (val.uncoveredEntryPrice !== undefined && !val.allowUncovered) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['uncoveredEntryPrice'],
+      message: 'uncoveredEntryPrice requires allowUncovered.',
+    });
+  }
+};
+
 // --- Transactions ----------------------------------------------------------
 
 /** BUY adds to a position; SELL reduces it (§6.9). */
@@ -259,9 +294,30 @@ export const transactionInputSchema = z
      */
     taxAmountEur: z.number().nonnegative().finite().max(MAX_CASH_AMOUNT_EUR).optional(),
     taxRatePct: z.number().min(0).max(100).optional(),
+    /**
+     * Uncovered sell (issue #369) — the explicit acknowledgment behind selling a
+     * stock you don't (fully) hold. When a SELL's `quantity` exceeds the held
+     * position (including a **zero** holding), this flag lets the server accept
+     * it instead of rejecting with `OVERSELL`: the position closes at exactly 0
+     * (never negative — **no shorts**), the covered shares realize against the
+     * real moving-average basis, and the uncovered remainder realizes against
+     * {@link uncoveredEntryPrice} (or, when that is omitted, the sale price → 0 %
+     * realized, so the tax ledger books no phantom gain). Ignored on a covered
+     * sell; rejected on a buy.
+     */
+    allowUncovered: z.boolean().optional(),
+    /**
+     * Native-currency per-unit cost basis for the uncovered portion of an
+     * {@link allowUncovered} SELL (issue #369, option B — "enter the original
+     * buy-in price for accurate history"). Omitted → option A: the uncovered
+     * shares take the sale price as their basis, so they realize 0. Requires
+     * `allowUncovered`; rejected on a buy.
+     */
+    uncoveredEntryPrice: z.number().nonnegative().finite().optional(),
   })
   .strict()
-  .superRefine(refineManualTaxEntry);
+  .superRefine(refineManualTaxEntry)
+  .superRefine(refineUncoveredSell);
 export type TransactionInput = z.infer<typeof transactionInputSchema>;
 
 /**
@@ -344,6 +400,15 @@ export const transactionSchema = z
     fee: z.number(),
     executedAt: z.string().datetime(),
     note: z.string().nullable(),
+    /**
+     * Uncovered sell (issue #369): true when this SELL was recorded against an
+     * insufficient/zero holding behind the explicit acknowledgment. `false` on
+     * every buy and every covered sell. {@link uncoveredEntryPrice} is the
+     * native per-unit basis chosen for the uncovered shares (null = the sale
+     * price was used → 0 % on that portion).
+     */
+    allowUncovered: z.boolean(),
+    uncoveredEntryPrice: z.number().nullable(),
     asset: portfolioAssetSchema,
   })
   .strict();

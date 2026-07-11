@@ -254,6 +254,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       price: number,
       fee: number,
       executedAt: string,
+      allowUncovered: boolean,
+      uncoveredEntryPrice: number | null,
     ): Promise<void> => {
       const currency = currencyOf(assetId);
       const day = executedAt.slice(0, 10);
@@ -265,11 +267,28 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         priceEur: await toEur(price, currency, day),
         feeEur: await toEur(fee, currency, day),
         executedAt,
+        // Uncovered sell (issue #369): the acknowledgment lets the replay accept
+        // an oversell, and the user's native entry price is converted at the
+        // sell's own trade date (like every other leg) so the uncovered shares
+        // carry a real EUR basis — or, when absent, the sale price → 0 gain.
+        allowUncovered,
+        uncoveredEntryPriceEur:
+          uncoveredEntryPrice == null ? null : await toEur(uncoveredEntryPrice, currency, day),
       });
     };
     for (const t of existing) {
       if (!neededAssetIds.has(t.assetId)) continue;
-      await push(t.id, t.assetId, t.side, t.quantity, t.price, t.fee, t.executedAt.toISOString());
+      await push(
+        t.id,
+        t.assetId,
+        t.side,
+        t.quantity,
+        t.price,
+        t.fee,
+        t.executedAt.toISOString(),
+        t.allowUncovered,
+        t.uncoveredEntryPrice,
+      );
     }
     for (const { tempId, input } of pending) {
       if (!neededAssetIds.has(input.assetId)) continue;
@@ -281,6 +300,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         input.price,
         input.fee,
         new Date(input.executedAt).toISOString(),
+        input.side === 'sell' ? (input.allowUncovered ?? false) : false,
+        input.side === 'sell' && input.allowUncovered ? (input.uncoveredEntryPrice ?? null) : null,
       );
     }
     return taxables;

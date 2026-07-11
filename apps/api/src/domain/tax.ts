@@ -167,6 +167,23 @@ export interface TaxableTransaction {
   feeEur: number;
   /** ISO-8601 timestamp; orders the replay and buckets the tax year. */
   executedAt: string;
+  /**
+   * Uncovered sell (issue #369). When true, a SELL exceeding the held quantity
+   * is permitted instead of throwing: the covered shares realize against the
+   * running average, the uncovered remainder against {@link uncoveredEntryPriceEur}
+   * (or the sale price when absent → 0 realized on that portion), and the
+   * position closes at 0. Absent → the strict behavior (an oversell throws,
+   * meaning the log is inconsistent). Ignored on buys / covered sells.
+   */
+  allowUncovered?: boolean;
+  /**
+   * EUR per-unit basis for the uncovered portion of an {@link allowUncovered}
+   * SELL (issue #369; the service converts the user-supplied native price at the
+   * sell's trade date). `null`/absent → the uncovered shares take the sale price
+   * as their basis, so they book **no gain** — the AT ledger never taxes a
+   * phantom acquisition.
+   */
+  uncoveredEntryPriceEur?: number | null;
 }
 
 /** The EUR outcome of one SELL against the running moving average. */
@@ -178,10 +195,25 @@ export interface SellRealizationEur {
   quantity: number;
   /** `quantity · priceEur − feeEur`: net proceeds, EUR. */
   proceedsEur: number;
-  /** `quantity · avg` at the moment of the sell: the released cost basis, EUR. */
+  /**
+   * The released cost basis, EUR. For a covered sell this is `quantity · avg`;
+   * for an uncovered sell (issue #369) it is `covered · avg +
+   * uncovered · uncoveredBasis`, so the uncovered shares are basised at their
+   * supplied entry price — or the sale price (→ they add exactly their own
+   * proceeds, contributing 0 gain), never at the covered lot's average.
+   */
   costBasisEur: number;
-  /** `proceedsEur − costBasisEur` = `quantity·(price − avg) − fee`, EUR. */
+  /** `proceedsEur − costBasisEur`, EUR (signed). */
   realizedPnlEur: number;
+  /**
+   * Units of this SELL sold without a real, registered-buy basis (issue #369);
+   * 0 for a normal covered sell. Their basis is estimated (the sale price) or
+   * user-supplied — **not** a recorded acquisition — so downstream reporting can
+   * mark it "basis unknown / user-supplied" rather than trusting it like real
+   * cost. The AT settlement never taxes a phantom gain because, for the sale-
+   * price default, these shares realize 0.
+   */
+  uncoveredQuantity: number;
 }
 
 function assertFiniteNonNegative(value: number, label: string, id: string): void {
@@ -247,14 +279,32 @@ export function realizedSellsEur(
       pos.avg = (pos.held * pos.avg + t.quantity * t.priceEur + t.feeEur) / newHeld;
       pos.held = newHeld;
     } else if (t.side === 'sell') {
-      if (t.quantity > pos.held + QTY_EPSILON) {
+      const oversell = t.quantity > pos.held + QTY_EPSILON;
+      if (oversell && !t.allowUncovered) {
+        // Not an acknowledged uncovered sell (issue #369): a genuine oversell in
+        // the replay means the caller fed an inconsistent log, and a silently
+        // wrong basis would poison every tax figure downstream.
         throw new TaxComputationError(
           `Sell of ${t.quantity} exceeds the held ${pos.held} units of ${t.assetId} ` +
             `(transaction ${t.id}); the transaction log is inconsistent.`,
         );
       }
+      // Covered shares release the running average; the uncovered remainder is
+      // basised at its supplied EUR entry price, or the sale price when none was
+      // given (→ 0 gain, no phantom acquisition to tax). No shorts: the position
+      // closes at 0 on an uncovered sell.
+      const covered = oversell ? pos.held : t.quantity;
+      const uncovered = oversell ? t.quantity - pos.held : 0;
+      if (uncovered > 0 && t.uncoveredEntryPriceEur != null) {
+        assertFiniteNonNegative(
+          t.uncoveredEntryPriceEur,
+          'Transaction uncoveredEntryPriceEur',
+          t.id,
+        );
+      }
+      const uncoveredBasisEur = t.uncoveredEntryPriceEur ?? t.priceEur;
       const proceedsEur = t.quantity * t.priceEur - t.feeEur;
-      const costBasisEur = t.quantity * pos.avg;
+      const costBasisEur = covered * pos.avg + uncovered * uncoveredBasisEur;
       realizations.push({
         id: t.id,
         assetId: t.assetId,
@@ -263,12 +313,18 @@ export function realizedSellsEur(
         proceedsEur,
         costBasisEur,
         realizedPnlEur: proceedsEur - costBasisEur,
+        uncoveredQuantity: uncovered,
       });
-      pos.held -= t.quantity;
-      // Clamp float dust: selling everything leaves ~±1e-15, not 0.
-      if (Math.abs(pos.held) <= QTY_EPSILON) {
+      if (oversell) {
         pos.held = 0;
         pos.avg = 0;
+      } else {
+        pos.held -= t.quantity;
+        // Clamp float dust: selling everything leaves ~±1e-15, not 0.
+        if (Math.abs(pos.held) <= QTY_EPSILON) {
+          pos.held = 0;
+          pos.avg = 0;
+        }
       }
     } else {
       throw new TaxComputationError(

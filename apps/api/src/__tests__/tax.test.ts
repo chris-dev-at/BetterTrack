@@ -1064,3 +1064,161 @@ describe('mode switches apply forward only (cutover semantics)', () => {
     expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
   });
 });
+
+// ─── Uncovered sell (issue #369) ──────────────────────────────────────────────
+
+/** The held quantity of one asset from the portfolio overview (0 when closed). */
+async function heldQuantity(agent: Agent, pid: string, assetId: string): Promise<number> {
+  const res = await agent.get(`/api/v1/portfolios/${pid}`);
+  expect(res.status).toBe(200);
+  const holdings = res.body.holdings as Array<{ asset: { id: string }; quantity: number }>;
+  return holdings.find((h) => h.asset.id === assetId)?.quantity ?? 0;
+}
+
+describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
+  it('rejects an oversell without the acknowledgment (unchanged OVERSELL guard)', async () => {
+    const { agent, pid, asset } = await setup();
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 2,
+      price: 40,
+      executedAt: '2026-01-01T10:00:00.000Z',
+    });
+    const res = await trade(
+      agent,
+      pid,
+      {
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 10,
+        price: 100,
+        executedAt: '2026-01-02T10:00:00.000Z',
+      },
+      400,
+    );
+    expect(res.body.error.code).toBe('OVERSELL');
+  });
+
+  it('accepts an acknowledged uncovered sell: closes at 0, books full proceeds to cash', async () => {
+    const { agent, pid, asset } = await setup();
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 2,
+      price: 40,
+      executedAt: '2026-01-01T10:00:00.000Z',
+    });
+    const res = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 10,
+      price: 100,
+      executedAt: '2026-01-02T10:00:00.000Z',
+      allowUncovered: true,
+      addProceedsToCash: true,
+    });
+    // The stored row carries the acknowledgment; option A leaves the basis null.
+    expect(res.body.transactions[0]).toMatchObject({
+      allowUncovered: true,
+      uncoveredEntryPrice: null,
+    });
+    // No shorts: the position closes at exactly 0.
+    expect(await heldQuantity(agent, pid, asset.id)).toBe(0);
+    // Cash added normally: the full proceeds (10·100) land in the ledger.
+    expect((await cashState(agent, pid)).balanceEur).toBe(1000);
+  });
+
+  it('AT mode, option A (0 %): a zero-holding uncovered sell books NO phantom gain or tax', async () => {
+    const { agent, pid, asset } = await setup('country_specific');
+    // Sell 100 with nothing held, counted at 0 % → basis = sale price → 0 gain.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 100,
+      price: 100,
+      executedAt: '2026-05-10T10:00:00.000Z',
+      allowUncovered: true,
+      addProceedsToCash: true,
+    });
+    // The AT ledger must not misreport a fabricated gain: no withholding at all.
+    const cash = await cashState(agent, pid);
+    expect(taxMovements(cash.movements)).toHaveLength(0);
+    expect(cash.balanceEur).toBe(10000);
+
+    const years = await yearSummaries(agent, pid);
+    expect(years).toEqual([
+      {
+        year: 2026,
+        realizedPnlEur: 0,
+        dividendsGrossEur: 0,
+        taxWithheldEur: 0,
+        taxRefundedEur: 0,
+        taxNetEur: 0,
+      },
+    ]);
+    const report = await yearReport(agent, pid, 2026);
+    // The report prices the uncovered shares at their proceeds → 0 realized.
+    expect(report.positions[0]!.sells[0]).toMatchObject({
+      proceedsEur: 10000,
+      costBasisEur: 10000,
+      realizedPnlEur: 0,
+    });
+  });
+
+  it('AT mode, option B: a user-supplied buy-in price is taxed as a real gain', async () => {
+    const { agent, pid, asset } = await setup('country_specific');
+    // Sell 100 @ 100 uncovered, user states a 60 buy-in → gain 100·(100−60)=4000.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 100,
+      price: 100,
+      executedAt: '2026-06-10T10:00:00.000Z',
+      allowUncovered: true,
+      uncoveredEntryPrice: 60,
+      addProceedsToCash: true,
+    });
+    const cash = await cashState(agent, pid);
+    const withholding = taxMovements(cash.movements);
+    expect(withholding).toHaveLength(1);
+    // 27.5 % × 4000 = 1100.
+    expect(withholding[0]).toMatchObject({
+      kind: 'tax_withholding',
+      amountEur: -1100,
+      taxYear: 2026,
+    });
+
+    const years = await yearSummaries(agent, pid);
+    expect(years).toEqual([
+      {
+        year: 2026,
+        realizedPnlEur: 4000,
+        dividendsGrossEur: 0,
+        taxWithheldEur: 1100,
+        taxRefundedEur: 0,
+        taxNetEur: 1100,
+      },
+    ]);
+    // Cash = 10000 proceeds − 1100 tax.
+    expect(cash.balanceEur).toBe(10000 - 1100);
+  });
+
+  it('rejects the uncovered fields on a buy (contract-guarded)', async () => {
+    const { agent, pid, asset } = await setup();
+    const res = await trade(
+      agent,
+      pid,
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        executedAt: '2026-01-01T10:00:00.000Z',
+        allowUncovered: true,
+      },
+      400,
+    );
+    expect(res.body.error.code).toBeDefined();
+  });
+});

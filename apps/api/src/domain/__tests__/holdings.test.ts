@@ -29,6 +29,8 @@ function tx(
     price: over.price,
     fee: over.fee ?? 0,
     executedAt: over.executedAt ?? '2026-01-01T00:00:00Z',
+    allowUncovered: over.allowUncovered,
+    uncoveredEntryPrice: over.uncoveredEntryPrice,
   };
 }
 
@@ -316,6 +318,97 @@ describe('reducePosition', () => {
         }),
       ]);
       expect(pos.quantity).toBe(0);
+    });
+  });
+
+  describe('uncovered sell — allowUncovered (issue #369)', () => {
+    it('sells with a zero holding at 0 % basis (sale price) → 0 realized, closes at 0', () => {
+      const pos = reducePosition([
+        tx({ side: 'sell', quantity: 10, price: 100, allowUncovered: true }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.avgCost).toBe(0);
+      // Basis = sale price on every uncovered share → no gain (fee-free here).
+      expect(pos.realizedPnl).toBe(0);
+      expect(pos.realizations).toHaveLength(1);
+      expect(pos.realizations[0]!.realizedPnl).toBe(0);
+    });
+
+    it('a zero-holding uncovered sell with a fee realizes exactly minus the fee', () => {
+      const pos = reducePosition([
+        tx({ side: 'sell', quantity: 4, price: 50, fee: 3, allowUncovered: true }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.realizedPnl).toBe(-3);
+    });
+
+    it('splits a partial-cover sell: covered shares realize real gain, uncovered 0 %', () => {
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 2, price: 40, executedAt: '2026-01-01T00:00:00Z' }),
+        tx({
+          side: 'sell',
+          quantity: 10,
+          price: 100,
+          allowUncovered: true,
+          executedAt: '2026-01-02T00:00:00Z',
+        }),
+      ]);
+      // covered 2·(100−40) = 120; uncovered 8·(100−100) = 0.
+      expect(pos.realizedPnl).toBeCloseTo(120, 10);
+      expect(pos.quantity).toBe(0);
+      expect(pos.avgCost).toBe(0);
+    });
+
+    it('uses a supplied entry price for the uncovered portion (option B)', () => {
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 2, price: 40, executedAt: '2026-01-01T00:00:00Z' }),
+        tx({
+          side: 'sell',
+          quantity: 10,
+          price: 100,
+          allowUncovered: true,
+          uncoveredEntryPrice: 60,
+          executedAt: '2026-01-02T00:00:00Z',
+        }),
+      ]);
+      // covered 2·(100−40) = 120; uncovered 8·(100−60) = 320.
+      expect(pos.realizedPnl).toBeCloseTo(440, 10);
+      expect(pos.quantity).toBe(0);
+    });
+
+    it('still throws OversellError when the flag is absent (strict default preserved)', () => {
+      expect(() => reducePosition([tx({ side: 'sell', quantity: 1, price: 100 })])).toThrow(
+        OversellError,
+      );
+    });
+
+    it('no shorts: a later buy after an uncovered sell rebuilds from 0, not a debt', () => {
+      const pos = reducePosition([
+        tx({
+          side: 'sell',
+          quantity: 10,
+          price: 100,
+          allowUncovered: true,
+          executedAt: '2026-01-01T00:00:00Z',
+        }),
+        tx({ side: 'buy', quantity: 3, price: 20, executedAt: '2026-01-02T00:00:00Z' }),
+      ]);
+      expect(pos.quantity).toBe(3);
+      expect(pos.avgCost).toBeCloseTo(20, 10);
+    });
+
+    it('rejects a non-finite supplied entry price', () => {
+      expect(() =>
+        reducePosition([
+          tx({
+            side: 'sell',
+            quantity: 5,
+            price: 100,
+            allowUncovered: true,
+            uncoveredEntryPrice: -1,
+          }),
+        ]),
+      ).toThrow(/uncovered entry price/i);
     });
   });
 
@@ -698,6 +791,52 @@ describe('valueOverTime', () => {
     });
     // 01: 4·10=40, 02: 4·12=48, 03: sold → 0
     expect(series.map((p) => p.valueEur)).toEqual([40, 48, 0]);
+  });
+
+  it('an uncovered sell never goes short: a later buy rebuilds from 0 (issue #369)', async () => {
+    // Hold 2, uncovered-sell 5 on day 02 (net would be −3), then buy 4 on day 03.
+    // Without the no-shorts clamp the −3 debt would suppress the rebuild.
+    const series = await valueOverTime({
+      transactions: [
+        tx({
+          assetId: 'A',
+          side: 'buy',
+          quantity: 2,
+          price: 10,
+          executedAt: '2026-01-01T00:00:00Z',
+        }),
+        tx({
+          assetId: 'A',
+          side: 'sell',
+          quantity: 5,
+          price: 10,
+          allowUncovered: true,
+          executedAt: '2026-01-02T00:00:00Z',
+        }),
+        tx({
+          assetId: 'A',
+          side: 'buy',
+          quantity: 4,
+          price: 10,
+          executedAt: '2026-01-03T00:00:00Z',
+        }),
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-01', close: 10 },
+            { date: '2026-01-02', close: 10 },
+            { date: '2026-01-03', close: 10 },
+          ],
+        },
+      ],
+      today: '2026-01-03',
+      converter: stubConverter(),
+    });
+    // 01: 2·10=20, 02: closed at 0, 03: 4·10=40 (rebuilt from 0, not 1·10).
+    expect(series.map((p) => p.valueEur)).toEqual([20, 0, 40]);
   });
 
   it("applies each day's historical FX rate — worked scenario with carry-forward and a mid-series sell", async () => {
