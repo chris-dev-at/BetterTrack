@@ -253,6 +253,13 @@
       "when": 1783910000000,
       "tag": "0035_notification_archive",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1783911111111,
+      "tag": "0036_idempotency_keys_reapply",
+      "breakpoints": true
     }
   ]
 }

@@ -24,6 +24,14 @@ export default defineConfig({
       // (COALESCE + ::timestamptz casts) whose param typing differs between
       // PGlite and postgres-js — keep them proven on the real engine.
       'src/__tests__/notificationsArchive.test.ts',
+      // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
+      // semantics proven against real postgres + postgres-js (migration 0034 was
+      // silently skipped on prod while every fresh-database run stayed green).
+      'src/__tests__/idempotency.test.ts',
+      // …and the journal-ordering invariant that was the actual root cause (a
+      // misordered `when` makes drizzle skip a migration on any database that
+      // already applied a later-stamped one).
+      'src/__tests__/migrationJournal.test.ts',
     ],
     pool: 'forks',
     poolOptions: {
