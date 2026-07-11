@@ -1,4 +1,6 @@
-import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
+
+import type { NotificationView } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { notifications, notificationSettings } from '../schema';
@@ -52,6 +54,7 @@ export interface NotificationRecord {
   body: string;
   payload: unknown;
   readAt: Date | null;
+  archivedAt: Date | null;
   createdAt: Date;
 }
 
@@ -63,6 +66,7 @@ function toRecord(row: typeof notifications.$inferSelect): NotificationRecord {
     body: row.body,
     payload: row.payload,
     readAt: row.readAt,
+    archivedAt: row.archivedAt,
     createdAt: row.createdAt,
   };
 }
@@ -237,12 +241,15 @@ export function createNotificationRepository(db: Database) {
     /**
      * Newest-first notifications for one user, keyset paginated by UUIDv7 id
      * (§8). Scoped by `user_id` so another user's id is never returned — no
-     * IDOR by construction (§10).
+     * IDOR by construction (§10). `view` filters on the archive state (#437):
+     * `active` (archived_at NULL — the pre-#437 behavior every existing client
+     * keeps), `archived`, or `all`.
      */
     async listForUser(
       userId: string,
-      params: { limit: number; cursor?: string },
+      params: { limit: number; cursor?: string; view?: NotificationView },
     ): Promise<{ items: NotificationRecord[]; nextCursor: string | null }> {
+      const view = params.view ?? 'active';
       const rows = await db
         .select()
         .from(notifications)
@@ -251,6 +258,11 @@ export function createNotificationRepository(db: Database) {
             eq(notifications.userId, userId),
             // Hidden rows are dedupe markers, never inbox content (#368).
             eq(notifications.hidden, false),
+            view === 'active'
+              ? isNull(notifications.archivedAt)
+              : view === 'archived'
+                ? isNotNull(notifications.archivedAt)
+                : undefined,
             params.cursor ? lt(notifications.id, params.cursor) : undefined,
           ),
         )
@@ -263,7 +275,12 @@ export function createNotificationRepository(db: Database) {
       return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
     },
 
-    /** Count of the user's unread notifications, for the bell badge (§6.10). */
+    /**
+     * Count of the user's unread notifications, for the bell badge (§6.10).
+     * ACTIVE rows only (#437): an archived row never counts — though by the
+     * archive-implies-read invariant an archived row is always read anyway,
+     * the filter keeps the badge honest by construction.
+     */
     async countUnread(userId: string): Promise<number> {
       const [row] = await db
         .select({ count: sql<number>`count(*)::int` })
@@ -273,6 +290,7 @@ export function createNotificationRepository(db: Database) {
             eq(notifications.userId, userId),
             eq(notifications.hidden, false),
             isNull(notifications.readAt),
+            isNull(notifications.archivedAt),
           ),
         );
       return row?.count ?? 0;
@@ -297,6 +315,130 @@ export function createNotificationRepository(db: Database) {
         .update(notifications)
         .set({ readAt: new Date() })
         .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+    },
+
+    // ── Archive state + deletion (#437) ──────────────────────────────────────
+
+    /**
+     * Auto-archive sweep: stamp `archived_at = now` on every still-active row
+     * whose read happened before `readBefore` (= now minus the service's
+     * threshold). Runs lazily ahead of each list fetch — cheap, idempotent,
+     * strictly user-scoped, and it never touches unread rows or hidden dedupe
+     * markers.
+     */
+    async sweepAutoArchive(userId: string, readBefore: Date, now: Date): Promise<void> {
+      await db
+        .update(notifications)
+        .set({ archivedAt: now })
+        .where(
+          and(
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+            isNull(notifications.archivedAt),
+            isNotNull(notifications.readAt),
+            lt(notifications.readAt, readBefore),
+          ),
+        );
+    },
+
+    /**
+     * Archive one owned row: stamps `archived_at` and — archive-implies-read
+     * (#437: a hidden-but-unread badge would lie) — `read_at` too, each only
+     * when not already set, so a repeat is idempotent and preserves the
+     * original timestamps. @returns false when the id isn't the caller's (or
+     * doesn't exist / is a hidden marker) — indistinguishable, for the 404.
+     */
+    async archive(userId: string, id: string, now: Date): Promise<boolean> {
+      // The COALESCE params ride a raw SQL fragment, outside the column's
+      // drizzle type mapping — postgres-js needs the explicit ISO string +
+      // ::timestamptz cast (a bare Date param fails to type-resolve there).
+      const nowIso = now.toISOString();
+      const rows = await db
+        .update(notifications)
+        .set({
+          archivedAt: sql`coalesce(${notifications.archivedAt}, ${nowIso}::timestamptz)`,
+          readAt: sql`coalesce(${notifications.readAt}, ${nowIso}::timestamptz)`,
+        })
+        .where(
+          and(
+            eq(notifications.id, id),
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+          ),
+        )
+        .returning({ id: notifications.id });
+      return rows.length > 0;
+    },
+
+    /**
+     * Un-archive one owned row (back to active; `read_at` stays). Idempotent on
+     * an already-active row. @returns false when the id isn't the caller's.
+     */
+    async unarchive(userId: string, id: string): Promise<boolean> {
+      const rows = await db
+        .update(notifications)
+        .set({ archivedAt: null })
+        .where(
+          and(
+            eq(notifications.id, id),
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+          ),
+        )
+        .returning({ id: notifications.id });
+      return rows.length > 0;
+    },
+
+    /** Archive every read, still-active row for the user (bulk, idempotent). */
+    async archiveAllRead(userId: string, now: Date): Promise<void> {
+      await db
+        .update(notifications)
+        .set({ archivedAt: now })
+        .where(
+          and(
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+            isNull(notifications.archivedAt),
+            isNotNull(notifications.readAt),
+          ),
+        );
+    },
+
+    /**
+     * Hard-delete one owned row. @returns false when nothing was deleted (not
+     * the caller's, already gone, or a hidden dedupe marker — which must
+     * survive so an at-least-once redelivery of its event stays deduped).
+     */
+    async deleteOne(userId: string, id: string): Promise<boolean> {
+      const rows = await db
+        .delete(notifications)
+        .where(
+          and(
+            eq(notifications.id, id),
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+          ),
+        )
+        .returning({ id: notifications.id });
+      return rows.length > 0;
+    },
+
+    /**
+     * Bulk hard delete for one user (#437): `archived` removes exactly the
+     * archived set, `all` empties the user's notifications. Hidden dedupe
+     * markers are infrastructure, not inbox content — they are never listed,
+     * never archived, and stay behind so redeliveries keep deduping.
+     */
+    async deleteBulk(userId: string, scope: 'archived' | 'all'): Promise<void> {
+      await db
+        .delete(notifications)
+        .where(
+          and(
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+            scope === 'archived' ? isNotNull(notifications.archivedAt) : undefined,
+          ),
+        );
     },
   };
 }

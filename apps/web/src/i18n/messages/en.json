@@ -238,8 +238,35 @@
         "title": "No notifications yet",
         "description": "Activity like friend requests and shares will show up here."
       },
+      "emptyArchived": {
+        "title": "No archived notifications"
+      },
       "refreshError": "Couldn't refresh notifications. Showing the last loaded list.",
       "loadMore": "Load more",
+      "views": {
+        "active": "Active",
+        "archived": "Archived",
+        "all": "All"
+      },
+      "viewFilterAria": "Filter notifications",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "archiveAria": "Archive “{{title}}”",
+      "unarchiveAria": "Unarchive “{{title}}”",
+      "deleteAria": "Delete “{{title}}”",
+      "actionError": "Couldn't update your notifications. Please try again.",
+      "deleteArchived": "Delete all archived",
+      "deleteAll": "Delete everything",
+      "deleting": "Deleting…",
+      "confirmDeleteAction": "Delete permanently",
+      "confirmDeleteArchived": {
+        "title": "Delete all archived notifications?",
+        "description": "This permanently deletes every archived notification. This cannot be undone."
+      },
+      "confirmDeleteAll": {
+        "title": "Delete all notifications?",
+        "description": "This permanently deletes ALL of your notifications — read, unread and archived. This cannot be undone."
+      },
       "channels": {
         "inapp": "In-app",
         "email": "Email",

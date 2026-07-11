@@ -99,6 +99,33 @@ export const webPushUnsubscribeRequestSchema = z
   .strict();
 export type WebPushUnsubscribeRequest = z.infer<typeof webPushUnsubscribeRequestSchema>;
 
+// ── Archive state + deletion (#437) ──────────────────────────────────────────
+
+/**
+ * The three list views (#437). `active` (unarchived) is the DEFAULT, so
+ * pre-archive clients (the mobile app in production) keep working unchanged —
+ * archived rows simply stop appearing. A row is archived when the user archived
+ * it explicitly or when the auto-archive sweep caught it (read more than
+ * `AUTO_ARCHIVE_READ_AFTER_DAYS` ago — the API service owns that constant).
+ */
+export const NOTIFICATION_VIEWS = ['active', 'archived', 'all'] as const;
+export type NotificationView = (typeof NOTIFICATION_VIEWS)[number];
+export const notificationViewSchema = z.enum(NOTIFICATION_VIEWS);
+
+/** `/notifications/:id/...` path param (archive, unarchive, delete). */
+export const notificationIdParamSchema = z.object({ id: z.string().uuid() }).strict();
+
+/**
+ * `DELETE /notifications?scope=` query — bulk hard delete (#437). `scope` is
+ * REQUIRED (no default): `archived` deletes exactly the caller's archived rows,
+ * `all` empties the caller's notifications entirely. Omitting it is a 400, so
+ * an accidental bare DELETE can never wipe anything.
+ */
+export const notificationBulkDeleteQuerySchema = z
+  .object({ scope: z.enum(['archived', 'all']) })
+  .strict();
+export type NotificationBulkDeleteQuery = z.infer<typeof notificationBulkDeleteQuerySchema>;
+
 export const notificationSchema = z
   .object({
     id: z.string().uuid(),
@@ -107,6 +134,8 @@ export const notificationSchema = z
     body: z.string(),
     payload: z.unknown().optional(),
     readAt: z.string().datetime().nullable(),
+    /** When the row was archived (explicitly or by the sweep); null = active (#437). */
+    archivedAt: z.string().datetime().nullable(),
     createdAt: z.string().datetime(),
   })
   .strict();
@@ -117,16 +146,18 @@ export const notificationListResponseSchema = z
   .object({
     items: z.array(notificationSchema),
     nextCursor: z.string().nullable(),
+    /** Unread among ACTIVE rows only — archived rows never count (#437). */
     unreadCount: z.number().int().nonnegative(),
   })
   .strict();
 export type NotificationListResponse = z.infer<typeof notificationListResponseSchema>;
 
-/** Cursor pagination query for the notification list. */
+/** Cursor pagination + view filter for the notification list (#437). */
 export const notificationListQuerySchema = z
   .object({
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
+    view: notificationViewSchema.default('active'),
   })
   .strict();
 export type NotificationListQuery = z.infer<typeof notificationListQuerySchema>;

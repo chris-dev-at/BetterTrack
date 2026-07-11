@@ -177,6 +177,11 @@ export interface CreateTestAppOptions {
    * direct dispatch under test.
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
+  /**
+   * Controlled clock for the notification service (#437) — makes the
+   * auto-archive sweep threshold provable deterministically.
+   */
+  notificationNow?: () => Date;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -211,6 +216,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     passwordHasher: testPasswordHasher,
     liveModeOptions: options.liveModeOptions,
     notificationEnqueue: options.notificationEnqueue,
+    notificationNow: options.notificationNow,
   });
   const app = createApp(ctx);
 

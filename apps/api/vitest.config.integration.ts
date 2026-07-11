@@ -20,6 +20,10 @@ export default defineConfig({
       'src/__tests__/admin.test.ts',
       'src/__tests__/workboard.test.ts',
       'src/__tests__/password.test.ts',
+      // #437: the archive/delete repo methods carry raw SQL fragments
+      // (COALESCE + ::timestamptz casts) whose param typing differs between
+      // PGlite and postgres-js — keep them proven on the real engine.
+      'src/__tests__/notificationsArchive.test.ts',
     ],
     pool: 'forks',
     poolOptions: {

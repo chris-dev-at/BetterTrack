@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -11,6 +11,10 @@ vi.mock('../../lib/settingsApi', () => ({
 vi.mock('../../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
   markNotificationsRead: vi.fn(),
+  archiveNotification: vi.fn(),
+  unarchiveNotification: vi.fn(),
+  deleteNotification: vi.fn(),
+  deleteNotifications: vi.fn(),
 }));
 
 import {
@@ -22,7 +26,14 @@ import {
   type NotificationTypeRouting,
 } from '@bettertrack/contracts';
 
-import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
+import {
+  archiveNotification,
+  deleteNotification,
+  deleteNotifications,
+  listNotifications,
+  markNotificationsRead,
+  unarchiveNotification,
+} from '../../lib/notificationsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
 import { NotificationSettingsPage } from './SettingsSection';
 
@@ -46,6 +57,7 @@ function notification(overrides: Partial<Notification>): Notification {
     body: 'jane sent you a friend request',
     payload: undefined,
     readAt: null,
+    archivedAt: null,
     createdAt: new Date().toISOString(),
     ...overrides,
   };
@@ -88,6 +100,10 @@ beforeEach(() => {
   vi.mocked(getNotificationSettings).mockResolvedValue(makeSettings());
   vi.mocked(listNotifications).mockResolvedValue(EMPTY_LIST_RESPONSE);
   vi.mocked(markNotificationsRead).mockResolvedValue(undefined);
+  vi.mocked(archiveNotification).mockResolvedValue(undefined);
+  vi.mocked(unarchiveNotification).mockResolvedValue(undefined);
+  vi.mocked(deleteNotification).mockResolvedValue(undefined);
+  vi.mocked(deleteNotifications).mockResolvedValue(undefined);
 });
 
 describe('NotificationSettingsPage', () => {
@@ -398,5 +414,164 @@ describe('NotificationSettingsPage', () => {
 
     resolveMarkRead();
     await waitFor(() => expect(vi.mocked(markNotificationsRead)).toHaveBeenCalled());
+  });
+
+  // ── Archive state + deletion (#437) ─────────────────────────────────────────
+
+  test('defaults to the Active view and requests it from the API', async () => {
+    renderPage();
+
+    await waitFor(() =>
+      expect(vi.mocked(listNotifications)).toHaveBeenCalledWith(
+        expect.objectContaining({ view: 'active' }),
+        expect.anything(),
+      ),
+    );
+    expect(screen.getByRole('tab', { name: 'Active' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  test('the Archived tab fetches the archived view and offers Unarchive', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockImplementation(async (params = {}) =>
+      params.view === 'archived'
+        ? {
+            items: [
+              notification({
+                id: '00000000-0000-0000-0000-000000000002',
+                title: 'Old news',
+                readAt: new Date().toISOString(),
+                archivedAt: new Date().toISOString(),
+              }),
+            ],
+            nextCursor: null,
+            unreadCount: 0,
+          }
+        : EMPTY_LIST_RESPONSE,
+    );
+    renderPage();
+
+    await user.click(await screen.findByRole('tab', { name: 'Archived' }));
+
+    expect(await screen.findByText('Old news')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(vi.mocked(listNotifications)).toHaveBeenCalledWith(
+        expect.objectContaining({ view: 'archived' }),
+        expect.anything(),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Unarchive “Old news”' }));
+    await waitFor(() =>
+      expect(vi.mocked(unarchiveNotification)).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000002',
+      ),
+    );
+  });
+
+  test('an empty Archived view gets its own empty state', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('tab', { name: 'Archived' }));
+
+    expect(await screen.findByText('No archived notifications')).toBeInTheDocument();
+  });
+
+  test('the per-row Archive action calls the API', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [notification({ id: '00000000-0000-0000-0000-000000000002', title: 'Fresh' })],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Archive “Fresh”' }));
+
+    await waitFor(() =>
+      expect(vi.mocked(archiveNotification)).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000002',
+      ),
+    );
+  });
+
+  test('the per-row Delete action hard-deletes via the API', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [notification({ id: '00000000-0000-0000-0000-000000000002', title: 'Doomed' })],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete “Doomed”' }));
+
+    await waitFor(() =>
+      expect(vi.mocked(deleteNotification)).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000002',
+      ),
+    );
+  });
+
+  test('"Delete all archived" asks for confirmation before deleting', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete all archived' }));
+
+    // Nothing deleted yet — the destructive confirm dialog gates it.
+    expect(vi.mocked(deleteNotifications)).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Delete all archived notifications?',
+    });
+    expect(dialog).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+
+    await waitFor(() => expect(vi.mocked(deleteNotifications)).toHaveBeenCalledWith('archived'));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'Delete all archived notifications?' }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  test('"Delete everything" confirms, and Cancel aborts without deleting', async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete everything' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Delete all notifications?' });
+    expect(dialog).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(vi.mocked(deleteNotifications)).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('dialog', { name: 'Delete all notifications?' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Delete everything' }));
+    await user.click(
+      within(await screen.findByRole('dialog', { name: 'Delete all notifications?' })).getByRole(
+        'button',
+        { name: 'Delete permanently' },
+      ),
+    );
+    await waitFor(() => expect(vi.mocked(deleteNotifications)).toHaveBeenCalledWith('all'));
+  });
+
+  test('surfaces an archive/delete failure instead of doing nothing visibly', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [notification({ id: '00000000-0000-0000-0000-000000000002', title: 'Sticky' })],
+      nextCursor: null,
+      unreadCount: 1,
+    });
+    vi.mocked(archiveNotification).mockRejectedValue(new Error('boom'));
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Archive “Sticky”' }));
+
+    expect(await screen.findByText(/Couldn't update your notifications/i)).toBeInTheDocument();
   });
 });

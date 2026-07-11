@@ -173,7 +173,7 @@ describe('#361 route × scope matrix', () => {
   // past the scope guard (any non-403 — 200/400 — proves enforcement, not shape).
   const rows: {
     name: string;
-    method: 'get' | 'post' | 'patch';
+    method: 'get' | 'post' | 'patch' | 'delete';
     path: string;
     scope: string;
     body?: Record<string, unknown>;
@@ -190,6 +190,19 @@ describe('#361 route × scope matrix', () => {
       path: '/notifications/mark-read',
       scope: 'notifications:write',
       body: { all: true },
+    },
+    // #437: archive state + deletion are writes on the same module scope.
+    {
+      name: 'notification archive (mutate)',
+      method: 'post',
+      path: `/notifications/${MISSING_ID}/archive`,
+      scope: 'notifications:write',
+    },
+    {
+      name: 'notifications bulk delete',
+      method: 'delete',
+      path: '/notifications?scope=archived',
+      scope: 'notifications:write',
     },
     {
       name: 'notification prefs read',
@@ -270,7 +283,9 @@ describe('#361 route × scope matrix', () => {
         ? base.get(url)
         : row.method === 'post'
           ? base.post(url)
-          : base.patch(url);
+          : row.method === 'delete'
+            ? base.delete(url)
+            : base.patch(url);
     const withAuth = started.set(bearer(token));
     return row.body ? withAuth.send(row.body) : withAuth;
   };

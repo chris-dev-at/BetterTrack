@@ -238,8 +238,35 @@
         "title": "Noch keine Benachrichtigungen",
         "description": "Aktivitäten wie Freundschaftsanfragen und Freigaben erscheinen hier."
       },
+      "emptyArchived": {
+        "title": "Keine archivierten Benachrichtigungen"
+      },
       "refreshError": "Benachrichtigungen konnten nicht aktualisiert werden. Die zuletzt geladene Liste wird angezeigt.",
       "loadMore": "Mehr laden",
+      "views": {
+        "active": "Aktiv",
+        "archived": "Archiviert",
+        "all": "Alle"
+      },
+      "viewFilterAria": "Benachrichtigungen filtern",
+      "archive": "Archivieren",
+      "unarchive": "Wiederherstellen",
+      "archiveAria": "„{{title}}“ archivieren",
+      "unarchiveAria": "„{{title}}“ wiederherstellen",
+      "deleteAria": "„{{title}}“ löschen",
+      "actionError": "Deine Benachrichtigungen konnten nicht aktualisiert werden. Bitte versuche es erneut.",
+      "deleteArchived": "Alle archivierten löschen",
+      "deleteAll": "Alles löschen",
+      "deleting": "Wird gelöscht…",
+      "confirmDeleteAction": "Endgültig löschen",
+      "confirmDeleteArchived": {
+        "title": "Alle archivierten Benachrichtigungen löschen?",
+        "description": "Das löscht alle archivierten Benachrichtigungen dauerhaft. Das kann nicht rückgängig gemacht werden."
+      },
+      "confirmDeleteAll": {
+        "title": "Alle Benachrichtigungen löschen?",
+        "description": "Das löscht ALLE deine Benachrichtigungen dauerhaft — gelesene, ungelesene und archivierte. Das kann nicht rückgängig gemacht werden."
+      },
       "channels": {
         "inapp": "In der App",
         "email": "E-Mail",

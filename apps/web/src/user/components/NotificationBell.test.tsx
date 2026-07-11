@@ -21,9 +21,13 @@ function makeQueryClient() {
 }
 
 function renderBell() {
+  // The dropdown always renders the "All notifications" footer Link (#437),
+  // so every bell render needs a router context.
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <NotificationBell />
+      <MemoryRouter>
+        <NotificationBell />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -36,6 +40,7 @@ function notification(overrides: Partial<Notification>): Notification {
     body: 'jane sent you a friend request',
     payload: undefined,
     readAt: null,
+    archivedAt: null,
     createdAt: new Date().toISOString(),
     ...overrides,
   };
@@ -281,6 +286,17 @@ describe('NotificationBell', () => {
     push!({ notificationId: '00000000-0000-0000-0000-000000000002', occurredAt: 'now' });
     await waitFor(() => expect(vi.mocked(listNotifications)).toHaveBeenCalledTimes(2));
     expect(await screen.findByText('1')).toBeInTheDocument();
+  });
+
+  test('the dropdown carries an "All notifications" footer link to the settings page (#437)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue(EMPTY_RESPONSE);
+    renderBell();
+
+    await user.click(await screen.findByRole('button', { name: 'Notifications' }));
+
+    const link = await screen.findByRole('link', { name: 'All notifications' });
+    expect(link).toHaveAttribute('href', '/settings/notifications');
   });
 
   test('an alert.triggered notification links to its asset (§14)', async () => {
