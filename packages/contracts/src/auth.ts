@@ -23,6 +23,23 @@ export const loginRequestSchema = z
   .object({
     identifier: z.string().min(1).max(320),
     password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
+    /**
+     * "Stay signed in" (V4-P2b, owner spec #399 §A). Omitted/true = a persistent
+     * session with the fixed 30-day window and a Max-Age cookie — today's
+     * behavior (the server defaults to persistent). False = an ephemeral
+     * session: a browser-session cookie (no Max-Age) backed by a bounded server
+     * TTL (§16). Optional so existing callers (e.g. the admin login) are
+     * unchanged.
+     */
+    staySignedIn: z.boolean().optional(),
+    /**
+     * Set by the SPA when this login happens inside an OAuth authorize flow
+     * (§399 §A). A PIN-less OAuth login is FORCED ephemeral server-side
+     * regardless of `staySignedIn`: a Custom-Tab browser must not silently
+     * retain a persistent web session that auto-re-logs-in after app logout.
+     * An account WITH a PIN may still persist — the PIN gates access.
+     */
+    oauthLogin: z.boolean().optional(),
   })
   .strict();
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
@@ -358,6 +375,13 @@ export const sessionSummarySchema = z
     lastSeenAt: z.string().datetime(),
     /** True for the caller's own session — the one making this request. */
     current: z.boolean(),
+    /**
+     * True = a persistent session ("stay signed in": fixed 30-day window,
+     * Max-Age cookie). False = an ephemeral session (browser-session cookie +
+     * bounded server TTL), created by an unticked login or a PIN-less OAuth
+     * login (V4-P2b, §399 §A). Lets the session manager render which is which.
+     */
+    persistent: z.boolean(),
   })
   .strict();
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;

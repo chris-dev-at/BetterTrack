@@ -17,7 +17,16 @@
       "forgotPassword": "Passwort vergessen?",
       "rateLimited": "Zu viele Anmeldeversuche.",
       "accountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
-      "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch."
+      "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
+      "staySignedIn": "Angemeldet bleiben"
+    },
+    "oauthStay": {
+      "subtitle": "Anmeldung",
+      "description": "Du meldest dich an, um eine App zu autorisieren.",
+      "checkboxLabel": "In diesem Browser angemeldet bleiben",
+      "checkboxHint": "Deine PIN schützt dein Konto auf diesem Gerät weiterhin.",
+      "continue": "Weiter",
+      "continuing": "Wird fortgesetzt…"
     },
     "twoFactor": {
       "subtitle": "Zwei-Faktor-Authentifizierung",
@@ -288,6 +297,8 @@
         "revokeOneError": "Dieses Gerät konnte nicht abgemeldet werden. Bitte versuche es erneut.",
         "revokeOthersError": "Die anderen Geräte konnten nicht abgemeldet werden. Bitte versuche es erneut.",
         "currentDevice": "Dieses Gerät",
+        "persistent": "Bleibt angemeldet",
+        "ephemeral": "Nur dieser Browser",
         "timestamps": "Angemeldet {{createdAt}} · zuletzt aktiv {{lastSeenAt}}",
         "logOut": "Abmelden",
         "confirmLogoutOthersOne": "{{count}} anderes Gerät abmelden? Du bleibst auf diesem Gerät angemeldet.",

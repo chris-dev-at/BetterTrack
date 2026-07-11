@@ -372,6 +372,14 @@ const endpoints: EndpointDef[] = [
     response: R.SessionInfoResponse,
   },
   {
+    method: 'post',
+    path: '/auth/session/persist',
+    tag: 'Auth',
+    summary: 'Promote the current session to persistent (OAuth “stay signed in”, PIN-gated).',
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
     method: 'get',
     path: '/auth/sessions',
     tag: 'Auth',

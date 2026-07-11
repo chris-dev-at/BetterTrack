@@ -233,7 +233,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // §5.5) and the portfolio service below.
   const portfolioRepo = createPortfolioRepository(db);
 
-  const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000));
+  const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000), {
+    ephemeralIdleMs: config.cookie.ephemeralIdleMs,
+    ephemeralCapMs: config.cookie.ephemeralCapMs,
+  });
   const audit = createAuditService(auditRepo);
 
   // Personal API keys (§6.13, V2-P12): issuance/list/revoke + bearer-token
@@ -595,7 +598,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     bus: events,
     logger,
-    resolveSession: (sessionId, userAgent) => auth.resolveSession(sessionId, userAgent),
+    resolveSession: async (sessionId, userAgent) => {
+      // The gateway only needs the resolved user; the persistence marker
+      // (V4-P2b) is HTTP-cookie bookkeeping and irrelevant to a socket.
+      const resolved = await auth.resolveSession(sessionId, userAgent);
+      return resolved?.user ?? null;
+    },
     // Bearer handshake auth for the cookieless mobile app (§6.13, §14): the SAME
     // resolution the HTTP bearer middleware runs — a personal API key first,
     // then a delegated OAuth access token; both enforce revocation, expiry and

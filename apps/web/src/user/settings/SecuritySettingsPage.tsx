@@ -161,6 +161,12 @@ function SessionsSection() {
                       {t('settings.security.sessions.currentDevice')}
                     </span>
                   ) : null}
+                  {/* Persistent vs ephemeral ("stay signed in") — V4-P2b, §399 §A. */}
+                  <span className="ml-2 rounded-full bg-neutral-800 px-2 py-0.5 text-xs font-medium text-neutral-400">
+                    {session.persistent
+                      ? t('settings.security.sessions.persistent')
+                      : t('settings.security.sessions.ephemeral')}
+                  </span>
                 </span>
                 <span className="text-xs text-neutral-500">
                   {t('settings.security.sessions.timestamps', {

@@ -21,6 +21,12 @@ declare global {
   namespace Express {
     interface Request {
       sessionId?: string;
+      /**
+       * Whether the resolved cookie session is persistent ("stay signed in") vs
+       * ephemeral (V4-P2b, §399 §A). Set alongside `sessionId` by `loadSession`
+       * so handlers that re-issue the cookie (PIN verify) keep its flavour.
+       */
+      sessionPersistent?: boolean;
       authUser?: AuthUser;
       /**
        * Set when the request authenticated via an `Authorization: Bearer` token

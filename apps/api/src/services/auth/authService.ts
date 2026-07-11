@@ -35,7 +35,7 @@ import type { PasswordHasher } from '../password/passwordHasher';
 import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
-import type { SessionService } from '../sessions/sessionService';
+import { isPersistent, type SessionService } from '../sessions/sessionService';
 import {
   clearLoginThrottle,
   clearPasswordThrottle,
@@ -68,11 +68,20 @@ export interface LoginInput {
   password: string;
   ip?: string | null;
   currentSessionId?: string;
+  /** "Stay signed in" (V4-P2b, §399 §A). Default true = a persistent session. */
+  staySignedIn?: boolean;
+  /**
+   * This login is part of an OAuth authorize flow (§399 §A). A PIN-less OAuth
+   * login is forced ephemeral here regardless of {@link staySignedIn}.
+   */
+  oauthLogin?: boolean;
 }
 
 export interface SessionResult {
   user: UserRow;
   sessionId: string;
+  /** Whether the minted session is persistent (V4-P2b) — drives the cookie's Max-Age. */
+  persistent: boolean;
 }
 
 /** The login-time 2FA challenge handed back when an account has 2FA enabled (§6.1). */
@@ -135,9 +144,13 @@ export interface AuthService {
    * stamps the session's last-seen and captures its device on first-seen
    * (V3-P11a) — a throttled write to a side key that never touches the fixed
    * 30-day window (§6.1). `userAgent` comes from the request; omit it off the
-   * request path.
+   * request path. Returns the resolved user together with the session's
+   * persistence marker (V4-P2b) so the caller can re-issue the matching cookie.
    */
-  resolveSession(sessionId: string, userAgent?: string | null): Promise<UserRow | null>;
+  resolveSession(
+    sessionId: string,
+    userAgent?: string | null,
+  ): Promise<{ user: UserRow; persistent: boolean } | null>;
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
@@ -206,6 +219,14 @@ export interface AuthService {
    */
   getSessionInfo(sessionId: string): Promise<SessionInfoResponse | null>;
   /**
+   * Upgrade the caller's CURRENT session to persistent — the OAuth-login "stay
+   * signed in — your PIN protects this" choice (V4-P2b, §399 §A). PIN-gated:
+   * only an account WITH a PIN may persist an OAuth-flow session (a PIN-less one
+   * stays ephemeral, so a Custom-Tab browser never silently retains it),
+   * throwing `PIN_NOT_ENABLED` otherwise. No-op-false when the session is gone.
+   */
+  persistCurrentSession(userId: string, sessionId: string): Promise<void>;
+  /**
    * The caller's own active sessions for Settings → Security (V3-P11a, §6.11):
    * device label, created/last-seen, and a current-session marker. Only ever the
    * user's own sessions — `userId` comes from the session cookie.
@@ -248,6 +269,12 @@ interface Pending2faState {
   userId: string;
   /** A pre-login session id to rotate out on successful verify, if any. */
   priorSessionId?: string;
+  /**
+   * Persistence intent computed at the password step (V4-P2b, §399 §A) and
+   * carried here because a 2FA login mints its session only on verify. Absent
+   * for a reset-originated challenge → treated as persistent (today's behavior).
+   */
+  persistent?: boolean;
 }
 
 /** Single generic failure for every login rejection — no user enumeration (§6.1). */
@@ -382,11 +409,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
     priorSessionId?: string,
+    persistent?: boolean,
   ): Promise<TwoFactorChallenge> {
     const methods = await twoFactor.getMethods(user.id);
     const pendingToken = randomBytes(32).toString('base64url');
     const state: Pending2faState = { userId: user.id };
     if (priorSessionId) state.priorSessionId = priorSessionId;
+    // Carry the password-step persistence choice to the verify step (V4-P2b).
+    if (persistent !== undefined) state.persistent = persistent;
     await redis.set(pendingKey(pendingToken), JSON.stringify(state), 'EX', PENDING_2FA_TTL_SEC);
     await audit.record({
       actorId: user.id,
@@ -413,7 +443,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   const clearPasswordFailures = (userId: string) => clearPasswordThrottle(redis, userId);
 
   return {
-    async login({ identifier, password, ip, currentSessionId }) {
+    async login({ identifier, password, ip, currentSessionId, staySignedIn, oauthLogin }) {
       const user = await userRepo.findByIdentifier(identifier);
 
       if (!user) {
@@ -476,20 +506,34 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // once a second factor verifies (see verifyTwoFactor).
       await clearPasswordFailures(user.id);
 
+      // Persistence decision (V4-P2b, §399 §A). "Stay signed in" (default true)
+      // asks for a persistent session; an OAuth-flow login on a PIN-less account
+      // is FORCED ephemeral regardless — a Custom-Tab browser must not silently
+      // keep a persistent web session that auto-re-logs-in after app logout. An
+      // account WITH a PIN may still persist (the PIN gates access). This is the
+      // authoritative server-side enforcement; the SPA hides the checkbox to match.
+      const wantsPersist = staySignedIn ?? true;
+      const persistent = wantsPersist && !((oauthLogin ?? false) && !user.pinEnabled);
+
       // 2FA gate (§6.1, §13.2 V2-P5): with any 2FA method on, do NOT mint a
       // session yet. Issue a short-lived, single-purpose pending challenge (Redis)
       // that only the verify / email-code endpoints accept; the session is
       // withheld until a second factor verifies. The prior session id (if any) is
       // carried so it can be rotated out on success, not destroyed on an abandoned
-      // challenge.
+      // challenge. The persistence choice rides along to the verify step.
       if (await twoFactor.isEnabled(user.id)) {
-        const challenge = await issueTwoFactorChallenge(user, ip, currentSessionId ?? undefined);
+        const challenge = await issueTwoFactorChallenge(
+          user,
+          ip,
+          currentSessionId ?? undefined,
+          persistent,
+        );
         return { status: 'two_factor_required', challenge };
       }
 
       // Session rotation: drop any pre-login session before minting a new id.
       if (currentSessionId) await sessions.destroy(currentSessionId);
-      const sessionId = await sessions.create(user.id);
+      const sessionId = await sessions.create(user.id, persistent);
 
       const now = new Date();
       await userRepo.setLastLogin(user.id, now);
@@ -510,7 +554,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         });
       }
 
-      return { status: 'authenticated', user: { ...user, lastLoginAt: now }, sessionId };
+      return {
+        status: 'authenticated',
+        user: { ...user, lastLoginAt: now },
+        sessionId,
+        persistent,
+      };
     },
 
     async verifyTwoFactor({ pendingToken, code, recoveryCode, ip }) {
@@ -579,7 +628,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       await twoFactorThrottle.reset(userId);
       await clearFailures(userId);
       if (state.priorSessionId) await sessions.destroy(state.priorSessionId);
-      const sessionId = await sessions.create(userId);
+      // Honour the persistence choice made at the password step (V4-P2b); a
+      // reset-originated challenge carries none → persistent, today's behavior.
+      const persistent = state.persistent ?? true;
+      const sessionId = await sessions.create(userId, persistent);
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -592,7 +644,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         meta: { via: '2fa' },
       });
 
-      return { user: { ...user, lastLoginAt: now }, sessionId };
+      return { user: { ...user, lastLoginAt: now }, sessionId, persistent };
     },
 
     async requestTwoFactorEmailCode(pendingToken, ip) {
@@ -631,13 +683,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         return null;
       }
       // Session manager bookkeeping (V3-P11a): stamp last-seen + capture the
-      // device on first-seen. Throttled and written to a side key, so it never
-      // extends the fixed 30-day window (§6.1). Only when a UA is actually
-      // present (i.e. an HTTP request), never on internal resolves.
+      // device on first-seen. Throttled and written to a side key. For a
+      // persistent session it never extends the fixed 30-day window (§6.1); for
+      // an ephemeral session (V4-P2b) this same throttled write is where the
+      // sliding idle window advances. Only when a UA is actually present (i.e.
+      // an HTTP request), never on internal resolves.
       if (userAgent !== undefined) {
         await sessions.touchLastSeen(sessionId, userAgent);
       }
-      return user;
+      return { user, persistent: isPersistent(data) };
     },
 
     async changePassword(userId, input, ip) {
@@ -677,7 +731,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
 
       const updated = await userRepo.findById(user.id);
-      return { user: updated ?? { ...user, passwordHash, mustChangePassword: false }, sessionId };
+      return {
+        user: updated ?? { ...user, passwordHash, mustChangePassword: false },
+        sessionId,
+        // A password change re-establishes a normal persistent session (§6.1).
+        persistent: true,
+      };
     },
 
     async validateInvite(token) {
@@ -748,7 +807,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       });
 
       const sessionId = await sessions.create(user.id);
-      return { user, sessionId };
+      return { user, sessionId, persistent: true };
     },
 
     async requestPasswordReset({ email: address }, ip) {
@@ -840,6 +899,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         status: 'authenticated',
         user: updated ?? { ...user, passwordHash, mustChangePassword: false },
         sessionId,
+        // A completed reset lands a normal persistent session (§6.1, #268).
+        persistent: true,
       };
     },
 
@@ -1007,6 +1068,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       };
     },
 
+    async persistCurrentSession(userId, sessionId) {
+      const user = await userRepo.findById(userId);
+      if (!user || user.status !== 'active') throw unauthorized();
+      // PIN gate (V4-P2b, §399 §A): a session may be promoted to persistent only
+      // when the account has a PIN — that PIN is precisely what makes keeping a
+      // browser session acceptable in the OAuth flow. A PIN-less account can
+      // therefore never turn its forced-ephemeral OAuth session persistent.
+      if (!user.pinEnabled || !user.pinHash) {
+        throw badRequest('A PIN is required to stay signed in.', 'PIN_NOT_ENABLED');
+      }
+      await sessions.setPersistent(sessionId, true);
+    },
+
     async listSessions(userId, currentSessionId) {
       const entries = await sessions.listForUser(userId, currentSessionId);
       return entries.map((entry) => ({
@@ -1015,6 +1089,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         createdAt: new Date(entry.createdAt).toISOString(),
         lastSeenAt: new Date(entry.lastSeenAt).toISOString(),
         current: entry.current,
+        persistent: entry.persistent,
       }));
     },
 

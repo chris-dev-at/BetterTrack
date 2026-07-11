@@ -106,6 +106,7 @@ const SESSIONS: SessionSummary[] = [
     createdAt: '2026-07-01T08:00:00.000Z',
     lastSeenAt: '2026-07-07T09:00:00.000Z',
     current: true,
+    persistent: true,
   },
   {
     id: 'handle-other',
@@ -113,6 +114,7 @@ const SESSIONS: SessionSummary[] = [
     createdAt: '2026-06-20T08:00:00.000Z',
     lastSeenAt: '2026-07-05T10:00:00.000Z',
     current: false,
+    persistent: false,
   },
 ];
 
@@ -150,6 +152,15 @@ describe('SecuritySettingsPage', () => {
     expect(screen.getByText('This device')).toBeInTheDocument();
     // Exactly one per-row "Log out" (the non-current device).
     expect(screen.getAllByRole('button', { name: 'Log out' })).toHaveLength(1);
+  });
+
+  test('marks each session persistent vs ephemeral (V4-P2b, §399 §A)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    renderPage();
+
+    // The current session is persistent; the other was a browser-session login.
+    expect(await screen.findByText('Stays signed in')).toBeInTheDocument();
+    expect(screen.getByText('This browser only')).toBeInTheDocument();
   });
 
   test('logs out one device via revokeSession (V3-P11a)', async () => {
