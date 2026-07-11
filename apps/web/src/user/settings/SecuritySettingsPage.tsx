@@ -76,10 +76,17 @@ function SessionInfo() {
         />
       ) : (
         <p className="text-sm text-neutral-400">
-          {t('settings.security.session.info', {
-            signedInAt: formatDateTime(query.data.signedInAt),
-            expiresAt: formatDateTime(query.data.expiresAt),
-          })}
+          {/* Ephemeral sessions die on browser close and are server-capped
+              (≤6h) — reporting the persistent 30-day window would lie (V4-P2b). */}
+          {t(
+            query.data.persistent
+              ? 'settings.security.session.info'
+              : 'settings.security.session.infoEphemeral',
+            {
+              signedInAt: formatDateTime(query.data.signedInAt),
+              expiresAt: formatDateTime(query.data.expiresAt),
+            },
+          )}
         </p>
       )}
     </section>

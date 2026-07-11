@@ -1063,8 +1063,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       return {
         signedInAt: new Date(session.createdAt).toISOString(),
         renewedAt: new Date(session.renewedAt).toISOString(),
-        // The 30-day window is fixed from the last login / PIN verify (§6.1).
-        expiresAt: new Date(session.renewedAt + sessions.ttlSeconds * 1000).toISOString(),
+        persistent: isPersistent(session),
+        // Persistent → the fixed 30-day window from the last login / PIN verify
+        // (§6.1). Ephemeral → the hard cap from creation, an upper bound only —
+        // reporting the flat 30-day window here would overstate an ephemeral
+        // session's lifetime by ~60× (V4-P2b, §399 §A).
+        expiresAt: new Date(sessions.expiresAtFor(session)).toISOString(),
       };
     },
 
@@ -1075,6 +1079,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // when the account has a PIN — that PIN is precisely what makes keeping a
       // browser session acceptable in the OAuth flow. A PIN-less account can
       // therefore never turn its forced-ephemeral OAuth session persistent.
+      // Note: this promotes the caller's OWN current session whatever minted it
+      // (not OAuth-specific) — equivalent to having ticked "stay signed in", so
+      // no privilege is gained beyond that PIN-gated choice.
       if (!user.pinEnabled || !user.pinHash) {
         throw badRequest('A PIN is required to stay signed in.', 'PIN_NOT_ENABLED');
       }

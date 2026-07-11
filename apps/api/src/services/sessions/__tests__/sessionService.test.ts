@@ -364,4 +364,21 @@ describe('sessionService — ephemeral sessions (V4-P2b, §399 §A)', () => {
     expect(isPersistent({ persistent: false })).toBe(false);
     expect(isPersistent({ persistent: true })).toBe(true);
   });
+
+  it('expiresAtFor: persistent → renewedAt + fixed window; ephemeral → the hard cap from creation', () => {
+    const sessions = make();
+    const createdAt = now;
+    const renewedAt = now + 123_000; // a later PIN verify moves the window
+    // Persistent: the fixed window (here 5000s) past the LAST renew.
+    expect(sessions.expiresAtFor({ createdAt, renewedAt, persistent: true })).toBe(
+      renewedAt + 5_000_000,
+    );
+    // A legacy unmarked session is treated as persistent (back-compat).
+    expect(sessions.expiresAtFor({ createdAt, renewedAt })).toBe(renewedAt + 5_000_000);
+    // Ephemeral: the hard cap from CREATION — a stable upper bound, unaffected
+    // by renew or the sliding idle window (never the 30-day window).
+    expect(sessions.expiresAtFor({ createdAt, renewedAt, persistent: false })).toBe(
+      createdAt + 1_000_000,
+    );
+  });
 });

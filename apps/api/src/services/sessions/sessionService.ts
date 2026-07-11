@@ -50,6 +50,15 @@ export interface SessionService {
   /** The fixed 30-day window length in seconds (config.cookie.maxAgeMs / 1000). */
   readonly ttlSeconds: number;
   /**
+   * Absolute expiry (ms epoch) for display (§6.11 Security). Persistent → the
+   * fixed 30-day window from the last renew (`renewedAt` + `ttlSeconds`).
+   * Ephemeral → the hard cap from creation (`createdAt` + `ephemeralCapMs`): a
+   * stable upper bound the session can never outlive, since the sliding idle
+   * window only ever expires it sooner. Never overstates — unlike a flat
+   * 30-day claim on an ephemeral session (V4-P2b, §399 §A).
+   */
+  expiresAtFor(data: Pick<SessionData, 'createdAt' | 'renewedAt' | 'persistent'>): number;
+  /**
    * Mint a session. `persistent` (default true) picks the TTL model: a
    * persistent session gets the fixed 30-day window; an ephemeral one gets a
    * sliding idle window hard-capped from now (V4-P2b, §399 §A).
@@ -164,6 +173,14 @@ export function createSessionService(
 
   const service: SessionService = {
     ttlSeconds,
+    expiresAtFor(data) {
+      // Persistent: the fixed window past the last renew — exactly what the key
+      // TTL enforces (`get` never slides it). Ephemeral: the hard cap from
+      // creation, a stable upper bound (idleness / browser-close end it sooner).
+      return isPersistent(data)
+        ? data.renewedAt + ttlSeconds * 1000
+        : data.createdAt + ephemeralCapMs;
+    },
     async create(userId, persistent = true) {
       const sessionId = randomBytes(32).toString('base64url');
       const now = clock();

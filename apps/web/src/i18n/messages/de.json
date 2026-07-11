@@ -286,7 +286,8 @@
         "loadError": {
           "title": "Deine Sitzung konnte nicht geladen werden"
         },
-        "info": "Angemeldet seit {{signedInAt}} — läuft nach 30 Tagen Inaktivität ab ({{expiresAt}})."
+        "info": "Angemeldet seit {{signedInAt}} — läuft nach 30 Tagen Inaktivität ab ({{expiresAt}}).",
+        "infoEphemeral": "Angemeldet seit {{signedInAt}} — nur dieser Browser; wird beim Schließen abgemeldet, spätestens aber um {{expiresAt}}."
       },
       "sessions": {
         "title": "Aktive Sitzungen",

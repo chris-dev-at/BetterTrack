@@ -58,6 +58,7 @@ import { SecuritySettingsPage } from './SecuritySettingsPage';
 const SESSION: SessionInfoResponse = {
   signedInAt: '2026-06-01T08:00:00.000Z',
   renewedAt: '2026-07-01T08:00:00.000Z',
+  persistent: true,
   expiresAt: '2026-07-31T08:00:00.000Z',
 };
 
@@ -139,6 +140,16 @@ describe('SecuritySettingsPage', () => {
 
     expect(await screen.findByText(/signed in since/i)).toBeInTheDocument();
     expect(screen.getByText(/expires after 30 days of inactivity/i)).toBeInTheDocument();
+  });
+
+  test('an ephemeral session reports its real lifetime, not "30 days" (V4-P2b, §399 §A)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getSession).mockResolvedValue({ ...SESSION, persistent: false });
+    renderPage();
+
+    // The browser-only copy, never the persistent 30-day claim.
+    expect(await screen.findByText(/signs out when you close it/i)).toBeInTheDocument();
+    expect(screen.queryByText(/expires after 30 days of inactivity/i)).not.toBeInTheDocument();
   });
 
   test('lists active sessions with device labels and a current-device marker (V3-P11a)', async () => {

@@ -136,8 +136,16 @@ export function LoginPage() {
       <OAuthStaySignedInStep
         onContinue={async (stay) => {
           // Opting in promotes the just-minted ephemeral session to persistent
-          // (PIN-gated server-side); either way we then open the app (V4-P2b).
-          if (stay) await persistSession();
+          // (PIN-gated server-side). A promotion failure must NOT strand the
+          // OAuth authorize flow — the (ephemeral) session is already live, so
+          // we fall through and open the app either way (V4-P2b).
+          if (stay) {
+            try {
+              await persistSession();
+            } catch {
+              // Non-fatal: proceed as an ephemeral session rather than block.
+            }
+          }
           adoptUser(persistChoice);
           navigate(from, { replace: true });
         }}
@@ -380,8 +388,9 @@ function OAuthStaySignedInStep({ onContinue }: { onContinue: (stay: boolean) => 
     try {
       await onContinue(stay);
     } catch {
-      // Promotion failed — surface it and let them retry; the (ephemeral)
-      // session is live regardless.
+      // Defensive: persist failures are swallowed by the caller (non-fatal), so
+      // this only fires on an unexpected error while landing — surface it and
+      // let them retry; the (ephemeral) session is live regardless.
       setError(t('common.genericError'));
       setSubmitting(false);
     }

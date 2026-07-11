@@ -249,3 +249,26 @@ test('opting into "stay signed in" on the OAuth persist step promotes the sessio
   await waitFor(() => expect(api.persistSession).toHaveBeenCalledTimes(1));
   expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
 });
+
+test('a persist failure on the OAuth step does not strand the flow — it proceeds to consent (V4-P2b)', async () => {
+  vi.mocked(api.login).mockResolvedValue({ ...user, pinEnabled: true });
+  // Promotion rejects — the session is live (ephemeral) regardless, so the
+  // authorize flow must fall through to consent rather than block on the step.
+  vi.mocked(api.persistSession).mockRejectedValue(new ApiError(500, 'INTERNAL', 'nope'));
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  const stay = await screen.findByLabelText(/stay signed in on this browser/i);
+  await u.click(stay);
+  await u.click(screen.getByRole('button', { name: 'Continue' }));
+
+  await waitFor(() => expect(api.persistSession).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+});

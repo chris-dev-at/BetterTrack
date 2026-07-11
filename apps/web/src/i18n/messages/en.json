@@ -286,7 +286,8 @@
         "loadError": {
           "title": "Couldn't load your session"
         },
-        "info": "Signed in since {{signedInAt}} — expires after 30 days of inactivity ({{expiresAt}})."
+        "info": "Signed in since {{signedInAt}} — expires after 30 days of inactivity ({{expiresAt}}).",
+        "infoEphemeral": "Signed in since {{signedInAt}} — this browser only; signs out when you close it, or by {{expiresAt}} at the latest."
       },
       "sessions": {
         "title": "Active sessions",

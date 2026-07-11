@@ -341,16 +341,29 @@ export type TwoFactorEmailCodeRequest = z.infer<typeof twoFactorEmailCodeRequest
 
 /**
  * `GET /auth/session` — the caller's own current session timestamps
- * (PROJECTPLAN.md §6.11 Security). `expiresAt` is `renewedAt` plus the fixed
- * 30-day window (§6.1).
+ * (PROJECTPLAN.md §6.11 Security). `expiresAt` depends on persistence: a
+ * persistent ("stay signed in") session lapses at `renewedAt` + the fixed
+ * 30-day window (§6.1); an ephemeral one at its hard server cap from creation —
+ * an upper bound the session can never outlive (V4-P2b, §399 §A).
  */
 export const sessionInfoResponseSchema = z
   .object({
     /** When the session was created — i.e. the last login. */
     signedInAt: z.string().datetime(),
-    /** Last time the 30-day window was reset (login / PIN verify). */
+    /** Last time the window was reset (login / PIN verify). */
     renewedAt: z.string().datetime(),
-    /** When the session lapses: `renewedAt` + the 30-day window. */
+    /**
+     * True = a persistent session ("stay signed in": the fixed 30-day window).
+     * False = an ephemeral session (browser-session cookie + bounded server
+     * TTL) from an unticked login or a PIN-less OAuth login (V4-P2b, §399 §A).
+     * Lets the surface report the real lifetime instead of assuming 30 days.
+     */
+    persistent: z.boolean(),
+    /**
+     * When the session lapses. Persistent → `renewedAt` + the 30-day window.
+     * Ephemeral → the hard server cap from creation: an upper bound only (the
+     * sliding idle window and closing the browser both end it sooner).
+     */
     expiresAt: z.string().datetime(),
   })
   .strict();
