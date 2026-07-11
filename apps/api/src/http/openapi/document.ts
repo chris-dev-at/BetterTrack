@@ -1620,12 +1620,13 @@ const endpoints: EndpointDef[] = [
     response: R.OkResponse,
   },
 
-  // Notifications (§6.10)
+  // Notifications (§6.10, #437)
   {
     method: 'get',
     path: '/notifications',
     tag: 'Notifications',
-    summary: 'Newest-first notifications with unread count.',
+    summary:
+      'Newest-first notifications with unread count. `view` filters on archive state (#437): active (default — unarchived), archived, or all; unreadCount always counts unread ACTIVE rows.',
     query: contracts.notificationListQuerySchema,
     status: 200,
     response: R.NotificationListResponse,
@@ -1638,6 +1639,50 @@ const endpoints: EndpointDef[] = [
     body: R.MarkReadRequest,
     status: 200,
     response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/notifications/{id}/archive',
+    tag: 'Notifications',
+    summary:
+      'Archive one notification (also marks it read); it leaves the default/active view. Foreign or unknown id → 404 (#437).',
+    params: contracts.notificationIdParamSchema,
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/notifications/{id}/unarchive',
+    tag: 'Notifications',
+    summary: 'Un-archive one notification (back to active; stays read). Unknown id → 404 (#437).',
+    params: contracts.notificationIdParamSchema,
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/notifications/archive-all-read',
+    tag: 'Notifications',
+    summary: 'Archive every read, still-active notification of the caller (idempotent, #437).',
+    status: 200,
+    response: R.OkResponse,
+  },
+  {
+    method: 'delete',
+    path: '/notifications/{id}',
+    tag: 'Notifications',
+    summary: 'Hard-delete one notification; a repeated or foreign id → 404 (#437).',
+    params: contracts.notificationIdParamSchema,
+    status: 204,
+  },
+  {
+    method: 'delete',
+    path: '/notifications',
+    tag: 'Notifications',
+    summary:
+      "Bulk hard delete (#437): scope=archived removes exactly the caller's archived rows, scope=all empties the caller's notifications. scope is required.",
+    query: contracts.notificationBulkDeleteQuerySchema,
+    status: 204,
   },
   {
     method: 'post',

@@ -228,6 +228,12 @@ export interface BuildContextDeps {
    * dispatcher delivery under test (BullMQ cannot run on ioredis-mock).
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
+  /**
+   * Test seam (#437): the notification service's clock, so the auto-archive
+   * sweep threshold is provable under a controlled clock. Defaults to the
+   * real time.
+   */
+  notificationNow?: () => Date;
 }
 
 /** Composition root: repositories → services → context. */
@@ -547,12 +553,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
-  // Notification read/mark-read + push registrations (§6.10, #368): user-scoped
-  // over the dispatcher's rows and the device-token/web-push stores.
+  // Notification read/mark-read, archive/delete + push registrations (§6.10,
+  // #368, #437): user-scoped over the dispatcher's rows and the
+  // device-token/web-push stores.
   const notifications = createNotificationService({
     repo: notificationRepo,
     devices: deviceTokenRepo,
     webPushSubs: pushSubscriptionRepo,
+    now: deps.notificationNow,
   });
   // The per-type × channel matrix + global mute (§6.10, §6.11, #368): the
   // settings rows the dispatcher reads, plus deployment channel availability.

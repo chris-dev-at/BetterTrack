@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 import type { MarkReadRequest, Notification } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
@@ -105,9 +106,12 @@ function NotificationRow({
 /**
  * Notification bell (PROJECTPLAN.md §6.10, §7.4) — unread badge, dropdown list,
  * mark-read/mark-all. V1 freshness is TanStack Query polling + refocus-refetch
- * (no sockets); the full list lives in Settings → Notifications (P7).
+ * (no sockets). Shows ACTIVE rows only (#437 — the server's default view, so
+ * archived rows never reach the dropdown); the full Active/Archived/All list
+ * lives behind the "All notifications" footer link in Settings → Notifications.
  */
 export function NotificationBell() {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
@@ -244,6 +248,16 @@ export function NotificationBell() {
               ))}
             </ul>
           )}
+
+          <div className="border-t border-neutral-800 px-3 py-2 text-center">
+            <Link
+              to="/settings/notifications"
+              onClick={() => setOpen(false)}
+              className="text-xs font-medium text-sky-400 hover:text-sky-300"
+            >
+              {t('settings.notifications.allTitle')}
+            </Link>
+          </div>
         </div>
       ) : null}
     </div>

@@ -409,6 +409,10 @@ export const notifications = pgTable(
     body: text('body').notNull(),
     payload: jsonb('payload'),
     readAt: timestamp('read_at', { withTimezone: true }),
+    // #437: set = archived (explicitly by the user, or by the auto-archive
+    // sweep once the read is older than the service threshold); NULL = active.
+    // The default list view and the unread badge only see active rows.
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
     // #368: a hidden row is invisible to the inbox/unread queries but still
     // carries its payload.eventKey — it is the DURABLE dedupe marker that makes
     // the at-least-once notifications.dispatch job idempotent even when the

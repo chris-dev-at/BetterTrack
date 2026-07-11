@@ -5,6 +5,7 @@ import { Outlet } from 'react-router-dom';
 import {
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_SETTING_CHANNELS,
+  NOTIFICATION_VIEWS,
   type MarkReadRequest,
   type Notification,
   type NotificationCategoryKey,
@@ -12,12 +13,20 @@ import {
   type NotificationSettingsResponse,
   type NotificationType,
   type NotificationTypeRouting,
+  type NotificationView,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
+import {
+  archiveNotification,
+  deleteNotification,
+  deleteNotifications,
+  listNotifications,
+  markNotificationsRead,
+  unarchiveNotification,
+} from '../../lib/notificationsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
 import {
   disableWebPush,
@@ -27,7 +36,8 @@ import {
   type WebPushState,
 } from '../../lib/webPushClient';
 import { ComingSoon, EmptyState, Skeleton } from '../../ui';
-import { Alert, cx } from '../components/ui';
+import { Dialog } from '../components/Dialog';
+import { Alert, Button, cx } from '../components/ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
 export { AccountSettingsPage } from './AccountSettingsPage';
@@ -420,24 +430,36 @@ function isMarkReadPendingFor(
   return vars !== undefined && 'ids' in vars && vars.ids.includes(id);
 }
 
+/** A per-row archive/unarchive/delete action (#437). */
+interface RowAction {
+  kind: 'archive' | 'unarchive' | 'delete';
+  id: string;
+}
+
 function NotificationListRow({
   notification,
   busy,
   onRead,
+  onAction,
 }: {
   notification: Notification;
   busy: boolean;
   onRead: () => void;
+  onAction: (kind: RowAction['kind']) => void;
 }) {
+  const t = useT();
   const unread = notification.readAt === null;
+  const archived = notification.archivedAt !== null;
+  const actionClass =
+    'rounded px-2 py-1 text-xs font-medium text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200 disabled:cursor-not-allowed disabled:opacity-50';
   return (
-    <li>
+    <li className="flex items-start gap-1 px-2 py-1">
       <button
         type="button"
         onClick={onRead}
         disabled={!unread || busy}
         className={cx(
-          'flex w-full flex-col gap-0.5 px-4 py-3 text-left transition-colors',
+          'flex min-w-0 flex-1 flex-col gap-0.5 rounded px-2 py-2 text-left transition-colors',
           unread ? 'bg-neutral-800/60 hover:bg-neutral-800' : 'disabled:cursor-default',
         )}
       >
@@ -459,58 +481,216 @@ function NotificationListRow({
           {formatRelativeTime(notification.createdAt)}
         </span>
       </button>
+      <div className="flex flex-none items-center gap-1 pt-2">
+        {archived ? (
+          <button
+            type="button"
+            onClick={() => onAction('unarchive')}
+            disabled={busy}
+            aria-label={t('settings.notifications.unarchiveAria', { title: notification.title })}
+            className={actionClass}
+          >
+            {t('settings.notifications.unarchive')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onAction('archive')}
+            disabled={busy}
+            aria-label={t('settings.notifications.archiveAria', { title: notification.title })}
+            className={actionClass}
+          >
+            {t('settings.notifications.archive')}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onAction('delete')}
+          disabled={busy}
+          aria-label={t('settings.notifications.deleteAria', { title: notification.title })}
+          className={cx(actionClass, 'text-red-400 hover:bg-red-950/60 hover:text-red-300')}
+        >
+          {t('common.delete')}
+        </button>
+      </div>
     </li>
   );
 }
 
 /**
- * The full, paged notification list (PROJECTPLAN.md §6.10, §6.11) — newest
- * first, cursor-paginated "load more", per-item mark-read and mark-all.
- * Invalidates the `notifications` query family on mark-read so the bell's
- * unread badge (`apps/web/src/user/components/NotificationBell.tsx`) updates
- * alongside this list.
+ * The destructive bulk-delete confirmations (#437): "all archived" and
+ * "absolutely everything", each behind an explicit dialog — no silent wipes.
+ */
+function BulkDeleteDialog({
+  scope,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  scope: 'archived' | 'all';
+  busy: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const base = scope === 'archived' ? 'confirmDeleteArchived' : 'confirmDeleteAll';
+  return (
+    <Dialog
+      title={t(`settings.notifications.${base}.title`)}
+      onClose={onClose}
+      widthClassName="max-w-md"
+    >
+      <div className="flex flex-col gap-4">
+        <Alert tone="error">{t(`settings.notifications.${base}.description`)}</Alert>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
+            {t('common.cancel')}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            className="text-red-300 ring-red-900 hover:bg-red-950"
+            onClick={onConfirm}
+            disabled={busy}
+          >
+            {busy
+              ? t('settings.notifications.deleting')
+              : t('settings.notifications.confirmDeleteAction')}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * The full, paged "All notifications" list (PROJECTPLAN.md §6.10, §6.11; #437)
+ * — newest first, cursor-paginated "load more", with an Active | Archived | All
+ * view filter, per-item mark-read / archive / unarchive / delete, mark-all, and
+ * the two bulk deletions ("all archived", "everything") each behind an explicit
+ * destructive confirm dialog. Every mutation invalidates the `notifications`
+ * query family so the bell's badge and dropdown
+ * (`apps/web/src/user/components/NotificationBell.tsx`) update alongside.
  */
 function NotificationList() {
   const t = useT();
   const queryClient = useQueryClient();
+  const [view, setView] = useState<NotificationView>('active');
+  const [confirmScope, setConfirmScope] = useState<'archived' | 'all' | null>(null);
+
   const query = useInfiniteQuery({
-    queryKey: NOTIFICATIONS_LIST_KEY,
+    queryKey: [...NOTIFICATIONS_LIST_KEY, view],
     queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) =>
-      listNotifications({ cursor: pageParam, limit: NOTIFICATIONS_LIST_LIMIT }, signal),
+      listNotifications({ cursor: pageParam, limit: NOTIFICATIONS_LIST_LIMIT, view }, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     refetchInterval: NOTIFICATIONS_POLL_INTERVAL_MS,
     refetchOnWindowFocus: true,
   });
 
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['notifications'] });
+
   const markReadMutation = useMutation({
     mutationFn: (body: MarkReadRequest) => markNotificationsRead(body),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['notifications'] });
+      void invalidate();
+    },
+  });
+
+  // One mutation for the per-row actions so "busy" and errors stay per-row simple.
+  const rowMutation = useMutation({
+    mutationFn: (action: RowAction) =>
+      action.kind === 'archive'
+        ? archiveNotification(action.id)
+        : action.kind === 'unarchive'
+          ? unarchiveNotification(action.id)
+          : deleteNotification(action.id),
+    onSuccess: () => {
+      void invalidate();
+    },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (scope: 'archived' | 'all') => deleteNotifications(scope),
+    onSuccess: () => {
+      setConfirmScope(null);
+      void invalidate();
     },
   });
 
   const items = query.data?.pages.flatMap((page) => page.items) ?? [];
   const unreadCount = query.data?.pages[0]?.unreadCount ?? 0;
+  const rowBusy = (id: string) =>
+    isMarkReadPendingFor(markReadMutation, id) ||
+    (rowMutation.isPending && rowMutation.variables?.id === id);
+
+  const viewLabels: Record<NotificationView, string> = {
+    active: t('settings.notifications.views.active'),
+    archived: t('settings.notifications.views.archived'),
+    all: t('settings.notifications.views.all'),
+  };
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-neutral-300">
           {t('settings.notifications.allTitle')}
         </h3>
-        <button
-          type="button"
-          onClick={() => markReadMutation.mutate({ all: true })}
-          disabled={unreadCount === 0 || markReadMutation.isPending}
-          className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
-        >
-          {t('settings.notifications.markAllRead')}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => markReadMutation.mutate({ all: true })}
+            disabled={unreadCount === 0 || markReadMutation.isPending}
+            className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+          >
+            {t('settings.notifications.markAllRead')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmScope('archived')}
+            className="text-xs font-medium text-red-400 hover:text-red-300"
+          >
+            {t('settings.notifications.deleteArchived')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirmScope('all')}
+            className="text-xs font-medium text-red-400 hover:text-red-300"
+          >
+            {t('settings.notifications.deleteAll')}
+          </button>
+        </div>
+      </div>
+
+      <div
+        role="tablist"
+        aria-label={t('settings.notifications.viewFilterAria')}
+        className="flex w-fit items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900 p-1"
+      >
+        {NOTIFICATION_VIEWS.map((candidate) => (
+          <button
+            key={candidate}
+            type="button"
+            role="tab"
+            aria-selected={view === candidate}
+            onClick={() => setView(candidate)}
+            className={cx(
+              'rounded px-3 py-1 text-xs font-medium transition-colors',
+              view === candidate
+                ? 'bg-neutral-800 text-neutral-100'
+                : 'text-neutral-400 hover:text-neutral-200',
+            )}
+          >
+            {viewLabels[candidate]}
+          </button>
+        ))}
       </div>
 
       {markReadMutation.isError ? (
         <Alert tone="error">{t('settings.notifications.markReadError')}</Alert>
+      ) : null}
+      {rowMutation.isError || bulkDeleteMutation.isError ? (
+        <Alert tone="error">{t('settings.notifications.actionError')}</Alert>
       ) : null}
 
       {query.isPending ? (
@@ -525,11 +705,15 @@ function NotificationList() {
           description={t('settings.retryHint')}
         />
       ) : items.length === 0 ? (
-        <EmptyState
-          icon="🔔"
-          title={t('settings.notifications.empty.title')}
-          description={t('settings.notifications.empty.description')}
-        />
+        view === 'archived' ? (
+          <EmptyState icon="🗂️" title={t('settings.notifications.emptyArchived.title')} />
+        ) : (
+          <EmptyState
+            icon="🔔"
+            title={t('settings.notifications.empty.title')}
+            description={t('settings.notifications.empty.description')}
+          />
+        )
       ) : (
         <>
           {query.isError ? (
@@ -540,8 +724,9 @@ function NotificationList() {
               <NotificationListRow
                 key={notification.id}
                 notification={notification}
-                busy={isMarkReadPendingFor(markReadMutation, notification.id)}
+                busy={rowBusy(notification.id)}
                 onRead={() => markReadMutation.mutate({ ids: [notification.id] })}
+                onAction={(kind) => rowMutation.mutate({ kind, id: notification.id })}
               />
             ))}
           </ul>
@@ -559,6 +744,15 @@ function NotificationList() {
           ) : null}
         </>
       )}
+
+      {confirmScope !== null ? (
+        <BulkDeleteDialog
+          scope={confirmScope}
+          busy={bulkDeleteMutation.isPending}
+          onConfirm={() => bulkDeleteMutation.mutate(confirmScope)}
+          onClose={() => setConfirmScope(null)}
+        />
+      ) : null}
     </div>
   );
 }
