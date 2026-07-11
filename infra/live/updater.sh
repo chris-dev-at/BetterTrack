@@ -95,15 +95,29 @@ while true; do
         # GET /api/v1/version and the admin-login footer report exactly what is
         # live. Both assignments always succeed (|| echo unknown / date), so the
         # && chain's success semantics are unchanged.
+        #
+        # Deploy the WHOLE app stack: every compose service that builds app code
+        # (web, api, worker, landing) must be in BOTH the `build` and the final
+        # `up -d` list. Each buildable service owns its own image tag
+        # (<project>-<service>), so building web+api alone leaves the worker's
+        # image untouched, and `up -d` never recreates a service it doesn't
+        # list. Historically only web+api deployed: the worker container stayed
+        # frozen on its first-bring-up image across every auto-deploy — on
+        # 2026-07-11 that stranded a pre-notifications-v2 worker publishing
+        # alert.triggered onto the retired ephemeral bus nobody consumes, so
+        # triggered alerts produced no inbox row and no push (P1). The worker
+        # build is near-free: same Dockerfile as api, so its layers come out of
+        # the build cache. Guarded by
+        # apps/api/src/__tests__/liveDeployTopology.test.ts.
         if git -C "$APP" reset --hard "$REMOTE" >>"$LOG" 2>&1 &&
           GIT_SHA="$(git -C "$APP" rev-parse HEAD 2>/dev/null || echo unknown)" &&
           GIT_BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" &&
           export GIT_SHA GIT_BUILD_TIME &&
-          dc build web api >>"$LOG" 2>&1 &&
+          dc build web api worker landing >>"$LOG" 2>&1 &&
           dc up -d db redis >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/migrate.js >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/seed.js >>"$LOG" 2>&1 &&
-          dc up -d db redis api web >>"$LOG" 2>&1; then
+          dc up -d db redis api web worker landing >>"$LOG" 2>&1; then
           printf '%s\n' "$REMOTE" >"$DEPLOYED_SHA"
           log "update complete -> ${REMOTE}"
         else
