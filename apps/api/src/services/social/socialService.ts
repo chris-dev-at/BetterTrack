@@ -27,9 +27,9 @@ import type {
 } from '../../data/repositories/friendshipRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import { badRequest, notFound } from '../../errors';
-import type { EventBus } from '../../events';
 import type { Logger } from '../../logger';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { WorkboardService } from '../workboard/workboardService';
 import type { AudienceMutationResult, AudienceService } from './audienceService';
@@ -57,7 +57,8 @@ export interface SocialServiceDeps {
   conglomerate: ConglomerateService;
   /** Owner-scoped source of watchlist items + named-list metadata. */
   workboard: WorkboardService;
-  events: EventBus;
+  /** The central notification pipeline (#368) — friend.request/accepted enter here. */
+  notify: NotificationCenter;
   logger?: Logger;
 }
 
@@ -159,15 +160,11 @@ function toFriendship(row: FriendRow): Friendship {
 }
 
 export function createSocialService(deps: SocialServiceDeps): SocialService {
-  const { repo, profile, audience, portfolio, conglomerate, workboard, events, logger } = deps;
+  const { repo, profile, audience, portfolio, conglomerate, workboard, notify } = deps;
 
-  async function emit(event: Parameters<EventBus['publish']>[0]): Promise<void> {
-    try {
-      await events.publish(event);
-    } catch (err) {
-      logger?.error({ err, type: event.type }, 'social event publish failed');
-    }
-  }
+  // Friend events enter the ONE durable notification pipeline (#368) — the
+  // center is fire-and-forget: a queue failure logs and never fails the action.
+  const emit = notify.emit.bind(notify);
 
   // Owner-scoped read-view builders, reused by both the friend endpoints and the
   // public-link resolver so the two never diverge (authorization differs; the

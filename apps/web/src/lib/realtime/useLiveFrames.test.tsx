@@ -30,6 +30,8 @@ function makeContext(overrides: Partial<RealtimeContextValue> = {}) {
     joinRoom: () => () => {},
     watchLive: vi.fn(async () => [] as RealtimeLiveFrame[]),
     unwatchLive: vi.fn(),
+    presenceEnter: () => {},
+    presenceLeave: () => {},
     ...overrides,
   };
   const push = (payload: unknown) => {

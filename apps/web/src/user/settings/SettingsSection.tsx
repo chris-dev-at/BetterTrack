@@ -1,19 +1,31 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import {
-  NOTIFICATION_TYPES,
+  NOTIFICATION_CATEGORIES,
+  NOTIFICATION_SETTING_CHANNELS,
   type MarkReadRequest,
   type Notification,
+  type NotificationCategoryKey,
+  type NotificationSettingChannel,
   type NotificationSettingsResponse,
   type NotificationType,
   type NotificationTypeRouting,
+  type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
+import {
+  disableWebPush,
+  enableWebPush,
+  isWebPushSupported,
+  webPushState,
+  type WebPushState,
+} from '../../lib/webPushClient';
 import { ComingSoon, EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from '../components/ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
@@ -58,7 +70,7 @@ export function SettingsLayout() {
 
 const NOTIFICATION_SETTINGS_KEY = ['settings', 'notifications'] as const;
 
-/** Human labels + descriptions for each routable notification type (§6.10). */
+/** Human labels + descriptions for each routable notification type (§6.10, #368). */
 function notificationTypeMeta(
   t: TranslateFn,
 ): Record<NotificationType, { label: string; description: string }> {
@@ -74,6 +86,18 @@ function notificationTypeMeta(
     'portfolio.shared': {
       label: t('settings.notifications.types.portfolioShared.label'),
       description: t('settings.notifications.types.portfolioShared.description'),
+    },
+    'watchlist.shared': {
+      label: t('settings.notifications.types.watchlistShared.label'),
+      description: t('settings.notifications.types.watchlistShared.description'),
+    },
+    'conglomerate.shared': {
+      label: t('settings.notifications.types.conglomerateShared.label'),
+      description: t('settings.notifications.types.conglomerateShared.description'),
+    },
+    'friend.activity': {
+      label: t('settings.notifications.types.friendActivity.label'),
+      description: t('settings.notifications.types.friendActivity.description'),
     },
     'account.invite': {
       label: t('settings.notifications.types.accountInvite.label'),
@@ -94,67 +118,277 @@ function notificationTypeMeta(
   };
 }
 
-/** The four routing choices a type offers — the two channels collapsed to a mode. */
-type RoutingMode = 'both' | 'inapp' | 'email' | 'muted';
-
-function routingModeOptions(t: TranslateFn): readonly { value: RoutingMode; label: string }[] {
-  return [
-    { value: 'both', label: t('settings.notifications.routing.both') },
-    { value: 'inapp', label: t('settings.notifications.routing.inapp') },
-    { value: 'email', label: t('settings.notifications.routing.email') },
-    { value: 'muted', label: t('settings.notifications.routing.muted') },
-  ];
+function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, string> {
+  return {
+    inapp: t('settings.notifications.channels.inapp'),
+    email: t('settings.notifications.channels.email'),
+    push: t('settings.notifications.channels.push'),
+    webpush: t('settings.notifications.channels.webpush'),
+  };
 }
 
-function routingToMode(routing: NotificationTypeRouting): RoutingMode {
-  if (routing.inapp && routing.email) return 'both';
-  if (routing.inapp) return 'inapp';
-  if (routing.email) return 'email';
-  return 'muted';
+function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string> {
+  return {
+    social: t('settings.notifications.categories.social'),
+    sharing: t('settings.notifications.categories.sharing'),
+    chat: t('settings.notifications.categories.chat'),
+    alerts: t('settings.notifications.categories.alerts'),
+    account: t('settings.notifications.categories.account'),
+  };
 }
 
-function modeToRouting(mode: RoutingMode): NotificationTypeRouting {
-  return { inapp: mode === 'both' || mode === 'inapp', email: mode === 'both' || mode === 'email' };
+/**
+ * Cells the grid renders but never lets the user toggle (#368):
+ *  - `account.invite` routes to people who have no account yet, so per-user
+ *    routing cannot apply — the whole row is informational;
+ *  - `account.temp_password`'s EMAIL is transactional (it carries the
+ *    credential) and always sent directly at the source.
+ */
+function cellLocked(type: NotificationType, channel: NotificationSettingChannel): boolean {
+  if (type === 'account.invite') return true;
+  return type === 'account.temp_password' && channel === 'email';
 }
 
-/** One notification type's row in the settings matrix: label + a mode selector. */
-function NotificationMatrixRow({
-  label,
-  description,
-  mode,
-  busy,
-  onChange,
+/** The toggle in one (type × channel) grid cell. */
+function MatrixCell({
+  type,
+  channel,
+  checked,
+  disabled,
+  ariaLabel,
+  onToggle,
 }: {
-  label: string;
-  description: string;
-  mode: RoutingMode;
-  busy?: boolean;
-  onChange: (next: RoutingMode) => void;
+  type: NotificationType;
+  channel: NotificationSettingChannel;
+  checked: boolean;
+  disabled: boolean;
+  ariaLabel: string;
+  onToggle: (next: boolean) => void;
+}) {
+  const locked = cellLocked(type, channel);
+  return (
+    <input
+      type="checkbox"
+      role="switch"
+      aria-label={ariaLabel}
+      checked={locked ? channel === 'email' : checked}
+      disabled={disabled || locked}
+      onChange={(event) => onToggle(event.target.checked)}
+      className={cx(
+        'h-4 w-4 accent-sky-500',
+        (disabled || locked) && 'cursor-not-allowed opacity-50',
+      )}
+    />
+  );
+}
+
+/**
+ * The redesigned per-type × per-channel grid (#368): rows are types grouped by
+ * category, columns are the deployment's LIVE channels as toggles, each
+ * category header carries a master toggle, and a global mute sits above.
+ */
+function NotificationMatrixGrid({
+  settings,
+  busy,
+  onUpdate,
+}: {
+  settings: NotificationSettingsResponse;
+  busy: boolean;
+  onUpdate: (patch: UpdateNotificationSettingsRequest) => void;
 }) {
   const t = useT();
+  const typeMeta = notificationTypeMeta(t);
+  const chLabels = channelLabels(t);
+  const catLabels = categoryLabels(t);
+  // Only columns this deployment can actually deliver (#350/#351 gating).
+  const channels = NOTIFICATION_SETTING_CHANNELS.filter((c) => settings.channels[c]);
+  const gridDisabled = busy || settings.muted;
+
+  const rowRouting = (type: NotificationType): NotificationTypeRouting => settings.matrix[type];
+
+  function toggleCell(type: NotificationType, channel: NotificationSettingChannel, next: boolean) {
+    onUpdate({ matrix: { [type]: { ...rowRouting(type), [channel]: next } } });
+  }
+
+  /** Master toggle: any live cell on (ignoring locked ones) counts as "on". */
+  function categoryEnabled(types: readonly NotificationType[]): boolean {
+    return types.some((type) =>
+      channels.some((channel) => !cellLocked(type, channel) && rowRouting(type)[channel]),
+    );
+  }
+
+  function toggleCategory(types: readonly NotificationType[], next: boolean) {
+    const matrix: Partial<Record<NotificationType, NotificationTypeRouting>> = {};
+    for (const type of types) {
+      if (type === 'account.invite') continue;
+      const routing = { ...rowRouting(type) };
+      for (const channel of channels) {
+        if (!cellLocked(type, channel)) routing[channel] = next;
+      }
+      matrix[type] = routing;
+    }
+    if (Object.keys(matrix).length > 0) onUpdate({ matrix });
+  }
+
   return (
-    <div className="flex items-start justify-between gap-4 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium text-neutral-100">{label}</span>
-        <span className="text-xs text-neutral-500">{description}</span>
-      </div>
-      <select
-        aria-label={label}
-        value={mode}
-        disabled={busy}
-        onChange={(event) => onChange(event.target.value as RoutingMode)}
-        className={cx(
-          'mt-0.5 shrink-0 rounded-md border border-neutral-700 bg-neutral-800 px-2 py-1 text-sm text-neutral-100',
-          'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-          'disabled:cursor-not-allowed disabled:opacity-60',
-        )}
-      >
-        {routingModeOptions(t).map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
+    <div
+      className={cx(
+        'overflow-x-auto rounded-md border border-neutral-800 bg-neutral-900',
+        settings.muted && 'opacity-60',
+      )}
+    >
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500">
+            <th scope="col" className="px-4 py-2 text-left font-medium">
+              {t('settings.notifications.title')}
+            </th>
+            {channels.map((channel) => (
+              <th scope="col" key={channel} className="px-3 py-2 text-center font-medium">
+                {chLabels[channel]}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        {NOTIFICATION_CATEGORIES.map((category) => (
+          <tbody key={category.key} className="border-b border-neutral-800 last:border-b-0">
+            <tr className="bg-neutral-950/40">
+              <th scope="rowgroup" colSpan={channels.length + 1} className="px-4 py-2 text-left">
+                <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label={t('settings.notifications.grid.categoryToggleAria', {
+                      category: catLabels[category.key],
+                    })}
+                    checked={categoryEnabled(category.types)}
+                    disabled={gridDisabled}
+                    onChange={(event) => toggleCategory(category.types, event.target.checked)}
+                    className={cx(
+                      'h-4 w-4 accent-sky-500',
+                      gridDisabled && 'cursor-not-allowed opacity-50',
+                    )}
+                  />
+                  {catLabels[category.key]}
+                </label>
+              </th>
+            </tr>
+            {category.types.map((type) => (
+              <tr key={type} className="border-t border-neutral-800/60">
+                <td className="px-4 py-2.5">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="font-medium text-neutral-100">{typeMeta[type].label}</span>
+                    <span className="text-xs text-neutral-500">
+                      {type === 'account.invite'
+                        ? t('settings.notifications.grid.inviteHint')
+                        : type === 'account.temp_password'
+                          ? t('settings.notifications.grid.tempPasswordEmailHint')
+                          : typeMeta[type].description}
+                    </span>
+                  </div>
+                </td>
+                {channels.map((channel) => (
+                  <td key={channel} className="px-3 py-2.5 text-center align-middle">
+                    <MatrixCell
+                      type={type}
+                      channel={channel}
+                      checked={rowRouting(type)[channel]}
+                      disabled={gridDisabled}
+                      ariaLabel={t('settings.notifications.grid.cellAria', {
+                        type: typeMeta[type].label,
+                        channel: chLabels[channel],
+                      })}
+                      onToggle={(next) => toggleCell(type, channel, next)}
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
         ))}
-      </select>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Per-browser web-push opt-in (#368/#350): rendered only when the deployment
+ * has VAPID configured. The permission prompt is triggered exclusively by the
+ * enable button here — never on page load.
+ */
+function WebPushOptIn({ publicKey }: { publicKey: string }) {
+  const t = useT();
+  const [state, setState] = useState<WebPushState | 'unknown'>('unknown');
+  const [error, setError] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void webPushState().then((s) => {
+      if (!cancelled) setState(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function toggle(enable: boolean) {
+    setError(false);
+    setPending(true);
+    try {
+      setState(enable ? await enableWebPush(publicKey) : await disableWebPush());
+    } catch {
+      setError(true);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const supported = isWebPushSupported();
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium text-neutral-100">
+            {t('settings.notifications.webPush.title')}
+          </span>
+          <span className="text-xs text-neutral-500">
+            {t('settings.notifications.webPush.description')}
+          </span>
+        </div>
+        {!supported ? (
+          <span className="text-xs text-neutral-500">
+            {t('settings.notifications.webPush.unsupported')}
+          </span>
+        ) : state === 'denied' ? (
+          <span className="text-xs text-amber-400">
+            {t('settings.notifications.webPush.denied')}
+          </span>
+        ) : (
+          <button
+            type="button"
+            disabled={pending || state === 'unknown'}
+            onClick={() => toggle(state !== 'enabled')}
+            className={cx(
+              'rounded-md border px-3 py-1.5 text-sm font-medium',
+              state === 'enabled'
+                ? 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'
+                : 'border-sky-500 text-sky-400 hover:bg-sky-500/10',
+              'disabled:cursor-not-allowed disabled:opacity-60',
+            )}
+          >
+            {state === 'enabled'
+              ? t('settings.notifications.webPush.disable')
+              : t('settings.notifications.webPush.enable')}
+          </button>
+        )}
+      </div>
+      {state === 'enabled' ? (
+        <span className="text-xs text-emerald-400">
+          {t('settings.notifications.webPush.enabled')}
+        </span>
+      ) : null}
+      {error ? <Alert tone="error">{t('settings.notifications.webPush.error')}</Alert> : null}
     </div>
   );
 }
@@ -330,10 +564,10 @@ function NotificationList() {
 }
 
 /**
- * Settings → Notifications page (PROJECTPLAN.md §6.10, §6.11). Composes the
- * per-type × channel routing matrix (each notification type → in-app bell /
- * email / both / muted, wired to `GET/PATCH /settings/notifications`) with the
- * full, paged notification list.
+ * Settings → Notifications page (PROJECTPLAN.md §6.10, §6.11; #368). Composes
+ * the global mute, the per-browser web-push opt-in (when the deployment has
+ * VAPID), the compact per-type × per-channel grid, and the full, paged
+ * notification list — all wired to `GET/PATCH /settings/notifications`.
  */
 export function NotificationSettingsPage() {
   const t = useT();
@@ -345,15 +579,11 @@ export function NotificationSettingsPage() {
   });
 
   const mutation = useMutation({
-    mutationFn: (vars: { type: NotificationType; routing: NotificationTypeRouting }) =>
-      updateNotificationSettings({ matrix: { [vars.type]: vars.routing } }),
+    mutationFn: (patch: UpdateNotificationSettingsRequest) => updateNotificationSettings(patch),
     onSuccess: (data: NotificationSettingsResponse) => {
       queryClient.setQueryData(NOTIFICATION_SETTINGS_KEY, data);
     },
   });
-
-  const pendingType = mutation.isPending ? mutation.variables?.type : undefined;
-  const typeMeta = notificationTypeMeta(t);
 
   return (
     <div className="flex flex-col gap-4">
@@ -376,20 +606,41 @@ export function NotificationSettingsPage() {
         />
       ) : (
         <div className="flex flex-col gap-3">
-          {NOTIFICATION_TYPES.map((type) => {
-            const meta = typeMeta[type];
-            return (
-              <NotificationMatrixRow
-                key={type}
-                label={meta.label}
-                description={meta.description}
-                mode={routingToMode(query.data.matrix[type])}
-                busy={pendingType === type}
-                onChange={(mode) => mutation.mutate({ type, routing: modeToRouting(mode) })}
-              />
-            );
-          })}
-          {mutation.isError ? <Alert tone="error">{t('settings.saveError')}</Alert> : null}
+          <label className="flex items-start justify-between gap-4 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium text-neutral-100">
+                {t('settings.notifications.mute.label')}
+              </span>
+              <span className="text-xs text-neutral-500">
+                {t('settings.notifications.mute.description')}
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label={t('settings.notifications.mute.label')}
+              checked={query.data.muted}
+              disabled={mutation.isPending}
+              onChange={(event) => mutation.mutate({ muted: event.target.checked })}
+              className={cx(
+                'mt-0.5 h-4 w-4 accent-sky-500',
+                mutation.isPending && 'cursor-not-allowed opacity-50',
+              )}
+            />
+          </label>
+
+          {query.data.channels.webpush && query.data.webPushPublicKey ? (
+            <WebPushOptIn publicKey={query.data.webPushPublicKey} />
+          ) : null}
+
+          <NotificationMatrixGrid
+            settings={query.data}
+            busy={mutation.isPending}
+            onUpdate={(patch) => mutation.mutate(patch)}
+          />
+          {mutation.isError ? (
+            <Alert tone="error">{t('settings.notifications.grid.saveError')}</Alert>
+          ) : null}
         </div>
       )}
 

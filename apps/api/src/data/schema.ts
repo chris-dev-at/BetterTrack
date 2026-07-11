@@ -82,6 +82,10 @@ export const users = pgTable(
     // can't render. Persisted here so `/auth/me` can seed the runtime and
     // notification emails can render in the recipient's language.
     locale: varchar('locale', { length: 5 }).notNull().default('en'),
+    // Global notification mute (#368): while set, the dispatcher suppresses
+    // EVERY channel for every type — a kill switch over the per-type matrix,
+    // which stays stored untouched underneath.
+    notificationsMuted: boolean('notifications_muted').notNull().default(false),
     // Default friend-sharing visibility applied when the user creates a *new*
     // portfolio (§6.9, §13.2 V2-P9). Only affects the default at creation time;
     // existing portfolios and explicit per-item toggles are untouched. The
@@ -393,25 +397,95 @@ export const alerts = pgTable('alerts', {
 
 // --- Notifications ---------------------------------------------------------
 
-export const notifications = pgTable('notifications', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  type: text('type').notNull(),
-  title: text('title').notNull(),
-  body: text('body').notNull(),
-  payload: jsonb('payload'),
-  readAt: timestamp('read_at', { withTimezone: true }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    payload: jsonb('payload'),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    // #368: a hidden row is invisible to the inbox/unread queries but still
+    // carries its payload.eventKey — it is the DURABLE dedupe marker that makes
+    // the at-least-once notifications.dispatch job idempotent even when the
+    // recipient routed the type away from in-app (or is globally muted).
+    hidden: boolean('hidden').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The (user, eventKey) dedupe marker enforced by the DB, not just the
+    // dispatcher's exists→insert pair: a second dispatcher replica racing past
+    // the read still collapses to one row (insert is ON CONFLICT DO NOTHING),
+    // and the per-dispatch eventKey lookup stops being a JSON scan. Partial:
+    // only dispatcher-written rows carry an eventKey.
+    uniqueIndex('notifications_user_event_key_unique')
+      .on(t.userId, sql`(${t.payload} ->> 'eventKey')`)
+      .where(sql`(${t.payload} ->> 'eventKey') is not null`),
+  ],
+);
 
 export const notificationChannelEnum = pgEnum('notification_channel', [
   'inapp',
   'email',
   'telegram',
   'discord',
+  'push',
+  'webpush',
 ]);
+
+/**
+ * FCM device registrations for phone push (#368/#351). One row per token;
+ * `token` is globally unique and an upsert re-binds it to the registering user
+ * (a device that logs into another account takes its pushes along). Pruned when
+ * FCM reports the registration gone (structured errorCode UNREGISTERED).
+ */
+export const devicePlatformEnum = pgEnum('device_platform', ['android', 'ios', 'web']);
+
+export const deviceTokens = pgTable(
+  'device_tokens',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    token: text('token').notNull(),
+    platform: devicePlatformEnum('platform').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('device_tokens_token_unique').on(t.token),
+    index('device_tokens_user_id_idx').on(t.userId),
+  ],
+);
+
+/**
+ * Web-push (VAPID) subscriptions for browser push (#368/#350). One row per
+ * subscription `endpoint` (globally unique, upsert re-binds like device
+ * tokens); pruned when the push service reports it gone (404/410).
+ */
+export const pushSubscriptions = pgTable(
+  'push_subscriptions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    endpoint: text('endpoint').notNull(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('push_subscriptions_endpoint_unique').on(t.endpoint),
+    index('push_subscriptions_user_id_idx').on(t.userId),
+  ],
+);
 
 export const notificationSettings = pgTable(
   'notification_settings',
@@ -1189,6 +1263,10 @@ export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;
 export type NotificationRow = typeof notifications.$inferSelect;
 export type NotificationSettingRow = typeof notificationSettings.$inferSelect;
+export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
+export type NewDeviceTokenRow = typeof deviceTokens.$inferInsert;
+export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
+export type NewPushSubscriptionRow = typeof pushSubscriptions.$inferInsert;
 export type EmailLogRow = typeof emailLog.$inferSelect;
 export type NewEmailLogRow = typeof emailLog.$inferInsert;
 export type ConglomerateRow = typeof conglomerates.$inferSelect;
@@ -1253,6 +1331,8 @@ export const schema = {
   alerts,
   notifications,
   notificationSettings,
+  deviceTokens,
+  pushSubscriptions,
   emailLog,
   conglomerates,
   conglomeratePositions,
@@ -1276,6 +1356,7 @@ export const schema = {
   alertKindEnum,
   alertStatusEnum,
   notificationChannelEnum,
+  devicePlatformEnum,
   emailStatusEnum,
   conglomerateStatusEnum,
   transactionSideEnum,

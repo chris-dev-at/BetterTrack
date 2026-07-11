@@ -202,3 +202,43 @@ describe('realtime flag (§4.5, V3-P7a)', () => {
     expect(config({ REALTIME_ENABLED: '1' }).realtime.enabled).toBe(true);
   });
 });
+
+describe('web-push VAPID config (#368)', () => {
+  it('keys-only config enables the channel with the mailto subject derived from BT_DOMAIN', () => {
+    const c = config({
+      BT_DOMAIN: 'track.example.at',
+      BT_VAPID_PUBLIC_KEY: 'pub',
+      BT_VAPID_PRIVATE_KEY: 'priv',
+    });
+    expect(c.webPush.enabled).toBe(true);
+    expect(c.webPush.subject).toBe('mailto:admin@track.example.at');
+  });
+
+  it('an EMPTY BT_VAPID_SUBJECT (the compose default for an unset var) still derives the mailto subject', () => {
+    // infra/docker-compose.yml injects BT_VAPID_SUBJECT='' when unset; an empty
+    // subject makes web-push throw at setVapidDetails and kills the channel.
+    const c = config({
+      BT_DOMAIN: 'track.example.at',
+      BT_VAPID_PUBLIC_KEY: 'pub',
+      BT_VAPID_PRIVATE_KEY: 'priv',
+      BT_VAPID_SUBJECT: '',
+    });
+    expect(c.webPush.enabled).toBe(true);
+    expect(c.webPush.subject).toBe('mailto:admin@track.example.at');
+  });
+
+  it('an explicit subject wins; empty/missing keys keep the channel disabled', () => {
+    const explicit = config({
+      BT_VAPID_PUBLIC_KEY: 'pub',
+      BT_VAPID_PRIVATE_KEY: 'priv',
+      BT_VAPID_SUBJECT: 'mailto:ops@bettertrack.at',
+    });
+    expect(explicit.webPush.subject).toBe('mailto:ops@bettertrack.at');
+
+    expect(config({}).webPush.enabled).toBe(false);
+    // Compose's empty-string defaults must read as "not configured" too.
+    expect(config({ BT_VAPID_PUBLIC_KEY: '', BT_VAPID_PRIVATE_KEY: '' }).webPush.enabled).toBe(
+      false,
+    );
+  });
+});

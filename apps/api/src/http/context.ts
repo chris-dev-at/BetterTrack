@@ -18,6 +18,8 @@ import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
+import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createChatRepository } from '../data/repositories/chatRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
@@ -69,8 +71,14 @@ import {
 } from '../services/customAssets/customAssetService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createEmailService } from '../services/email/emailService';
+import { createFcmChannel } from '../services/notifications/fcm';
+import {
+  createNotificationCenter,
+  type NotificationCenter,
+} from '../services/notifications/notificationCenter';
 import {
   createNotificationDispatcher,
+  type DispatchableEvent,
   type NotificationDispatcher,
 } from '../services/notifications/notificationDispatcher';
 import {
@@ -81,6 +89,8 @@ import {
   createNotificationSettingsService,
   type NotificationSettingsService,
 } from '../services/notifications/notificationSettingsService';
+import { createPresenceStore, type PresenceStore } from '../services/notifications/presence';
+import { createWebPushChannel } from '../services/notifications/webPush';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import {
@@ -147,14 +157,22 @@ export interface AppContext {
   /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
   alerts: AlertService;
   /**
-   * Notification dispatcher (§6.10, §9): the bus subscriber that turns the social
-   * domain events into in-app rows + emails. Built here and started by the API
-   * bootstrap (`server.ts`) so notifications are produced **in the API process**
-   * that handles the request, rather than depending on the separate worker being
-   * healthy — the #248 fix. Not started by `buildContext` itself, so tests that
-   * only need the HTTP surface don't accrue bus subscriptions.
+   * The notification delivery core (#368): matrix resolve → inbox row / email /
+   * FCM / web-push, idempotent under redelivery. In production it runs inside
+   * the WORKER's `notifications.dispatch` job (the durable pipeline); the API
+   * process builds it too so tests can deliver synchronously and boot logs
+   * report channel availability in both processes. It subscribes to nothing.
    */
   notificationDispatcher: NotificationDispatcher;
+  /**
+   * The ONE notification entry point (#368) every source emits through. In
+   * production it enqueues onto the durable `notifications.dispatch` BullMQ
+   * queue; under test it delivers straight into {@link notificationDispatcher}
+   * (override with `BuildContextDeps.notificationEnqueue`).
+   */
+  notify: NotificationCenter;
+  /** Active-view presence store (#368) — written by the gateway, read at dispatch. */
+  presence: PresenceStore;
   /**
    * Realtime gateway (§4.5, V3-P7a): the second designed bus subscriber —
    * Socket.IO at /ws mapping domain events to room emissions. Built here but
@@ -194,6 +212,12 @@ export interface BuildContextDeps {
   passwordHasher?: PasswordHasher;
   /** Test seam: fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
+  /**
+   * Test seam (#368): the notification center's transport. Defaults to the
+   * durable BullMQ enqueue in production and to a direct synchronous
+   * dispatcher delivery under test (BullMQ cannot run on ioredis-mock).
+   */
+  notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
 }
 
 /** Composition root: repositories → services → context. */
@@ -227,10 +251,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // read by the auth register guard and the admin settings API.
   const appSettings = createAppSettingsService({ repo: createAppSettingsRepository(db) });
 
-  // Typed domain event bus (§9, §4.5). Pub/sub needs a dedicated subscriber
-  // connection, so publisher and subscriber each get their own duplicated Redis
-  // connection. The API only *publishes* (producers); the notification dispatcher
-  // subscribes in the worker process.
+  // Typed domain event bus (§9, §4.5) — EPHEMERAL fan-out only (#368): realtime
+  // pushes (bell, quotes, chat threads, presence-adjacent signals). Anything
+  // that must survive a restart rides BullMQ, never this. Pub/sub needs a
+  // dedicated subscriber connection, so publisher and subscriber each get their
+  // own duplicated Redis connection.
   const events = createEventBus({
     publisher: redis.duplicate(),
     subscriber: redis.duplicate(),
@@ -242,13 +267,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const friendshipRepo = createFriendshipRepository(db);
   // Public-profile settings + per-viewer activity-alert prefs (§6.9, §14, V3-P6).
   const profileRepo = createProfileRepository(db);
-
-  // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
-  // authorization-is-the-join queries behind every social read path, plus
-  // hash-only public-link minting. Injected into workboard/conglomerate/social
-  // and the realtime room-join check so authorization is decided in ONE place.
   const shareAudienceRepo = createShareAudienceRepository(db);
-  const audience = createAudienceService({ repo: shareAudienceRepo });
 
   // Only open a real SMTP connection when the channel is configured (§11).
   const transport =
@@ -259,6 +278,76 @@ export function buildContext(deps: BuildContextDeps): AppContext {
         : null;
   const emailLogRepo = createEmailLogRepository(db);
   const email = createEmailService({ config, logger, audit, emailLog: emailLogRepo, transport });
+
+  // ── The central notification pipeline (#368) ────────────────────────────────
+  // BullMQ queues for producer-side enqueues (durable notification dispatch +
+  // the backfill scheduler below). Tests run on ioredis-mock, which BullMQ's
+  // Lua cannot execute — the test paths below bypass the queue entirely.
+  const queues = config.isTest ? null : createQueueRegistry(redis);
+
+  const notificationRepo = createNotificationRepository(db);
+  const deviceTokenRepo = createDeviceTokenRepository(db);
+  const pushSubscriptionRepo = createPushSubscriptionRepository(db);
+  const alertRepo = createAlertRepository(db);
+  // Written by the realtime gateway, read at dispatch time (cross-process via
+  // Redis) to suppress notifying about the surface the user is viewing (#368).
+  const presence = createPresenceStore({ redis });
+
+  // Push channels, env-gated (#421): null = unconfigured/unloadable (one warn
+  // log inside the factory). The nulls also drive the settings surface's
+  // channel-availability report, so the UI can only offer live columns.
+  const fcmChannel = createFcmChannel({
+    serviceAccountFile: config.push.fcmServiceAccountFile,
+    devices: deviceTokenRepo,
+    logger,
+  });
+  const webPushChannel = createWebPushChannel({
+    vapid: config.webPush,
+    subscriptions: pushSubscriptionRepo,
+    logger,
+  });
+
+  // The delivery core. The WORKER runs the authoritative instance inside the
+  // `notifications.dispatch` job; this API-side twin serves synchronous test
+  // delivery and makes both processes' boot logs report push-channel state
+  // (#421). Both are built from the same factories, so they cannot drift.
+  const notificationDispatcher = createNotificationDispatcher({
+    bus: events,
+    repo: notificationRepo,
+    users: userRepo,
+    email,
+    // Resolves an `alert.triggered` event's asset + rule for rendering (§14).
+    resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
+    fcm: fcmChannel,
+    webPush: webPushChannel,
+    presence,
+    logger,
+  });
+
+  // The ONE emit entry (#368): production enqueues durably; tests deliver
+  // synchronously through the dispatcher (same core the worker job runs).
+  const notify = createNotificationCenter({
+    enqueue:
+      deps.notificationEnqueue ??
+      (queues
+        ? async (event) => {
+            await queues.enqueue('notifications.dispatch', { event });
+          }
+        : (event) => notificationDispatcher.dispatch(event)),
+    logger,
+  });
+
+  // The ONE sharing-enforcement layer (§13.3 V3-P5, §6.9): the audience model +
+  // authorization-is-the-join queries behind every social read path, plus
+  // hash-only public-link minting. Injected into workboard/conglomerate/social
+  // and the realtime room-join check so authorization is decided in ONE place.
+  // Emits `*.shared` notifications when the picker admits friends (#368).
+  const audience = createAudienceService({
+    repo: shareAudienceRepo,
+    friendship: friendshipRepo,
+    notify,
+    logger,
+  });
 
   // TOTP two-factor (§6.1, §13.2 V2-P5): enroll/confirm/disable + recovery codes,
   // plus the login-challenge factor checks the auth service calls. Secret
@@ -299,6 +388,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
     emailLog: emailLogRepo,
     appSettings,
+    notify,
   });
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
@@ -321,10 +411,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     }).service;
 
   // First-touch backfill enqueue (§6.2/§9). In tests no BullMQ worker runs, so
-  // default to a no-op; production enqueues onto the shared Redis-backed queue.
+  // default to a no-op; production enqueues onto the shared Redis-backed queues.
   const backfill =
-    deps.backfill ??
-    (config.isTest ? noopBackfillScheduler : createBackfillScheduler(createQueueRegistry(redis)));
+    deps.backfill ?? (queues ? createBackfillScheduler(queues) : noopBackfillScheduler);
 
   // Single conversion keystone (§5.4): spot FX sourced from cached Yahoo quotes.
   const currencySource = createMarketDataFxSource(marketData);
@@ -343,7 +432,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const referenceBackfill = createReferenceBackfill({ assetRepo, backfill, logger });
 
   const workboardRepo = createWorkboardRepository(db);
-  const workboard = createWorkboardService({ repo: workboardRepo, referenceBackfill, audience });
+  const workboard = createWorkboardService({
+    repo: workboardRepo,
+    referenceBackfill,
+    audience,
+    profile: profileRepo,
+    friendship: friendshipRepo,
+    notify,
+    logger,
+  });
 
   // Local-first search (§6.2): answers from the Postgres catalog; a thin result
   // set triggers a background, coalesced provider search that enriches it.
@@ -381,7 +478,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     taxService: tax,
     friendshipRepo,
     audience,
-    events,
+    profile: profileRepo,
+    notify,
     logger,
   });
   const customAssetRepo = createCustomAssetRepository(db);
@@ -408,7 +506,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
-  // Publishes friend.request / friend.accepted for the notification dispatcher.
+  // Emits friend.request / friend.accepted through the notification center.
   const social = createSocialService({
     repo: friendshipRepo,
     profile: profileRepo,
@@ -416,7 +514,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio,
     conglomerate,
     workboard,
-    events,
+    notify,
     logger,
   });
 
@@ -432,15 +530,29 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
     assets: assetRepo,
     events,
+    notify,
     logger,
   });
 
-  // Notification read/mark-read (§6.10): user-scoped over the dispatcher's rows.
-  const notificationRepo = createNotificationRepository(db);
-  const notifications = createNotificationService({ repo: notificationRepo });
-  // Notification channel toggles (§6.10, §6.11): in-app always on, email on by
-  // default; writes the settings rows the dispatcher reads.
-  const notificationSettings = createNotificationSettingsService({ repo: notificationRepo });
+  // Notification read/mark-read + push registrations (§6.10, #368): user-scoped
+  // over the dispatcher's rows and the device-token/web-push stores.
+  const notifications = createNotificationService({
+    repo: notificationRepo,
+    devices: deviceTokenRepo,
+    webPushSubs: pushSubscriptionRepo,
+  });
+  // The per-type × channel matrix + global mute (§6.10, §6.11, #368): the
+  // settings rows the dispatcher reads, plus deployment channel availability.
+  const notificationSettings = createNotificationSettingsService({
+    repo: notificationRepo,
+    users: userRepo,
+    channelAvailability: {
+      email: email.enabled,
+      push: fcmChannel !== null,
+      webpush: webPushChannel !== null,
+    },
+    webPushPublicKey: config.webPush.publicKey ?? null,
+  });
 
   // Account defaults (§6.9, V2-P9): Settings → Account default portfolio
   // visibility, applied by the portfolio service at create time.
@@ -461,25 +573,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
 
   // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
-  // the worker fires them and publishes `alert.triggered`, which the dispatcher
-  // below fans out via the notification matrix.
-  const alertRepo = createAlertRepository(db);
+  // the worker fires them and emits `alert.triggered` onto the durable
+  // notification queue (#368), which the worker's dispatch job fans out.
   const alerts = createAlertService({ repo: alertRepo, assetRepo, marketData, logger });
-
-  // Notification dispatcher (§6.10, §9): fans the V1 social events out to the
-  // recipient's in-app + email channels, consulting the per-type × channel
-  // matrix. Built with the API's own email + user deps and started by the API
-  // bootstrap so notifications are delivered in-process (the #248 fix — the API
-  // no longer relies on the worker to persist friend-request notifications).
-  const notificationDispatcher = createNotificationDispatcher({
-    bus: events,
-    repo: notificationRepo,
-    email,
-    users: userRepo,
-    // Resolves an `alert.triggered` event's asset + rule for rendering (§14).
-    resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
-    logger,
-  });
 
   // Realtime gateway (§4.5, V3-P7a): session auth reuses the auth service's
   // cookie→user resolution verbatim; `portfolio:{id}` room joins enforce
@@ -523,6 +619,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       const row = await assetRepo.findByIdForUser(assetId, userId);
       return row ? { providerId: row.providerId, providerRef: row.providerRef } : null;
     },
+    // Active-view presence (#368): enter/leave/heartbeat land here; the
+    // dispatcher (any process) reads the same keys through Redis.
+    presence,
   });
 
   return {
@@ -551,6 +650,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     accountDeletion,
     alerts,
     notificationDispatcher,
+    notify,
+    presence,
     realtime,
     liveMode,
     events,

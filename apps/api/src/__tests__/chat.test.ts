@@ -459,7 +459,9 @@ describe('chat — chat.message notification matrix', () => {
     const muted = await bob.agent
       .patch('/api/v1/settings/notifications')
       .set(...XRW)
-      .send({ matrix: { 'chat.message': { inapp: false, email: false } } });
+      .send({
+        matrix: { 'chat.message': { inapp: false, email: false, push: false, webpush: false } },
+      });
     expect(muted.status).toBe(200);
 
     const dispatcher = harness.ctx.notificationDispatcher;

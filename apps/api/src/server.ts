@@ -14,10 +14,10 @@ const redis = createRedis(config.redisUrl);
 const ctx = buildContext({ config, db, redis, logger });
 const app = createApp(ctx);
 
-// Subscribe the notification dispatcher in the API process so friend-request and
-// other social notifications are produced in-process (the #248 fix), rather than
-// depending on the separate worker being healthy.
-await ctx.notificationDispatcher.start();
+// Notification delivery is owned by the WORKER's durable `notifications.dispatch`
+// job (#368) — the API only ENQUEUES through the center. Nothing to start here:
+// the queue holds events until a worker picks them up, so no notification is
+// ever lost to a restart on either side (#367's hard requirement).
 
 const server = app.listen(config.port, () => {
   logger.info({ port: config.port }, 'BetterTrack API listening');
@@ -42,8 +42,6 @@ async function shutdown(signal: string): Promise<void> {
     ctx.liveMode.close();
     server.closeIdleConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    // Drop the dispatcher's bus subscriptions before closing the bus.
-    await ctx.notificationDispatcher.stop();
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await ctx.marketData.settled();

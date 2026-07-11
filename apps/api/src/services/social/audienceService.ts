@@ -15,8 +15,11 @@ import type {
   PublicLinkTarget,
   ShareAudienceRepository,
 } from '../../data/repositories/shareAudienceRepository';
+import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import { badRequest } from '../../errors';
+import type { Logger } from '../../logger';
 import { generateToken, hashToken } from '../crypto/tokens';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 
 /**
  * The ONE server-side sharing-enforcement layer (PROJECTPLAN.md §13.3 V3-P5,
@@ -54,6 +57,11 @@ export interface AudienceMutationResult {
 
 export interface AudienceServiceDeps {
   repo: ShareAudienceRepository;
+  /** Resolves friend recipients + the actor's username for share events (#368). */
+  friendship?: Pick<FriendshipRepository, 'getUsername' | 'listFriends'>;
+  /** The central notification pipeline (#368) — `*.shared` events enter here. */
+  notify?: NotificationCenter;
+  logger?: Logger;
 }
 
 export interface AudienceService {
@@ -146,7 +154,48 @@ function linkPath(token: string): string {
 }
 
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
-  const { repo } = deps;
+  const { repo, friendship, notify, logger } = deps;
+
+  /**
+   * Tell each friend the picker just admitted that the item is shared with them
+   * (#368): all-friends → every current friend, specific-friends → the validated
+   * member set; private/public-link → nobody (a link is pull, not push). One
+   * event per (item, owner) per recipient — the dispatcher's eventKey dedupes
+   * repeat transitions, so widening back and forth never re-notifies. Emits
+   * ride the durable center and are best-effort for the mutation.
+   */
+  async function emitShared(
+    ownerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    audienceValue: ShareAudience,
+    memberIds: readonly string[],
+  ): Promise<void> {
+    if (!notify || !friendship) return;
+    if (audienceValue !== 'all_friends' && audienceValue !== 'specific_friends') return;
+    try {
+      const recipients =
+        audienceValue === 'all_friends'
+          ? (await friendship.listFriends(ownerId)).map((f) => f.id)
+          : [...memberIds];
+      if (recipients.length === 0) return;
+      const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
+      const occurredAt = new Date().toISOString();
+      for (const userId of recipients) {
+        if (userId === ownerId) continue;
+        const base = { userId, actorId: ownerId, actorUsername, occurredAt };
+        if (kind === 'portfolio') {
+          await notify.emit({ type: 'portfolio.shared', portfolioId: subjectId, ...base });
+        } else if (kind === 'watchlist') {
+          await notify.emit({ type: 'watchlist.shared', watchlistId: subjectId, ...base });
+        } else {
+          await notify.emit({ type: 'conglomerate.shared', conglomerateId: subjectId, ...base });
+        }
+      }
+    } catch (err) {
+      logger?.error({ err, kind, subjectId }, 'share event emit failed');
+    }
+  }
 
   function toState(
     kind: ShareKind,
@@ -222,6 +271,10 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         await repo.insertLink(audienceId, minted.tokenHash);
         link = { token: minted.token, url: linkPath(minted.token) };
       }
+
+      // Notify the newly admitted friends (#368) — after the audience committed,
+      // so a recipient acting on the bell is already authorized.
+      await emitShared(ownerId, kind, subjectId, input.audience, memberIds);
 
       const owned = await repo.getOwnedState(kind, subjectId);
       return { state: toState(kind, subjectId, owned), link };

@@ -102,6 +102,67 @@ export interface PortfolioSharedEvent {
 }
 
 /**
+ * `watchlist.shared` → a watchlist's audience now includes the recipient
+ * (#368; mirrors {@link PortfolioSharedEvent} for the V3-P5 audience model).
+ */
+export interface WatchlistSharedEvent {
+  type: 'watchlist.shared';
+  /** Recipient — a friend the watchlist was just shared with. */
+  userId: string;
+  actorId: string;
+  actorUsername: string;
+  watchlistId: string;
+  occurredAt: string;
+}
+
+/** `conglomerate.shared` → same as {@link WatchlistSharedEvent} for conglomerates. */
+export interface ConglomerateSharedEvent {
+  type: 'conglomerate.shared';
+  /** Recipient — a friend the conglomerate was just shared with. */
+  userId: string;
+  actorId: string;
+  actorUsername: string;
+  conglomerateId: string;
+  occurredAt: string;
+}
+
+/**
+ * `friend.activity` → a friend acted on a shared item the recipient FOLLOWS
+ * (#368; the V3-P6 per-shared-item activity toggle is the opt-in). Emitted once
+ * per opted-in viewer whose access to the item is still live at emit time — the
+ * producer re-checks the audience layer, so a revoked share never leaks
+ * activity. `refId` identifies the underlying action (transaction id /
+ * watchlist add) for the per-recipient dedupe key.
+ */
+export interface FriendActivityEvent {
+  type: 'friend.activity';
+  /** Recipient — an opted-in viewer of the shared item. */
+  userId: string;
+  /** Actor — the friend who bought/sold/added. */
+  actorId: string;
+  actorUsername: string;
+  itemKind: 'portfolio' | 'watchlist';
+  itemId: string;
+  activity: 'buy' | 'sell' | 'watchlist_add';
+  assetSymbol: string;
+  refId: string;
+  occurredAt: string;
+}
+
+/**
+ * `account.temp_password` → an admin reset the recipient's password (#368).
+ * The credential itself NEVER rides this event (it would persist in the queue);
+ * the transactional email with the temp password is sent directly at the
+ * source. This event only feeds the informational inbox/push notice.
+ */
+export interface AccountTempPasswordEvent {
+  type: 'account.temp_password';
+  /** Recipient — the user whose password was reset. */
+  userId: string;
+  occurredAt: string;
+}
+
+/**
  * `chat.message` → a friend sent the recipient a chat message (§13.3 V3-P8).
  * `userId` is the **recipient**; `senderId`/`senderUsername` identify the sender.
  * Two independent subscribers consume it: the realtime gateway pushes it to the
@@ -138,6 +199,10 @@ export type DomainEvent =
   | FriendRequestEvent
   | FriendAcceptedEvent
   | PortfolioSharedEvent
+  | WatchlistSharedEvent
+  | ConglomerateSharedEvent
+  | FriendActivityEvent
+  | AccountTempPasswordEvent
   | ChatMessageEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
@@ -156,5 +221,9 @@ export const DOMAIN_EVENT_TYPES = [
   'friend.request',
   'friend.accepted',
   'portfolio.shared',
+  'watchlist.shared',
+  'conglomerate.shared',
+  'friend.activity',
+  'account.temp_password',
   'chat.message',
 ] as const satisfies readonly DomainEventType[];

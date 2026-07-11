@@ -80,6 +80,19 @@ const envSchema = z.object({
   // the SPA's poll/refetch fallback carries every feature (flagged rollout).
   REALTIME_ENABLED: z.string().optional(),
 
+  // ── Push channels (#368 Notifications v2) ───────────────────────────────────
+  // Phone push (FCM HTTP v1): absolute in-container path to the mounted Firebase
+  // service-account JSON (SERVER SECRET — mounted, never in a repo). Unset var
+  // or missing/unreadable file ⇒ the push channel is cleanly DISABLED with one
+  // warn log at boot; api/worker must never crash over it (#421: the key may
+  // land on live before or after this deploys, in any order).
+  BT_FCM_SERVICE_ACCOUNT_FILE: z.string().optional(),
+  // Browser push (web-push/VAPID): both keys set ⇒ channel on. The subject is
+  // the VAPID contact (mailto:/https:); derived from BT_DOMAIN when unset.
+  BT_VAPID_PUBLIC_KEY: z.string().optional(),
+  BT_VAPID_PRIVATE_KEY: z.string().optional(),
+  BT_VAPID_SUBJECT: z.string().optional(),
+
   // ── Two-factor auth (§6.1, §13.2 V2-P5) ────────────────────────────────────
   // Issuer label baked into the `otpauth://` URI so the code shows up as
   // "BetterTrack (user@…)" in an authenticator app. TOTP_ENCRYPTION_KEY is the
@@ -274,6 +287,19 @@ export interface AppConfig {
     /** When false the Socket.IO server is never attached — zero behavior change. */
     enabled: boolean;
   };
+  /** Phone push via FCM HTTP v1 (#368). Channel exists iff the file is set AND loads. */
+  push: {
+    /** Path to the mounted Firebase service-account JSON; unset ⇒ channel off. */
+    fcmServiceAccountFile?: string;
+  };
+  /** Browser push via web-push/VAPID (#368/#350). Channel on iff both keys set. */
+  webPush: {
+    enabled: boolean;
+    publicKey?: string;
+    privateKey?: string;
+    /** VAPID contact (`mailto:`/`https:`), required by push services. */
+    subject: string;
+  };
   /** Two-factor auth (§6.1, §13.2 V2-P5). */
   twoFactor: {
     /** Issuer label embedded in the `otpauth://` provisioning URI. */
@@ -384,6 +410,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     realtime: {
       enabled: boolFrom(e.REALTIME_ENABLED, true),
+    },
+    push: {
+      fcmServiceAccountFile: e.BT_FCM_SERVICE_ACCOUNT_FILE,
+    },
+    webPush: {
+      enabled: Boolean(e.BT_VAPID_PUBLIC_KEY && e.BT_VAPID_PRIVATE_KEY),
+      publicKey: e.BT_VAPID_PUBLIC_KEY,
+      privateKey: e.BT_VAPID_PRIVATE_KEY,
+      // `||`, not `??`: compose injects BT_VAPID_SUBJECT='' when the operator
+      // leaves it unset, and web-push rejects an empty subject — which would
+      // silently disable the channel on the documented keys-only config.
+      subject: e.BT_VAPID_SUBJECT || `mailto:admin@${e.BT_DOMAIN}`,
     },
     twoFactor: {
       issuer: e.TOTP_ISSUER,

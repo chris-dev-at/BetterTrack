@@ -2,17 +2,19 @@ import type { Database } from '../../data/db';
 import { createAlertRepository } from '../../data/repositories/alertRepository';
 import type { MarketDataService } from '../../providers';
 import { runAlertsEvaluation } from '../../services/alerts/alertEvaluator';
+import type { NotificationCenter } from '../../services/notifications/notificationCenter';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
  * `alerts.evaluate` — the §14 minute evaluator (V3-P10 arc b). Every minute it
  * loads every active price alert, reads each referenced asset's quote once from
- * the cached §5.3 core, and fires the ones whose rule is met — publishing
- * `alert.triggered` on the bus for the notification dispatcher to fan out.
+ * the cached §5.3 core, and fires the ones whose rule is met — emitting
+ * `alert.triggered` through the notification center onto the DURABLE
+ * `notifications.dispatch` queue (#368; never the at-most-once bus).
  *
- * Built from `{ db, marketData }` like the other §9 jobs; the cross-cutting infra
- * (bus, Redis idempotency store, logger) comes from the {@link JobContext} at run
- * time.
+ * Built from `{ db, marketData, notify }` like the other §9 jobs; the
+ * cross-cutting infra (Redis idempotency store, logger) comes from the
+ * {@link JobContext} at run time.
  */
 
 export const ALERTS_EVALUATE_SCHEDULER_ID = 'alerts.evaluate';
@@ -22,6 +24,8 @@ export const ALERTS_EVALUATE_INTERVAL_MS = 60_000;
 export interface AlertsJobDeps {
   db: Database;
   marketData: MarketDataService;
+  /** The central notification pipeline (#368) — fires are enqueued durably. */
+  notify: NotificationCenter;
 }
 
 export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'alerts.evaluate'> {
@@ -37,7 +41,7 @@ export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'ale
         alertRepo,
         marketData: deps.marketData,
         redis: ctx.redis,
-        events: ctx.events,
+        notify: deps.notify,
         logger: ctx.logger,
         now: () => now,
       });

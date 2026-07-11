@@ -1,6 +1,6 @@
 import type { JobDefinition } from '../types';
 
-import { createAlertsEvaluateJob } from './alertsJob';
+import { createAlertsEvaluateJob, type AlertsJobDeps } from './alertsJob';
 import { heartbeatJob } from './heartbeat';
 import {
   createFxRefreshSpotJob,
@@ -10,11 +10,16 @@ import {
 } from './marketDataJobs';
 
 /**
- * Every job the worker process runs. The heartbeat smoke-test needs nothing; the
- * §9 market-data jobs close over their domain dependencies (`db`, `marketData`),
- * so the worker bootstrap builds the full list by passing those in here.
+ * Every scheduled job the worker process runs. The heartbeat smoke-test needs
+ * nothing; the §9 market-data jobs close over their domain dependencies (`db`,
+ * `marketData`) and the alert evaluator additionally over the notification
+ * center (#368), so the worker bootstrap builds the full list by passing those
+ * in here. The event-driven `notifications.dispatch` job is composed separately
+ * (it needs the fully-built dispatcher).
  */
-export function createJobDefinitions(deps: MarketDataJobDeps): readonly JobDefinition[] {
+export function createJobDefinitions(
+  deps: MarketDataJobDeps & AlertsJobDeps,
+): readonly JobDefinition[] {
   return [
     heartbeatJob,
     createPricesRefreshDailyJob(deps),
@@ -37,6 +42,11 @@ export {
   ALERTS_EVALUATE_INTERVAL_MS,
   type AlertsJobDeps,
 } from './alertsJob';
+
+export {
+  createNotificationsDispatchJob,
+  type NotificationsDispatchJobDeps,
+} from './notificationsJob';
 
 export {
   createPricesRefreshDailyJob,

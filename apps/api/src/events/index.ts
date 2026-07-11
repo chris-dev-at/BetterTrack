@@ -14,6 +14,10 @@ export type {
   FriendRequestEvent,
   FriendAcceptedEvent,
   PortfolioSharedEvent,
+  WatchlistSharedEvent,
+  ConglomerateSharedEvent,
+  FriendActivityEvent,
+  AccountTempPasswordEvent,
   ChatMessageEvent,
 } from './types';
 export { DOMAIN_EVENT_TYPES } from './types';

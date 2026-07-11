@@ -20,6 +20,7 @@ import type { FriendshipRepository } from '../../data/repositories/friendshipRep
 import type { EventBus } from '../../events';
 import { badRequest, forbidden, notFound } from '../../errors';
 import type { Logger } from '../../logger';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 
 /**
@@ -52,7 +53,10 @@ export interface ChatServiceDeps {
   audience: AudienceService;
   /** §10 asset visibility for `asset` chips (global or the viewer's own custom asset). */
   assets: Pick<AssetRepository, 'findByIdForUser'>;
+  /** Ephemeral bus (§4.5): carries ONLY the gateway's in-thread realtime push. */
   events: EventBus;
+  /** The central notification pipeline (#368): the durable bell/email/push leg. */
+  notify: NotificationCenter;
   logger?: Logger;
 }
 
@@ -78,7 +82,7 @@ export interface ChatService {
 }
 
 export function createChatService(deps: ChatServiceDeps): ChatService {
-  const { repo, friendship, audience, assets, events, logger } = deps;
+  const { repo, friendship, audience, assets, events, notify, logger } = deps;
 
   /** Whether `userId` is one of the conversation's participants. The gate keys on
    * the CALLER's side only, so a deleted other side (#362) keeps history readable. */
@@ -274,24 +278,31 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
         chipSubjectId,
       });
 
-      // Announce on the bus (§4.5, §9). Best-effort: the message is already
-      // persisted and the recipient's poll fallback catches up regardless.
+      // Two independent delivery legs (#368), both best-effort for the caller —
+      // the message is already persisted and the recipient's poll fallback
+      // catches up regardless:
+      //  1. the EPHEMERAL bus publish the gateway maps to the in-thread realtime
+      //     push (always delivered to the open thread, matrix-independent);
+      //  2. the DURABLE notification-center emit, matrix-routed to bell/email/
+      //     push and presence-suppressed when the recipient has this very
+      //     conversation open.
+      const chatEvent = {
+        type: 'chat.message' as const,
+        userId: recipientId,
+        senderId: userId,
+        senderUsername: (await friendship.getUsername(userId).catch(() => '')) ?? '',
+        conversationId,
+        messageId: row.id,
+        bodyPreview: body ? body.slice(0, PREVIEW_MAX) : null,
+        hasChip: chipKind !== null,
+        occurredAt: row.createdAt.toISOString(),
+      };
       try {
-        const senderUsername = (await friendship.getUsername(userId)) ?? '';
-        await events.publish({
-          type: 'chat.message',
-          userId: recipientId,
-          senderId: userId,
-          senderUsername,
-          conversationId,
-          messageId: row.id,
-          bodyPreview: body ? body.slice(0, PREVIEW_MAX) : null,
-          hasChip: chipKind !== null,
-          occurredAt: row.createdAt.toISOString(),
-        });
+        await events.publish(chatEvent);
       } catch (err) {
         logger?.warn({ err, messageId: row.id }, 'chat.message publish failed');
       }
+      await notify.emit(chatEvent);
 
       return toMessage(userId, row);
     },

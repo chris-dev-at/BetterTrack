@@ -11,19 +11,37 @@ import { notifications, notificationSettings } from '../schema';
  * Dedupe is by **event key**: the dispatcher stamps a deterministic
  * `payload.eventKey` per (user, logical event), and {@link existsForEventKey}
  * lets an at-least-once redelivery of the same event become a no-op rather than a
- * duplicate row (§6.10 "deduped per (user, event key)").
+ * duplicate row (§6.10 "deduped per (user, event key)"). The check is backed by
+ * a partial unique expression index on `(user_id, payload->>'eventKey')`, so
+ * two dispatchers racing past the read still collapse to one row at insert.
  */
 
 /** The notification channel discriminator (`notification_channel` enum). */
-export type NotificationChannel = 'inapp' | 'email' | 'telegram' | 'discord';
+export type NotificationChannel = 'inapp' | 'email' | 'telegram' | 'discord' | 'push' | 'webpush';
 
-/** A row to insert; `id`/`createdAt`/`readAt` are defaulted by the schema. */
+/** The four user-routable matrix channels (#368) resolved for one type. */
+export interface TypeRouting {
+  inapp: boolean;
+  email: boolean;
+  push: boolean;
+  webpush: boolean;
+}
+
+/**
+ * A row to insert; `id`/`createdAt` are defaulted by the schema. `readAt` lets
+ * the dispatcher persist a presence-suppressed row already seen (#368: no
+ * unread bump for the thread you're viewing); `hidden: true` writes a pure
+ * dedupe marker that never surfaces in the inbox (in-app routed off / global
+ * mute) but still blocks an at-least-once redelivery.
+ */
 export interface InsertNotificationInput {
   userId: string;
   type: string;
   title: string;
   body: string;
   payload: unknown;
+  readAt?: Date | null;
+  hidden?: boolean;
 }
 
 /** One notification row as read back for the user-facing list (§8). */
@@ -51,9 +69,15 @@ function toRecord(row: typeof notifications.$inferSelect): NotificationRecord {
 
 export function createNotificationRepository(db: Database) {
   return {
-    /** Insert one in-app notification row; returns the new row's id (§4.5 —
-     *  the dispatcher publishes `notification.created` with it for the bell push). */
-    async insert(input: InsertNotificationInput): Promise<string> {
+    /**
+     * Insert one in-app notification row; returns the new row's id (§4.5 —
+     * the dispatcher publishes `notification.created` with it for the bell
+     * push), or **null** when the partial unique index on
+     * `(user_id, payload->>'eventKey')` rejected a concurrent duplicate — the
+     * DB-level backstop behind {@link existsForEventKey} that keeps the dedupe
+     * marker airtight even with a second dispatcher replica.
+     */
+    async insert(input: InsertNotificationInput): Promise<string | null> {
       const [row] = await db
         .insert(notifications)
         .values({
@@ -62,9 +86,12 @@ export function createNotificationRepository(db: Database) {
           title: input.title,
           body: input.body,
           payload: input.payload ?? null,
+          readAt: input.readAt ?? null,
+          hidden: input.hidden ?? false,
         })
+        .onConflictDoNothing()
         .returning({ id: notifications.id });
-      return row!.id;
+      return row?.id ?? null;
     },
 
     /**
@@ -112,6 +139,35 @@ export function createNotificationRepository(db: Database) {
       const override = (row.config as Record<string, boolean> | null)?.[type];
       if (typeof override === 'boolean') return override;
       return row.enabled;
+    },
+
+    /**
+     * One type's routing across all four matrix channels (#368), resolved with
+     * the same precedence as {@link typeChannelEnabled} in a single query —
+     * the dispatcher's per-event gate.
+     */
+    async routingFor(userId: string, type: string): Promise<TypeRouting> {
+      const rows = await db
+        .select({
+          channel: notificationSettings.channel,
+          enabled: notificationSettings.enabled,
+          config: notificationSettings.config,
+        })
+        .from(notificationSettings)
+        .where(eq(notificationSettings.userId, userId));
+      const resolve = (channel: NotificationChannel): boolean => {
+        const row = rows.find((r) => r.channel === channel);
+        if (!row) return true;
+        const override = (row.config as Record<string, boolean> | null)?.[type];
+        if (typeof override === 'boolean') return override;
+        return row.enabled;
+      };
+      return {
+        inapp: resolve('inapp'),
+        email: resolve('email'),
+        push: resolve('push'),
+        webpush: resolve('webpush'),
+      };
     },
 
     /**
@@ -193,6 +249,8 @@ export function createNotificationRepository(db: Database) {
         .where(
           and(
             eq(notifications.userId, userId),
+            // Hidden rows are dedupe markers, never inbox content (#368).
+            eq(notifications.hidden, false),
             params.cursor ? lt(notifications.id, params.cursor) : undefined,
           ),
         )
@@ -210,7 +268,13 @@ export function createNotificationRepository(db: Database) {
       const [row] = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(notifications)
-        .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
+        .where(
+          and(
+            eq(notifications.userId, userId),
+            eq(notifications.hidden, false),
+            isNull(notifications.readAt),
+          ),
+        );
       return row?.count ?? 0;
     },
 

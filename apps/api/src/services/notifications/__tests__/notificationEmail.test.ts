@@ -72,9 +72,14 @@ async function setup(options: CreateTestAppOptions, transport: MailTransport | n
 }
 
 afterEach(async () => {
-  await dispatcher.stop();
   await harness.ctx.events.close();
 });
+
+/** Inbox-visible rows only — hidden rows are dedupe markers (#368). */
+async function visibleInappRows(userId: string) {
+  const rows = await db.select().from(notifications).where(eq(notifications.userId, userId));
+  return rows.filter((r) => !r.hidden);
+}
 
 async function logFor(recipient: string): Promise<EmailLogRow[]> {
   const rows = await db.select().from(emailLog).orderBy(desc(emailLog.id));
@@ -156,14 +161,10 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
 
     expect(await logFor(recipient.email)).toHaveLength(0);
-    const inapp = await db
-      .select()
-      .from(notifications)
-      .where(eq(notifications.userId, recipient.id));
-    expect(inapp).toHaveLength(1);
+    expect(await visibleInappRows(recipient.id)).toHaveLength(1);
   });
 
-  it('email-only: a type muted for in-app sends email but writes no in-app row', async () => {
+  it('email-only: a type muted for in-app sends email but surfaces no inbox row', async () => {
     const recipient = await harness.seedUser({ email: 'mailonly@bt.test', username: 'mailonly' });
     await db.insert(notificationSettings).values({
       userId: recipient.id,
@@ -175,14 +176,11 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
 
     expect(await logFor(recipient.email)).toHaveLength(1);
-    const inapp = await db
-      .select()
-      .from(notifications)
-      .where(eq(notifications.userId, recipient.id));
-    expect(inapp).toHaveLength(0);
+    // No visible inbox row — only the hidden dedupe marker (#368).
+    expect(await visibleInappRows(recipient.id)).toHaveLength(0);
   });
 
-  it('muted: a type off on both channels produces neither an in-app row nor an email', async () => {
+  it('muted: a type off on both channels surfaces neither an inbox row nor an email', async () => {
     const recipient = await harness.seedUser({ email: 'muted@bt.test', username: 'muted' });
     await db.insert(notificationSettings).values([
       {
@@ -202,11 +200,7 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
 
     expect(await logFor(recipient.email)).toHaveLength(0);
-    const inapp = await db
-      .select()
-      .from(notifications)
-      .where(eq(notifications.userId, recipient.id));
-    expect(inapp).toHaveLength(0);
+    expect(await visibleInappRows(recipient.id)).toHaveLength(0);
   });
 
   it('does not re-email a redelivered event (deduped via the in-app row)', async () => {
@@ -234,10 +228,6 @@ describe('notification email dispatch with SMTP unconfigured (PROJECTPLAN.md §6
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe('suppressed');
     // The in-app row is still written — SMTP being off doesn't suppress in-app.
-    const inapp = await db
-      .select()
-      .from(notifications)
-      .where(eq(notifications.userId, recipient.id));
-    expect(inapp).toHaveLength(1);
+    expect(await visibleInappRows(recipient.id)).toHaveLength(1);
   });
 });

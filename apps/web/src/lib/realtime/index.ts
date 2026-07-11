@@ -2,6 +2,7 @@
 export {
   RealtimeContext,
   RealtimeProvider,
+  usePresence,
   useRealtime,
   useRealtimeEvent,
   type RealtimeContextValue,

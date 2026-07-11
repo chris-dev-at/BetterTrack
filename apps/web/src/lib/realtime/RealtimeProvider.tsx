@@ -12,6 +12,7 @@ import {
 import type { Socket } from 'socket.io-client';
 
 import {
+  PRESENCE_HEARTBEAT_MS,
   REALTIME_CLIENT_EVENTS,
   REALTIME_SERVER_EVENTS,
   realtimeLiveWatchAckSchema,
@@ -19,6 +20,7 @@ import {
   realtimeQuoteUpdatedSchema,
   type LiveRate,
   type LiveWindow,
+  type PresenceSurface,
   type RealtimeLiveFrame,
   type RealtimeRoom,
 } from '@bettertrack/contracts';
@@ -59,6 +61,14 @@ export interface RealtimeContextValue {
   ): Promise<RealtimeLiveFrame[] | null>;
   /** Release a Live Mode watch (fire-and-forget; disconnects also release it). */
   unwatchLive(assetId: string): void;
+  /**
+   * Declare the user actively viewing a surface (#368) — fire-and-forget; the
+   * server holds it under a short TTL, so callers re-emit as a heartbeat
+   * (see {@link usePresence}, which owns that lifecycle).
+   */
+  presenceEnter(surface: PresenceSurface, id: string): void;
+  /** Clear a presence declaration (surface closed / tab blurred). */
+  presenceLeave(surface: PresenceSurface, id: string): void;
 }
 
 /**
@@ -72,6 +82,8 @@ const NOOP_CONTEXT: RealtimeContextValue = {
   joinRoom: () => () => {},
   watchLive: () => Promise.resolve(null),
   unwatchLive: () => {},
+  presenceEnter: () => {},
+  presenceLeave: () => {},
 };
 
 export const RealtimeContext = createContext<RealtimeContextValue>(NOOP_CONTEXT);
@@ -214,6 +226,14 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
     socketRef.current?.emit(REALTIME_CLIENT_EVENTS.liveUnwatch, { assetId });
   }, []);
 
+  const presenceEnter = useCallback<RealtimeContextValue['presenceEnter']>((surface, id) => {
+    socketRef.current?.emit(REALTIME_CLIENT_EVENTS.presenceEnter, { surface, id });
+  }, []);
+
+  const presenceLeave = useCallback<RealtimeContextValue['presenceLeave']>((surface, id) => {
+    socketRef.current?.emit(REALTIME_CLIENT_EVENTS.presenceLeave, { surface, id });
+  }, []);
+
   // Central cache sync for the pushes whose query keys are app-global.
   useEffect(() => {
     const offQuote = on(REALTIME_SERVER_EVENTS.quoteUpdated, (payload) => {
@@ -234,9 +254,41 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
   }, [on, queryClient]);
 
   const value = useMemo<RealtimeContextValue>(
-    () => ({ connected, on, joinRoom, watchLive, unwatchLive }),
-    [connected, on, joinRoom, watchLive, unwatchLive],
+    () => ({ connected, on, joinRoom, watchLive, unwatchLive, presenceEnter, presenceLeave }),
+    [connected, on, joinRoom, watchLive, unwatchLive, presenceEnter, presenceLeave],
   );
 
   return <RealtimeContext.Provider value={value}>{children}</RealtimeContext.Provider>;
+}
+
+/**
+ * Declare the user actively viewing a surface while mounted, focused and
+ * connected (#368 presence suppression): enters on mount/focus/reconnect,
+ * re-enters every {@link PRESENCE_HEARTBEAT_MS} (the server holds a short TTL,
+ * so a dropped client auto-clears), leaves on blur/hide/unmount. Pass `null`
+ * to hold no claim. The server suppresses bell/email/push for a surface its
+ * user is verifiably looking at — the content just lands in the open view.
+ */
+export function usePresence(surface: PresenceSurface, id: string | null): void {
+  const { connected, presenceEnter, presenceLeave } = useRealtime();
+  useEffect(() => {
+    if (!id || !connected) return;
+    const enter = () => {
+      if (!document.hidden && document.hasFocus()) presenceEnter(surface, id);
+    };
+    const leave = () => presenceLeave(surface, id);
+    const onVisibility = () => (document.hidden ? leave() : enter());
+    enter();
+    const heartbeat = setInterval(enter, PRESENCE_HEARTBEAT_MS);
+    window.addEventListener('focus', enter);
+    window.addEventListener('blur', leave);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      clearInterval(heartbeat);
+      window.removeEventListener('focus', enter);
+      window.removeEventListener('blur', leave);
+      document.removeEventListener('visibilitychange', onVisibility);
+      leave();
+    };
+  }, [surface, id, connected, presenceEnter, presenceLeave]);
 }

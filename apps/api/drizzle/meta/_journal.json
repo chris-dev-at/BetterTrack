@@ -218,6 +218,20 @@
       "when": 1783492600000,
       "tag": "0030_first_party_client_alerts_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1783719318199,
+      "tag": "0031_notifications_v2",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1783733000000,
+      "tag": "0032_notifications_event_key_unique",
+      "breakpoints": true
     }
   ]
 }

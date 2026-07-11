@@ -198,16 +198,14 @@ describe('friend-request notification regression (#248)', () => {
     return page;
   }
 
-  it('a friend request produces the recipient in-app bell item via the API dispatcher', async () => {
-    // The dispatcher subscribes in the API process (server.ts) — start it here to
-    // exercise that same in-process fan-out the API bootstrap relies on.
-    await harness.ctx.notificationDispatcher.start();
+  it('a friend request produces the recipient in-app bell item via the central pipeline', async () => {
     try {
       const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
       const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
       const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
 
-      // Alice sends Bob a friend request → publishes `friend.request` on the bus.
+      // Alice sends Bob a friend request → emits `friend.request` through the
+      // notification center (#368), delivered by the ONE dispatch core.
       await harness.ctx.social.sendRequest(alice.id, 'bob');
 
       const page = await waitForBellItem(bobAgent);
@@ -215,7 +213,6 @@ describe('friend-request notification regression (#248)', () => {
       expect(page.items[0]?.type).toBe('friend.request');
       expect(page.items[0]?.body).toBe('alice sent you a friend request.');
     } finally {
-      await harness.ctx.notificationDispatcher.stop();
       await harness.ctx.events.close();
     }
   });
@@ -232,8 +229,7 @@ describe('alert.triggered notification (§14, V3-P10)', () => {
     return page;
   }
 
-  it('a fired alert reaches the owner’s bell via the bus → dispatcher path', async () => {
-    await harness.ctx.notificationDispatcher.start();
+  it('a fired alert reaches the owner’s bell via the center → dispatcher path', async () => {
     try {
       const user = await harness.seedUser({ email: 'ann@bt.test', username: 'ann' });
       const agent = await loginAgent(harness.app, user.email, user.password);
@@ -261,8 +257,9 @@ describe('alert.triggered notification (§14, V3-P10)', () => {
         })
         .returning();
 
-      // The evaluator publishes this on the bus; the API dispatcher subscribes.
-      await harness.ctx.events.publish({
+      // The evaluator emits this through the notification center (#368) — the
+      // durable queue in production, direct dispatch under test.
+      await harness.ctx.notify.emit({
         type: 'alert.triggered',
         userId: user.id,
         alertId: alert!.id,
@@ -275,7 +272,6 @@ describe('alert.triggered notification (§14, V3-P10)', () => {
       expect(page.items[0]?.type).toBe('alert.triggered');
       expect(page.items[0]?.title).toBe('Price alert: AAPL');
     } finally {
-      await harness.ctx.notificationDispatcher.stop();
       await harness.ctx.events.close();
     }
   });

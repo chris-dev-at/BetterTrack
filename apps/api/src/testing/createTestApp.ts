@@ -22,6 +22,7 @@ import { createLogger } from '../logger';
 import type { MarketDataService } from '../providers';
 import type { MailTransport } from '../services/email/transport';
 import type { LiveModeServiceOptions } from '../services/liveMode';
+import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
 /**
@@ -170,6 +171,12 @@ export interface CreateTestAppOptions {
   backfill?: BackfillScheduler;
   /** Fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
+  /**
+   * Notification-center transport override (#368): e.g. a recording queue that
+   * nothing consumes, to model a dispatcher outage. Defaults to synchronous
+   * direct dispatch under test.
+   */
+  notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -203,6 +210,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     backfill: options.backfill,
     passwordHasher: testPasswordHasher,
     liveModeOptions: options.liveModeOptions,
+    notificationEnqueue: options.notificationEnqueue,
   });
   const app = createApp(ctx);
 

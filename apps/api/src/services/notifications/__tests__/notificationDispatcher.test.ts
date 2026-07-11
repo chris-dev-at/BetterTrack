@@ -1,19 +1,15 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createNotificationRepository } from '../../../data/repositories/notificationRepository';
 import type { Database } from '../../../data/db';
-import { friendships, notifications, notificationSettings } from '../../../data/schema';
+import { friendships, notifications, notificationSettings, users } from '../../../data/schema';
 import type {
   FriendAcceptedEvent,
   FriendRequestEvent,
   PortfolioSharedEvent,
 } from '../../../events';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import {
-  createNotificationDispatcher,
-  type NotificationDispatcher,
-} from '../notificationDispatcher';
+import type { NotificationDispatcher } from '../notificationDispatcher';
 
 const OCCURRED_AT = '2026-07-04T00:00:00.000Z';
 
@@ -24,35 +20,26 @@ let dispatcher: NotificationDispatcher;
 beforeEach(async () => {
   harness = await createTestApp();
   db = harness.db;
-  dispatcher = createNotificationDispatcher({
-    bus: harness.ctx.events,
-    repo: createNotificationRepository(db),
-    logger: harness.ctx.logger,
-  });
+  // The context's own delivery core — the exact instance the test-mode
+  // notification center delivers through, so direct dispatch() calls and
+  // producer-driven emits exercise ONE pipeline (#368).
+  dispatcher = harness.ctx.notificationDispatcher;
 });
 
 afterEach(async () => {
-  // Drop subscriptions so this file's dispatcher never handles another file's
-  // events on the process-shared ioredis-mock pub/sub bus, then quit the bus's
-  // duplicated connections so their message listeners don't accumulate.
-  await dispatcher.stop();
+  // Quit the bus's duplicated connections so message listeners don't accumulate
+  // on the process-shared ioredis-mock pub/sub.
   await harness.ctx.events.close();
 });
 
-async function notificationsFor(userId: string, type?: string) {
+async function allRowsFor(userId: string, type?: string) {
   const rows = await db.select().from(notifications).where(eq(notifications.userId, userId));
   return type ? rows.filter((r) => r.type === type) : rows;
 }
 
-/** Poll until at least one `type` notification exists for the user, or time out. */
-async function waitForNotification(userId: string, type: string, timeoutMs = 2000) {
-  const start = Date.now();
-  for (;;) {
-    const rows = await notificationsFor(userId, type);
-    if (rows.length > 0) return rows;
-    if (Date.now() - start > timeoutMs) return rows;
-    await new Promise((r) => setTimeout(r, 15));
-  }
+/** Only the rows the inbox would show (#368: hidden rows are dedupe markers). */
+async function visibleRowsFor(userId: string, type?: string) {
+  return (await allRowsFor(userId, type)).filter((r) => !r.hidden);
 }
 
 /** Canonical friendship insert (schema stores each pair once, `user_a < user_b`). */
@@ -78,7 +65,7 @@ describe('notificationDispatcher.dispatch', () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'ruser' });
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id, actorUsername: 'anna' }));
 
-    const rows = await notificationsFor(recipient.id);
+    const rows = await visibleRowsFor(recipient.id);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.type).toBe('friend.request');
     expect(rows[0]!.title).toBe('New friend request');
@@ -109,9 +96,53 @@ describe('notificationDispatcher.dispatch', () => {
     };
     await dispatcher.dispatch(shared);
 
-    const byType = new Map((await notificationsFor(recipient.id)).map((r) => [r.type, r]));
+    const byType = new Map((await visibleRowsFor(recipient.id)).map((r) => [r.type, r]));
     expect(byType.get('friend.accepted')?.body).toBe('bob accepted your friend request.');
     expect(byType.get('portfolio.shared')?.body).toBe('anna shared their portfolio with friends.');
+  });
+
+  it('renders the v2 event catalog: watchlist/conglomerate shares, friend activity, temp password', async () => {
+    const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
+
+    await dispatcher.dispatch({
+      type: 'watchlist.shared',
+      userId: recipient.id,
+      actorId: 'owner',
+      actorUsername: 'anna',
+      watchlistId: 'wl-1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'conglomerate.shared',
+      userId: recipient.id,
+      actorId: 'owner',
+      actorUsername: 'anna',
+      conglomerateId: 'cg-1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'friend.activity',
+      userId: recipient.id,
+      actorId: 'owner',
+      actorUsername: 'anna',
+      itemKind: 'portfolio',
+      itemId: 'pf-1',
+      activity: 'buy',
+      assetSymbol: 'AAPL',
+      refId: 'txn:1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'account.temp_password',
+      userId: recipient.id,
+      occurredAt: OCCURRED_AT,
+    });
+
+    const byType = new Map((await visibleRowsFor(recipient.id)).map((r) => [r.type, r]));
+    expect(byType.get('watchlist.shared')?.body).toBe('anna shared a watchlist with you.');
+    expect(byType.get('conglomerate.shared')?.body).toBe('anna shared a conglomerate with you.');
+    expect(byType.get('friend.activity')?.body).toBe('anna bought AAPL.');
+    expect(byType.get('account.temp_password')?.title).toBe('Password was reset');
   });
 
   it('dedupes: re-dispatching the same event does not create a second row', async () => {
@@ -121,26 +152,36 @@ describe('notificationDispatcher.dispatch', () => {
     await dispatcher.dispatch(event);
     await dispatcher.dispatch(event);
 
-    expect(await notificationsFor(recipient.id)).toHaveLength(1);
+    expect(await allRowsFor(recipient.id)).toHaveLength(1);
   });
 
   it('treats the in-app channel as on by default when the user has no settings row', async () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
-    expect(await notificationsFor(recipient.id)).toHaveLength(1);
+    expect(await visibleRowsFor(recipient.id)).toHaveLength(1);
   });
 
-  it('suppresses the row when the in-app channel is explicitly disabled', async () => {
+  it('writes only a hidden, read dedupe marker when the in-app channel is disabled', async () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
     await db
       .insert(notificationSettings)
       .values({ userId: recipient.id, channel: 'inapp', enabled: false });
 
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
-    expect(await notificationsFor(recipient.id)).toHaveLength(0);
+
+    // Nothing surfaces in the inbox…
+    expect(await visibleRowsFor(recipient.id)).toHaveLength(0);
+    // …but the durable marker exists (idempotency under at-least-once, #368)
+    // and a redelivery stays a no-op.
+    const markers = await allRowsFor(recipient.id);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.hidden).toBe(true);
+    expect(markers[0]!.readAt).not.toBeNull();
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
+    expect(await allRowsFor(recipient.id)).toHaveLength(1);
   });
 
-  it('suppresses the in-app row when the type is muted via the matrix config', async () => {
+  it('suppresses the visible row when the type is muted via the matrix config', async () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
     // Channel stays on globally, but friend.request is routed away from in-app.
     await db.insert(notificationSettings).values({
@@ -151,7 +192,7 @@ describe('notificationDispatcher.dispatch', () => {
     });
 
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
-    expect(await notificationsFor(recipient.id, 'friend.request')).toHaveLength(0);
+    expect(await visibleRowsFor(recipient.id, 'friend.request')).toHaveLength(0);
   });
 
   it('keeps the in-app row for a type whose in-app override is on, ignoring other types', async () => {
@@ -165,36 +206,43 @@ describe('notificationDispatcher.dispatch', () => {
     });
 
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
-    expect(await notificationsFor(recipient.id, 'friend.request')).toHaveLength(1);
+    expect(await visibleRowsFor(recipient.id, 'friend.request')).toHaveLength(1);
   });
 
-  it('start() subscribes so a published event is dispatched end-to-end', async () => {
+  it('global mute suppresses every channel, leaving only the hidden marker', async () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
-    await dispatcher.start();
+    await db.update(users).set({ notificationsMuted: true }).where(eq(users.id, recipient.id));
 
-    await harness.ctx.events.publish(friendRequestEvent({ userId: recipient.id }));
+    await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
 
-    const rows = await waitForNotification(recipient.id, 'friend.request');
-    expect(rows).toHaveLength(1);
+    expect(await visibleRowsFor(recipient.id)).toHaveLength(0);
+    const markers = await allRowsFor(recipient.id);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.hidden).toBe(true);
+  });
+
+  it('ignores an event whose recipient no longer exists', async () => {
+    await dispatcher.dispatch(
+      friendRequestEvent({ userId: '00000000-0000-7000-8000-000000000000' }),
+    );
+    // Nothing thrown, nothing written.
+    const rows = await db.select().from(notifications);
+    expect(rows).toHaveLength(0);
   });
 });
 
-describe('producers → dispatcher (end-to-end over the bus)', () => {
-  beforeEach(async () => {
-    await dispatcher.start();
-  });
-
+describe('producers → center → dispatcher (one pipeline, #368)', () => {
   it('creating a friend request notifies the addressee', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
 
     await harness.ctx.social.sendRequest(alice.id, 'bob');
 
-    const rows = await waitForNotification(bob.id, 'friend.request');
+    const rows = await visibleRowsFor(bob.id, 'friend.request');
     expect(rows).toHaveLength(1);
     expect(rows[0]!.body).toBe('alice sent you a friend request.');
     // No self / requester notification.
-    expect(await notificationsFor(alice.id, 'friend.request')).toHaveLength(0);
+    expect(await allRowsFor(alice.id, 'friend.request')).toHaveLength(0);
   });
 
   it('accepting a request notifies the original requester', async () => {
@@ -206,7 +254,7 @@ describe('producers → dispatcher (end-to-end over the bus)', () => {
     expect(incoming).toHaveLength(1);
     await harness.ctx.social.accept(bob.id, incoming[0]!.id);
 
-    const rows = await waitForNotification(alice.id, 'friend.accepted');
+    const rows = await visibleRowsFor(alice.id, 'friend.accepted');
     expect(rows).toHaveLength(1);
     expect(rows[0]!.body).toBe('bob accepted your friend request.');
   });
@@ -222,11 +270,11 @@ describe('producers → dispatcher (end-to-end over the bus)', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
 
-    expect(await waitForNotification(f1.id, 'portfolio.shared')).toHaveLength(1);
-    expect(await waitForNotification(f2.id, 'portfolio.shared')).toHaveLength(1);
-    expect(await notificationsFor(stranger.id, 'portfolio.shared')).toHaveLength(0);
+    expect(await visibleRowsFor(f1.id, 'portfolio.shared')).toHaveLength(1);
+    expect(await visibleRowsFor(f2.id, 'portfolio.shared')).toHaveLength(1);
+    expect(await allRowsFor(stranger.id, 'portfolio.shared')).toHaveLength(0);
     // The owner never notifies themselves.
-    expect(await notificationsFor(owner.id, 'portfolio.shared')).toHaveLength(0);
+    expect(await allRowsFor(owner.id, 'portfolio.shared')).toHaveLength(0);
   });
 
   it('does not notify when visibility is unchanged or set to a non-friends value', async () => {
@@ -237,7 +285,7 @@ describe('producers → dispatcher (end-to-end over the bus)', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     // Share once → one notification.
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
-    expect(await waitForNotification(friend.id, 'portfolio.shared')).toHaveLength(1);
+    expect(await visibleRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
 
     // A rename (visibility untouched) and a re-set to friends must not re-notify.
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { name: 'Renamed' });
@@ -247,8 +295,6 @@ describe('producers → dispatcher (end-to-end over the bus)', () => {
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'private' });
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { visibility: 'friends' });
 
-    // Give any stray publish time to land, then assert still exactly one.
-    await new Promise((r) => setTimeout(r, 60));
-    expect(await notificationsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
+    expect(await allRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
   });
 });

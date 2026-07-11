@@ -25,6 +25,8 @@ import type {
   Unsubscribe,
 } from '../../events';
 import type { Logger } from '../../logger';
+import type { NotificationCenter } from '../../services/notifications/notificationCenter';
+import type { DispatchableEvent } from '../../services/notifications/notificationDispatcher';
 import { createStubMarketData } from '../../testing/marketDataStubs';
 import { createDeadLetter } from '../deadLetter';
 import {
@@ -60,6 +62,18 @@ function recordingBus(): EventBus & { published: DomainEvent[] } {
       return unsub;
     },
     async close() {},
+  };
+}
+
+/** Recording stand-in for the notification center (#368) — captures emits. */
+function recordingCenter(): NotificationCenter & { emitted: DispatchableEvent[] } {
+  const emitted: DispatchableEvent[] = [];
+  return {
+    emitted,
+    async emit(event) {
+      emitted.push(event);
+      return true;
+    },
   };
 }
 
@@ -109,7 +123,11 @@ describe('alerts.evaluate job (§14, V3-P10)', () => {
   });
 
   it('is scheduled every minute', () => {
-    const job = createAlertsEvaluateJob({ db, marketData: createStubMarketData() });
+    const job = createAlertsEvaluateJob({
+      db,
+      marketData: createStubMarketData(),
+      notify: recordingCenter(),
+    });
     expect(job.name).toBe('alerts.evaluate');
     expect(job.schedule).toEqual({
       id: ALERTS_EVALUATE_SCHEDULER_ID,
@@ -131,17 +149,21 @@ describe('alerts.evaluate job (§14, V3-P10)', () => {
     });
 
     const events = recordingBus();
+    const notify = recordingCenter();
     const ctx = makeCtx(events);
     const job = createAlertsEvaluateJob({
       db,
       marketData: createStubMarketData({ quote: () => quoteResult(150) }),
+      notify,
     });
 
     await job.handler(makeJob(Date.parse('2026-07-07T12:00:00.000Z')), ctx);
 
-    expect(events.published).toEqual([
+    // The fire enters the durable notification center (#368) — never the bus.
+    expect(notify.emitted).toEqual([
       expect.objectContaining({ type: 'alert.triggered', userId, alertId: alert.id, assetId }),
     ]);
+    expect(events.published).toEqual([]);
     const [row] = await db.select().from(schema.alerts).where(eq(schema.alerts.id, alert.id));
     expect(row!.status).toBe('triggered');
   });
