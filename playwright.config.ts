@@ -8,6 +8,8 @@ import {
   REDIS_URL,
   SESSION_SECRET,
   WEB_BASE_URL,
+  WORKER_HEALTH_PORT,
+  WORKER_HEALTH_URL,
 } from './e2e/support/config';
 
 /**
@@ -59,6 +61,17 @@ export default defineConfig({
       url: WEB_BASE_URL,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
+    },
+    // The BullMQ worker (issue #426, flow 6): the alerts evaluator only runs
+    // here, so without it no price alert can fire under Playwright. Started via
+    // a thin wrapper that exposes a health port for the readiness poll — the
+    // worker itself has no HTTP surface. Test-infra wiring only, no app source.
+    {
+      command: 'node e2e/support/workerServer.mjs',
+      url: WORKER_HEALTH_URL,
+      env: { ...apiEnv, E2E_WORKER_HEALTH_PORT: WORKER_HEALTH_PORT },
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
     },
   ],
 });

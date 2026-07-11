@@ -12,7 +12,11 @@ jobs:
   e2e:
     name: Playwright happy path
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Headroom for the V3 flow specs added in #426 (cash transfer, share-to-one-
+    # friend, second watchlist, chat, alert fire) — the alert flow alone waits
+    # out the ~60s worker evaluator tick, and every spec runs on both the desktop
+    # and mobile-viewport projects.
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:17
