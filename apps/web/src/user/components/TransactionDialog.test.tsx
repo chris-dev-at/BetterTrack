@@ -137,8 +137,10 @@ describe('TransactionDialog — amount entry mode', () => {
     await user.type(screen.getByLabelText(/amount invested for btc/i), '1000');
 
     const status = screen.getByRole('status', { name: /derived quantity for btc/i });
-    expect(status).toHaveTextContent('0.01851852');
-    expect(status).toHaveTextContent(/records 1000\.00 EUR/i);
+    // Display quantity + money now flow through the shared locale-aware kit
+    // (de-AT default): "0,01851852" and "1.000,00 €", symbol-last (§7.1).
+    expect(status).toHaveTextContent('0,01851852');
+    expect(status).toHaveTextContent(/records 1\.000,00 €/);
   });
 
   test('submits a canonical (quantity, price) record with the derived quantity', async () => {

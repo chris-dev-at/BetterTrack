@@ -138,6 +138,7 @@ function AssetHeader({
                 amount={quote.price}
                 currency={quote.currency}
                 convertedAmount={detail.eurPrice}
+                unitPrice
               />
             </p>
             {dayChangePct != null ? (

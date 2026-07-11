@@ -157,7 +157,7 @@ describe('PriceChart', () => {
     // The series already are % curves: re-normalizing (percentage scale mode)
     // would divide by a first value of 0 — the scale must stay normal.
     expect(options.rightPriceScale).toMatchObject({ mode: 0 });
-    expect(options.localization?.priceFormatter?.(7.1167)).toBe('7.12 %');
+    expect(options.localization?.priceFormatter?.(7.1167)).toBe('7,12 %');
   });
 
   test('empty series renders an empty state without creating a chart', () => {

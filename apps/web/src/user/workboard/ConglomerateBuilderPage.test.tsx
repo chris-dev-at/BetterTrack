@@ -159,11 +159,11 @@ describe('ConglomerateBuilderPage', () => {
       { id: 'a1', symbol: 'AAPL', weightPct: 60 },
       { id: 'a2', symbol: 'MSFT', weightPct: 27.5 },
     ]);
-    // 87.5% total → amber with the "% left" readout.
-    expect(screen.getByText('87.5% — 12.5% left')).toBeInTheDocument();
+    // 87.5% total → amber with the "% left" readout (2 dp, de-AT default locale).
+    expect(screen.getByText('87,50 % — 12,50 % left')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Weight for MSFT'), { target: { value: '40' } });
-    await waitFor(() => expect(screen.getByText('100.0%')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('100,00 %')).toBeInTheDocument());
   });
 
   test('auto-balance produces a Σ of exactly 100', async () => {
@@ -174,7 +174,7 @@ describe('ConglomerateBuilderPage', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: /auto-balance/i }));
 
-    await waitFor(() => expect(screen.getByText('100.0%')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('100,00 %')).toBeInTheDocument());
     expect(screen.getByLabelText('Weight for AAPL')).toHaveValue(50);
     expect(screen.getByLabelText('Weight for MSFT')).toHaveValue(50);
   });
@@ -187,7 +187,7 @@ describe('ConglomerateBuilderPage', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: /normalize/i }));
 
-    await waitFor(() => expect(screen.getByText('100.0%')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('100,00 %')).toBeInTheDocument());
     expect(screen.getByLabelText('Weight for AAPL')).toHaveValue(75);
     expect(screen.getByLabelText('Weight for MSFT')).toHaveValue(25);
   });

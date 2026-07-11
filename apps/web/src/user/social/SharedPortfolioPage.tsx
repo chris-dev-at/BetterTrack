@@ -136,7 +136,7 @@ function HoldingsTable({ holdings }: { holdings: Holding[] }) {
               </td>
               <td className="px-3 py-2 text-right tabular-nums">{formatQuantity(h.quantity)}</td>
               <td className="px-3 py-2 text-right">
-                <MoneyText amount={h.price} currency={h.asset.currency} />
+                <MoneyText amount={h.price} currency={h.asset.currency} unitPrice />
               </td>
               <td className="px-3 py-2 text-right">
                 <MoneyText amount={h.marketValueEur} />

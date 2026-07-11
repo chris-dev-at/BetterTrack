@@ -138,14 +138,14 @@ describe('CashSourcesPage', () => {
     // Name + type both read "Bank" in the row — proves the type label renders.
     expect(within(bank).getAllByText('Bank')).toHaveLength(2);
     expect(within(bank).getByText('1.000,00 €')).toBeInTheDocument();
-    // Per-source share of the 6 000 total (liquidity split): 1000 / 6000 ≈ 16,7 %.
-    expect(within(bank).getByText('16,7 %')).toBeInTheDocument();
+    // Per-source share of the 6 000 total (liquidity split): 1000 / 6000 ≈ 16,67 %.
+    expect(within(bank).getByText('16,67 %')).toBeInTheDocument();
 
     // A distinct type label on another row.
     expect(within(rowFor('Savings')).getByText('Retirement')).toBeInTheDocument();
 
     const main = rowFor('Main');
-    expect(within(main).getByText('83,3 %')).toBeInTheDocument();
+    expect(within(main).getByText('83,33 %')).toBeInTheDocument();
   });
 
   test('creates a named source', async () => {

@@ -101,12 +101,12 @@ describe('BacktestPanel', () => {
     );
 
     expect(screen.getByText('Total return')).toBeInTheDocument();
-    expect(screen.getByText('+42,5 %')).toBeInTheDocument();
-    expect(screen.getByText('+7,3 %')).toBeInTheDocument();
-    expect(screen.getByText('-9,1 %')).toBeInTheDocument();
-    expect(screen.getByText('14,6 %')).toBeInTheDocument();
-    expect(screen.getByText('+3,2 %')).toBeInTheDocument();
-    expect(screen.getByText('-2,8 %')).toBeInTheDocument();
+    expect(screen.getByText('+42,50 %')).toBeInTheDocument();
+    expect(screen.getByText('+7,30 %')).toBeInTheDocument();
+    expect(screen.getByText('-9,10 %')).toBeInTheDocument();
+    expect(screen.getByText('14,60 %')).toBeInTheDocument();
+    expect(screen.getByText('+3,20 %')).toBeInTheDocument();
+    expect(screen.getByText('-2,80 %')).toBeInTheDocument();
 
     // The chart's own built-in range toggle is hidden — the panel drives its own.
     expect(screen.queryByRole('group', { name: /select chart range/i })).not.toBeInTheDocument();
@@ -270,7 +270,7 @@ describe('BacktestPanel', () => {
     expect(notice.textContent).toMatch(/SPACEX/);
     // Idle-cash visibility: the "avg. uninvested" stat (cash mode only).
     expect(screen.getByText('Avg. uninvested')).toBeInTheDocument();
-    expect(screen.getByText('21,4 %')).toBeInTheDocument();
+    expect(screen.getByText('21,40 %')).toBeInTheDocument();
     // The entry marker rides the chart at the entry date ("X enters").
     await waitFor(() =>
       expect(chartMocks.setMarkers).toHaveBeenCalledWith([

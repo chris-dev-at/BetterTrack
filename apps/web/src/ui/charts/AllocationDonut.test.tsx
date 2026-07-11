@@ -30,8 +30,8 @@ describe('AllocationDonut', () => {
     for (const seg of sampleAllocation) {
       expect(within(list).getByText(seg.label)).toBeInTheDocument();
     }
-    // 32.5 of a total of 100 ⇒ "32.5%".
-    expect(within(list).getByText('32.5%')).toBeInTheDocument();
+    // 32.5 of a total of 100 ⇒ "32,50 %".
+    expect(within(list).getByText('32,50 %')).toBeInTheDocument();
     // The donut itself is labelled for screen readers.
     expect(screen.getByRole('img', { name: /allocation breakdown/i })).toBeInTheDocument();
   });

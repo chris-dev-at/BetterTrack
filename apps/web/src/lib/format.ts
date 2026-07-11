@@ -86,6 +86,7 @@ function withoutNegativeZero(value: number): number {
 
 interface LocaleFormatters {
   quantity: Intl.NumberFormat;
+  smallPrice: Intl.NumberFormat;
   percent: Intl.NumberFormat;
   signedPercent: Intl.NumberFormat;
   signedDelta: Intl.NumberFormat;
@@ -100,24 +101,32 @@ function formatters(): LocaleFormatters {
   let cached = localeCache.get(activeLocale);
   if (!cached) {
     cached = {
-      // Quantities (e.g. fractional shares): up to 6 dp, no forced trailing zeros.
+      // Asset quantities (fractional shares, crypto): up to 8 dp (a satoshi is
+      // 1e-8), no forced trailing zeros — whole numbers render plain (§7.1 rule 3).
       quantity: new Intl.NumberFormat(activeLocale, {
         minimumFractionDigits: 0,
-        maximumFractionDigits: 6,
+        maximumFractionDigits: 8,
+      }),
+      // Sub-cent unit prices (|value| < 0.01): up to 6 significant decimals so a
+      // €0.000012 token price does not collapse to €0,00 (§7.1 rule 4). Trailing
+      // zeros are not padded, so 0.000012 stays "0,000012".
+      smallPrice: new Intl.NumberFormat(activeLocale, {
+        maximumSignificantDigits: 6,
       }),
       // Percent/weight: callers pass a 0–100 magnitude, so divide by 100 — `style:
-      // 'percent'` scales the input internally and supplies the locale-correct symbol.
+      // 'percent'` scales the input internally and supplies the locale-correct
+      // symbol. Two decimals app-wide (§7.1 rule 2).
       percent: new Intl.NumberFormat(activeLocale, {
         style: 'percent',
-        minimumFractionDigits: 1,
-        maximumFractionDigits: 1,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
       }),
       // Signed percent delta — `exceptZero` prepends `+`/`-`, nothing for zero.
       signedPercent: new Intl.NumberFormat(activeLocale, {
         style: 'percent',
         signDisplay: 'exceptZero',
-        minimumFractionDigits: 1,
-        maximumFractionDigits: 1,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
       }),
       // Signed plain-number delta (non-currency), always 2 dp.
       signedDelta: new Intl.NumberFormat(activeLocale, {
@@ -141,19 +150,38 @@ function formatters(): LocaleFormatters {
   return cached;
 }
 
+/**
+ * `roundingMode` is a valid runtime Intl option (ES2023) but is absent from this
+ * TypeScript lib's `NumberFormatOptions`; widen locally so we can pin it.
+ */
+type NumberFormatOptionsWithRounding = Intl.NumberFormatOptions & {
+  roundingMode?: 'halfExpand';
+};
+
 function moneyFormatter(currency: string): Intl.NumberFormat {
   const cache = formatters().money;
   let formatter = cache.get(currency);
   if (!formatter) {
-    formatter = new Intl.NumberFormat(activeLocale, {
+    const options: NumberFormatOptionsWithRounding = {
       style: 'currency',
       currency,
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
-    });
+      // Fiat money is always half-up (round half away from zero) and never
+      // floored (§7.1 rule 1): 2,125 → 2,13, -2,125 → -2,13. This is ICU's
+      // default, pinned explicitly so the binding rule is not ICU-version-dependent.
+      roundingMode: 'halfExpand',
+    };
+    formatter = new Intl.NumberFormat(activeLocale, options);
     cache.set(currency, formatter);
   }
   return formatter;
+}
+
+/** The locale's rendered currency symbol (`€`, `$`, `CHF`), for symbol-last composition. */
+function currencySymbolFor(currency: string): string {
+  const parts = moneyFormatter(currency).formatToParts(0);
+  return parts.find((part) => part.type === 'currency')?.value ?? currency;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +221,9 @@ export function formatMoney(value: number | null | undefined, currency?: string)
 }
 
 /**
- * A bare quantity — up to 6 dp, no forced trailing zeros:
- * `formatQuantity(12)` → `"12"`, `formatQuantity(1.1234567)` → `"1,123457"`.
+ * An asset quantity (§7.1 rule 3) — whole numbers render plain, fractional up to
+ * **8 dp** with trailing zeros trimmed (crypto): `formatQuantity(12)` → `"12"`,
+ * `formatQuantity(1.5)` → `"1,5"`, `formatQuantity(0.12345678)` → `"0,12345678"`.
  * Returns {@link EM_DASH} for absent/non-finite values.
  */
 export function formatQuantity(value: number | null | undefined): string {
@@ -203,8 +232,27 @@ export function formatQuantity(value: number | null | undefined): string {
 }
 
 /**
- * A percentage/weight given as a 0–100 magnitude, 1 dp:
- * `formatPercent(2.5)` → `"2,5 %"`, `formatPercent(-2.5)` → `"-2,5 %"`.
+ * A per-unit price (§7.1 rule 4), symbol-last. A sub-cent price keeps precision:
+ * for `0 < |value| < 0.01` it renders up to **6 significant decimals**
+ * (`formatUnitPrice(0.000012)` → `"0,000012 €"`) so a micro-cap token price is
+ * never rounded away to `0,00 €`; every other value (including exactly `0`)
+ * follows the 2 dp money rule (`formatUnitPrice(12.5)` → `"12,50 €"`). The
+ * currency defaults to the user's base ({@link setMoneyCurrency}); pass an
+ * asset's native currency explicitly. Returns {@link EM_DASH} for non-finite input.
+ */
+export function formatUnitPrice(value: number | null | undefined, currency?: string): string {
+  if (!isFiniteNumber(value)) return EM_DASH;
+  currency ??= activeCurrency;
+  const v = withoutNegativeZero(value);
+  if (v !== 0 && Math.abs(v) < 0.01) {
+    return normalizeSpaces(`${formatters().smallPrice.format(v)} ${currencySymbolFor(currency)}`);
+  }
+  return formatMoney(v, currency);
+}
+
+/**
+ * A percentage/weight given as a 0–100 magnitude, 2 dp (§7.1 rule 2):
+ * `formatPercent(2.5)` → `"2,50 %"`, `formatPercent(-2.5)` → `"-2,50 %"`.
  * Returns {@link EM_DASH} for absent/non-finite values.
  */
 export function formatPercent(value: number | null | undefined): string {
@@ -216,8 +264,8 @@ export function formatPercent(value: number | null | undefined): string {
 export const formatWeight = formatPercent;
 
 /**
- * A signed percentage delta (0–100 magnitude), 1 dp, explicit `+` for gains:
- * `formatSignedPercent(2.5)` → `"+2,5 %"`, `-1.5` → `"-1,5 %"`, `0` → `"0,0 %"`.
+ * A signed percentage delta (0–100 magnitude), 2 dp, explicit `+` for gains:
+ * `formatSignedPercent(2.5)` → `"+2,50 %"`, `-1.5` → `"-1,50 %"`, `0` → `"0,00 %"`.
  * Returns {@link EM_DASH} for absent/non-finite values.
  */
 export function formatSignedPercent(value: number | null | undefined): string {

@@ -163,8 +163,8 @@ describe('ConglomerateDetailPage', () => {
     const table = screen.getByRole('table');
     expect(within(table).getByText('AAPL')).toBeInTheDocument();
     expect(within(table).getByText('MSFT')).toBeInTheDocument();
-    expect(within(table).getByText('60,0 %')).toBeInTheDocument();
-    expect(within(table).getByText('40,0 %')).toBeInTheDocument();
+    expect(within(table).getByText('60,00 %')).toBeInTheDocument();
+    expect(within(table).getByText('40,00 %')).toBeInTheDocument();
 
     const donut = screen.getByRole('img', { name: /conglomerate allocation/i });
     expect(donut).toBeInTheDocument();

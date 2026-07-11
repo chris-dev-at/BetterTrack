@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
 import { getSharedConglomerate } from '../../lib/socialApi';
+import { formatPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
 
 const SHARED_STALE_MS = 30_000;
@@ -64,7 +65,7 @@ export function SharedConglomeratePage() {
                 <p className="truncate text-xs text-neutral-500">{p.asset.name}</p>
               </div>
               <span className="shrink-0 text-sm font-medium tabular-nums text-neutral-200">
-                {p.weightPct.toFixed(1)}%
+                {formatPercent(p.weightPct)}
               </span>
             </li>
           ))}

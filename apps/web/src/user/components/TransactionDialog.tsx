@@ -20,6 +20,7 @@ import {
   updateTransaction,
 } from '../../lib/portfolioApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
+import { formatMoney, formatQuantity } from '../../lib/format';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
@@ -191,8 +192,13 @@ export function formatDerivedQuantity(quantity: number): string {
   return fixed.includes('.') ? fixed.replace(/0+$/, '').replace(/\.$/, '') : fixed;
 }
 
-/** Two-decimal money string for previews and mode-switch preservation. */
-function formatMoney(amount: number): string {
+/**
+ * A dot-decimal money string for the amount **input** field (fill-max and
+ * mode-switch preservation). It feeds a raw `<input>` value re-parsed with
+ * `Number()`, so it must stay locale-independent (always `.`) — this is NOT
+ * display; user-facing money renders through the shared `formatMoney`.
+ */
+function amountToInput(amount: number): string {
   return amount.toFixed(2);
 }
 
@@ -741,7 +747,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     if (max == null) return;
     const patch: Partial<Row> =
       row.entryMode === 'amount'
-        ? { amount: formatMoney(max) }
+        ? { amount: amountToInput(max) }
         : { quantity: formatDerivedQuantity(max) };
     if (row.key === cashRow?.key && linkAsset) handleLinkedChange(patch);
     else updateRow(row.key, patch);
@@ -1020,7 +1026,7 @@ function switchEntryMode(row: Row, next: EntryMode, onChange: (patch: Partial<Ro
     const quantity = Number(row.quantity);
     const patch: Partial<Row> = { entryMode: 'amount' };
     if (row.quantity.trim() !== '' && Number.isFinite(quantity) && quantity > 0 && priceUsable) {
-      patch.amount = formatMoney(quantity * price);
+      patch.amount = amountToInput(quantity * price);
     }
     onChange(patch);
     return;
@@ -1359,9 +1365,11 @@ function UncoveredCard({
   t: TranslateFn;
 }) {
   const symbol = row.asset.symbol;
-  const held = formatDerivedQuantity(uncovered.info.held);
-  const sellQty = formatDerivedQuantity(uncovered.info.sellQty);
-  const uncoveredQty = formatDerivedQuantity(uncovered.info.uncoveredQty);
+  // Display quantities go through the shared locale-aware formatter (§7.1 rule 3);
+  // `formatDerivedQuantity` stays reserved for raw input-field values.
+  const held = formatQuantity(uncovered.info.held);
+  const sellQty = formatQuantity(uncovered.info.sellQty);
+  const uncoveredQty = formatQuantity(uncovered.info.uncoveredQty);
   const modeBtn = (mode: 'zero' | 'entry') =>
     cx(
       'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
@@ -1654,16 +1662,15 @@ function RowFields({
           {derived ? (
             <>
               ≈{' '}
-              <span className="font-mono text-neutral-200">
-                {formatDerivedQuantity(derived.quantity)}
-              </span>{' '}
+              <span className="font-mono text-neutral-200">{formatQuantity(derived.quantity)}</span>{' '}
               {symbol} · records{' '}
               <span className="font-mono text-neutral-200">
-                {formatMoney(derived.recordedAmount)} {row.asset.currency}
+                {formatMoney(derived.recordedAmount, row.asset.currency)}
               </span>
               {Math.abs(derived.residual) >= 0.005
                 ? ` (${derived.residual > 0 ? '+' : '−'}${formatMoney(
                     Math.abs(derived.residual),
+                    row.asset.currency,
                   )} vs entered, from 8-decimal rounding)`
                 : ''}
             </>
