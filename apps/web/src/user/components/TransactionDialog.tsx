@@ -136,6 +136,20 @@ interface Row {
    * acquisition keeps its past date, the withdrawal moves to today.
    */
   settleCashAsOfToday: boolean;
+  /**
+   * Uncovered sell acknowledgment (issue #369): the user confirmed selling more
+   * than they hold. Only meaningful while the row is genuinely uncovered
+   * (sell quantity > held); resets are handled by the detection, not the flag.
+   */
+  allowUncovered: boolean;
+  /**
+   * How the uncovered shares are basised (#369): `zero` = count as 0 % (basis =
+   * sale price → no gain, the default); `entry` = the user typed the original
+   * buy-in price in {@link uncoveredEntryPrice}.
+   */
+  uncoveredMode: 'zero' | 'entry';
+  /** Native per-unit buy-in price for the uncovered shares (mode `entry`), raw. */
+  uncoveredEntryPrice: string;
 }
 
 /**
@@ -233,6 +247,9 @@ function makeRow(
     note: '',
     cashLinked: false,
     settleCashAsOfToday: false,
+    allowUncovered: false,
+    uncoveredMode: 'zero',
+    uncoveredEntryPrice: '',
     ...seed,
   };
 }
@@ -259,6 +276,9 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
         note: t.note ?? '',
         cashLinked: false,
         settleCashAsOfToday: false,
+        allowUncovered: false,
+        uncoveredMode: 'zero',
+        uncoveredEntryPrice: '',
       },
     ];
   }
@@ -358,6 +378,34 @@ function resolveRowQuantityPrice(row: Row): { quantity: number; price: number } 
   const quantity = Number(row.quantity);
   if (!row.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) return null;
   return { quantity, price };
+}
+
+/** Quantity tolerance for the uncovered-sell trigger (mirrors domain QTY_EPSILON). */
+const UNCOVERED_QTY_EPSILON = 1e-9;
+
+/** An uncovered sell: how much of the sell isn't covered by the holding (#369). */
+interface UncoveredInfo {
+  /** Currently held quantity, clamped ≥ 0. */
+  held: number;
+  /** The resolved sell quantity. */
+  sellQty: number;
+  /** `sellQty − held`: shares being sold that aren't held. */
+  uncoveredQty: number;
+}
+
+/**
+ * Detect an uncovered sell (issue #369): a SELL whose resolved quantity exceeds
+ * the held position (a **zero** holding counts). Returns `null` when the row is
+ * not a sell, the holding is unknown (a freshly searched asset), or the sell is
+ * fully covered.
+ */
+function uncoveredForRow(row: Row, heldQuantity: number | undefined): UncoveredInfo | null {
+  if (row.side !== 'sell' || heldQuantity == null) return null;
+  const resolved = resolveRowQuantityPrice(row);
+  if (!resolved) return null;
+  const held = heldQuantity > 0 ? heldQuantity : 0;
+  if (resolved.quantity <= held + UNCOVERED_QTY_EPSILON) return null;
+  return { held, sellQty: resolved.quantity, uncoveredQty: resolved.quantity - held };
 }
 
 /**
@@ -638,6 +686,28 @@ export function TransactionDialog(props: TransactionDialogProps) {
     setSingleRow({ settleCashAsOfToday: !cashRow.settleCashAsOfToday });
   }
 
+  // --- Uncovered sell (issue #369) ------------------------------------------
+  // Selling more than held (a zero holding counts) is allowed only behind an
+  // explicit acknowledgment. Detected on the single-asset *create* row where the
+  // held quantity is known; edit keeps the server's strict oversell guard, and a
+  // freshly searched asset (unknown holding) falls back to the server's OVERSELL.
+  const uncoveredRow = !isEdit && rows.length === 1 ? rows[0]! : null;
+  const uncoveredInfo = uncoveredRow ? uncoveredForRow(uncoveredRow, props.heldQuantity) : null;
+  const uncoveredAck = uncoveredRow?.allowUncovered ?? false;
+  // Record is blocked until the user acknowledges an uncovered sell.
+  const uncoveredBlocksRecord = uncoveredInfo != null && !uncoveredAck;
+
+  function toggleUncoveredAck() {
+    if (!uncoveredRow) return;
+    setSingleRow({ allowUncovered: !uncoveredRow.allowUncovered });
+  }
+  function setUncoveredMode(mode: 'zero' | 'entry') {
+    setSingleRow({ uncoveredMode: mode });
+  }
+  function setUncoveredEntryPrice(value: string) {
+    setSingleRow({ uncoveredEntryPrice: value });
+  }
+
   /** Max affordable/held for the current row, in the active entry unit (#378). */
   function maxForRow(row: Row): number | null {
     if (row.side === 'sell') {
@@ -710,6 +780,21 @@ export function TransactionDialog(props: TransactionDialogProps) {
       if (row.key === cashRow?.key && row.cashLinked && cashSourceId) {
         input!.cashSourceId = cashSourceId;
       }
+      // Uncovered sell (issue #369): attach the acknowledged flag + the chosen
+      // basis for the uncovered shares. `zero` mode omits the entry price so the
+      // server basises them at the sale price (0 realized); `entry` mode sends
+      // the user's buy-in price for an accurate realized gain.
+      if (row.key === uncoveredRow?.key && uncoveredInfo && uncoveredAck) {
+        input!.allowUncovered = true;
+        if (row.uncoveredMode === 'entry') {
+          const entry = Number(row.uncoveredEntryPrice);
+          if (row.uncoveredEntryPrice.trim() === '' || !Number.isFinite(entry) || entry < 0) {
+            setError(t('portfolio.transaction.uncoveredEntryPriceInvalid'));
+            return;
+          }
+          input!.uncoveredEntryPrice = entry;
+        }
+      }
       inputs.push(input!);
     }
 
@@ -721,6 +806,13 @@ export function TransactionDialog(props: TransactionDialogProps) {
           ? t('portfolio.transaction.backdatedBlocked')
           : t('portfolio.transaction.cashNegative'),
       );
+      return;
+    }
+
+    // An unacknowledged uncovered sell never submits (#369): the button is
+    // already disabled, but re-check here for keyboard/enter submits too.
+    if (uncoveredBlocksRecord) {
+      setError(t('portfolio.transaction.uncoveredBlocked'));
       return;
     }
 
@@ -806,7 +898,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       <button
         type="submit"
         form={headingId}
-        disabled={submitting || cashBlocksRecord}
+        disabled={submitting || cashBlocksRecord || uncoveredBlocksRecord}
         className={cx(
           'w-full rounded-lg px-4 py-3 text-sm font-semibold text-black transition',
           'bg-[#F6B82E] hover:bg-[#ffca4d] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E] focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900',
@@ -869,6 +961,20 @@ export function TransactionDialog(props: TransactionDialogProps) {
                     onToggleSettleToday: toggleSettleToday,
                   }
                 : undefined;
+            // The uncovered-sell card lives on the same eligible create row.
+            const uncovered: RowUncovered | undefined =
+              uncoveredRow && uncoveredRow.key === row.key && uncoveredInfo
+                ? {
+                    info: uncoveredInfo,
+                    acknowledged: row.allowUncovered,
+                    mode: row.uncoveredMode,
+                    entryPrice: row.uncoveredEntryPrice,
+                    currency: row.asset.currency,
+                    onToggleAck: toggleUncoveredAck,
+                    onSetMode: setUncoveredMode,
+                    onSetEntryPrice: setUncoveredEntryPrice,
+                  }
+                : undefined;
             const canChangeAsset = !isEdit && !props.asset && !props.prefill && rows.length === 1;
             return (
               <RowFields
@@ -890,6 +996,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
                 onFillMax={maxForRow(row) != null ? () => fillMax(row) : undefined}
                 link={link}
                 cash={cash}
+                uncovered={uncovered}
               />
             );
           })}
@@ -959,6 +1066,23 @@ export interface RowCash {
   buyDate: string;
   onToggle: () => void;
   onToggleSettleToday: () => void;
+}
+
+/** Uncovered-sell card controls for the eligible sell row (issue #369). */
+export interface RowUncovered {
+  /** Held / sell / uncovered quantities driving the warning copy. */
+  info: UncoveredInfo;
+  /** The "continue anyway" acknowledgment is on. */
+  acknowledged: boolean;
+  /** Basis for the uncovered shares: 0 % (sale price) or a typed buy-in. */
+  mode: 'zero' | 'entry';
+  /** Native buy-in price string (mode `entry`). */
+  entryPrice: string;
+  /** Asset native currency, for the buy-in suffix. */
+  currency: string;
+  onToggleAck: () => void;
+  onSetMode: (mode: 'zero' | 'entry') => void;
+  onSetEntryPrice: (value: string) => void;
 }
 
 /** Small "auto" marker so a fetched value is never mistaken for a typed one. */
@@ -1219,6 +1343,116 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
   );
 }
 
+/**
+ * The uncovered-sell card (issue #369): a warning that the sell exceeds the
+ * holding, the **required** "continue anyway" acknowledgment, and the basis
+ * choice for the shares the user doesn't own (count as 0 %, or enter the
+ * original buy-in). Shown only while the row is genuinely uncovered.
+ */
+function UncoveredCard({
+  row,
+  uncovered,
+  t,
+}: {
+  row: Row;
+  uncovered: RowUncovered;
+  t: TranslateFn;
+}) {
+  const symbol = row.asset.symbol;
+  const held = formatDerivedQuantity(uncovered.info.held);
+  const sellQty = formatDerivedQuantity(uncovered.info.sellQty);
+  const uncoveredQty = formatDerivedQuantity(uncovered.info.uncoveredQty);
+  const modeBtn = (mode: 'zero' | 'entry') =>
+    cx(
+      'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
+      uncovered.mode === mode
+        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700'
+        : 'text-neutral-400 hover:text-neutral-200',
+    );
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-red-500/40 bg-red-500/10 p-4">
+      <p className="text-sm font-medium text-red-300" role="alert">
+        {t('portfolio.transaction.uncoveredWarning', {
+          symbol,
+          held,
+          quantity: sellQty,
+          uncovered: uncoveredQty,
+        })}
+      </p>
+      <p className="text-xs leading-relaxed text-neutral-300">
+        {t('portfolio.transaction.uncoveredNoShorts')}
+      </p>
+
+      <label className="flex items-center gap-2 text-sm font-medium text-neutral-100">
+        <input
+          type="checkbox"
+          checked={uncovered.acknowledged}
+          onChange={uncovered.onToggleAck}
+          aria-label={t('portfolio.transaction.uncoveredAck')}
+          className="h-4 w-4 rounded border-neutral-600 bg-neutral-900 text-red-500 focus:ring-red-500"
+        />
+        {t('portfolio.transaction.uncoveredAck')}
+      </label>
+
+      {uncovered.acknowledged ? (
+        <div className="flex flex-col gap-2">
+          <span className="text-[0.7rem] font-medium uppercase tracking-wide text-neutral-500">
+            {t('portfolio.transaction.uncoveredBasisLabel')}
+          </span>
+          <div
+            className="flex gap-1 rounded-lg bg-neutral-900 p-1 ring-1 ring-inset ring-neutral-800"
+            role="group"
+            aria-label={t('portfolio.transaction.uncoveredBasisLabel')}
+          >
+            <button
+              type="button"
+              onClick={() => uncovered.onSetMode('zero')}
+              aria-pressed={uncovered.mode === 'zero'}
+              className={modeBtn('zero')}
+            >
+              {t('portfolio.transaction.uncoveredBasisZero')}
+            </button>
+            <button
+              type="button"
+              onClick={() => uncovered.onSetMode('entry')}
+              aria-pressed={uncovered.mode === 'entry'}
+              className={modeBtn('entry')}
+            >
+              {t('portfolio.transaction.uncoveredBasisEntry')}
+            </button>
+          </div>
+
+          {uncovered.mode === 'entry' ? (
+            <label className="group flex flex-col gap-1.5">
+              <FieldLabel>{t('portfolio.transaction.uncoveredEntryPriceLabel')}</FieldLabel>
+              <span className="relative">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="any"
+                  min="0"
+                  value={uncovered.entryPrice}
+                  onChange={(e) => uncovered.onSetEntryPrice(e.target.value)}
+                  aria-label={t('portfolio.transaction.uncoveredEntryPriceAria', { symbol })}
+                  className={cx(inputClass, 'pr-8')}
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm text-neutral-500">
+                  {currencySuffix(uncovered.currency)}
+                </span>
+              </span>
+            </label>
+          ) : null}
+
+          <p className="text-xs leading-relaxed text-neutral-400">
+            {t('portfolio.transaction.uncoveredNudge')}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RowFields({
   row,
   t,
@@ -1229,6 +1463,7 @@ function RowFields({
   onFillMax,
   link,
   cash,
+  uncovered,
 }: {
   row: Row;
   t: TranslateFn;
@@ -1239,6 +1474,7 @@ function RowFields({
   onFillMax?: () => void;
   link?: RowLink;
   cash?: RowCash;
+  uncovered?: RowUncovered;
 }) {
   const symbol = row.asset.symbol;
   const isAmountMode = row.entryMode === 'amount';
@@ -1460,6 +1696,9 @@ function RowFields({
 
       {/* Pay-from-cash card (Main default, no source picker — #378). */}
       {cash ? <CashCard row={row} cash={cash} t={t} /> : null}
+
+      {/* Uncovered-sell warning + acknowledgment + basis choice (issue #369). */}
+      {uncovered ? <UncoveredCard row={row} uncovered={uncovered} t={t} /> : null}
 
       {/* Note. */}
       <label className="group flex flex-col gap-1.5">

@@ -386,6 +386,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       price: r.price,
       fee: r.fee,
       executedAt: r.executedAt.toISOString(),
+      // Carry the persisted uncovered acknowledgment (issue #369) so a replay
+      // (holdings, oversell re-check on edit/delete) doesn't reject an already-
+      // accepted uncovered sell.
+      allowUncovered: r.allowUncovered,
+      uncoveredEntryPrice: r.uncoveredEntryPrice,
     };
   }
 
@@ -401,6 +406,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // will hold — client timestamps may carry a different sub-second
       // precision or zone offset than the stored rows (issue #218).
       executedAt: new Date(i.executedAt).toISOString(),
+      // The submitted acknowledgment (issue #369): with it, an oversell in this
+      // batch's replay is permitted instead of throwing OVERSELL.
+      allowUncovered: i.allowUncovered,
+      uncoveredEntryPrice: i.uncoveredEntryPrice,
     };
   }
 
@@ -434,6 +443,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       fee: r.fee,
       executedAt: r.executedAt.toISOString(),
       note: r.note,
+      allowUncovered: r.allowUncovered,
+      uncoveredEntryPrice: r.uncoveredEntryPrice,
       asset: assetToDto(asset),
     };
   }
@@ -1227,6 +1238,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           fee: row.fee,
           executedAt: row.executedAt.toISOString(),
           note: row.note,
+          allowUncovered: row.allowUncovered,
+          uncoveredEntryPrice: row.uncoveredEntryPrice,
           asset: {
             id: row.asset.id,
             symbol: row.asset.symbol,
@@ -1376,6 +1389,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             executedAt: new Date(i.executedAt),
             note: i.note ?? null,
             tax: rowPlan?.tax ?? null,
+            // Persist the uncovered-sell acknowledgment + supplied basis (#369);
+            // the entry price is only meaningful on an acknowledged sell.
+            allowUncovered: i.side === 'sell' ? (i.allowUncovered ?? false) : false,
+            uncoveredEntryPrice:
+              i.side === 'sell' && i.allowUncovered ? (i.uncoveredEntryPrice ?? null) : null,
             cashMovements,
           };
         }),

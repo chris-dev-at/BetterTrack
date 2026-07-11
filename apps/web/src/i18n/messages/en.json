@@ -638,7 +638,18 @@
       "saveChanges": "Save changes",
       "saving": "Saving…",
       "cancel": "Cancel",
-      "saveError": "Could not save. Please try again."
+      "saveError": "Could not save. Please try again.",
+      "uncoveredWarning": "You only hold {{held}} {{symbol}} — selling {{quantity}} means {{uncovered}} you don't own.",
+      "uncoveredNoShorts": "The position closes at 0 — no short is created. The proceeds are added to cash as usual.",
+      "uncoveredAck": "Continue anyway — sell more than I hold",
+      "uncoveredBasisLabel": "Cost basis for the shares you don't hold",
+      "uncoveredBasisZero": "Count as 0 % (no gain)",
+      "uncoveredBasisEntry": "Enter buy-in price",
+      "uncoveredEntryPriceLabel": "Original buy-in price",
+      "uncoveredEntryPriceAria": "Original buy-in price for the uncovered {{symbol}}",
+      "uncoveredNudge": "For accurate history, register the original buy instead.",
+      "uncoveredBlocked": "Acknowledge selling more than you hold to continue.",
+      "uncoveredEntryPriceInvalid": "Enter a valid buy-in price, or count the shares as 0 %."
     },
     "overview": {
       "title": "Portfolio",

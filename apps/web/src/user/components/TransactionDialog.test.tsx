@@ -297,6 +297,8 @@ describe('TransactionDialog — quantity entry mode (regression)', () => {
       fee: 0,
       executedAt: '2026-06-01T00:00:00.000Z',
       note: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
     };
     renderDialog({ transaction, asset: undefined });
 
@@ -331,6 +333,8 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
     // A stored time-of-day: an untouched date must not clobber it to midnight.
     executedAt: '2026-06-01T14:30:00.000Z',
     note: null,
+    allowUncovered: false,
+    uncoveredEntryPrice: null,
   };
 
   test('a note-only edit sends just the note — the server allows it on cash-linked txns', async () => {
@@ -732,5 +736,85 @@ describe('TransactionDialog — backdated pay-from-cash (#378 Part A)', () => {
     await user.click(deduct); // opt out
     await waitFor(() => expect(screen.getByRole('button', { name: /record buy/i })).toBeDisabled());
     expect(portfolioApi.createTransactions).not.toHaveBeenCalled();
+  });
+});
+
+// --- Dialog: uncovered sell (issue #369) ------------------------------------
+
+describe('TransactionDialog — uncovered sell', () => {
+  async function fillSell(
+    user: ReturnType<typeof userEvent.setup>,
+    quantity: string,
+    price: string,
+  ) {
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    await user.type(screen.getByLabelText(/quantity for btc/i), quantity);
+    await user.type(screen.getByLabelText(/price for btc/i), price);
+  }
+
+  test('warns and blocks Record until acknowledged, then sends allowUncovered (option A)', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog({ heldQuantity: 2 });
+
+    await fillSell(user, '10', '100');
+
+    // The warning shows the shortfall; Record is disabled without the ack.
+    expect(screen.getByRole('alert')).toHaveTextContent(/only hold 2/i);
+    const record = screen.getByRole('button', { name: /record sell/i });
+    expect(record).toBeDisabled();
+
+    await user.click(screen.getByRole('checkbox', { name: /continue anyway/i }));
+    expect(record).toBeEnabled();
+    await user.click(record);
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]).toMatchObject({
+      side: 'sell',
+      quantity: 10,
+      price: 100,
+      allowUncovered: true,
+    });
+    // Option A (default) sends no entry price → the server basises at sale price.
+    expect(submitted[0]!.uncoveredEntryPrice).toBeUndefined();
+  });
+
+  test('option B sends the supplied buy-in price as uncoveredEntryPrice', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog({ heldQuantity: 0 });
+
+    await fillSell(user, '5', '100');
+    await user.click(screen.getByRole('checkbox', { name: /continue anyway/i }));
+    await user.click(screen.getByRole('button', { name: /enter buy-in price/i }));
+    await user.type(screen.getByLabelText(/original buy-in price/i), '60');
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]).toMatchObject({
+      side: 'sell',
+      quantity: 5,
+      allowUncovered: true,
+      uncoveredEntryPrice: 60,
+    });
+  });
+
+  test('a covered sell shows no warning and carries no uncovered flag', async () => {
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog({ heldQuantity: 20 });
+
+    await fillSell(user, '10', '100');
+    expect(screen.queryByRole('checkbox', { name: /continue anyway/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.allowUncovered).toBeUndefined();
   });
 });

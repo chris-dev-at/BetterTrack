@@ -178,6 +178,73 @@ describe('realizedSellsEur', () => {
       TaxComputationError,
     );
   });
+
+  describe('uncovered sell — allowUncovered (issue #369)', () => {
+    it('basises the uncovered shares at the sale price → 0 gain, no phantom tax', () => {
+      // Sell 10 with nothing held: basis = proceeds, so realized is exactly 0 —
+      // the AT ledger must never see a fabricated gain here.
+      const [r] = realizedSellsEur([
+        { ...T('s1', 'sell', 10, 100, '2026-02-01T10:00:00Z'), allowUncovered: true },
+      ]);
+      expect(r!.proceedsEur).toBe(1000);
+      expect(r!.costBasisEur).toBe(1000);
+      expect(r!.realizedPnlEur).toBe(0);
+      expect(r!.uncoveredQuantity).toBe(10);
+    });
+
+    it('splits a partial-cover sell: covered at avg, uncovered at the sale price', () => {
+      // Hold 2 @ 40; sell 10 @ 100 uncovered. covered 2·(100−40)=120, uncovered 0.
+      const [r] = realizedSellsEur([
+        T('b1', 'buy', 2, 40, '2026-01-01T10:00:00Z'),
+        { ...T('s1', 'sell', 10, 100, '2026-02-01T10:00:00Z'), allowUncovered: true },
+      ]);
+      expect(r!.costBasisEur).toBe(2 * 40 + 8 * 100); // 880
+      expect(r!.realizedPnlEur).toBe(120);
+      expect(r!.uncoveredQuantity).toBe(8);
+    });
+
+    it('uses a supplied EUR entry price for the uncovered portion (option B)', () => {
+      const [r] = realizedSellsEur([
+        T('b1', 'buy', 2, 40, '2026-01-01T10:00:00Z'),
+        {
+          ...T('s1', 'sell', 10, 100, '2026-02-01T10:00:00Z'),
+          allowUncovered: true,
+          uncoveredEntryPriceEur: 60,
+        },
+      ]);
+      // covered 2·(100−40)=120; uncovered 8·(100−60)=320.
+      expect(r!.costBasisEur).toBe(2 * 40 + 8 * 60); // 560
+      expect(r!.realizedPnlEur).toBe(440);
+      expect(r!.uncoveredQuantity).toBe(8);
+    });
+
+    it('marks a covered sell with uncoveredQuantity 0', () => {
+      const [r] = realizedSellsEur([
+        T('b1', 'buy', 10, 100, '2026-01-01T10:00:00Z'),
+        T('s1', 'sell', 4, 110, '2026-02-01T10:00:00Z'),
+      ]);
+      expect(r!.uncoveredQuantity).toBe(0);
+    });
+
+    it('closes at 0 and lets a later buy rebuild a clean average (no shorts)', () => {
+      const sells = realizedSellsEur([
+        { ...T('s1', 'sell', 5, 100, '2026-01-01T10:00:00Z'), allowUncovered: true },
+        T('b1', 'buy', 2, 50, '2026-02-01T10:00:00Z'),
+        T('s2', 'sell', 2, 70, '2026-03-01T10:00:00Z'),
+      ]);
+      // Second round trip sees avg 50 (rebuilt from 0), not a −3 debt: 2·(70−50)=40.
+      expect(sells[1]!.realizedPnlEur).toBe(40);
+    });
+
+    it('still rejects an oversell when the flag is absent', () => {
+      expect(() =>
+        realizedSellsEur([
+          T('b1', 'buy', 1, 100, '2026-01-01T10:00:00Z'),
+          T('s1', 'sell', 2, 100, '2026-01-02T10:00:00Z'),
+        ]),
+      ).toThrow(TaxComputationError);
+    });
+  });
 });
 
 describe('atYearTargetEur', () => {

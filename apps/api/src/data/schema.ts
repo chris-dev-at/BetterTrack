@@ -645,10 +645,29 @@ export const transactions = pgTable(
     taxMode: taxModeEnum('tax_mode'),
     taxCountry: char('tax_country', { length: 2 }),
     taxAmountEur: numeric('tax_amount_eur', { precision: 20, scale: 6 }),
+    // Uncovered sell (issue #369): a SELL recorded against an insufficient/zero
+    // holding behind the explicit acknowledgment closes the position at 0 (no
+    // shorts). `allow_uncovered` is the persisted acknowledgment — it also keeps
+    // a later edit/delete replay from silently rejecting the (already accepted)
+    // oversell. `uncovered_entry_price` is the native per-unit basis the user
+    // supplied for the uncovered shares (NULL = the sale price is used → 0 %
+    // realized on that portion, so no phantom gain reaches the tax ledger).
+    allowUncovered: boolean('allow_uncovered').notNull().default(false),
+    uncoveredEntryPrice: numeric('uncovered_entry_price', { precision: 20, scale: 6 }),
   },
   (t) => [
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
     check('transactions_price_nonneg', sql`${t.price} >= 0`),
+    // Uncovered fields are sell-only, and an entry price is meaningless without
+    // the acknowledgment (mirrors the contract's refineUncoveredSell, #369).
+    check(
+      'transactions_uncovered_sell_only',
+      sql`${t.allowUncovered} = false OR ${t.side} = 'sell'`,
+    ),
+    check(
+      'transactions_uncovered_entry_price_requires_flag',
+      sql`${t.uncoveredEntryPrice} IS NULL OR ${t.allowUncovered} = true`,
+    ),
   ],
 );
 
