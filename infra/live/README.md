@@ -17,6 +17,19 @@ app services through the mounted docker socket.
 
 What this canonical copy adds over the historical control-dir script:
 
+- **Whole-stack deploys.** The `build` and final `up -d` lists include **every**
+  compose service that builds app code — web, api, **worker**, landing — not
+  just web+api. Each buildable service owns its own image tag and `up -d` never
+  recreates a service it doesn't list, so the historical web+api-only deploy
+  left the worker (and landing) frozen on their first-bring-up images across
+  every auto-deploy. That is exactly how the 2026-07-11 `alert.triggered` P1
+  happened: the notifications-v2 cutover (#427) redeployed the api off the
+  ephemeral-bus dispatcher while the frozen pre-v2 worker kept publishing
+  `alert.triggered` onto that now-unconsumed bus — triggered alerts produced no
+  inbox row and no push. The deploy set is guarded against the compose file by
+  `apps/api/src/__tests__/liveDeployTopology.test.ts`. **Adopting this version
+  on the prod host (see below) is required for the fix to take effect**; the
+  first deploy tick after adoption recreates the worker onto current code.
 - **Deploy-reason logging.** When a new SHA is detected, before deploying it logs
   the trigger — a summary line (`deploying <short-sha>, N new commit(s)`) plus one
   line per non-merge commit in `<deployed>..<new>` (squash-merges carry the PR id,
