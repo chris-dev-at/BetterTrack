@@ -576,7 +576,7 @@ describe('fx.refreshSpot', () => {
 // ---- registration ---------------------------------------------------------
 
 // Inert notification center — the registration tests never dispatch (#368).
-const inertNotify = { emit: async () => undefined };
+const inertNotify = { emit: async () => true };
 
 describe('createJobDefinitions registration', () => {
   it('builds the heartbeat + market-data jobs + the alerts evaluator', async () => {

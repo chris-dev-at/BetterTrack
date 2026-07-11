@@ -113,6 +113,32 @@ describe('push channels through the matrix (#368)', () => {
     expect(fcmSent).toHaveLength(1);
     expect(webSent).toHaveLength(1);
   });
+
+  it('the DB-level (user, eventKey) unique marker collapses a concurrent duplicate insert', async () => {
+    // Two dispatcher replicas can both pass the exists-check before either
+    // inserts; the partial unique index makes the second insert a no-op (null).
+    const user = await harness.seedUser({ email: 'p@bt.test', username: 'pushee' });
+    const repo = createNotificationRepository(db);
+    const row = {
+      userId: user.id,
+      type: 'chat.message',
+      title: 'New message',
+      body: 'anna: hi',
+      payload: { eventKey: 'chat.message:m-race' },
+    };
+    const first = await repo.insert(row);
+    const duplicate = await repo.insert(row);
+    expect(first).not.toBeNull();
+    expect(duplicate).toBeNull();
+    expect(await rowsFor(user.id)).toHaveLength(1);
+
+    // A different eventKey (and rows without one) still insert freely.
+    expect(
+      await repo.insert({ ...row, payload: { eventKey: 'chat.message:m-other' } }),
+    ).not.toBeNull();
+    expect(await repo.insert({ ...row, payload: null })).not.toBeNull();
+    expect(await repo.insert({ ...row, payload: null })).not.toBeNull();
+  });
 });
 
 describe('presence suppression (#368 owner mandate)', () => {
@@ -135,6 +161,31 @@ describe('presence suppression (#368 owner mandate)', () => {
     expect(rows[0]!.readAt).not.toBeNull();
     // …and NO channel fired: no bell push, no email, no phone/browser push.
     expect(published).toHaveLength(0);
+    expect(fcmSent).toHaveLength(0);
+    expect(webSent).toHaveLength(0);
+  });
+
+  it('presence with in-app routed OFF leaves only the hidden marker — never a resurrected inbox row', async () => {
+    // The matrix wins over presence: a type the user routed away from in-app
+    // must not land in their inbox just because they were viewing the thread.
+    const user = await harness.seedUser({ email: 'v@bt.test', username: 'viewer' });
+    await db
+      .insert(notificationSettings)
+      .values({
+        userId: user.id,
+        channel: 'inapp',
+        enabled: true,
+        config: { 'chat.message': false },
+      });
+    const event = chatEvent(user.id);
+    await presence.enter(user.id, 'chat', event.conversationId);
+
+    await dispatcher.dispatch(event);
+
+    const rows = await rowsFor(user.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.hidden).toBe(true);
+    expect(rows[0]!.readAt).not.toBeNull();
     expect(fcmSent).toHaveLength(0);
     expect(webSent).toHaveLength(0);
   });

@@ -25,9 +25,10 @@ import type { NotificationCenter } from '../notifications/notificationCenter';
  * old pub/sub hand-off was at-most-once — a fire published while the
  * dispatcher was down/redeploying was silently lost although the alert was
  * already on cooldown; the queue survives restarts and retries). The emit
- * happens BEFORE the alert's own state flips, so a crash between the two can
- * only ever re-fire (deduped downstream), never lose the notification. This
- * module never touches the notification tables directly.
+ * happens BEFORE the alert's own state flips — and the flip is skipped when the
+ * enqueue itself failed — so a crash OR a Redis hiccup between the two can only
+ * ever re-fire (deduped downstream), never lose the notification. This module
+ * never touches the notification tables directly.
  */
 
 /** Repeat-alert cooldown between fires (§14: 24 h). */
@@ -192,13 +193,20 @@ export async function runAlertsEvaluation(
       // the two, the worst case is a re-fire next window (deduped by the
       // dispatcher's eventKey), never a triggered-but-never-delivered alert —
       // the exact #367 failure this ordering kills.
-      await notify.emit({
+      const emitted = await notify.emit({
         type: 'alert.triggered',
         userId: alert.userId,
         alertId: alert.id,
         assetId: alert.assetId,
         occurredAt,
       });
+      if (!emitted) {
+        // Enqueue failed (the center logged it): leave the alert untouched so
+        // the next window retries — same #367 rule for a Redis hiccup as for a
+        // crash: a fire may be delayed and re-attempted, never dropped after
+        // the state already flipped.
+        continue;
+      }
       const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
       await alertRepo.recordTriggered(alert.id, status, new Date(now));
       fired += 1;

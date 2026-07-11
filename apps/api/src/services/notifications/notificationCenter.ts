@@ -17,10 +17,15 @@ import type { DispatchableEvent } from './notificationDispatcher';
  * realtime fan-out. In tests the seam delivers straight into the dispatcher.
  *
  * Emitting is fire-and-forget for the caller: a queue hiccup logs an error but
- * never fails the user action that produced the event.
+ * never fails the user action that produced the event. The returned boolean
+ * says whether the event actually reached the durable transport — producers of
+ * user actions ignore it, but the alert evaluator checks it so it never flips
+ * an alert to triggered/cooldown on a fire that was silently dropped (#367).
  */
 export interface NotificationCenter {
-  emit(event: DispatchableEvent): Promise<void>;
+  /** @returns true when the event was durably enqueued, false when the
+   *  transport failed (already logged — never throws). */
+  emit(event: DispatchableEvent): Promise<boolean>;
 }
 
 export interface CreateNotificationCenterDeps {
@@ -33,13 +38,15 @@ export interface CreateNotificationCenterDeps {
 export function createNotificationCenter(deps: CreateNotificationCenterDeps): NotificationCenter {
   const { enqueue, logger } = deps;
   return {
-    async emit(event: DispatchableEvent): Promise<void> {
+    async emit(event: DispatchableEvent): Promise<boolean> {
       try {
         await enqueue(event);
+        return true;
       } catch (err) {
         // The producing action already committed; losing this emit is an
         // incident to log loudly, never an error to bubble into the request.
         logger?.error({ err, type: event.type }, 'notification emit failed');
+        return false;
       }
     },
   };

@@ -11,7 +11,9 @@ import { notifications, notificationSettings } from '../schema';
  * Dedupe is by **event key**: the dispatcher stamps a deterministic
  * `payload.eventKey` per (user, logical event), and {@link existsForEventKey}
  * lets an at-least-once redelivery of the same event become a no-op rather than a
- * duplicate row (§6.10 "deduped per (user, event key)").
+ * duplicate row (§6.10 "deduped per (user, event key)"). The check is backed by
+ * a partial unique expression index on `(user_id, payload->>'eventKey')`, so
+ * two dispatchers racing past the read still collapse to one row at insert.
  */
 
 /** The notification channel discriminator (`notification_channel` enum). */
@@ -67,9 +69,15 @@ function toRecord(row: typeof notifications.$inferSelect): NotificationRecord {
 
 export function createNotificationRepository(db: Database) {
   return {
-    /** Insert one in-app notification row; returns the new row's id (§4.5 —
-     *  the dispatcher publishes `notification.created` with it for the bell push). */
-    async insert(input: InsertNotificationInput): Promise<string> {
+    /**
+     * Insert one in-app notification row; returns the new row's id (§4.5 —
+     * the dispatcher publishes `notification.created` with it for the bell
+     * push), or **null** when the partial unique index on
+     * `(user_id, payload->>'eventKey')` rejected a concurrent duplicate — the
+     * DB-level backstop behind {@link existsForEventKey} that keeps the dedupe
+     * marker airtight even with a second dispatcher replica.
+     */
+    async insert(input: InsertNotificationInput): Promise<string | null> {
       const [row] = await db
         .insert(notifications)
         .values({
@@ -81,8 +89,9 @@ export function createNotificationRepository(db: Database) {
           readAt: input.readAt ?? null,
           hidden: input.hidden ?? false,
         })
+        .onConflictDoNothing()
         .returning({ id: notifications.id });
-      return row!.id;
+      return row?.id ?? null;
     },
 
     /**

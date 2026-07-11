@@ -161,12 +161,30 @@ export function createFcmChannel(deps: CreateFcmChannelDeps): FcmChannel | null 
     return cached.token;
   }
 
-  /** Whether an FCM error response means the token is permanently dead. */
-  function isGone(status: number, bodyText: string): boolean {
-    if (status === 404) return true;
-    // v1 surfaces dead registrations as 400/404 with errorCode UNREGISTERED
-    // (and INVALID_ARGUMENT for garbage tokens — those are dead too).
-    return status === 400 && /UNREGISTERED|INVALID_ARGUMENT/.test(bodyText);
+  /** The structured `FcmError.errorCode` from a v1 error body, or null. */
+  function fcmErrorCode(bodyText: string): string | null {
+    try {
+      const parsed = JSON.parse(bodyText) as {
+        error?: { details?: Array<{ errorCode?: unknown }> };
+      };
+      for (const detail of parsed.error?.details ?? []) {
+        if (typeof detail.errorCode === 'string') return detail.errorCode;
+      }
+    } catch {
+      // Not JSON — no structured code, so never a prune signal.
+    }
+    return null;
+  }
+
+  /**
+   * Whether an FCM error response means the token is permanently dead. Only
+   * the structured v1 `errorCode: UNREGISTERED` prunes: INVALID_ARGUMENT (400)
+   * also fires for a malformed message body, and a bare 404 for a bad send
+   * URL — pruning on either would let a payload/config regression wipe every
+   * registered device.
+   */
+  function isGone(bodyText: string): boolean {
+    return fcmErrorCode(bodyText) === 'UNREGISTERED';
   }
 
   /** One token send. Never throws — outcomes drive pruning + logging only. */
@@ -189,7 +207,7 @@ export function createFcmChannel(deps: CreateFcmChannelDeps): FcmChannel | null 
       });
       if (res.ok) return 'ok';
       const bodyText = await res.text().catch(() => '');
-      if (isGone(res.status, bodyText)) return 'gone';
+      if (isGone(bodyText)) return 'gone';
       logger.warn({ status: res.status }, 'FCM send failed');
       return 'error';
     } catch (err) {

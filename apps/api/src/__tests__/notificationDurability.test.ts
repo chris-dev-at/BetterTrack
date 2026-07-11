@@ -6,6 +6,7 @@ import type { Quote } from '@bettertrack/contracts';
 import { createAlertRepository } from '../data/repositories/alertRepository';
 import * as schema from '../data/schema';
 import { runAlertsEvaluation } from '../services/alerts/alertEvaluator';
+import { createNotificationCenter } from '../services/notifications/notificationCenter';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -148,6 +149,7 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
             .from(schema.alerts)
             .where(eq(schema.alerts.id, alertId));
           statusAtEmit.push(row!.status);
+          return true;
         },
       },
       logger: harness.ctx.logger,
@@ -163,6 +165,38 @@ describe('durable notification delivery across a dispatcher outage (#368/#367)',
       .from(schema.alerts)
       .where(eq(schema.alerts.id, alertId));
     expect(after!.status).toBe('triggered');
+  });
+
+  it('a failed enqueue leaves the alert un-flipped — the next window retries instead of losing the fire', async () => {
+    const user = await harness.seedUser({ email: 'cy@bt.test', username: 'cy' });
+    const { alertId } = await seedAlert(user.id);
+    const alertRepo = createAlertRepository(harness.db);
+
+    // A center whose durable transport is down: emit reports the failure
+    // (logged, never thrown) and the evaluator must NOT record the trigger —
+    // the millisecond-scale sibling of the dispatcher-offline outage above.
+    const result = await runAlertsEvaluation({
+      alertRepo,
+      marketData: createStubMarketData({ quote: () => quoteResult(150) }),
+      redis: harness.ctx.redis,
+      notify: createNotificationCenter({
+        enqueue: async () => {
+          throw new Error('redis gone mid-fire');
+        },
+        logger: harness.ctx.logger,
+      }),
+      logger: harness.ctx.logger,
+      now: () => Date.parse('2026-07-10T12:00:00.000Z'),
+    });
+
+    expect(result.fired).toBe(0);
+    const [after] = await harness.db
+      .select({ status: schema.alerts.status, lastTriggeredAt: schema.alerts.lastTriggeredAt })
+      .from(schema.alerts)
+      .where(eq(schema.alerts.id, alertId));
+    // Still active, never marked triggered: the next evaluation window re-fires.
+    expect(after!.status).toBe('active');
+    expect(after!.lastTriggeredAt).toBeNull();
   });
 
   it('social events ride the same durable path: emitted while offline, delivered on drain', async () => {

@@ -418,7 +418,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: Boolean(e.BT_VAPID_PUBLIC_KEY && e.BT_VAPID_PRIVATE_KEY),
       publicKey: e.BT_VAPID_PUBLIC_KEY,
       privateKey: e.BT_VAPID_PRIVATE_KEY,
-      subject: e.BT_VAPID_SUBJECT ?? `mailto:admin@${e.BT_DOMAIN}`,
+      // `||`, not `??`: compose injects BT_VAPID_SUBJECT='' when the operator
+      // leaves it unset, and web-push rejects an empty subject — which would
+      // silently disable the channel on the documented keys-only config.
+      subject: e.BT_VAPID_SUBJECT || `mailto:admin@${e.BT_DOMAIN}`,
     },
     twoFactor: {
       issuer: e.TOTP_ISSUER,

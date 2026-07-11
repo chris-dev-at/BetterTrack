@@ -397,23 +397,36 @@ export const alerts = pgTable('alerts', {
 
 // --- Notifications ---------------------------------------------------------
 
-export const notifications = pgTable('notifications', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  userId: uuid('user_id')
-    .notNull()
-    .references(() => users.id, { onDelete: 'cascade' }),
-  type: text('type').notNull(),
-  title: text('title').notNull(),
-  body: text('body').notNull(),
-  payload: jsonb('payload'),
-  readAt: timestamp('read_at', { withTimezone: true }),
-  // #368: a hidden row is invisible to the inbox/unread queries but still
-  // carries its payload.eventKey — it is the DURABLE dedupe marker that makes
-  // the at-least-once notifications.dispatch job idempotent even when the
-  // recipient routed the type away from in-app (or is globally muted).
-  hidden: boolean('hidden').notNull().default(false),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const notifications = pgTable(
+  'notifications',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    payload: jsonb('payload'),
+    readAt: timestamp('read_at', { withTimezone: true }),
+    // #368: a hidden row is invisible to the inbox/unread queries but still
+    // carries its payload.eventKey — it is the DURABLE dedupe marker that makes
+    // the at-least-once notifications.dispatch job idempotent even when the
+    // recipient routed the type away from in-app (or is globally muted).
+    hidden: boolean('hidden').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The (user, eventKey) dedupe marker enforced by the DB, not just the
+    // dispatcher's exists→insert pair: a second dispatcher replica racing past
+    // the read still collapses to one row (insert is ON CONFLICT DO NOTHING),
+    // and the per-dispatch eventKey lookup stops being a JSON scan. Partial:
+    // only dispatcher-written rows carry an eventKey.
+    uniqueIndex('notifications_user_event_key_unique')
+      .on(t.userId, sql`(${t.payload} ->> 'eventKey')`)
+      .where(sql`(${t.payload} ->> 'eventKey') is not null`),
+  ],
+);
 
 export const notificationChannelEnum = pgEnum('notification_channel', [
   'inapp',
@@ -428,7 +441,7 @@ export const notificationChannelEnum = pgEnum('notification_channel', [
  * FCM device registrations for phone push (#368/#351). One row per token;
  * `token` is globally unique and an upsert re-binds it to the registering user
  * (a device that logs into another account takes its pushes along). Pruned when
- * FCM reports the token gone (404/UNREGISTERED).
+ * FCM reports the registration gone (structured errorCode UNREGISTERED).
  */
 export const devicePlatformEnum = pgEnum('device_platform', ['android', 'ios', 'web']);
 

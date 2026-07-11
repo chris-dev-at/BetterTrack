@@ -416,10 +416,11 @@ export function createNotificationDispatcher(
     }
 
     // The inbox row doubles as the dedupe marker, so ONE row is always written:
-    //  - routed + live      → visible, unread, bell push
-    //  - presence-suppressed → visible, already read (it's on their screen)
-    //  - in-app off / muted → hidden marker, already read
-    const visible = !muted && (routing.inapp || suppressedByPresence);
+    //  - routed + live                → visible, unread, bell push
+    //  - routed + presence-suppressed → visible, already read (it's on their screen)
+    //  - in-app off / muted           → hidden marker, already read — presence
+    //    never resurrects a channel the user routed off.
+    const visible = !muted && routing.inapp;
     const alreadyRead = muted || suppressedByPresence || !routing.inapp;
     const notificationId = await repo.insert({
       userId: event.userId,
@@ -430,6 +431,10 @@ export function createNotificationDispatcher(
       hidden: !visible,
       readAt: alreadyRead ? new Date() : null,
     });
+    // Insert lost the (user, eventKey) unique race — a concurrent dispatch of
+    // the same event (second worker replica) already wrote the marker and is
+    // handling the fan-out.
+    if (!notificationId) return;
 
     if (visible && !alreadyRead) {
       // Ephemeral bell push (§4.5) — best-effort; the SPA poll catches up.

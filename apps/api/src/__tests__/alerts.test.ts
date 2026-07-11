@@ -98,6 +98,7 @@ function recordingCenter(): NotificationCenter & { published: DispatchableEvent[
     published,
     async emit(event) {
       published.push(event);
+      return true;
     },
   };
 }

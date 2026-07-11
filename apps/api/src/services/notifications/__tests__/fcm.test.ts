@@ -162,10 +162,15 @@ describe('FCM channel (#368, HTTP v1)', () => {
     expect(calls.filter((c) => c.url.includes('oauth2.googleapis.com'))).toHaveLength(1);
   });
 
-  it('prunes a token FCM reports UNREGISTERED/404 and keeps the healthy ones', async () => {
+  it('prunes a token FCM reports UNREGISTERED (the v1 404 shape) and keeps the healthy ones', async () => {
     const repo = deviceRepo(['dead-token', 'live-token']);
     const { fn } = fetchStub([
-      { status: 404, body: '{"error":{"status":"NOT_FOUND"}}' },
+      {
+        status: 404,
+        // The real v1 dead-registration body: NOT_FOUND status plus the
+        // structured FcmError detail carrying errorCode UNREGISTERED.
+        body: '{"error":{"code":404,"status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}',
+      },
       { status: 200 },
     ]);
     const channel = createFcmChannel({
@@ -191,6 +196,39 @@ describe('FCM channel (#368, HTTP v1)', () => {
     });
     await channel!.deliver('user-1', MESSAGE);
     expect(repo.pruned).toEqual(['stale']);
+  });
+
+  it('never prunes on 400 INVALID_ARGUMENT — it also fires for a malformed message body', async () => {
+    // A payload regression must not wipe every registered device: only the
+    // structured UNREGISTERED code is a prune signal.
+    const repo = deviceRepo(['tok-1', 'tok-2']);
+    const { fn } = fetchStub([
+      {
+        status: 400,
+        body: '{"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"INVALID_ARGUMENT"}]}}',
+      },
+    ]);
+    const channel = createFcmChannel({
+      serviceAccountFile: writeServiceAccount(),
+      devices: repo,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+    });
+    await expect(channel!.deliver('user-1', MESSAGE)).resolves.toBeUndefined();
+    expect(repo.pruned).toEqual([]);
+  });
+
+  it('never prunes on a 404 without the structured UNREGISTERED code (e.g. a bad send URL)', async () => {
+    const repo = deviceRepo(['tok']);
+    const { fn } = fetchStub([{ status: 404, body: '{"error":{"status":"NOT_FOUND"}}' }]);
+    const channel = createFcmChannel({
+      serviceAccountFile: writeServiceAccount(),
+      devices: repo,
+      logger,
+      fetchFn: fn as unknown as typeof fetch,
+    });
+    await channel!.deliver('user-1', MESSAGE);
+    expect(repo.pruned).toEqual([]);
   });
 
   it('a transient send failure logs and neither throws nor prunes', async () => {
