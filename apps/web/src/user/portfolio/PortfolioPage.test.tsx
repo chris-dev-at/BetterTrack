@@ -407,13 +407,13 @@ describe('PortfolioPage — net worth incl. cash (#311)', () => {
   test('the liquidity ring shows invested/cash percentages that sum coherently with the headline', async () => {
     renderPage();
     const totals = await screen.findByRole('region', { name: 'Portfolio totals' });
-    // 321 350 / 326 350 = 98,5 % invested; the cash share is its exact
-    // complement (1,5 %), so the split always describes 100 % of the total.
+    // 321 350 / 326 350 = 98,47 % invested; the cash share is its exact
+    // complement (1,53 %), so the split always describes 100 % of the total.
     expect(
-      within(totals).getByRole('img', { name: '98,5 % invested, 1,5 % liquid' }),
+      within(totals).getByRole('img', { name: '98,47 % invested, 1,53 % liquid' }),
     ).toBeInTheDocument();
-    expect(within(totals).getByText('98,5 %')).toBeInTheDocument();
-    expect(within(totals).getByText('1,5 %')).toBeInTheDocument();
+    expect(within(totals).getByText('98,47 %')).toBeInTheDocument();
+    expect(within(totals).getByText('1,53 %')).toBeInTheDocument();
   });
 
   test('the allocation donuts include a cash slice', async () => {

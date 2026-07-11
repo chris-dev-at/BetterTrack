@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import type { Time } from 'lightweight-charts';
 
 import { resolveShareLink } from '../../lib/socialApi';
+import { formatMoney, formatPercent } from '../../lib/format';
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
@@ -14,14 +15,6 @@ import { Splash } from '../components/ui';
  * shared item — and nothing else. A revoked/unknown token, or one whose owner
  * narrowed the audience, renders a friendly "no longer available" (the API 404s).
  */
-function eur(value: number): string {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'EUR',
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
@@ -74,7 +67,7 @@ export function PublicSharePage() {
             <p className="text-xs uppercase tracking-wide text-neutral-500">
               {t('publicShare.netWorth')}
             </p>
-            <p className="text-3xl font-semibold">{eur(p.totals.totalValueEur)}</p>
+            <p className="text-3xl font-semibold">{formatMoney(p.totals.totalValueEur, 'EUR')}</p>
           </div>
           {p.history.points.length > 0 ? (
             <section aria-label={t('publicShare.valueOverTime')}>
@@ -104,7 +97,7 @@ export function PublicSharePage() {
                     <p className="truncate text-xs text-neutral-500">{h.asset.name}</p>
                   </div>
                   <span className="shrink-0 text-sm text-neutral-300">
-                    {eur(h.marketValueEur ?? 0)}
+                    {formatMoney(h.marketValueEur ?? 0, 'EUR')}
                   </span>
                 </li>
               ))}
@@ -137,7 +130,9 @@ export function PublicSharePage() {
                     <p className="truncate text-sm font-medium">{pos.asset.symbol}</p>
                     <p className="truncate text-xs text-neutral-500">{pos.asset.name}</p>
                   </div>
-                  <span className="shrink-0 text-sm text-neutral-300">{pos.weightPct}%</span>
+                  <span className="shrink-0 text-sm text-neutral-300">
+                    {formatPercent(pos.weightPct)}
+                  </span>
                 </li>
               ))}
             </ul>

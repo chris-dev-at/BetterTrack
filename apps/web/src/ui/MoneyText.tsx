@@ -1,5 +1,5 @@
 import { cx } from '../lib/cx';
-import { formatMoney, getMoneyCurrency } from '../lib/format';
+import { formatMoney, formatUnitPrice, getMoneyCurrency } from '../lib/format';
 
 export interface MoneyTextProps {
   /** The amount. */
@@ -23,6 +23,12 @@ export interface MoneyTextProps {
    * because most amounts (balances, prices) are not deltas.
    */
   signed?: boolean;
+  /**
+   * Render as a per-unit **price** (§7.1 rule 4): a sub-cent value keeps up to 6
+   * significant decimals so a micro-cap token price (€0.000012) is not rounded
+   * away to €0,00. Off by default — balances/totals/fees use the 2 dp money rule.
+   */
+  unitPrice?: boolean;
   className?: string;
 }
 
@@ -37,11 +43,13 @@ export function MoneyText({
   currency,
   convertedAmount,
   signed = false,
+  unitPrice = false,
   className,
 }: MoneyTextProps) {
   const base = getMoneyCurrency();
   const effectiveCurrency = currency ?? base;
-  const formatted = formatMoney(amount, effectiveCurrency);
+  const format = unitPrice ? formatUnitPrice : formatMoney;
+  const formatted = format(amount, effectiveCurrency);
 
   // Only positive/negative finite deltas get colour and a leading `+`; zero,
   // null and NaN stay neutral.
@@ -57,7 +65,7 @@ export function MoneyText({
     <span className={cx('tabular-nums', colorClass, className)}>
       {display}
       {showConverted ? (
-        <span className="ml-1 text-neutral-500">({formatMoney(convertedAmount, base)})</span>
+        <span className="ml-1 text-neutral-500">({format(convertedAmount, base)})</span>
       ) : null}
     </span>
   );

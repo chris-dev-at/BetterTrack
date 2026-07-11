@@ -192,7 +192,7 @@ describe('BudgetCalculator', () => {
     expect(within(table).getByText('GOOGL')).toBeInTheDocument();
     expect(within(table).getByText('300,00 €')).toBeInTheDocument();
     expect(within(table).getByText('600,00 €')).toBeInTheDocument();
-    expect(within(table).getByText('-10,0 %')).toBeInTheDocument();
+    expect(within(table).getByText('-10,00 %')).toBeInTheDocument();
 
     expect(screen.getByText('Total cost')).toBeInTheDocument();
     expect(screen.getByText('900,00 €')).toBeInTheDocument();

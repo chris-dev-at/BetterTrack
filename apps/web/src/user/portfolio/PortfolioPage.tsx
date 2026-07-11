@@ -525,7 +525,7 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
                   {formatQuantity(txn.quantity)}
                 </td>
                 <td className="px-3 py-2 text-right">
-                  <MoneyText amount={txn.price} currency={txn.asset.currency} />
+                  <MoneyText amount={txn.price} currency={txn.asset.currency} unitPrice />
                 </td>
                 <td className="px-3 py-2 text-neutral-400">{formatDate(txn.executedAt)}</td>
               </tr>
@@ -676,10 +676,10 @@ function HoldingRow({
         </td>
         <td className="px-3 py-3 text-right tabular-nums">{formatQuantity(h.quantity)}</td>
         <td className="px-3 py-3 text-right">
-          <MoneyText amount={h.avgCost} currency={asset.currency} />
+          <MoneyText amount={h.avgCost} currency={asset.currency} unitPrice />
         </td>
         <td className="px-3 py-3 text-right">
-          <MoneyText amount={h.price} currency={asset.currency} />
+          <MoneyText amount={h.price} currency={asset.currency} unitPrice />
         </td>
         <td className="px-3 py-3 text-right">
           <MoneyText amount={h.marketValueEur} />
@@ -839,7 +839,7 @@ function TransactionRow({
         {formatQuantity(txn.quantity)}
       </td>
       <td className="py-2 pr-3 text-right text-neutral-300">
-        <MoneyText amount={txn.price} currency={currency} />
+        <MoneyText amount={txn.price} currency={currency} unitPrice />
       </td>
       <td className="py-2 pr-3 text-right text-neutral-300">
         {txn.fee > 0 ? <MoneyText amount={txn.fee} currency={currency} /> : EM_DASH}

@@ -13,6 +13,7 @@ import {
   updateConglomerate,
 } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
+import { formatPercent } from '../../lib/format';
 import { useT } from '../../i18n';
 import { AllocationDonut } from '../../ui/charts';
 import { AssetSearchBox } from '../components/AssetSearchBox';
@@ -678,21 +679,21 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
         role="status"
         className="inline-flex items-center rounded-full bg-emerald-950/60 px-3 py-1 text-sm font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-800"
       >
-        100.0%
+        {formatPercent(ACTIVE_SUM)}
       </span>
     );
   }
 
   const tail =
     remaining >= 0
-      ? t('workboard.builder.sumRemainingLeft', { value: remaining.toFixed(1) })
-      : t('workboard.builder.sumRemainingOver', { value: Math.abs(remaining).toFixed(1) });
+      ? t('workboard.builder.sumRemainingLeft', { value: formatPercent(remaining) })
+      : t('workboard.builder.sumRemainingOver', { value: formatPercent(Math.abs(remaining)) });
   return (
     <span
       role="status"
       className="inline-flex items-center rounded-full bg-amber-950/60 px-3 py-1 text-sm font-semibold text-amber-300 ring-1 ring-inset ring-amber-800"
     >
-      {sum.toFixed(1)}% — {tail}
+      {formatPercent(sum)} — {tail}
     </span>
   );
 }
@@ -728,10 +729,10 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
       <dl className="grid grid-cols-3 gap-2">
         <Stat label={t('workboard.builder.statPositions')} value={String(live.length)} />
-        <Stat label={t('workboard.builder.statTotalWeight')} value={`${total.toFixed(1)}%`} />
+        <Stat label={t('workboard.builder.statTotalWeight')} value={formatPercent(total)} />
         <Stat
           label={t('workboard.builder.statLargest')}
-          value={largest ? `${largest.symbol} ${largest.weightPct.toFixed(1)}%` : '—'}
+          value={largest ? `${largest.symbol} ${formatPercent(largest.weightPct)}` : '—'}
         />
       </dl>
 

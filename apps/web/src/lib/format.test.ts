@@ -9,6 +9,7 @@ import {
   formatQuantity,
   formatSignedDelta,
   formatSignedPercent,
+  formatUnitPrice,
   formatWeight,
   getFormatLocale,
   getMoneyCurrency,
@@ -30,6 +31,14 @@ describe('formatMoney', () => {
 
   test('always uses 2 decimal places', () => {
     expect(formatMoney(42)).toBe('42,00 €');
+  });
+
+  test('rounds half-up (away from zero), never floors (§7.1 rule 1)', () => {
+    // 2.125 is exactly representable in binary, so this pins the rounding mode
+    // rather than a float artefact: half-up → 2,13 (banker's would give 2,12).
+    expect(formatMoney(2.125)).toBe('2,13 €');
+    expect(formatMoney(-2.125)).toBe('-2,13 €');
+    expect(formatMoney(2.135)).toBe('2,14 €');
   });
 
   test('formats zero', () => {
@@ -106,12 +115,13 @@ describe('formatQuantity', () => {
     expect(formatQuantity(12.5)).toBe('12,5');
   });
 
-  test('keeps up to 6 decimal places', () => {
-    expect(formatQuantity(0.123456)).toBe('0,123456');
+  test('keeps up to 8 decimal places (a satoshi), trailing zeros trimmed', () => {
+    expect(formatQuantity(0.12345678)).toBe('0,12345678');
+    expect(formatQuantity(0.5)).toBe('0,5');
   });
 
-  test('rounds beyond 6 decimal places', () => {
-    expect(formatQuantity(1.1234567)).toBe('1,123457');
+  test('rounds beyond 8 decimal places (half-up)', () => {
+    expect(formatQuantity(1.123456785)).toBe('1,12345679');
   });
 
   test('groups thousands (separator varies by ICU; normalised to a space)', () => {
@@ -125,23 +135,60 @@ describe('formatQuantity', () => {
 });
 
 // ---------------------------------------------------------------------------
+// formatUnitPrice (§7.1 rule 4)
+//
+// Per-unit prices keep sub-cent precision so a micro-cap token price never
+// collapses to 0,00 €; every other value follows the 2 dp money rule.
+
+describe('formatUnitPrice', () => {
+  test('a sub-cent price keeps up to 6 significant decimals, symbol-last', () => {
+    expect(formatUnitPrice(0.000012)).toBe('0,000012 €');
+    expect(formatUnitPrice(0.0000123456)).toBe('0,0000123456 €');
+  });
+
+  test('a negative sub-cent price keeps the minus and the precision', () => {
+    expect(formatUnitPrice(-0.000012)).toBe('-0,000012 €');
+  });
+
+  test('honours an explicit native currency for a sub-cent price', () => {
+    expect(formatUnitPrice(0.000012, 'USD')).toBe('0,000012 $');
+  });
+
+  test('a value at/above 0.01 follows the 2 dp money rule', () => {
+    expect(formatUnitPrice(12.5)).toBe('12,50 €');
+    expect(formatUnitPrice(0.01)).toBe('0,01 €');
+  });
+
+  test('exactly zero renders as money, not sub-cent precision', () => {
+    expect(formatUnitPrice(0)).toBe('0,00 €');
+    expect(formatUnitPrice(-0)).toBe('0,00 €');
+  });
+
+  test('returns em dash for null / undefined / NaN', () => {
+    expect(formatUnitPrice(null)).toBe(EM_DASH);
+    expect(formatUnitPrice(undefined)).toBe(EM_DASH);
+    expect(formatUnitPrice(NaN)).toBe(EM_DASH);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // formatPercent / formatWeight
 
 describe('formatPercent', () => {
-  test('formats a positive percent, 1 dp, space before %', () => {
-    expect(formatPercent(2.5)).toBe('2,5 %');
+  test('formats a positive percent, 2 dp, space before %', () => {
+    expect(formatPercent(2.5)).toBe('2,50 %');
   });
 
-  test('formats a negative percent (matches AC example "-2,5 %")', () => {
-    expect(formatPercent(-2.5)).toBe('-2,5 %');
+  test('formats a negative percent', () => {
+    expect(formatPercent(-2.5)).toBe('-2,50 %');
   });
 
   test('formats zero', () => {
-    expect(formatPercent(0)).toBe('0,0 %');
+    expect(formatPercent(0)).toBe('0,00 %');
   });
 
   test('formats 100 %', () => {
-    expect(formatPercent(100)).toBe('100,0 %');
+    expect(formatPercent(100)).toBe('100,00 %');
   });
 
   test('returns em dash for null / undefined / NaN', () => {
@@ -163,15 +210,15 @@ describe('formatWeight', () => {
 
 describe('formatSignedPercent', () => {
   test('prepends + for positive values', () => {
-    expect(formatSignedPercent(2.5)).toBe('+2,5 %');
+    expect(formatSignedPercent(2.5)).toBe('+2,50 %');
   });
 
   test('keeps - for negative values', () => {
-    expect(formatSignedPercent(-1.5)).toBe('-1,5 %');
+    expect(formatSignedPercent(-1.5)).toBe('-1,50 %');
   });
 
   test('shows no sign for zero', () => {
-    expect(formatSignedPercent(0)).toBe('0,0 %');
+    expect(formatSignedPercent(0)).toBe('0,00 %');
   });
 
   test('returns em dash for null / NaN', () => {
@@ -256,13 +303,13 @@ describe('locale-aware formatting (§13.3 V3-P1)', () => {
     // en-GB disambiguates the dollar as "US$" — the locale's own symbol is kept.
     expect(formatMoney(1234.56, 'USD')).toBe('1,234.56 US$');
     expect(formatQuantity(1234.5)).toBe('1,234.5');
-    expect(formatPercent(2.5)).toMatch(/^2\.5\s?%$/);
+    expect(formatPercent(2.5)).toMatch(/^2\.50\s?%$/);
   });
 
   test('de-AT uses "," decimals and "." grouping (the default dialect)', () => {
     setFormatLocale('de-AT');
     expect(formatMoney(1234.56)).toBe('1.234,56 €');
-    expect(formatPercent(2.5)).toBe('2,5 %');
+    expect(formatPercent(2.5)).toBe('2,50 %');
   });
 
   test('dates render in the active locale, always Europe/Vienna wall-clock', () => {

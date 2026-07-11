@@ -16,6 +16,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
+import { formatPercent } from '../../lib/format';
 import {
   PRICE_RANGES,
   type BenchmarkSeries,
@@ -208,7 +209,7 @@ export function PriceChart({
       // Values arriving pre-expressed in % render as "x.xx %" on the axis and
       // crosshair instead of looking like absolute prices (#125).
       ...(percentValues
-        ? { localization: { priceFormatter: (p: number) => `${p.toFixed(2)} %` } }
+        ? { localization: { priceFormatter: (p: number) => formatPercent(p) } }
         : {}),
       timeScale: { borderColor: GRID, fixLeftEdge: true, fixRightEdge: true },
       handleScale: false,

@@ -130,7 +130,7 @@ function WatchlistRow({
         {quoteQuery.isLoading ? (
           <Skeleton variant="line" width="w-20" className="ml-auto" />
         ) : quote ? (
-          <MoneyText amount={quote.price} currency={quote.currency} />
+          <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
         ) : (
           <span className="text-neutral-600">—</span>
         )}

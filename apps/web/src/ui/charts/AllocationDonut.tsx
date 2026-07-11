@@ -1,6 +1,7 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
 import { cx } from '../../lib/cx';
+import { formatPercent, formatQuantity } from '../../lib/format';
 import type { AllocationSegment } from './types';
 
 export interface AllocationDonutProps {
@@ -86,7 +87,7 @@ export function AllocationDonut({
             <Tooltip
               formatter={(value, name) => {
                 const v = Number(value) || 0;
-                return [`${formatShare(v / total)} (${v})`, String(name)];
+                return [`${formatShare(v / total)} (${formatQuantity(v)})`, String(name)];
               }}
               contentStyle={{
                 background: '#18181b',
@@ -117,7 +118,7 @@ export function AllocationDonut({
   );
 }
 
-/** One-decimal percentage, e.g. `0.125 → "12.5%"`. */
+/** Locale-aware 2 dp percentage of a 0–1 fraction, e.g. `0.125 → "12,50 %"` (§7.1 rule 2). */
 function formatShare(fraction: number): string {
-  return `${(fraction * 100).toFixed(1)}%`;
+  return formatPercent(fraction * 100);
 }

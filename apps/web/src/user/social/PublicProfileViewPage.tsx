@@ -6,6 +6,7 @@ import type { Time } from 'lightweight-charts';
 import type { ShareKind } from '@bettertrack/contracts';
 
 import { getPublicProfile, getPublicProfileItem } from '../../lib/socialApi';
+import { formatMoney, formatPercent } from '../../lib/format';
 import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
@@ -20,14 +21,6 @@ import { KindIcon } from './SharedPeople';
  * inactive user) renders a friendly "not available" (the API 404s), so disabling a
  * profile takes it offline instantly and a non-public item can never appear.
  */
-function eur(value: number): string {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'EUR',
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
@@ -137,7 +130,7 @@ function ProfileItemCard({
                       <p className="truncate text-xs text-neutral-500">{h.asset.name}</p>
                     </div>
                     <span className="shrink-0 text-sm text-neutral-300">
-                      {eur(h.marketValueEur ?? 0)}
+                      {formatMoney(h.marketValueEur ?? 0, 'EUR')}
                     </span>
                   </li>
                 ))}
@@ -151,7 +144,9 @@ function ProfileItemCard({
                     <p className="truncate text-sm font-medium">{p.asset.symbol}</p>
                     <p className="truncate text-xs text-neutral-500">{p.asset.name}</p>
                   </div>
-                  <span className="shrink-0 text-sm text-neutral-300">{p.weightPct}%</span>
+                  <span className="shrink-0 text-sm text-neutral-300">
+                    {formatPercent(p.weightPct)}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -232,7 +227,7 @@ export function PublicProfileViewPage() {
                     kind="portfolio"
                     subjectId={p.portfolioId}
                     name={p.name}
-                    headline={eur(p.totalValueEur)}
+                    headline={formatMoney(p.totalValueEur, 'EUR')}
                   />
                 ))}
               </Section>
