@@ -1331,6 +1331,51 @@ export const appSettings = pgTable('app_settings', {
 export type AppSettingRow = typeof appSettings.$inferSelect;
 export type NewAppSettingRow = typeof appSettings.$inferInsert;
 
+/**
+ * Idempotency keys on portfolio mutation endpoints (PROJECTPLAN.md §13.4 V4-P2a,
+ * #417) — the backbone for the mobile app's offline FIFO queue (mobile SPEC §7).
+ * A client MAY send an `Idempotency-Key` header (a UUID) on a mutating request:
+ * the first request under a `(user_id, key)` claims the row (the unique index
+ * makes the claim atomic, so two concurrent duplicates collapse to exactly one),
+ * runs the mutation, then stores its response; a later duplicate replays
+ * `status_code` + `response_body` verbatim instead of repeating the side effect.
+ * `method`/`path` are the endpoint fingerprint and `request_hash` the body hash —
+ * together they decide whether a same-key retry is the SAME request (replay) or a
+ * different one (409, never replayed). Rows are retained ≥ 48 h and lazily purged
+ * past that on the next write (no job needed), after which the key is reusable.
+ * Keyed per user, so one user's key never touches another's; deleting the user
+ * cascades the rows away.
+ */
+export const idempotencyKeys = pgTable(
+  'idempotency_keys',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    method: text('method').notNull(),
+    path: text('path').notNull(),
+    requestHash: text('request_hash').notNull(),
+    // NULL while the first request is still in flight; set once its response
+    // settles, at which point a duplicate replays these exact bytes.
+    statusCode: integer('status_code'),
+    responseBody: text('response_body'),
+    contentType: text('content_type'),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The atomic per-user claim: INSERT … ON CONFLICT (user_id, key) DO NOTHING.
+    uniqueIndex('idempotency_keys_user_key_unique').on(t.userId, t.key),
+    // Drives the lazy retention purge (DELETE WHERE created_at < cutoff).
+    index('idempotency_keys_created_at_idx').on(t.createdAt),
+  ],
+);
+
+export type IdempotencyKeyRow = typeof idempotencyKeys.$inferSelect;
+export type NewIdempotencyKeyRow = typeof idempotencyKeys.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -1369,6 +1414,7 @@ export const schema = {
   shareAudienceLinks,
   sharedItemActivityPrefs,
   appSettings,
+  idempotencyKeys,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,

@@ -116,6 +116,7 @@ function buildInertContext(): AppContext {
     presence: inertService('presence'),
     realtime: inertService('realtime'),
     liveMode: inertService('liveMode'),
+    idempotency: inertService('idempotency'),
   };
 }
 

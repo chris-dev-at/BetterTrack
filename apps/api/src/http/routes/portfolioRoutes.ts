@@ -42,6 +42,7 @@ import {
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
+import { createIdempotency } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -56,6 +57,12 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  // Idempotency (§13.4 V4-P2a, #417): the opt-in `Idempotency-Key` middleware,
+  // mounted per mutation route below (create/edit/delete transaction; cash
+  // deposit/withdraw/transfer/set-balance). Built once; a request without the
+  // header passes straight through.
+  const idempotency = createIdempotency(ctx);
 
   // GET /portfolios?includeArchived= — the user's portfolios (active by default,
   // §6.8; archived rows included only when asked, §13.2 V2-P8).
@@ -163,6 +170,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/deposit',
     validateParams(portfolioIdParamSchema),
+    idempotency,
     validateBody(cashEntryRequestSchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
@@ -176,6 +184,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/withdraw',
     validateParams(portfolioIdParamSchema),
+    idempotency,
     validateBody(cashEntryRequestSchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
@@ -286,6 +295,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/transfer',
     validateParams(portfolioIdParamSchema),
+    idempotency,
     validateBody(cashTransferRequestSchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
@@ -300,6 +310,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/cash/sources/:sourceId/set-balance',
     validateParams(cashSourceParamsSchema),
+    idempotency,
     validateBody(setCashBalanceRequestSchema),
     async (req, res) => {
       const { portfolioId, sourceId } = req.valid?.params as {
@@ -401,6 +412,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post(
     '/:portfolioId/transactions',
     validateParams(portfolioIdParamSchema),
+    idempotency,
     validateBody(createTransactionsRequestSchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
@@ -415,6 +427,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.patch(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
+    idempotency,
     validateBody(updateTransactionRequestSchema),
     async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
@@ -433,6 +446,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.delete(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
+    idempotency,
     async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
       await ctx.portfolio.deleteTransaction(req.authUser!.id, portfolioId, txId);

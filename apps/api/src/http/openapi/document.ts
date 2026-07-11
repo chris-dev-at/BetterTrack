@@ -275,6 +275,17 @@ registry.registerComponent('securitySchemes', BEARER_SECURITY, {
 // `userId` param is defined inline in socialRoutes (not exported from contracts).
 const userIdParamSchema = z.object({ userId: z.string().uuid() }).strict();
 
+// Idempotency-Key request header (§13.4 V4-P2a, #417), documented on the covered
+// portfolio mutation endpoints. Optional (opt-in) — a request without it behaves
+// exactly as before. Header name + semantics come from `@bettertrack/contracts`.
+const idempotencyKeyHeaders = z.object({
+  [contracts.IDEMPOTENCY_KEY_HEADER]: contracts.idempotencyKeySchema.optional().openapi({
+    description:
+      'Optional idempotency key (a UUID). The first request under this key runs the mutation and its response is stored per user for ≥ 48 h; a duplicate replays that exact response instead of repeating the side effect. Reusing the key with a different request body is rejected (409 IDEMPOTENCY_KEY_MISMATCH); a non-UUID value is 400 IDEMPOTENCY_KEY_INVALID.',
+    example: '018f9a1e-7c3d-7b2a-9e10-2b6f4c1d8a55',
+  }),
+});
+
 // ── Endpoint table ──────────────────────────────────────────────────────────
 type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
@@ -291,6 +302,12 @@ interface EndpointDef {
   status: number;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
+  /**
+   * Accepts the opt-in `Idempotency-Key` header (§13.4 V4-P2a, #417) — documents
+   * the header + its 409 conflict semantics. Kept in lockstep with the routes the
+   * idempotency middleware is actually mounted on.
+   */
+  idempotent?: boolean;
 }
 
 const endpoints: EndpointDef[] = [
@@ -1029,6 +1046,7 @@ const endpoints: EndpointDef[] = [
     body: R.CashEntryRequest,
     status: 201,
     response: R.CashMovementResponse,
+    idempotent: true,
   },
   {
     method: 'post',
@@ -1039,6 +1057,7 @@ const endpoints: EndpointDef[] = [
     body: R.CashEntryRequest,
     status: 201,
     response: R.CashMovementResponse,
+    idempotent: true,
   },
   {
     method: 'post',
@@ -1107,6 +1126,7 @@ const endpoints: EndpointDef[] = [
     body: R.CashTransferRequest,
     status: 201,
     response: R.CashTransferResponse,
+    idempotent: true,
   },
   {
     method: 'post',
@@ -1117,6 +1137,7 @@ const endpoints: EndpointDef[] = [
     body: R.SetCashBalanceRequest,
     status: 200,
     response: R.SetCashBalanceResponse,
+    idempotent: true,
   },
   {
     method: 'post',
@@ -1182,6 +1203,7 @@ const endpoints: EndpointDef[] = [
     body: R.CreateTransactionsRequest,
     status: 201,
     response: R.CreateTransactionsResponse,
+    idempotent: true,
   },
   {
     method: 'patch',
@@ -1192,6 +1214,7 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateTransactionRequest,
     status: 200,
     response: R.UpdateTransactionResponse,
+    idempotent: true,
   },
   {
     method: 'delete',
@@ -1200,6 +1223,7 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete a transaction (re-validates oversell).',
     params: contracts.portfolioTransactionParamsSchema,
     status: 204,
+    idempotent: true,
   },
 
   // Custom assets (§6.9)
@@ -1271,6 +1295,7 @@ const endpoints: EndpointDef[] = [
     body: R.PutValuePointsRequest,
     status: 200,
     response: R.ValuePointsResponse,
+    idempotent: true,
   },
 
   // Conglomerates (§6.5, §6.7)
@@ -1872,6 +1897,13 @@ for (const ep of endpoints) {
   if (!ep.public) {
     responses['401'] = errorResponse('Authentication required.');
   }
+  // Idempotency conflict semantics (§13.4 V4-P2a, #417): reusing a key for a
+  // different request, or racing an in-flight one, is a typed 409.
+  if (ep.idempotent) {
+    responses['409'] = errorResponse(
+      'Idempotency-Key conflict (IDEMPOTENCY_KEY_MISMATCH / IDEMPOTENCY_IN_PROGRESS).',
+    );
+  }
   // Shared error envelope `{ error: { code, message, details? } }` (§8).
   responses['default'] = errorResponse('Error envelope.');
 
@@ -1896,6 +1928,7 @@ for (const ep of endpoints) {
     request: {
       ...(ep.params ? { params: ep.params } : {}),
       ...(ep.query ? { query: ep.query } : {}),
+      ...(ep.idempotent ? { headers: idempotencyKeyHeaders } : {}),
       ...(ep.body ? { body: { required: true, content: jsonContent(ep.body) } } : {}),
     },
     responses,
