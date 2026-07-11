@@ -40,6 +40,12 @@ describe('AlertDialog (asset-locked inline create)', () => {
     expect(screen.getByLabelText(/Threshold price \(USD\)/)).toHaveValue(187.5);
   });
 
+  test('cuts a raw quote to cents when it seeds the threshold (owner directive 2026-07-12)', () => {
+    renderDialog({ asset: ASSET, referencePrice: 187.499320001 });
+    // The live quote is a market-data autofill → 187.49, not 187.50 or the raw quote.
+    expect(screen.getByLabelText(/Threshold price \(USD\)/)).toHaveValue(187.49);
+  });
+
   test('switching to a percent kind changes the threshold unit', async () => {
     const user = userEvent.setup();
     renderDialog({ asset: ASSET, referencePrice: 187.5 });

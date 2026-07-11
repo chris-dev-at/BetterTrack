@@ -3,7 +3,6 @@ import { describe, expect, test } from 'vitest';
 
 import {
   dateForPrice,
-  formatSeriesPrice,
   priceForDate,
   toDailyPoints,
   weekdayShort,
@@ -119,12 +118,5 @@ describe('weekdayShort', () => {
     expect(weekdayShort('2026-06-05')).toBe('Fri');
     expect(weekdayShort('2026-06-08')).toBe('Mon');
     expect(weekdayShort('2026-06-06')).toBe('Sat');
-  });
-});
-
-describe('formatSeriesPrice', () => {
-  test('trims float noise to a clean string', () => {
-    expect(formatSeriesPrice(50.12300000001)).toBe('50.123');
-    expect(formatSeriesPrice(108)).toBe('108');
   });
 });

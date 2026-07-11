@@ -6,6 +6,7 @@ import type { Alert, AlertKind, CreateAlertRequest } from '@bettertrack/contract
 import { ALERTS_QUERY_KEY, createAlert, updateAlert } from '../../lib/alertsApi';
 import { ApiError } from '../../lib/apiClient';
 import { formatMoney } from '../../lib/format';
+import { truncateMoneyForInput } from '../../lib/moneyInput';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
 import { ALERT_KIND_META, ALERT_KIND_ORDER } from './alertMeta';
@@ -63,9 +64,12 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
   );
   const [kind, setKind] = useState<AlertKind>(existing?.kind ?? 'price_above');
   const initialThreshold = existing
-    ? String(existing.threshold)
+    ? // Edit opens on the STORED threshold — keep it exact, never cents-truncated
+      // (truncating on open + save would silently mutate the saved value).
+      String(existing.threshold)
     : asset && referencePrice != null && ALERT_KIND_META['price_above'].unit === 'price'
-      ? String(referencePrice)
+      ? // Seed from the live quote → a market-data autofill: cut to cents.
+        truncateMoneyForInput(referencePrice)
       : '';
   const [threshold, setThreshold] = useState(initialThreshold);
   const [repeat, setRepeat] = useState(existing?.repeat ?? false);
@@ -120,7 +124,8 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
       ALERT_KIND_META[next].unit === 'price' &&
       referencePrice != null
     ) {
-      setThreshold(String(referencePrice));
+      // Same market-data seed as on open — cut the live quote to cents.
+      setThreshold(truncateMoneyForInput(referencePrice));
     }
   }
 
