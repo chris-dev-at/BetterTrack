@@ -437,6 +437,14 @@
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor, Passwort und App-PIN verwalten."
         },
+        "alertsRead": {
+          "label": "Preisalarme · lesen",
+          "description": "Ihre Preisalarme lesen."
+        },
+        "alertsWrite": {
+          "label": "Preisalarme · schreiben",
+          "description": "Preisalarme erstellen, bearbeiten, neu aktivieren und löschen."
+        },
         "impliedByWrite": "Wird automatisch mit dem Schreibzugriff gewährt."
       },
       "keys": {

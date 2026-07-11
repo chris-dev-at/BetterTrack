@@ -88,6 +88,14 @@ function scopeMeta(t: TranslateFn): Record<ApiKeyScope, { label: string; descrip
       label: t('settings.api.scope.accountSecurity.label'),
       description: t('settings.api.scope.accountSecurity.description'),
     },
+    'alerts:read': {
+      label: t('settings.api.scope.alertsRead.label'),
+      description: t('settings.api.scope.alertsRead.description'),
+    },
+    'alerts:write': {
+      label: t('settings.api.scope.alertsWrite.label'),
+      description: t('settings.api.scope.alertsWrite.description'),
+    },
   };
 }
 

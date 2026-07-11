@@ -93,6 +93,12 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   // matter which scopes the token held. Cookie sessions bypass this map, which
   // is why web chat worked and only bearer clients (mobile, #349) hit it.
   { prefix: '/chat', read: 'chat:read', write: 'chat:write' },
+  // #405: price alerts (V3-P10) shipped without a row here — the same gap class
+  // as chat (#396). Every bearer request to /alerts/* fell through to the
+  // session-only default (403 API_KEY_FORBIDDEN regardless of scope), so the
+  // mobile app could never reach alerts. Cookie sessions bypass this map, which
+  // is why web alerts worked and only bearer clients hit it.
+  { prefix: '/alerts', read: 'alerts:read', write: 'alerts:write' },
   { prefix: '/settings', read: 'social:read', write: 'social:write' },
 ];
 

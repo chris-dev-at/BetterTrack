@@ -6,6 +6,8 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  alertListResponseSchema,
+  alertSchema,
   chatConversationListResponseSchema,
   conversationResponseSchema,
   createApiKeyResponseSchema,
@@ -224,6 +226,22 @@ describe('#361 route × scope matrix', () => {
       path: '/chat/conversations',
       scope: 'chat:write',
       body: { userId: MISSING_ID },
+    },
+    // #405: /alerts was missing from MODULE_POLICIES, so both rows used to hit
+    // the session-only default (403 API_KEY_FORBIDDEN) even WITH the alerts
+    // scopes — the mobile 403 this fix closes.
+    {
+      name: 'alerts list',
+      method: 'get',
+      path: '/alerts',
+      scope: 'alerts:read',
+    },
+    {
+      name: 'alerts create (mutate)',
+      method: 'post',
+      path: '/alerts',
+      scope: 'alerts:write',
+      body: { assetId: MISSING_ID, kind: 'price_above', threshold: 100 },
     },
     { name: '2fa status', method: 'get', path: '/auth/2fa/status', scope: 'account:security' },
     { name: 'sessions list', method: 'get', path: '/auth/sessions', scope: 'account:security' },
@@ -576,5 +594,136 @@ describe('#371 write-implies-read at the scope-enforcement rail', () => {
     const shown = parsed.scopes.map((s) => s.scope);
     expect(shown).toContain('portfolio:write');
     expect(shown).toContain('portfolio:read');
+  });
+});
+
+describe('#405 bearer /alerts coverage — the mobile alerts 403 root cause', () => {
+  /**
+   * Seed a global (ownerId-null) tradable asset so an alert can be created
+   * against it. `price_above` needs no reference quote, so no market stub is
+   * required for the CRUD path.
+   */
+  async function seedAlertAsset(): Promise<string> {
+    const tag = uniq();
+    const [asset] = await harness.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: `REF-${tag}`,
+        type: 'stock',
+        symbol: `SYM${tag.slice(0, 4).toUpperCase()}`,
+        name: 'Test Corp',
+        currency: 'USD',
+        exchange: 'NASDAQ',
+      })
+      .returning();
+    if (!asset) throw new Error('failed to seed asset');
+    return asset.id;
+  }
+
+  it('an alerts-scoped key walks the full CRUD: create → list → patch → rearm → delete', async () => {
+    const { token } = await mintKey(['alerts:read', 'alerts:write']);
+    const assetId = await seedAlertAsset();
+
+    // POST /alerts — pre-fix this was 403 API_KEY_FORBIDDEN despite alerts:write.
+    const created = await request(harness.app)
+      .post('/api/v1/alerts')
+      .set(bearer(token))
+      .send({ assetId, kind: 'price_above', threshold: 150, repeat: false });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(alertSchema.safeParse(created.body).success).toBe(true);
+    const alertId = created.body.id as string;
+
+    // GET /alerts — the exact request the mobile app failed on (#405).
+    const list = await request(harness.app).get('/api/v1/alerts').set(bearer(token));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const parsed = alertListResponseSchema.parse(list.body);
+    expect(parsed.items.map((a) => a.id)).toContain(alertId);
+
+    // PATCH /alerts/{id} (write).
+    const patched = await request(harness.app)
+      .patch(`/api/v1/alerts/${alertId}`)
+      .set(bearer(token))
+      .send({ threshold: 175 });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+    expect(patched.body.threshold).toBe(175);
+
+    // POST /alerts/{id}/rearm (write).
+    const rearmed = await request(harness.app)
+      .post(`/api/v1/alerts/${alertId}/rearm`)
+      .set(bearer(token));
+    expect(rearmed.status, JSON.stringify(rearmed.body)).toBe(200);
+
+    // DELETE /alerts/{id} (write).
+    const removed = await request(harness.app)
+      .delete(`/api/v1/alerts/${alertId}`)
+      .set(bearer(token));
+    expect(removed.status).toBe(204);
+  });
+
+  it('403 INSUFFICIENT_SCOPE (scope-gated, not API_KEY_FORBIDDEN) without alerts scopes', async () => {
+    // A broadly-scoped token that merely lacks alerts:* — pre-fix the failure was
+    // a blanket API_KEY_FORBIDDEN regardless of scopes.
+    const { token } = await mintKey(['portfolio:read', 'social:read', 'notifications:read']);
+    const assetId = await seedAlertAsset();
+
+    const list = await request(harness.app).get('/api/v1/alerts').set(bearer(token));
+    expect(list.status).toBe(403);
+    expect(list.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(list.body.error.message).toContain('alerts:read');
+
+    const create = await request(harness.app)
+      .post('/api/v1/alerts')
+      .set(bearer(token))
+      .send({ assetId, kind: 'price_above', threshold: 150 });
+    expect(create.status).toBe(403);
+    expect(create.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(create.body.error.message).toContain('alerts:write');
+  });
+
+  it('alerts:read alone lists but cannot create (read/write split holds)', async () => {
+    const { token } = await mintKey(['alerts:read']);
+    const assetId = await seedAlertAsset();
+
+    await request(harness.app).get('/api/v1/alerts').set(bearer(token)).expect(200);
+
+    const create = await request(harness.app)
+      .post('/api/v1/alerts')
+      .set(bearer(token))
+      .send({ assetId, kind: 'price_above', threshold: 150 });
+    expect(create.status).toBe(403);
+    expect(create.body.error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+
+  it('alerts:write ALONE reaches the read-only GET too (write-implies-read, #371)', async () => {
+    // The mobile grant may hold only the write; #371 (PR #415) means the read GET
+    // must still pass with ONLY alerts:write held — asserted explicitly here.
+    const { token } = await mintKey(['alerts:write']);
+    const assetId = await seedAlertAsset();
+
+    const created = await request(harness.app)
+      .post('/api/v1/alerts')
+      .set(bearer(token))
+      .send({ assetId, kind: 'price_above', threshold: 150 });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    const list = await request(harness.app).get('/api/v1/alerts').set(bearer(token));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(list.body.items).toHaveLength(1);
+  });
+
+  it('a delegated OAuth token with alerts scopes reaches alerts too (the rail the mobile app rides)', async () => {
+    const { token } = await mintOAuthToken(['alerts:read', 'alerts:write']);
+    const assetId = await seedAlertAsset();
+
+    const created = await request(harness.app)
+      .post('/api/v1/alerts')
+      .set(bearer(token))
+      .send({ assetId, kind: 'price_above', threshold: 150 });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    const list = await request(harness.app).get('/api/v1/alerts').set(bearer(token));
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    expect(alertListResponseSchema.safeParse(list.body).success).toBe(true);
   });
 });

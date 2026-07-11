@@ -169,14 +169,12 @@ describe('presence suppression (#368 owner mandate)', () => {
     // The matrix wins over presence: a type the user routed away from in-app
     // must not land in their inbox just because they were viewing the thread.
     const user = await harness.seedUser({ email: 'v@bt.test', username: 'viewer' });
-    await db
-      .insert(notificationSettings)
-      .values({
-        userId: user.id,
-        channel: 'inapp',
-        enabled: true,
-        config: { 'chat.message': false },
-      });
+    await db.insert(notificationSettings).values({
+      userId: user.id,
+      channel: 'inapp',
+      enabled: true,
+      config: { 'chat.message': false },
+    });
     const event = chatEvent(user.id);
     await presence.enter(user.id, 'chat', event.conversationId);
 
