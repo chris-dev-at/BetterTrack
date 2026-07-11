@@ -21,13 +21,13 @@ import {
 } from '../../lib/portfolioApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
 import { formatMoney, formatQuantity } from '../../lib/format';
+import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
 import {
   dateForPrice,
-  formatSeriesPrice,
   priceForDate,
   toDailyPoints,
   weekdayShort,
@@ -193,16 +193,6 @@ export function formatDerivedQuantity(quantity: number): string {
 }
 
 /**
- * A dot-decimal money string for the amount **input** field (fill-max and
- * mode-switch preservation). It feeds a raw `<input>` value re-parsed with
- * `Number()`, so it must stay locale-independent (always `.`) — this is NOT
- * display; user-facing money renders through the shared `formatMoney`.
- */
-function amountToInput(amount: number): string {
-  return amount.toFixed(2);
-}
-
-/**
  * Outlined field (#378 brand tokens): #171717 fill, #262626 border, tabular
  * figures, and the one accent — a gold ring on focus. Paired with a `group`
  * wrapper the label turns gold too (`group-focus-within`). Number spinners are
@@ -293,7 +283,10 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
       makeRow(`prefill-${i}`, p.asset, today, {
         side: p.side ?? 'buy',
         quantity: numToInput(p.quantity),
-        price: numToInput(p.price),
+        // Market-data prefill: bulk-buy prices come in at the current native
+        // quote (§6.7), so cut them to cents like every other market autofill —
+        // quantity/fee stay exact (quantity is never cents-truncated, #crypto).
+        price: p.price === undefined ? '' : truncateMoneyForInput(p.price),
         fee: numToInput(p.fee),
         date: p.date ?? today,
         note: p.note ?? '',
@@ -506,7 +499,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
         // price at daily granularity), so Record with no edits books at today's
         // price. Never overwrite a value the user already typed.
         if (points.length > 0 && !manualPrice.current) {
-          const latest = formatSeriesPrice(points[points.length - 1]!.close);
+          const latest = truncateMoneyForInput(points[points.length - 1]!.close);
           setRows((rs) =>
             rs.length === 1 && rs[0]!.price.trim() === '' ? [{ ...rs[0]!, price: latest }] : rs,
           );
@@ -536,7 +529,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       setLinkNote('No price data on or before that date.');
       return;
     }
-    setSingleRow({ price: formatSeriesPrice(res.price) });
+    setSingleRow({ price: truncateMoneyForInput(res.price) });
     setPriceAuto(true);
     setLinkNote(res.adjusted ? `Market closed — using ${weekdayShort(res.date)} close.` : null);
   }

@@ -104,8 +104,3 @@ export function weekdayShort(date: string): string {
   const d = new Date(`${date}T00:00:00.000Z`);
   return WEEKDAYS[d.getUTCDay()] ?? '';
 }
-
-/** Trim a series close to a clean, up-to-6-decimal string for the price input. */
-export function formatSeriesPrice(price: number): string {
-  return String(Number(price.toFixed(6)));
-}

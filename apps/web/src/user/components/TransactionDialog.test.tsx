@@ -411,6 +411,14 @@ describe('TransactionDialog — linked date ↔ price fields', () => {
     expect(screen.getByRole('button', { name: 'Unlink date and price' })).toBeInTheDocument();
   });
 
+  test('default on open: the latest close is cut to cents before it fills the price (owner directive 2026-07-12)', async () => {
+    mockDailyCloses([day('2026-06-30', 187.499)]);
+    renderDialog();
+
+    // 187.499 auto-fills as 187.49 — truncated DOWN, not rounded to 187.50.
+    await waitFor(() => expect(screen.getByLabelText(/price for btc/i)).toHaveValue(187.49));
+  });
+
   test('Record with no edits books at the auto-filled current price', async () => {
     mockDailyCloses(LINK_SERIES);
     vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
@@ -436,6 +444,17 @@ describe('TransactionDialog — linked date ↔ price fields', () => {
 
     fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2026-06-03' } });
     expect(price).toHaveValue(90);
+  });
+
+  test('date drives price: the price-at-date quote is cut to cents (owner directive 2026-07-12)', async () => {
+    mockDailyCloses([...LINK_SERIES, day('2026-06-04', 231.499320001)]);
+    renderDialog();
+    const price = screen.getByLabelText(/price for btc/i);
+    await waitFor(() => expect(price).toHaveValue(120)); // latest close, on open
+
+    // Picking 06-04 looks up the raw close 231.499320001 → cents, not 231.50.
+    fireEvent.change(screen.getByLabelText(/date for btc/i), { target: { value: '2026-06-04' } });
+    expect(price).toHaveValue(231.49);
   });
 
   test('a non-trading day falls back to the last trading close, with an inline note', async () => {
@@ -506,6 +525,15 @@ describe('TransactionDialog — linked date ↔ price fields', () => {
       ).not.toBeInTheDocument(),
     );
     expect(assetApi.getAssetDailyCloses).not.toHaveBeenCalled();
+  });
+
+  test('bulk prefill: a market price is cut to cents in the row (owner directive 2026-07-12)', async () => {
+    renderDialog({
+      asset: undefined,
+      prefill: [{ asset: BTC, quantity: 1, price: 231.499320001 }],
+    });
+
+    await waitFor(() => expect(screen.getByLabelText(/price for btc/i)).toHaveValue(231.49));
   });
 });
 
