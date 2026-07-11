@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -7,6 +7,7 @@ import type { MeResponse, TwoFactorChallengeResponse } from '@bettertrack/contra
 
 vi.mock('../../lib/userApi');
 vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/oauthApi');
 vi.mock('../../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
   listWorkboard: vi.fn(),
@@ -16,9 +17,15 @@ vi.mock('../../lib/workboardApi', () => ({
 }));
 
 import { ApiError } from '../../lib/apiClient';
+import * as oauthApi from '../../lib/oauthApi';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
 import { UserApp } from '../UserApp';
+
+// A representative OAuth authorize URL, as RequireUser stashes it in state.from
+// when it bounces an anonymous visitor to /login (V4-P2b, §399 §A).
+const OAUTH_FROM =
+  '/oauth/authorize?client_id=app&redirect_uri=https%3A%2F%2Fx.example&scope=portfolio%3Aread';
 
 const user: MeResponse = {
   id: 'user-1',
@@ -44,6 +51,17 @@ const challenge: TwoFactorChallengeResponse = {
 function renderApp() {
   return render(
     <MemoryRouter initialEntries={['/login']}>
+      <Routes>
+        <Route path="/*" element={<UserApp />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+/** Render the app landing on `/login` with a stashed `state.from` (e.g. an OAuth URL). */
+function renderAppAt(entry: { pathname: string; state?: unknown }) {
+  return render(
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/*" element={<UserApp />} />
       </Routes>
@@ -144,4 +162,113 @@ test('an account without 2FA logs straight into the app', async () => {
 
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.queryByText('Two-factor authentication')).not.toBeInTheDocument();
+});
+
+// ── Stay signed in + OAuth persistence rules (V4-P2b, §399 §A) ────────────────
+
+test('the login form shows a Stay-signed-in checkbox ticked by default; unticking sends staySignedIn:false', async () => {
+  vi.mocked(api.login).mockResolvedValue(user);
+
+  const u = userEvent.setup();
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  const stay = screen.getByLabelText('Stay signed in');
+  expect(stay).toBeChecked();
+  await u.click(stay); // untick → ephemeral
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(api.login).toHaveBeenCalledWith(
+    expect.objectContaining({ staySignedIn: false, oauthLogin: false }),
+  );
+});
+
+test('an OAuth login shows no stay-signed-in checkbox and, without a PIN, never prompts to persist', async () => {
+  vi.mocked(api.login).mockResolvedValue(user); // pinEnabled: false
+  // Keep the consent screen loading so we can assert we advanced past login.
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+
+  // No "stay signed in" checkbox on the OAuth login form (PIN unknown yet).
+  expect(screen.queryByLabelText('Stay signed in')).not.toBeInTheDocument();
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  // A PIN-less OAuth login goes straight on to consent — never a persist prompt.
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+  expect(api.login).toHaveBeenCalledWith(
+    expect.objectContaining({ oauthLogin: true, staySignedIn: false }),
+  );
+  expect(screen.queryByLabelText(/stay signed in on this browser/i)).not.toBeInTheDocument();
+});
+
+test('an OAuth login on a PIN account offers the "stay signed in — your PIN protects this" choice', async () => {
+  vi.mocked(api.login).mockResolvedValue({ ...user, pinEnabled: true });
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  // The PIN-dependent choice appears post-credential-entry, with the messaging.
+  expect(await screen.findByLabelText(/stay signed in on this browser/i)).toBeInTheDocument();
+  expect(screen.getByText(/your PIN still protects your account/i)).toBeInTheDocument();
+  // The app hasn't opened — we're still deciding persistence.
+  expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
+});
+
+test('opting into "stay signed in" on the OAuth persist step promotes the session, then proceeds', async () => {
+  vi.mocked(api.login).mockResolvedValue({ ...user, pinEnabled: true });
+  vi.mocked(api.persistSession).mockResolvedValue();
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  const stay = await screen.findByLabelText(/stay signed in on this browser/i);
+  await u.click(stay);
+  await u.click(screen.getByRole('button', { name: 'Continue' }));
+
+  await waitFor(() => expect(api.persistSession).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+});
+
+test('a persist failure on the OAuth step does not strand the flow — it proceeds to consent (V4-P2b)', async () => {
+  vi.mocked(api.login).mockResolvedValue({ ...user, pinEnabled: true });
+  // Promotion rejects — the session is live (ephemeral) regardless, so the
+  // authorize flow must fall through to consent rather than block on the step.
+  vi.mocked(api.persistSession).mockRejectedValue(new ApiError(500, 'INTERNAL', 'nope'));
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  const stay = await screen.findByLabelText(/stay signed in on this browser/i);
+  await u.click(stay);
+  await u.click(screen.getByRole('button', { name: 'Continue' }));
+
+  await waitFor(() => expect(api.persistSession).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
 });

@@ -14,12 +14,14 @@ beforeEach(async () => {
 });
 
 /** Log in and return an agent whose cookie jar carries the session. */
-async function loginAgent(email: string, password: string) {
+async function loginAgent(email: string, password: string, staySignedIn?: boolean) {
   const agent = request.agent(harness.app);
+  const body: Record<string, unknown> = { identifier: email, password };
+  if (staySignedIn !== undefined) body.staySignedIn = staySignedIn;
   const res = await agent
     .post('/api/v1/auth/login')
     .set(...XRW)
-    .send({ identifier: email, password });
+    .send(body);
   expect(res.status).toBe(200);
   return agent;
 }
@@ -41,8 +43,26 @@ describe('GET /auth/session — current-session info (PROJECTPLAN.md §6.11 Secu
 
     // Freshly logged in: created and renewed at the same instant.
     expect(renewedAt).toBe(signedInAt);
-    // Expiry is exactly the fixed 30-day window past the renewal.
+    // A default login is persistent: the expiry is exactly the fixed 30-day
+    // window past the renewal.
+    expect(info.persistent).toBe(true);
     expect(expiresAt - renewedAt).toBe(harness.ctx.config.cookie.maxAgeMs);
+  });
+
+  it('reports an ephemeral session with persistent:false and a cap-bounded expiry, not 30 days', async () => {
+    const user = await harness.seedUser();
+    // staySignedIn:false mints an ephemeral session (V4-P2b, §399 §A).
+    const agent = await loginAgent(user.email, user.password, false);
+
+    const info = sessionInfoResponseSchema.parse((await agent.get('/api/v1/auth/session')).body);
+
+    expect(info.persistent).toBe(false);
+    const signedInAt = Date.parse(info.signedInAt);
+    const expiresAt = Date.parse(info.expiresAt);
+    // Ephemeral expiry is the hard cap from creation — the honest upper bound,
+    // NOT the 30-day window (which would overstate the lifetime by ~60×).
+    expect(expiresAt - signedInAt).toBe(harness.ctx.config.cookie.ephemeralCapMs);
+    expect(expiresAt - signedInAt).toBeLessThan(harness.ctx.config.cookie.maxAgeMs);
   });
 
   it('is 401 for an unauthenticated caller (no session cookie)', async () => {

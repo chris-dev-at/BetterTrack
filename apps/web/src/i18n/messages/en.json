@@ -17,7 +17,16 @@
       "forgotPassword": "Forgot password?",
       "rateLimited": "Too many login attempts.",
       "accountDisabled": "This account has been suspended. Please contact the administrator.",
-      "invalidCredentials": "Incorrect email/username or password."
+      "invalidCredentials": "Incorrect email/username or password.",
+      "staySignedIn": "Stay signed in"
+    },
+    "oauthStay": {
+      "subtitle": "Signing in",
+      "description": "You're signing in to authorize an app.",
+      "checkboxLabel": "Stay signed in on this browser",
+      "checkboxHint": "Your PIN still protects your account on this device.",
+      "continue": "Continue",
+      "continuing": "Continuing…"
     },
     "twoFactor": {
       "subtitle": "Two-factor authentication",
@@ -277,7 +286,8 @@
         "loadError": {
           "title": "Couldn't load your session"
         },
-        "info": "Signed in since {{signedInAt}} — expires after 30 days of inactivity ({{expiresAt}})."
+        "info": "Signed in since {{signedInAt}} — expires after 30 days of inactivity ({{expiresAt}}).",
+        "infoEphemeral": "Signed in since {{signedInAt}} — this browser only; signs out when you close it, or by {{expiresAt}} at the latest."
       },
       "sessions": {
         "title": "Active sessions",
@@ -288,6 +298,8 @@
         "revokeOneError": "Could not log out that device. Please try again.",
         "revokeOthersError": "Could not log out the other devices. Please try again.",
         "currentDevice": "This device",
+        "persistent": "Stays signed in",
+        "ephemeral": "This browser only",
         "timestamps": "Signed in {{createdAt}} · last active {{lastSeenAt}}",
         "logOut": "Log out",
         "confirmLogoutOthersOne": "Log out all {{count}} other device? You'll stay signed in on this one.",

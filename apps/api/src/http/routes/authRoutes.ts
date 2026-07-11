@@ -52,6 +52,9 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       password: body.password,
       ip: req.ip,
       currentSessionId: req.sessionId,
+      // "Stay signed in" + OAuth-flow persistence rules (V4-P2b, §399 §A).
+      staySignedIn: body.staySignedIn,
+      oauthLogin: body.oauthLogin,
     });
     // 2FA on: no session cookie yet — hand back the challenge so the SPA can
     // collect a second factor (§6.1, §13.2 V2-P5).
@@ -59,7 +62,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       res.json({ twoFactorRequired: true, ...result.challenge });
       return;
     }
-    setSessionCookie(res, ctx.config, result.sessionId);
+    setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
     res.json(toMeResponseFromRow(result.user));
   });
 
@@ -74,13 +77,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(twoFactorVerifyRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as TwoFactorVerifyRequest;
-      const { user, sessionId } = await ctx.auth.verifyTwoFactor({
+      const { user, sessionId, persistent } = await ctx.auth.verifyTwoFactor({
         pendingToken: body.pendingToken,
         code: body.code,
         recoveryCode: body.recoveryCode,
         ip: req.ip,
       });
-      setSessionCookie(res, ctx.config, sessionId);
+      setSessionCookie(res, ctx.config, sessionId, persistent);
       res.json(toMeResponseFromRow(user));
     },
   );
@@ -134,6 +137,18 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     res.json(info);
   });
 
+  // Promote the caller's current session to persistent — the OAuth-login "stay
+  // signed in — your PIN protects this" choice, made post-credential-entry once
+  // the PIN is known (V4-P2b, §399 §A). Cookie-session only (a bearer is 403'd by
+  // the /auth session-only policy); the service PIN-gates it so a PIN-less
+  // account can never turn its forced-ephemeral OAuth session persistent.
+  router.post('/session/persist', requireAuth, async (req, res) => {
+    if (!req.sessionId) throw unauthorized();
+    await ctx.auth.persistCurrentSession(req.authUser!.id, req.sessionId);
+    setSessionCookie(res, ctx.config, req.sessionId, true);
+    res.json({ ok: true });
+  });
+
   // ── Session manager (§6.1, §6.11 Security, V3-P11a) ─────────────────────────
   // The caller's own active sessions + revocation. Cookie-session only: the
   // whole `/auth/*` group is bearer-forbidden (§6.13), so an API-key/OAuth
@@ -175,8 +190,12 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     validateBody(changePasswordRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ChangePasswordRequest;
-      const { user, sessionId } = await ctx.auth.changePassword(req.authUser!.id, body, req.ip);
-      setSessionCookie(res, ctx.config, sessionId);
+      const { user, sessionId, persistent } = await ctx.auth.changePassword(
+        req.authUser!.id,
+        body,
+        req.ip,
+      );
+      setSessionCookie(res, ctx.config, sessionId, persistent);
       res.json(toMeResponseFromRow(user));
     },
   );
@@ -212,8 +231,10 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         pin: body.pin,
         ip: req.ip,
       });
-      // The 30-day window was renewed; refresh the cookie's max-age to match.
-      setSessionCookie(res, ctx.config, req.sessionId!);
+      // The window was renewed; refresh the cookie, keeping this session's
+      // flavour (persistent Max-Age vs browser-session) — PIN verify never
+      // changes persistence (V4-P2b).
+      setSessionCookie(res, ctx.config, req.sessionId!, req.sessionPersistent ?? true);
       res.json(toMeResponseFromRow(user));
     },
   );
@@ -328,11 +349,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     limiters.login,
     validateBody(registerRequestSchema),
     async (req, res) => {
-      const { user, sessionId } = await ctx.auth.register(
+      const { user, sessionId, persistent } = await ctx.auth.register(
         req.valid?.body as RegisterRequest,
         req.ip,
       );
-      setSessionCookie(res, ctx.config, sessionId);
+      setSessionCookie(res, ctx.config, sessionId, persistent);
       res.status(201).json(toMeResponseFromRow(user));
     },
   );
@@ -365,15 +386,15 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         res.json({ twoFactorRequired: true, ...result.challenge });
         return;
       }
-      setSessionCookie(res, ctx.config, result.sessionId);
+      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
       res.json(toMeResponseFromRow(result.user));
     },
   );
 
   router.post('/accept-invite', validateBody(acceptInviteRequestSchema), async (req, res) => {
     const body = req.valid?.body as AcceptInviteRequest;
-    const { user, sessionId } = await ctx.auth.acceptInvite(body, req.ip);
-    setSessionCookie(res, ctx.config, sessionId);
+    const { user, sessionId, persistent } = await ctx.auth.acceptInvite(body, req.ip);
+    setSessionCookie(res, ctx.config, sessionId, persistent);
     res.status(201).json(toMeResponseFromRow(user));
   });
 

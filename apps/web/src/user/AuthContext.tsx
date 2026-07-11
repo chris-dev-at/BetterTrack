@@ -150,7 +150,16 @@ function isPinLocked(me: MeResponse): boolean {
  * {@link AuthContextValue.verifyTwoFactor} before a session exists.
  */
 export type LoginOutcome =
-  | { status: 'authenticated' }
+  | {
+      status: 'authenticated';
+      /**
+       * The signed-in user. For a normal login the context is already updated
+       * (applied); for an OAuth-flow login it is deferred so the login screen
+       * can offer the post-credential-entry "stay signed in" choice before the
+       * app opens — call {@link AuthContextValue.adoptUser} once decided (V4-P2b).
+       */
+      me: MeResponse;
+    }
   | { status: 'two_factor_required'; challenge: TwoFactorChallengeResponse };
 
 interface AuthContextValue {
@@ -160,8 +169,23 @@ interface AuthContextValue {
    *  identity isn't disclosed until the password is changed). */
   user: MeResponse | null;
   login: (credentials: LoginRequest) => Promise<LoginOutcome>;
-  /** Complete a login 2FA challenge; on success the app lands authenticated. */
-  verifyTwoFactor: (body: TwoFactorVerifyRequest) => Promise<void>;
+  /**
+   * Complete a login 2FA challenge. On success the app lands authenticated,
+   * UNLESS `deferApply` is set (the OAuth flow) — then the resolved user is
+   * returned unapplied so the caller can offer the "stay signed in" choice and
+   * apply it via {@link adoptUser} (V4-P2b).
+   */
+  verifyTwoFactor: (body: TwoFactorVerifyRequest, deferApply?: boolean) => Promise<MeResponse>;
+  /**
+   * Apply a user resolved by a deferred (OAuth-flow) login/verify — flips the
+   * app to authenticated and opens a fresh PIN window (V4-P2b).
+   */
+  adoptUser: (me: MeResponse) => void;
+  /**
+   * Promote the current session to persistent — the OAuth-login "stay signed in
+   * — your PIN protects this" choice (V4-P2b, §399 §A). PIN-gated server-side.
+   */
+  persistSession: () => Promise<void>;
   /** Request a one-time email login code for a pending 2FA challenge. */
   requestTwoFactorEmailCode: (body: TwoFactorEmailCodeRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
@@ -366,6 +390,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [status, pinEnabled, userId, idleMinutes]);
 
+  // Flip the app to authenticated for a user resolved by a deferred (OAuth-flow)
+  // login/verify, opening a fresh PIN window (a fresh login is a stronger factor
+  // than the PIN, so the user isn't re-gated in the same breath).
+  const adoptUser = useCallback(
+    (me: MeResponse) => {
+      recordActivity(me.id);
+      applyUser(me);
+    },
+    [applyUser],
+  );
+
   const login = useCallback(
     async (credentials: LoginRequest): Promise<LoginOutcome> => {
       const result = await api.login(credentials);
@@ -381,17 +416,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.logout().catch(() => undefined);
         throw new AdminAccountError();
       }
-      // A fresh password login is a stronger factor than the PIN — open a fresh
-      // unlock window so the user isn't gated again in the same breath.
-      recordActivity(me.id);
-      applyUser(me);
-      return { status: 'authenticated' };
+      // OAuth-flow login (V4-P2b): defer applying the user so the login screen
+      // can present the post-credential-entry "stay signed in" choice (which
+      // depends on whether the account has a PIN) before the app opens. The
+      // caller applies it via adoptUser once decided.
+      if (credentials.oauthLogin) {
+        return { status: 'authenticated', me };
+      }
+      adoptUser(me);
+      return { status: 'authenticated', me };
     },
-    [applyUser],
+    [adoptUser],
   );
 
   const verifyTwoFactor = useCallback(
-    async (body: TwoFactorVerifyRequest) => {
+    async (body: TwoFactorVerifyRequest, deferApply = false): Promise<MeResponse> => {
       const me = await api.verifyTwoFactor(body);
       if (me.role === 'admin') {
         // Defensive: admin-kind 2FA is out of scope, but never admit an admin
@@ -399,12 +438,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await api.logout().catch(() => undefined);
         throw new AdminAccountError();
       }
-      // Verifying a second factor completed a fresh login — opens a fresh window.
-      recordActivity(me.id);
-      applyUser(me);
+      // The OAuth flow defers applying so it can offer the "stay signed in"
+      // choice first (V4-P2b); everything else lands authenticated immediately.
+      if (!deferApply) adoptUser(me);
+      return me;
     },
-    [applyUser],
+    [adoptUser],
   );
+
+  const persistSession = useCallback(() => api.persistSession(), []);
 
   const requestTwoFactorEmailCode = useCallback(
     (body: TwoFactorEmailCodeRequest) => api.requestTwoFactorEmailCode(body),
@@ -435,7 +477,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // this lands authenticated; a fresh credential opens a fresh window.
       recordActivity(result.id);
       applyUser(result);
-      return { status: 'authenticated' };
+      return { status: 'authenticated', me: result };
     },
     [applyUser],
   );
@@ -488,6 +530,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       login,
       verifyTwoFactor,
+      adoptUser,
+      persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
       completePasswordReset,
@@ -502,6 +546,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       login,
       verifyTwoFactor,
+      adoptUser,
+      persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
       completePasswordReset,
