@@ -2,6 +2,8 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  pinQuickAuthResponseSchema,
+  rememberedDeviceResponseSchema,
   revokeSessionsResponseSchema,
   sessionInfoResponseSchema,
   sessionListResponseSchema,
@@ -14,7 +16,10 @@ import {
   type MeResponse,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type PinQuickAuthRequest,
+  type PinQuickAuthResponse,
   type PinVerifyRequest,
+  type RememberedDeviceResponse,
   type RevokeSessionsResponse,
   type SessionInfoResponse,
   type SessionSummary,
@@ -148,6 +153,50 @@ export async function verifyPin(body: PinVerifyRequest): Promise<MeResponse> {
     suppressAuthRedirect: true,
   });
   return meResponseSchema.parse(data);
+}
+
+/**
+ * OAuth PIN quick re-auth for a remembered device (§16, owner spec #399 §B,
+ * V4-P2b). PIN-only sign-in bound to the signed `bt_rdid` device cookie — the
+ * server never takes the identity from here. Omit `pin` to probe: the server
+ * auto-passes (returns the signed-in user) when the ~15-min PIN window from a
+ * recent entry is still open, else answers `{ pinRequired: true }` so the chooser
+ * shows the PIN input. `suppressAuthRedirect`: a 401 (unknown device / wrong PIN)
+ * is an in-flow chooser error, not a global redirect.
+ */
+export async function quickAuthPin(body: PinQuickAuthRequest): Promise<PinQuickAuthResponse> {
+  const data = await apiRequest<unknown>('/auth/pin/quick-auth', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return pinQuickAuthResponseSchema.parse(data);
+}
+
+/**
+ * Remember this device for OAuth PIN quick re-auth (§399 §B). Sets the signed,
+ * httpOnly `bt_rdid` cookie server-side and returns the identity the client
+ * stores in its remember-me record — username + avatar + user id, never a token
+ * or scope. PIN users only; the server 400s a PIN-less account.
+ */
+export async function rememberDevice(): Promise<RememberedDeviceResponse> {
+  const data = await apiRequest<unknown>('/auth/remembered-device', {
+    method: 'POST',
+    suppressAuthRedirect: true,
+  });
+  return rememberedDeviceResponseSchema.parse(data);
+}
+
+/**
+ * Forget the remembered device — "Another account" / explicit forget (§399 §B).
+ * Clears the `bt_rdid` cookie + its server binding so the next OAuth open knows
+ * nobody (blank login). Public: it only ever affects the calling device.
+ */
+export async function forgetRememberedDevice(): Promise<void> {
+  await apiRequest<unknown>('/auth/remembered-device', {
+    method: 'DELETE',
+    suppressAuthRedirect: true,
+  });
 }
 
 /** Enable or change the PIN (§6.1). */

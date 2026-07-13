@@ -39,3 +39,41 @@ export function clearSessionCookie(res: Response, config: AppConfig): void {
     path: '/',
   });
 }
+
+/**
+ * Remembered-device cookie (PROJECTPLAN.md §16; owner spec #399 §B, V4-P2b): the
+ * server-side binding for OAuth PIN quick re-auth. httpOnly + signed like the
+ * session cookie — the browser never reads it (the client's own remember-me
+ * record, username + avatar + user id, lives in localStorage). The value is an
+ * opaque device id mapped to a user in Redis. Long-lived (no automatic expiry per
+ * the owner — "until cleared"); the browser caps persistent cookies near 400
+ * days, so it is re-set on every quick re-auth to keep it fresh.
+ */
+export const REMEMBERED_DEVICE_COOKIE = 'bt_rdid';
+/** ~400 days (the browser cap for a persisted cookie) — the closest to "no expiry". */
+export const REMEMBERED_DEVICE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+
+export function setRememberedDeviceCookie(
+  res: Response,
+  config: AppConfig,
+  deviceId: string,
+): void {
+  res.cookie(REMEMBERED_DEVICE_COOKIE, deviceId, {
+    httpOnly: true,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    signed: true,
+    maxAge: REMEMBERED_DEVICE_MAX_AGE_MS,
+    path: '/',
+  });
+}
+
+export function clearRememberedDeviceCookie(res: Response, config: AppConfig): void {
+  res.clearCookie(REMEMBERED_DEVICE_COOKIE, {
+    httpOnly: true,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    signed: true,
+    path: '/',
+  });
+}

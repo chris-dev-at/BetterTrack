@@ -8,6 +8,7 @@ import {
   type PasswordResetComplete,
   type PasswordResetRequest,
   type RegisterRequest,
+  type RememberedDeviceResponse,
   type SessionInfoResponse,
   type SessionSummary,
   type TwoFactorChannel,
@@ -42,7 +43,10 @@ import {
   LOGIN_ACCOUNT_NAMESPACE,
   pinFailCountKey,
   PIN_FALLBACK_THRESHOLD,
+  PIN_QUICK_AUTH_WINDOW_SECONDS,
+  pinQuickAuthMarkerKey,
   PIN_TOKEN_ACCOUNT_NAMESPACE,
+  rememberedDeviceKey,
   TWO_FACTOR_ACCOUNT_NAMESPACE,
 } from './loginThrottle';
 import type { TwoFactorService } from './twoFactorService';
@@ -116,6 +120,25 @@ export interface VerifyPinInput {
   pin: string;
   ip?: string | null;
 }
+
+export interface QuickAuthInput {
+  /** The opaque device id from the signed `bt_rdid` cookie; null when absent. */
+  deviceId: string | null;
+  /** The PIN to verify; omitted = a probe (auto-pass only if the window is open). */
+  pin?: string;
+  ip?: string | null;
+}
+
+/**
+ * Outcome of an OAuth PIN quick re-auth (§399 §B). `authenticated` carries a
+ * freshly-minted ephemeral session (the route sets its cookie); `pin_required`
+ * means the probe found a closed quick-auth window, so the client must collect
+ * the PIN. Every other case (unknown device, disabled/PIN-less user, wrong PIN,
+ * cooldown) throws.
+ */
+export type QuickAuthResult =
+  | { status: 'authenticated'; user: UserRow; sessionId: string }
+  | { status: 'pin_required' };
 
 export interface AuthService {
   /**
@@ -197,6 +220,36 @@ export interface AuthService {
    * `429`, and `PIN_NOT_ENABLED` when no web PIN is set. Never logs the PIN.
    */
   verifyPinForToken(input: { userId: string; pin: string; ip?: string | null }): Promise<void>;
+  /**
+   * OAuth PIN quick re-auth (§16, owner spec #399 §B, V4-P2b). Resolves the
+   * remembered device (the signed `bt_rdid` cookie's opaque id → a user in Redis)
+   * and, on that binding alone, signs the user in from the PIN — no password. A
+   * `pin`-less call is a probe: it auto-passes when the ~15-min quick-auth window
+   * from a recent PIN entry is still open, else returns `pin_required`. A real
+   * PIN check rides the SAME per-account progressive limiter as
+   * {@link verifyPinForToken}, so hammering it locks out on that schedule. The
+   * minted session is always EPHEMERAL. Throws `REMEMBER_DEVICE_UNKNOWN` for an
+   * absent/forgotten device or a bound account that is gone / PIN-less.
+   */
+  quickAuth(input: QuickAuthInput): Promise<QuickAuthResult>;
+  /**
+   * Remember this device for OAuth PIN quick re-auth (§399 §B). Mints an opaque
+   * device id bound to the user in Redis (no TTL — "until cleared") and returns it
+   * (for the `bt_rdid` cookie) plus the identity the client stores (username +
+   * avatar + user id, never a token). PIN users only — throws `PIN_NOT_ENABLED`
+   * for a PIN-less account, which can never be remembered.
+   */
+  rememberDevice(
+    userId: string,
+    ip?: string | null,
+  ): Promise<{ deviceId: string; record: RememberedDeviceResponse }>;
+  /**
+   * Forget a remembered device — "Another account" / explicit forget (§399 §B).
+   * Clears its Redis binding and quick-auth window. Callable with no live session:
+   * it only ever affects the device that presents the cookie. No-op when the
+   * device id is null/unknown.
+   */
+  forgetDevice(deviceId: string | null, ip?: string | null): Promise<void>;
   /** Enable the PIN or change it to a new value (§6.1). */
   setPin(userId: string, pin: string, ip?: string | null): Promise<UserRow>;
   /** Turn the PIN gate off (§6.1). */
@@ -449,6 +502,31 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
   // clearPasswordThrottle). Used at the password step; the full clear above runs
   // only once a second factor has actually verified.
   const clearPasswordFailures = (userId: string) => clearPasswordThrottle(redis, userId);
+
+  /**
+   * Mint a fresh EPHEMERAL session for an OAuth PIN quick re-auth (§399 §B). A
+   * Custom-Tab browser must never silently retain a persistent web session, so —
+   * exactly like a PIN-less OAuth login — the session is always ephemeral; the
+   * remembered device + the PIN, not the cookie, are what bring the user back.
+   * Stamps last-login and audits a `quick_auth` login, mirroring the password path.
+   */
+  async function mintQuickAuthSession(
+    user: UserRow,
+    ip?: string | null,
+  ): Promise<{ sessionId: string; user: UserRow }> {
+    const sessionId = await sessions.create(user.id, false);
+    const now = new Date();
+    await userRepo.setLastLogin(user.id, now);
+    await audit.record({
+      actorId: user.id,
+      action: AuditAction.LoginSuccess,
+      targetType: 'user',
+      targetId: user.id,
+      ip,
+      meta: { via: 'quick_auth' },
+    });
+    return { sessionId, user: { ...user, lastLoginAt: now } };
+  }
 
   return {
     async login({ identifier, password, ip, currentSessionId, staySignedIn, oauthLogin }) {
@@ -1012,6 +1090,119 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         ip,
         meta: { via: 'token' },
       });
+    },
+
+    async quickAuth({ deviceId, pin, ip }) {
+      // A missing/forgotten device binding means this browser was never
+      // remembered (or was told "Another account"): the client falls back to a
+      // blank login. Every "not remembered" branch returns the SAME code so it is
+      // never an oracle for which device ids or accounts exist.
+      const unknownDevice = () =>
+        unauthorized('This device is not remembered.', 'REMEMBER_DEVICE_UNKNOWN');
+      if (!deviceId) throw unknownDevice();
+      const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
+      if (!boundUserId) throw unknownDevice();
+
+      const user = await userRepo.findById(boundUserId);
+      // The bound account vanished, was suspended, or dropped its PIN — the
+      // memory is dead: clear the binding + window and fall back to full login.
+      if (!user || user.status !== 'active' || !user.pinEnabled || !user.pinHash) {
+        await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+        throw unknownDevice();
+      }
+
+      // Probe (no PIN entered): auto-pass ONLY while the quick-auth window from a
+      // recent PIN entry is still open (owner: "tapping your name while the PIN
+      // timer is still running ⇒ auto-login"). Otherwise ask for the PIN — the
+      // chooser tap already happened, this is not an error and burns no limiter.
+      if (pin === undefined) {
+        const windowOpen = await redis.get(pinQuickAuthMarkerKey(deviceId));
+        if (!windowOpen) return { status: 'pin_required' };
+        const signedIn = await mintQuickAuthSession(user, ip);
+        return { status: 'authenticated', user: signedIn.user, sessionId: signedIn.sessionId };
+      }
+
+      // PIN present: reject an already-cooling account before the slow hash, then
+      // ride the SAME per-account progressive limiter as the bearer PIN verify
+      // (#361) — the two share the `pin_token_account` namespace keyed by user id,
+      // so hammering either locks out on one schedule. No session to drop here, so
+      // this limiter (not the 5-strike session counter) is the brute-force guard.
+      const cooling = await pinTokenThrottle.peek(user.id);
+      if (cooling > 0) throw tooManyRequests(cooling);
+      const ok = await passwordHasher.verify(user.pinHash, pin);
+      if (!ok) {
+        const decision = await pinTokenThrottle.consume(user.id);
+        await audit.record({
+          action: AuditAction.PinVerifyFail,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+          meta: { via: 'quick_auth' },
+        });
+        if (!decision.allowed) throw tooManyRequests(decision.retryAfterSec);
+        throw unauthorized('Incorrect PIN.', 'INVALID_PIN');
+      }
+
+      // Correct PIN: clear the tally and open the quick-auth window from THIS
+      // entry (device-keyed, fixed TTL). An auto-pass never refreshes it, so the
+      // window always measures time since the last real PIN.
+      await pinTokenThrottle.reset(user.id);
+      await redis.set(pinQuickAuthMarkerKey(deviceId), '1', 'EX', PIN_QUICK_AUTH_WINDOW_SECONDS);
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.PinVerified,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+        meta: { via: 'quick_auth' },
+      });
+      const signedIn = await mintQuickAuthSession(user, ip);
+      return { status: 'authenticated', user: signedIn.user, sessionId: signedIn.sessionId };
+    },
+
+    async rememberDevice(userId, ip) {
+      const user = await userRepo.findById(userId);
+      if (!user || user.status !== 'active') throw unauthorized();
+      if (!user.pinEnabled || !user.pinHash) {
+        // Only PIN users can be remembered (owner spec §B): a no-PIN account gets
+        // no remember-me and a blank login every time. The SPA only offers the
+        // prompt to PIN users; this is the authoritative server-side enforcement.
+        throw badRequest('A PIN is required to remember this device.', 'PIN_NOT_ENABLED');
+      }
+      // Opaque, high-entropy device id — the value of the signed `bt_rdid` cookie.
+      // Stored with NO TTL: the memory persists until "Another account" / forget
+      // (owner: "until cleared — no automatic expiry"). The cookie is signed, so
+      // its integrity is guarded even though the id is stored raw (like a session).
+      const deviceId = generateToken().token;
+      await redis.set(rememberedDeviceKey(deviceId), user.id);
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.RememberedDeviceCreated,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+      });
+      return {
+        deviceId,
+        // The client's whole record: never a token or scope (avatar is always null
+        // — the app has no avatar system yet; the chooser renders initials).
+        record: { userId: user.id, username: user.username, avatarUrl: null },
+      };
+    },
+
+    async forgetDevice(deviceId, ip) {
+      if (!deviceId) return;
+      const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
+      await redis.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      if (boundUserId) {
+        await audit.record({
+          actorId: boundUserId,
+          action: AuditAction.RememberedDeviceForgotten,
+          targetType: 'user',
+          targetId: boundUserId,
+          ip,
+        });
+      }
     },
 
     async setPin(userId, pin, ip) {

@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 
 import {
   acceptInviteRequestSchema,
@@ -6,6 +6,7 @@ import {
   loginRequestSchema,
   passwordResetCompleteSchema,
   passwordResetRequestSchema,
+  pinQuickAuthRequestSchema,
   pinVerifyRequestSchema,
   registerRequestSchema,
   sessionHandleParamSchema,
@@ -22,6 +23,7 @@ import {
   type LoginRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type PinQuickAuthRequest,
   type PinVerifyRequest,
   type RegisterRequest,
   type SetPinLockRequest,
@@ -34,7 +36,13 @@ import {
 } from '@bettertrack/contracts';
 
 import { notFound, unauthorized } from '../../errors';
-import { clearSessionCookie, setSessionCookie } from '../cookies';
+import {
+  clearRememberedDeviceCookie,
+  clearSessionCookie,
+  REMEMBERED_DEVICE_COOKIE,
+  setRememberedDeviceCookie,
+  setSessionCookie,
+} from '../cookies';
 import { requireAuth, requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
@@ -264,6 +272,59 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       res.json(toMeResponseFromRow(user));
     },
   );
+
+  // ── OAuth account memory + PIN quick re-auth (§16, owner spec #399 §B, V4-P2b) ──
+  // The remembered-device binding rides a signed httpOnly `bt_rdid` cookie; read it
+  // from the signed-cookie jar (cookie-parser drops a tampered value), never the
+  // body — the client controls its display record but not which account it is.
+  const readDeviceId = (req: Request): string | null => {
+    const value = req.signedCookies?.[REMEMBERED_DEVICE_COOKIE] as unknown;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  };
+
+  // PIN-only re-authentication for a device that already remembers a PIN user.
+  // PUBLIC (no session yet — that is the whole point) but rate-limited per-IP on
+  // the login schedule; the PIN check itself rides the per-account progressive PIN
+  // limiter in the service. A `pin`-less call is an auto-pass probe that answers
+  // { pinRequired: true } when the ~15-min window is closed.
+  router.post(
+    '/pin/quick-auth',
+    limiters.login,
+    validateBody(pinQuickAuthRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as PinQuickAuthRequest;
+      const deviceId = readDeviceId(req);
+      const result = await ctx.auth.quickAuth({ deviceId, pin: body.pin, ip: req.ip });
+      if (result.status === 'pin_required') {
+        res.json({ pinRequired: true });
+        return;
+      }
+      // Always an ephemeral session (a Custom-Tab browser must not silently keep a
+      // persistent one); refresh the long-lived device cookie so the memory stays.
+      setSessionCookie(res, ctx.config, result.sessionId, false);
+      if (deviceId) setRememberedDeviceCookie(res, ctx.config, deviceId);
+      res.json(toMeResponseFromRow(result.user));
+    },
+  );
+
+  // Remember THIS device for the caller (a PIN user) so future OAuth flows can
+  // quick-re-auth. Cookie-session only (requireUser 403s bearer/admin): sets the
+  // signed httpOnly `bt_rdid` cookie and returns the identity the client stores.
+  router.post('/remembered-device', requireUser, async (req, res) => {
+    const { deviceId, record } = await ctx.auth.rememberDevice(req.authUser!.id, req.ip);
+    setRememberedDeviceCookie(res, ctx.config, deviceId);
+    res.json(record);
+  });
+
+  // Forget the remembered device — "Another account" / explicit forget. PUBLIC:
+  // it only ever clears the binding for the device presenting the cookie, so it
+  // needs no session (the chooser shows the option when none exists). Clears the
+  // cookie so a closed-then-reopened OAuth flow knows nobody (blank login).
+  router.delete('/remembered-device', async (req, res) => {
+    await ctx.auth.forgetDevice(readDeviceId(req), req.ip);
+    clearRememberedDeviceCookie(res, ctx.config);
+    res.json({ ok: true });
+  });
 
   // ── Two-factor auth — two methods (§6.1, §13.2 V2-P5, #298) ─────────────────
   // All 2FA endpoints are user-kind only: `requireUser` 401s the anonymous and

@@ -278,6 +278,68 @@ export const meResponseSchema = z.object({
 export type MeResponse = z.infer<typeof meResponseSchema>;
 
 /**
+ * OAuth account memory + PIN quick re-auth (PROJECTPLAN.md §16; owner spec #399
+ * §B, V4-P2b). On the OAuth authorize page a device can remember the last
+ * PIN-user's identity so the next flow is: tap your name → enter your PIN only →
+ * authorized (password becomes the rare heavy credential). Two moving parts:
+ *
+ *  - A **client-side record** (localStorage) that carries at most
+ *    {@link rememberedDeviceResponseSchema}'s three fields — username + avatar +
+ *    user id, NEVER a token or scope — and drives the "Log in as X?" chooser.
+ *  - A **server-side device binding**: a signed, httpOnly `bt_rdid` cookie set by
+ *    `POST /auth/remembered-device`, mapped to the user in Redis. The quick
+ *    re-auth request is bound to that device+user and its PIN check rides the
+ *    SAME per-account progressive limiter as the #361 bearer PIN verify, so
+ *    brute force is contained on the existing schedule.
+ */
+
+/**
+ * `POST /auth/pin/quick-auth` — PIN-only re-authentication in the OAuth flow, for
+ * a device that already remembers a PIN user (the `bt_rdid` cookie carries the
+ * binding; the identity is NEVER taken from the body). `pin` omitted = a probe:
+ * the server auto-passes when the ~15-min quick-auth window from a recent PIN
+ * entry is still open, otherwise it answers {@link pinQuickAuthPendingSchema} so
+ * the client shows the PIN input. `pin` present = verify it and mint the session.
+ */
+export const pinQuickAuthRequestSchema = z.object({ pin: pinSchema.optional() }).strict();
+export type PinQuickAuthRequest = z.infer<typeof pinQuickAuthRequestSchema>;
+
+/**
+ * The "you must enter your PIN" answer to a `pin`-less probe: the quick-auth
+ * window is closed (or was never opened), so no session is minted and the client
+ * must collect the PIN. Distinct from an error — the chooser was still shown and
+ * the tap succeeded; only the auto-pass didn't apply.
+ */
+export const pinQuickAuthPendingSchema = z.object({ pinRequired: z.literal(true) }).strict();
+export type PinQuickAuthPending = z.infer<typeof pinQuickAuthPendingSchema>;
+
+/**
+ * `POST /auth/pin/quick-auth` response: either the signed-in user (a session
+ * cookie was set — an ephemeral one, exactly like a PIN-less OAuth login) or the
+ * "enter your PIN" pending answer. The two branches are disjoint: only the
+ * pending branch carries `pinRequired`, and a real user view always carries `id`.
+ */
+export const pinQuickAuthResponseSchema = z.union([meResponseSchema, pinQuickAuthPendingSchema]);
+export type PinQuickAuthResponse = z.infer<typeof pinQuickAuthResponseSchema>;
+
+/**
+ * `POST /auth/remembered-device` response — the identity the client stores in its
+ * remember-me record, AND the exact shape the record may hold: user id, username,
+ * and an avatar URL (always `null` today — the app has no avatar system yet, so
+ * the chooser renders a lettered placeholder). Deliberately carries no token or
+ * scope: the device binding lives in the httpOnly `bt_rdid` cookie, never here.
+ * Only PIN users may be remembered — the endpoint 400s a PIN-less account.
+ */
+export const rememberedDeviceResponseSchema = z
+  .object({
+    userId: z.string().uuid(),
+    username: z.string(),
+    avatarUrl: z.string().nullable(),
+  })
+  .strict();
+export type RememberedDeviceResponse = z.infer<typeof rememberedDeviceResponseSchema>;
+
+/**
  * Login-time 2FA challenge (PROJECTPLAN.md §6.1, §13.2 V2-P5). When an account
  * has 2FA enabled, a correct password does **not** mint a session: the API
  * returns this challenge carrying a short-lived, single-purpose `pendingToken`

@@ -13,6 +13,10 @@ export const AuditAction = {
   PinVerified: 'pin.verified',
   PinVerifyFail: 'pin.verify_fail',
   PinLockIdleChanged: 'pin.lock_idle_changed',
+  /** OAuth device remembered for PIN quick re-auth (#399 §B, V4-P2b). */
+  RememberedDeviceCreated: 'remembered_device.created',
+  /** Remembered device forgotten ("Another account" / explicit forget). */
+  RememberedDeviceForgotten: 'remembered_device.forgotten',
   TwoFactorEnrolled: 'two_factor.enrolled',
   TwoFactorEnrollCanceled: 'two_factor.enroll_canceled',
   TwoFactorConfirmed: 'two_factor.confirmed',
