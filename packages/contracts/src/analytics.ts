@@ -103,7 +103,10 @@ export const analyticsSeriesQuerySchema = z
     compareKind: analyticsCompareKindSchema.optional(),
     compareId: z.string().uuid().optional(),
     inflation: analyticsInflationModeSchema.optional(),
-    inflationRate: z.coerce.number().finite().optional(),
+    // > -100 so the flat deflator's growth base (1 + r/100) stays positive: at
+    // r ≤ -100 the base is ≤ 0 and `growth ** -yearsElapsed` yields Infinity/NaN
+    // real-terms values (deflateSeries, domain/seriesStats).
+    inflationRate: z.coerce.number().finite().gt(-100).optional(),
   })
   .strict();
 export type AnalyticsSeriesQuery = z.infer<typeof analyticsSeriesQuerySchema>;

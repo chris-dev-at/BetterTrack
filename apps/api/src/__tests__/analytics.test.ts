@@ -64,6 +64,24 @@ async function buy(
   expect(res.status).toBe(201);
 }
 
+/** Buy with an explicit day offset, so assets can be acquired on staggered dates. */
+async function buyAt(
+  agent: ReturnType<typeof request.agent>,
+  pid: string,
+  assetId: string,
+  quantity: number,
+  price: number,
+  offsetDays: number,
+) {
+  const res = await agent
+    .post(`/api/v1/portfolios/${pid}/transactions`)
+    .set(...XRW)
+    .send({
+      transactions: [{ assetId, side: 'buy', quantity, price, executedAt: tsOffset(offsetDays) }],
+    });
+  expect(res.status).toBe(201);
+}
+
 /**
  * Market-data controls for the value/filter/compare scenarios. AAA rises
  * (100→106), BBB is flat at 200, CCC is a catalog benchmark. Quotes match the
@@ -222,12 +240,92 @@ describe('analytics — filtered series, stats & contributions', () => {
     expect(noKind.status).toBe(400);
   });
 
+  it('rejects an inflation rate ≤ -100 % (flat deflator growth base must stay positive)', async () => {
+    const atBound = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?inflation=flat&inflationRate=-100`,
+    );
+    expect(atBound.status).toBe(400);
+    const belowBound = await agent.get(
+      `/api/v1/analytics/portfolios/${pid}/series?inflation=flat&inflationRate=-150`,
+    );
+    expect(belowBound.status).toBe(400);
+  });
+
   it('404s a portfolio the caller does not own', async () => {
     const other = await harness.seedUser({ email: 'other@bt.test', username: 'otheruser' });
     const otherAgent = await loginAgent(harness.app, other.email, other.password);
     const otherPid = await defaultPortfolioId(otherAgent);
     const res = await agent.get(`/api/v1/analytics/portfolios/${otherPid}/series`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('analytics — staggered buy dates (hide the earliest-held asset)', () => {
+  let harness: TestHarness;
+  let agent: ReturnType<typeof request.agent>;
+  let pid: string;
+  let aaa: string;
+  let bbb: string;
+
+  // AAA's real return over its own holding window (bought day-3 at 103, now 106).
+  const AAA_RETURN_PCT = (1060 / 1030 - 1) * 100;
+
+  beforeEach(async () => {
+    harness = await createTestApp({ marketData: stubMarket() });
+    const user = await harness.seedUser();
+    agent = await loginAgent(harness.app, user.email, user.password);
+    pid = await defaultPortfolioId(agent);
+    aaa = (await seedAsset(harness, { symbol: 'AAA', providerRef: 'AAA', type: 'stock' })).id;
+    bbb = (
+      await seedAsset(harness, { symbol: 'BBB', providerRef: 'BBB', name: 'Asset B', type: 'etf' })
+    ).id;
+    // BBB (flat 200) is the EARLIEST holding (day-6); AAA (rising 100→106) is
+    // bought later (day-3). On day-6..day-4 only BBB is held, so the all-assets
+    // grid starts before AAA existed — the regression the shipped tests miss.
+    await buyAt(agent, pid, bbb, 5, 200, -6);
+    await buyAt(agent, pid, aaa, 10, 100, -3);
+  });
+
+  it('anchors stats + window to the later asset instead of a leading 0', async () => {
+    const res = await agent.get(`/api/v1/analytics/portfolios/${pid}/series?hide=${bbb}`);
+    expect(res.status).toBe(200);
+    const body = res.body;
+
+    // Window anchors to AAA's first held day (day-3), NOT BBB's day-6: the
+    // leading padding-0s (days before AAA existed) are trimmed, so the first
+    // point is AAA's real value, not 0.
+    expect(body.from).toBe(dayOffset(-3));
+    expect(body.primary.points[0].value).toBeCloseTo(1030, 6);
+    expect(body.primary.points.at(-1).value).toBeCloseTo(1060, 6);
+
+    // AAA alone rose 1030 → 1060 (+2.9126 %). Pre-fix this reported 0 % with a
+    // null CAGR/best/worst and 0 drawdown because first.value was the leading 0.
+    expect(body.primary.stats.totalReturnPct).toBeCloseTo(AAA_RETURN_PCT, 6);
+    expect(body.primary.stats.totalReturnPct).toBeGreaterThan(0);
+    expect(body.primary.stats.maxDrawdownPct).toBeCloseTo(0, 6);
+    expect(body.primary.stats.bestDay).not.toBeNull();
+
+    // The single visible row still reconciles to the series total return.
+    expect(body.contributions).toHaveLength(1);
+    expect(body.contributions[0].asset.id).toBe(aaa);
+    expect(body.contributions[0].contributionPct).toBeCloseTo(AAA_RETURN_PCT, 6);
+  });
+
+  it('a group filter that excludes the earliest asset behaves the same', async () => {
+    // hideGroups=etf drops BBB (the earliest) exactly like hide=bbb.
+    const res = await agent.get(`/api/v1/analytics/portfolios/${pid}/series?hideGroups=etf`);
+    expect(res.status).toBe(200);
+    expect(res.body.from).toBe(dayOffset(-3));
+    expect(res.body.primary.stats.totalReturnPct).toBeCloseTo(AAA_RETURN_PCT, 6);
+    expect(res.body.contributions).toHaveLength(1);
+    expect(res.body.contributions[0].asset.id).toBe(aaa);
+  });
+
+  it('performance mode is not flatlined at 0 % when the earliest asset is hidden', async () => {
+    const res = await agent.get(`/api/v1/analytics/portfolios/${pid}/series?hide=${bbb}&mode=perf`);
+    expect(res.status).toBe(200);
+    expect(res.body.primary.points[0].value).toBeCloseTo(0, 6);
+    expect(res.body.primary.points.at(-1).value).toBeCloseTo(AAA_RETURN_PCT, 6);
   });
 });
 

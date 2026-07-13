@@ -38,6 +38,15 @@ import { INFLATION_INDEX_SERIES } from './inflationSeries';
  * Denominated in EUR (the storage base): the per-asset value pipeline converts
  * with historical daily FX to EUR; non-EUR presentation bases are the overview's
  * V3-P10d concern and out of scope here.
+ *
+ * Stats are FLOW-INCLUSIVE, not time-weighted: `domain/seriesStats` takes
+ * day-over-day returns on the raw value series, so a buy-day 0→value jump, a
+ * sell-day value→0 drop and mid-window top-ups all count toward totalReturn /
+ * drawdown / best-worst day. This is deliberate — the overview keeps TWR (§6.9);
+ * the analytics deep-dive reports the value curve as-is (§13.3). The window is
+ * anchored to the span the visible set actually held value (leading/trailing
+ * zero-value days are trimmed), so hiding the earliest-held asset can't zero the
+ * stats via the `first.value <= 0` guard.
  */
 export interface AnalyticsServiceDeps {
   portfolio: PortfolioService;
@@ -75,6 +84,23 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       date,
       value: maps.reduce((sum, map) => sum + (map.get(date) ?? 0), 0),
     }));
+  }
+
+  /**
+   * Drop leading and trailing non-positive points so the window + stats anchor
+   * to the span the series actually held value. The primary curve sums the
+   * VISIBLE assets over the ALL-assets date grid, so hiding the earliest-held
+   * asset leaves leading padding-0s (days before any visible asset existed);
+   * `computeSeriesStats`/`toPerformanceSeries` would then bail on
+   * `first.value <= 0` and zero every stat. Interior 0s (a genuine
+   * flat-to-zero holding gap) are preserved; an all-zero series ⇒ `[]`.
+   */
+  function trimZeroValueEdges(series: readonly StatSeriesPoint[]): StatSeriesPoint[] {
+    let lo = 0;
+    let hi = series.length - 1;
+    while (lo <= hi && (series[lo]?.value ?? 0) <= 0) lo += 1;
+    while (hi >= lo && (series[hi]?.value ?? 0) <= 0) hi -= 1;
+    return series.slice(lo, hi + 1);
   }
 
   /** Resolve the query's inflation knob to a pure {@link Deflator}, or `null` (nominal). */
@@ -117,7 +143,14 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
     return { kind, label, points: applyMode(value, mode), stats: computeSeriesStats(value) };
   }
 
-  /** Compare vs a catalog asset/index: its own daily close series (native currency). */
+  /**
+   * Compare vs a catalog asset/index: its own daily close series in the asset's
+   * NATIVE currency (not converted to the portfolio's EUR base). In `value` mode
+   * the two curves therefore sit on different currency scales — fine for the
+   * side-by-side perf/relative read, and the stats (total %, CAGR, drawdown) are
+   * scale-invariant so they stay correct; a EUR-converted benchmark is a future
+   * (V3-P10d base-currency) refinement.
+   */
   async function resolveCompareAsset(
     userId: string,
     assetId: string,
@@ -252,8 +285,8 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
       };
 
       // Per-asset value maps; the grid is the union of ALL assets' dates within
-      // the window, so hiding an asset changes the curve's VALUES but not its
-      // x-axis. Missing day → 0 (asset not yet held that day).
+      // the window, so hiding a NON-extreme asset changes the curve's VALUES but
+      // not its x-axis. Missing day → 0 (asset not yet held that day).
       const dates = new Set<string>();
       const assetById = new Map<string, { asset: PortfolioAsset; map: Map<string, number> }>();
       for (const entry of src.assets) {
@@ -267,18 +300,31 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
         assetById.set(entry.asset.id, { asset: entry.asset, map });
       }
       const grid = [...dates].sort();
-      const from = grid[0] ?? query.from ?? src.today;
-      const to = grid[grid.length - 1] ?? query.to ?? src.today;
 
       const visibleEntries = src.assets
         .map((e) => assetById.get(e.asset.id))
         .filter((e): e is { asset: PortfolioAsset; map: Map<string, number> } => e !== undefined)
         .filter((e) => isVisible(e.asset));
 
-      const nominalPrimary = sumOverGrid(
-        grid,
-        visibleEntries.map((e) => e.map),
+      // Sum the VISIBLE assets over the shared grid, then anchor the window +
+      // stats to the span those assets actually held value by trimming leading/
+      // trailing zero-value points. Without this, hiding (or group-filtering out)
+      // the earliest-held asset leaves leading padding-0s — days before any
+      // visible asset existed — and computeSeriesStats/toPerformanceSeries bail on
+      // `first.value <= 0`, zeroing every stat and flatlining the perf curve
+      // (#424 review). Interior 0s (a genuine flat-to-zero holding gap) survive.
+      const nominalPrimary = trimZeroValueEdges(
+        sumOverGrid(
+          grid,
+          visibleEntries.map((e) => e.map),
+        ),
       );
+      const from = nominalPrimary[0]?.date ?? grid[0] ?? query.from ?? src.today;
+      const to =
+        nominalPrimary[nominalPrimary.length - 1]?.date ??
+        grid[grid.length - 1] ??
+        query.to ??
+        src.today;
       const primary = buildSeries('portfolio', src.name, nominalPrimary, deflator, query.mode);
 
       // Contribution table (visible set): value/cost/P-L/weight are current
