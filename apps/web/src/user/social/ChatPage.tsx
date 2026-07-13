@@ -4,10 +4,12 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import {
   REALTIME_SERVER_EVENTS,
+  SHARE_KINDS,
   realtimeChatMessageSchema,
   type ChatChip,
   type ChatConversation,
   type ChatMessage,
+  type ShareKind,
 } from '@bettertrack/contracts';
 
 import {
@@ -20,7 +22,7 @@ import {
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { usePresence, useRealtimeEvent } from '../../lib/realtime';
-import { listFriends } from '../../lib/socialApi';
+import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { formatDateTime } from '../../lib/format';
 import { useT, type TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
@@ -138,9 +140,98 @@ function ShareChipView({ chip }: { chip: ChatChip }) {
   );
 }
 
+// ── Share-in-chat quick-share shortcut (#380) ─────────────────────────────────
+
+/** The two chat participants, narrowed to what the shortcut needs. */
+type ChipRecipient = { id: string; username: string };
+
+const isShareKind = (kind: ChatChip['kind']): kind is ShareKind =>
+  (SHARE_KINDS as readonly string[]).includes(kind);
+
+/**
+ * Offered under the OWNER's own share chip when the recipient can't currently see
+ * the item (#380). A one-tap shortcut over the existing AudiencePicker / setAudience
+ * (`PUT /social/audience/:kind/:subjectId`): it only ever ADDS this one named
+ * friend to the item's audience (private → `specific_friends` + them; or add them
+ * to the existing set), so it can never widen access beyond the deliberate choice
+ * — the §16 friction ladder for a specific friend is no warning. It reuses the ONE
+ * enforcement layer (V3-P5) and mirrors the same audience-grant rule the chip
+ * resolution applies, so it appears exactly when the recipient's chip is
+ * `viewable: false`. Assets carry no audience, so the shortcut never shows for them.
+ */
+function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: ChipRecipient }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const shareKind = isShareKind(chip.kind) ? chip.kind : null;
+
+  const audienceQuery = useQuery({
+    queryKey: ['social', 'audience', chip.kind, chip.subjectId],
+    queryFn: ({ signal }) => getAudience(shareKind!, chip.subjectId, signal),
+    enabled: shareKind !== null,
+  });
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      // Only ever ADD the recipient; the existing membership is preserved.
+      const current = audienceQuery.data;
+      const existing = current?.audience === 'specific_friends' ? current.friendIds : [];
+      const friendIds = existing.includes(recipient.id) ? existing : [...existing, recipient.id];
+      return setAudience(shareKind!, chip.subjectId, { audience: 'specific_friends', friendIds });
+    },
+    onSuccess: () => {
+      // Re-resolve the audience (the prompt vanishes as the recipient is now
+      // admitted) and refresh the sharing surfaces the picker also feeds.
+      void queryClient.invalidateQueries({ queryKey: ['social'] });
+      void queryClient.invalidateQueries({ queryKey: ['workboard'] });
+    },
+  });
+
+  if (shareKind === null) return null;
+  const state = audienceQuery.data;
+  if (!state) return null; // loading, or a read the owner can't make — offer nothing.
+
+  // Mirror the enforcement layer's audience-grant rule: a friend recipient is
+  // admitted by `all_friends` / `public_link`, or by `specific_friends` naming
+  // them. Anything else (private, or a set without them) means they can't see it.
+  const admitted =
+    state.audience === 'all_friends' ||
+    state.audience === 'public_link' ||
+    (state.audience === 'specific_friends' && state.friendIds.includes(recipient.id));
+  if (admitted) return null;
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2">
+      <p className="text-xs text-neutral-400">
+        {t('social.chat.chip.shortcut.prompt', { username: recipient.username })}
+      </p>
+      <button
+        type="button"
+        onClick={() => mutation.mutate()}
+        disabled={mutation.isPending}
+        className="self-start rounded-md border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-xs font-semibold text-sky-300 transition-colors hover:bg-sky-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-50"
+      >
+        {mutation.isPending
+          ? t('social.chat.chip.shortcut.sharing')
+          : t('social.chat.chip.shortcut.action')}
+      </button>
+      {mutation.isError ? (
+        <p className="text-xs text-rose-400">{t('social.chat.chip.shortcut.error')}</p>
+      ) : null}
+    </div>
+  );
+}
+
 // ── Message bubble ───────────────────────────────────────────────────────────
 
-function MessageBubble({ message, mine }: { message: ChatMessage; mine: boolean }) {
+function MessageBubble({
+  message,
+  mine,
+  recipient,
+}: {
+  message: ChatMessage;
+  mine: boolean;
+  recipient: ChipRecipient | null;
+}) {
   return (
     <div className={cx('flex', mine ? 'justify-end' : 'justify-start')}>
       <div
@@ -152,6 +243,9 @@ function MessageBubble({ message, mine }: { message: ChatMessage; mine: boolean 
         )}
       >
         {message.chip ? <ShareChipView chip={message.chip} /> : null}
+        {mine && message.chip && recipient ? (
+          <ChipShareShortcut chip={message.chip} recipient={recipient} />
+        ) : null}
         {message.body ? (
           <p className="whitespace-pre-wrap break-words text-sm text-neutral-100">{message.body}</p>
         ) : null}
@@ -655,7 +749,12 @@ function ChatThreadPane({
           </div>
         ) : (
           messages.map((m) => (
-            <MessageBubble key={m.id} message={m} mine={m.senderId === user?.id} />
+            <MessageBubble
+              key={m.id}
+              message={m}
+              mine={m.senderId === user?.id}
+              recipient={other}
+            />
           ))
         )}
         <div ref={bottomRef} />

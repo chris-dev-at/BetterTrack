@@ -10,7 +10,11 @@ vi.mock('../../lib/chatApi', () => ({
   sendChatMessage: vi.fn(),
   markConversationRead: vi.fn(),
 }));
-vi.mock('../../lib/socialApi', () => ({ listFriends: vi.fn() }));
+vi.mock('../../lib/socialApi', () => ({
+  listFriends: vi.fn(),
+  getAudience: vi.fn(),
+  setAudience: vi.fn(),
+}));
 vi.mock('../../lib/portfolioApi', () => ({ listPortfolios: vi.fn() }));
 vi.mock('../../lib/conglomerateApi', () => ({ listConglomerates: vi.fn() }));
 vi.mock('../AuthContext', () => ({ useAuth: () => ({ user: { id: 'me', username: 'me' } }) }));
@@ -24,6 +28,7 @@ import {
   openConversation,
   sendChatMessage,
 } from '../../lib/chatApi';
+import { getAudience, setAudience } from '../../lib/socialApi';
 import { ChatPage } from './ChatPage';
 
 function makeQueryClient() {
@@ -167,6 +172,139 @@ describe('ChatPage — thread + share chip enforcement', () => {
     vi.mocked(openConversation).mockRejectedValue(new Error('not found'));
     renderAt('/social/chat/u2');
     await waitFor(() => expect(screen.getByText("You're not connected")).toBeInTheDocument());
+  });
+});
+
+describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
+  const convo = {
+    id: 'c1',
+    user: { id: 'u2', username: 'bob' },
+    unreadCount: 0,
+    lastMessage: null,
+    lastMessageAt: null,
+  };
+
+  /** A thread with one chip the caller ('me') sent to bob, resolved for the owner. */
+  function ownerChipThread(senderId: 'me' | 'u2' = 'me') {
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: convo,
+      nextCursor: null,
+      messages: [
+        {
+          id: 'm1',
+          conversationId: 'c1',
+          senderId,
+          body: null,
+          chip: {
+            kind: 'portfolio',
+            subjectId: 'p1',
+            viewable: true,
+            title: 'Growth Portfolio',
+            subtitle: null,
+          },
+          createdAt: '2026-01-01T10:00:00.000Z',
+        },
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [], unreadTotal: 0 });
+    vi.mocked(openConversation).mockResolvedValue(convo);
+  });
+
+  test('offers the one-tap shortcut on my own chip the recipient cannot see', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'private',
+      friendIds: [],
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: 'p1',
+        audience: 'specific_friends',
+        friendIds: ['u2'],
+        link: { active: false, createdAt: null },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+
+    await waitFor(() => expect(screen.getByText(/bob can't see this/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Share it with just them' }));
+
+    // The shortcut only ever ADDS the named friend to a specific-friends audience.
+    await waitFor(() =>
+      expect(setAudience).toHaveBeenCalledWith('portfolio', 'p1', {
+        audience: 'specific_friends',
+        friendIds: ['u2'],
+      }),
+    );
+  });
+
+  test('adds the friend to an existing specific-friends set without dropping anyone', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'specific_friends',
+      friendIds: ['u9'],
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: 'p1',
+        audience: 'specific_friends',
+        friendIds: ['u9', 'u2'],
+        link: { active: false, createdAt: null },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+
+    await user.click(await screen.findByRole('button', { name: 'Share it with just them' }));
+
+    await waitFor(() =>
+      expect(setAudience).toHaveBeenCalledWith('portfolio', 'p1', {
+        audience: 'specific_friends',
+        friendIds: ['u9', 'u2'],
+      }),
+    );
+  });
+
+  test('shows no shortcut when the recipient can already see the item', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'all_friends',
+      friendIds: [],
+      link: { active: false, createdAt: null },
+    });
+
+    renderAt('/social/chat/u2');
+
+    await waitFor(() => expect(screen.getByText('Growth Portfolio')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Share it with just them' })).toBeNull();
+  });
+
+  test('never offers the shortcut on a chip the friend sent me', async () => {
+    ownerChipThread('u2');
+
+    renderAt('/social/chat/u2');
+
+    await waitFor(() => expect(screen.getByText('Growth Portfolio')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Share it with just them' })).toBeNull();
+    // A chip I don't own never triggers an owner-only audience read.
+    expect(getAudience).not.toHaveBeenCalled();
   });
 });
 

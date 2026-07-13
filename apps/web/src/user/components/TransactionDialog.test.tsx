@@ -8,11 +8,13 @@ import type { Transaction, TransactionInput } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/assetApi');
+vi.mock('../../lib/settingsApi');
 import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
+import * as settingsApi from '../../lib/settingsApi';
 import {
   DERIVED_QUANTITY_DECIMALS,
   deriveQuantityFromAmount,
@@ -80,6 +82,9 @@ beforeEach(() => {
     defaultPayFromCash: false,
     archivedAt: null,
   });
+  // Default: no tax mode → the manual per-trade tax field stays hidden, so the
+  // existing specs behave exactly as before. Manual-tax specs override this.
+  vi.mocked(settingsApi.getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
 });
 
 // --- Pure derivation --------------------------------------------------------
@@ -846,5 +851,99 @@ describe('TransactionDialog — uncovered sell', () => {
     const submitted = vi.mocked(portfolioApi.createTransactions).mock
       .calls[0]![1] as TransactionInput[];
     expect(submitted[0]!.allowUncovered).toBeUndefined();
+  });
+});
+
+// --- Dialog: manual per-trade tax (V3-P4, #431) ----------------------------
+
+describe('TransactionDialog — manual per-trade tax', () => {
+  function useManualMode() {
+    vi.mocked(settingsApi.getTaxSettings).mockResolvedValue({
+      mode: 'manual_per_trade',
+      country: null,
+    });
+  }
+
+  async function sellWithPrice(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    await user.type(screen.getByLabelText(/quantity for btc/i), '10');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+  }
+
+  test('offers the tax field on a SELL in manual mode and submits an absolute € amount', async () => {
+    useManualMode();
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
+    await user.type(taxInput, '250');
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxAmountEur).toBe(250);
+    expect(submitted[0]!.taxRatePct).toBeUndefined();
+  });
+
+  test('switching the unit to "% of gain" submits a rate instead of an amount', async () => {
+    useManualMode();
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    await screen.findByLabelText(/manual tax for this sale/i);
+    await user.click(screen.getByRole('button', { name: /% of gain/i }));
+    await user.type(screen.getByLabelText(/manual tax for this sale/i), '30');
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxRatePct).toBe(30);
+    expect(submitted[0]!.taxAmountEur).toBeUndefined();
+  });
+
+  test('a blank tax field records no tax (neither field on the payload)', async () => {
+    useManualMode();
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    await screen.findByLabelText(/manual tax for this sale/i);
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxAmountEur).toBeUndefined();
+    expect(submitted[0]!.taxRatePct).toBeUndefined();
+  });
+
+  test('never offered on a BUY — only once the row is a SELL', async () => {
+    useManualMode();
+    const user = userEvent.setup();
+    renderDialog();
+
+    // The default side is BUY: even after the tax mode resolves, no field shows.
+    await waitFor(() => expect(settingsApi.getTaxSettings).toHaveBeenCalled());
+    expect(screen.queryByLabelText(/manual tax for this sale/i)).toBeNull();
+
+    // Switching to Sell reveals it (the gate is side-based, not just mode-based).
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    expect(await screen.findByLabelText(/manual tax for this sale/i)).toBeInTheDocument();
+  });
+
+  test('no tax UI at all when the mode is `none` (default)', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    await waitFor(() => expect(settingsApi.getTaxSettings).toHaveBeenCalled());
+    expect(screen.queryByLabelText(/manual tax for this sale/i)).toBeNull();
   });
 });
