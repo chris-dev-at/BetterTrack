@@ -10,11 +10,15 @@ import { migrate as migratePostgres } from 'drizzle-orm/postgres-js/migrator';
 import { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import postgres from 'postgres';
+import request from 'supertest';
+
+import { twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
 
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { generateTotpCode } from '../services/auth/totp';
 import * as schema from '../data/schema';
 import { buildContext, type AppContext } from '../http/context';
 import type { BackfillScheduler } from '../jobs';
@@ -158,6 +162,14 @@ export interface TestHarness {
   db: Database;
   seedAdmin(input?: Partial<Omit<SeededAdmin, 'id'>>): Promise<SeededAdmin>;
   seedUser(input?: Partial<Omit<SeededUser, 'id'>>): Promise<SeededUser>;
+  /**
+   * Log a freshly-seeded admin in AND satisfy the mandatory admin-login 2FA gate
+   * (§6.12, #400) by enrolling TOTP in-session — the enroll/confirm set is exempt
+   * from the setup gate, so the same session then reaches every admin route (the
+   * AC1 bootstrap behavior). Returns the authenticated agent. Use this wherever a
+   * test needs an admin that can actually call admin endpoints.
+   */
+  loginAdmin(admin: SeededAdmin): Promise<ReturnType<typeof request.agent>>;
 }
 
 export interface CreateTestAppOptions {
@@ -255,5 +267,32 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     return { id: user.id, email: user.email, username: user.username, password };
   }
 
-  return { app, ctx, db, seedAdmin, seedUser };
+  async function loginAdmin(admin: SeededAdmin): Promise<ReturnType<typeof request.agent>> {
+    const agent = request.agent(app);
+    const res = await agent
+      .post('/api/v1/auth/login')
+      .set('X-Requested-With', 'BetterTrack')
+      .send({ identifier: admin.email, password: admin.password });
+    // A freshly-seeded admin has no 2FA yet, so password login mints a session in
+    // the setup-required state (never a challenge). Enroll TOTP on that session —
+    // the enroll/confirm endpoints are exempt from the setup gate — and the same
+    // session is then cleared to reach every admin route (#400, AC1).
+    if (res.body?.twoFactorRequired) {
+      throw new Error('loginAdmin expects a fresh (un-enrolled) admin');
+    }
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (
+        await agent
+          .post('/api/v1/admin/security/2fa/totp/enroll')
+          .set('X-Requested-With', 'BetterTrack')
+      ).body,
+    );
+    await agent
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set('X-Requested-With', 'BetterTrack')
+      .send({ code: generateTotpCode(secret) });
+    return agent;
+  }
+
+  return { app, ctx, db, seedAdmin, seedUser, loginAdmin };
 }

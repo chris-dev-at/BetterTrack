@@ -244,3 +244,64 @@ export const testEmailResponseSchema = z.object({
   code: z.string().optional(),
 });
 export type TestEmailResponse = z.infer<typeof testEmailResponseSchema>;
+
+/**
+ * Mandatory admin-login two-factor auth (PROJECTPLAN.md §6.12, #400).
+ *
+ * Every `role='admin'` account must pass 2FA to use the admin surface — there is
+ * no opt-in and no "root admin" exemption. The login challenge REUSES the shared
+ * `two_factor_required` flow (`/auth/login` → `/auth/2fa/verify`), so the schemas
+ * for enrolling TOTP, confirming a method, disabling it and (re)issuing recovery
+ * codes are the SAME ones the user surface uses (`twoFactorEnrollResponseSchema`,
+ * `twoFactorConfirmRequestSchema`, `twoFactorEmailConfirmRequestSchema`,
+ * `twoFactorDisableRequestSchema`, `twoFactorMethodEnabledResponseSchema`,
+ * `twoFactorRecoveryCodesResponseSchema` — all in `./auth`). Only two things are
+ * admin-specific and defined here: the status shape (it carries the setup-gate
+ * flag + the separate 2FA email) and the email-method start request (it names the
+ * target 2FA email, with an optional fresh-proof for a change once enrolled).
+ */
+
+/**
+ * Error code returned (403) by every admin endpoint EXCEPT the 2FA enroll/confirm
+ * set while a logged-in admin has no confirmed 2FA method. The admin SPA detects
+ * it and forces the enrollment wizard (bootstrap for "mandatory", #400).
+ */
+export const ADMIN_2FA_SETUP_REQUIRED = 'ADMIN_2FA_SETUP_REQUIRED';
+
+/** `GET /admin/security/2fa/status` — the admin's own 2FA methods + setup gate state. */
+export const adminTwoFactorStatusResponseSchema = z
+  .object({
+    /**
+     * True when the admin has NO confirmed 2FA method yet — the mandatory-2FA
+     * bootstrap state in which every other admin endpoint answers 403
+     * `ADMIN_2FA_SETUP_REQUIRED` and the SPA forces the enrollment wizard.
+     */
+    setupRequired: z.boolean(),
+    /** Authenticator-app (TOTP) method: on once a code has confirmed enrollment. */
+    totpEnabled: z.boolean(),
+    /** True when a TOTP secret is enrolled but not yet confirmed (awaiting a code). */
+    totpPending: z.boolean(),
+    /** Email-OTP method: on once a code mailed to the 2FA email confirmed it. */
+    emailEnabled: z.boolean(),
+    /** The separately-set 2FA email the login code is delivered to; NULL if unset. */
+    twoFactorEmail: z.string().nullable(),
+    /** Count of recovery codes still unused (shared across both methods). */
+    recoveryCodesRemaining: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminTwoFactorStatusResponse = z.infer<typeof adminTwoFactorStatusResponseSchema>;
+
+/**
+ * `POST /admin/security/2fa/email/start` — set (first time) or change the admin's
+ * 2FA email and send a confirmation code to it. `proof` (a current TOTP code or an
+ * unused recovery code) is REQUIRED once the admin is already enrolled — changing
+ * the address must clear a fresh 2FA proof (decision 3, #400) — and ignored on the
+ * first-time set during forced enrollment (no method on yet).
+ */
+export const adminTwoFactorEmailStartRequestSchema = z
+  .object({
+    email: emailSchema,
+    proof: z.string().trim().min(6).max(64).optional(),
+  })
+  .strict();
+export type AdminTwoFactorEmailStartRequest = z.infer<typeof adminTwoFactorEmailStartRequestSchema>;

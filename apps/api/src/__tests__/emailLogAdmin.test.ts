@@ -53,7 +53,7 @@ describe('admin email-log endpoints (PROJECTPLAN.md §6.10, §6.12, §8)', () =>
     expect((await userAgent.get('/api/v1/admin/emails')).status).toBe(404);
     expect((await userAgent.get(`/api/v1/admin/users/${user.id}/emails`)).status).toBe(404);
 
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     expect((await adminAgent.get('/api/v1/admin/emails')).status).toBe(200);
     expect((await adminAgent.get(`/api/v1/admin/users/${user.id}/emails`)).status).toBe(200);
   });
@@ -64,7 +64,7 @@ describe('admin email-log endpoints (PROJECTPLAN.md §6.10, §6.12, §8)', () =>
     await seedLog(user.id, user.email, 3);
     await seedLog(null, 'invitee@test.dev', 2); // pre-account invite sends
 
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const first = await adminAgent.get('/api/v1/admin/emails').query({ limit: 3 });
     const firstPage = emailLogListResponseSchema.parse(first.body);
@@ -90,7 +90,7 @@ describe('admin email-log endpoints (PROJECTPLAN.md §6.10, §6.12, §8)', () =>
     await seedLog(alice.id, alice.email, 2);
     await seedLog(bob.id, bob.email, 3);
 
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const res = await adminAgent.get(`/api/v1/admin/users/${alice.id}/emails`);
     const page = emailLogListResponseSchema.parse(res.body);
@@ -100,7 +100,7 @@ describe('admin email-log endpoints (PROJECTPLAN.md §6.10, §6.12, §8)', () =>
 
   it('per-user log 404s for an unknown user id', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const res = await adminAgent.get(
       '/api/v1/admin/users/00000000-0000-7000-8000-000000000000/emails',
     );

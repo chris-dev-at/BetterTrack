@@ -19,6 +19,13 @@ export interface TwoFactorState {
   confirmedAt: Date | null;
   /** The standalone email-code method flag (#298). */
   emailEnabled: boolean;
+  /**
+   * Admin-login email-OTP target (#400): the separately-set "2FA email" an
+   * admin-kind account receives its login code on. NULL for every user-kind
+   * account (they code to the account email) and for an admin who has not turned
+   * the email method on.
+   */
+  twoFactorEmail: string | null;
 }
 
 export function createTwoFactorRepository(db: Database) {
@@ -31,11 +38,24 @@ export function createTwoFactorRepository(db: Database) {
           enabled: users.twoFactorEnabled,
           confirmedAt: users.twoFactorConfirmedAt,
           emailEnabled: users.twoFactorEmailEnabled,
+          twoFactorEmail: users.twoFactorEmail,
         })
         .from(users)
         .where(eq(users.id, userId))
         .limit(1);
       return row;
+    },
+
+    /**
+     * Set (or clear, with NULL) the admin-login 2FA email (#400). Independent of
+     * the `twoFactorEmailEnabled` flag — the service sets the address then flips
+     * the flag on confirm, and clears both when the admin turns the method off.
+     */
+    async setTwoFactorEmail(userId: string, email: string | null): Promise<void> {
+      await db
+        .update(users)
+        .set({ twoFactorEmail: email, updatedAt: new Date() })
+        .where(eq(users.id, userId));
     },
 
     /** Store a provisional (not-yet-enabled) encrypted secret, clearing any prior confirm. */

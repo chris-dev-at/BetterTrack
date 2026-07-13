@@ -2,8 +2,9 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { meResponseSchema } from '@bettertrack/contracts';
+import { meResponseSchema, twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
 
+import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -51,7 +52,7 @@ describe('password reset — lost-token re-reset never bricks a user (#248 item 
   it('a second reset invalidates the first temp password and issues a fresh usable one', async () => {
     const admin = await harness.seedAdmin();
     const user = await harness.seedUser();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     // First reset — the token the owner then "loses".
     const temp1 = await resetPassword(adminAgent, user.id);
@@ -79,7 +80,7 @@ describe('password reset — an admin account is recoverable (#248 item 6)', () 
   it('a reset admin completes the change and reaches admin endpoints — no user-panel loop', async () => {
     const actor = await harness.seedAdmin({ email: 'root@test.dev', username: 'root_admin' });
     const target = await harness.seedAdmin({ email: 'ops@test.dev', username: 'ops_admin' });
-    const actorAgent = await loginAgent(harness.app, actor.email, actor.password);
+    const actorAgent = await harness.loginAdmin(actor);
 
     const temp = await resetPassword(actorAgent, target.id);
 
@@ -98,9 +99,22 @@ describe('password reset — an admin account is recoverable (#248 item 6)', () 
     expect(me.role).toBe('admin');
     expect(me.mustChangePassword).toBe(false);
 
-    // The admin panel opens up on the very same session — the loop is gone.
+    // The password loop is gone — but mandatory admin 2FA (#400) now gates the
+    // panel with the setup wizard (not a bounce) until the reset admin enrolls.
+    const stillGated = await targetAgent.get('/api/v1/admin/users');
+    expect(stillGated.status).toBe(403);
+    expect(stillGated.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+
+    // Enrolling 2FA on the very same session opens the panel — recovery complete.
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await targetAgent.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+    await targetAgent
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
     expect((await targetAgent.get('/api/v1/admin/users')).status).toBe(200);
-    // And the new password logs the admin straight back in.
+    // And the new password is accepted at login (now issuing the 2FA challenge).
     expect((await login(harness.app, target.email, 'ops-recovered-strong-9')).status).toBe(200);
   });
 });
@@ -113,7 +127,7 @@ describe('password reset — outcome is independent of any admin session elsewhe
     // One agent holds the admin session, then logs in as the reset user in the
     // same agent — rotating the cookie to the user's session. The forced change
     // must act on the user, never on the admin whose session was there before.
-    const agent = await loginAgent(harness.app, admin.email, admin.password);
+    const agent = await harness.loginAdmin(admin);
     const temp = await resetPassword(agent, user.id);
 
     const relogin = await agent
@@ -140,7 +154,7 @@ describe('password reset — no redundant password re-entry (#248 item 7)', () =
   it('completing a reset with only the new password logs the user straight in', async () => {
     const admin = await harness.seedAdmin();
     const user = await harness.seedUser();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const temp = await resetPassword(adminAgent, user.id);
 
     const userAgent = await loginAgent(harness.app, user.email, temp);
@@ -160,7 +174,7 @@ describe('password reset — no redundant password re-entry (#248 item 7)', () =
   it('enforces the password policy on the forced-change new password (§6.1)', async () => {
     const admin = await harness.seedAdmin();
     const user = await harness.seedUser();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const temp = await resetPassword(adminAgent, user.id);
 
     const userAgent = await loginAgent(harness.app, user.email, temp);

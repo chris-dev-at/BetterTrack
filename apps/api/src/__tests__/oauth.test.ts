@@ -88,7 +88,7 @@ async function registerFirstPartyClient(
     email: `fp-admin-${randomBytes(4).toString('hex')}@bettertrack.test`,
     username: `fpadmin${randomBytes(4).toString('hex')}`,
   });
-  const agent = await loginAgent(harness.app, admin.email, admin.password);
+  const agent = await harness.loginAdmin(admin);
   const res = await agent
     .post('/api/v1/admin/oauth-clients')
     .set(...XRW)
@@ -116,7 +116,7 @@ async function adminAndFirstPartyClient(
     email: `fp-admin-${randomBytes(4).toString('hex')}@bettertrack.test`,
     username: `fpadmin${randomBytes(4).toString('hex')}`,
   });
-  const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+  const adminAgent = await harness.loginAdmin(admin);
   const res = await adminAgent
     .post('/api/v1/admin/oauth-clients')
     .set(...XRW)
@@ -931,7 +931,7 @@ describe('first-party app editing (#341) — consent-safe', () => {
       email: `edit-admin-${randomBytes(4).toString('hex')}@bettertrack.test`,
       username: `editadmin${randomBytes(4).toString('hex')}`,
     });
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const notFoundRes = await editFirstPartyClient(adminAgent, thirdRow!.id, {
       name: 'hijacked',
       redirectUris: [HTTPS_REDIRECT],

@@ -23,6 +23,8 @@ export const AuditAction = {
   TwoFactorEmailEnabled: 'two_factor.email_enabled',
   TwoFactorEmailDisabled: 'two_factor.email_disabled',
   TwoFactorVerifyFail: 'two_factor.verify_fail',
+  /** Break-glass reset of an admin's 2FA enrollment via the shell-only script (#400). */
+  AdminTwoFactorReset: 'admin.two_factor_reset',
   UserCreated: 'user.created',
   UserDisabled: 'user.disabled',
   UserEnabled: 'user.enabled',

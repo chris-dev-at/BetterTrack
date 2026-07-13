@@ -378,6 +378,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
   ): Promise<void> {
+    // Admin-login email codes go to the separately-set 2FA email, NEVER the
+    // account email (§6.12, #400); a user's go to the account email exactly as
+    // before. If an admin somehow has the email method armed without a 2FA email
+    // set (cannot happen via the enroll flow, which sets it on confirm), there is
+    // nothing to deliver to — skip silently, leaving TOTP/recovery to carry the
+    // challenge, and never mint a code that can't arrive.
+    const to = user.role === 'admin' ? user.twoFactorEmail : user.email;
+    if (!to) return;
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
     await redis.set(emailCodeKey(pendingToken), hashToken(code), 'EX', EMAIL_CODE_TTL_MINUTES * 60);
     await audit.record({
@@ -388,7 +396,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       ip,
     });
     await email.sendTwoFactorCode({
-      to: user.email,
+      to,
       userId: user.id,
       code,
       expiresInMinutes: EMAIL_CODE_TTL_MINUTES,

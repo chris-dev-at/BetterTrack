@@ -77,6 +77,14 @@ beforeEach(() => {
   // matches (or reports) a stale mutation from the wrong test (#337).
   vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
+  vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
+    setupRequired: false,
+    totpEnabled: true,
+    totpPending: false,
+    emailEnabled: false,
+    twoFactorEmail: null,
+    recoveryCodesRemaining: 8,
+  });
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
   vi.mocked(api.listUserAudit).mockResolvedValue({ entries: [auditEntry], nextCursor: null });
   vi.mocked(api.listUserEmails).mockResolvedValue({ entries: [emailEntry], nextCursor: null });

@@ -260,6 +260,13 @@
       "when": 1783911111111,
       "tag": "0036_idempotency_keys_reapply",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1783920000000,
+      "tag": "0037_admin_two_factor_email",
+      "breakpoints": true
     }
   ]
 }

@@ -58,6 +58,14 @@ function renderPage() {
 
 beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
+  vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
+    setupRequired: false,
+    totpEnabled: true,
+    totpPending: false,
+    emailEnabled: false,
+    twoFactorEmail: null,
+    recoveryCodesRemaining: 8,
+  });
   vi.mocked(api.getStats).mockResolvedValue(stats);
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
 });

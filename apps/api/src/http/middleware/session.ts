@@ -1,5 +1,7 @@
 import type { RequestHandler } from 'express';
 
+import { ADMIN_2FA_SETUP_REQUIRED } from '@bettertrack/contracts';
+
 import { adminAccountKind, forbidden, notFound, unauthorized } from '../../errors';
 import type { AppContext } from '../context';
 import { clearSessionCookie, setSessionCookie } from '../cookies';
@@ -117,3 +119,39 @@ export const requireAdmin: RequestHandler = (req, _res, next) => {
   }
   next();
 };
+
+/**
+ * Mandatory admin-login 2FA gate (§6.12, #400). Mounted right AFTER
+ * {@link requireAdmin} and AFTER the 2FA enroll/confirm sub-router, so it guards
+ * every OTHER admin endpoint: a logged-in admin with no confirmed 2FA method gets
+ * `403 ADMIN_2FA_SETUP_REQUIRED`, which the admin SPA turns into the forced
+ * enrollment wizard. This is the bootstrap that makes "mandatory" deployable
+ * without locking out the seeded admin — password login still succeeds, but the
+ * admin can do nothing except enroll until a method is confirmed. An enrolled
+ * admin can never reach here on a fresh login without first passing the shared
+ * `two_factor_required` challenge (the session is withheld until it does), so this
+ * gate only ever fires in the not-yet-enrolled state.
+ */
+export function requireAdminTwoFactor(ctx: AppContext): RequestHandler {
+  return async (req, _res, next) => {
+    try {
+      // requireAdmin already ran; be defensive if the mount order ever changes.
+      if (req.apiKey || !req.authUser || req.authUser.role !== 'admin') {
+        next();
+        return;
+      }
+      if (await ctx.twoFactor.isEnabled(req.authUser.id)) {
+        next();
+        return;
+      }
+      next(
+        forbidden(
+          'Two-factor authentication setup is required for admin accounts.',
+          ADMIN_2FA_SETUP_REQUIRED,
+        ),
+      );
+    } catch (err) {
+      next(err);
+    }
+  };
+}
