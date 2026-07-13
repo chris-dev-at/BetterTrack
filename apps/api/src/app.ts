@@ -14,6 +14,7 @@ import { createOpenApiRouter } from './http/openapi';
 import { createAccountRouter } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAlertsRouter } from './http/routes/alertsRoutes';
+import { createAnalyticsRouter } from './http/routes/analyticsRoutes';
 import { createAssetsRouter } from './http/routes/assetsRoutes';
 import { createAuthRouter } from './http/routes/authRoutes';
 import { createBacktestRouter } from './http/routes/backtestRoutes';
@@ -95,6 +96,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
+  app.use('/api/v1/analytics', createAnalyticsRouter(ctx));
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
   app.use('/api/v1/chat', createChatRouter(ctx));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));

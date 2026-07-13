@@ -78,6 +78,10 @@ const ACCOUNT_SECURITY_SCOPE = 'account:security';
 const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[] = [
   { prefix: '/portfolios', read: 'portfolio:read', write: 'portfolio:write' },
   { prefix: '/custom-assets', read: 'portfolio:read', write: 'portfolio:write' },
+  // Analytics deep-dive (§13.3 V3-P9) reads portfolio-derived series/stats — a
+  // read-only surface, but declared with the portfolio scope pair so it never
+  // falls through to the session-only default (the #396/#405 gap class).
+  { prefix: '/analytics', read: 'portfolio:read', write: 'portfolio:write' },
   { prefix: '/workboard', read: 'workboard:read', write: 'workboard:write' },
   { prefix: '/conglomerates', read: 'workboard:read', write: 'workboard:write' },
   { prefix: '/backtest', read: 'workboard:read', write: 'workboard:write' },

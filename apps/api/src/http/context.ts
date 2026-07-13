@@ -59,6 +59,10 @@ import { createAppSettingsService } from '../services/appSettings/appSettingsSer
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
 import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
+import {
+  createAnalyticsService,
+  type AnalyticsService,
+} from '../services/analytics/analyticsService';
 import { createAuditService } from '../services/audit/auditService';
 import {
   createConglomerateService,
@@ -146,6 +150,8 @@ export interface AppContext {
   conglomerate: ConglomerateService;
   /** Backtest preview over inline draft baskets for the Builder (§6.5, §6.6). */
   backtest: BacktestService;
+  /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
+  analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
   social: SocialService;
   /** 1:1 friend chat — conversations, threads, unread + share-in-chat (§13.3 V3-P8). */
@@ -523,6 +529,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
   });
 
+  // Analytics deep-dive (§13.3 V3-P9): assembles the configurable graph +
+  // contribution table over the per-asset value pipeline, resolves compare
+  // benchmarks (catalog asset / own portfolio / own conglomerate) and the
+  // real-terms inflation transform. Pure stats math lives in domain/seriesStats.
+  const analytics = createAnalyticsService({
+    portfolio,
+    conglomerate,
+    backtest: backtestPreview,
+    assetRepo,
+    marketData,
+  });
+
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Emits friend.request / friend.accepted through the notification center.
@@ -672,6 +690,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     customAssets,
     conglomerate,
     backtest: backtestPreview,
+    analytics,
     social,
     chat,
     notifications,

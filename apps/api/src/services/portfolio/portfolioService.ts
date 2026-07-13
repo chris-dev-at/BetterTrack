@@ -16,6 +16,7 @@ import type {
   UpdateCashSourceRequest,
   Holding as HoldingDto,
   HistoryRange,
+  PortfolioAsset,
   PortfolioHistoryOverlay,
   PortfolioHistoryRange,
   PortfolioPerformancePoint,
@@ -304,6 +305,25 @@ export interface PortfolioService {
     points: Array<{ date: string; valueEur: number }>;
     performance: PortfolioPerformancePoint[];
     assets?: PortfolioHistoryOverlay[];
+  }>;
+  /**
+   * Per-asset EUR value-over-time series (V3-P9 Analytics) — the smoothing-aware
+   * building block the overview curve sums over, exposed at per-asset
+   * granularity so Analytics can mask visibility, filter by category/type, and
+   * compute per-asset contributions. One entry per transacted, EUR-convertible
+   * asset (non-convertible currencies drop exactly as they do in the overview,
+   * §5.4); each is a daily EUR series from that asset's first transaction
+   * through `today`. Always EUR-denominated (the storage base). Ownership is
+   * enforced (404 on a foreign/missing id); not cached.
+   */
+  getAssetValueSeries(
+    userId: string,
+    portfolioId: string,
+  ): Promise<{
+    baseCurrency: string;
+    name: string;
+    today: string;
+    assets: Array<{ asset: PortfolioAsset; points: Array<{ date: string; valueEur: number }> }>;
   }>;
   /** Drop the cached value series for a portfolio (called on any write). */
   invalidateHistory(portfolioId: string): Promise<void>;
@@ -926,25 +946,26 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /**
-   * The holdings-only legs of the graph payload: the daily holdings value
-   * curve, the external transaction flows (cash-funded transactions excluded,
-   * see {@link loadSeries}), and the #122 overlay series. Degrades to empty
-   * legs when no holding is EUR-convertible.
+   * Assemble each transacted, EUR-convertible asset's merged, smoothing-aware
+   * daily price series (§5.2/§5.3): stored `price_history` rows as the durable
+   * fallback layer, overlaid with each asset's real daily market history
+   * (custom assets route through the manual provider via the exact same call,
+   * so V3-P2 value-smoothing is applied transparently). The shared price
+   * assembly reused by both the net-worth curve ({@link buildHoldingsLegs}) and
+   * the per-asset Analytics series ({@link getAssetValueSeries}, V3-P9) — one
+   * place owns the currency-convertibility probe and provider fan-out. When no
+   * holding is EUR-convertible, `valueAssets` is empty and callers degrade.
+   * Assumes `txns` is non-empty (both callers guard).
    */
-  async function buildHoldingsLegs(
+  async function buildValueAssets(
     txns: TransactionRecord[],
-    linkedTxnIds: ReadonlySet<string>,
-    splitCashBuys: ReadonlyArray<{
-      txnId: string;
-      buyDay: string;
-      settleDay: string;
-      amountEur: number;
-    }>,
     today: string,
   ): Promise<{
-    points: Array<{ date: string; valueEur: number }>;
-    flows: FlowPoint[];
-    overlays: PortfolioHistoryOverlay[];
+    assetsById: Map<string, AssetRow>;
+    valueAssets: ValueOverTimeAsset[];
+    usableAssetIds: string[];
+    usableIdSet: Set<string>;
+    firstTxnDay: string;
   }> {
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
     const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
@@ -974,11 +995,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return asset !== undefined && isConvertible(asset.currency);
     });
 
-    // No EUR-convertible holding has any history to plot — degrade to empty
-    // legs instead of throwing mid-conversion (the cash leg still renders).
-    if (usableAssetIds.length === 0) return { points: [], flows: [], overlays: [] };
-
     const usableIdSet = new Set(usableAssetIds);
+    const firstTxnDay = txns
+      .map((t) => t.executedAt.toISOString().slice(0, 10))
+      .reduce((a, b) => (a < b ? a : b));
+
+    // No EUR-convertible holding: nothing to price (callers degrade to empty).
+    if (usableAssetIds.length === 0) {
+      return { assetsById, valueAssets: [], usableAssetIds, usableIdSet, firstTxnDay };
+    }
 
     // Stored daily closes / custom value points (`price_history`): the durable
     // fallback layer of the series.
@@ -998,9 +1023,6 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // manual provider via the exact same call: zero special-casing (§5.2).
     // Best-effort per asset: an outage past the stale window degrades that
     // asset to its stored rows above — the chart renders what is available.
-    const firstTxnDay = txns
-      .map((t) => t.executedAt.toISOString().slice(0, 10))
-      .reduce((a, b) => (a < b ? a : b));
     const range = seriesHistoryRange(firstTxnDay, today);
     const providerPrices = await Promise.all(
       usableAssetIds.map(async (assetId): Promise<readonly ProviderPricePoint[]> => {
@@ -1028,6 +1050,39 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         prices: mergeDailyPrices(storedByAsset.get(assetId) ?? [], providerPrices[i] ?? []),
       };
     });
+
+    return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay };
+  }
+
+  /**
+   * The holdings-only legs of the graph payload: the daily holdings value
+   * curve, the external transaction flows (cash-funded transactions excluded,
+   * see {@link loadSeries}), and the #122 overlay series. Degrades to empty
+   * legs when no holding is EUR-convertible.
+   */
+  async function buildHoldingsLegs(
+    txns: TransactionRecord[],
+    linkedTxnIds: ReadonlySet<string>,
+    splitCashBuys: ReadonlyArray<{
+      txnId: string;
+      buyDay: string;
+      settleDay: string;
+      amountEur: number;
+    }>,
+    today: string,
+  ): Promise<{
+    points: Array<{ date: string; valueEur: number }>;
+    flows: FlowPoint[];
+    overlays: PortfolioHistoryOverlay[];
+  }> {
+    const { assetsById, valueAssets, usableIdSet, firstTxnDay } = await buildValueAssets(
+      txns,
+      today,
+    );
+
+    // No EUR-convertible holding has any history to plot — degrade to empty
+    // legs instead of throwing mid-conversion (the cash leg still renders).
+    if (valueAssets.length === 0) return { points: [], flows: [], overlays: [] };
 
     const usableRecords = txns.filter((t) => usableIdSet.has(t.assetId));
     const usableTxns = usableRecords.map(recordToDomain);
@@ -2021,6 +2076,40 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
         .filter((a) => a.points.length > 0);
       return { range, baseCurrency: fx.baseCurrency, points, performance, assets };
+    },
+
+    async getAssetValueSeries(userId, portfolioId) {
+      // Ownership enforced against the scoped id (§6.8): a foreign/missing id 404s.
+      const summary = await requireOwnedPortfolio(userId, portfolioId);
+      const today = todayIso();
+      const txns = await transactionRepo.listForPortfolio(portfolioId);
+      if (txns.length === 0) {
+        return { baseCurrency, name: summary.name, today, assets: [] };
+      }
+
+      // Reuse the exact overview price pipeline (smoothing-aware, provider-
+      // coalesced) but keep the per-asset breakdown instead of summing it away:
+      // one valueOverTime pass per asset yields its own EUR value curve. Summing
+      // these over any visible subset reproduces the overview total exactly,
+      // because valueOverTime is linear in its assets (§13.3 V3-P9).
+      const { assetsById, valueAssets } = await buildValueAssets(txns, today);
+      const assets: Array<{
+        asset: PortfolioAsset;
+        points: Array<{ date: string; valueEur: number }>;
+      }> = [];
+      for (const valueAsset of valueAssets) {
+        const row = assetsById.get(valueAsset.assetId);
+        if (!row) continue; // unreachable: valueAssets is built from assetsById
+        const assetTxns = txns.filter((t) => t.assetId === valueAsset.assetId).map(recordToDomain);
+        const points = await valueOverTime({
+          transactions: assetTxns,
+          assets: [valueAsset],
+          today,
+          converter: currencyService,
+        });
+        assets.push({ asset: assetToDto(row), points });
+      }
+      return { baseCurrency, name: summary.name, today, assets };
     },
 
     invalidateHistory,

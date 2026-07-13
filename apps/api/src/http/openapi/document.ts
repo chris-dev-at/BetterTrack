@@ -176,6 +176,9 @@ const componentSchemas = {
   BacktestPreviewRequest: contracts.backtestPreviewRequestSchema,
   BacktestResponse: contracts.backtestResponseSchema,
 
+  // Analytics (§13.3 V3-P9)
+  AnalyticsSeriesResponse: contracts.analyticsSeriesResponseSchema,
+
   // Social (§6.9, §13.2 V2-P9)
   CreateFriendRequestRequest: contracts.createFriendRequestRequestSchema,
   FriendRequestListResponse: contracts.friendRequestListResponseSchema,
@@ -1382,6 +1385,19 @@ const endpoints: EndpointDef[] = [
     body: R.BacktestPreviewRequest,
     status: 200,
     response: R.BacktestResponse,
+  },
+
+  // Analytics (§13.3 V3-P9)
+  {
+    method: 'get',
+    path: '/analytics/portfolios/{portfolioId}/series',
+    tag: 'Analytics',
+    summary:
+      'Configurable analytics series + per-series stats, contributions, compare & inflation.',
+    params: contracts.portfolioIdParamSchema,
+    query: contracts.analyticsSeriesQuerySchema,
+    status: 200,
+    response: R.AnalyticsSeriesResponse,
   },
 
   // Social (§6.9)
