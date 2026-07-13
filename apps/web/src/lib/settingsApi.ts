@@ -1,10 +1,13 @@
 import {
   accountSettingsResponseSchema,
   notificationSettingsResponseSchema,
+  taxSettingsResponseSchema,
   type AccountSettingsResponse,
   type NotificationSettingsResponse,
+  type TaxSettingsResponse,
   type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
+  type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -50,4 +53,27 @@ export async function updateAccountSettings(
     body: patch,
   });
   return accountSettingsResponseSchema.parse(data);
+}
+
+/**
+ * `GET /settings/taxes` — the caller's tax mode (V3-P4). `none` /
+ * `manual_per_trade` / `country_specific` (with `country` set only in the last
+ * case). Drives the manual per-trade field in `TransactionDialog` and the
+ * per-year tax report page.
+ */
+export async function getTaxSettings(signal?: AbortSignal): Promise<TaxSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/taxes', { signal });
+  return taxSettingsResponseSchema.parse(data);
+}
+
+/**
+ * `PATCH /settings/taxes` — switch tax mode (V3-P4). `country` is required with
+ * `country_specific` and rejected with any other mode (the contract enforces the
+ * pair); switching applies forward only and never rewrites recorded rows.
+ */
+export async function updateTaxSettings(
+  body: UpdateTaxSettingsRequest,
+): Promise<TaxSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/taxes', { method: 'PATCH', body });
+  return taxSettingsResponseSchema.parse(data);
 }

@@ -602,6 +602,30 @@
         "GBP": "GBP — British Pound (£)"
       }
     },
+    "taxes": {
+      "title": "Taxes",
+      "subtitle": "How BetterTrack records tax on your sells and dividends.",
+      "groupAria": "Tax mode",
+      "loadError": {
+        "title": "Couldn’t load your tax settings"
+      },
+      "saveError": "Couldn’t save your tax mode. Please try again.",
+      "reportLink": "View your per-year tax report →",
+      "mode": {
+        "none": {
+          "label": "No tax tracking",
+          "description": "Record sells and dividends without any tax. This is the default."
+        },
+        "manual_per_trade": {
+          "label": "Manual — enter tax per trade",
+          "description": "You enter the tax yourself on each sell — an amount, or a percentage of the gain. Nothing is calculated for you."
+        },
+        "country_specific": {
+          "label": "Austria (KESt)",
+          "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year."
+        }
+      }
+    },
     "password": {
       "title": "Change password",
       "current": "Current password",
@@ -688,7 +712,17 @@
       "uncoveredEntryPriceAria": "Original buy-in price for the uncovered {{symbol}}",
       "uncoveredNudge": "For accurate history, register the original buy instead.",
       "uncoveredBlocked": "Acknowledge selling more than you hold to continue.",
-      "uncoveredEntryPriceInvalid": "Enter a valid buy-in price, or count the shares as 0 %."
+      "uncoveredEntryPriceInvalid": "Enter a valid buy-in price, or count the shares as 0 %.",
+      "tax": {
+        "title": "Tax on this sale (optional)",
+        "description": "Manual tax mode is on. Enter the tax for this sell, or leave it blank to record none.",
+        "unitAria": "Tax entry unit",
+        "unitAmount": "Amount (€)",
+        "unitRate": "% of gain",
+        "valueAria": "Manual tax for this sale",
+        "placeholder": "0",
+        "invalid": "Enter a valid tax amount, or a rate between 0 and 100 %."
+      }
     },
     "overview": {
       "title": "Portfolio",
@@ -795,12 +829,51 @@
         "ariaLabelValue": "Portfolio value over time"
       }
     },
+    "taxReport": {
+      "title": "Tax report",
+      "subtitle": "Realized gains, dividends and tax by calendar year (Europe/Vienna).",
+      "column": {
+        "year": "Year",
+        "realized": "Realized P/L",
+        "dividends": "Dividends",
+        "withheld": "Tax withheld",
+        "refund": "Refund",
+        "net": "Net tax"
+      },
+      "expandYear": "Show {{year}} details",
+      "collapseYear": "Hide {{year}} details",
+      "realized": "Realized",
+      "tax": "Tax",
+      "sell": {
+        "date": "Date",
+        "quantity": "Qty",
+        "proceeds": "Proceeds",
+        "costBasis": "Cost basis",
+        "realized": "Realized P/L",
+        "tax": "Tax"
+      },
+      "detailError": "Couldn’t load that year’s details. Please try again.",
+      "detailEmpty": "No taxable sells or dividends recorded in this year.",
+      "loadError": {
+        "title": "Couldn’t load your tax report"
+      },
+      "empty": {
+        "title": "No tax activity yet",
+        "description": "Once you record a sell or a dividend, its realized P/L and tax show up here by year."
+      },
+      "disabled": {
+        "title": "Tax tracking is off",
+        "description": "Turn on a tax mode to see realized gains and tax by year.",
+        "link": "Choose a tax mode in Settings → Taxes →"
+      }
+    },
     "section": {
       "subnav": {
         "overview": "Overview",
         "transactions": "Transactions",
         "customAssets": "Custom Assets",
-        "cash": "Cash"
+        "cash": "Cash",
+        "tax": "Tax"
       },
       "transactionsComingSoon": {
         "description": "The full transaction ledger — every buy and sell, editable, with realized P/L — lands with the Portfolio phase."

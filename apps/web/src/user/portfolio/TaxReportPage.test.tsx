@@ -1,0 +1,156 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
+
+vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/settingsApi', () => ({ getTaxSettings: vi.fn() }));
+
+import * as portfolioApi from '../../lib/portfolioApi';
+import { getTaxSettings } from '../../lib/settingsApi';
+import { TaxReportPage } from './TaxReportPage';
+
+const PORTFOLIO_LIST = {
+  portfolios: [
+    {
+      id: 'p1',
+      name: 'Main',
+      visibility: 'private' as const,
+      sortOrder: 0,
+      isDefault: true,
+      defaultPayFromCash: false,
+      archivedAt: null,
+    },
+  ],
+};
+
+// Owner's canonical year (§13.3 V3-P4): +450 taxed, −100 loss same year ⇒
+// net tax = 27.5 % × 350 = 96.25, with a 27.50 refund line from the loss offset.
+const YEAR_2026: TaxYearSummary = {
+  year: 2026,
+  realizedPnlEur: 350,
+  dividendsGrossEur: 0,
+  taxWithheldEur: 123.75,
+  taxRefundedEur: 27.5,
+  taxNetEur: 96.25,
+};
+
+const APPLE: PortfolioAsset = {
+  id: 'a1',
+  symbol: 'AAPL',
+  name: 'Apple',
+  exchange: 'NASDAQ',
+  currency: 'USD',
+  type: 'stock',
+  isCustom: false,
+};
+
+function renderPage() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <TaxReportPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
+  vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
+  vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
+});
+
+describe('TaxReportPage', () => {
+  test('with tax tracking off, points to Settings → Taxes and never queries the report', async () => {
+    vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
+    renderPage();
+
+    expect(await screen.findByText(/Tax tracking is off/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Choose a tax mode/i })).toHaveAttribute(
+      'href',
+      '/settings/taxes',
+    );
+    // Wait a tick to be sure the (disabled) report query truly never fired.
+    await waitFor(() => expect(getTaxSettings).toHaveBeenCalled());
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+  });
+
+  test('renders a per-year row: realized P/L, tax withheld, the refund line, and the net total', async () => {
+    renderPage();
+
+    const yearRow = (await screen.findByRole('button', { name: /Show 2026 details/i })).closest(
+      'tr',
+    ) as HTMLElement;
+    const cells = within(yearRow).getAllByRole('cell');
+    // year | realized | dividends | withheld | refund | net
+    expect(cells[1]).toHaveTextContent('350,00 €'); // realized P/L
+    expect(cells[3]).toHaveTextContent('123,75 €'); // tax withheld
+    expect(cells[4]).toHaveTextContent('27,50 €'); // loss-offset refund line
+    expect(cells[5]).toHaveTextContent('96,25 €'); // net tax = 27.5 % × 350
+  });
+
+  test('empty history shows the empty state', async () => {
+    vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [] });
+    renderPage();
+    expect(await screen.findByText(/No tax activity yet/i)).toBeInTheDocument();
+  });
+
+  test('load failure shows the error state', async () => {
+    vi.mocked(portfolioApi.getTaxYearReports).mockRejectedValue(new Error('boom'));
+    renderPage();
+    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+  });
+
+  test('an uncovered sell (#369) renders its real basis — no fabricated gain on the uncovered portion', async () => {
+    const report: TaxYearReportResponse = {
+      year: 2026,
+      summary: YEAR_2026,
+      positions: [
+        {
+          asset: APPLE,
+          realizedPnlEur: 0,
+          dividendsGrossEur: 0,
+          taxEur: 0,
+          sells: [
+            {
+              transactionId: 't1',
+              executedAt: '2026-03-01T00:00:00.000Z',
+              quantity: 5,
+              proceedsEur: 500, // sold for 500…
+              costBasisEur: 500, // …basised at the sale price (uncovered, option A)
+              realizedPnlEur: 0, // …so realized is 0, NEVER a phantom 500 gain
+              taxMode: 'country_specific',
+              taxAmountEur: 0,
+            },
+          ],
+          dividends: [],
+        },
+      ],
+    };
+    vi.mocked(portfolioApi.getTaxYearReport).mockResolvedValue(report);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await screen.findByText('AAPL'); // drill-down loaded
+
+    // The sell row is the only leaf (6-cell) row carrying the 500,00 € proceeds.
+    const sellRow = screen.getAllByRole('row').find((r) => {
+      const cells = within(r).queryAllByRole('cell');
+      return cells.length === 6 && within(r).queryAllByText('500,00 €').length > 0;
+    });
+    expect(sellRow).toBeDefined();
+    const cells = within(sellRow!).getAllByRole('cell');
+    // date | qty | proceeds | costBasis | realized | tax
+    expect(cells[2]).toHaveTextContent('500,00 €'); // proceeds
+    expect(cells[3]).toHaveTextContent('500,00 €'); // cost basis (= proceeds)
+    expect(cells[4]).toHaveTextContent('0,00 €'); // realized P/L — no fabricated gain
+    expect(cells[4]).not.toHaveTextContent('500');
+  });
+});

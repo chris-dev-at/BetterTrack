@@ -13,6 +13,8 @@ import {
   portfolioResponseSchema,
   recategorizationStatusResponseSchema,
   setCashBalanceResponseSchema,
+  taxYearListResponseSchema,
+  taxYearReportResponseSchema,
   transactionListResponseSchema,
   transactionSchema,
   updatePortfolioResponseSchema,
@@ -38,6 +40,8 @@ import {
   type RecategorizationStatusResponse,
   type SetCashBalanceRequest,
   type SetCashBalanceResponse,
+  type TaxYearListResponse,
+  type TaxYearReportResponse,
   type Transaction,
   type TransactionInput,
   type TransactionListResponse,
@@ -213,6 +217,42 @@ export async function deleteTransaction(portfolioId: string, id: string): Promis
       method: 'DELETE',
     },
   );
+}
+
+// --- Per-year tax report (V3-P4) ---------------------------------------------
+
+/**
+ * `GET /portfolios/:id/reports/tax-years` — one row per Europe/Vienna calendar
+ * year (newest first) with realized P/L, gross dividends, and the tax withheld /
+ * refunded / net that year's settlement movements hold (V3-P4d).
+ */
+export async function getTaxYearReports(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<TaxYearListResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/reports/tax-years`,
+    { signal },
+  );
+  return taxYearListResponseSchema.parse(data);
+}
+
+/**
+ * `GET /portfolios/:id/reports/tax-years/:year` — one year's per-position
+ * drill-down (each asset's realized P/L, dividends, recorded tax, and the
+ * underlying sells/dividends). An uncovered sell (#369) shows its proceeds
+ * against a basis that never fabricates gain on the uncovered portion.
+ */
+export async function getTaxYearReport(
+  portfolioId: string,
+  year: number,
+  signal?: AbortSignal,
+): Promise<TaxYearReportResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/reports/tax-years/${encodeURIComponent(year)}`,
+    { signal },
+  );
+  return taxYearReportResponseSchema.parse(data);
 }
 
 // --- Cash ledger ("Bargeld") -------------------------------------------------

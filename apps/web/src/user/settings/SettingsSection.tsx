@@ -43,11 +43,12 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
 export { AccountSettingsPage } from './AccountSettingsPage';
 export { ApiAccessPage } from './ApiAccessPage';
 export { SecuritySettingsPage } from './SecuritySettingsPage';
+export { TaxSettingsPage } from './TaxSettingsPage';
 
 /**
  * Settings section shell (PROJECTPLAN.md §6.11, §7.2), reached from the profile
- * menu. Subnav: Account · Notifications · Security, plus the Coming-Soon pages
- * (Imports & Exports · Connections · Backups · API Access). `/settings`
+ * menu. Subnav: Account · Notifications · Security · Taxes, plus the Coming-Soon
+ * pages (Imports & Exports · Connections · Backups · API Access). `/settings`
  * redirects to `/settings/account`.
  */
 export function SettingsLayout() {
@@ -56,6 +57,7 @@ export function SettingsLayout() {
     { to: '/settings/account', label: t('settings.account.title') },
     { to: '/settings/notifications', label: t('settings.notifications.title') },
     { to: '/settings/security', label: t('settings.security.title') },
+    { to: '/settings/taxes', label: t('settings.taxes.title') },
     { to: '/settings/imports', label: t('settings.section.importsExports'), comingSoon: true },
     { to: '/settings/connections', label: t('settings.section.connections'), comingSoon: true },
     { to: '/settings/backups', label: t('settings.section.backups'), comingSoon: true },
