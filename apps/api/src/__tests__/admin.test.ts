@@ -42,7 +42,7 @@ const failsToLock = (harness: TestHarness) => harness.ctx.config.rateLimits.logi
 describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
   it('returns 404 for normal users and anonymous requests — no route disclosure', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const created = await adminAgent
       .post('/api/v1/admin/users')
@@ -69,7 +69,7 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
 describe('admin creates user → forced password change (PROJECTPLAN.md §6.1)', () => {
   it('issues a temp password and forces a change before normal use', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const created = await adminAgent
       .post('/api/v1/admin/users')
@@ -98,7 +98,7 @@ describe('admin creates user → forced password change (PROJECTPLAN.md §6.1)',
 
   it('rejects a common/weak new password', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
@@ -117,7 +117,7 @@ describe('admin creates user → forced password change (PROJECTPLAN.md §6.1)',
 describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
   it('kills live sessions instantly and blocks re-login', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const created = await adminAgent
       .post('/api/v1/admin/users')
@@ -152,7 +152,7 @@ describe('disable user (PROJECTPLAN.md §6.1, §13)', () => {
 describe('invite lifecycle (PROJECTPLAN.md §6.1, §6.12)', () => {
   it('creates, validates, accepts, and one-shot-consumes an invite', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const invite = await adminAgent
       .post('/api/v1/admin/invites')
@@ -186,7 +186,7 @@ describe('invite lifecycle (PROJECTPLAN.md §6.1, §6.12)', () => {
 describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
   it('records login.success, admin.login and user.created', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
@@ -202,7 +202,7 @@ describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
 
   it('exposes overview stats', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const stats = await adminAgent.get('/api/v1/admin/stats');
     expect(stats.status).toBe(200);
     const parsed = adminStatsSchema.parse(stats.body);
@@ -213,7 +213,7 @@ describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
 describe('forced-password-change guard is global (PROJECTPLAN.md §6.1)', () => {
   it('403s a mustChange user on every protected route, including admin routes', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     // Make the new account an admin so requireAdmin would otherwise let it in —
     // proving the password-change guard fires first.
     const created = await adminAgent
@@ -239,7 +239,7 @@ describe('forced-password-change guard is global (PROJECTPLAN.md §6.1)', () => 
 describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', () => {
   it('password reset clears lockout so the new temp password works immediately', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
@@ -266,7 +266,7 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
 
   it('re-enabling a disabled user clears lockout state', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
@@ -298,7 +298,7 @@ describe('admin recovery clears login throttle (PROJECTPLAN.md §6.1, §6.12)', 
 describe('throttled login failures are audited (PROJECTPLAN.md §10)', () => {
   it('records a login.fail with reason locked once the account cools down', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
@@ -325,7 +325,7 @@ describe('throttled login failures are audited (PROJECTPLAN.md §10)', () => {
 describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () => {
   it('blocks an admin from disabling, demoting, or deleting their own account', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const disableSelf = await adminAgent
       .patch(`/api/v1/admin/users/${admin.id}`)
@@ -356,7 +356,7 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
       username: 'second_admin',
       password: 'second-admin-strong-1',
     });
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const demote = await adminAgent
       .patch(`/api/v1/admin/users/${second.id}`)
@@ -382,7 +382,7 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
 
   it('persists a username change and writes an audit entry', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const userId = await seedUser(adminAgent, 'rename@test.dev', 'rename_me');
 
     const patched = await adminAgent
@@ -400,7 +400,7 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
 
   it('persists an email change (normalised) and writes an audit entry', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const userId = await seedUser(adminAgent, 'oldmail@test.dev', 'mail_user');
 
     const patched = await adminAgent
@@ -417,7 +417,7 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
 
   it('rejects a duplicate username or email cleanly (409)', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     await seedUser(adminAgent, 'first@test.dev', 'first_user');
     const secondId = await seedUser(adminAgent, 'second@test.dev', 'second_user');
 
@@ -440,7 +440,7 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
 describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
   it('bulk-disables a set of users and kills their sessions', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const a = await adminAgent
       .post('/api/v1/admin/users')
@@ -470,7 +470,7 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
 
   it('skips the actor and already-disabled users instead of failing the batch', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)

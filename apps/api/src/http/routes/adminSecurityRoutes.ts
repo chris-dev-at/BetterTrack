@@ -1,0 +1,88 @@
+import { Router } from 'express';
+
+import {
+  adminTwoFactorEmailStartRequestSchema,
+  twoFactorConfirmRequestSchema,
+  twoFactorDisableRequestSchema,
+  twoFactorEmailConfirmRequestSchema,
+  type AdminTwoFactorEmailStartRequest,
+  type TwoFactorConfirmRequest,
+  type TwoFactorDisableRequest,
+  type TwoFactorEmailConfirmRequest,
+} from '@bettertrack/contracts';
+
+import type { AppContext } from '../context';
+import { validateBody } from '../middleware/validate';
+
+/**
+ * Admin 2FA management endpoints under `/admin/security/2fa` (§6.12, #400).
+ *
+ * Registered FLAT onto the admin router (not a nested sub-router — the OpenAPI
+ * coverage checker only reconstructs top-level mounts) and BEFORE the
+ * {@link requireAdminTwoFactor} setup gate, so they stay reachable in the
+ * not-yet-enrolled bootstrap state: they are exactly the "2FA enroll/confirm set"
+ * the gate exempts. `requireAdmin` on the parent router fences them to admin
+ * accounts (404 to everyone else).
+ *
+ * The TOTP + recovery lifecycle mirrors the user endpoints (the service delegates
+ * to the shared core); the email method targets the SEPARATE 2FA email.
+ */
+export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): void {
+  // `ctx.adminTwoFactor` is read PER-REQUEST, never at mount — route factories
+  // must stay side-effect free at mount time (checkOpenapiCoverage relies on it).
+
+  router.get('/security/2fa/status', async (req, res) => {
+    res.json(await ctx.adminTwoFactor.status(req.authUser!.id));
+  });
+
+  router.post('/security/2fa/totp/enroll', async (req, res) => {
+    res.json(await ctx.adminTwoFactor.enrollTotp(req.authUser!.id, req.ip));
+  });
+
+  router.post(
+    '/security/2fa/totp/confirm',
+    validateBody(twoFactorConfirmRequestSchema),
+    async (req, res) => {
+      const { code } = req.valid?.body as TwoFactorConfirmRequest;
+      res.json(await ctx.adminTwoFactor.confirmTotp(req.authUser!.id, code, req.ip));
+    },
+  );
+
+  router.post(
+    '/security/2fa/totp/disable',
+    validateBody(twoFactorDisableRequestSchema),
+    async (req, res) => {
+      const { code } = req.valid?.body as TwoFactorDisableRequest;
+      await ctx.adminTwoFactor.disableTotp(req.authUser!.id, code, req.ip);
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    '/security/2fa/email/start',
+    validateBody(adminTwoFactorEmailStartRequestSchema),
+    async (req, res) => {
+      const { email, proof } = req.valid?.body as AdminTwoFactorEmailStartRequest;
+      await ctx.adminTwoFactor.startEmailEnrollment(req.authUser!.id, email, proof, req.ip);
+      res.status(204).end();
+    },
+  );
+
+  router.post(
+    '/security/2fa/email/confirm',
+    validateBody(twoFactorEmailConfirmRequestSchema),
+    async (req, res) => {
+      const { code } = req.valid?.body as TwoFactorEmailConfirmRequest;
+      res.json(await ctx.adminTwoFactor.confirmEmail(req.authUser!.id, code, req.ip));
+    },
+  );
+
+  router.post('/security/2fa/email/disable', async (req, res) => {
+    await ctx.adminTwoFactor.disableEmail(req.authUser!.id, req.ip);
+    res.status(204).end();
+  });
+
+  router.post('/security/2fa/recovery-codes', async (req, res) => {
+    res.json(await ctx.adminTwoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
+  });
+}

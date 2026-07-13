@@ -1,6 +1,5 @@
 import { desc } from 'drizzle-orm';
 import request from 'supertest';
-import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { emailLog, type EmailLogRow } from '../data/schema';
@@ -36,20 +35,10 @@ function recordingTransport(
   };
 }
 
-async function loginAgent(app: Application, identifier: string, password: string) {
-  const agent = request.agent(app);
-  const res = await agent
-    .post('/api/v1/auth/login')
-    .set(...XRW)
-    .send({ identifier, password });
-  expect(res.status).toBe(200);
-  return agent;
-}
-
 async function adminHarness(options: CreateTestAppOptions) {
   const harness = await createTestApp(options);
   const admin = await harness.seedAdmin();
-  const agent = await loginAgent(harness.app, admin.email, admin.password);
+  const agent = await harness.loginAdmin(admin);
   return { harness, admin, agent };
 }
 
@@ -69,7 +58,7 @@ describe('email channel disabled (PROJECTPLAN.md §6.11, §11)', () => {
       username: 'a2',
       password: 'second-admin-strong-1',
     });
-    const agent = await loginAgent(harness.app, admin.email, admin.password);
+    const agent = await harness.loginAdmin(admin);
 
     const created = await agent
       .post('/api/v1/admin/users')

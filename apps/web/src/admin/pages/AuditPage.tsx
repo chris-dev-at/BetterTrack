@@ -4,7 +4,7 @@ import type { AuditLogEntry } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
-import { useAuth } from '../AuthContext';
+import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
 import { formatDateTime } from '../format';
 import { Alert, Button, EmptyState, PageHeader, Spinner } from '../components/ui';
 
@@ -20,7 +20,7 @@ function metaSummary(meta: unknown): string {
 }
 
 export function AuditPage() {
-  const { clearSession } = useAuth();
+  const { clearSession, requireTwoFactorSetup } = useAuth();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,10 +41,14 @@ export function AuditPage() {
           clearSession();
           return;
         }
+        if (isAdminTwoFactorSetupRequired(err)) {
+          requireTwoFactorSetup();
+          return;
+        }
         setError(err instanceof ApiError ? err.message : 'Something went wrong.');
       }
     },
-    [clearSession],
+    [clearSession, requireTwoFactorSetup],
   );
 
   useEffect(() => {

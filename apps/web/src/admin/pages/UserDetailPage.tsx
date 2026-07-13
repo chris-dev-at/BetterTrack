@@ -6,7 +6,7 @@ import type { AdminUser, AuditLogEntry, ResetPasswordResponse } from '@bettertra
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
-import { useAuth } from '../AuthContext';
+import { isAdminTwoFactorSetupRequired, useAuth } from '../AuthContext';
 import { formatDateTime } from '../format';
 import { useResource } from '../useResource';
 import { EmailLogTable } from '../components/EmailLogTable';
@@ -320,7 +320,7 @@ function UserEmailLog({ userId, email }: { userId: string; email: string }) {
 
 /** Compact per-user audit history, cursor-paged newest-first (§6.12). */
 function UserAuditLog({ userId }: { userId: string }) {
-  const { clearSession } = useAuth();
+  const { clearSession, requireTwoFactorSetup } = useAuth();
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -341,10 +341,14 @@ function UserAuditLog({ userId }: { userId: string }) {
           clearSession();
           return;
         }
+        if (isAdminTwoFactorSetupRequired(err)) {
+          requireTwoFactorSetup();
+          return;
+        }
         setError(err instanceof ApiError ? err.message : 'Something went wrong.');
       }
     },
-    [userId, clearSession],
+    [userId, clearSession, requireTwoFactorSetup],
   );
 
   useEffect(() => {

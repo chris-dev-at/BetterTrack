@@ -1571,5 +1571,102 @@
       "wrongCode": "Dieser Code ist falsch oder abgelaufen.",
       "tooMany": "Zu viele Versuche. Bitte warte kurz und versuch es erneut."
     }
+  },
+  "admin": {
+    "nav": {
+      "security": "Sicherheit"
+    },
+    "security": {
+      "title": "Sicherheit",
+      "subtitle": "Verwalte die Zwei-Faktor-Authentifizierung für dein Administratorkonto.",
+      "loadError": "Dein Zwei-Faktor-Status konnte nicht geladen werden.",
+      "statusDescription": "Zwei-Faktor-Authentifizierung ist für jedes Administratorkonto erforderlich."
+    },
+    "twoFactor": {
+      "confirming": "Wird bestätigt…",
+      "confirmAndEnable": "Bestätigen & aktivieren",
+      "challenge": {
+        "title": "Zwei-Faktor-Authentifizierung",
+        "promptTotpAndEmail": "Gib den 6-stelligen Code aus deiner Authenticator-App ein oder fordere unten einen Code per E-Mail an.",
+        "promptTotpOnly": "Gib den 6-stelligen Code aus deiner Authenticator-App ein.",
+        "promptEmailOnly": "Gib den 6-stelligen Code ein, den wir dir per E-Mail geschickt haben.",
+        "recoveryPrompt": "Gib einen deiner Wiederherstellungscodes ein.",
+        "codeLabel": "Bestätigungscode",
+        "recoveryCodeLabel": "Wiederherstellungscode",
+        "verify": "Bestätigen",
+        "verifying": "Wird bestätigt…",
+        "emailMeACode": "Code per E-Mail senden",
+        "sendingEmailCode": "Wird gesendet…",
+        "emailCodeSent": "Falls E-Mail eingerichtet ist, ist ein Anmeldecode unterwegs. Gib ihn unten ein.",
+        "emailCodeFailed": "E-Mail-Code konnte nicht gesendet werden. Versuche es mit deinem Authenticator oder einem Wiederherstellungscode.",
+        "useRecoveryCode": "Wiederherstellungscode verwenden",
+        "useAuthenticatorOrEmail": "Authenticator- oder E-Mail-Code verwenden",
+        "backToSignIn": "Zurück zur Anmeldung",
+        "invalidCode": "Dieser Code ist falsch oder abgelaufen.",
+        "sessionExpired": "Deine Bestätigungssitzung ist abgelaufen. Bitte melde dich erneut an.",
+        "tooManyCodes": "Zu viele falsche Codes. Bitte warte einen Moment und versuche es erneut."
+      },
+      "setup": {
+        "title": "Zwei-Faktor-Authentifizierung einrichten",
+        "intro": "Zwei-Faktor-Authentifizierung ist für Administratorkonten erforderlich. Richte mindestens eine Methode ein, um fortzufahren.",
+        "chooseMethod": "Wähle, wie du deinen zweiten Faktor bereitstellst.",
+        "finishError": "Die Konsole konnte nicht geöffnet werden. Bitte versuche es erneut.",
+        "signOut": "Abmelden"
+      },
+      "totp": {
+        "cardTitle": "Authenticator-App (TOTP)",
+        "cardDescription": "Codes aus Google Authenticator, 1Password oder jeder anderen TOTP-App.",
+        "enrollError": "Die Einrichtung konnte nicht gestartet werden. Bitte versuche es erneut.",
+        "scanInstructions": "Scanne diesen QR-Code mit deiner Authenticator-App und gib dann den 6-stelligen Code ein, den sie anzeigt.",
+        "qrAriaLabel": "QR-Code für die Zwei-Faktor-Einrichtung",
+        "manualEntryToggle": "Kein Scan möglich? Diesen Schlüssel manuell eingeben",
+        "setupKeyLabel": "Einrichtungsschlüssel",
+        "otpauthUriLabel": "otpauth-URI",
+        "confirmationCodeLabel": "Bestätigungscode",
+        "confirmationCodeHint": "Gib den aktuellen 6-stelligen Code aus deiner Authenticator-App ein.",
+        "setup": "Authenticator-App einrichten",
+        "reenroll": "Authenticator neu einrichten",
+        "enabledLabel": "Authenticator-App ist aktiv.",
+        "enabledNotice": "Authenticator-App aktiviert.",
+        "disableToReenroll": "Gib einen aktuellen Code ein, um den Authenticator zu deaktivieren, und richte ihn dann neu ein.",
+        "disableCodeLabel": "Aktueller Authenticator-Code oder Wiederherstellungscode",
+        "disableAndContinue": "Deaktivieren & neu einrichten",
+        "confirming": "Wird bestätigt…"
+      },
+      "email": {
+        "cardTitle": "E-Mail-Codes",
+        "cardDescription": "Ein Einmalcode, der bei der Anmeldung an eine dedizierte Zwei-Faktor-E-Mail-Adresse gesendet wird.",
+        "currentEmail": "Codes werden an {{email}} gesendet.",
+        "noEmail": "Noch keine Zwei-Faktor-E-Mail festgelegt.",
+        "emailLabel": "Zwei-Faktor-E-Mail-Adresse",
+        "proofLabel": "Aktueller Authenticator-Code oder Wiederherstellungscode",
+        "proofHint": "Für eine Änderung der Adresse ist ein aktueller zweiter Faktor erforderlich.",
+        "sendCode": "Bestätigungscode senden",
+        "sendingCode": "Wird gesendet…",
+        "confirmInstructions": "Wir haben einen Code an {{email}} gesendet. Gib ihn ein, um E-Mail-Codes zu aktivieren.",
+        "codeLabel": "E-Mail-Code",
+        "codeHint": "Gib den 6-stelligen Code ein, den wir dir gerade gesendet haben.",
+        "setup": "E-Mail-Codes einrichten",
+        "change": "E-Mail ändern",
+        "enabledNotice": "E-Mail-Codes aktiviert.",
+        "disabledNotice": "E-Mail-Codes deaktiviert.",
+        "turnOff": "Deaktivieren",
+        "turningOff": "Wird deaktiviert…"
+      },
+      "recoveryCodes": {
+        "saveNotice": "Bewahre diese Wiederherstellungscodes sicher auf. Jeder kann einmal verwendet werden, um dich anzumelden, falls du den Zugriff auf deine anderen Faktoren verlierst — sie werden nicht erneut angezeigt.",
+        "copy": "Codes kopieren",
+        "copied": "Kopiert!",
+        "download": "Codes herunterladen",
+        "done": "Ich habe diese Codes gespeichert",
+        "cardTitle": "Wiederherstellungscodes",
+        "cardDescription": "Einmalcodes zum Anmelden, falls du den Zugriff auf deine anderen Faktoren verlierst.",
+        "remainingOne": "Noch {{count}} Wiederherstellungscode übrig.",
+        "remainingOther": "Noch {{count}} Wiederherstellungscodes übrig.",
+        "regenerate": "Wiederherstellungscodes neu erzeugen",
+        "regenerating": "Wird neu erzeugt…",
+        "regenerateError": "Wiederherstellungscodes konnten nicht neu erzeugt werden. Bitte versuche es erneut."
+      }
+    }
   }
 }

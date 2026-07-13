@@ -1,5 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
+import { I18nProvider } from '../i18n';
+
 import { AuthProvider, useAuth } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
 import { AuditPage } from './pages/AuditPage';
@@ -8,19 +10,25 @@ import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
+import { SecuritySettingsPage } from './pages/SecuritySettingsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { TwoFactorChallengePage } from './pages/TwoFactorChallengePage';
+import { TwoFactorSetupPage } from './pages/TwoFactorSetupPage';
 import { UserDetailPage } from './pages/UserDetailPage';
 import { UsersPage } from './pages/UsersPage';
 
 /**
- * Route tree for the admin world. A reset admin is trapped into the forced-change
- * screen above routing until the flag clears (§6.1, #248 item 6) — mirroring the
- * user app's forced-change trap — so the account is recoverable here.
+ * Route tree for the admin world. Several states trap above routing until they
+ * clear, mirroring the user app: a reset admin into the forced-change screen (§6.1,
+ * #248 item 6); an enrolled admin mid-login into the 2FA challenge; and an admin
+ * with no confirmed 2FA method into the mandatory-enrollment wizard (§6.12, #400).
  */
 function AdminShell() {
   const { status } = useAuth();
 
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
+  if (status === 'two-factor-required') return <TwoFactorChallengePage />;
+  if (status === 'two-factor-setup-required') return <TwoFactorSetupPage />;
 
   return (
     <Routes>
@@ -34,6 +42,7 @@ function AdminShell() {
         <Route path="email" element={<EmailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="security" element={<SecuritySettingsPage />} />
       </Route>
       {/* Unknown admin paths fall back to the users page (or login if anonymous).
           The target MUST be absolute (`/admin/users`): a relative `to="users"`
@@ -49,12 +58,16 @@ function AdminShell() {
 /**
  * The admin world (PROJECTPLAN.md §6.12): its own auth provider and router,
  * mounted at `/admin/*`, with a layout entirely separate from the normal app.
- * Routes here are relative to `/admin`.
+ * Routes here are relative to `/admin`. Wrapped in {@link I18nProvider} so the
+ * admin surfaces (§13.3 V3-P1) render the chosen language — the graceful EN
+ * fallback keeps `useT()` working in unit tests even without a provider.
  */
 export function AdminApp() {
   return (
-    <AuthProvider>
-      <AdminShell />
-    </AuthProvider>
+    <I18nProvider>
+      <AuthProvider>
+        <AdminShell />
+      </AuthProvider>
+    </I18nProvider>
   );
 }

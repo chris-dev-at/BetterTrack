@@ -29,8 +29,9 @@ import {
 
 import type { AdminActor } from '../../services/admin/adminService';
 import type { AppContext } from '../context';
-import { requireAdmin } from '../middleware/session';
+import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
+import { registerAdminSecurityRoutes } from './adminSecurityRoutes';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import {
   toAdminInvite,
@@ -52,6 +53,14 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   router.use(limiters.admin);
   router.use(requireAdmin);
+
+  // Admin 2FA management (§6.12, #400) is registered BEFORE the setup gate so it
+  // stays reachable while the admin is not yet enrolled (the bootstrap wizard).
+  registerAdminSecurityRoutes(router, ctx);
+
+  // Mandatory admin-login 2FA: every admin endpoint below this line 403s with
+  // ADMIN_2FA_SETUP_REQUIRED until the admin has a confirmed 2FA method.
+  router.use(requireAdminTwoFactor(ctx));
 
   router.get('/users', validateQuery(adminUserListQuerySchema), async (req, res) => {
     const { search } = (req.valid?.query ?? {}) as { search?: string };

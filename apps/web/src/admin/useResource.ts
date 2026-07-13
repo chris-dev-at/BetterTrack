@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError } from '../lib/apiClient';
-import { useAuth } from './AuthContext';
+import { isAdminTwoFactorSetupRequired, useAuth } from './AuthContext';
 
 interface ResourceState<T> {
   data: T | null;
@@ -18,13 +18,15 @@ interface Resource<T> extends ResourceState<T> {
  * Loads a single admin resource with loading/error state and abort-on-unmount.
  * A 401/404 mid-session (expired cookie, account disabled) clears the session so
  * the route guard sends the admin back to the login screen — without leaking
- * which route or resource was involved (PROJECTPLAN.md §6.12).
+ * which route or resource was involved (PROJECTPLAN.md §6.12). A 403
+ * `ADMIN_2FA_SETUP_REQUIRED` (a break-glass reset stripped the last 2FA method
+ * mid-use) instead traps into the forced-enrollment wizard (#400).
  */
 export function useResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   deps: readonly unknown[],
 ): Resource<T> {
-  const { clearSession } = useAuth();
+  const { clearSession, requireTwoFactorSetup } = useAuth();
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
     loading: true,
@@ -48,6 +50,10 @@ export function useResource<T>(
           clearSession();
           return;
         }
+        if (isAdminTwoFactorSetupRequired(err)) {
+          requireTwoFactorSetup();
+          return;
+        }
         const message = err instanceof ApiError ? err.message : 'Something went wrong.';
         setState({ data: null, loading: false, error: message });
       }
@@ -55,7 +61,7 @@ export function useResource<T>(
     return () => controller.abort();
     // `fetcher` is intentionally excluded from the dependency list — callers pass
     // an inline closure and declare its real inputs through `deps`.
-  }, [nonce, clearSession, ...deps]);
+  }, [nonce, clearSession, requireTwoFactorSetup, ...deps]);
 
   return { ...state, reload };
 }

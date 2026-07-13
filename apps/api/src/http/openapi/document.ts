@@ -71,6 +71,8 @@ const componentSchemas = {
   InviteValidationResponse: contracts.inviteValidationResponseSchema,
 
   // Admin (§6.12)
+  AdminTwoFactorStatusResponse: contracts.adminTwoFactorStatusResponseSchema,
+  AdminTwoFactorEmailStartRequest: contracts.adminTwoFactorEmailStartRequestSchema,
   CreateUserRequest: contracts.createUserRequestSchema,
   UpdateUserRequest: contracts.updateUserRequestSchema,
   BulkUserActionRequest: contracts.bulkUserActionRequestSchema,
@@ -618,6 +620,78 @@ const endpoints: EndpointDef[] = [
   },
 
   // Admin (§6.12)
+  // Mandatory admin-login 2FA management (#400). Reachable even in the
+  // setup-required bootstrap state — every OTHER admin endpoint 403s with
+  // ADMIN_2FA_SETUP_REQUIRED until a method is confirmed. The login challenge
+  // itself reuses the shared /auth/login → /auth/2fa/verify flow.
+  {
+    method: 'get',
+    path: '/admin/security/2fa/status',
+    tag: 'Admin',
+    summary: 'The admin’s own 2FA methods + the mandatory-setup gate state.',
+    status: 200,
+    response: R.AdminTwoFactorStatusResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/totp/enroll',
+    tag: 'Admin',
+    summary: 'Begin admin TOTP enrollment; returns a provisional secret + otpauth URI.',
+    status: 200,
+    response: R.TwoFactorEnrollResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/totp/confirm',
+    tag: 'Admin',
+    summary:
+      'Confirm admin TOTP with a code. Returns recovery codes if it is the first method enabled, else null.',
+    body: R.TwoFactorConfirmRequest,
+    status: 200,
+    response: R.TwoFactorMethodEnabledResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/totp/disable',
+    tag: 'Admin',
+    summary: 'Disable the admin authenticator (TOTP) method with a valid TOTP or recovery code.',
+    body: R.TwoFactorDisableRequest,
+    status: 204,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/email/start',
+    tag: 'Admin',
+    summary:
+      'Set or change the separate 2FA email and send a confirmation code to it. Requires a fresh 2FA proof once enrolled.',
+    body: R.AdminTwoFactorEmailStartRequest,
+    status: 204,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/email/confirm',
+    tag: 'Admin',
+    summary:
+      'Confirm the emailed code; enables the admin email method on the new 2FA email. Returns recovery codes if first method, else null.',
+    body: R.TwoFactorEmailConfirmRequest,
+    status: 200,
+    response: R.TwoFactorMethodEnabledResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/email/disable',
+    tag: 'Admin',
+    summary: 'Disable the admin email 2FA method and clear the 2FA email.',
+    status: 204,
+  },
+  {
+    method: 'post',
+    path: '/admin/security/2fa/recovery-codes',
+    tag: 'Admin',
+    summary: 'Regenerate the admin recovery codes (voids the old set).',
+    status: 200,
+    response: R.TwoFactorRecoveryCodesResponse,
+  },
   {
     method: 'get',
     path: '/admin/users',

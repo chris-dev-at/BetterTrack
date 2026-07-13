@@ -34,6 +34,14 @@ function renderPage() {
 
 beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
+  vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
+    setupRequired: false,
+    totpEnabled: true,
+    totpPending: false,
+    emailEnabled: false,
+    twoFactorEmail: null,
+    recoveryCodesRemaining: 8,
+  });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: true });
   vi.mocked(api.sendTestEmail).mockResolvedValue({ status: 'sent', to: admin.email });
   vi.mocked(api.listEmails).mockResolvedValue({ entries: [], nextCursor: null });

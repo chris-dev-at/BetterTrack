@@ -1571,5 +1571,102 @@
       "wrongCode": "That code is incorrect or has expired.",
       "tooMany": "Too many attempts. Please wait a moment and try again."
     }
+  },
+  "admin": {
+    "nav": {
+      "security": "Security"
+    },
+    "security": {
+      "title": "Security",
+      "subtitle": "Manage two-factor authentication for your administrator account.",
+      "loadError": "Couldn't load your two-factor status.",
+      "statusDescription": "Two-factor authentication is required for every administrator account."
+    },
+    "twoFactor": {
+      "confirming": "Confirming…",
+      "confirmAndEnable": "Confirm & enable",
+      "challenge": {
+        "title": "Two-factor authentication",
+        "promptTotpAndEmail": "Enter the 6-digit code from your authenticator app, or request an emailed code below.",
+        "promptTotpOnly": "Enter the 6-digit code from your authenticator app.",
+        "promptEmailOnly": "Enter the 6-digit code we emailed you.",
+        "recoveryPrompt": "Enter one of your recovery codes.",
+        "codeLabel": "Verification code",
+        "recoveryCodeLabel": "Recovery code",
+        "verify": "Verify",
+        "verifying": "Verifying…",
+        "emailMeACode": "Email me a code",
+        "sendingEmailCode": "Sending…",
+        "emailCodeSent": "If email is configured, a sign-in code is on its way. Enter it below.",
+        "emailCodeFailed": "Could not send an email code. Try your authenticator or a recovery code.",
+        "useRecoveryCode": "Use a recovery code",
+        "useAuthenticatorOrEmail": "Use an authenticator or email code",
+        "backToSignIn": "Back to sign in",
+        "invalidCode": "That code is incorrect or has expired.",
+        "sessionExpired": "Your verification session expired. Please sign in again.",
+        "tooManyCodes": "Too many incorrect codes. Please wait a moment and try again."
+      },
+      "setup": {
+        "title": "Set up two-factor authentication",
+        "intro": "Two-factor authentication is required for administrator accounts. Set up at least one method to continue.",
+        "chooseMethod": "Choose how you'll provide your second factor.",
+        "finishError": "Couldn't open the console. Please try again.",
+        "signOut": "Sign out"
+      },
+      "totp": {
+        "cardTitle": "Authenticator app (TOTP)",
+        "cardDescription": "Codes from Google Authenticator, 1Password, or any TOTP app.",
+        "enrollError": "Couldn't start setup. Please try again.",
+        "scanInstructions": "Scan this QR code with your authenticator app, then enter the 6-digit code it shows.",
+        "qrAriaLabel": "QR code for two-factor setup",
+        "manualEntryToggle": "Can't scan? Enter this key manually",
+        "setupKeyLabel": "Setup key",
+        "otpauthUriLabel": "otpauth URI",
+        "confirmationCodeLabel": "Confirmation code",
+        "confirmationCodeHint": "Enter the current 6-digit code from your authenticator app.",
+        "setup": "Set up authenticator app",
+        "reenroll": "Re-enroll authenticator",
+        "enabledLabel": "Authenticator app is on.",
+        "enabledNotice": "Authenticator app enabled.",
+        "disableToReenroll": "Enter a current code to turn off the authenticator, then set it up again.",
+        "disableCodeLabel": "Current authenticator code or recovery code",
+        "disableAndContinue": "Turn off & re-enroll",
+        "confirming": "Confirming…"
+      },
+      "email": {
+        "cardTitle": "Email codes",
+        "cardDescription": "A one-time code sent to a dedicated two-factor email address at sign-in.",
+        "currentEmail": "Codes are sent to {{email}}.",
+        "noEmail": "No two-factor email set yet.",
+        "emailLabel": "Two-factor email address",
+        "proofLabel": "Current authenticator code or recovery code",
+        "proofHint": "Changing the address requires a current second factor.",
+        "sendCode": "Send confirmation code",
+        "sendingCode": "Sending…",
+        "confirmInstructions": "We sent a code to {{email}}. Enter it to enable email codes.",
+        "codeLabel": "Email code",
+        "codeHint": "Enter the 6-digit code we just sent.",
+        "setup": "Set up email codes",
+        "change": "Change email",
+        "enabledNotice": "Email codes enabled.",
+        "disabledNotice": "Email codes disabled.",
+        "turnOff": "Turn off",
+        "turningOff": "Turning off…"
+      },
+      "recoveryCodes": {
+        "saveNotice": "Save these recovery codes somewhere safe. Each one can be used once to sign in if you lose access to your other factors — they won't be shown again.",
+        "copy": "Copy codes",
+        "copied": "Copied!",
+        "download": "Download codes",
+        "done": "I've saved these codes",
+        "cardTitle": "Recovery codes",
+        "cardDescription": "One-time codes to sign in if you lose access to your other factors.",
+        "remainingOne": "{{count}} recovery code remaining.",
+        "remainingOther": "{{count}} recovery codes remaining.",
+        "regenerate": "Regenerate recovery codes",
+        "regenerating": "Regenerating…",
+        "regenerateError": "Couldn't regenerate recovery codes. Please try again."
+      }
+    }
   }
 }

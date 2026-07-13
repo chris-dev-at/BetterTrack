@@ -65,7 +65,10 @@ export const users = pgTable(
     // flag still false (provisional), and a valid TOTP code confirms it — flipping
     // the flag on and stamping `twoFactorConfirmedAt`. Recovery codes live in the
     // `two_factor_recovery_codes` child table. All 2FA state cascades away with
-    // the user; user-kind accounts only.
+    // the user. Originally user-kind only; as of the mandatory admin-login 2FA
+    // (§6.12, #400) these same columns also back admin-kind accounts — the login
+    // challenge reuses the exact user machinery, with only the email target
+    // differing (see `twoFactorEmail`).
     twoFactorSecret: text('two_factor_secret'),
     twoFactorEnabled: boolean('two_factor_enabled').notNull().default(false),
     twoFactorConfirmedAt: timestamp('two_factor_confirmed_at', { withTimezone: true }),
@@ -73,8 +76,16 @@ export const users = pgTable(
     // Independent of the TOTP flag above: either method being on arms the login
     // challenge. Enabled only after an emailed code proves mailbox access; the
     // shared recovery codes are issued on the FIRST method enabled and wiped when
-    // the last one goes off.
+    // the last one goes off. For a user-kind account the code is sent to the
+    // account email; for an admin-kind account it is sent to `twoFactorEmail`.
     twoFactorEmailEnabled: boolean('two_factor_email_enabled').notNull().default(false),
+    // Admin-login email-OTP target (§6.12, #400). Admin-kind accounts ONLY: the
+    // separately-set "2FA email" the login email code is delivered to, which may
+    // differ from the account email. NULL until an admin turns the email method
+    // on; the user-kind email method never reads it (it codes to the account
+    // email). Set/changed only with a fresh 2FA proof once the admin is already
+    // enrolled — the first-time set during forced enrollment needs none.
+    twoFactorEmail: varchar('two_factor_email', { length: 320 }),
     baseCurrency: char('base_currency', { length: 3 }).notNull().default('EUR'),
     // UI-language preference (§13.3 V3-P1). A short BCP-47-ish code (`en`, `de`,
     // `de-AT`); EN is the source of truth and the default, so a fresh account
@@ -204,7 +215,9 @@ export const passwordResetTokens = pgTable(
  * SHA-256 `code_hash` is stored — the plaintext codes are shown once at
  * generation and never persisted. A code is consumed by stamping `used_at`
  * (single-use); regenerating wipes the whole set and issues a fresh batch, and
- * disabling 2FA clears them entirely. Cascades away with the owning user.
+ * disabling 2FA clears them entirely. Cascades away with the owning user. Backs
+ * both user-kind and (as of #400) admin-kind 2FA — the owner is a `users` row
+ * either way, so no schema change was needed here for the admin surface.
  */
 export const twoFactorRecoveryCodes = pgTable(
   'two_factor_recovery_codes',

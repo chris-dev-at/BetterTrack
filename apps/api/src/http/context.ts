@@ -53,6 +53,10 @@ import {
 } from '../services/account/accountSettingsService';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import {
+  createAdminTwoFactorService,
+  type AdminTwoFactorService,
+} from '../services/admin/adminTwoFactorService';
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
@@ -128,6 +132,8 @@ export interface AppContext {
   auth: AuthService;
   /** TOTP enroll/confirm/disable + recovery codes — the Settings → Security 2FA core (§6.1). */
   twoFactor: TwoFactorService;
+  /** Mandatory admin-login 2FA management — enrollment wizard + admin Security settings (§6.12, #400). */
+  adminTwoFactor: AdminTwoFactorService;
   admin: AdminService;
   /** Personal API keys — issuance, listing, revocation + bearer resolution (§6.13, V2-P12). */
   apiKeys: ApiKeyService;
@@ -382,6 +388,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     config,
     userRepo,
     twoFactorRepo,
+    audit,
+    redis,
+    email,
+  });
+
+  // Mandatory admin-login 2FA management (§6.12, #400): reuses the user 2FA core
+  // above for the TOTP + recovery lifecycle and adds the email method to the
+  // separate 2FA email. The login challenge itself runs through the shared auth
+  // service below (admins are `users`), so nothing forks the challenge protocol.
+  const adminTwoFactor = createAdminTwoFactorService({
+    twoFactorRepo,
+    twoFactor,
     audit,
     redis,
     email,
@@ -678,6 +696,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
     auth,
     twoFactor,
+    adminTwoFactor,
     admin,
     apiKeys,
     oauth,

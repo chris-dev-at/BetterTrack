@@ -1,17 +1,20 @@
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
+import { useT } from '../../i18n';
 import { ErrorBoundary } from '../../ui';
 import { useAuth } from '../AuthContext';
 import { Button, Spinner, cx } from './ui';
 
-const NAV_ITEMS = [
+/** `labelKey` runs through i18n (new entries); `label` is a legacy literal. */
+const NAV_ITEMS: Array<{ to: string; label?: string; labelKey?: string }> = [
   { to: '/admin/users', label: 'Users' },
   { to: '/admin/invites', label: 'Invites' },
   { to: '/admin/oauth-apps', label: 'OAuth apps' },
   { to: '/admin/email', label: 'Email' },
   { to: '/admin/audit', label: 'Audit log' },
   { to: '/admin/settings', label: 'Settings' },
+  { to: '/admin/security', labelKey: 'admin.nav.security' },
 ];
 
 /**
@@ -22,6 +25,7 @@ const NAV_ITEMS = [
  * AuthContext only marks admins as authenticated.
  */
 export function AdminLayout() {
+  const t = useT();
   const { status, user, logout } = useAuth();
   const location = useLocation();
 
@@ -54,7 +58,7 @@ export function AdminLayout() {
                     )
                   }
                 >
-                  {item.label}
+                  {item.labelKey ? t(item.labelKey) : item.label}
                 </NavLink>
               ))}
             </nav>

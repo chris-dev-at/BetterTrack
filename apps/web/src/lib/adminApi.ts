@@ -1,6 +1,7 @@
 import {
   adminInviteListResponseSchema,
   adminStatsSchema,
+  adminTwoFactorStatusResponseSchema,
   adminUserListResponseSchema,
   adminUserSchema,
   appSettingsResponseSchema,
@@ -11,15 +12,21 @@ import {
   createUserResponseSchema,
   emailLogListResponseSchema,
   emailStatusResponseSchema,
+  loginResponseSchema,
   meResponseSchema,
   oauthClientListResponseSchema,
   oauthClientSummarySchema,
   okResponseSchema,
   resetPasswordResponseSchema,
   testEmailResponseSchema,
+  twoFactorEnrollResponseSchema,
+  twoFactorMethodEnabledResponseSchema,
+  twoFactorRecoveryCodesResponseSchema,
   versionResponseSchema,
   type AdminInviteListResponse,
   type AdminStats,
+  type AdminTwoFactorEmailStartRequest,
+  type AdminTwoFactorStatusResponse,
   type AdminUser,
   type AdminUserListResponse,
   type AppSettingsResponse,
@@ -36,12 +43,21 @@ import {
   type EmailLogListResponse,
   type EmailStatusResponse,
   type LoginRequest,
+  type LoginResponse,
   type MeResponse,
   type OAuthClientListResponse,
   type OAuthClientSummary,
   type ResetPasswordResponse,
   type TestEmailRequest,
   type TestEmailResponse,
+  type TwoFactorConfirmRequest,
+  type TwoFactorDisableRequest,
+  type TwoFactorEmailCodeRequest,
+  type TwoFactorEmailConfirmRequest,
+  type TwoFactorEnrollResponse,
+  type TwoFactorMethodEnabledResponse,
+  type TwoFactorRecoveryCodesResponse,
+  type TwoFactorVerifyRequest,
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
   type UpdateUserRequest,
@@ -58,9 +74,30 @@ import { apiRequest } from './apiClient';
 
 // --- Auth -----------------------------------------------------------------
 
-export async function login(body: LoginRequest): Promise<MeResponse> {
+/**
+ * Password login (§6.1). Resolves to either the signed-in admin (no 2FA — the
+ * session cookie is set) or a login 2FA challenge (`twoFactorRequired`) that the
+ * caller completes via {@link verifyTwoFactor}. Every admin is enrolled once the
+ * mandatory-2FA bootstrap (#400) is satisfied, so an established admin gets the
+ * challenge branch.
+ */
+export async function login(body: LoginRequest): Promise<LoginResponse> {
   const data = await apiRequest<unknown>('/auth/login', { method: 'POST', body });
+  return loginResponseSchema.parse(data);
+}
+
+/**
+ * Complete a login 2FA challenge (§6.1, #400) with a TOTP/email code or a recovery
+ * code. On success the API sets the session cookie and returns the signed-in admin.
+ */
+export async function verifyTwoFactor(body: TwoFactorVerifyRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/2fa/verify', { method: 'POST', body });
   return meResponseSchema.parse(data);
+}
+
+/** Request a one-time email login code for a pending 2FA challenge (§6.1). */
+export async function requestTwoFactorEmailCode(body: TwoFactorEmailCodeRequest): Promise<void> {
+  await apiRequest<unknown>('/auth/2fa/email-code', { method: 'POST', body });
 }
 
 export async function logout(): Promise<void> {
@@ -254,4 +291,73 @@ export async function listUserAudit(
     signal,
   });
   return auditLogListResponseSchema.parse(data);
+}
+
+// --- Admin: mandatory-login 2FA (§6.12, #400) -----------------------------
+
+/**
+ * The admin's own 2FA state + the mandatory-setup gate flag. EXEMPT from the gate,
+ * so it always answers for a logged-in admin — the SPA reads `setupRequired` to
+ * decide between the forced-enrollment wizard and the console.
+ */
+export async function getTwoFactorStatus(
+  signal?: AbortSignal,
+): Promise<AdminTwoFactorStatusResponse> {
+  const data = await apiRequest<unknown>('/admin/security/2fa/status', { signal });
+  return adminTwoFactorStatusResponseSchema.parse(data);
+}
+
+/** Begin authenticator enrollment — a provisional secret + `otpauth://` URI (not yet on). */
+export async function enrollTotp(): Promise<TwoFactorEnrollResponse> {
+  const data = await apiRequest<unknown>('/admin/security/2fa/totp/enroll', { method: 'POST' });
+  return twoFactorEnrollResponseSchema.parse(data);
+}
+
+/**
+ * Enable the authenticator method by proving a current code. `recoveryCodes` is the
+ * fresh set when this is the first method enabled, else `null`.
+ */
+export async function confirmTotp(
+  body: TwoFactorConfirmRequest,
+): Promise<TwoFactorMethodEnabledResponse> {
+  const data = await apiRequest<unknown>('/admin/security/2fa/totp/confirm', {
+    method: 'POST',
+    body,
+  });
+  return twoFactorMethodEnabledResponseSchema.parse(data);
+}
+
+/** Disable the authenticator method — a current TOTP code or recovery code authorizes it. */
+export async function disableTotp(body: TwoFactorDisableRequest): Promise<void> {
+  await apiRequest<unknown>('/admin/security/2fa/totp/disable', { method: 'POST', body });
+}
+
+/**
+ * Set (first time) or change the 2FA email and mail a confirmation code to it.
+ * `proof` (a current TOTP or recovery code) is required only when already enrolled.
+ */
+export async function startEmailTwoFactor(body: AdminTwoFactorEmailStartRequest): Promise<void> {
+  await apiRequest<unknown>('/admin/security/2fa/email/start', { method: 'POST', body });
+}
+
+/** Enable the email method with the mailed code (first method → fresh recovery codes). */
+export async function confirmEmailTwoFactor(
+  body: TwoFactorEmailConfirmRequest,
+): Promise<TwoFactorMethodEnabledResponse> {
+  const data = await apiRequest<unknown>('/admin/security/2fa/email/confirm', {
+    method: 'POST',
+    body,
+  });
+  return twoFactorMethodEnabledResponseSchema.parse(data);
+}
+
+/** Turn the email method off (authenticated admin session). */
+export async function disableEmailTwoFactor(): Promise<void> {
+  await apiRequest<unknown>('/admin/security/2fa/email/disable', { method: 'POST' });
+}
+
+/** Regenerate recovery codes — invalidates any prior unused codes; shown once. */
+export async function regenerateRecoveryCodes(): Promise<TwoFactorRecoveryCodesResponse> {
+  const data = await apiRequest<unknown>('/admin/security/2fa/recovery-codes', { method: 'POST' });
+  return twoFactorRecoveryCodesResponseSchema.parse(data);
 }

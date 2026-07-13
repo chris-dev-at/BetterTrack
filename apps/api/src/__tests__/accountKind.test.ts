@@ -45,7 +45,7 @@ const USER_ENDPOINTS = [
 describe('account-kind separation (PROJECTPLAN.md §3, §5.5, §10)', () => {
   it('rejects an admin-kind session on every user endpoint with the admin-area pointer', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     for (const path of USER_ENDPOINTS) {
       const res = await adminAgent.get(path);
@@ -76,7 +76,7 @@ describe('account-kind separation (PROJECTPLAN.md §3, §5.5, §10)', () => {
 describe('default-portfolio provisioning by account kind (§5.5)', () => {
   it('gives an admin-created user exactly one default portfolio and an admin none', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     // The seeded first admin is management-only — no portfolio.
     expect(await portfolioCount(harness, admin.id)).toBe(0);
@@ -98,7 +98,7 @@ describe('default-portfolio provisioning by account kind (§5.5)', () => {
 
   it('gives an invite-accepted user exactly one default portfolio', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const invite = await adminAgent
       .post('/api/v1/admin/invites')

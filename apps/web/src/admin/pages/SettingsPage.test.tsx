@@ -41,6 +41,15 @@ function renderPage() {
 
 beforeEach(() => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
+  // Bootstrap now consults the mandatory-2FA setup gate — an enrolled admin.
+  vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
+    setupRequired: false,
+    totpEnabled: true,
+    totpPending: false,
+    emailEnabled: false,
+    twoFactorEmail: null,
+    recoveryCodesRemaining: 8,
+  });
   vi.mocked(api.getSettings).mockResolvedValue(settings);
   vi.mocked(api.updateSettings).mockResolvedValue(settings);
 });

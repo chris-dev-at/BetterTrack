@@ -27,7 +27,7 @@ async function loginAgent(app: Application, identifier: string, password: string
 describe('GET /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
   it('returns defaults when no row exists', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const res = await adminAgent.get('/api/v1/admin/settings');
     expect(res.status).toBe(200);
@@ -41,7 +41,7 @@ describe('GET /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
 
   it('is admin-only — user session and anonymous requests both 404 (no leak)', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
     const created = await adminAgent
       .post('/api/v1/admin/users')
       .set(...XRW)
@@ -65,7 +65,7 @@ describe('GET /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
 describe('PATCH /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
   it('persists a change and writes an audit-log entry', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const patched = await adminAgent
       .patch('/api/v1/admin/settings')
@@ -93,7 +93,7 @@ describe('PATCH /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
 
   it('accepts an explicit closed registration mode', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const res = await adminAgent
       .patch('/api/v1/admin/settings')
@@ -105,7 +105,7 @@ describe('PATCH /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
 
   it('rejects any registration mode other than closed in V1', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     for (const mode of ['open', 'approval', 'invite_token']) {
       const res = await adminAgent
@@ -123,7 +123,7 @@ describe('PATCH /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
 
   it('rejects unknown fields (strict) and empty bodies', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     const unknown = await adminAgent
       .patch('/api/v1/admin/settings')
@@ -162,7 +162,7 @@ describe('registration-mode enforcement (PROJECTPLAN.md §4, §6.12, §13 P8)', 
 
   it('leaves admin-created users and invite acceptance working in closed mode', async () => {
     const admin = await harness.seedAdmin();
-    const adminAgent = await loginAgent(harness.app, admin.email, admin.password);
+    const adminAgent = await harness.loginAdmin(admin);
 
     // Admin-created user still works.
     const created = await adminAgent
