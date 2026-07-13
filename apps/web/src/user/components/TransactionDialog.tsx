@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 
+import { useQuery } from '@tanstack/react-query';
+
 import type {
   CashPreviewResponse,
   CashSource,
@@ -20,6 +22,7 @@ import {
   updateTransaction,
 } from '../../lib/portfolioApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
+import { getTaxSettings } from '../../lib/settingsApi';
 import { formatMoney, formatQuantity } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
@@ -151,6 +154,14 @@ interface Row {
   uncoveredMode: 'zero' | 'entry';
   /** Native per-unit buy-in price for the uncovered shares (mode `entry`), raw. */
   uncoveredEntryPrice: string;
+  /**
+   * Manual per-trade tax entry on a SELL (V3-P4, `manual_per_trade` mode only):
+   * `amount` = an absolute EUR figure, `rate` = a % of the sell's realized gain.
+   * At most one is sent — {@link taxValue} empty means no tax is recorded.
+   */
+  taxUnit: 'amount' | 'rate';
+  /** Raw manual-tax value (EUR amount or percent, per {@link taxUnit}); empty = none. */
+  taxValue: string;
 }
 
 /**
@@ -246,6 +257,8 @@ function makeRow(
     allowUncovered: false,
     uncoveredMode: 'zero',
     uncoveredEntryPrice: '',
+    taxUnit: 'amount',
+    taxValue: '',
     ...seed,
   };
 }
@@ -275,6 +288,8 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
         allowUncovered: false,
         uncoveredMode: 'zero',
         uncoveredEntryPrice: '',
+        taxUnit: 'amount',
+        taxValue: '',
       },
     ];
   }
@@ -450,6 +465,17 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
+
+  // The caller's tax mode (V3-P4). The manual per-trade tax field is offered only
+  // while recording a SELL in `manual_per_trade` mode; an edit never re-taxes (the
+  // tax is frozen at recording time, §16), so this is fetched for create only.
+  const taxSettingsQuery = useQuery({
+    queryKey: ['settings', 'taxes'],
+    queryFn: ({ signal }) => getTaxSettings(signal),
+    staleTime: 30_000,
+    enabled: !isEdit,
+  });
+  const manualTaxActive = !isEdit && taxSettingsQuery.data?.mode === 'manual_per_trade';
 
   // Web funds/receives cash from the portfolio's Main source — no source picker
   // (#378). The API still accepts `cashSourceId`, so send the resolved Main id
@@ -794,6 +820,19 @@ export function TransactionDialog(props: TransactionDialogProps) {
           input!.uncoveredEntryPrice = entry;
         }
       }
+      // Manual per-trade tax (V3-P4, `manual_per_trade` mode): attach the user's
+      // entry on a SELL — an absolute € amount OR a % of the realized gain (at
+      // most one). An empty field records no tax; buys and other modes never get
+      // one (the server also rejects a mismatched entry).
+      if (manualTaxActive && row.side === 'sell' && row.taxValue.trim() !== '') {
+        const value = Number(row.taxValue);
+        if (!Number.isFinite(value) || value < 0 || (row.taxUnit === 'rate' && value > 100)) {
+          setError(t('portfolio.transaction.tax.invalid'));
+          return;
+        }
+        if (row.taxUnit === 'rate') input!.taxRatePct = value;
+        else input!.taxAmountEur = value;
+      }
       inputs.push(input!);
     }
 
@@ -996,6 +1035,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
                 link={link}
                 cash={cash}
                 uncovered={uncovered}
+                showTax={manualTaxActive && row.side === 'sell'}
               />
             );
           })}
@@ -1454,6 +1494,85 @@ function UncoveredCard({
   );
 }
 
+/**
+ * Manual per-trade tax card (#431, §13.3 V3-P4): shown while recording a SELL in
+ * `manual_per_trade` mode. The user enters an absolute € amount OR a % of the
+ * realized gain (a unit toggle picks which); leaving it blank records no tax. The
+ * server owns the computation and freezes whatever is recorded onto the row.
+ */
+function TaxCard({
+  row,
+  onChange,
+  t,
+}: {
+  row: Row;
+  onChange: (patch: Partial<Row>) => void;
+  t: TranslateFn;
+}) {
+  const isRate = row.taxUnit === 'rate';
+  const unitBtn = (unit: 'amount' | 'rate') =>
+    cx(
+      'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500',
+      row.taxUnit === unit
+        ? 'bg-neutral-800 text-neutral-100 ring-1 ring-inset ring-neutral-700'
+        : 'text-neutral-400 hover:text-neutral-200',
+    );
+  return (
+    <div className="flex flex-col gap-3 rounded-lg bg-neutral-900 p-4 ring-1 ring-inset ring-neutral-800">
+      <div className="flex flex-col gap-0.5">
+        <span className="text-sm font-medium text-neutral-200">
+          {t('portfolio.transaction.tax.title')}
+        </span>
+        <span className="text-xs text-neutral-500">
+          {t('portfolio.transaction.tax.description')}
+        </span>
+      </div>
+      <div className="flex items-stretch gap-2">
+        <div
+          className="flex gap-1 rounded-lg bg-neutral-950 p-1 ring-1 ring-inset ring-neutral-800"
+          role="group"
+          aria-label={t('portfolio.transaction.tax.unitAria')}
+        >
+          <button
+            type="button"
+            onClick={() => onChange({ taxUnit: 'amount' })}
+            aria-pressed={!isRate}
+            className={unitBtn('amount')}
+          >
+            {t('portfolio.transaction.tax.unitAmount')}
+          </button>
+          <button
+            type="button"
+            onClick={() => onChange({ taxUnit: 'rate' })}
+            aria-pressed={isRate}
+            className={unitBtn('rate')}
+          >
+            {t('portfolio.transaction.tax.unitRate')}
+          </button>
+        </div>
+        <label className="group relative flex-1">
+          <input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min="0"
+            max={isRate ? '100' : undefined}
+            value={row.taxValue}
+            onChange={(e) => onChange({ taxValue: e.target.value })}
+            aria-label={t('portfolio.transaction.tax.valueAria')}
+            placeholder={t('portfolio.transaction.tax.placeholder')}
+            className={cx(inputClass, 'pr-8')}
+          />
+          <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center text-sm text-neutral-500">
+            {isRate ? '%' : '€'}
+          </span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function RowFields({
   row,
   t,
@@ -1465,6 +1584,7 @@ function RowFields({
   link,
   cash,
   uncovered,
+  showTax,
 }: {
   row: Row;
   t: TranslateFn;
@@ -1476,6 +1596,8 @@ function RowFields({
   link?: RowLink;
   cash?: RowCash;
   uncovered?: RowUncovered;
+  /** Offer the manual per-trade tax field (a SELL in `manual_per_trade` mode, #431). */
+  showTax?: boolean;
 }) {
   const symbol = row.asset.symbol;
   const isAmountMode = row.entryMode === 'amount';
@@ -1699,6 +1821,9 @@ function RowFields({
 
       {/* Uncovered-sell warning + acknowledgment + basis choice (issue #369). */}
       {uncovered ? <UncoveredCard row={row} uncovered={uncovered} t={t} /> : null}
+
+      {/* Manual per-trade tax field — a SELL in manual_per_trade mode (#431). */}
+      {showTax ? <TaxCard row={row} onChange={onChange} t={t} /> : null}
 
       {/* Note. */}
       <label className="group flex flex-col gap-1.5">

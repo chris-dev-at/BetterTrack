@@ -18,6 +18,7 @@ import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
+import { TaxReportPage } from './portfolio/TaxReportPage';
 import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
 import { WorkboardPage } from './workboard/WorkboardPage';
 import {
@@ -64,6 +65,7 @@ import {
   NotificationSettingsPage,
   SecuritySettingsPage,
   SettingsLayout,
+  TaxSettingsPage,
 } from './settings/SettingsSection';
 
 const queryClient = new QueryClient();
@@ -129,6 +131,7 @@ function UserShell() {
             <Route path="transactions" element={<TransactionsPage />} />
             <Route path="custom-assets" element={<CustomAssetsPage />} />
             <Route path="cash" element={<CashSourcesPage />} />
+            <Route path="tax" element={<TaxReportPage />} />
           </Route>
 
           {/* ── Workboard ── */}
@@ -190,6 +193,7 @@ function UserShell() {
             <Route path="account" element={<AccountSettingsPage />} />
             <Route path="notifications" element={<NotificationSettingsPage />} />
             <Route path="security" element={<SecuritySettingsPage />} />
+            <Route path="taxes" element={<TaxSettingsPage />} />
             <Route path="imports" element={<ImportsExportsPage />} />
             <Route path="connections" element={<ConnectionsPage />} />
             <Route path="backups" element={<BackupsPage />} />

@@ -602,6 +602,30 @@
         "GBP": "GBP — Britisches Pfund (£)"
       }
     },
+    "taxes": {
+      "title": "Steuern",
+      "subtitle": "Wie BetterTrack Steuern auf deine Verkäufe und Dividenden erfasst.",
+      "groupAria": "Steuermodus",
+      "loadError": {
+        "title": "Deine Steuereinstellungen konnten nicht geladen werden"
+      },
+      "saveError": "Dein Steuermodus konnte nicht gespeichert werden. Bitte versuche es erneut.",
+      "reportLink": "Deinen Steuerbericht pro Jahr ansehen →",
+      "mode": {
+        "none": {
+          "label": "Keine Steuererfassung",
+          "description": "Verkäufe und Dividenden werden ohne Steuer erfasst. Das ist die Standardeinstellung."
+        },
+        "manual_per_trade": {
+          "label": "Manuell — Steuer pro Trade eingeben",
+          "description": "Du gibst die Steuer bei jedem Verkauf selbst ein — als Betrag oder als Prozentsatz des Gewinns. Es wird nichts für dich berechnet."
+        },
+        "country_specific": {
+          "label": "Österreich (KESt)",
+          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnitts-Einstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
+        }
+      }
+    },
     "password": {
       "title": "Passwort ändern",
       "current": "Aktuelles Passwort",
@@ -688,7 +712,17 @@
       "uncoveredEntryPriceAria": "Ursprünglicher Kaufpreis für die nicht gedeckten {{symbol}}",
       "uncoveredNudge": "Erfasse für eine korrekte Historie besser den ursprünglichen Kauf.",
       "uncoveredBlocked": "Bestätige den Verkauf über deinen Bestand hinaus, um fortzufahren.",
-      "uncoveredEntryPriceInvalid": "Gib einen gültigen Kaufpreis ein oder zähle die Stücke als 0 %."
+      "uncoveredEntryPriceInvalid": "Gib einen gültigen Kaufpreis ein oder zähle die Stücke als 0 %.",
+      "tax": {
+        "title": "Steuer auf diesen Verkauf (optional)",
+        "description": "Der manuelle Steuermodus ist aktiv. Gib die Steuer für diesen Verkauf ein oder lass das Feld leer, um keine zu erfassen.",
+        "unitAria": "Einheit der Steuereingabe",
+        "unitAmount": "Betrag (€)",
+        "unitRate": "% des Gewinns",
+        "valueAria": "Manuelle Steuer für diesen Verkauf",
+        "placeholder": "0",
+        "invalid": "Gib einen gültigen Steuerbetrag ein oder einen Satz zwischen 0 und 100 %."
+      }
     },
     "overview": {
       "title": "Portfolio",
@@ -795,12 +829,51 @@
         "ariaLabelValue": "Portfolio-Wert im Zeitverlauf"
       }
     },
+    "taxReport": {
+      "title": "Steuerbericht",
+      "subtitle": "Realisierte Gewinne, Dividenden und Steuer pro Kalenderjahr (Zeitzone Wien).",
+      "column": {
+        "year": "Jahr",
+        "realized": "Realisiertes G/V",
+        "dividends": "Dividenden",
+        "withheld": "Einbehaltene Steuer",
+        "refund": "Erstattung",
+        "net": "Netto-Steuer"
+      },
+      "expandYear": "Details für {{year}} anzeigen",
+      "collapseYear": "Details für {{year}} ausblenden",
+      "realized": "Realisiert",
+      "tax": "Steuer",
+      "sell": {
+        "date": "Datum",
+        "quantity": "Menge",
+        "proceeds": "Erlös",
+        "costBasis": "Einstand",
+        "realized": "Realisiertes G/V",
+        "tax": "Steuer"
+      },
+      "detailError": "Die Details für dieses Jahr konnten nicht geladen werden. Bitte versuche es erneut.",
+      "detailEmpty": "In diesem Jahr wurden keine steuerpflichtigen Verkäufe oder Dividenden erfasst.",
+      "loadError": {
+        "title": "Dein Steuerbericht konnte nicht geladen werden"
+      },
+      "empty": {
+        "title": "Noch keine Steueraktivität",
+        "description": "Sobald du einen Verkauf oder eine Dividende erfasst, erscheinen realisiertes G/V und Steuer hier nach Jahr."
+      },
+      "disabled": {
+        "title": "Steuererfassung ist aus",
+        "description": "Aktiviere einen Steuermodus, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
+        "link": "Steuermodus in Einstellungen → Steuern wählen →"
+      }
+    },
     "section": {
       "subnav": {
         "overview": "Übersicht",
         "transactions": "Transaktionen",
         "customAssets": "Individuelle Anlagen",
-        "cash": "Bargeld"
+        "cash": "Bargeld",
+        "tax": "Steuer"
       },
       "transactionsComingSoon": {
         "description": "Das vollständige Transaktionsjournal — jeder Kauf und Verkauf, bearbeitbar, mit realisiertem G/V — kommt mit der Portfolio-Phase."
