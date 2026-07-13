@@ -1437,6 +1437,12 @@
           "portfolio": "Portfolio",
           "conglomerate": "Conglomerate",
           "watchlist": "Watchlist"
+        },
+        "shortcut": {
+          "prompt": "{{username}} can't see this — it isn't shared with them.",
+          "action": "Share it with just them",
+          "sharing": "Sharing…",
+          "error": "Couldn't share — try again."
         }
       },
       "share": {
