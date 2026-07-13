@@ -53,6 +53,37 @@ export const pinFailCountKey = (userId: string) => `pin_fail:${userId}`;
 export const PIN_FALLBACK_THRESHOLD = 5;
 
 /**
+ * OAuth account memory + PIN quick re-auth (§16, owner spec #399 §B, V4-P2b).
+ * A device that a PIN user opted to be remembered on holds a signed httpOnly
+ * `bt_rdid` cookie whose opaque device id maps to that user here — the server-
+ * side binding for the quick re-auth flow. No TTL: the memory persists until the
+ * user chooses "Another account" or logs out-all — never an automatic expiry
+ * (owner: "until cleared"). The value is the user id (the device is bound to one
+ * account at a time); re-remembering a device overwrites it.
+ */
+export const rememberedDeviceKey = (deviceId: string) => `remember_dev:${deviceId}`;
+
+/**
+ * Marks that this remembered device recently proved its PIN, so the next OAuth
+ * quick re-auth within {@link PIN_QUICK_AUTH_WINDOW_SECONDS} auto-passes without
+ * re-entering it (owner: "the PIN timer from a recent entry is still running").
+ * Device-keyed (not user-keyed) so entering a PIN on one device never opens the
+ * window on another; the {@link rememberedDeviceKey} cookie is required to read
+ * it. Set only on a real PIN entry, given a fixed TTL — an auto-pass never
+ * refreshes it, so the window measures time since the last actual PIN.
+ */
+export const pinQuickAuthMarkerKey = (deviceId: string) => `pin_quick_ok:${deviceId}`;
+
+/**
+ * Length of the quick re-auth auto-pass window, in seconds (~15 min, owner spec
+ * #399 §B). A deliberate server-side grace distinct from the client-side idle
+ * lock (`pinLockIdleMinutes`, a UI-only preference): quick re-auth has no live
+ * session to time against, so the window is a fixed server marker keyed to the
+ * remembered device. Chosen to match the per-account PIN limiter's 15-min window.
+ */
+export const PIN_QUICK_AUTH_WINDOW_SECONDS = 15 * 60;
+
+/**
  * Drop the per-account password-failure throttle and PIN-fallback state on a
  * correct password, WITHOUT touching the second-factor throttle. That 2FA
  * counter must survive a re-login so its §10 escalation lock accumulates across

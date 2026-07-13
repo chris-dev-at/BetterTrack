@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -72,10 +72,34 @@ function renderAppAt(entry: { pathname: string; state?: unknown }) {
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  // The remember-me record + "asked" flag live in localStorage — isolate them.
+  localStorage.clear();
   // Anonymous to start: the bootstrap /auth/me rejects, so the app shows /login.
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'nope'));
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
+
+// ── OAuth account memory + PIN quick re-auth: the chooser state ladder (§399 §B) ─
+
+const pinUser: MeResponse = { ...user, pinEnabled: true };
+const REMEMBERED_KEY = 'bettertrack.oauthRemembered';
+const ASKED_KEY = 'bettertrack.oauthRememberAsked';
+
+/** Seed the device-level remembered identity that drives the chooser. */
+function rememberJane() {
+  localStorage.setItem(
+    REMEMBERED_KEY,
+    JSON.stringify({ userId: 'user-1', username: 'jane', avatarUrl: null }),
+  );
+}
+
+/** Fill the four PIN boxes; the fourth digit auto-submits (no button). */
+function typePin(pin: string) {
+  const labels = ['PIN', 'PIN digit 2', 'PIN digit 3', 'PIN digit 4'];
+  for (let i = 0; i < labels.length; i += 1) {
+    fireEvent.change(screen.getByLabelText(labels[i] as string), { target: { value: pin[i] } });
+  }
+}
 
 async function submitPassword() {
   const u = userEvent.setup();
@@ -271,4 +295,196 @@ test('a persist failure on the OAuth step does not strand the flow — it procee
 
   await waitFor(() => expect(api.persistSession).toHaveBeenCalledTimes(1));
   expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+});
+
+// ── State ladder (§399 §B, owner refinement 2026-07-10) ──────────────────────
+
+test('state ladder (1): a valid PIN-gated session shows the PIN gate, never the chooser', async () => {
+  rememberJane(); // even with a device identity remembered…
+  // …a live PIN-gated session wins: UserShell traps at the PIN gate above routing.
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+  render(
+    <MemoryRouter initialEntries={[OAUTH_FROM]}>
+      <Routes>
+        <Route path="/*" element={<UserApp />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(await screen.findByRole('heading', { name: 'Enter your PIN' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /log in as jane/i })).not.toBeInTheDocument();
+});
+
+test('state ladder (2): no session + a remembered identity shows the chooser', async () => {
+  rememberJane();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  expect(await screen.findByRole('button', { name: /log in as jane/i })).toBeInTheDocument();
+  // Not the blank login form.
+  expect(screen.queryByLabelText('Email or username')).not.toBeInTheDocument();
+});
+
+test('state ladder (3): nothing remembered shows a blank login', async () => {
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /log in as/i })).not.toBeInTheDocument();
+});
+
+test('chooser: "Log in as" → PIN-only entry completes login + authorize, no password', async () => {
+  rememberJane();
+  vi.mocked(api.quickAuthPin)
+    .mockResolvedValueOnce({ pinRequired: true }) // probe: the ~15-min window is closed
+    .mockResolvedValueOnce(pinUser); // PIN verify: signed in
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+
+  // Window closed → the PIN input appears; a password field is never shown.
+  await screen.findByLabelText('PIN');
+  expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+  expect(api.login).not.toHaveBeenCalled();
+
+  typePin('4242');
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+  expect(api.quickAuthPin).toHaveBeenNthCalledWith(2, { pin: '4242' });
+  expect(api.login).not.toHaveBeenCalled();
+});
+
+test('chooser: within the ~15-min window, tapping the name auto-logs-in — chooser still shown', async () => {
+  rememberJane();
+  vi.mocked(api.quickAuthPin).mockResolvedValue(pinUser); // probe auto-passes
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  // The chooser step WAS shown (never auto-skipped) — we must tap the name.
+  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+
+  // Auto-pass: straight to consent from a PIN-less probe, no PIN input.
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+  expect(api.quickAuthPin).toHaveBeenCalledWith({});
+  expect(screen.queryByLabelText('PIN')).not.toBeInTheDocument();
+});
+
+test('chooser: "Another account" forgets the identity and drops to a blank login', async () => {
+  rememberJane();
+  vi.mocked(api.forgetRememberedDevice).mockResolvedValue();
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await u.click(await screen.findByRole('button', { name: 'Another account' }));
+
+  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(api.forgetRememberedDevice).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+  expect(api.quickAuthPin).not.toHaveBeenCalled();
+});
+
+// ── Remember-me prompt (§399 §B) ─────────────────────────────────────────────
+
+test('remember-me: an OAuth login on a PIN account offers the one-time remember-me choice', async () => {
+  vi.mocked(api.login).mockResolvedValue(pinUser);
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  // Both the #418 stay-signed-in and the new #419 remember-me choices appear.
+  expect(await screen.findByLabelText(/stay signed in on this browser/i)).toBeInTheDocument();
+  expect(screen.getByLabelText(/remember me on this device/i)).toBeInTheDocument();
+});
+
+test('remember-me: ticking it binds the device and stores the local chooser record', async () => {
+  vi.mocked(api.login).mockResolvedValue(pinUser);
+  vi.mocked(api.rememberDevice).mockResolvedValue({
+    userId: 'user-1',
+    username: 'jane',
+    avatarUrl: null,
+  });
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  await u.click(await screen.findByLabelText(/remember me on this device/i));
+  await u.click(screen.getByRole('button', { name: 'Continue' }));
+
+  await waitFor(() => expect(api.rememberDevice).toHaveBeenCalledTimes(1));
+  expect(localStorage.getItem(REMEMBERED_KEY)).toContain('jane');
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+});
+
+test('remember-me: shown once — hidden after this device already asked the user', async () => {
+  localStorage.setItem(ASKED_KEY, JSON.stringify(['user-1']));
+  vi.mocked(api.login).mockResolvedValue(pinUser);
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  // The persist step still appears (stay-signed-in), but not the remember-me box.
+  expect(await screen.findByLabelText(/stay signed in on this browser/i)).toBeInTheDocument();
+  expect(screen.queryByLabelText(/remember me on this device/i)).not.toBeInTheDocument();
+});
+
+test('remember-me: a PIN-less OAuth login is never prompted to remember', async () => {
+  vi.mocked(api.login).mockResolvedValue(user); // pinEnabled: false
+  vi.mocked(oauthApi.getAuthorizationDetails).mockReturnValue(new Promise(() => {}));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await screen.findByText('Sign in to your account');
+  await u.type(screen.getByLabelText('Email or username'), 'jane');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  // No PIN → straight to consent; never a remember-me (nor stay-signed-in) step.
+  expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
+  expect(screen.queryByLabelText(/remember me on this device/i)).not.toBeInTheDocument();
+  expect(api.rememberDevice).not.toHaveBeenCalled();
+});
+
+test('chooser: a stale/forgotten server binding falls back to a blank login', async () => {
+  rememberJane();
+  vi.mocked(api.quickAuthPin).mockRejectedValue(
+    new ApiError(401, 'REMEMBER_DEVICE_UNKNOWN', 'This device is not remembered.'),
+  );
+  vi.mocked(api.forgetRememberedDevice).mockResolvedValue();
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+
+  // The dead memory is dropped and the flow falls through to a blank login.
+  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(api.forgetRememberedDevice).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem(REMEMBERED_KEY)).toBeNull();
+});
+
+test('chooser: a wrong PIN shows an error and stays on the PIN step', async () => {
+  rememberJane();
+  vi.mocked(api.quickAuthPin)
+    .mockResolvedValueOnce({ pinRequired: true })
+    .mockRejectedValueOnce(new ApiError(401, 'INVALID_PIN', 'Incorrect PIN.'));
+
+  const u = userEvent.setup();
+  renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
+  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+  await screen.findByLabelText('PIN');
+
+  typePin('0000');
+  expect(await screen.findByText('Incorrect PIN. Please try again.')).toBeInTheDocument();
+  // Still on the PIN step (boxes cleared and remounted), never a password field.
+  expect(screen.getByLabelText('PIN')).toBeInTheDocument();
+  expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
 });

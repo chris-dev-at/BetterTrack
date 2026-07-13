@@ -17,6 +17,7 @@ import type {
   LoginRequest,
   MeResponse,
   PasswordResetComplete,
+  PinQuickAuthRequest,
   PinVerifyRequest,
   TwoFactorChallengeResponse,
   TwoFactorEmailCodeRequest,
@@ -27,6 +28,7 @@ import { DEFAULT_PIN_WINDOW_MINUTES } from '@bettertrack/contracts';
 import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
 import { setMoneyCurrency } from '../lib/format';
 import * as api from '../lib/userApi';
+import { clearRememberedAccount, writeRememberedAccount } from './auth/rememberedAccount';
 
 /**
  * `loading` — bootstrapping from the session cookie.
@@ -162,6 +164,17 @@ export type LoginOutcome =
     }
   | { status: 'two_factor_required'; challenge: TwoFactorChallengeResponse };
 
+/**
+ * Result of an OAuth PIN quick re-auth (§16, owner spec #399 §B, V4-P2b).
+ * `authenticated` means the device's remembered PIN user signed in (session set,
+ * context applied); `pin_required` means the probe found a closed ~15-min window,
+ * so the chooser must collect the PIN and call {@link AuthContextValue.quickAuth}
+ * again with it.
+ */
+export type QuickAuthOutcome =
+  | { status: 'authenticated'; me: MeResponse }
+  | { status: 'pin_required' };
+
 interface AuthContextValue {
   status: AuthStatus;
   /** The current user. Null while anonymous/loading, and may be null in the
@@ -198,6 +211,25 @@ interface AuthContextValue {
   changePassword: (body: ChangePasswordRequest) => Promise<void>;
   /** Verify the PIN for the current session, releasing the `pin-required` trap. */
   verifyPin: (body: PinVerifyRequest) => Promise<void>;
+  /**
+   * OAuth PIN quick re-auth for the remembered device (§399 §B, V4-P2b). Omit
+   * `pin` to probe the ~15-min window; pass it to verify. On `authenticated` the
+   * context is already applied (session set + fresh PIN window). The identity is
+   * bound to the `bt_rdid` cookie server-side — never passed from the client.
+   */
+  quickAuth: (body: PinQuickAuthRequest) => Promise<QuickAuthOutcome>;
+  /**
+   * Remember-me opt-in: bind this device to the current PIN user server-side
+   * (sets the `bt_rdid` cookie) and store the client-side chooser record
+   * (username + avatar + user id only). PIN users only (§399 §B).
+   */
+  rememberThisDevice: () => Promise<void>;
+  /**
+   * "Another account" / explicit forget: clear the remembered identity —
+   * server binding + `bt_rdid` cookie AND the local chooser record — so the next
+   * OAuth open shows a blank login (§399 §B).
+   */
+  forgetRememberedAccount: () => Promise<void>;
   logout: () => Promise<void>;
   /** Non-null while a 429 toast should be visible. Cleared on dismiss. */
   rateLimitBanner: string | null;
@@ -512,6 +544,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applyUser, clearSession],
   );
 
+  const quickAuth = useCallback(
+    async (body: PinQuickAuthRequest): Promise<QuickAuthOutcome> => {
+      const result = await api.quickAuthPin(body);
+      // Probe found a closed ~15-min window: the chooser must collect the PIN
+      // and call again with it. No session was minted, nothing to apply.
+      if ('pinRequired' in result) return { status: 'pin_required' };
+      const me = result;
+      if (me.role === 'admin') {
+        // Defensive: a remembered device should only ever bind a user-kind
+        // account, but never admit an admin to the user app (mirrors login).
+        await api.logout().catch(() => undefined);
+        throw new AdminAccountError();
+      }
+      // Quick re-auth already minted the (ephemeral) session cookie; a correct
+      // PIN — or an in-window auto-pass — opens a fresh unlock window, so land
+      // straight in rather than re-gating on the PIN we just proved.
+      adoptUser(me);
+      return { status: 'authenticated', me };
+    },
+    [adoptUser],
+  );
+
+  const rememberThisDevice = useCallback(async () => {
+    // The server mints the `bt_rdid` binding + cookie and hands back exactly the
+    // record we may store (user id + username + avatar — never a token).
+    const record = await api.rememberDevice();
+    writeRememberedAccount(record);
+  }, []);
+
+  const forgetRememberedAccount = useCallback(async () => {
+    // Clear the LOCAL record first so the chooser drops immediately and a
+    // close-then-reopen shows a blank login even if the network call is slow or
+    // fails (owner: "immediately clears the remembered user"). Then best-effort
+    // clear the server binding + cookie.
+    clearRememberedAccount();
+    await api.forgetRememberedDevice().catch(() => undefined);
+  }, []);
+
   const logout = useCallback(async () => {
     try {
       await api.logout();
@@ -537,6 +607,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       completePasswordReset,
       changePassword,
       verifyPin,
+      quickAuth,
+      rememberThisDevice,
+      forgetRememberedAccount,
       logout,
       rateLimitBanner,
       clearRateLimitBanner,
@@ -553,6 +626,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       completePasswordReset,
       changePassword,
       verifyPin,
+      quickAuth,
+      rememberThisDevice,
+      forgetRememberedAccount,
       logout,
       rateLimitBanner,
       clearRateLimitBanner,

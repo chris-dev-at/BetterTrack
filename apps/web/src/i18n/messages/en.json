@@ -28,6 +28,19 @@
       "continue": "Continue",
       "continuing": "Continuing…"
     },
+    "oauthChooser": {
+      "subtitle": "Choose an account",
+      "prompt": "Continue to authorize an app.",
+      "loginAs": "Log in as {{username}}",
+      "pinHint": "Enter your PIN to continue",
+      "checking": "Signing you in…",
+      "pinPrompt": "Enter your {{length}}-digit PIN to continue as {{username}}.",
+      "anotherAccount": "Another account"
+    },
+    "oauthRemember": {
+      "checkboxLabel": "Remember me on this device",
+      "checkboxHint": "Next time, just tap your name and enter your PIN — no password."
+    },
     "twoFactor": {
       "subtitle": "Two-factor authentication",
       "promptTotpAndEmail": "Enter the 6-digit code from your authenticator app, or request an emailed code below.",

@@ -28,6 +28,19 @@
       "continue": "Weiter",
       "continuing": "Wird fortgesetzt…"
     },
+    "oauthChooser": {
+      "subtitle": "Konto auswählen",
+      "prompt": "Weiter, um eine App zu autorisieren.",
+      "loginAs": "Als {{username}} anmelden",
+      "pinHint": "Gib deine PIN ein, um fortzufahren",
+      "checking": "Du wirst angemeldet…",
+      "pinPrompt": "Gib deine {{length}}-stellige PIN ein, um als {{username}} fortzufahren.",
+      "anotherAccount": "Anderes Konto"
+    },
+    "oauthRemember": {
+      "checkboxLabel": "Mich auf diesem Gerät merken",
+      "checkboxHint": "Beim nächsten Mal einfach auf deinen Namen tippen und deine PIN eingeben — kein Passwort."
+    },
     "twoFactor": {
       "subtitle": "Zwei-Faktor-Authentifizierung",
       "promptTotpAndEmail": "Gib den 6-stelligen Code aus deiner Authenticator-App ein oder fordere unten einen Code per E-Mail an.",

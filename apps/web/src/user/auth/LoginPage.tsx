@@ -8,6 +8,13 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { AdminAccountError, useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
+import { OAuthAccountChooser } from './OAuthAccountChooser';
+import {
+  hasBeenAskedToRemember,
+  markAskedToRemember,
+  readRememberedAccount,
+  type RememberedAccount,
+} from './rememberedAccount';
 
 /** Where to land after a successful sign-in: the intended route, else home. */
 function intendedPath(state: unknown): string {
@@ -28,7 +35,8 @@ function intendedPath(state: unknown): string {
  */
 export function LoginPage() {
   const t = useT();
-  const { status, login, adoptUser, persistSession } = useAuth();
+  const { status, login, adoptUser, persistSession, rememberThisDevice, forgetRememberedAccount } =
+    useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const from = intendedPath(location.state);
@@ -38,6 +46,13 @@ export function LoginPage() {
   // PIN-less account is never persisted — the checkbox appears only afterwards,
   // once the account is known to have a PIN.
   const oauthContext = from.startsWith('/oauth/authorize');
+  // State-ladder step 2 (§399 §B): a device that remembers a PIN user shows the
+  // "Log in as [name]? / Another account" chooser instead of a blank login. Read
+  // once; "Another account" clears it (→ blank login). Step 1 (a live PIN-gated
+  // session) never reaches here — UserShell shows the PIN gate above routing.
+  const [remembered, setRemembered] = useState<RememberedAccount | null>(() =>
+    oauthContext ? readRememberedAccount() : null,
+  );
 
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -129,12 +144,34 @@ export function LoginPage() {
     }
   }
 
+  // State-ladder step 2 (§399 §B): a remembered PIN user with no session gets
+  // the "Log in as [name]? / Another account" chooser instead of a blank login.
+  // Always interposed — never skipped — so switching accounts is one tap away.
+  // "Another account" clears the memory; the flow drops to the blank form below.
+  if (oauthContext && remembered) {
+    return (
+      <OAuthAccountChooser
+        account={remembered}
+        // quickAuth (inside the chooser) already adopted the user — just land on
+        // the authorize URL; the authenticated guard above is the backstop.
+        onAuthenticated={() => navigate(from, { replace: true })}
+        onAnotherAccount={() => {
+          void forgetRememberedAccount();
+          setRemembered(null);
+        }}
+      />
+    );
+  }
+
   // Checked before `challenge`: a 2FA OAuth login sets both, and the persist
   // choice takes precedence once the second factor has verified.
   if (persistChoice) {
     return (
       <OAuthStaySignedInStep
-        onContinue={async (stay) => {
+        // The one-time remember-me prompt rides this same PIN-user step (owner:
+        // "asked once"). Hidden once this device has already asked this user.
+        showRemember={!hasBeenAskedToRemember(persistChoice.id)}
+        onContinue={async ({ stay, remember }) => {
           // Opting in promotes the just-minted ephemeral session to persistent
           // (PIN-gated server-side). A promotion failure must NOT strand the
           // OAuth authorize flow — the (ephemeral) session is already live, so
@@ -146,6 +183,17 @@ export function LoginPage() {
               // Non-fatal: proceed as an ephemeral session rather than block.
             }
           }
+          // Remember-me opt-in (§399 §B): bind this device so the next OAuth flow
+          // is chooser → PIN. Also non-fatal — never strand the authorize flow.
+          if (remember) {
+            try {
+              await rememberThisDevice();
+            } catch {
+              // Non-fatal: proceed without remembering rather than block.
+            }
+          }
+          // Asked once, whether accepted or declined — don't re-prompt this user.
+          markAskedToRemember(persistChoice.id);
           adoptUser(persistChoice);
           navigate(from, { replace: true });
         }}
@@ -370,15 +418,27 @@ export function TwoFactorStep({
 }
 
 /**
- * Post-credential-entry "stay signed in" choice for an OAuth authorize login on
- * an account WITH a PIN (PROJECTPLAN.md §16; owner spec #399 §A). The session is
- * already minted (ephemeral); ticking this promotes it to persistent —
- * acceptable here precisely because the PIN gates access. A PIN-less OAuth
- * account never reaches this step, so it can never persist a browser session.
+ * Post-credential-entry choice for an OAuth authorize login on an account WITH a
+ * PIN (PROJECTPLAN.md §16; owner spec #399 §A + §B). Two independent opt-ins on
+ * one step (PIN-less accounts never reach it, so neither is ever offered without
+ * a PIN):
+ *
+ *  - **Stay signed in (§A):** the session is already minted (ephemeral); ticking
+ *    promotes it to persistent — acceptable precisely because the PIN gates access.
+ *  - **Remember me on this device (§B):** binds this device so the next OAuth flow
+ *    is "tap your name → enter your PIN". Shown only once per device per user
+ *    (`showRemember`), so it does not nag on every login.
  */
-function OAuthStaySignedInStep({ onContinue }: { onContinue: (stay: boolean) => Promise<void> }) {
+function OAuthStaySignedInStep({
+  showRemember,
+  onContinue,
+}: {
+  showRemember: boolean;
+  onContinue: (opts: { stay: boolean; remember: boolean }) => Promise<void>;
+}) {
   const t = useT();
   const [stay, setStay] = useState(false);
+  const [remember, setRemember] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -386,11 +446,11 @@ function OAuthStaySignedInStep({ onContinue }: { onContinue: (stay: boolean) => 
     setError(null);
     setSubmitting(true);
     try {
-      await onContinue(stay);
+      await onContinue({ stay, remember: showRemember && remember });
     } catch {
-      // Defensive: persist failures are swallowed by the caller (non-fatal), so
-      // this only fires on an unexpected error while landing — surface it and
-      // let them retry; the (ephemeral) session is live regardless.
+      // Defensive: persist/remember failures are swallowed by the caller
+      // (non-fatal), so this only fires on an unexpected error while landing —
+      // surface it and let them retry; the (ephemeral) session is live regardless.
       setError(t('common.genericError'));
       setSubmitting(false);
     }
@@ -416,6 +476,23 @@ function OAuthStaySignedInStep({ onContinue }: { onContinue: (stay: boolean) => 
             </span>
           </span>
         </label>
+        {showRemember ? (
+          <label className="flex items-start gap-2.5">
+            <input
+              type="checkbox"
+              name="rememberDevice"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
+            />
+            <span className="text-sm text-neutral-300">
+              {t('auth.oauthRemember.checkboxLabel')}
+              <span className="block text-xs text-neutral-500">
+                {t('auth.oauthRemember.checkboxHint')}
+              </span>
+            </span>
+          </label>
+        ) : null}
         <Button type="button" onClick={handleContinue} disabled={submitting}>
           {submitting ? t('auth.oauthStay.continuing') : t('auth.oauthStay.continue')}
         </Button>
