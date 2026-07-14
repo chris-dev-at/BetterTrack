@@ -6,6 +6,7 @@ import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 import type { MarkReadRequest, Notification } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { getFormatLocale } from '../../lib/format';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
@@ -43,17 +44,17 @@ function notificationLink(notification: Notification): string | null {
 const POLL_INTERVAL_MS = 30_000;
 const NOTIFICATIONS_QUERY_KEY = ['notifications'];
 
-const relativeTimeFormatter = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-
 /** ISO timestamp → short relative label ("5m ago", "in 2h" never occurs — all past). */
 function formatRelativeTime(iso: string): string {
+  // Built per call so the label follows the active UI locale (V3-P1/P13).
+  const formatter = new Intl.RelativeTimeFormat(getFormatLocale(), { numeric: 'auto' });
   const diffMs = new Date(iso).getTime() - Date.now();
   const diffMinutes = Math.round(diffMs / 60_000);
-  if (Math.abs(diffMinutes) < 60) return relativeTimeFormatter.format(diffMinutes, 'minute');
+  if (Math.abs(diffMinutes) < 60) return formatter.format(diffMinutes, 'minute');
   const diffHours = Math.round(diffMinutes / 60);
-  if (Math.abs(diffHours) < 24) return relativeTimeFormatter.format(diffHours, 'hour');
+  if (Math.abs(diffHours) < 24) return formatter.format(diffHours, 'hour');
   const diffDays = Math.round(diffHours / 24);
-  return relativeTimeFormatter.format(diffDays, 'day');
+  return formatter.format(diffDays, 'day');
 }
 
 function NotificationRow({
@@ -204,24 +205,26 @@ export function NotificationBell() {
       {open ? (
         <div
           role="dialog"
-          aria-label="Notifications"
+          aria-label={t('common.notifications.title')}
           className="absolute right-0 z-40 mt-2 w-80 rounded-lg border border-neutral-800 bg-neutral-900 shadow-xl"
         >
           <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
-            <span className="text-sm font-medium text-neutral-200">Notifications</span>
+            <span className="text-sm font-medium text-neutral-200">
+              {t('common.notifications.title')}
+            </span>
             <button
               type="button"
               onClick={() => markReadMutation.mutate({ all: true })}
               disabled={unreadCount === 0 || markReadMutation.isPending}
               className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
-              Mark all read
+              {t('common.notifications.markAllRead')}
             </button>
           </div>
 
           {markReadMutation.isError ? (
             <div className="px-3 pt-2">
-              <Alert tone="error">Couldn't update that notification. Please try again.</Alert>
+              <Alert tone="error">{t('common.notifications.updateError')}</Alert>
             </div>
           ) : null}
 
@@ -233,15 +236,15 @@ export function NotificationBell() {
             </div>
           ) : query.isError && items.length === 0 ? (
             <EmptyState
-              title="Couldn't load notifications"
-              description="Please try again in a moment."
+              title={t('common.notifications.loadErrorTitle')}
+              description={t('common.notifications.loadErrorDescription')}
               className="py-10"
             />
           ) : items.length === 0 ? (
             <EmptyState
               icon="🔔"
-              title="No notifications yet"
-              description="Activity like friend requests and shares will show up here."
+              title={t('common.notifications.emptyTitle')}
+              description={t('common.notifications.emptyDescription')}
               className="py-10"
             />
           ) : (

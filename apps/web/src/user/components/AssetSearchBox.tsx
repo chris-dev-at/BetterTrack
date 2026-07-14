@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { ConglomerateSummary, SearchResultItem } from '@bettertrack/contracts';
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import {
   getConglomerate,
@@ -77,8 +78,9 @@ export function AssetSearchBox({
   onAction,
   onSelect,
   autoFocus = false,
-  placeholder = 'Search stocks, ETFs, indices…',
+  placeholder,
 }: AssetSearchBoxProps) {
+  const t = useT();
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebounce(query.trim(), DEBOUNCE_MS);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -266,8 +268,8 @@ export function AssetSearchBox({
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder={placeholder}
-        aria-label="Search assets"
+        placeholder={placeholder ?? t('assets.searchBox.placeholder')}
+        aria-label={t('assets.searchBox.inputAria')}
         className={cx(
           'w-full rounded-md bg-neutral-950 px-4 py-3 text-sm text-neutral-100',
           'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
@@ -276,7 +278,7 @@ export function AssetSearchBox({
       />
 
       {showSkeleton ? (
-        <ul className="flex flex-col gap-2" aria-label="Loading results" aria-busy="true">
+        <ul className="flex flex-col gap-2" aria-label={t('assets.searchBox.loadingResults')} aria-busy="true">
           {Array.from({ length: 4 }, (_, i) => (
             <li key={i} className="flex items-center gap-3 rounded-md bg-neutral-900 p-3">
               <Skeleton variant="block" width="w-16" height="h-4" />
@@ -291,26 +293,26 @@ export function AssetSearchBox({
           role="alert"
           className="rounded-md border border-red-800 bg-red-950/60 px-3 py-2 text-sm text-red-300"
         >
-          Search failed. Please try again.
+          {t('assets.searchBox.failed')}
         </p>
       ) : null}
 
       {showEmpty ? (
         <EmptyState
           icon="🔍"
-          title="No results found"
-          description={`Nothing matched "${debouncedQuery}". Try a different symbol or name.`}
+          title={t('assets.searchBox.noResultsTitle')}
+          description={t('assets.searchBox.noResultsDescription', { query: debouncedQuery })}
         />
       ) : null}
 
       {showSearching ? (
         <p role="status" aria-live="polite" className="px-1 text-xs text-neutral-500">
-          Searching the market for more results…
+          {t('assets.searchBox.searchingMore')}
         </p>
       ) : null}
 
       {results.length > 0 ? (
-        <ul className="flex flex-col gap-1" role="list" aria-label="Search results">
+        <ul className="flex flex-col gap-1" role="list" aria-label={t('assets.searchBox.resultsAria')}>
           {results.map((item) =>
             onSelect ? (
               <SelectRow key={item.id} item={item} onSelect={() => onSelect(item)} />
@@ -383,6 +385,7 @@ function ResultRow({
   onCreateConglomerate,
   onPortfolio,
 }: ResultRowProps) {
+  const t = useT();
   const badgeClass = TYPE_BADGE[item.type] ?? 'bg-neutral-800 text-neutral-400';
   const conglomerateRef = useRef<HTMLDivElement>(null);
   usePopoverDismiss(conglomeratePickerOpen, onCloseConglomeratePicker, conglomerateRef);
@@ -392,7 +395,7 @@ function ResultRow({
       <button
         type="button"
         onClick={onOpen}
-        aria-label={`Open ${item.symbol} — ${item.name}`}
+        aria-label={t('assets.searchBox.openAria', { symbol: item.symbol, name: item.name })}
         className="flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
         <div className="flex items-center gap-2">
@@ -415,9 +418,9 @@ function ResultRow({
         <div className="relative" ref={conglomerateRef}>
           <ActionButton
             onClick={onConglomerate}
-            aria-label={`Add ${item.symbol} to a Conglomerate`}
+            aria-label={t('assets.searchBox.addToConglomerateAria', { symbol: item.symbol })}
           >
-            → Conglomerate
+            {t('assets.searchBox.toConglomerate')}
           </ActionButton>
 
           {conglomeratePickerOpen ? (
@@ -433,8 +436,11 @@ function ResultRow({
           ) : null}
         </div>
 
-        <ActionButton onClick={onPortfolio} aria-label={`Record a buy for ${item.symbol}`}>
-          → Portfolio
+        <ActionButton
+          onClick={onPortfolio}
+          aria-label={t('assets.searchBox.recordBuyAria', { symbol: item.symbol })}
+        >
+          {t('assets.searchBox.toPortfolio')}
         </ActionButton>
       </div>
     </li>
@@ -479,6 +485,7 @@ function WatchlistControl({
   status: 'idle' | 'pending' | 'done' | 'error';
   onAdd: (watchlistId?: string) => void;
 }) {
+  const t = useT();
   const [listPickerOpen, setListPickerOpen] = useState(false);
   const added = status === 'done';
   const containerRef = useRef<HTMLDivElement>(null);
@@ -501,12 +508,12 @@ function WatchlistControl({
         aria-pressed={added}
         aria-label={
           added
-            ? `${item.symbol} is on your watchlist`
+            ? t('assets.searchBox.onWatchlistAria', { symbol: item.symbol })
             : status === 'error'
-              ? `Retry adding ${item.symbol} to your watchlist`
-              : `Add ${item.symbol} to watchlist`
+              ? t('assets.searchBox.retryWatchlistAria', { symbol: item.symbol })
+              : t('assets.searchBox.addToWatchlistAria', { symbol: item.symbol })
         }
-        title={added ? 'On your watchlist' : 'Add to watchlist'}
+        title={added ? t('assets.searchBox.onWatchlistTitle') : t('assets.searchBox.addToWatchlistTitle')}
         className={cx(
           'rounded p-1.5 transition-colors',
           added ? 'text-sky-400' : 'text-neutral-500 hover:bg-neutral-700 hover:text-neutral-100',
@@ -521,7 +528,7 @@ function WatchlistControl({
       <button
         type="button"
         onClick={() => setListPickerOpen((o) => !o)}
-        aria-label={`Choose a watchlist for ${item.symbol}`}
+        aria-label={t('assets.searchBox.chooseWatchlistAria', { symbol: item.symbol })}
         aria-haspopup="menu"
         aria-expanded={listPickerOpen}
         className="rounded p-0.5 text-xs text-neutral-600 hover:text-neutral-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
@@ -532,7 +539,7 @@ function WatchlistControl({
       {listPickerOpen ? (
         <div
           role="menu"
-          aria-label={`Watchlists for ${item.symbol}`}
+          aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol: item.symbol })}
           className="absolute right-0 top-full z-10 mt-1 w-48 rounded-md border border-neutral-700 bg-neutral-900 p-2 text-xs shadow-xl"
         >
           {(listsQuery.data?.watchlists ?? []).map((list) => (
@@ -594,20 +601,21 @@ function ConglomeratePicker({
   onClose: () => void;
   onCreateNew: () => void;
 }) {
+  const t = useT();
   const pending = addState?.status === 'pending';
 
   return (
     <div
       role="menu"
-      aria-label={`Add ${item.symbol} to a conglomerate`}
+      aria-label={t('assets.searchBox.pickerMenuAria', { symbol: item.symbol })}
       className="absolute right-0 top-full z-10 mt-1 w-64 rounded-md border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
     >
       <div className="flex items-center justify-between px-1 pb-1">
-        <span className="text-xs font-medium text-neutral-400">Add to conglomerate</span>
+        <span className="text-xs font-medium text-neutral-400">{t('assets.searchBox.pickerTitle')}</span>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close"
+          aria-label={t('common.close')}
           className="rounded p-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
         >
           ✕
@@ -615,9 +623,9 @@ function ConglomeratePicker({
       </div>
 
       {isLoading ? (
-        <p className="px-1 py-2 text-xs text-neutral-500">Loading…</p>
+        <p className="px-1 py-2 text-xs text-neutral-500">{t('common.loading')}</p>
       ) : conglomerates.length === 0 ? (
-        <p className="px-1 py-2 text-xs text-neutral-500">You don't have any conglomerates yet.</p>
+        <p className="px-1 py-2 text-xs text-neutral-500">{t('assets.searchBox.noConglomerates')}</p>
       ) : (
         <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
           {conglomerates.map((c) => (
@@ -637,7 +645,9 @@ function ConglomeratePicker({
       )}
 
       {addState?.status === 'done' ? (
-        <p className="mt-1 px-1 text-xs text-emerald-400">Added to {addState.message}.</p>
+        <p className="mt-1 px-1 text-xs text-emerald-400">
+          {t('assets.searchBox.addedTo', { name: addState.message ?? '' })}
+        </p>
       ) : null}
       {addState?.status === 'error' ? (
         <p className="mt-1 px-1 text-xs text-red-400">{addState.message}</p>
@@ -648,7 +658,7 @@ function ConglomeratePicker({
         onClick={onCreateNew}
         className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs text-sky-400 hover:bg-neutral-800"
       >
-        + Create new conglomerate
+        {t('assets.searchBox.createNewConglomerate')}
       </button>
     </div>
   );
@@ -656,13 +666,14 @@ function ConglomeratePicker({
 
 /** A single-action result row for picker mode (`onSelect`). The whole row is the button. */
 function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () => void }) {
+  const t = useT();
   const badgeClass = TYPE_BADGE[item.type] ?? 'bg-neutral-800 text-neutral-400';
   return (
     <li>
       <button
         type="button"
         onClick={onSelect}
-        aria-label={`Select ${item.symbol}`}
+        aria-label={t('assets.searchBox.selectAria', { symbol: item.symbol })}
         className={cx(
           'flex w-full items-center gap-3 rounded-md bg-neutral-900 px-3 py-2.5 text-left',
           'transition-colors hover:bg-neutral-800/80',
@@ -684,7 +695,7 @@ function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () =>
           </span>
         </div>
         <span aria-hidden="true" className="shrink-0 text-xs text-sky-400">
-          Select →
+          {t('assets.searchBox.select')}
         </span>
       </button>
     </li>

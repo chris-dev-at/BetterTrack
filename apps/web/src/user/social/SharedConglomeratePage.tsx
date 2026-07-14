@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { getSharedConglomerate } from '../../lib/socialApi';
 import { formatPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
@@ -15,6 +16,7 @@ const SHARED_STALE_MS = 30_000;
  * basket 404s and surfaces the not-found affordance.
  */
 export function SharedConglomeratePage() {
+  const t = useT();
   const { id = '' } = useParams<{ id: string }>();
   const { data, isLoading, isError } = useQuery({
     queryKey: ['social', 'shared', 'conglomerate', id],
@@ -37,8 +39,8 @@ export function SharedConglomeratePage() {
       <div className="flex flex-col gap-4">
         <BackLink />
         <EmptyState
-          title="This conglomerate isn't available"
-          description="The owner may have stopped sharing it, or you're no longer friends."
+          title={t('social.shared.conglomerateUnavailableTitle')}
+          description={t('social.shared.unavailableDescription')}
         />
       </div>
     );
@@ -53,13 +55,19 @@ export function SharedConglomeratePage() {
           <ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />
         </div>
         <p className="text-sm text-neutral-500">
-          Shared by {data.owner.username} · {data.status === 'active' ? 'Active' : 'Draft'}
+          {t('social.shared.sharedBy', { username: data.owner.username })} ·{' '}
+          {data.status === 'active'
+            ? t('workboard.conglomerates.status.active')
+            : t('workboard.conglomerates.status.draft')}
         </p>
         {data.description ? <p className="text-sm text-neutral-400">{data.description}</p> : null}
       </div>
 
       {data.positions.length === 0 ? (
-        <EmptyState title="No positions" description="This conglomerate has no assets yet." />
+        <EmptyState
+          title={t('social.shared.noPositionsTitle')}
+          description={t('social.shared.noPositionsDescription')}
+        />
       ) : (
         <ul className="divide-y divide-neutral-800">
           {data.positions.map((p) => (
@@ -80,12 +88,13 @@ export function SharedConglomeratePage() {
 }
 
 function BackLink() {
+  const t = useT();
   return (
     <Link
       to="/social/friends"
       className="w-fit text-xs text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
     >
-      ← Friends
+      {t('social.shared.backToFriends')}
     </Link>
   );
 }

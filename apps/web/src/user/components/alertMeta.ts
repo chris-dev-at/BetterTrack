@@ -1,5 +1,6 @@
 import type { Alert, AlertKind, AlertStatus } from '@bettertrack/contracts';
 
+import type { TranslateFn } from '../../i18n';
 import { formatMoney, formatPercent } from '../../lib/format';
 
 /**
@@ -13,10 +14,10 @@ import { formatMoney, formatPercent } from '../../lib/format';
 export type ThresholdUnit = 'price' | 'percent';
 
 export interface AlertKindMeta {
-  /** Full label for the kind selector. */
-  label: string;
-  /** Grouping caption in the selector (price level vs. % move). */
-  group: string;
+  /** i18n key of the full label for the kind selector. */
+  labelKey: string;
+  /** i18n key of the grouping caption in the selector (price level vs. % move). */
+  groupKey: string;
   /** Whether the threshold is a price or a percentage. */
   unit: ThresholdUnit;
   /** Whether a reference price is captured at creation (the `*_from_ref` kinds). */
@@ -33,25 +34,43 @@ export const ALERT_KIND_ORDER: readonly AlertKind[] = [
   'pct_day_down',
 ];
 
+const KINDS = 'workboard.alerts.kinds';
+const GROUPS = 'workboard.alerts.groups';
+
 export const ALERT_KIND_META: Record<AlertKind, AlertKindMeta> = {
-  price_above: { label: 'Price rises above', group: 'Price level', unit: 'price', ref: false },
-  price_below: { label: 'Price falls below', group: 'Price level', unit: 'price', ref: false },
+  price_above: {
+    labelKey: `${KINDS}.priceAbove`,
+    groupKey: `${GROUPS}.priceLevel`,
+    unit: 'price',
+    ref: false,
+  },
+  price_below: {
+    labelKey: `${KINDS}.priceBelow`,
+    groupKey: `${GROUPS}.priceLevel`,
+    unit: 'price',
+    ref: false,
+  },
   pct_up_from_ref: {
-    label: 'Rises % from reference',
-    group: 'Move from reference',
+    labelKey: `${KINDS}.pctUpFromRef`,
+    groupKey: `${GROUPS}.fromReference`,
     unit: 'percent',
     ref: true,
   },
   pct_down_from_ref: {
-    label: 'Falls % from reference',
-    group: 'Move from reference',
+    labelKey: `${KINDS}.pctDownFromRef`,
+    groupKey: `${GROUPS}.fromReference`,
     unit: 'percent',
     ref: true,
   },
-  pct_day_up: { label: 'Up % on the day', group: 'Move on the day', unit: 'percent', ref: false },
+  pct_day_up: {
+    labelKey: `${KINDS}.pctDayUp`,
+    groupKey: `${GROUPS}.onTheDay`,
+    unit: 'percent',
+    ref: false,
+  },
   pct_day_down: {
-    label: 'Down % on the day',
-    group: 'Move on the day',
+    labelKey: `${KINDS}.pctDayDown`,
+    groupKey: `${GROUPS}.onTheDay`,
     unit: 'percent',
     ref: false,
   },
@@ -59,40 +78,52 @@ export const ALERT_KIND_META: Record<AlertKind, AlertKindMeta> = {
 
 /** Human sentence for an alert's rule (asset omitted — the row already names it). */
 export function describeAlertRule(
+  t: TranslateFn,
   alert: Pick<Alert, 'kind' | 'threshold' | 'refPrice'>,
   currency = 'EUR',
 ): string {
   const meta = ALERT_KIND_META[alert.kind];
   const amount =
     meta.unit === 'price' ? formatMoney(alert.threshold, currency) : formatPercent(alert.threshold);
-  const money = (value: number) => formatMoney(value, currency);
+  const RULE = 'workboard.alerts.rule';
   switch (alert.kind) {
     case 'price_above':
-      return `Price rises above ${amount}`;
+      return t(`${RULE}.priceAbove`, { amount });
     case 'price_below':
-      return `Price falls below ${amount}`;
+      return t(`${RULE}.priceBelow`, { amount });
     case 'pct_up_from_ref':
       return alert.refPrice != null
-        ? `Rises ${amount} from ${money(alert.refPrice)}`
-        : `Rises ${amount} from reference`;
+        ? t(`${RULE}.pctUpFromRefPrice`, { amount, ref: formatMoney(alert.refPrice, currency) })
+        : t(`${RULE}.pctUpFromRef`, { amount });
     case 'pct_down_from_ref':
       return alert.refPrice != null
-        ? `Falls ${amount} from ${money(alert.refPrice)}`
-        : `Falls ${amount} from reference`;
+        ? t(`${RULE}.pctDownFromRefPrice`, { amount, ref: formatMoney(alert.refPrice, currency) })
+        : t(`${RULE}.pctDownFromRef`, { amount });
     case 'pct_day_up':
-      return `Up ${amount} on the day`;
+      return t(`${RULE}.pctDayUp`, { amount });
     case 'pct_day_down':
-      return `Down ${amount} on the day`;
+      return t(`${RULE}.pctDayDown`, { amount });
   }
 }
 
 export interface AlertStatusMeta {
-  label: string;
+  labelKey: string;
   className: string;
 }
 
+const STATUS = 'workboard.alerts.status';
+
 export const ALERT_STATUS_META: Record<AlertStatus, AlertStatusMeta> = {
-  active: { label: 'Active', className: 'bg-emerald-950/60 text-emerald-400 ring-emerald-800' },
-  triggered: { label: 'Triggered', className: 'bg-amber-950/60 text-amber-400 ring-amber-800' },
-  disabled: { label: 'Disabled', className: 'bg-neutral-800 text-neutral-400 ring-neutral-700' },
+  active: {
+    labelKey: `${STATUS}.active`,
+    className: 'bg-emerald-950/60 text-emerald-400 ring-emerald-800',
+  },
+  triggered: {
+    labelKey: `${STATUS}.triggered`,
+    className: 'bg-amber-950/60 text-amber-400 ring-amber-800',
+  },
+  disabled: {
+    labelKey: `${STATUS}.disabled`,
+    className: 'bg-neutral-800 text-neutral-400 ring-neutral-700',
+  },
 };

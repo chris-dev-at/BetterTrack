@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
@@ -8,20 +9,20 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
  * plus the Coming-Soon category browsers
  * (Stocks · ETFs · Crypto · Commodities · Custom Assets).
  */
-const ASSETS_SUBNAV: readonly SubNavItem[] = [
-  { to: '/assets', label: 'Overview', end: true },
-  { to: '/assets/search', label: 'Search' },
-  { to: '/assets/stocks', label: 'Stocks', comingSoon: true },
-  { to: '/assets/etfs', label: 'ETFs', comingSoon: true },
-  { to: '/assets/crypto', label: 'Crypto', comingSoon: true },
-  { to: '/assets/commodities', label: 'Commodities', comingSoon: true },
-  { to: '/assets/custom', label: 'Custom Assets', comingSoon: true },
-];
-
 export function AssetsLayout() {
+  const t = useT();
+  const subnav: readonly SubNavItem[] = [
+    { to: '/assets', label: t('assets.nav.overview'), end: true },
+    { to: '/assets/search', label: t('assets.nav.search') },
+    { to: '/assets/stocks', label: t('assets.nav.stocks'), comingSoon: true },
+    { to: '/assets/etfs', label: t('assets.nav.etfs'), comingSoon: true },
+    { to: '/assets/crypto', label: t('assets.nav.crypto'), comingSoon: true },
+    { to: '/assets/commodities', label: t('assets.nav.commodities'), comingSoon: true },
+    { to: '/assets/custom', label: t('assets.nav.customAssets'), comingSoon: true },
+  ];
   return (
     <div className="flex flex-col gap-6">
-      <SubNav items={ASSETS_SUBNAV} />
+      <SubNav items={subnav} />
       <Outlet />
     </div>
   );
@@ -30,38 +31,49 @@ export function AssetsLayout() {
 // ─── Not-yet-built surfaces (own feature issues) ──────────────────────────────
 
 export function AssetsOverviewPage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Assets Overview"
-      description="A calm entry point — search, recently viewed assets and catalog counts. Use Search to look up any asset today."
+      title={t('assets.comingSoon.overview.title')}
+      description={t('assets.comingSoon.overview.description')}
       icon="🔍"
     />
   );
 }
 
 export function StocksPage() {
-  return <ComingSoon title="Stocks" description="Browse and filter the stock catalog." />;
+  const t = useT();
+  return (
+    <ComingSoon title={t('assets.nav.stocks')} description={t('assets.comingSoon.stocks')} />
+  );
 }
 
 export function EtfsPage() {
-  return <ComingSoon title="ETFs" description="Browse and filter the ETF catalog." />;
+  const t = useT();
+  return <ComingSoon title={t('assets.nav.etfs')} description={t('assets.comingSoon.etfs')} />;
 }
 
 export function CryptoPage() {
-  return <ComingSoon title="Crypto" description="Browse and filter the crypto catalog." />;
+  const t = useT();
+  return <ComingSoon title={t('assets.nav.crypto')} description={t('assets.comingSoon.crypto')} />;
 }
 
 export function CommoditiesPage() {
+  const t = useT();
   return (
-    <ComingSoon title="Commodities" description="Browse and filter the commodities catalog." />
+    <ComingSoon
+      title={t('assets.nav.commodities')}
+      description={t('assets.comingSoon.commodities')}
+    />
   );
 }
 
 export function CustomAssetsBrowsePage() {
+  const t = useT();
   return (
     <ComingSoon
-      title="Custom Assets"
-      description="Browse the custom assets you've created across your portfolios."
+      title={t('assets.nav.customAssets')}
+      description={t('assets.comingSoon.customAssets')}
     />
   );
 }

@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 
+import { useT } from '../i18n';
+
 export interface ErrorBoundaryProps {
   children: ReactNode;
   /**
@@ -41,23 +43,33 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (!this.state.hasError) return this.props.children;
     if (this.props.fallback !== undefined) return this.props.fallback;
 
-    return (
-      <div
-        role="alert"
-        className="flex flex-col items-center gap-4 rounded-lg border border-red-900 bg-red-950/40 px-6 py-8 text-center"
-      >
-        <p className="text-sm font-medium text-red-300">Something went wrong.</p>
-        {this.state.error?.message ? (
-          <p className="text-xs text-neutral-500">{this.state.error.message}</p>
-        ) : null}
-        <button
-          type="button"
-          onClick={this.reset}
-          className="rounded-md bg-neutral-800 px-3 py-1.5 text-sm text-neutral-100 hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-        >
-          Try again
-        </button>
-      </div>
-    );
+    return <DefaultErrorFallback errorMessage={this.state.error?.message} onRetry={this.reset} />;
   }
+}
+
+/** Hook-friendly default fallback — class components can't call `useT` themselves. */
+function DefaultErrorFallback({
+  errorMessage,
+  onRetry,
+}: {
+  errorMessage: string | undefined;
+  onRetry: () => void;
+}) {
+  const t = useT();
+  return (
+    <div
+      role="alert"
+      className="flex flex-col items-center gap-4 rounded-lg border border-red-900 bg-red-950/40 px-6 py-8 text-center"
+    >
+      <p className="text-sm font-medium text-red-300">{t('common.errorTitle')}</p>
+      {errorMessage ? <p className="text-xs text-neutral-500">{errorMessage}</p> : null}
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded-md bg-neutral-800 px-3 py-1.5 text-sm text-neutral-100 hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      >
+        {t('common.retry')}
+      </button>
+    </div>
+  );
 }

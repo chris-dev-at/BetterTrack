@@ -83,6 +83,36 @@ test('follows: follow a person and a shared portfolio, both listed on Following'
     { timeout: 15_000 },
   );
 
+  // ── Alert follows (#455) ──────────────────────────────────────────────────
+  // The owner opts in to sharing their alerts with followers — the toggle on
+  // Workboard → Alerts raises the all-followers friction dialog first.
+  await owner.page.goto('/workboard/alerts');
+  const shareToggle = owner.page.getByRole('switch', { name: 'Share my alerts with followers' });
+  await expect(shareToggle).toHaveAttribute('aria-checked', 'false');
+  await shareToggle.click();
+  await owner.page.getByRole('button', { name: 'I understand — share my alerts' }).click();
+  await expect(shareToggle).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+
+  // The follower's Following row carries the two independent alert triggers
+  // (created / fired), both default OFF; flipping one persists.
+  await follower.page.goto('/social/following');
+  const createTrigger = follower.page.getByRole('switch', {
+    name: `Notify me about new alerts from ${owner.username}`,
+  });
+  const fireTrigger = follower.page.getByRole('switch', {
+    name: `Notify me when alerts from ${owner.username} fire`,
+  });
+  await expect(createTrigger).toHaveAttribute('aria-checked', 'false');
+  await expect(fireTrigger).toHaveAttribute('aria-checked', 'false');
+  await createTrigger.click();
+  await expect(createTrigger).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+  await follower.page.reload();
+  await expect(
+    follower.page.getByRole('switch', {
+      name: `Notify me about new alerts from ${owner.username}`,
+    }),
+  ).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+
   await owner.context.close();
   await follower.context.close();
 });

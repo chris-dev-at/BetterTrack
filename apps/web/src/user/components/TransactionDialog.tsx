@@ -1126,9 +1126,10 @@ export interface RowUncovered {
 
 /** Small "auto" marker so a fetched value is never mistaken for a typed one. */
 function AutoHint() {
+  const t = useT();
   return (
     <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide text-[#F6B82E]">
-      auto
+      {t('portfolio.transaction.autoHint')}
     </span>
   );
 }
@@ -1778,19 +1779,21 @@ function RowFields({
             <>
               ≈{' '}
               <span className="font-mono text-neutral-200">{formatQuantity(derived.quantity)}</span>{' '}
-              {symbol} · records{' '}
+              {symbol} {t('portfolio.transaction.derivedRecords')}{' '}
               <span className="font-mono text-neutral-200">
                 {formatMoney(derived.recordedAmount, row.asset.currency)}
               </span>
               {Math.abs(derived.residual) >= 0.005
-                ? ` (${derived.residual > 0 ? '+' : '−'}${formatMoney(
-                    Math.abs(derived.residual),
-                    row.asset.currency,
-                  )} vs entered, from 8-decimal rounding)`
+                ? t('portfolio.transaction.derivedResidual', {
+                    delta: `${derived.residual > 0 ? '+' : '−'}${formatMoney(
+                      Math.abs(derived.residual),
+                      row.asset.currency,
+                    )}`,
+                  })
                 : ''}
             </>
           ) : (
-            'Enter a price and amount above 0 to derive the quantity.'
+            t('portfolio.transaction.derivedPrompt')
           )}
         </p>
       ) : null}

@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
 
+import { useT } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 
 /** Tiny class-name joiner — avoids a dependency for one helper (mirrors admin/ui). */
@@ -80,20 +81,21 @@ export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode
   );
 }
 
-export function Spinner({ label = 'Loading…' }: { label?: string }) {
+export function Spinner({ label }: { label?: string }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-3 text-sm text-neutral-400" role="status">
       <span
         className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-600 border-t-sky-400"
         aria-hidden="true"
       />
-      <span>{label}</span>
+      <span>{label ?? t('common.loading')}</span>
     </div>
   );
 }
 
 /** Full-screen branded splash, shown while the session bootstraps. */
-export function Splash({ label = 'Loading…' }: { label?: string }) {
+export function Splash({ label }: { label?: string }) {
   return (
     <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
       <div className="flex flex-col items-center gap-4 text-center">
@@ -109,6 +111,7 @@ export function Splash({ label = 'Loading…' }: { label?: string }) {
  * shifts layout. Provide an `onDismiss` handler to let the user close it.
  */
 export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss: () => void }) {
+  const t = useT();
   return (
     <div
       role="alert"
@@ -119,7 +122,7 @@ export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss:
       <button
         type="button"
         onClick={onDismiss}
-        aria-label="Dismiss"
+        aria-label={t('common.dismiss')}
         className="shrink-0 text-amber-400 hover:text-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
       >
         ✕

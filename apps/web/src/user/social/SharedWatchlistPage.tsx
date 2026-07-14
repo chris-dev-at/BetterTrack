@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
+import { useT } from '../../i18n';
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -13,6 +14,7 @@ const SHARED_STALE_MS = 30_000;
  * unknown owner 404s and surfaces the not-found affordance.
  */
 export function SharedWatchlistPage() {
+  const t = useT();
   const { watchlistId = '' } = useParams<{ watchlistId: string }>();
   const { data, isLoading, isError } = useQuery({
     queryKey: ['social', 'shared', 'watchlist', watchlistId],
@@ -35,8 +37,8 @@ export function SharedWatchlistPage() {
       <div className="flex flex-col gap-4">
         <BackLink />
         <EmptyState
-          title="This watchlist isn't available"
-          description="The owner may have stopped sharing it, or you're no longer friends."
+          title={t('social.shared.watchlistUnavailableTitle')}
+          description={t('social.shared.unavailableDescription')}
         />
       </div>
     );
@@ -55,7 +57,10 @@ export function SharedWatchlistPage() {
       </div>
 
       {data.items.length === 0 ? (
-        <EmptyState title="Empty watchlist" description="This friend isn't watching any assets." />
+        <EmptyState
+          title={t('social.shared.watchlistEmptyTitle')}
+          description={t('social.shared.watchlistEmptyDescription')}
+        />
       ) : (
         <ul className="divide-y divide-neutral-800">
           {data.items.map((item) => (
@@ -76,12 +81,13 @@ export function SharedWatchlistPage() {
 }
 
 function BackLink() {
+  const t = useT();
   return (
     <Link
       to="/social/friends"
       className="w-fit text-xs text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
     >
-      ← Friends
+      {t('social.shared.backToFriends')}
     </Link>
   );
 }

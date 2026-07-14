@@ -14,6 +14,7 @@ import {
 } from 'lightweight-charts';
 import { useEffect, useRef, useState } from 'react';
 
+import { useT } from '../../i18n';
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
 import { formatPercent } from '../../lib/format';
@@ -409,10 +410,11 @@ function RangeToggle({
   ranges: readonly PriceRange[];
   onSelect: (range: PriceRange) => void;
 }) {
+  const t = useT();
   return (
     <div
       role="group"
-      aria-label="Select chart range"
+      aria-label={t('common.charts.selectRange')}
       className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
       {ranges.map((token) => {

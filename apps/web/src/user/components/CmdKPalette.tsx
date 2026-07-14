@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 
 import { AssetSearchBox } from './AssetSearchBox';
+import { useT } from '../../i18n';
 
 interface CmdKPaletteProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ interface CmdKPaletteProps {
  * Closed by Escape, backdrop click, or a result action.
  */
 export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
+  const t = useT();
   const dialogRef = useRef<HTMLDivElement>(null);
 
   // Close on Escape
@@ -39,7 +41,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Quick search"
+      aria-label={t('common.quickSearchAria')}
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[10vh] backdrop-blur-sm"
       onClick={handleBackdrop}
     >
@@ -53,9 +55,9 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
         <div className="border-t border-neutral-800 px-4 py-2">
           <span className="text-xs text-neutral-600">
             <kbd className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-neutral-400">
-              Esc
+              {t('common.escKey')}
             </kbd>{' '}
-            to close
+            {t('common.escToClose')}
           </span>
         </div>
       </div>

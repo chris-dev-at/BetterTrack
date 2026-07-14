@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import type { ReactNode } from 'react';
 
+import { useT } from '../../i18n';
 import { cx } from './ui';
 
 /**
@@ -30,6 +31,7 @@ export function Dialog({
   /** Tailwind max-width for the panel. Defaults to `max-w-lg`. */
   widthClassName?: string;
 }) {
+  const t = useT();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -69,7 +71,7 @@ export function Dialog({
             <button
               type="button"
               onClick={onClose}
-              aria-label="Close dialog"
+              aria-label={t('common.closeDialogAria')}
               className="-mr-1 -mt-1 shrink-0 rounded p-1 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-neutral-500"
             >
               ✕
@@ -97,7 +99,7 @@ export function Dialog({
             <button
               type="button"
               onClick={onClose}
-              aria-label="Close dialog"
+              aria-label={t('common.closeDialogAria')}
               className="-mr-1 -mt-1 shrink-0 rounded p-1 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
               ✕

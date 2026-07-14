@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import { useT } from '../i18n';
 import { cx } from '../lib/cx';
 
 export interface ComingSoonProps {
@@ -19,6 +20,7 @@ export interface ComingSoonProps {
  * blank area. Purely presentational — no network.
  */
 export function ComingSoon({ title, description, icon = '🚧', className }: ComingSoonProps) {
+  const t = useT();
   return (
     <section
       className={cx(
@@ -31,7 +33,7 @@ export function ComingSoon({ title, description, icon = '🚧', className }: Com
       </span>
       <div className="flex flex-col items-center gap-2">
         <span className="inline-flex items-center rounded-full bg-neutral-800 px-2.5 py-0.5 text-[0.68rem] font-semibold uppercase tracking-wide text-neutral-400 ring-1 ring-inset ring-neutral-700">
-          Coming soon
+          {t('common.comingSoon')}
         </span>
         <h1 className="text-xl font-semibold tracking-tight text-neutral-100">{title}</h1>
         {description ? <p className="max-w-md text-sm text-neutral-500">{description}</p> : null}

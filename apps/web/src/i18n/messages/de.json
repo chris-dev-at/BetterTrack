@@ -148,6 +148,24 @@
       "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "pendingSubtitle": "Fast geschafft",
       "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde."
+    },
+    "oauthConsent": {
+      "logoBadge": "BT",
+      "firstParty": "Offizielle BetterTrack-App",
+      "thirdParty": "Dritt-App",
+      "invalidRequest": "Diese Autorisierungsanfrage ist ungültig oder unvollständig. Geh zurück zur App und versuche es erneut.",
+      "cancelledTitle": "Autorisierung abgebrochen",
+      "cancelledBody": "Es wurde kein Zugriff gewährt. Du kannst dieses Fenster schließen oder zu BetterTrack zurückkehren.",
+      "goToApp": "Zu BetterTrack",
+      "loading": "Autorisierungsanfrage wird geladen…",
+      "badClient": "Die Autorisierungsanfrage dieser App ist ungültig. Zu deiner Sicherheit fahren wir nicht fort. Wende dich an die Entwickler der App.",
+      "loadError": "Die Autorisierungsanfrage konnte nicht geladen werden. Bitte versuche es gleich noch einmal.",
+      "signingIn": "Du wirst bei {{name}} angemeldet…",
+      "wantsAccess": "möchte Zugriff auf dein BetterTrack-Konto. Wenn du zustimmst, kann die App:",
+      "returnedTo": "Du wirst zurückgeleitet zu",
+      "revokeHint": ". Du kannst diesen Zugriff jederzeit unter Einstellungen → API-Zugang widerrufen.",
+      "authorizing": "Wird autorisiert…",
+      "approve": "Zustimmen"
     }
   },
   "common": {
@@ -170,7 +188,28 @@
     "friends": "Freunde",
     "soon": "Bald",
     "comingSoon": "Demnächst",
-    "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut."
+    "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+    "continue": "Weiter",
+    "dismiss": "Schließen",
+    "errorTitle": "Etwas ist schiefgelaufen.",
+    "loadingLabel": "Lädt",
+    "quickSearchAria": "Schnellsuche",
+    "escKey": "Esc",
+    "escToClose": "zum Schließen",
+    "closeDialogAria": "Dialog schließen",
+    "charts": {
+      "noAllocationData": "Noch keine Allokationsdaten.",
+      "selectRange": "Chart-Zeitraum wählen"
+    },
+    "notifications": {
+      "title": "Benachrichtigungen",
+      "markAllRead": "Alle als gelesen markieren",
+      "updateError": "Die Benachrichtigung konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
+      "loadErrorDescription": "Bitte versuche es gleich noch einmal.",
+      "emptyTitle": "Noch keine Benachrichtigungen",
+      "emptyDescription": "Aktivitäten wie Freundschaftsanfragen und geteilte Inhalte erscheinen hier."
+    }
   },
   "nav": {
     "portfolio": "Portfolio",
@@ -774,7 +813,11 @@
         "valueAria": "Manuelle Steuer für diesen Verkauf",
         "placeholder": "0",
         "invalid": "Gib einen gültigen Steuerbetrag ein oder einen Satz zwischen 0 und 100 %."
-      }
+      },
+      "autoHint": "auto",
+      "derivedRecords": "· verbucht",
+      "derivedResidual": " ({{delta}} ggü. Eingabe, durch Rundung auf 8 Dezimalstellen)",
+      "derivedPrompt": "Gib einen Kurs und einen Betrag über 0 ein, um die Stückzahl abzuleiten."
     },
     "overview": {
       "title": "Portfolio",
@@ -1403,6 +1446,67 @@
         "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
         "confirmCancel": "Abbrechen",
         "confirmEnable": "Ich verstehe — Alarme teilen"
+      },
+      "kinds": {
+        "priceAbove": "Kurs steigt über",
+        "priceBelow": "Kurs fällt unter",
+        "pctUpFromRef": "Steigt % über Referenz",
+        "pctDownFromRef": "Fällt % unter Referenz",
+        "pctDayUp": "Steigt % im Tagesverlauf",
+        "pctDayDown": "Fällt % im Tagesverlauf"
+      },
+      "groups": {
+        "priceLevel": "Kursniveau",
+        "fromReference": "Bewegung ab Referenz",
+        "onTheDay": "Tagesbewegung"
+      },
+      "rule": {
+        "priceAbove": "Kurs steigt über {{amount}}",
+        "priceBelow": "Kurs fällt unter {{amount}}",
+        "pctUpFromRefPrice": "Steigt {{amount}} ab {{ref}}",
+        "pctUpFromRef": "Steigt {{amount}} ab Referenz",
+        "pctDownFromRefPrice": "Fällt {{amount}} ab {{ref}}",
+        "pctDownFromRef": "Fällt {{amount}} ab Referenz",
+        "pctDayUp": "Steigt {{amount}} im Tagesverlauf",
+        "pctDayDown": "Fällt {{amount}} im Tagesverlauf"
+      },
+      "status": {
+        "active": "Aktiv",
+        "triggered": "Ausgelöst",
+        "disabled": "Deaktiviert"
+      },
+      "dialog": {
+        "createTitle": "Neuer Preisalarm",
+        "editTitle": "Alarm bearbeiten",
+        "createDescription": "Werde benachrichtigt, wenn diese Regel auslöst. Alarme werden jede Minute anhand des aktuellsten Kurses ausgewertet.",
+        "editDescription": "Regelart und Anlage sind fest — passe Schwelle oder Wiederholung an.",
+        "errorNoAsset": "Wähle eine Anlage für diesen Alarm.",
+        "errorThreshold": "Gib eine Schwelle größer als 0 ein.",
+        "saveError": "Der Alarm konnte nicht gespeichert werden. Bitte versuche es erneut.",
+        "changeAsset": "Ändern",
+        "assetLabel": "Anlage",
+        "assetPlaceholder": "Anlage für den Alarm suchen…",
+        "whenLabel": "Wenn",
+        "thresholdPrice": "Schwellenkurs ({{currency}})",
+        "thresholdPercent": "Prozentuale Änderung",
+        "refMeasured": "Gemessen ab der bei Erstellung erfassten Referenz ({{price}}).",
+        "refWillCapture": "Der aktuelle Kurs ({{price}}) wird beim Erstellen dieses Alarms als Referenz erfasst.",
+        "refWillCaptureNoPrice": "Der aktuelle Marktkurs wird beim Erstellen dieses Alarms als Referenz erfasst.",
+        "repeatLabel": "Wiederholen",
+        "repeatOnHint": "Löst bei jeder Überschreitung erneut aus, höchstens einmal pro 24 h.",
+        "repeatOffHint": "Einmalig — löst einmal aus und pausiert dann, bis du ihn wieder scharf stellst.",
+        "saveChanges": "Änderungen speichern",
+        "create": "Alarm erstellen"
+      },
+      "list": {
+        "repeat": "Wiederholend (24 h)",
+        "oneShot": "Einmalig",
+        "lastFired": "Zuletzt ausgelöst {{time}}",
+        "neverFired": "Noch nie ausgelöst",
+        "rearming": "Wird scharf gestellt…",
+        "rearm": "Wieder scharf stellen",
+        "deleting": "Wird gelöscht…",
+        "updateError": "Der Alarm konnte nicht aktualisiert werden. Bitte versuche es erneut."
       }
     },
     "conglomerates": {
@@ -1489,7 +1593,29 @@
   },
   "assets": {
     "detail": {
-      "chartAriaLabel": "Kursdiagramm für {{symbol}}"
+      "chartAriaLabel": "Kursdiagramm für {{symbol}}",
+      "stale": "Veraltet",
+      "asOf": "Stand {{time}}",
+      "delayedNote": "Daten können verzögert sein.",
+      "alerts": {
+        "title": "Deine Alarme zu dieser Anlage",
+        "loadError": "Deine Alarme konnten nicht geladen werden. Bitte versuche es erneut.",
+        "emptyTitle": "Noch keine Alarme zu dieser Anlage",
+        "emptyDescription": "Erstelle einen Alarm, um benachrichtigt zu werden, wenn sie eine Kursmarke über- oder unterschreitet oder sich um einen Prozentsatz bewegt."
+      },
+      "appearsIn": {
+        "title": "Enthalten in",
+        "emptyTitle": "In keinem Konglomerat oder Portfolio",
+        "emptyDescription": "Füge diese Anlage einem Konglomerat hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
+      },
+      "watchlistAddError": "Konnte nicht zur Watchlist hinzugefügt werden. Bitte versuche es erneut.",
+      "quickActions": "Schnellaktionen",
+      "addToPortfolio": "+ Portfolio",
+      "addToConglomerate": "+ Konglomerat",
+      "backToSearch": "← Zurück zur Suche",
+      "backShort": "← Suche",
+      "loadError": "Die Anlagedetails konnten nicht geladen werden. Die Anlage existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
+      "disclaimer": "Marktdaten stammen aus einer inoffiziellen Quelle und können verzögert oder ungenau sein."
     },
     "live": {
       "badge": "LIVE",
@@ -1500,6 +1626,59 @@
       "waiting": "Warte auf Live-Kurse…",
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
       "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}"
+    },
+    "nav": {
+      "overview": "Übersicht",
+      "search": "Suche",
+      "stocks": "Aktien",
+      "etfs": "ETFs",
+      "crypto": "Krypto",
+      "commodities": "Rohstoffe",
+      "customAssets": "Individuelle Anlagen"
+    },
+    "comingSoon": {
+      "overview": {
+        "title": "Anlagen-Übersicht",
+        "description": "Ein ruhiger Einstieg — Suche, zuletzt angesehene Anlagen und Katalogzahlen. Nutze die Suche, um heute jede Anlage nachzuschlagen."
+      },
+      "stocks": "Durchsuche und filtere den Aktienkatalog.",
+      "etfs": "Durchsuche und filtere den ETF-Katalog.",
+      "crypto": "Durchsuche und filtere den Krypto-Katalog.",
+      "commodities": "Durchsuche und filtere den Rohstoffkatalog.",
+      "customAssets": "Durchsuche die individuellen Anlagen, die du in deinen Portfolios angelegt hast."
+    },
+    "search": {
+      "title": "Suche",
+      "subtitle": "Finde Aktien, ETFs, Indizes, Währungspaare und deine individuellen Anlagen."
+    },
+    "searchBox": {
+      "placeholder": "Aktien, ETFs, Indizes suchen…",
+      "inputAria": "Anlagen suchen",
+      "loadingResults": "Ergebnisse werden geladen",
+      "failed": "Die Suche ist fehlgeschlagen. Bitte versuche es erneut.",
+      "noResultsTitle": "Keine Treffer",
+      "noResultsDescription": "Nichts passt zu „{{query}}“. Versuche ein anderes Symbol oder einen anderen Namen.",
+      "searchingMore": "Der Markt wird nach weiteren Ergebnissen durchsucht…",
+      "resultsAria": "Suchergebnisse",
+      "openAria": "{{symbol}} öffnen — {{name}}",
+      "toConglomerate": "→ Konglomerat",
+      "toPortfolio": "→ Portfolio",
+      "addToConglomerateAria": "{{symbol}} zu einem Konglomerat hinzufügen",
+      "recordBuyAria": "Kauf für {{symbol}} erfassen",
+      "onWatchlistAria": "{{symbol}} ist auf deiner Watchlist",
+      "retryWatchlistAria": "{{symbol}} erneut zur Watchlist hinzufügen",
+      "addToWatchlistAria": "{{symbol}} zur Watchlist hinzufügen",
+      "onWatchlistTitle": "Auf deiner Watchlist",
+      "addToWatchlistTitle": "Zur Watchlist hinzufügen",
+      "chooseWatchlistAria": "Watchlist für {{symbol}} wählen",
+      "watchlistsMenuAria": "Watchlists für {{symbol}}",
+      "pickerMenuAria": "{{symbol}} zu einem Konglomerat hinzufügen",
+      "pickerTitle": "Zu Konglomerat hinzufügen",
+      "noConglomerates": "Du hast noch keine Konglomerate.",
+      "addedTo": "Zu {{name}} hinzugefügt.",
+      "createNewConglomerate": "+ Neues Konglomerat erstellen",
+      "selectAria": "{{symbol}} auswählen",
+      "select": "Auswählen →"
     }
   },
   "sharing": {
@@ -1741,6 +1920,58 @@
         "conglomerate": "Konglomerat",
         "watchlist": "Watchlist"
       }
+    },
+    "ideas": {
+      "title": "Ideen",
+      "description": "Ein leichter Feed mit Investmentideen, die Freunde miteinander teilen."
+    },
+    "friends": {
+      "subtitle": "Füge Freunde per Benutzername oder E-Mail hinzu, beantworte Anfragen und verwalte, mit wem du verbunden bist.",
+      "addTitle": "Freund:in hinzufügen",
+      "identifierLabel": "Benutzername oder E-Mail",
+      "identifierPlaceholder": "jane oder jane@example.com",
+      "sending": "Wird gesendet…",
+      "sendRequest": "Anfrage senden",
+      "requestSent": "Falls dieses Konto existiert, haben wir deine Freundschaftsanfrage gesendet. Sie wird sichtbar, sobald sie angenommen wird.",
+      "requestError": "Die Anfrage konnte nicht gesendet werden. Bitte versuche es erneut.",
+      "requestsLoadError": "Deine Freundschaftsanfragen konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "actionError": "Das hat nicht geklappt. Bitte versuche es erneut.",
+      "incomingTitle": "Eingehende Anfragen",
+      "incomingEmptyTitle": "Keine eingehenden Anfragen",
+      "incomingEmptyDescription": "Neue Freundschaftsanfragen erscheinen hier.",
+      "outgoingTitle": "Ausstehende Anfragen",
+      "outgoingEmptyTitle": "Keine ausstehenden Anfragen",
+      "outgoingEmptyDescription": "Gesendete Anfragen stehen hier, bis sie angenommen oder abgelehnt werden.",
+      "accepting": "Wird angenommen…",
+      "accept": "Annehmen",
+      "declining": "Wird abgelehnt…",
+      "decline": "Ablehnen",
+      "cancelling": "Wird zurückgezogen…",
+      "removeTitle": "Freund:in entfernen?",
+      "removeBody": "ist dann nicht mehr mit dir befreundet und wird nicht benachrichtigt.",
+      "removeError": "Konnte nicht entfernt werden. Bitte versuche es erneut.",
+      "removing": "Wird entfernt…",
+      "friendsLoadError": "Deine Freunde konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "emptyTitle": "Noch keine Freunde",
+      "emptyDescription": "Füge oben eine Person per Benutzername oder E-Mail hinzu, um mit dem Teilen zu starten."
+    },
+    "shared": {
+      "backToFriends": "← Freunde",
+      "sharedBy": "Geteilt von {{username}}",
+      "readOnly": "nur Lesezugriff",
+      "totalsAria": "Portfolio-Summen",
+      "allocationAria": "Allokation",
+      "portfolioLoadError": "Dieses geteilte Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
+      "portfolioEmptyTitle": "Noch nichts zu zeigen",
+      "portfolioEmptyDescription": "{{username}} hat in diesem Portfolio noch keine Bestände erfasst.",
+      "portfolioChartAria": "Wertverlauf des geteilten Portfolios",
+      "conglomerateUnavailableTitle": "Dieses Konglomerat ist nicht verfügbar",
+      "watchlistUnavailableTitle": "Diese Watchlist ist nicht verfügbar",
+      "unavailableDescription": "Die Person teilt es möglicherweise nicht mehr, oder ihr seid nicht mehr befreundet.",
+      "noPositionsTitle": "Keine Positionen",
+      "noPositionsDescription": "Dieses Konglomerat enthält noch keine Anlagen.",
+      "watchlistEmptyTitle": "Leere Watchlist",
+      "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen."
     }
   },
   "profile": {

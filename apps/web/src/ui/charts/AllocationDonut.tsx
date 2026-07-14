@@ -1,5 +1,6 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
+import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { formatPercent, formatQuantity } from '../../lib/format';
 import type { AllocationSegment } from './types';
@@ -42,6 +43,7 @@ export function AllocationDonut({
   className,
   title = 'Allocation breakdown',
 }: AllocationDonutProps) {
+  const t = useT();
   const segments = data
     .filter((s) => Number.isFinite(s.value) && s.value > 0)
     .map((s, i) => ({ ...s, color: s.color ?? PALETTE[i % PALETTE.length] }));
@@ -58,7 +60,7 @@ export function AllocationDonut({
         )}
         style={{ minHeight: size }}
       >
-        No allocation data yet.
+        {t('common.charts.noAllocationData')}
       </div>
     );
   }
