@@ -3,14 +3,29 @@ import { z } from 'zod';
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
 
 /**
- * Global registration mode (PROJECTPLAN.md §4, §6.12). Governs how accounts come
- * to exist. V1 runs `closed` (admin-created users + invite links only) and fully
- * enforces it; the other three modes are designed and stored but inactive until
- * post-v1, so activating one later is a data switch, not a rebuild.
+ * Global registration mode (PROJECTPLAN.md §4, §6.12, §13.4 V4-P4a). Governs how
+ * accounts come to exist and is admin-switchable at runtime:
+ *  - `closed` — admin-created users + per-email invite links only (the default).
+ *  - `invite_token` — self-serve registration gated by an admin-issued token.
+ *  - `approval` — open registration form; accounts wait in an admin approval queue.
+ *  - `open` — automatic self-serve registration.
+ * All four are live as of V4-P4a; switching modes takes effect without a restart.
  */
 export const REGISTRATION_MODES = ['closed', 'invite_token', 'approval', 'open'] as const;
 export const registrationModeSchema = z.enum(REGISTRATION_MODES);
 export type RegistrationMode = z.infer<typeof registrationModeSchema>;
+
+/**
+ * `GET /auth/registration-info` — the PUBLIC (unauthenticated) discovery shape the
+ * login / register surfaces and the landing page read to reflect the active mode
+ * (§13.4 V4-P4a). It leaks nothing beyond the mode itself — no token, no counts,
+ * no user data — so an anonymous visitor learns only whether (and how) they may
+ * sign up.
+ */
+export const publicRegistrationInfoResponseSchema = z
+  .object({ mode: registrationModeSchema })
+  .strict();
+export type PublicRegistrationInfoResponse = z.infer<typeof publicRegistrationInfoResponseSchema>;
 
 /** `GET /admin/settings` — current global app settings (defaults when unset). */
 export const appSettingsResponseSchema = z.object({
@@ -25,9 +40,8 @@ export type AppSettingsResponse = z.infer<typeof appSettingsResponseSchema>;
 
 /**
  * `PATCH /admin/settings` — partial update. At least one field required; unknown
- * fields rejected. V1 only accepts `registrationMode: 'closed'` (the API rejects
- * any other mode) so the stored state can never claim a mode the guard would not
- * enforce.
+ * fields rejected. All four registration modes are accepted as of V4-P4a (the
+ * enforcement layer honours each one), so switching the mode is a live change.
  */
 export const updateAppSettingsRequestSchema = z
   .object({
@@ -158,6 +172,82 @@ export type CreateInviteResponse = z.infer<typeof createInviteResponseSchema>;
 
 export const adminInviteListResponseSchema = z.object({ invites: z.array(adminInviteSchema) });
 export type AdminInviteListResponse = z.infer<typeof adminInviteListResponseSchema>;
+
+// --- Registration access tokens (§6.12, §13.4 V4-P4a) ------------------------
+// The `invite_token` registration mode is gated by admin-issued access tokens.
+// Distinct from the V1 per-email invites above: a token is not bound to an email,
+// may be single- OR multi-use (a use counter + limit), and carries its own
+// optional expiry. Only the SHA-256 hash is stored; the raw token rides the
+// register URL shown to the admin once.
+
+/** How many accounts a single token may create at most. */
+export const MAX_REGISTRATION_TOKEN_USES = 1000;
+/** Optional expiry window bound, in days. */
+export const MAX_REGISTRATION_TOKEN_TTL_DAYS = 365;
+
+/** Derived lifecycle of a registration token — computed server-side, never stored. */
+export const REGISTRATION_TOKEN_STATUSES = ['active', 'exhausted', 'expired', 'revoked'] as const;
+export const registrationTokenStatusSchema = z.enum(REGISTRATION_TOKEN_STATUSES);
+export type RegistrationTokenStatus = z.infer<typeof registrationTokenStatusSchema>;
+
+export const registrationTokenSchema = z.object({
+  id: z.string().uuid(),
+  /** Optional admin-facing label ("beta wave 1"); never shown to registrants. */
+  label: z.string().nullable(),
+  status: registrationTokenStatusSchema,
+  maxUses: z.number().int().positive(),
+  useCount: z.number().int().nonnegative(),
+  /** Null = never expires. */
+  expiresAt: z.string().datetime().nullable(),
+  revokedAt: z.string().datetime().nullable(),
+  createdAt: z.string().datetime(),
+});
+export type RegistrationToken = z.infer<typeof registrationTokenSchema>;
+
+export const createRegistrationTokenRequestSchema = z
+  .object({
+    label: z.string().trim().max(80).optional(),
+    /** 1 = single-use; >1 = multi-use with this cap. Defaults to single-use. */
+    maxUses: z.number().int().min(1).max(MAX_REGISTRATION_TOKEN_USES).default(1),
+    /** Days until expiry; omit for a token that never expires. */
+    expiresInDays: z.number().int().min(1).max(MAX_REGISTRATION_TOKEN_TTL_DAYS).optional(),
+  })
+  .strict();
+export type CreateRegistrationTokenRequest = z.infer<typeof createRegistrationTokenRequestSchema>;
+
+/** The register URL (carrying the raw token) is shown to the admin exactly once. */
+export const createRegistrationTokenResponseSchema = z.object({
+  token: registrationTokenSchema,
+  registerUrl: z.string().url(),
+});
+export type CreateRegistrationTokenResponse = z.infer<
+  typeof createRegistrationTokenResponseSchema
+>;
+
+export const registrationTokenListResponseSchema = z.object({
+  tokens: z.array(registrationTokenSchema),
+});
+export type RegistrationTokenListResponse = z.infer<typeof registrationTokenListResponseSchema>;
+
+// --- Approval queue (§6.12, §13.4 V4-P4a) ------------------------------------
+// In `approval` mode a registrant's details land here as a pending application —
+// NOT a usable account — until an admin approves (creates the account + sends a
+// decision email) or rejects (drops the application + sends a decision email).
+
+export const registrationRequestSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string(),
+  username: z.string(),
+  createdAt: z.string().datetime(),
+});
+export type RegistrationRequest = z.infer<typeof registrationRequestSchema>;
+
+export const registrationRequestListResponseSchema = z.object({
+  requests: z.array(registrationRequestSchema),
+});
+export type RegistrationRequestListResponse = z.infer<
+  typeof registrationRequestListResponseSchema
+>;
 
 export const auditLogEntrySchema = z.object({
   id: z.string().uuid(),

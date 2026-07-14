@@ -5,19 +5,18 @@ import {
 } from '@bettertrack/contracts';
 
 import type { AppSettingsRepository } from '../../data/repositories/appSettingsRepository';
-import { badRequest, forbidden } from '../../errors';
+import { forbidden } from '../../errors';
 
 /**
- * Global app settings (PROJECTPLAN.md §4, §5.5, §6.12). Typed read/write over the
- * keyed `app_settings` store, plus the registration-mode enforcement guard the
- * public register route reads from day one.
+ * Global app settings (PROJECTPLAN.md §4, §5.5, §6.12, §13.4 V4-P4a). Typed
+ * read/write over the keyed `app_settings` store, plus the registration-mode
+ * enforcement guard the public register route reads.
  *
- * V1 enforces **closed** registration (admin-created users + invite links only).
- * The other three modes are stored-but-inactive: {@link update} rejects any
- * `registrationMode` other than `closed`, so the stored state can never claim a
- * mode the guard would not enforce, and {@link assertSelfRegistrationAllowed}
- * reads the stored mode rather than a constant — activating a self-serve mode
- * post-v1 is a data switch, not a rebuild.
+ * All four registration modes are live (V4-P4a): the stored mode is the single
+ * source of truth for how (and whether) self-serve registration works, and the
+ * admin may switch it at runtime with no restart. {@link getRegistrationMode}
+ * feeds the enforcement path, {@link assertSelfRegistrationAllowed} rejects the
+ * `closed` mode, and {@link update} persists any valid mode.
  */
 
 /** Keyed-store keys (§5.5). One row per setting; the value is jsonb. */
@@ -30,9 +29,8 @@ export const DEFAULT_BETA_MODE = false;
 
 /**
  * Which registration modes permit self-serve account creation. `closed` is
- * absent, so the guard rejects it. All non-closed modes are post-v1 (§6.12) and
- * currently unreachable — {@link update} refuses to store them — but naming them
- * here is what makes activation a switch rather than a rewrite.
+ * absent, so the guard rejects it; the other three each drive their own
+ * concrete flow in the auth service (§13.4 V4-P4a).
  */
 const SELF_REGISTRATION_MODES: ReadonlySet<RegistrationMode> = new Set<RegistrationMode>([
   'invite_token',
@@ -94,9 +92,8 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
 
     /**
      * Reject with 403 `REGISTRATION_CLOSED` unless the stored mode permits
-     * self-serve registration. In V1 only `closed` is ever stored, so this
-     * always rejects — but it **reads** the setting, so activating a self-serve
-     * mode post-v1 flips this without a code change.
+     * self-serve registration. The concrete per-mode flow (open / invite-token /
+     * approval) is decided by the auth service once this passes (§13.4 V4-P4a).
      */
     async assertSelfRegistrationAllowed(): Promise<void> {
       const mode = await getRegistrationMode();
@@ -106,17 +103,11 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
     },
 
     /**
-     * Persist a partial settings change. V1 refuses any `registrationMode` other
-     * than `closed` so the stored state can never claim a mode the guard would
-     * not enforce (§6.12).
+     * Persist a partial settings change (§6.12). Any of the four registration
+     * modes is accepted as of V4-P4a — the enforcement layer honours each one, so
+     * switching the mode takes effect immediately with no restart.
      */
     async update(input: UpdateAppSettingsRequest, updatedBy: string | null): Promise<AppSettings> {
-      if (input.registrationMode !== undefined && input.registrationMode !== 'closed') {
-        throw badRequest(
-          'Only closed registration is available in this version.',
-          'REGISTRATION_MODE_LOCKED',
-        );
-      }
       if (input.registrationMode !== undefined) {
         await repo.upsert(REGISTRATION_MODE_KEY, input.registrationMode, updatedBy);
       }

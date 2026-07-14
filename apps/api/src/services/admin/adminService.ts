@@ -4,6 +4,7 @@ import type {
   BulkUserActionRequest,
   BulkUserActionResponse,
   CreateInviteRequest,
+  CreateRegistrationTokenRequest,
   CreateUserRequest,
   UpdateAppSettingsRequest,
   UpdateUserRequest,
@@ -13,8 +14,10 @@ import type { AppConfig } from '../../config/env';
 import type { EmailLogPage, EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
+import type { RegistrationRequestRepository } from '../../data/repositories/registrationRequestRepository';
+import type { RegistrationTokenRepository } from '../../data/repositories/registrationTokenRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
-import type { InviteRow, UserRow } from '../../data/schema';
+import type { InviteRow, RegistrationTokenRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
 import type { AppSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
@@ -31,6 +34,10 @@ export interface AdminServiceDeps {
   redis: Redis;
   userRepo: UserRepository;
   inviteRepo: InviteRepository;
+  /** Registration access tokens for the `invite_token` mode (§13.4 V4-P4a). */
+  registrationTokenRepo: RegistrationTokenRepository;
+  /** Approval-queue applications for the `approval` mode (§13.4 V4-P4a). */
+  registrationRequestRepo: RegistrationRequestRepository;
   portfolioRepo: PortfolioRepository;
   sessions: SessionService;
   audit: AuditService;
@@ -55,6 +62,8 @@ export function createAdminService(deps: AdminServiceDeps) {
     redis,
     userRepo,
     inviteRepo,
+    registrationTokenRepo,
+    registrationRequestRepo,
     portfolioRepo,
     sessions,
     audit,
@@ -397,6 +406,130 @@ export function createAdminService(deps: AdminServiceDeps) {
         targetType: 'invite',
         targetId: id,
         ip: actor.ip,
+      });
+    },
+
+    // ── Registration access tokens (§6.12, §13.4 V4-P4a) ──────────────────────
+    // Admin-issued tokens that gate the `invite_token` registration mode. The raw
+    // token is only ever returned here, once, inside the register URL; the store
+    // keeps its hash. All actions are audit-logged.
+    async createRegistrationToken(
+      input: CreateRegistrationTokenRequest,
+      actor: AdminActor,
+    ): Promise<{ token: RegistrationTokenRow; registerUrl: string }> {
+      const { token, tokenHash } = generateToken();
+      const expiresAt =
+        input.expiresInDays === undefined
+          ? null
+          : new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000);
+      const row = await registrationTokenRepo.create({
+        tokenHash,
+        label: input.label?.trim() ? input.label.trim() : null,
+        maxUses: input.maxUses,
+        createdBy: actor.id,
+        expiresAt,
+      });
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.RegistrationTokenCreated,
+        targetType: 'registration_token',
+        targetId: row.id,
+        ip: actor.ip,
+        meta: { maxUses: row.maxUses, expiresAt: expiresAt?.toISOString() ?? null },
+      });
+      const registerUrl = `${config.appOrigin}/register?token=${token}`;
+      return { token: row, registerUrl };
+    },
+
+    listRegistrationTokens: () => registrationTokenRepo.listAll(),
+
+    async revokeRegistrationToken(id: string, actor: AdminActor): Promise<void> {
+      const row = await registrationTokenRepo.findById(id);
+      if (!row) throw notFound('Registration token not found.', 'REGISTRATION_TOKEN_NOT_FOUND');
+      if (row.revokedAt) return;
+      await registrationTokenRepo.revoke(id, new Date());
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.RegistrationTokenRevoked,
+        targetType: 'registration_token',
+        targetId: id,
+        ip: actor.ip,
+      });
+    },
+
+    // ── Approval queue (§6.12, §13.4 V4-P4a) ──────────────────────────────────
+    // Pending `approval`-mode applications. Approve creates the real account (with
+    // the applicant's chosen password) and sends a localized decision email;
+    // reject drops the application and sends its own decision email. Either way the
+    // row is removed so it leaves the queue.
+    listRegistrationRequests: () => registrationRequestRepo.listAll(),
+
+    async approveRegistrationRequest(id: string, actor: AdminActor): Promise<UserRow> {
+      const request = await registrationRequestRepo.findById(id);
+      if (!request) {
+        throw notFound('Registration request not found.', 'REGISTRATION_REQUEST_NOT_FOUND');
+      }
+      // Re-check uniqueness at approval time — the email/username may have been
+      // claimed by an admin-created account (or another approval) since the
+      // application was filed.
+      if (await userRepo.findByEmail(request.email)) {
+        throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
+      }
+      if (await userRepo.findByUsername(request.username)) {
+        throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+      }
+
+      const user = await userRepo.create({
+        email: request.email,
+        username: request.username,
+        // The applicant already chose (and hashed) their password at request time.
+        passwordHash: request.passwordHash,
+        role: 'user',
+        status: 'active',
+        mustChangePassword: false,
+      });
+      await portfolioRepo.createDefault(user.id);
+      await registrationRequestRepo.remove(id);
+
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.RegistrationRequestApproved,
+        targetType: 'user',
+        targetId: user.id,
+        ip: actor.ip,
+        meta: { requestId: id },
+      });
+
+      // Best-effort, post-commit: the account exists regardless of mail state.
+      await email.sendRegistrationApproved({
+        to: user.email,
+        userId: user.id,
+        username: user.username,
+        locale: request.locale,
+        audit: { actorId: actor.id, targetType: 'user', targetId: user.id, ip: actor.ip },
+      });
+      return user;
+    },
+
+    async rejectRegistrationRequest(id: string, actor: AdminActor): Promise<void> {
+      const request = await registrationRequestRepo.findById(id);
+      if (!request) {
+        throw notFound('Registration request not found.', 'REGISTRATION_REQUEST_NOT_FOUND');
+      }
+      await registrationRequestRepo.remove(id);
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.RegistrationRequestRejected,
+        targetType: 'registration_request',
+        targetId: id,
+        ip: actor.ip,
+        meta: { email: request.email },
+      });
+      // No account was ever created — the decision email carries no credential.
+      await email.sendRegistrationRejected({
+        to: request.email,
+        locale: request.locale,
+        audit: { actorId: actor.id, targetType: 'user', targetId: id, ip: actor.ip },
       });
     },
 

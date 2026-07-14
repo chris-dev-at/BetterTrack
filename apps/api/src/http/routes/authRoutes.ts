@@ -401,21 +401,31 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     res.json(await ctx.auth.validateInvite(token));
   });
 
-  // Public self-serve registration (§4, §6.12). Enforcement plumbing: the
-  // service reads the stored registration mode and, in V1's `closed` mode,
-  // rejects with 403 REGISTRATION_CLOSED — this is the "hand-crafted register
-  // call" the P8 gate blocks. Admin-created users and invites are unaffected.
+  // Public registration-mode discovery (§13.4 V4-P4a). Unauthenticated: the
+  // login / register surfaces and the landing page read the active mode to
+  // reflect it. Leaks nothing beyond the mode itself.
+  router.get('/registration-info', async (_req, res) => {
+    res.json(await ctx.auth.getRegistrationInfo());
+  });
+
+  // Public self-serve registration (§4, §6.12, §13.4 V4-P4a). The service reads
+  // the stored registration mode and gates on it: `closed` → 403
+  // REGISTRATION_CLOSED (unchanged); `invite_token` → a valid token required;
+  // `approval` → a pending application (202, no session); `open` → account
+  // created and signed straight in (201). Admin-created users and per-email
+  // invites are unaffected either way.
   router.post(
     '/register',
     limiters.login,
     validateBody(registerRequestSchema),
     async (req, res) => {
-      const { user, sessionId, persistent } = await ctx.auth.register(
-        req.valid?.body as RegisterRequest,
-        req.ip,
-      );
-      setSessionCookie(res, ctx.config, sessionId, persistent);
-      res.status(201).json(toMeResponseFromRow(user));
+      const result = await ctx.auth.register(req.valid?.body as RegisterRequest, req.ip);
+      if (result.status === 'pending') {
+        res.status(202).json({ pending: true });
+        return;
+      }
+      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      res.status(201).json(toMeResponseFromRow(result.user));
     },
   );
 

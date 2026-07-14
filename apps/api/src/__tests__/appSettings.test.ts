@@ -103,22 +103,22 @@ describe('PATCH /admin/settings (PROJECTPLAN.md §6.12, §8)', () => {
     expect(res.body.registrationMode).toBe('closed');
   });
 
-  it('rejects any registration mode other than closed in V1', async () => {
+  it('accepts every registration mode as of V4-P4a and persists it', async () => {
     const admin = await harness.seedAdmin();
     const adminAgent = await harness.loginAdmin(admin);
 
-    for (const mode of ['open', 'approval', 'invite_token']) {
+    for (const mode of ['open', 'approval', 'invite_token', 'closed'] as const) {
       const res = await adminAgent
         .patch('/api/v1/admin/settings')
         .set(...XRW)
         .send({ registrationMode: mode });
-      expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe('REGISTRATION_MODE_LOCKED');
-    }
+      expect(res.status).toBe(200);
+      expect(res.body.registrationMode).toBe(mode);
 
-    // The rejected write never touched the stored state.
-    const settings = await adminAgent.get('/api/v1/admin/settings');
-    expect(settings.body.registrationMode).toBe('closed');
+      // The change survives a fresh read — switching takes effect without restart.
+      const settings = await adminAgent.get('/api/v1/admin/settings');
+      expect(settings.body.registrationMode).toBe(mode);
+    }
   });
 
   it('rejects unknown fields (strict) and empty bodies', async () => {

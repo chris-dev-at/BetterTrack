@@ -12,6 +12,8 @@ import {
   inviteEmail,
   passwordResetEmail,
   portfolioSharedEmail,
+  registrationApprovedEmail,
+  registrationRejectedEmail,
   tempPasswordEmail,
   testEmail,
   twoFactorCodeEmail,
@@ -83,6 +85,23 @@ export interface EmailService {
   sendWelcome(params: {
     to: string;
     username: string;
+    audit: EmailAuditTarget;
+  }): Promise<EmailSendResult>;
+  /**
+   * Approval-queue decision emails (§6.12, §13.4 V4-P4a), localized to the
+   * registrant's chosen language. Approved carries the new user's id for the log;
+   * rejected has no account (userId null). Best-effort like every send.
+   */
+  sendRegistrationApproved(params: {
+    to: string;
+    userId: string;
+    username: string;
+    locale?: string;
+    audit: EmailAuditTarget;
+  }): Promise<EmailSendResult>;
+  sendRegistrationRejected(params: {
+    to: string;
+    locale?: string;
     audit: EmailAuditTarget;
   }): Promise<EmailSendResult>;
   /** Admin diagnostic (PROJECTPLAN.md §6.12): a throwaway "does SMTP work" mail. */
@@ -163,6 +182,8 @@ type EmailTemplateKind =
   | 'password_reset'
   | 'two_factor_code'
   | 'welcome'
+  | 'registration_approved'
+  | 'registration_rejected'
   | 'test'
   | 'friend_request'
   | 'friend_accepted'
@@ -294,6 +315,20 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
 
     sendWelcome: ({ to, username, audit: target }) =>
       deliver('welcome', to, welcomeEmail({ username, appUrl: config.appOrigin }), {
+        audit: target,
+      }),
+
+    sendRegistrationApproved: ({ to, userId, username, locale, audit: target }) =>
+      deliver(
+        'registration_approved',
+        to,
+        registrationApprovedEmail({ username, appUrl: config.appOrigin, locale }),
+        { userId, audit: target },
+      ),
+
+    sendRegistrationRejected: ({ to, locale, audit: target }) =>
+      deliver('registration_rejected', to, registrationRejectedEmail({ locale }), {
+        userId: null,
         audit: target,
       }),
 

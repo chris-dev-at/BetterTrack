@@ -8,6 +8,7 @@ import {
   type PasswordResetComplete,
   type PasswordResetRequest,
   type RegisterRequest,
+  type RegistrationMode,
   type RememberedDeviceResponse,
   type SessionInfoResponse,
   type SessionSummary,
@@ -18,13 +19,14 @@ import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
 import type { PasswordResetTokenRepository } from '../../data/repositories/passwordResetTokenRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
+import type { RegistrationRequestRepository } from '../../data/repositories/registrationRequestRepository';
+import type { RegistrationTokenRepository } from '../../data/repositories/registrationTokenRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import {
   accountDisabled,
   badRequest,
   conflict,
-  forbidden,
   tooManyRequests,
   unauthorized,
 } from '../../errors';
@@ -57,6 +59,10 @@ export interface AuthServiceDeps {
   userRepo: UserRepository;
   inviteRepo: InviteRepository;
   passwordResetRepo: PasswordResetTokenRepository;
+  /** Registration access tokens for the `invite_token` mode (§13.4 V4-P4a). */
+  registrationTokenRepo: RegistrationTokenRepository;
+  /** Approval-queue applications for the `approval` mode (§13.4 V4-P4a). */
+  registrationRequestRepo: RegistrationRequestRepository;
   portfolioRepo: PortfolioRepository;
   sessions: SessionService;
   audit: AuditService;
@@ -104,6 +110,15 @@ export interface TwoFactorChallenge {
 export type LoginResult =
   | ({ status: 'authenticated' } & SessionResult)
   | { status: 'two_factor_required'; challenge: TwoFactorChallenge };
+
+/**
+ * Result of a self-serve registration (§13.4 V4-P4a). The `open` and
+ * `invite_token` modes create the account and sign it in (`authenticated`); the
+ * `approval` mode parks a pending application and mints NO session (`pending`).
+ */
+export type RegisterResult =
+  | ({ status: 'authenticated' } & SessionResult)
+  | { status: 'pending' };
 
 export interface VerifyTwoFactorInput {
   pendingToken: string;
@@ -198,12 +213,18 @@ export interface AuthService {
    */
   completePasswordReset(input: PasswordResetComplete, ip?: string | null): Promise<LoginResult>;
   /**
-   * Public self-serve registration (§4, §6.12). Reads the stored registration
-   * mode and rejects with 403 `REGISTRATION_CLOSED` unless the mode permits
-   * self-registration. V1 runs `closed`, so this always rejects; it exists as
-   * enforcement plumbing so activating a self-serve mode post-v1 is a switch.
+   * Public self-serve registration (§4, §6.12, §13.4 V4-P4a). Reads the stored
+   * registration mode and gates on it: `closed` → 403 `REGISTRATION_CLOSED`;
+   * `invite_token` → a valid token is required; `approval` → a pending
+   * application (no session); `open` → account created and signed straight in.
    */
-  register(input: RegisterRequest, ip?: string | null): Promise<SessionResult>;
+  register(input: RegisterRequest, ip?: string | null): Promise<RegisterResult>;
+  /**
+   * The active registration mode, for the PUBLIC discovery endpoint (§13.4
+   * V4-P4a). Leaks only the mode so the login / register surfaces + landing page
+   * can reflect it; carries nothing else.
+   */
+  getRegistrationInfo(): Promise<{ mode: RegistrationMode }>;
   /**
    * Verify the PIN for the current session, renewing its 30-day window on
    * success (§6.1). {@link PIN_FALLBACK_THRESHOLD} wrong PINs in a row destroy
@@ -353,6 +374,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     userRepo,
     inviteRepo,
     passwordResetRepo,
+    registrationTokenRepo,
+    registrationRequestRepo,
     portfolioRepo,
     sessions,
     audit,
@@ -990,13 +1013,134 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       };
     },
 
-    async register(_input, _ip) {
-      // Enforcement plumbing (§4, §6.12): read the stored registration mode.
-      // V1 runs `closed`, so this always rejects with 403 `REGISTRATION_CLOSED`.
+    async getRegistrationInfo() {
+      return { mode: await appSettings.getRegistrationMode() };
+    },
+
+    async register(input, ip) {
+      // Gate (§4, §6.12, §13.4 V4-P4a): 403 `REGISTRATION_CLOSED` when the stored
+      // mode is `closed` — closed keeps blocking everything exactly as before.
       await appSettings.assertSelfRegistrationAllowed();
-      // Unreachable in V1 — the guard rejects every stored mode. The concrete
-      // account-creation path lands when a self-serve mode is activated post-v1.
-      throw forbidden('Self-serve registration is not available.', 'REGISTRATION_CLOSED');
+      const mode = await appSettings.getRegistrationMode();
+
+      const policy = checkPasswordPolicy(input.password);
+      if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
+
+      const emailAddr = input.email.trim().toLowerCase();
+      const username = input.username.trim();
+      // Store the register-form language verbatim; the email layer resolves it to
+      // a renderable locale at decision time (EN fallback).
+      const locale = input.locale ?? 'en';
+
+      // Approval mode parks the details as a PENDING application — never a user
+      // row — so the applicant has no usable account and cannot log in until an
+      // admin approves. Uniqueness is checked against live accounts AND other
+      // pending applications so a duplicate can't slip through either.
+      if (mode === 'approval') {
+        if (await userRepo.findByEmail(emailAddr)) {
+          throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
+        }
+        if (await userRepo.findByUsername(username)) {
+          throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+        }
+        if (await registrationRequestRepo.findByEmail(emailAddr)) {
+          throw conflict('A registration request for this email is already pending.', 'EMAIL_TAKEN');
+        }
+        if (await registrationRequestRepo.findByUsername(username)) {
+          throw conflict('That username is already requested.', 'USERNAME_TAKEN');
+        }
+        const passwordHash = await passwordHasher.hash(input.password);
+        const request = await registrationRequestRepo.create({
+          email: emailAddr,
+          username,
+          passwordHash,
+          locale,
+        });
+        await audit.record({
+          action: AuditAction.RegistrationRequested,
+          targetType: 'registration_request',
+          targetId: request.id,
+          ip,
+          meta: { via: 'approval' },
+        });
+        return { status: 'pending' };
+      }
+
+      // Invite-token mode requires a valid, unexpired, unexhausted token. Claim a
+      // use ATOMICALLY (the repo's WHERE is the concurrency guard) so a single-use
+      // token can never create two accounts and a multi-use one can never exceed
+      // its cap. Uniqueness is checked first so a taken email/username doesn't
+      // burn a use.
+      let tokenId: string | null = null;
+      if (mode === 'invite_token') {
+        const raw = input.inviteToken?.trim();
+        if (!raw) {
+          throw badRequest('A registration token is required.', 'REGISTRATION_TOKEN_REQUIRED');
+        }
+        const record = await registrationTokenRepo.findByTokenHash(hashToken(raw));
+        const usable =
+          record &&
+          !record.revokedAt &&
+          record.useCount < record.maxUses &&
+          (record.expiresAt === null || new Date(record.expiresAt).getTime() > Date.now());
+        if (!record || !usable) {
+          throw badRequest(
+            'This registration token is invalid or has expired.',
+            'INVALID_REGISTRATION_TOKEN',
+          );
+        }
+        tokenId = record.id;
+      }
+
+      if (await userRepo.findByEmail(emailAddr)) {
+        throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
+      }
+      if (await userRepo.findByUsername(username)) {
+        throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+      }
+
+      if (tokenId) {
+        const claimed = await registrationTokenRepo.consumeUse(tokenId, new Date());
+        if (!claimed) {
+          // Raced to exhaustion/expiry/revocation between the check and the claim.
+          throw badRequest(
+            'This registration token is invalid or has expired.',
+            'INVALID_REGISTRATION_TOKEN',
+          );
+        }
+      }
+
+      const passwordHash = await passwordHasher.hash(input.password);
+      const user = await userRepo.create({
+        email: emailAddr,
+        username,
+        passwordHash,
+        role: 'user',
+        status: 'active',
+        mustChangePassword: false,
+      });
+      // Self-serve accounts are always the user kind (§5.5): provision the one
+      // default portfolio up front so the app opens onto a real workspace.
+      await portfolioRepo.createDefault(user.id);
+
+      await audit.record({
+        actorId: user.id,
+        action: AuditAction.UserCreated,
+        targetType: 'user',
+        targetId: user.id,
+        ip,
+        meta: tokenId ? { via: 'registration', mode, tokenId } : { via: 'registration', mode },
+      });
+
+      // Best-effort welcome mail, after the account is fully provisioned.
+      await email.sendWelcome({
+        to: user.email,
+        username: user.username,
+        audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+      });
+
+      const sessionId = await sessions.create(user.id);
+      return { status: 'authenticated', user, sessionId, persistent: true };
     },
 
     async verifyPin({ userId, sessionId, pin, ip }) {

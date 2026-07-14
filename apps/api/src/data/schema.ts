@@ -211,6 +211,58 @@ export const passwordResetTokens = pgTable(
 );
 
 /**
+ * Registration access tokens (PROJECTPLAN.md §6.12, §13.4 V4-P4a). Gate the
+ * `invite_token` registration mode. Unlike the per-email `invites` above, a token
+ * is not bound to an email and may be single- OR multi-use: `max_uses` is the cap
+ * and `use_count` the running tally (a registration succeeds only while
+ * use_count < max_uses AND not revoked AND not past `expires_at`). Only the
+ * SHA-256 `token_hash` is stored — the raw token lives in the register URL shown
+ * to the admin once. NULL `expires_at` = never expires. Admin-managed; the
+ * creating admin is nulled out (not cascaded) if their account is later removed.
+ */
+export const registrationTokens = pgTable(
+  'registration_tokens',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    tokenHash: text('token_hash').notNull(),
+    label: varchar('label', { length: 80 }),
+    maxUses: integer('max_uses').notNull().default(1),
+    useCount: integer('use_count').notNull().default(0),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('registration_tokens_token_hash_unique').on(t.tokenHash)],
+);
+
+/**
+ * Approval-queue applications (PROJECTPLAN.md §6.12, §13.4 V4-P4a). In `approval`
+ * registration mode a self-serve registrant's details land here as a PENDING
+ * application — deliberately NOT a `users` row, so a pending applicant has no
+ * usable account and cannot log in. The chosen password is argon2id-hashed at
+ * request time and carried through to account creation on admin approval;
+ * `locale` records the register-form language so the decision email localizes.
+ * Approve creates the account + drops the row; reject just drops the row. Email +
+ * username are unique (case-insensitively) so a duplicate application is refused.
+ */
+export const registrationRequests = pgTable(
+  'registration_requests',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    email: varchar('email', { length: 320 }).notNull(),
+    username: varchar('username', { length: 40 }).notNull(),
+    passwordHash: text('password_hash').notNull(),
+    locale: varchar('locale', { length: 5 }).notNull().default('en'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('registration_requests_email_unique').on(t.email),
+    uniqueIndex('registration_requests_username_lower_unique').on(sql`lower(${t.username})`),
+  ],
+);
+
+/**
  * Single-use 2FA recovery codes (PROJECTPLAN.md §6.1, §13.2 V2-P5). Only the
  * SHA-256 `code_hash` is stored — the plaintext codes are shown once at
  * generation and never persisted. A code is consumed by stamping `used_at`
@@ -1291,6 +1343,8 @@ export type OAuthAccessTokenRow = typeof oauthAccessTokens.$inferSelect;
 export type OAuthRefreshTokenRow = typeof oauthRefreshTokens.$inferSelect;
 export type InviteRow = typeof invites.$inferSelect;
 export type PasswordResetTokenRow = typeof passwordResetTokens.$inferSelect;
+export type RegistrationTokenRow = typeof registrationTokens.$inferSelect;
+export type RegistrationRequestRow = typeof registrationRequests.$inferSelect;
 export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;

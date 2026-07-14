@@ -41,6 +41,12 @@ export const AuditAction = {
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',
   InviteRevoked: 'invite.revoked',
+  // Registration modes (§6.12, §13.4 V4-P4a).
+  RegistrationTokenCreated: 'registration_token.created',
+  RegistrationTokenRevoked: 'registration_token.revoked',
+  RegistrationRequested: 'registration.requested',
+  RegistrationRequestApproved: 'registration.approved',
+  RegistrationRequestRejected: 'registration.rejected',
   EmailSendFailed: 'email.send_failed',
   EmailTestSent: 'email.test_sent',
   SettingsUpdated: 'settings.updated',
