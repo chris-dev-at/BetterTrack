@@ -385,6 +385,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: shareAudienceRepo,
     friendship: friendshipRepo,
     follows: userFollowsRepo,
+    // Gates `follow.published` on a live public profile — the deep link's target (#438).
+    profile: profileRepo,
     notify,
     logger,
   });

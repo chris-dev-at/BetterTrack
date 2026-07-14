@@ -153,4 +153,16 @@ describe('PublicProfileViewPage (/u/:username)', () => {
     expect(chartMocks.createChart).toHaveBeenCalled();
     expect(screen.getByText('BAYN.DE')).toBeInTheDocument();
   });
+
+  test('offers a logged-out visitor a "log in to follow" link back to sign-in', async () => {
+    vi.mocked(getPublicProfile).mockResolvedValue(profile);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('@alice')).toBeInTheDocument());
+
+    // No AuthProvider here → logged-out: the follow control is a login affordance
+    // (the `social.follow.loginToFollow` string), not an empty/dead render.
+    const loginLink = screen.getByRole('link', { name: /log in to follow/i });
+    expect(loginLink).toHaveAttribute('href', '/login');
+  });
 });

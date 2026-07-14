@@ -86,6 +86,22 @@ export function createProfileRepository(db: Database) {
     },
 
     /**
+     * Whether the owner's public profile is currently enabled. The
+     * `follow.published` fan-out gates on this (#438): a newly-public item is
+     * only reachable by a follower through the `/u/:username` profile page — they
+     * hold no share link — so the notification's deep link 404s unless the
+     * profile resolves. A vanished user reads as not-public.
+     */
+    async isProfilePublic(ownerId: string): Promise<boolean> {
+      const [row] = await db
+        .select({ isPublic: users.profilePublic })
+        .from(users)
+        .where(eq(users.id, ownerId))
+        .limit(1);
+      return row?.isPublic ?? false;
+    },
+
+    /**
      * The set of items the viewer has enabled activity alerts for, as
      * `"<kind>:<subjectId>"` keys — used to stamp `activityAlertsEnabled` onto the
      * Shared-With-Me summaries without an N+1.

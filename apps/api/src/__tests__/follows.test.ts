@@ -118,6 +118,20 @@ async function makePublic(agent: Agent, portfolioId: string): Promise<void> {
   expect(res.status).toBe(200);
 }
 
+/**
+ * Opt the caller into a public profile so the `/u/:username` slug resolves. The
+ * `follow.published` fan-out is gated on this — a follower reaches a newly-public
+ * item ONLY through the owner's public profile (the notification's deep link), so
+ * an item published without a live profile deep-links nowhere and sends no news.
+ */
+async function enablePublicProfile(agent: Agent): Promise<void> {
+  const res = await agent
+    .put('/api/v1/social/profile')
+    .set(...XRW)
+    .send({ isPublic: true, acknowledgePublic: true });
+  expect(res.status).toBe(200);
+}
+
 describe('follows — CRUD, lists, isolation', () => {
   it('follow/unfollow is idempotent; following/followers lists are correct and isolated', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
@@ -186,19 +200,60 @@ describe('follow.published — emission matrix + anti-noise', () => {
 
     expect((await follow(bobAgent, alice.id)).status).toBe(202); // carol does NOT follow
 
+    // Alice opts into a public profile so the bell's `/u/alice` deep link resolves.
+    await enablePublicProfile(aliceAgent);
+
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid);
 
     const bobNews = await notifs(bob.id, 'follow.published');
     expect(bobNews).toHaveLength(1);
-    // The deep link is reconstructable from the payload (actor slug + item).
     const payload = bobNews[0]!.payload as Record<string, unknown>;
     expect(payload.actorUsername).toBe('alice');
     expect(payload.itemKind).toBe('portfolio');
     expect(payload.itemId).toBe(pid);
     expect(typeof payload.itemName).toBe('string');
+
+    // "with a working link": the deep link the bell builds from the payload
+    // (`/u/${actorUsername}`) actually resolves — the follower can open Alice's
+    // public profile AND drill into the freshly-published item, both 200.
+    const slug = payload.actorUsername as string;
+    const profileRes = await bobAgent.get(`/api/v1/social/profiles/${slug}`);
+    expect(profileRes.status).toBe(200);
+    expect(
+      (profileRes.body.portfolios as { portfolioId: string }[]).map((p) => p.portfolioId),
+    ).toContain(pid);
+    expect((await bobAgent.get(`/api/v1/social/profiles/${slug}/portfolio/${pid}`)).status).toBe(
+      200,
+    );
+
     // The non-follower gets nothing.
     expect(await notifs(carol.id, 'follow.published')).toHaveLength(0);
+  });
+
+  it('does NOT notify followers when the owner has no public profile (dead-link guard)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await follow(bobAgent, alice.id);
+
+    // Alice publishes an item but never opts into a public profile: `/u/alice`
+    // 404s, so a follow.published would deep-link nowhere — none is sent.
+    const pid = await defaultPortfolioId(aliceAgent);
+    await makePublic(aliceAgent, pid);
+    expect(await notifs(bob.id, 'follow.published')).toHaveLength(0);
+    expect((await bobAgent.get('/api/v1/social/profiles/alice')).status).toBe(404);
+
+    // Once Alice enables the profile, publishing a fresh item DOES notify, and the
+    // link now resolves (a distinct item keeps the dedup key from colliding).
+    await enablePublicProfile(aliceAgent);
+    const freshPid = await createPortfolio(aliceAgent, 'Now Public');
+    await makePublic(aliceAgent, freshPid);
+    const news = await notifs(bob.id, 'follow.published');
+    expect(news).toHaveLength(1);
+    expect((news[0]!.payload as Record<string, unknown>).itemId).toBe(freshPid);
+    expect((await bobAgent.get('/api/v1/social/profiles/alice')).status).toBe(200);
   });
 
   it('fires for a newly-created portfolio made public (create-public path)', async () => {
@@ -207,6 +262,7 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     await follow(bobAgent, alice.id);
+    await enablePublicProfile(aliceAgent);
 
     const pid = await createPortfolio(aliceAgent, 'Fresh');
     await makePublic(aliceAgent, pid);
@@ -272,6 +328,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     await befriend(aliceAgent, bobAgent, 'bob');
     await follow(bobAgent, alice.id);
+    // Profile live, so the ONLY reason bob gets no news is "could see before".
+    await enablePublicProfile(aliceAgent);
 
     const pid = await defaultPortfolioId(aliceAgent);
     await putAudience(aliceAgent, 'portfolio', pid, { audience: 'all_friends' });
@@ -286,11 +344,13 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await enablePublicProfile(aliceAgent);
 
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid); // public BEFORE anyone follows
     await follow(bobAgent, alice.id);
 
+    // Nothing to notify: bob wasn't a follower at the moment it went public.
     expect(await notifs(bob.id, 'follow.published')).toHaveLength(0);
   });
 
@@ -300,6 +360,7 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     await follow(bobAgent, alice.id);
+    await enablePublicProfile(aliceAgent);
 
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid);
@@ -316,6 +377,7 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     await follow(bobAgent, alice.id);
+    await enablePublicProfile(aliceAgent);
 
     const firstPid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, firstPid);
@@ -334,6 +396,7 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     await follow(bobAgent, alice.id);
+    await enablePublicProfile(aliceAgent);
 
     const lists = await aliceAgent.get('/api/v1/workboard/watchlists');
     const wid = lists.body.watchlists.find((w: { isDefault: boolean }) => w.isDefault).id as string;
@@ -370,6 +433,7 @@ describe('follow.published — emission matrix + anti-noise', () => {
           })
       ).status,
     ).toBe(200);
+    await enablePublicProfile(aliceAgent);
 
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid);

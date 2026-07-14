@@ -16,6 +16,7 @@ import type {
   ShareAudienceRepository,
 } from '../../data/repositories/shareAudienceRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
+import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import { badRequest } from '../../errors';
 import type { Logger } from '../../logger';
@@ -62,6 +63,8 @@ export interface AudienceServiceDeps {
   friendship?: Pick<FriendshipRepository, 'getUsername' | 'listFriends'>;
   /** Resolves the owner's followers for `follow.published` fan-out (#438). */
   follows?: Pick<UserFollowsRepository, 'listFollowerIds'>;
+  /** Reachability gate for `follow.published` — is the owner's public profile live (#438). */
+  profile?: Pick<ProfileRepository, 'isProfilePublic'>;
   /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
   notify?: NotificationCenter;
   logger?: Logger;
@@ -157,7 +160,7 @@ function linkPath(token: string): string {
 }
 
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
-  const { repo, friendship, follows, notify, logger } = deps;
+  const { repo, friendship, follows, profile, notify, logger } = deps;
 
   /**
    * Tell each friend the picker just admitted that the item is shared with them
@@ -212,6 +215,14 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
    * prior audience is excluded, so widening friends→public never re-notifies the
    * friends who already saw it, and re-saving public→public notifies nobody. The
    * dispatcher's day-bucketed event key handles same-day public↔private flapping.
+   *
+   * **Reachability gate.** A follower has no share link, so the ONLY way they can
+   * open a newly-public item is the owner's `/u/:username` public profile — the
+   * notification's deep link. That page 404s unless the profile is enabled
+   * (`users.profile_public`), which is decoupled from making an item public. So
+   * we notify ONLY when the profile is live; publishing an item without a public
+   * profile shares it link-only and produces no dead-link news (#438, AC#1).
+   *
    * Best-effort for the mutation, exactly like {@link emitShared}.
    */
   async function emitFollowPublished(
@@ -221,9 +232,11 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     prior: { audience: ShareAudience; memberIds: readonly string[] },
     nextAudience: ShareAudience,
   ): Promise<void> {
-    if (!notify || !follows || !friendship) return;
+    if (!notify || !follows || !friendship || !profile) return;
     if (nextAudience !== 'public_link') return;
     try {
+      // Reachability gate (see doc): no working destination → no news.
+      if (!(await profile.isProfilePublic(ownerId))) return;
       const followerIds = await follows.listFollowerIds(ownerId);
       if (followerIds.length === 0) return;
       const friendSet = new Set((await friendship.listFriends(ownerId)).map((f) => f.id));
