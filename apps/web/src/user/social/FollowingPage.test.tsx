@@ -38,6 +38,8 @@ const ALICE = {
   user: { id: 'u-alice', username: 'alice' },
   createdAt: '2026-07-01T00:00:00.000Z',
   autoFollowItems: false,
+  notifyOnAlertCreate: false,
+  notifyOnAlertFire: false,
 };
 
 const ITEMS = {
@@ -120,6 +122,39 @@ describe('FollowingPage — followed items collection (#439)', () => {
     await user.click(toggle);
     await waitFor(() =>
       expect(updateFollow).toHaveBeenCalledWith('u-alice', { autoFollowItems: true }),
+    );
+  });
+
+  test('the two alert-follow switches PATCH their trigger independently (#455)', async () => {
+    vi.mocked(updateFollow).mockResolvedValue({ ...ALICE, notifyOnAlertCreate: true });
+    const user = userEvent.setup();
+    renderPage();
+
+    const createToggle = await screen.findByRole('switch', {
+      name: 'Notify me about new alerts from alice',
+    });
+    const fireToggle = screen.getByRole('switch', {
+      name: 'Notify me when alerts from alice fire',
+    });
+    expect(createToggle).toHaveAttribute('aria-checked', 'false');
+    expect(fireToggle).toHaveAttribute('aria-checked', 'false');
+
+    await user.click(createToggle);
+    await waitFor(() =>
+      expect(updateFollow).toHaveBeenCalledWith('u-alice', { notifyOnAlertCreate: true }),
+    );
+
+    await user.click(fireToggle);
+    await waitFor(() =>
+      expect(updateFollow).toHaveBeenCalledWith('u-alice', { notifyOnAlertFire: true }),
+    );
+    // Each click patched ONLY its own trigger — never the sibling.
+    expect(updateFollow).not.toHaveBeenCalledWith(
+      'u-alice',
+      expect.objectContaining({
+        notifyOnAlertCreate: expect.anything(),
+        notifyOnAlertFire: expect.anything(),
+      }),
     );
   });
 });

@@ -241,6 +241,8 @@ const componentSchemas = {
   AlertListResponse: contracts.alertListResponseSchema,
   CreateAlertRequest: contracts.createAlertRequestSchema,
   UpdateAlertRequest: contracts.updateAlertRequestSchema,
+  AlertSharingResponse: contracts.alertSharingResponseSchema,
+  UpdateAlertSharingRequest: contracts.updateAlertSharingRequestSchema,
 
   // Personal API keys (§6.13, V2-P12)
   CreateApiKeyRequest: contracts.createApiKeyRequestSchema,
@@ -1676,7 +1678,7 @@ const endpoints: EndpointDef[] = [
     method: 'patch',
     path: '/social/follows/{userId}',
     tag: 'Social',
-    summary: 'Update per-follow preferences (auto-follow their new items).',
+    summary: 'Update per-follow preferences (auto-follow their new items, alert-follow triggers).',
     params: userIdParamSchema,
     body: R.UpdateFollowRequest,
     status: 200,
@@ -2028,6 +2030,24 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete a price alert.',
     params: contracts.alertIdParamSchema,
     status: 204,
+  },
+  {
+    method: 'get',
+    path: '/alerts/sharing',
+    tag: 'Alerts',
+    summary: 'Whether the caller’s alerts are visible to their followers.',
+    status: 200,
+    response: R.AlertSharingResponse,
+  },
+  {
+    method: 'put',
+    path: '/alerts/sharing',
+    tag: 'Alerts',
+    summary:
+      'Expose or hide the caller’s alerts to followers (enabling requires the acknowledgment).',
+    body: R.UpdateAlertSharingRequest,
+    status: 200,
+    response: R.AlertSharingResponse,
   },
 
   // Settings (§6.10, §6.11)

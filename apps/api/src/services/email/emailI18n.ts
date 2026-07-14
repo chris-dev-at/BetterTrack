@@ -40,6 +40,9 @@ export interface NotificationEmailCopy {
   friendActivity: { subject: string; heading: string; button: string };
   /** Follow-published body sentence is supplied by the caller (same as the bell, #438). */
   followPublished: { subject: string; heading: string; button: string };
+  /** Alert-follow bodies are supplied by the caller (same as the bell, #455). */
+  followAlertCreated: { subject: string; heading: string; button: string };
+  followAlertFired: { subject: string; heading: string; button: string };
   /** Approval-queue decision emails (§6.12, §13.4 V4-P4a). Approved bolds `{username}`. */
   registrationApproved: { subject: string; heading: string; body: string; button: string };
   registrationRejected: { subject: string; heading: string; body: string };
@@ -99,6 +102,16 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     followPublished: {
       subject: 'New from someone you follow on BetterTrack',
       heading: 'New from someone you follow',
+      button: 'Open BetterTrack',
+    },
+    followAlertCreated: {
+      subject: 'New price alert from someone you follow',
+      heading: 'New price alert from someone you follow',
+      button: 'Open BetterTrack',
+    },
+    followAlertFired: {
+      subject: 'A price alert from someone you follow fired',
+      heading: 'A price alert from someone you follow fired',
       button: 'Open BetterTrack',
     },
     registrationApproved: {
@@ -166,6 +179,16 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     followPublished: {
       subject: 'Neues von jemandem, dem du folgst, auf BetterTrack',
       heading: 'Neues von jemandem, dem du folgst',
+      button: 'BetterTrack öffnen',
+    },
+    followAlertCreated: {
+      subject: 'Neuer Preisalarm von jemandem, dem du folgst',
+      heading: 'Neuer Preisalarm von jemandem, dem du folgst',
+      button: 'BetterTrack öffnen',
+    },
+    followAlertFired: {
+      subject: 'Ein Preisalarm von jemandem, dem du folgst, wurde ausgelöst',
+      heading: 'Preisalarm ausgelöst',
       button: 'BetterTrack öffnen',
     },
     registrationApproved: {

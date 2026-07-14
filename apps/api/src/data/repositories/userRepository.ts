@@ -181,6 +181,24 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
+    /** Whether the user's price alerts are exposed to their followers (#455). */
+    async getAlertsVisibleToFollowers(id: string): Promise<boolean> {
+      const [row] = await db
+        .select({ v: users.alertsVisibleToFollowers })
+        .from(users)
+        .where(eq(users.id, id))
+        .limit(1);
+      return row?.v ?? false;
+    },
+
+    /** Turn alert follower-sharing on/off (#455). Off stops follower delivery immediately. */
+    async setAlertsVisibleToFollowers(id: string, visible: boolean): Promise<void> {
+      await db
+        .update(users)
+        .set({ alertsVisibleToFollowers: visible, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
     /** Set the user's UI-language preference (§13.3 V3-P1). */
     async setLocale(id: string, locale: string): Promise<void> {
       await db.update(users).set({ locale, updatedAt: new Date() }).where(eq(users.id, id));

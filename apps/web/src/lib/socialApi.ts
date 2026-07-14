@@ -111,10 +111,17 @@ export async function followUser(userId: string, autoFollowItems?: boolean): Pro
   okResponseSchema.parse(data);
 }
 
-/** `PATCH /social/follows/:userId` — update per-follow prefs (#439). */
+/**
+ * `PATCH /social/follows/:userId` — update per-follow prefs: auto-follow items
+ * (#439) and the two independent alert-follow triggers (#455).
+ */
 export async function updateFollow(
   userId: string,
-  patch: { autoFollowItems?: boolean },
+  patch: {
+    autoFollowItems?: boolean;
+    notifyOnAlertCreate?: boolean;
+    notifyOnAlertFire?: boolean;
+  },
 ): Promise<FollowingEntry> {
   const data = await apiRequest<unknown>(`/social/follows/${encodeURIComponent(userId)}`, {
     method: 'PATCH',

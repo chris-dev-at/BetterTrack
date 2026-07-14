@@ -119,6 +119,15 @@ export const users = pgTable(
     // reads the same audience model the enforcement layer authorizes against.
     profilePublic: boolean('profile_public').notNull().default(false),
     profileBio: varchar('profile_bio', { length: 280 }),
+    // Opt-in alert visibility (#455). While true, the user's price alerts are
+    // exposed to their FOLLOWERS: a follower's per-follow alert triggers
+    // (`user_follows.notify_on_alert_*`) may then deliver `follow.alert.created`
+    // / `follow.alert.fired` news. OFF (default) means no follower ever sees or
+    // is notified about an alert — the fan-out queries join on this flag at
+    // emission time, so flipping it off stops delivery immediately. Per-user
+    // over the whole alert list, NOT the V3-P5 audience model: followers are
+    // not friends, so the friend-scoped rungs don't map (§16 2026-07-14).
+    alertsVisibleToFollowers: boolean('alerts_visible_to_followers').notNull().default(false),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1030,6 +1039,15 @@ export const userFollows = pgTable(
      * {@link itemFollows} — in addition to the news notification.
      */
     autoFollowItems: boolean('auto_follow_items').notNull().default(false),
+    /**
+     * Alert-follow triggers (#455, both default OFF, independent): notify the
+     * follower when the followed person CREATES a new alert / when one of their
+     * alerts FIRES. Notify-only — no alert is ever copied into the follower's
+     * own list — and both are gated at emission time on the owner's
+     * {@link users.alertsVisibleToFollowers} opt-in.
+     */
+    notifyOnAlertCreate: boolean('notify_on_alert_create').notNull().default(false),
+    notifyOnAlertFire: boolean('notify_on_alert_fire').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

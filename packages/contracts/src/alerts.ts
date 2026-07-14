@@ -113,3 +113,31 @@ export type UpdateAlertRequest = z.infer<typeof updateAlertRequestSchema>;
 
 /** Route param for a single alert. */
 export const alertIdParamSchema = z.object({ id: z.string().uuid() }).strict();
+
+// --- Alert sharing (visibility to followers, #455) ---------------------------
+
+/**
+ * The owner's alert-visibility setting (#455): whether the caller's price
+ * alerts are exposed to their followers. Alerts reveal which assets a person
+ * watches plus their price targets, so this is OFF by default — while OFF a
+ * follower's alert-follow triggers deliver nothing. One per-user flag over the
+ * whole alert list (§16 2026-07-14: followers are not friends, so the V3-P5
+ * friend-scoped audience rungs don't map onto the follower relation).
+ */
+export const alertSharingResponseSchema = z.object({ visibleToFollowers: z.boolean() }).strict();
+export type AlertSharingResponse = z.infer<typeof alertSharingResponseSchema>;
+
+/**
+ * `PUT /alerts/sharing` body. Enabling exposes every current and future alert
+ * to ALL followers (anyone may follow), so the privacy friction ladder applies:
+ * the server rejects `visibleToFollowers: true` without the explicit
+ * acknowledgment — defense-in-depth behind the UI warning. Disabling needs no
+ * ack and stops follower delivery immediately.
+ */
+export const updateAlertSharingRequestSchema = z
+  .object({
+    visibleToFollowers: z.boolean(),
+    acknowledgeFollowers: z.boolean().optional(),
+  })
+  .strict();
+export type UpdateAlertSharingRequest = z.infer<typeof updateAlertSharingRequestSchema>;

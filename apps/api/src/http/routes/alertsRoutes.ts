@@ -4,8 +4,10 @@ import {
   alertIdParamSchema,
   createAlertRequestSchema,
   updateAlertRequestSchema,
+  updateAlertSharingRequestSchema,
   type CreateAlertRequest,
   type UpdateAlertRequest,
+  type UpdateAlertSharingRequest,
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
@@ -22,6 +24,19 @@ export function createAlertsRouter(ctx: AppContext): Router {
   router.get('/', async (req, res) => {
     const items = await ctx.alerts.list(req.authUser!.id);
     res.json({ items: items.map(toAlert) });
+  });
+
+  // GET /alerts/sharing — the caller's alert-visibility setting (#455).
+  router.get('/sharing', async (req, res) => {
+    res.json(await ctx.alerts.getSharing(req.authUser!.id));
+  });
+
+  // PUT /alerts/sharing — expose/hide the caller's alerts to their followers
+  // (#455). Enabling requires the explicit acknowledgment (§16 friction ladder);
+  // disabling stops follower delivery immediately.
+  router.put('/sharing', validateBody(updateAlertSharingRequestSchema), async (req, res) => {
+    const body = req.valid?.body as UpdateAlertSharingRequest;
+    res.json(await ctx.alerts.setSharing(req.authUser!.id, body));
   });
 
   router.post('/', validateBody(createAlertRequestSchema), async (req, res) => {

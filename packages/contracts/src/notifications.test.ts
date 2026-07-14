@@ -28,6 +28,8 @@ describe('notification taxonomy (#368)', () => {
       'conglomerate.shared',
       'friend.activity',
       'follow.published',
+      'follow.alert.created',
+      'follow.alert.fired',
       'account.invite',
       'account.temp_password',
       'alert.triggered',

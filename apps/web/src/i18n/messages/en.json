@@ -264,6 +264,14 @@
         "followPublished": {
           "label": "New from people you follow",
           "description": "When someone you follow makes a portfolio, watchlist or conglomerate public."
+        },
+        "followAlertCreated": {
+          "label": "New alerts from people you follow",
+          "description": "When someone you follow creates a price alert (only people whose alert news you opted into)."
+        },
+        "followAlertFired": {
+          "label": "Fired alerts from people you follow",
+          "description": "When a price alert of someone you follow triggers (only people whose alert news you opted into)."
         }
       },
       "routing": {
@@ -1384,7 +1392,18 @@
       "loadError": "Could not load your alerts. Please refresh the page.",
       "emptyTitle": "No alerts yet",
       "emptyDescription": "Create an alert to get notified when an asset hits a price or moves by a percentage.",
-      "emptyCta": "New alert →"
+      "emptyCta": "New alert →",
+      "sharing": {
+        "title": "Share my alerts with followers",
+        "offHint": "Your alerts are private. Followers cannot see them or be notified about them.",
+        "onHint": "Followers who opted in are notified when you create an alert or one of your alerts fires.",
+        "toggleAria": "Share my alerts with followers",
+        "error": "Could not update alert sharing. Please try again.",
+        "confirmTitle": "Share your alerts with all followers?",
+        "confirmWarning": "This shows every follower which assets you watch and your price targets — anyone can follow you. Followers who opted in will be notified when you create an alert or one of your alerts fires. You can turn this off at any time.",
+        "confirmCancel": "Cancel",
+        "confirmEnable": "I understand — share my alerts"
+      }
     },
     "conglomerates": {
       "title": "Conglomerates",
@@ -1629,7 +1648,13 @@
       },
       "autoFollow": "Auto-follow their new items",
       "autoFollowHint": "Automatically adds every item they make visible to you to your followed items.",
-      "autoFollowAria": "Auto-follow new items from {{username}}"
+      "autoFollowAria": "Auto-follow new items from {{username}}",
+      "alertCreate": "Notify me about their new alerts",
+      "alertCreateHint": "Get a notification when they create a new price alert. Only works while they share their alerts with followers.",
+      "alertCreateAria": "Notify me about new alerts from {{username}}",
+      "alertFire": "Notify me when their alerts fire",
+      "alertFireHint": "Get a notification when one of their price alerts triggers. Only works while they share their alerts with followers.",
+      "alertFireAria": "Notify me when alerts from {{username}} fire"
     },
     "friend": {
       "since": "Friends since {{date}}",
