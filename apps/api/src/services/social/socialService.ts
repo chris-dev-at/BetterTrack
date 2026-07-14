@@ -1,9 +1,13 @@
 import type {
   ActivityAlertState,
   AudienceState,
+  FollowedItem,
   FollowersListResponse,
+  FollowingEntry,
   FollowingListResponse,
   FollowUser,
+  ItemFollowsListResponse,
+  UpdateFollowRequest,
   FriendRequest,
   FriendRequestListResponse,
   Friendship,
@@ -28,8 +32,13 @@ import type {
   FriendRow,
   PendingRequestRow,
 } from '../../data/repositories/friendshipRepository';
+import type {
+  ItemFollowsRepository,
+  ItemFollowListRow,
+} from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type {
+  FollowingUserRow,
   FollowUserRow,
   UserFollowsRepository,
 } from '../../data/repositories/userFollowsRepository';
@@ -56,6 +65,8 @@ export interface SocialServiceDeps {
   repo: FriendshipRepository;
   /** Person-follow graph (#438) — follow/unfollow + the following/followers lists. */
   follows: UserFollowsRepository;
+  /** Item bookmarks (#439) — follow/unfollow/list; visibility is re-derived per read. */
+  itemFollows: ItemFollowsRepository;
   /** Public-profile settings + per-viewer activity-alert preferences (V3-P6). */
   profile: ProfileRepository;
   /** The single sharing-enforcement layer — consulted by every read path here. */
@@ -79,14 +90,34 @@ export interface SocialService {
   cancel(userId: string, requestId: string): Promise<void>;
   listFriends(userId: string): Promise<FriendsListResponse>;
   removeFriend(userId: string, otherUserId: string): Promise<void>;
-  /** Follow a person (#438). Idempotent; 404 when the target isn't a valid follow target. */
-  followUser(userId: string, targetId: string): Promise<void>;
+  /**
+   * Follow a person (#438). Idempotent; 404 when the target isn't a valid follow
+   * target. `autoFollowItems` (#439) is settable at follow time; a repeat follow
+   * never flips the existing pref.
+   */
+  followUser(userId: string, targetId: string, opts?: { autoFollowItems?: boolean }): Promise<void>;
   /** Unfollow a person (#438). 404 when the caller wasn't following them. */
   unfollowUser(userId: string, targetId: string): Promise<void>;
+  /** Patch the caller's prefs on one follow (#439). 404 when not following. */
+  updateFollow(
+    userId: string,
+    targetId: string,
+    patch: UpdateFollowRequest,
+  ): Promise<FollowingEntry>;
   /** The users the caller follows, with follower/following counts (#438). */
   listFollowing(userId: string): Promise<FollowingListResponse>;
   /** The users who follow the caller (#438). */
   listFollowers(userId: string): Promise<FollowersListResponse>;
+  /**
+   * Bookmark another user's item (#439). Idempotent. 404 unless the item is
+   * currently visible to the caller (friend-shared or public with a live
+   * profile); 400 on the caller's own item.
+   */
+  followItem(userId: string, kind: ShareKind, subjectId: string): Promise<void>;
+  /** Remove an item bookmark (#439). 404 when the caller wasn't following it. */
+  unfollowItem(userId: string, kind: ShareKind, subjectId: string): Promise<void>;
+  /** The caller's followed items, visibility re-derived per row (#439). */
+  listItemFollows(userId: string): Promise<ItemFollowsListResponse>;
   listSharedWithMe(userId: string, opts?: { baseCurrency?: string }): Promise<SharedWithMeResponse>;
   getSharedPortfolio(
     viewerId: string,
@@ -148,6 +179,10 @@ const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOU
 const FOLLOW_TARGET_NOT_FOUND = () => notFound('User not found.', 'USER_NOT_FOUND');
 const NOT_FOLLOWING = () => notFound('You are not following this user.', 'FOLLOW_NOT_FOUND');
 const CANNOT_FOLLOW_SELF = () => badRequest('You cannot follow yourself.', 'CANNOT_FOLLOW_SELF');
+const ITEM_FOLLOW_NOT_FOUND = () =>
+  notFound('You are not following this item.', 'ITEM_FOLLOW_NOT_FOUND');
+const CANNOT_FOLLOW_OWN_ITEM = () =>
+  badRequest('You cannot follow your own item.', 'CANNOT_FOLLOW_OWN_ITEM');
 const SHARED_NOT_FOUND = () => notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
 const SHARED_CONGLOMERATE_NOT_FOUND = () =>
   notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
@@ -186,8 +221,22 @@ function toFollowUser(row: FollowUserRow): FollowUser {
   };
 }
 
+function toFollowingEntry(row: FollowingUserRow): FollowingEntry {
+  return { ...toFollowUser(row), autoFollowItems: row.autoFollowItems };
+}
+
 export function createSocialService(deps: SocialServiceDeps): SocialService {
-  const { repo, follows, profile, audience, portfolio, conglomerate, workboard, notify } = deps;
+  const {
+    repo,
+    follows,
+    itemFollows,
+    profile,
+    audience,
+    portfolio,
+    conglomerate,
+    workboard,
+    notify,
+  } = deps;
 
   // Friend events enter the ONE durable notification pipeline (#368) — the
   // center is fire-and-forget: a queue failure logs and never fails the action.
@@ -374,7 +423,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!removed) throw FRIEND_NOT_FOUND();
     },
 
-    async followUser(userId, targetId) {
+    async followUser(userId, targetId, opts) {
       if (userId === targetId) throw CANNOT_FOLLOW_SELF();
       // The target must be a real, active, non-admin account. Validating first
       // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
@@ -382,8 +431,9 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const target = await follows.findFollowTarget(targetId);
       if (!target) throw FOLLOW_TARGET_NOT_FOUND();
       // Idempotent: a repeat follow is a silent no-op — following grants no access
-      // and emits nothing on its own, so there is nothing to re-fire.
-      await follows.follow(userId, targetId);
+      // and emits nothing on its own, so there is nothing to re-fire. A repeat
+      // follow also never flips prefs; changing those is PATCH's job (#439).
+      await follows.follow(userId, targetId, { autoFollowItems: opts?.autoFollowItems });
     },
 
     async unfollowUser(userId, targetId) {
@@ -391,17 +441,74 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!removed) throw NOT_FOLLOWING();
     },
 
+    async updateFollow(userId, targetId, patch) {
+      const found = await follows.updateFollowPrefs(userId, targetId, {
+        autoFollowItems: patch.autoFollowItems,
+      });
+      if (!found) throw NOT_FOLLOWING();
+      const row = await follows.getFollowing(userId, targetId);
+      if (!row) throw NOT_FOLLOWING(); // unfollowed between the two statements
+      return toFollowingEntry(row);
+    },
+
     async listFollowing(userId) {
       const [rows, followerCount] = await Promise.all([
         follows.listFollowing(userId),
         follows.countFollowers(userId),
       ]);
-      return { following: rows.map(toFollowUser), followingCount: rows.length, followerCount };
+      return { following: rows.map(toFollowingEntry), followingCount: rows.length, followerCount };
     },
 
     async listFollowers(userId) {
       const rows = await follows.listFollowers(userId);
       return { followers: rows.map(toFollowUser) };
+    },
+
+    async followItem(userId, kind, subjectId) {
+      // Your own item is never followable — the Following collection is
+      // strictly "other people's items" (#439). Owner-checked FIRST so the
+      // error is honest for the one caller who already knows the item exists.
+      if (await audience.ownsSubject(userId, kind, subjectId)) throw CANNOT_FOLLOW_OWN_ITEM();
+      // Only a CURRENTLY visible item is followable — the same enforcement
+      // decision every read makes, so this can't probe private items (404,
+      // never 403). Idempotent afterwards, like the person-follow.
+      const visible = await audience.authorizeItemFollowRead(userId, kind, subjectId);
+      if (!visible) throw SUBJECT_NOT_FOUND();
+      await itemFollows.follow(userId, kind, subjectId);
+    },
+
+    async unfollowItem(userId, kind, subjectId) {
+      // No visibility gate here: unfollowing must keep working AFTER the item
+      // became invisible (that's how a "gone" row is cleaned up).
+      const removed = await itemFollows.unfollow(userId, kind, subjectId);
+      if (!removed) throw ITEM_FOLLOW_NOT_FOUND();
+    },
+
+    async listItemFollows(userId) {
+      // Visibility is re-derived through the enforcement layer PER ROW at read
+      // time (§6.9 no-caching): an item that was unshared/narrowed/deleted or
+      // whose owner vanished renders as the chat-chip-style `viewable: false`
+      // shell — subjectId only, no name/owner — never a stale view.
+      const rows = await itemFollows.list(userId);
+      const items: FollowedItem[] = await Promise.all(
+        rows.map(async (row: ItemFollowListRow): Promise<FollowedItem> => {
+          const base = {
+            kind: row.kind,
+            subjectId: row.subjectId,
+            followedAt: row.createdAt.toISOString(),
+          };
+          const visible = await audience.authorizeItemFollowRead(userId, row.kind, row.subjectId);
+          if (!visible) return { ...base, viewable: false, name: null, owner: null, via: null };
+          return {
+            ...base,
+            viewable: true,
+            name: visible.name,
+            owner: { id: visible.ownerId, username: visible.ownerUsername },
+            via: visible.via,
+          };
+        }),
+      );
+      return { items };
     },
 
     async listSharedWithMe(userId, opts) {

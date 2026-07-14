@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { getSharedConglomerate } from '../../lib/socialApi';
 import { formatPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
+import { ItemFollowButton } from './ItemFollowButton';
 
 const SHARED_STALE_MS = 30_000;
 
@@ -47,7 +48,10 @@ export function SharedConglomeratePage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
         <BackLink />
-        <h2 className="text-lg font-semibold text-neutral-100">{data.name}</h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-neutral-100">{data.name}</h2>
+          <ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />
+        </div>
         <p className="text-sm text-neutral-500">
           Shared by {data.owner.username} · {data.status === 'active' ? 'Active' : 'Draft'}
         </p>

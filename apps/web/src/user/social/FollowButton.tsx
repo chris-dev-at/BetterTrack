@@ -2,8 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
-import { followUser, listFollowing, unfollowUser } from '../../lib/socialApi';
+import { followUser, listFollowing, unfollowUser, updateFollow } from '../../lib/socialApi';
 import { useOptionalAuth } from '../AuthContext';
+import { ITEM_FOLLOWS_QUERY_KEY } from './ItemFollowButton';
 
 /** Shared query key for "who I follow" — one deduped fetch across every button + the list. */
 export const FOLLOWING_QUERY_KEY = ['social', 'following'] as const;
@@ -97,5 +98,67 @@ export function FollowButton({
     >
       {t('social.follow.follow')}
     </button>
+  );
+}
+
+/**
+ * Per-followed-person auto-follow switch (#439): when ON, every item of theirs
+ * that becomes newly visible to the caller is auto-added to the caller's
+ * followed items (in addition to the follow news). Rendered ONLY while the
+ * caller follows the person — it reads its state from the same deduped
+ * `['social','following']` query as the FollowButton and PATCHes the follow row,
+ * so the button, this switch and the Following list never disagree.
+ */
+export function AutoFollowToggle({ userId, username }: { userId: string; username: string }) {
+  const t = useT();
+  const auth = useOptionalAuth();
+  const queryClient = useQueryClient();
+  const authenticated = auth?.status === 'authenticated';
+  const isSelf = auth?.user?.id === userId;
+
+  const followingQuery = useQuery({
+    queryKey: FOLLOWING_QUERY_KEY,
+    queryFn: ({ signal }) => listFollowing(signal),
+    enabled: authenticated && !isSelf,
+    staleTime: 30_000,
+  });
+  const entry = followingQuery.data?.following.find((f) => f.user.id === userId);
+
+  const toggleMutation = useMutation({
+    mutationFn: (next: boolean) => updateFollow(userId, { autoFollowItems: next }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: FOLLOWING_QUERY_KEY });
+      // Flipping it ON changes what lands in the followed-items collection next.
+      void queryClient.invalidateQueries({ queryKey: ITEM_FOLLOWS_QUERY_KEY });
+    },
+  });
+
+  if (!authenticated || isSelf || !entry) return null;
+
+  const on = entry.autoFollowItems;
+  return (
+    <label
+      className="flex items-center gap-2 text-xs text-neutral-400"
+      title={t('social.follow.autoFollowHint')}
+    >
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={t('social.follow.autoFollowAria', { username })}
+        disabled={toggleMutation.isPending}
+        onClick={() => toggleMutation.mutate(!on)}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60 ${
+          on ? 'bg-sky-600' : 'bg-neutral-700'
+        }`}
+      >
+        <span
+          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+            on ? 'translate-x-[18px]' : 'translate-x-1'
+          }`}
+        />
+      </button>
+      {t('social.follow.autoFollow')}
+    </label>
   );
 }

@@ -1626,7 +1626,10 @@
       "followingStat": {
         "one": "{{count}} abonniert",
         "other": "{{count}} abonniert"
-      }
+      },
+      "autoFollow": "Neuen Elementen automatisch folgen",
+      "autoFollowHint": "Fügt jedes Element, das diese Person für dich sichtbar macht, automatisch zu deinen gefolgten Elementen hinzu.",
+      "autoFollowAria": "Neuen Elementen von {{username}} automatisch folgen"
     },
     "friend": {
       "since": "Befreundet seit {{date}}",
@@ -1693,6 +1696,26 @@
       },
       "deletedUser": "Gelöschtes Konto",
       "deletedClosed": "Dieses Konto existiert nicht mehr. Die Unterhaltung ist geschlossen, dein Verlauf bleibt aber lesbar."
+    },
+    "itemFollow": {
+      "follow": "Element folgen",
+      "following": "Gefolgt",
+      "followAria": "Diesem Element folgen",
+      "unfollowAria": "Diesem Element entfolgen",
+      "unfollow": "Entfolgen",
+      "sectionTitle": "Gefolgte Elemente",
+      "sectionSubtitle": "Portfolios, Watchlists und Konglomerate, denen du folgst. Neue Elemente von Personen mit Auto-Folgen erscheinen hier automatisch.",
+      "empty": "Du folgst noch keinen Elementen.",
+      "emptyHint": "Folge einem geteilten oder öffentlichen Portfolio, einer Watchlist oder einem Konglomerat, um es hier zu behalten.",
+      "gone": "Nicht mehr verfügbar",
+      "goneHint": "Dieses Element wurde nicht mehr geteilt oder gelöscht.",
+      "by": "von @{{username}}",
+      "error": "Deine gefolgten Elemente konnten nicht geladen werden. Bitte aktualisiere die Seite.",
+      "kind": {
+        "portfolio": "Portfolio",
+        "conglomerate": "Konglomerat",
+        "watchlist": "Watchlist"
+      }
     }
   },
   "profile": {

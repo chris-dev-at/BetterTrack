@@ -12,6 +12,7 @@ import { createConglomerateRepository } from '../data/repositories/conglomerateR
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
+import { createItemFollowsRepository } from '../data/repositories/itemFollowsRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
 import {
   createIdempotencyKeyRepository,
@@ -304,6 +305,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Person-follow graph (#438): follow/unfollow + the follower fan-out that feeds
   // `follow.published` news. Shared by the social service and the audience layer.
   const userFollowsRepo = createUserFollowsRepository(db);
+  // Item bookmarks (#439): explicit follows of other people's visible items,
+  // plus the auto-follow fan-out target. Shared by the social service (CRUD)
+  // and the audience layer (auto-add on publish + subject-deletion purge).
+  const itemFollowsRepo = createItemFollowsRepository(db);
   // Public-profile settings + per-viewer activity-alert prefs (§6.9, §14, V3-P6).
   const profileRepo = createProfileRepository(db);
   const shareAudienceRepo = createShareAudienceRepository(db);
@@ -385,6 +390,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     repo: shareAudienceRepo,
     friendship: friendshipRepo,
     follows: userFollowsRepo,
+    itemFollows: itemFollowsRepo,
     // Gates `follow.published` on a live public profile — the deep link's target (#438).
     profile: profileRepo,
     notify,
@@ -580,6 +586,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const social = createSocialService({
     repo: friendshipRepo,
     follows: userFollowsRepo,
+    itemFollows: itemFollowsRepo,
     profile: profileRepo,
     audience,
     portfolio,

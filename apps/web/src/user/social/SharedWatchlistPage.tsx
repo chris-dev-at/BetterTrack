@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
+import { ItemFollowButton } from './ItemFollowButton';
 
 const SHARED_STALE_MS = 30_000;
 
@@ -45,9 +46,12 @@ export function SharedWatchlistPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
         <BackLink />
-        <h2 className="text-lg font-semibold text-neutral-100">
-          {data.owner.username}&rsquo;s {data.name}
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold text-neutral-100">
+            {data.owner.username}&rsquo;s {data.name}
+          </h2>
+          <ItemFollowButton kind="watchlist" subjectId={data.watchlistId} ownerId={data.owner.id} />
+        </div>
       </div>
 
       {data.items.length === 0 ? (

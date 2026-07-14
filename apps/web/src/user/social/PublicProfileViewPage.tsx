@@ -12,7 +12,8 @@ import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
 import { Avatar } from '../components/Avatar';
 import { Splash } from '../components/ui';
-import { FollowButton } from './FollowButton';
+import { AutoFollowToggle, FollowButton } from './FollowButton';
+import { ItemFollowButton } from './ItemFollowButton';
 import { KindIcon } from './SharedPeople';
 
 /**
@@ -59,12 +60,15 @@ function Chevron({ open }: { open: boolean }) {
 /** A read-only public item that expands in place to its holdings/positions/assets. */
 function ProfileItemCard({
   username,
+  ownerId,
   kind,
   subjectId,
   name,
   headline,
 }: {
   username: string;
+  /** The profile owner — hides the item-follow button on one's own profile. */
+  ownerId: string;
   kind: ShareKind;
   subjectId: string;
   name: string;
@@ -82,21 +86,24 @@ function ProfileItemCard({
 
   return (
     <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/40">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
-      >
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-neutral-400">
-          <KindIcon kind={kind} className="h-5 w-5" />
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm font-medium text-neutral-100">{name}</span>
-          <span className="truncate text-xs text-neutral-500">{headline}</span>
-        </span>
-        <Chevron open={open} />
-      </button>
+      <div className="flex items-center gap-3 pr-3">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
+        >
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-neutral-400">
+            <KindIcon kind={kind} className="h-5 w-5" />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate text-sm font-medium text-neutral-100">{name}</span>
+            <span className="truncate text-xs text-neutral-500">{headline}</span>
+          </span>
+          <Chevron open={open} />
+        </button>
+        <ItemFollowButton kind={kind} subjectId={subjectId} ownerId={ownerId} />
+      </div>
 
       {open ? (
         <div className="border-t border-neutral-800 p-4">
@@ -218,7 +225,10 @@ export function PublicProfileViewPage() {
             </p>
             {data.bio ? <p className="mt-1 text-sm text-neutral-400">{data.bio}</p> : null}
           </div>
-          <FollowButton userId={data.userId} username={data.username} />
+          <div className="flex flex-col items-end gap-2">
+            <FollowButton userId={data.userId} username={data.username} />
+            <AutoFollowToggle userId={data.userId} username={data.username} />
+          </div>
         </div>
 
         {empty ? (
@@ -231,6 +241,7 @@ export function PublicProfileViewPage() {
                   <ProfileItemCard
                     key={p.portfolioId}
                     username={data.username}
+                    ownerId={data.userId}
                     kind="portfolio"
                     subjectId={p.portfolioId}
                     name={p.name}
@@ -245,6 +256,7 @@ export function PublicProfileViewPage() {
                   <ProfileItemCard
                     key={c.conglomerateId}
                     username={data.username}
+                    ownerId={data.userId}
                     kind="conglomerate"
                     subjectId={c.conglomerateId}
                     name={c.name}
@@ -259,6 +271,7 @@ export function PublicProfileViewPage() {
                   <ProfileItemCard
                     key={w.watchlistId}
                     username={data.username}
+                    ownerId={data.userId}
                     kind="watchlist"
                     subjectId={w.watchlistId}
                     name={w.name}
