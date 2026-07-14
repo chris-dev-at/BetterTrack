@@ -8,7 +8,12 @@ import { listFollowing, listItemFollows, unfollowItem } from '../../lib/socialAp
 import { EmptyState, Skeleton } from '../../ui';
 import { Avatar } from '../components/Avatar';
 import { Alert } from '../components/ui';
-import { AutoFollowToggle, FOLLOWING_QUERY_KEY, FollowButton } from './FollowButton';
+import {
+  AlertFollowToggles,
+  AutoFollowToggle,
+  FOLLOWING_QUERY_KEY,
+  FollowButton,
+} from './FollowButton';
 import { ITEM_FOLLOWS_QUERY_KEY } from './ItemFollowButton';
 
 const FOLLOWING_STALE_MS = 30_000;
@@ -155,8 +160,9 @@ export function FollowingPage() {
                   {`@${f.user.username}`}
                 </span>
               </Link>
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-4">
                 <AutoFollowToggle userId={f.user.id} username={f.user.username} />
+                <AlertFollowToggles userId={f.user.id} username={f.user.username} />
                 <FollowButton userId={f.user.id} username={f.user.username} />
               </div>
             </li>

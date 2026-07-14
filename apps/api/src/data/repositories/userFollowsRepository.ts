@@ -18,9 +18,25 @@ export interface FollowUserRow {
   createdAt: Date;
 }
 
-/** A row in the caller's OWN following list — carries their per-follow prefs (#439). */
+/** A row in the caller's OWN following list — carries their per-follow prefs (#439, #455). */
 export interface FollowingUserRow extends FollowUserRow {
   autoFollowItems: boolean;
+  notifyOnAlertCreate: boolean;
+  notifyOnAlertFire: boolean;
+}
+
+/** The caller-settable per-follow prefs (#439 auto-follow, #455 alert triggers). */
+export interface FollowPrefs {
+  autoFollowItems?: boolean;
+  notifyOnAlertCreate?: boolean;
+  notifyOnAlertFire?: boolean;
+}
+
+/** One follower to notify about a followed person's alert activity (#455). */
+export interface AlertFollowRecipient {
+  followerId: string;
+  /** The followed OWNER's username — the notification's actor. */
+  ownerUsername: string;
 }
 
 export function createUserFollowsRepository(db: Database) {
@@ -43,39 +59,52 @@ export function createUserFollowsRepository(db: Database) {
     /**
      * Record a follow. Idempotent against the composite PK: a repeat follow is a
      * no-op (never a duplicate-key crash) — an existing row keeps its prefs, so a
-     * repeat follow can't silently flip `autoFollowItems`. Returns whether a NEW
-     * row was created, so the service only emits/side-effects on a genuine new
-     * follow. `autoFollowItems` is settable at follow time (#439, default OFF).
+     * repeat follow can't silently flip any of them. Returns whether a NEW row
+     * was created, so the service only emits/side-effects on a genuine new
+     * follow. All prefs are settable at follow time (#439/#455, default OFF).
      */
-    async follow(
-      followerId: string,
-      followedId: string,
-      opts?: { autoFollowItems?: boolean },
-    ): Promise<boolean> {
+    async follow(followerId: string, followedId: string, opts?: FollowPrefs): Promise<boolean> {
       const rows = await db
         .insert(userFollows)
-        .values({ followerId, followedId, autoFollowItems: opts?.autoFollowItems ?? false })
+        .values({
+          followerId,
+          followedId,
+          autoFollowItems: opts?.autoFollowItems ?? false,
+          notifyOnAlertCreate: opts?.notifyOnAlertCreate ?? false,
+          notifyOnAlertFire: opts?.notifyOnAlertFire ?? false,
+        })
         .onConflictDoNothing()
         .returning({ followerId: userFollows.followerId });
       return rows.length > 0;
     },
 
     /**
-     * Patch the caller's per-follow prefs (#439) — currently `autoFollowItems`.
-     * Returns whether a follow row existed (the service 404s a non-follow).
+     * Patch the caller's per-follow prefs (#439/#455): `autoFollowItems` and the
+     * two independent alert-follow triggers. Returns whether a follow row
+     * existed (the service 404s a non-follow).
      */
     async updateFollowPrefs(
       followerId: string,
       followedId: string,
-      patch: { autoFollowItems?: boolean },
+      patch: FollowPrefs,
     ): Promise<boolean> {
-      if (patch.autoFollowItems === undefined) {
+      const set: Partial<{
+        autoFollowItems: boolean;
+        notifyOnAlertCreate: boolean;
+        notifyOnAlertFire: boolean;
+      }> = {};
+      if (patch.autoFollowItems !== undefined) set.autoFollowItems = patch.autoFollowItems;
+      if (patch.notifyOnAlertCreate !== undefined) {
+        set.notifyOnAlertCreate = patch.notifyOnAlertCreate;
+      }
+      if (patch.notifyOnAlertFire !== undefined) set.notifyOnAlertFire = patch.notifyOnAlertFire;
+      if (Object.keys(set).length === 0) {
         // Nothing to change — still report whether the follow exists.
         return this.isFollowing(followerId, followedId);
       }
       const rows = await db
         .update(userFollows)
-        .set({ autoFollowItems: patch.autoFollowItems })
+        .set(set)
         .where(and(eq(userFollows.followerId, followerId), eq(userFollows.followedId, followedId)))
         .returning({ followerId: userFollows.followerId });
       return rows.length > 0;
@@ -92,6 +121,8 @@ export function createUserFollowsRepository(db: Database) {
           username: users.username,
           createdAt: userFollows.createdAt,
           autoFollowItems: userFollows.autoFollowItems,
+          notifyOnAlertCreate: userFollows.notifyOnAlertCreate,
+          notifyOnAlertFire: userFollows.notifyOnAlertFire,
         })
         .from(userFollows)
         .innerJoin(users, eq(users.id, userFollows.followedId))
@@ -127,6 +158,8 @@ export function createUserFollowsRepository(db: Database) {
           username: users.username,
           createdAt: userFollows.createdAt,
           autoFollowItems: userFollows.autoFollowItems,
+          notifyOnAlertCreate: userFollows.notifyOnAlertCreate,
+          notifyOnAlertFire: userFollows.notifyOnAlertFire,
         })
         .from(userFollows)
         .innerJoin(users, eq(users.id, userFollows.followedId))
@@ -161,6 +194,31 @@ export function createUserFollowsRepository(db: Database) {
         })
         .from(userFollows)
         .where(eq(userFollows.followedId, followedId));
+    },
+
+    /**
+     * The followers to notify about the followed user's alert activity (#455):
+     * followers whose `notify_on_alert_create` / `notify_on_alert_fire` pref is
+     * on, joined against the OWNER's `alerts_visible_to_followers` opt-in — the
+     * privacy gate lives in this query, recomputed at every emission, so the
+     * owner unsharing (or a follower flipping a trigger off, or unfollowing)
+     * stops delivery immediately. The owner can never appear (self-follows are
+     * CHECK-rejected), so their own `alert.triggered` delivery is never doubled.
+     */
+    async listAlertFollowRecipients(
+      followedId: string,
+      trigger: 'create' | 'fire',
+    ): Promise<AlertFollowRecipient[]> {
+      const pref =
+        trigger === 'create' ? userFollows.notifyOnAlertCreate : userFollows.notifyOnAlertFire;
+      return db
+        .select({ followerId: userFollows.followerId, ownerUsername: users.username })
+        .from(userFollows)
+        .innerJoin(
+          users,
+          and(eq(users.id, userFollows.followedId), eq(users.alertsVisibleToFollowers, true)),
+        )
+        .where(and(eq(userFollows.followedId, followedId), eq(pref, true)));
     },
 
     /** How many users follow `userId` (public follower count on the profile). */

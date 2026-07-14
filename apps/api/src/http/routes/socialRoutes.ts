@@ -146,8 +146,13 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     limiters.social,
     validateBody(followUserRequestSchema),
     async (req, res) => {
-      const { userId, autoFollowItems } = req.valid?.body as FollowUserRequest;
-      await ctx.social.followUser(req.authUser!.id, userId, { autoFollowItems });
+      const { userId, autoFollowItems, notifyOnAlertCreate, notifyOnAlertFire } = req.valid
+        ?.body as FollowUserRequest;
+      await ctx.social.followUser(req.authUser!.id, userId, {
+        autoFollowItems,
+        notifyOnAlertCreate,
+        notifyOnAlertFire,
+      });
       res.status(202).json({ ok: true });
     },
   );
@@ -171,8 +176,9 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     res.status(204).send();
   });
 
-  // PATCH /social/follows/:userId — the caller's per-follow prefs (#439):
-  // currently the auto-follow-items toggle. 404 when not following.
+  // PATCH /social/follows/:userId — the caller's per-follow prefs: the
+  // auto-follow-items toggle (#439) and the two independent alert-follow
+  // triggers (#455). 404 when not following.
   router.patch(
     '/follows/:userId',
     validateParams(userIdParamSchema),

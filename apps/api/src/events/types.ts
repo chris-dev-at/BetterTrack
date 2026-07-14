@@ -173,6 +173,48 @@ export interface FollowPublishedEvent {
 }
 
 /**
+ * `follow.alert.created` → a user the recipient FOLLOWS created a new price
+ * alert, and the recipient opted into created-alert news for that person
+ * (`user_follows.notify_on_alert_create`, #455). Emitted once per opted-in
+ * follower, only while the owner's `alerts_visible_to_followers` opt-in is on
+ * (the fan-out query joins the flag at emission time — losing visibility
+ * silently stops the news). Notify-only: nothing is copied into the
+ * recipient's own alert list. The alert's display context (asset + rule) is
+ * resolved at dispatch time like `alert.triggered`.
+ */
+export interface FollowAlertCreatedEvent {
+  type: 'follow.alert.created';
+  /** Recipient — a follower who opted into created-alert news. */
+  userId: string;
+  /** Actor — the followed user who created the alert. */
+  actorId: string;
+  actorUsername: string;
+  alertId: string;
+  assetId: string;
+  occurredAt: string;
+}
+
+/**
+ * `follow.alert.fired` → a price alert of a user the recipient FOLLOWS fired,
+ * and the recipient opted into fired-alert news for that person
+ * (`user_follows.notify_on_alert_fire`, #455). Same visibility gating and
+ * dispatch-time context resolution as {@link FollowAlertCreatedEvent}; emitted
+ * IN ADDITION TO the owner's own `alert.triggered` (recipients are disjoint —
+ * a self-follow is impossible — so the owner is never doubled).
+ */
+export interface FollowAlertFiredEvent {
+  type: 'follow.alert.fired';
+  /** Recipient — a follower who opted into fired-alert news. */
+  userId: string;
+  /** Actor — the followed user whose alert fired. */
+  actorId: string;
+  actorUsername: string;
+  alertId: string;
+  assetId: string;
+  occurredAt: string;
+}
+
+/**
  * `account.temp_password` → an admin reset the recipient's password (#368).
  * The credential itself NEVER rides this event (it would persist in the queue);
  * the transactional email with the temp password is sent directly at the
@@ -226,6 +268,8 @@ export type DomainEvent =
   | ConglomerateSharedEvent
   | FriendActivityEvent
   | FollowPublishedEvent
+  | FollowAlertCreatedEvent
+  | FollowAlertFiredEvent
   | AccountTempPasswordEvent
   | ChatMessageEvent;
 
@@ -249,6 +293,8 @@ export const DOMAIN_EVENT_TYPES = [
   'conglomerate.shared',
   'friend.activity',
   'follow.published',
+  'follow.alert.created',
+  'follow.alert.fired',
   'account.temp_password',
   'chat.message',
 ] as const satisfies readonly DomainEventType[];

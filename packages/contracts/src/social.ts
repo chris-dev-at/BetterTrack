@@ -102,10 +102,20 @@ export type FriendsListResponse = z.infer<typeof friendsListResponseSchema>;
  * `POST /social/follows` body — the user to follow, by id. Idempotent (a repeat
  * follow never flips existing prefs). `autoFollowItems` (#439, default OFF)
  * opts the follower into auto-bookmarking every item of theirs that becomes
- * newly visible; it is also settable later via `PATCH /social/follows/:userId`.
+ * newly visible. `notifyOnAlertCreate` / `notifyOnAlertFire` (#455, both default
+ * OFF, independent) opt the follower into `follow.alert.created` /
+ * `follow.alert.fired` news about the followed person's price alerts — delivered
+ * only while the owner shares their alerts with followers (notify-only: nothing
+ * is ever copied into the follower's own alert list). All three are also
+ * settable later via `PATCH /social/follows/:userId`.
  */
 export const followUserRequestSchema = z
-  .object({ userId: z.string().uuid(), autoFollowItems: z.boolean().optional() })
+  .object({
+    userId: z.string().uuid(),
+    autoFollowItems: z.boolean().optional(),
+    notifyOnAlertCreate: z.boolean().optional(),
+    notifyOnAlertFire: z.boolean().optional(),
+  })
   .strict();
 export type FollowUserRequest = z.infer<typeof followUserRequestSchema>;
 
@@ -120,11 +130,15 @@ export type FollowUser = z.infer<typeof followUserSchema>;
 
 /**
  * One entry in the caller's OWN following list — the other party plus the
- * caller's per-followed-person prefs (#439). `autoFollowItems` never appears on
- * the followers list: it is the follower's private setting.
+ * caller's per-followed-person prefs (#439, #455). The prefs never appear on
+ * the followers list: they are the follower's private settings.
  */
 export const followingEntrySchema = followUserSchema
-  .extend({ autoFollowItems: z.boolean() })
+  .extend({
+    autoFollowItems: z.boolean(),
+    notifyOnAlertCreate: z.boolean(),
+    notifyOnAlertFire: z.boolean(),
+  })
   .strict();
 export type FollowingEntry = z.infer<typeof followingEntrySchema>;
 
@@ -140,12 +154,17 @@ export type FollowingListResponse = z.infer<typeof followingListResponseSchema>;
 
 /**
  * `PATCH /social/follows/:userId` body — update the caller's prefs on one
- * follow (#439). Fields are optional so future per-follow toggles (e.g. the
- * alert-follow triggers) stay additive; an empty patch is a no-op read.
- * 404s when the caller doesn't follow the user.
+ * follow (#439, #455): the auto-follow-items toggle and the two independent
+ * alert-follow triggers (created-only, fired-only, both, or neither). Fields
+ * are optional so future per-follow toggles stay additive; an empty patch is a
+ * no-op read. 404s when the caller doesn't follow the user.
  */
 export const updateFollowRequestSchema = z
-  .object({ autoFollowItems: z.boolean().optional() })
+  .object({
+    autoFollowItems: z.boolean().optional(),
+    notifyOnAlertCreate: z.boolean().optional(),
+    notifyOnAlertFire: z.boolean().optional(),
+  })
   .strict();
 export type UpdateFollowRequest = z.infer<typeof updateFollowRequestSchema>;
 

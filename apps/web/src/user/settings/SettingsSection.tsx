@@ -115,6 +115,14 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.followPublished.label'),
       description: t('settings.notifications.types.followPublished.description'),
     },
+    'follow.alert.created': {
+      label: t('settings.notifications.types.followAlertCreated.label'),
+      description: t('settings.notifications.types.followAlertCreated.description'),
+    },
+    'follow.alert.fired': {
+      label: t('settings.notifications.types.followAlertFired.label'),
+      description: t('settings.notifications.types.followAlertFired.description'),
+    },
     'account.invite': {
       label: t('settings.notifications.types.accountInvite.label'),
       description: t('settings.notifications.types.accountInvite.description'),

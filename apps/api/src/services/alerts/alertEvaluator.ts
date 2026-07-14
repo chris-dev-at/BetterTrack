@@ -2,6 +2,7 @@ import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
 import type { AlertRepository } from '../../data/repositories/alertRepository';
+import type { AlertFollowRecipient } from '../../data/repositories/userFollowsRepository';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { NotificationCenter } from '../notifications/notificationCenter';
@@ -95,6 +96,17 @@ export interface AlertsEvaluatorDeps {
   redis: Redis;
   /** The central notification pipeline (#368) — fires enter the durable queue here. */
   notify: NotificationCenter;
+  /**
+   * Alert-follow fire fan-out (#455): resolves the followers to notify with
+   * `follow.alert.fired` when one of `ownerId`'s alerts fires — opted-in
+   * followers of an owner whose `alertsVisibleToFollowers` opt-in is on (the
+   * query joins the flag per fire, so unsharing stops delivery immediately).
+   * Optional: absent = no follower fan-out (the owner's own delivery is
+   * untouched either way).
+   */
+  followFanout?: {
+    listFireRecipients(ownerId: string): Promise<AlertFollowRecipient[]>;
+  };
   logger: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -207,6 +219,37 @@ export async function runAlertsEvaluation(
         // the state already flipped.
         continue;
       }
+
+      // Alert-follow fan-out (#455): IN ADDITION TO the owner's delivery above,
+      // notify followers who opted into fired-alert news — the recipient query
+      // joins the owner's visibility opt-in per fire. Recipients are disjoint
+      // from the owner (self-follows are impossible), so the owner is never
+      // doubled. Best-effort like the channel fan-outs: a failed follower emit
+      // logs (the center already did) and never blocks the owner's fire — and
+      // it runs BEFORE the state flip so a crash can only re-fire (deduped per
+      // window downstream), never strand the followers of a one-shot alert.
+      if (deps.followFanout) {
+        try {
+          const recipients = await deps.followFanout.listFireRecipients(alert.userId);
+          for (const recipient of recipients) {
+            await notify.emit({
+              type: 'follow.alert.fired',
+              userId: recipient.followerId,
+              actorId: alert.userId,
+              actorUsername: recipient.ownerUsername,
+              alertId: alert.id,
+              assetId: alert.assetId,
+              occurredAt,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { alertId: alert.id, err: errorMessage(err) },
+            'alerts.evaluate: follower fan-out failed',
+          );
+        }
+      }
+
       const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
       await alertRepo.recordTriggered(alert.id, status, new Date(now));
       fired += 1;

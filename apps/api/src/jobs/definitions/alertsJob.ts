@@ -1,5 +1,6 @@
 import type { Database } from '../../data/db';
 import { createAlertRepository } from '../../data/repositories/alertRepository';
+import { createUserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import type { MarketDataService } from '../../providers';
 import { runAlertsEvaluation } from '../../services/alerts/alertEvaluator';
 import type { NotificationCenter } from '../../services/notifications/notificationCenter';
@@ -30,6 +31,9 @@ export interface AlertsJobDeps {
 
 export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'alerts.evaluate'> {
   const alertRepo = createAlertRepository(deps.db);
+  // Alert-follow fire fan-out (#455): opted-in followers of a sharing owner
+  // receive `follow.alert.fired` in addition to the owner's own delivery.
+  const followsRepo = createUserFollowsRepository(deps.db);
   return {
     name: QUEUE_NAMES.alertsEvaluate,
     schedule: { id: ALERTS_EVALUATE_SCHEDULER_ID, every: ALERTS_EVALUATE_INTERVAL_MS },
@@ -42,6 +46,9 @@ export function createAlertsEvaluateJob(deps: AlertsJobDeps): JobDefinition<'ale
         marketData: deps.marketData,
         redis: ctx.redis,
         notify: deps.notify,
+        followFanout: {
+          listFireRecipients: (ownerId) => followsRepo.listAlertFollowRecipients(ownerId, 'fire'),
+        },
         logger: ctx.logger,
         now: () => now,
       });

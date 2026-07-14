@@ -101,53 +101,31 @@ export function FollowButton({
   );
 }
 
-/**
- * Per-followed-person auto-follow switch (#439): when ON, every item of theirs
- * that becomes newly visible to the caller is auto-added to the caller's
- * followed items (in addition to the follow news). Rendered ONLY while the
- * caller follows the person — it reads its state from the same deduped
- * `['social','following']` query as the FollowButton and PATCHes the follow row,
- * so the button, this switch and the Following list never disagree.
- */
-export function AutoFollowToggle({ userId, username }: { userId: string; username: string }) {
-  const t = useT();
-  const auth = useOptionalAuth();
-  const queryClient = useQueryClient();
-  const authenticated = auth?.status === 'authenticated';
-  const isSelf = auth?.user?.id === userId;
-
-  const followingQuery = useQuery({
-    queryKey: FOLLOWING_QUERY_KEY,
-    queryFn: ({ signal }) => listFollowing(signal),
-    enabled: authenticated && !isSelf,
-    staleTime: 30_000,
-  });
-  const entry = followingQuery.data?.following.find((f) => f.user.id === userId);
-
-  const toggleMutation = useMutation({
-    mutationFn: (next: boolean) => updateFollow(userId, { autoFollowItems: next }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: FOLLOWING_QUERY_KEY });
-      // Flipping it ON changes what lands in the followed-items collection next.
-      void queryClient.invalidateQueries({ queryKey: ITEM_FOLLOWS_QUERY_KEY });
-    },
-  });
-
-  if (!authenticated || isSelf || !entry) return null;
-
-  const on = entry.autoFollowItems;
+/** The switch chrome shared by every per-follow pref toggle (#439/#455). */
+function FollowPrefSwitch({
+  on,
+  disabled,
+  ariaLabel,
+  hint,
+  label,
+  onToggle,
+}: {
+  on: boolean;
+  disabled: boolean;
+  ariaLabel: string;
+  hint: string;
+  label: string;
+  onToggle: () => void;
+}) {
   return (
-    <label
-      className="flex items-center gap-2 text-xs text-neutral-400"
-      title={t('social.follow.autoFollowHint')}
-    >
+    <label className="flex items-center gap-2 text-xs text-neutral-400" title={hint}>
       <button
         type="button"
         role="switch"
         aria-checked={on}
-        aria-label={t('social.follow.autoFollowAria', { username })}
-        disabled={toggleMutation.isPending}
-        onClick={() => toggleMutation.mutate(!on)}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={onToggle}
         className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60 ${
           on ? 'bg-sky-600' : 'bg-neutral-700'
         }`}
@@ -158,7 +136,107 @@ export function AutoFollowToggle({ userId, username }: { userId: string; usernam
           }`}
         />
       </button>
-      {t('social.follow.autoFollow')}
+      {label}
     </label>
+  );
+}
+
+/** The caller's follow row for `userId` off the shared following query, or undefined. */
+function useFollowingEntry(userId: string) {
+  const auth = useOptionalAuth();
+  const authenticated = auth?.status === 'authenticated';
+  const isSelf = auth?.user?.id === userId;
+  const followingQuery = useQuery({
+    queryKey: FOLLOWING_QUERY_KEY,
+    queryFn: ({ signal }) => listFollowing(signal),
+    enabled: authenticated && !isSelf,
+    staleTime: 30_000,
+  });
+  const entry =
+    authenticated && !isSelf
+      ? followingQuery.data?.following.find((f) => f.user.id === userId)
+      : undefined;
+  return entry;
+}
+
+/**
+ * Per-followed-person auto-follow switch (#439): when ON, every item of theirs
+ * that becomes newly visible to the caller is auto-added to the caller's
+ * followed items (in addition to the follow news). Rendered ONLY while the
+ * caller follows the person — it reads its state from the same deduped
+ * `['social','following']` query as the FollowButton and PATCHes the follow row,
+ * so the button, this switch and the Following list never disagree.
+ */
+export function AutoFollowToggle({ userId, username }: { userId: string; username: string }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const entry = useFollowingEntry(userId);
+
+  const toggleMutation = useMutation({
+    mutationFn: (next: boolean) => updateFollow(userId, { autoFollowItems: next }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: FOLLOWING_QUERY_KEY });
+      // Flipping it ON changes what lands in the followed-items collection next.
+      void queryClient.invalidateQueries({ queryKey: ITEM_FOLLOWS_QUERY_KEY });
+    },
+  });
+
+  if (!entry) return null;
+
+  return (
+    <FollowPrefSwitch
+      on={entry.autoFollowItems}
+      disabled={toggleMutation.isPending}
+      ariaLabel={t('social.follow.autoFollowAria', { username })}
+      hint={t('social.follow.autoFollowHint')}
+      label={t('social.follow.autoFollow')}
+      onToggle={() => toggleMutation.mutate(!entry.autoFollowItems)}
+    />
+  );
+}
+
+/**
+ * Per-followed-person alert-follow switches (#455): two INDEPENDENT triggers —
+ * notify me when they create a new alert / when one of their alerts fires
+ * (created-only, fired-only, both, or neither; both default OFF). Notify-only:
+ * nothing is copied into the caller's own alert list, and nothing arrives
+ * unless the followed person shares their alerts with followers. Rendered ONLY
+ * while the caller follows the person, off the same deduped following query as
+ * the FollowButton.
+ */
+export function AlertFollowToggles({ userId, username }: { userId: string; username: string }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const entry = useFollowingEntry(userId);
+
+  const toggleMutation = useMutation({
+    mutationFn: (patch: { notifyOnAlertCreate?: boolean; notifyOnAlertFire?: boolean }) =>
+      updateFollow(userId, patch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: FOLLOWING_QUERY_KEY });
+    },
+  });
+
+  if (!entry) return null;
+
+  return (
+    <>
+      <FollowPrefSwitch
+        on={entry.notifyOnAlertCreate}
+        disabled={toggleMutation.isPending}
+        ariaLabel={t('social.follow.alertCreateAria', { username })}
+        hint={t('social.follow.alertCreateHint')}
+        label={t('social.follow.alertCreate')}
+        onToggle={() => toggleMutation.mutate({ notifyOnAlertCreate: !entry.notifyOnAlertCreate })}
+      />
+      <FollowPrefSwitch
+        on={entry.notifyOnAlertFire}
+        disabled={toggleMutation.isPending}
+        ariaLabel={t('social.follow.alertFireAria', { username })}
+        hint={t('social.follow.alertFireHint')}
+        label={t('social.follow.alertFire')}
+        onToggle={() => toggleMutation.mutate({ notifyOnAlertFire: !entry.notifyOnAlertFire })}
+      />
+    </>
   );
 }

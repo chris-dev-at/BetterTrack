@@ -4,6 +4,8 @@ import type {
   AlertTriggeredEvent,
   ChatMessageEvent,
   ConglomerateSharedEvent,
+  FollowAlertCreatedEvent,
+  FollowAlertFiredEvent,
   FollowPublishedEvent,
   FriendAcceptedEvent,
   FriendActivityEvent,
@@ -17,7 +19,7 @@ import type {
 } from '../../data/repositories/notificationRepository';
 import type { AlertNotificationContext } from '../../data/repositories/alertRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
-import { alertBody, alertTitle } from '../alerts/alertMessages';
+import { alertBody, alertRuleSummary, alertTitle } from '../alerts/alertMessages';
 import type { EmailService } from '../email/emailService';
 import type { Logger } from '../../logger';
 
@@ -66,6 +68,8 @@ export type DispatchableEvent =
   | ConglomerateSharedEvent
   | FriendActivityEvent
   | FollowPublishedEvent
+  | FollowAlertCreatedEvent
+  | FollowAlertFiredEvent
   | AccountTempPasswordEvent
   | AlertTriggeredEvent
   | ChatMessageEvent;
@@ -79,6 +83,8 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'conglomerate.shared',
   'friend.activity',
   'follow.published',
+  'follow.alert.created',
+  'follow.alert.fired',
   'account.temp_password',
   'alert.triggered',
   'chat.message',
@@ -135,6 +141,15 @@ function eventKeyFor(event: DispatchableEvent): string {
       // re-notifies (#438 anti-noise), while a genuine re-publish on a later day
       // is a fresh key. The recipient userId (repo-side) keeps followers distinct.
       return `follow.published:${event.itemKind}:${event.itemId}:${event.occurredAt.slice(0, 10)}`;
+    case 'follow.alert.created':
+      // One creation per alert, ever — the alert id alone keys it; the
+      // recipient userId (repo-side) keeps followers distinct.
+      return `follow.alert.created:${event.alertId}`;
+    case 'follow.alert.fired':
+      // Deduped per (alert, trigger window) exactly like the owner's
+      // `alert.triggered` below — a redelivered fire no-ops, a repeat alert's
+      // next window is fresh.
+      return `follow.alert.fired:${event.alertId}:${event.occurredAt.slice(0, 16)}`;
     case 'account.temp_password':
       // Every reset is a fresh notice — the timestamp keys the occurrence.
       return `account.temp_password:${event.occurredAt}`;
@@ -326,6 +341,40 @@ export function createNotificationDispatcher(
           },
         };
       }
+      case 'follow.alert.created':
+      case 'follow.alert.fired': {
+        // Same dispatch-time context resolution as `alert.triggered`: the alert
+        // vanished (or alerts aren't wired here) → nothing to render, no row.
+        if (!resolveAlert) return null;
+        const context = await resolveAlert(event.alertId);
+        if (!context) return null;
+        const rule = alertRuleSummary({
+          kind: context.kind,
+          symbol: context.symbol,
+          threshold: context.threshold,
+          currency: context.currency,
+        });
+        const created = event.type === 'follow.alert.created';
+        return {
+          eventKey,
+          title: created
+            ? `New alert from ${event.actorUsername}`
+            : `${event.actorUsername}'s alert fired`,
+          body: created
+            ? `${event.actorUsername} created a price alert: ${rule}.`
+            : `${event.actorUsername}'s price alert fired: ${rule}.`,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            alertId: event.alertId,
+            assetId: event.assetId,
+            kind: context.kind,
+          },
+          data: { alertId: event.alertId, assetId: event.assetId },
+          alertSymbol: context.symbol,
+        };
+      }
       case 'account.temp_password':
         return {
           eventKey,
@@ -428,6 +477,12 @@ export function createNotificationDispatcher(
         // The rendered body already names the actor + item; the email reuses it
         // verbatim in the recipient's locale (#438).
         await email.sendFollowPublished({ to, userId, body: rendered.body, locale });
+        return;
+      case 'follow.alert.created':
+        await email.sendFollowAlertCreated({ to, userId, body: rendered.body, locale });
+        return;
+      case 'follow.alert.fired':
+        await email.sendFollowAlertFired({ to, userId, body: rendered.body, locale });
         return;
       case 'alert.triggered':
         await email.sendAlertTriggered({

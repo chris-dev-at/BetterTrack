@@ -39,6 +39,7 @@ import type {
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type {
   FollowingUserRow,
+  FollowPrefs,
   FollowUserRow,
   UserFollowsRepository,
 } from '../../data/repositories/userFollowsRepository';
@@ -92,10 +93,10 @@ export interface SocialService {
   removeFriend(userId: string, otherUserId: string): Promise<void>;
   /**
    * Follow a person (#438). Idempotent; 404 when the target isn't a valid follow
-   * target. `autoFollowItems` (#439) is settable at follow time; a repeat follow
-   * never flips the existing pref.
+   * target. All per-follow prefs (#439 auto-follow, #455 alert triggers) are
+   * settable at follow time; a repeat follow never flips existing prefs.
    */
-  followUser(userId: string, targetId: string, opts?: { autoFollowItems?: boolean }): Promise<void>;
+  followUser(userId: string, targetId: string, opts?: FollowPrefs): Promise<void>;
   /** Unfollow a person (#438). 404 when the caller wasn't following them. */
   unfollowUser(userId: string, targetId: string): Promise<void>;
   /** Patch the caller's prefs on one follow (#439). 404 when not following. */
@@ -222,7 +223,12 @@ function toFollowUser(row: FollowUserRow): FollowUser {
 }
 
 function toFollowingEntry(row: FollowingUserRow): FollowingEntry {
-  return { ...toFollowUser(row), autoFollowItems: row.autoFollowItems };
+  return {
+    ...toFollowUser(row),
+    autoFollowItems: row.autoFollowItems,
+    notifyOnAlertCreate: row.notifyOnAlertCreate,
+    notifyOnAlertFire: row.notifyOnAlertFire,
+  };
 }
 
 export function createSocialService(deps: SocialServiceDeps): SocialService {
@@ -432,8 +438,12 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       if (!target) throw FOLLOW_TARGET_NOT_FOUND();
       // Idempotent: a repeat follow is a silent no-op — following grants no access
       // and emits nothing on its own, so there is nothing to re-fire. A repeat
-      // follow also never flips prefs; changing those is PATCH's job (#439).
-      await follows.follow(userId, targetId, { autoFollowItems: opts?.autoFollowItems });
+      // follow also never flips prefs; changing those is PATCH's job (#439/#455).
+      await follows.follow(userId, targetId, {
+        autoFollowItems: opts?.autoFollowItems,
+        notifyOnAlertCreate: opts?.notifyOnAlertCreate,
+        notifyOnAlertFire: opts?.notifyOnAlertFire,
+      });
     },
 
     async unfollowUser(userId, targetId) {
@@ -444,6 +454,8 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     async updateFollow(userId, targetId, patch) {
       const found = await follows.updateFollowPrefs(userId, targetId, {
         autoFollowItems: patch.autoFollowItems,
+        notifyOnAlertCreate: patch.notifyOnAlertCreate,
+        notifyOnAlertFire: patch.notifyOnAlertFire,
       });
       if (!found) throw NOT_FOLLOWING();
       const row = await follows.getFollowing(userId, targetId);

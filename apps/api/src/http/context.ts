@@ -655,7 +655,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
   // the worker fires them and emits `alert.triggered` onto the durable
   // notification queue (#368), which the worker's dispatch job fans out.
-  const alerts = createAlertService({ repo: alertRepo, assetRepo, marketData, logger });
+  // #455: creation additionally fans `follow.alert.created` out to opted-in
+  // followers of a sharing owner, and the sharing getter/setter manage the
+  // owner's `alertsVisibleToFollowers` opt-in.
+  const alerts = createAlertService({
+    repo: alertRepo,
+    assetRepo,
+    follows: userFollowsRepo,
+    users: userRepo,
+    notify,
+    marketData,
+    logger,
+  });
 
   // Idempotency-key store (§13.4 V4-P2a, #417): the durable claim/replay backing
   // store for the reusable idempotency middleware on the portfolio mutation routes.

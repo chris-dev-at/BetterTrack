@@ -18,6 +18,8 @@ export type {
   ConglomerateSharedEvent,
   FriendActivityEvent,
   FollowPublishedEvent,
+  FollowAlertCreatedEvent,
+  FollowAlertFiredEvent,
   AccountTempPasswordEvent,
   ChatMessageEvent,
 } from './types';

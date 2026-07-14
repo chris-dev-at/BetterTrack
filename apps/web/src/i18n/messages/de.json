@@ -264,6 +264,14 @@
         "followPublished": {
           "label": "Neues von Personen, denen du folgst",
           "description": "Wenn jemand, dem du folgst, ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich macht."
+        },
+        "followAlertCreated": {
+          "label": "Neue Alarme von Personen, denen du folgst",
+          "description": "Wenn jemand, dem du folgst, einen Preisalarm erstellt (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
+        },
+        "followAlertFired": {
+          "label": "Ausgelöste Alarme von Personen, denen du folgst",
+          "description": "Wenn ein Preisalarm von jemandem, dem du folgst, auslöst (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
         }
       },
       "routing": {
@@ -1384,7 +1392,18 @@
       "loadError": "Deine Alarme konnten nicht geladen werden. Bitte lade die Seite neu.",
       "emptyTitle": "Noch keine Alarme",
       "emptyDescription": "Erstelle einen Alarm, um benachrichtigt zu werden, wenn eine Anlage einen Preis erreicht oder sich um einen Prozentsatz bewegt.",
-      "emptyCta": "Neuer Alarm →"
+      "emptyCta": "Neuer Alarm →",
+      "sharing": {
+        "title": "Meine Alarme mit Followern teilen",
+        "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
+        "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
+        "toggleAria": "Meine Alarme mit Followern teilen",
+        "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+        "confirmTitle": "Deine Alarme mit allen Followern teilen?",
+        "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
+        "confirmCancel": "Abbrechen",
+        "confirmEnable": "Ich verstehe — Alarme teilen"
+      }
     },
     "conglomerates": {
       "title": "Konglomerate",
@@ -1629,7 +1648,13 @@
       },
       "autoFollow": "Neuen Elementen automatisch folgen",
       "autoFollowHint": "Fügt jedes Element, das diese Person für dich sichtbar macht, automatisch zu deinen gefolgten Elementen hinzu.",
-      "autoFollowAria": "Neuen Elementen von {{username}} automatisch folgen"
+      "autoFollowAria": "Neuen Elementen von {{username}} automatisch folgen",
+      "alertCreate": "Über neue Alarme benachrichtigen",
+      "alertCreateHint": "Erhalte eine Benachrichtigung, wenn diese Person einen neuen Preisalarm erstellt. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
+      "alertCreateAria": "Über neue Alarme von {{username}} benachrichtigen",
+      "alertFire": "Benachrichtigen, wenn Alarme auslösen",
+      "alertFireHint": "Erhalte eine Benachrichtigung, wenn einer ihrer Preisalarme auslöst. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
+      "alertFireAria": "Benachrichtigen, wenn Alarme von {{username}} auslösen"
     },
     "friend": {
       "since": "Befreundet seit {{date}}",

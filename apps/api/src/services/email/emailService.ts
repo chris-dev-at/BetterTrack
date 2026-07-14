@@ -5,6 +5,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  followAlertEmail,
   conglomerateSharedEmail,
   friendAcceptedEmail,
   followPublishedEmail,
@@ -156,6 +157,20 @@ export interface EmailService {
     body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: someone `userId` follows created a price alert (#455). */
+  sendFollowAlertCreated(params: {
+    to: string;
+    userId: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /** Notification email: a price alert of someone `userId` follows fired (#455). */
+  sendFollowAlertFired(params: {
+    to: string;
+    userId: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /** Notification email: a price alert `userId` set fired (§14). */
   sendAlertTriggered(params: {
     to: string;
@@ -200,6 +215,8 @@ type EmailTemplateKind =
   | 'conglomerate_shared'
   | 'friend_activity'
   | 'follow_published'
+  | 'follow_alert_created'
+  | 'follow_alert_fired'
   | 'alert_triggered'
   | 'chat_message';
 
@@ -399,6 +416,22 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'follow_published',
         to,
         followPublishedEmail({ body, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendFollowAlertCreated: ({ to, userId, body, locale }) =>
+      deliver(
+        'follow_alert_created',
+        to,
+        followAlertEmail({ variant: 'created', body, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendFollowAlertFired: ({ to, userId, body, locale }) =>
+      deliver(
+        'follow_alert_fired',
+        to,
+        followAlertEmail({ variant: 'fired', body, appUrl: config.appOrigin, locale }),
         { userId },
       ),
 

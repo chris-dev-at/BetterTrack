@@ -1,10 +1,13 @@
 import {
   alertListResponseSchema,
   alertSchema,
+  alertSharingResponseSchema,
   type Alert,
   type AlertListResponse,
+  type AlertSharingResponse,
   type CreateAlertRequest,
   type UpdateAlertRequest,
+  type UpdateAlertSharingRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -53,4 +56,22 @@ export async function rearmAlert(id: string): Promise<Alert> {
 /** `DELETE /alerts/:id` — remove an alert. */
 export async function deleteAlert(id: string): Promise<void> {
   await apiRequest<unknown>(`/alerts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/** Query key for the caller's alert-visibility setting (#455). */
+export const ALERT_SHARING_QUERY_KEY = ['alerts', 'sharing'] as const;
+
+/** `GET /alerts/sharing` — whether the caller's alerts are visible to followers (#455). */
+export async function getAlertSharing(signal?: AbortSignal): Promise<AlertSharingResponse> {
+  const data = await apiRequest<unknown>('/alerts/sharing', { signal });
+  return alertSharingResponseSchema.parse(data);
+}
+
+/** `PUT /alerts/sharing` — expose/hide the caller's alerts to followers (#455).
+ * Enabling requires `acknowledgeFollowers: true` (privacy friction ladder). */
+export async function updateAlertSharing(
+  body: UpdateAlertSharingRequest,
+): Promise<AlertSharingResponse> {
+  const data = await apiRequest<unknown>('/alerts/sharing', { method: 'PUT', body });
+  return alertSharingResponseSchema.parse(data);
 }
