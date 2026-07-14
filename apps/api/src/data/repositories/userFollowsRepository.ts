@@ -18,6 +18,11 @@ export interface FollowUserRow {
   createdAt: Date;
 }
 
+/** A row in the caller's OWN following list — carries their per-follow prefs (#439). */
+export interface FollowingUserRow extends FollowUserRow {
+  autoFollowItems: boolean;
+}
+
 export function createUserFollowsRepository(db: Database) {
   return {
     /**
@@ -37,16 +42,62 @@ export function createUserFollowsRepository(db: Database) {
 
     /**
      * Record a follow. Idempotent against the composite PK: a repeat follow is a
-     * no-op (never a duplicate-key crash). Returns whether a NEW row was created,
-     * so the service only emits/side-effects on a genuine new follow.
+     * no-op (never a duplicate-key crash) — an existing row keeps its prefs, so a
+     * repeat follow can't silently flip `autoFollowItems`. Returns whether a NEW
+     * row was created, so the service only emits/side-effects on a genuine new
+     * follow. `autoFollowItems` is settable at follow time (#439, default OFF).
      */
-    async follow(followerId: string, followedId: string): Promise<boolean> {
+    async follow(
+      followerId: string,
+      followedId: string,
+      opts?: { autoFollowItems?: boolean },
+    ): Promise<boolean> {
       const rows = await db
         .insert(userFollows)
-        .values({ followerId, followedId })
+        .values({ followerId, followedId, autoFollowItems: opts?.autoFollowItems ?? false })
         .onConflictDoNothing()
         .returning({ followerId: userFollows.followerId });
       return rows.length > 0;
+    },
+
+    /**
+     * Patch the caller's per-follow prefs (#439) — currently `autoFollowItems`.
+     * Returns whether a follow row existed (the service 404s a non-follow).
+     */
+    async updateFollowPrefs(
+      followerId: string,
+      followedId: string,
+      patch: { autoFollowItems?: boolean },
+    ): Promise<boolean> {
+      if (patch.autoFollowItems === undefined) {
+        // Nothing to change — still report whether the follow exists.
+        return this.isFollowing(followerId, followedId);
+      }
+      const rows = await db
+        .update(userFollows)
+        .set({ autoFollowItems: patch.autoFollowItems })
+        .where(and(eq(userFollows.followerId, followerId), eq(userFollows.followedId, followedId)))
+        .returning({ followerId: userFollows.followerId });
+      return rows.length > 0;
+    },
+
+    /** One row of the caller's following list (the other party + prefs), or `undefined`. */
+    async getFollowing(
+      followerId: string,
+      followedId: string,
+    ): Promise<FollowingUserRow | undefined> {
+      const [row] = await db
+        .select({
+          id: users.id,
+          username: users.username,
+          createdAt: userFollows.createdAt,
+          autoFollowItems: userFollows.autoFollowItems,
+        })
+        .from(userFollows)
+        .innerJoin(users, eq(users.id, userFollows.followedId))
+        .where(and(eq(userFollows.followerId, followerId), eq(userFollows.followedId, followedId)))
+        .limit(1);
+      return row;
     },
 
     /** Remove a follow. Returns whether a row was removed (so the service 404s a non-follow). */
@@ -68,10 +119,15 @@ export function createUserFollowsRepository(db: Database) {
       return row !== undefined;
     },
 
-    /** The users `followerId` follows — the other party + when it formed, by username. */
-    async listFollowing(followerId: string): Promise<FollowUserRow[]> {
+    /** The users `followerId` follows — the other party + per-follow prefs, by username. */
+    async listFollowing(followerId: string): Promise<FollowingUserRow[]> {
       return db
-        .select({ id: users.id, username: users.username, createdAt: userFollows.createdAt })
+        .select({
+          id: users.id,
+          username: users.username,
+          createdAt: userFollows.createdAt,
+          autoFollowItems: userFollows.autoFollowItems,
+        })
         .from(userFollows)
         .innerJoin(users, eq(users.id, userFollows.followedId))
         .where(eq(userFollows.followerId, followerId))
@@ -89,16 +145,22 @@ export function createUserFollowsRepository(db: Database) {
     },
 
     /**
-     * The ids of everyone who follows `followedId` — the `follow.published`
-     * fan-out set. Ids only (no user join); the audience layer decides per-follower
-     * whether the item is newly visible.
+     * Everyone who follows `followedId` — the `follow.published` fan-out set —
+     * with each follower's `autoFollowItems` pref, so the emission can auto-add
+     * the item for opted-in followers in the same pass (#439). Ids + prefs only
+     * (no user join); the audience layer decides per-follower whether the item
+     * is newly visible.
      */
-    async listFollowerIds(followedId: string): Promise<string[]> {
-      const rows = await db
-        .select({ followerId: userFollows.followerId })
+    async listFollowerPrefs(
+      followedId: string,
+    ): Promise<{ followerId: string; autoFollowItems: boolean }[]> {
+      return db
+        .select({
+          followerId: userFollows.followerId,
+          autoFollowItems: userFollows.autoFollowItems,
+        })
         .from(userFollows)
         .where(eq(userFollows.followedId, followedId));
-      return rows.map((r) => r.followerId);
     },
 
     /** How many users follow `userId` (public follower count on the profile). */

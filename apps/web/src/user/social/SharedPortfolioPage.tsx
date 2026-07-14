@@ -10,6 +10,7 @@ import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
+import { ItemFollowButton } from './ItemFollowButton';
 import type { AllocationSegment } from '../../ui/charts';
 import { Alert } from '../components/ui';
 
@@ -216,7 +217,14 @@ export function SharedPortfolioPage() {
         >
           ← Friends
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-neutral-100">{name}</h1>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{name}</h1>
+          <ItemFollowButton
+            kind="portfolio"
+            subjectId={query.data.portfolioId}
+            ownerId={owner.id}
+          />
+        </div>
         <p className="mt-1 text-sm text-neutral-400">Shared by {owner.username} · read-only</p>
       </div>
 

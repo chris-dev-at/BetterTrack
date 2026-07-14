@@ -3,8 +3,10 @@ import {
   audienceMutationResponseSchema,
   audienceStateSchema,
   followersListResponseSchema,
+  followingEntrySchema,
   followingListResponseSchema,
   friendRequestListResponseSchema,
+  itemFollowsListResponseSchema,
   friendsListResponseSchema,
   mySharedResponseSchema,
   okResponseSchema,
@@ -20,8 +22,10 @@ import {
   type AudienceState,
   type CreateFriendRequestRequest,
   type FollowersListResponse,
+  type FollowingEntry,
   type FollowingListResponse,
   type FriendRequestListResponse,
+  type ItemFollowsListResponse,
   type FriendsListResponse,
   type MySharedResponse,
   type ProfileSettingsResponse,
@@ -94,13 +98,52 @@ export async function removeFriend(userId: string): Promise<void> {
   await apiRequest<unknown>(`/social/friends/${encodeURIComponent(userId)}`, { method: 'DELETE' });
 }
 
-/** `POST /social/follows` — follow a person (#438). Idempotent server-side. */
-export async function followUser(userId: string): Promise<void> {
+/**
+ * `POST /social/follows` — follow a person (#438). Idempotent server-side.
+ * `autoFollowItems` (#439) opts into auto-bookmarking their newly-visible items
+ * right at follow time (default OFF; a repeat follow never flips the pref).
+ */
+export async function followUser(userId: string, autoFollowItems?: boolean): Promise<void> {
   const data = await apiRequest<unknown>('/social/follows', {
     method: 'POST',
-    body: { userId },
+    body: autoFollowItems === undefined ? { userId } : { userId, autoFollowItems },
   });
   okResponseSchema.parse(data);
+}
+
+/** `PATCH /social/follows/:userId` — update per-follow prefs (#439). */
+export async function updateFollow(
+  userId: string,
+  patch: { autoFollowItems?: boolean },
+): Promise<FollowingEntry> {
+  const data = await apiRequest<unknown>(`/social/follows/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    body: patch,
+  });
+  return followingEntrySchema.parse(data);
+}
+
+/** `POST /social/item-follows` — bookmark another user's visible item (#439). Idempotent. */
+export async function followItem(kind: ShareKind, subjectId: string): Promise<void> {
+  const data = await apiRequest<unknown>('/social/item-follows', {
+    method: 'POST',
+    body: { kind, subjectId },
+  });
+  okResponseSchema.parse(data);
+}
+
+/** `DELETE /social/item-follows/:kind/:subjectId` — remove an item bookmark (#439). */
+export async function unfollowItem(kind: ShareKind, subjectId: string): Promise<void> {
+  await apiRequest<unknown>(
+    `/social/item-follows/${encodeURIComponent(kind)}/${encodeURIComponent(subjectId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+/** `GET /social/item-follows` — the caller's followed items (#439), newest first. */
+export async function listItemFollows(signal?: AbortSignal): Promise<ItemFollowsListResponse> {
+  const data = await apiRequest<unknown>('/social/item-follows', { signal });
+  return itemFollowsListResponseSchema.parse(data);
 }
 
 /** `DELETE /social/follows/:userId` — unfollow a person; stops their news (#438). */

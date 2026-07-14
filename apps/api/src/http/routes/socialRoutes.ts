@@ -7,21 +7,25 @@ import {
   createFriendRequestRequestSchema,
   followUserRequestSchema,
   idParamSchema,
+  itemFollowRequestSchema,
   portfolioIdParamSchema,
   profileItemParamSchema,
   profileUsernameParamSchema,
   setActivityAlertRequestSchema,
   setAudienceRequestSchema,
   tokenParamSchema,
+  updateFollowRequestSchema,
   updateProfileSettingsRequestSchema,
   watchlistIdParamSchema,
   type AudienceParam,
   type CreateFriendRequestRequest,
   type FollowUserRequest,
+  type ItemFollowRequest,
   type ProfileItemParam,
   type ProfileUsernameParam,
   type SetActivityAlertRequest,
   type SetAudienceRequest,
+  type UpdateFollowRequest,
   type UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -142,8 +146,8 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     limiters.social,
     validateBody(followUserRequestSchema),
     async (req, res) => {
-      const { userId } = req.valid?.body as FollowUserRequest;
-      await ctx.social.followUser(req.authUser!.id, userId);
+      const { userId, autoFollowItems } = req.valid?.body as FollowUserRequest;
+      await ctx.social.followUser(req.authUser!.id, userId, { autoFollowItems });
       res.status(202).json({ ok: true });
     },
   );
@@ -166,6 +170,53 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     await ctx.social.unfollowUser(req.authUser!.id, userId);
     res.status(204).send();
   });
+
+  // PATCH /social/follows/:userId — the caller's per-follow prefs (#439):
+  // currently the auto-follow-items toggle. 404 when not following.
+  router.patch(
+    '/follows/:userId',
+    validateParams(userIdParamSchema),
+    validateBody(updateFollowRequestSchema),
+    async (req, res) => {
+      const { userId } = req.valid?.params as { userId: string };
+      const patch = req.valid?.body as UpdateFollowRequest;
+      const result = await ctx.social.updateFollow(req.authUser!.id, userId, patch);
+      res.json(result);
+    },
+  );
+
+  // POST /social/item-follows — bookmark another user's item (#439). Idempotent;
+  // only a CURRENTLY visible item is followable (friend-shared or public with a
+  // live profile) — anything else 404s, so this can't probe private items.
+  router.post(
+    '/item-follows',
+    limiters.social,
+    validateBody(itemFollowRequestSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.body as ItemFollowRequest;
+      await ctx.social.followItem(req.authUser!.id, kind, subjectId);
+      res.status(202).json({ ok: true });
+    },
+  );
+
+  // GET /social/item-follows — the caller's Following collection (#439), each
+  // row's visibility re-derived through the enforcement layer at read time.
+  router.get('/item-follows', async (req, res) => {
+    const result = await ctx.social.listItemFollows(req.authUser!.id);
+    res.json(result);
+  });
+
+  // DELETE /social/item-follows/:kind/:subjectId — remove a bookmark (#439).
+  // Works regardless of current visibility (that's how a "gone" row is removed).
+  router.delete(
+    '/item-follows/:kind/:subjectId',
+    validateParams(audienceParamSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.params as AudienceParam;
+      await ctx.social.unfollowItem(req.authUser!.id, kind, subjectId);
+      res.status(204).send();
+    },
+  );
 
   // GET /social/shared — everything my friends share with me (audience-derived).
   router.get('/shared', async (req, res) => {

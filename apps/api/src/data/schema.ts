@@ -1023,6 +1023,13 @@ export const userFollows = pgTable(
     followedId: uuid('followed_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * Per-followed-person opt-in (#439, default OFF): when true, every item of
+     * theirs that becomes newly visible to the follower (the same #438 event
+     * matrix that fires `follow.published`) is auto-added to the follower's
+     * {@link itemFollows} — in addition to the news notification.
+     */
+    autoFollowItems: boolean('auto_follow_items').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -1141,6 +1148,35 @@ export const sharedItemActivityPrefs = pgTable(
       name: 'shared_item_activity_prefs_pk',
       columns: [t.viewerId, t.kind, t.subjectId],
     }),
+  ],
+);
+
+/**
+ * `item_follows` — a bookmark of ANOTHER user's shareable item (#439): one row
+ * per (user, kind, subject) the user follows. Like {@link sharedItemActivityPrefs}
+ * the `subject_id` is polymorphic (portfolio / conglomerate / watchlist id, no
+ * FK); a follow grants NO read access — the Following view re-authorizes every
+ * row through the audience layer at read time, so an item that loses visibility
+ * renders as gone (the chat-chip `viewable:false` precedent) and one that is
+ * deleted is purged via the same `clearForSubject` hygiene hook the audience
+ * rows use. Rows are written either explicitly (follow action on a visible
+ * item) or by the auto-follow fan-out ({@link userFollows.autoFollowItems}).
+ */
+export const itemFollows = pgTable(
+  'item_follows',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    kind: shareKindEnum('kind').notNull(),
+    subjectId: uuid('subject_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The unique triple — a repeat follow (manual or auto) is a no-op upsert.
+    primaryKey({ name: 'item_follows_pk', columns: [t.userId, t.kind, t.subjectId] }),
+    // Reverse lookup for the subject-deletion purge (clearForSubject).
+    index('item_follows_subject_idx').on(t.kind, t.subjectId),
   ],
 );
 
@@ -1405,6 +1441,8 @@ export type FriendshipRow = typeof friendships.$inferSelect;
 export type NewFriendshipRow = typeof friendships.$inferInsert;
 export type UserFollowRow = typeof userFollows.$inferSelect;
 export type NewUserFollowRow = typeof userFollows.$inferInsert;
+export type ItemFollowRow = typeof itemFollows.$inferSelect;
+export type NewItemFollowRow = typeof itemFollows.$inferInsert;
 export type WatchlistRow = typeof watchlists.$inferSelect;
 export type NewWatchlistRow = typeof watchlists.$inferInsert;
 export type ShareAudienceRow = typeof shareAudiences.$inferSelect;
@@ -1511,6 +1549,7 @@ export const schema = {
   friendRequests,
   friendships,
   userFollows,
+  itemFollows,
   shareAudiences,
   shareAudienceMembers,
   shareAudienceLinks,

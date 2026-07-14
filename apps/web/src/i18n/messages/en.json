@@ -1626,7 +1626,10 @@
       "followingStat": {
         "one": "{{count}} following",
         "other": "{{count}} following"
-      }
+      },
+      "autoFollow": "Auto-follow their new items",
+      "autoFollowHint": "Automatically adds every item they make visible to you to your followed items.",
+      "autoFollowAria": "Auto-follow new items from {{username}}"
     },
     "friend": {
       "since": "Friends since {{date}}",
@@ -1693,6 +1696,26 @@
       },
       "deletedUser": "Deleted user",
       "deletedClosed": "This account no longer exists. The conversation is closed, but your history stays readable."
+    },
+    "itemFollow": {
+      "follow": "Follow item",
+      "following": "Following",
+      "followAria": "Follow this item",
+      "unfollowAria": "Unfollow this item",
+      "unfollow": "Unfollow",
+      "sectionTitle": "Followed items",
+      "sectionSubtitle": "Portfolios, watchlists and conglomerates you follow. New items from people you auto-follow appear here automatically.",
+      "empty": "You're not following any items yet.",
+      "emptyHint": "Follow a shared or public portfolio, watchlist or conglomerate to keep it here.",
+      "gone": "No longer available",
+      "goneHint": "This item was unshared or deleted by its owner.",
+      "by": "by @{{username}}",
+      "error": "Couldn't load your followed items. Please refresh the page.",
+      "kind": {
+        "portfolio": "Portfolio",
+        "conglomerate": "Conglomerate",
+        "watchlist": "Watchlist"
+      }
     }
   },
   "profile": {

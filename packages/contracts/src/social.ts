@@ -98,8 +98,15 @@ export type FriendsListResponse = z.infer<typeof friendsListResponseSchema>;
  * visible to them (created/switched public, or shared their way).
  */
 
-/** `POST /social/follows` body — the user to follow, by id. Idempotent. */
-export const followUserRequestSchema = z.object({ userId: z.string().uuid() }).strict();
+/**
+ * `POST /social/follows` body — the user to follow, by id. Idempotent (a repeat
+ * follow never flips existing prefs). `autoFollowItems` (#439, default OFF)
+ * opts the follower into auto-bookmarking every item of theirs that becomes
+ * newly visible; it is also settable later via `PATCH /social/follows/:userId`.
+ */
+export const followUserRequestSchema = z
+  .object({ userId: z.string().uuid(), autoFollowItems: z.boolean().optional() })
+  .strict();
 export type FollowUserRequest = z.infer<typeof followUserRequestSchema>;
 
 /** One entry in a following/followers list — the other party + when the follow formed. */
@@ -111,21 +118,89 @@ export const followUserSchema = z
   .strict();
 export type FollowUser = z.infer<typeof followUserSchema>;
 
+/**
+ * One entry in the caller's OWN following list — the other party plus the
+ * caller's per-followed-person prefs (#439). `autoFollowItems` never appears on
+ * the followers list: it is the follower's private setting.
+ */
+export const followingEntrySchema = followUserSchema
+  .extend({ autoFollowItems: z.boolean() })
+  .strict();
+export type FollowingEntry = z.infer<typeof followingEntrySchema>;
+
 /** `GET /social/follows` response — the users the caller follows (with counts). */
 export const followingListResponseSchema = z
   .object({
-    following: z.array(followUserSchema),
+    following: z.array(followingEntrySchema),
     followingCount: z.number().int().nonnegative(),
     followerCount: z.number().int().nonnegative(),
   })
   .strict();
 export type FollowingListResponse = z.infer<typeof followingListResponseSchema>;
 
+/**
+ * `PATCH /social/follows/:userId` body — update the caller's prefs on one
+ * follow (#439). Fields are optional so future per-follow toggles (e.g. the
+ * alert-follow triggers) stay additive; an empty patch is a no-op read.
+ * 404s when the caller doesn't follow the user.
+ */
+export const updateFollowRequestSchema = z
+  .object({ autoFollowItems: z.boolean().optional() })
+  .strict();
+export type UpdateFollowRequest = z.infer<typeof updateFollowRequestSchema>;
+
 /** `GET /social/followers` response — the users who follow the caller. */
 export const followersListResponseSchema = z
   .object({ followers: z.array(followUserSchema) })
   .strict();
 export type FollowersListResponse = z.infer<typeof followersListResponseSchema>;
+
+// --- Item follows (bookmarks of other people's items, #439) -------------------
+
+/**
+ * `POST /social/item-follows` body — bookmark ANOTHER user's visible item.
+ * Idempotent. Only an item the caller can currently see (friend-shared to them,
+ * or public on a live public profile) is followable — anything else 404s, so
+ * the endpoint can't probe private items. Never your own item.
+ */
+export const itemFollowRequestSchema = z
+  .object({ kind: shareKindSchema, subjectId: z.string().uuid() })
+  .strict();
+export type ItemFollowRequest = z.infer<typeof itemFollowRequestSchema>;
+
+/**
+ * How the viewer reaches a followed item — decides the deep link the SPA
+ * builds: `friend` → the friend-shared read-only pages, `public` → the owner's
+ * public profile.
+ */
+export const followedItemViaSchema = z.enum(['friend', 'public']);
+export type FollowedItemVia = z.infer<typeof followedItemViaSchema>;
+
+/**
+ * One followed item in the caller's Following collection (#439). Visibility is
+ * re-derived through the audience enforcement layer on EVERY read: an item that
+ * was unshared, narrowed away from the caller, or deleted comes back as
+ * `viewable: false` with `name`/`owner`/`via` null — the chat-chip precedent —
+ * so nothing about it leaks and the row can be unfollowed but not opened.
+ */
+export const followedItemSchema = z
+  .object({
+    kind: shareKindSchema,
+    subjectId: z.string().uuid(),
+    followedAt: z.string().datetime(),
+    viewable: z.boolean(),
+    name: z.string().nullable(),
+    owner: friendUserSchema.nullable(),
+    via: followedItemViaSchema.nullable(),
+  })
+  .strict();
+export type FollowedItem = z.infer<typeof followedItemSchema>;
+
+/** `GET /social/item-follows` response — the caller's followed items, newest first. */
+export const itemFollowsListResponseSchema = z
+  .object({ items: z.array(followedItemSchema) })
+  .strict();
+export type ItemFollowsListResponse = z.infer<typeof itemFollowsListResponseSchema>;
 
 // --- Shared portfolios (§6.9: "Shared With Me" + "My Shared Items") ----------
 

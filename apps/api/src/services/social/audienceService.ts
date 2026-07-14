@@ -16,6 +16,7 @@ import type {
   ShareAudienceRepository,
 } from '../../data/repositories/shareAudienceRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
+import type { ItemFollowsRepository } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import { badRequest } from '../../errors';
@@ -61,8 +62,10 @@ export interface AudienceServiceDeps {
   repo: ShareAudienceRepository;
   /** Resolves friend recipients + the actor's username for share events (#368). */
   friendship?: Pick<FriendshipRepository, 'getUsername' | 'listFriends'>;
-  /** Resolves the owner's followers for `follow.published` fan-out (#438). */
-  follows?: Pick<UserFollowsRepository, 'listFollowerIds'>;
+  /** Resolves the owner's followers (+ their auto-follow prefs) for `follow.published` fan-out (#438/#439). */
+  follows?: Pick<UserFollowsRepository, 'listFollowerPrefs'>;
+  /** Item bookmarks (#439) — auto-added on publish for opted-in followers, purged with the subject. */
+  itemFollows?: Pick<ItemFollowsRepository, 'follow' | 'clearForSubject'>;
   /** Reachability gate for `follow.published` — is the owner's public profile live (#438). */
   profile?: Pick<ProfileRepository, 'isProfilePublic'>;
   /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
@@ -144,8 +147,21 @@ export interface AudienceService {
    * V3-P8 chip resolution), so it discloses nothing on its own.
    */
   subjectIdentity(kind: ShareKind, subjectId: string): Promise<{ name: string } | undefined>;
-  /** Drop a subject's audience row on subject deletion (hygiene; joins already gate). */
+  /** Drop a subject's audience row AND its item-follow bookmarks on subject deletion (hygiene; joins already gate). */
   clearForSubject(kind: ShareKind, subjectId: string): Promise<void>;
+  /**
+   * Whether — and how — a viewer can currently see one subject as an item-follow
+   * target (#439): first the friend-mode enforcement join (friendship AND the
+   * owner's audience), then the public rung (audience `public_link` AND the
+   * owner's public profile live — the only route a non-friend has to the item).
+   * Recomputed per call like every other authorization here; `undefined` → 404.
+   * `via` tells the SPA which read-only surface the item opens on.
+   */
+  authorizeItemFollowRead(
+    viewerId: string,
+    kind: ShareKind,
+    subjectId: string,
+  ): Promise<(NamedOwnerRef & { via: 'friend' | 'public' }) | undefined>;
 }
 
 export const PUBLIC_ACK_REQUIRED = () =>
@@ -160,7 +176,7 @@ function linkPath(token: string): string {
 }
 
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
-  const { repo, friendship, follows, profile, notify, logger } = deps;
+  const { repo, friendship, follows, itemFollows, profile, notify, logger } = deps;
 
   /**
    * Tell each friend the picker just admitted that the item is shared with them
@@ -237,8 +253,8 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     try {
       // Reachability gate (see doc): no working destination → no news.
       if (!(await profile.isProfilePublic(ownerId))) return;
-      const followerIds = await follows.listFollowerIds(ownerId);
-      if (followerIds.length === 0) return;
+      const followerPrefs = await follows.listFollowerPrefs(ownerId);
+      if (followerPrefs.length === 0) return;
       const friendSet = new Set((await friendship.listFriends(ownerId)).map((f) => f.id));
       const priorMembers = new Set(prior.memberIds);
       const couldSeeBefore = (followerId: string): boolean => {
@@ -253,16 +269,27 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
             return false;
         }
       };
-      const recipients = followerIds.filter((id) => id !== ownerId && !couldSeeBefore(id));
+      const recipients = followerPrefs.filter(
+        (f) => f.followerId !== ownerId && !couldSeeBefore(f.followerId),
+      );
       if (recipients.length === 0) return;
       const identity = await repo.getSubjectIdentity(kind, subjectId);
       if (!identity) return; // subject vanished mid-flight — nothing to name
       const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
       const occurredAt = new Date().toISOString();
-      for (const userId of recipients) {
+      for (const { followerId, autoFollowItems } of recipients) {
+        // Auto-follow (#439): an opted-in follower gets the item bookmarked in
+        // the SAME newly-visible pass that produces their news — insert BEFORE
+        // the emit so acting on the bell already finds the bookmark. Idempotent
+        // (PK upsert), so a same-day republish never duplicates it. The event
+        // matrix is deliberately identical to follow.published's: a follower
+        // who could already see the item is neither notified nor auto-added.
+        if (autoFollowItems && itemFollows) {
+          await itemFollows.follow(followerId, kind, subjectId);
+        }
         await notify.emit({
           type: 'follow.published',
-          userId,
+          userId: followerId,
           actorId: ownerId,
           actorUsername,
           itemKind: kind,
@@ -398,6 +425,35 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
 
     subjectIdentity: (kind, subjectId) => repo.getSubjectIdentity(kind, subjectId),
 
-    clearForSubject: (kind, subjectId) => repo.clearForSubject(kind, subjectId),
+    async clearForSubject(kind, subjectId) {
+      // Deleting a subject drops its audience row AND purges every bookmark of
+      // it (#439) — reads already degrade gracefully, this is pure hygiene.
+      await repo.clearForSubject(kind, subjectId);
+      await itemFollows?.clearForSubject(kind, subjectId);
+    },
+
+    async authorizeItemFollowRead(viewerId, kind, subjectId) {
+      // Friend mode first: the standard enforcement join. When it grants, the
+      // friend-shared read-only pages are the natural surface.
+      if (kind === 'portfolio') {
+        const shared = await repo.authorizePortfolioRead(viewerId, subjectId);
+        if (shared) return { ...shared, via: 'friend' };
+      } else if (kind === 'conglomerate') {
+        const shared = await repo.authorizeConglomerateRead(viewerId, subjectId);
+        if (shared) {
+          // The conglomerate authorize carries no name; resolve it AFTER the
+          // authorization passed (the documented getSubjectIdentity contract).
+          const identity = await repo.getSubjectIdentity(kind, subjectId);
+          if (identity) return { ...shared, name: identity.name, via: 'friend' };
+        }
+      } else {
+        const shared = await repo.authorizeWatchlistRead(viewerId, subjectId);
+        if (shared) return { ...shared, via: 'friend' };
+      }
+      // Public rung: `public_link` audience + a live public profile (#438's
+      // reachability gate) — viewer-independent, so any logged-in user qualifies.
+      const pub = await repo.publicFollowTarget(kind, subjectId);
+      return pub ? { ...pub, via: 'public' } : undefined;
+    },
   };
 }

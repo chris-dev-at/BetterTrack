@@ -408,6 +408,72 @@ export function createShareAudienceRepository(db: Database) {
       return row;
     },
 
+    /**
+     * Resolve one subject as a PUBLICLY followable item (#439) — no viewer, so
+     * the gate is: subject live, owner active, audience `public_link`, AND the
+     * owner's public profile enabled (the only route a non-friend follower has
+     * to the item is `/u/:username`, mirroring the #438 reachability gate — a
+     * public item without a live profile is link-only and not followable).
+     * Returns the owner + display name, or `undefined`.
+     */
+    async publicFollowTarget(
+      kind: ShareKind,
+      subjectId: string,
+    ): Promise<NamedOwnerRef | undefined> {
+      const publicAudience = and(
+        eq(shareAudiences.kind, kind),
+        eq(shareAudiences.audience, 'public_link'),
+      );
+      const liveOwner = (ownerCol: AnyPgColumn) =>
+        and(eq(users.id, ownerCol), eq(users.status, 'active'), eq(users.profilePublic, true));
+      if (kind === 'portfolio') {
+        const [row] = await db
+          .select({
+            ownerId: portfolios.userId,
+            ownerUsername: users.username,
+            name: portfolios.name,
+          })
+          .from(portfolios)
+          .innerJoin(users, liveOwner(portfolios.userId))
+          .innerJoin(
+            shareAudiences,
+            and(eq(shareAudiences.subjectId, portfolios.id), publicAudience),
+          )
+          .where(and(eq(portfolios.id, subjectId), isNull(portfolios.archivedAt)))
+          .limit(1);
+        return row;
+      }
+      if (kind === 'conglomerate') {
+        const [row] = await db
+          .select({
+            ownerId: conglomerates.ownerId,
+            ownerUsername: users.username,
+            name: conglomerates.name,
+          })
+          .from(conglomerates)
+          .innerJoin(users, liveOwner(conglomerates.ownerId))
+          .innerJoin(
+            shareAudiences,
+            and(eq(shareAudiences.subjectId, conglomerates.id), publicAudience),
+          )
+          .where(eq(conglomerates.id, subjectId))
+          .limit(1);
+        return row;
+      }
+      const [row] = await db
+        .select({
+          ownerId: watchlists.userId,
+          ownerUsername: users.username,
+          name: watchlists.name,
+        })
+        .from(watchlists)
+        .innerJoin(users, liveOwner(watchlists.userId))
+        .innerJoin(shareAudiences, and(eq(shareAudiences.subjectId, watchlists.id), publicAudience))
+        .where(eq(watchlists.id, subjectId))
+        .limit(1);
+      return row;
+    },
+
     // ── Read authorization — public-link mode (token, no friendship) ────────
 
     /**

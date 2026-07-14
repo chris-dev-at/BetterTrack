@@ -281,6 +281,13 @@
       "when": 1783940000000,
       "tag": "0039_user_follows",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1783950000000,
+      "tag": "0040_item_follows",
+      "breakpoints": true
     }
   ]
 }
