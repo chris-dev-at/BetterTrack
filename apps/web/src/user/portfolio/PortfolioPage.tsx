@@ -34,7 +34,7 @@ import {
 } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
-import type { AllocationSegment, BenchmarkSeries, PriceRange } from '../../ui/charts';
+import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { CashDialog } from './CashDialog';
@@ -961,7 +961,6 @@ export function PortfolioPage() {
   const t = useT();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<PriceRange>('1M');
-  const [overlay, setOverlay] = useState(false);
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
   const [perfMode, setPerfMode] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -997,9 +996,9 @@ export function PortfolioPage() {
   });
 
   const historyQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range), overlay],
+    queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
     queryFn: ({ signal }) =>
-      getPortfolioHistory(portfolioId!, toHistoryRange(range), overlay, signal),
+      getPortfolioHistory(portfolioId!, toHistoryRange(range), false, signal),
     enabled: portfolioId !== null,
     staleTime: HISTORY_STALE_MS,
   });
@@ -1078,33 +1077,6 @@ export function PortfolioPage() {
           })),
     [historyQuery.data, perfMode],
   );
-
-  // Per-asset overlay series (#122): raw native-currency closes; the chart
-  // normalizes everything to percentage moves when overlays are shown. In
-  // performance mode (#125) the main curve already *is* a % series, so each
-  // overlay is instead re-based here to its own first close in the window —
-  // one consistent % unit across every drawn series.
-  const chartOverlays = useMemo<BenchmarkSeries[]>(() => {
-    const assets = historyQuery.data?.assets ?? [];
-    if (!perfMode) {
-      return assets.map((a) => ({
-        label: a.symbol,
-        series: a.points.map((p) => ({ time: p.date as Time, value: p.close })),
-      }));
-    }
-    return assets
-      .filter((a) => (a.points[0]?.close ?? 0) > 0)
-      .map((a) => {
-        const first = a.points[0]!.close;
-        return {
-          label: a.symbol,
-          series: a.points.map((p) => ({
-            time: p.date as Time,
-            value: (p.close / first - 1) * 100,
-          })),
-        };
-      });
-  }, [historyQuery.data, perfMode]);
 
   // ── Loading / error ──
   if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
@@ -1260,20 +1232,21 @@ export function PortfolioPage() {
                     {t('portfolio.overview.chart.performanceMode')}
                   </ModeButton>
                 </div>
-                <button
-                  type="button"
-                  aria-pressed={overlay}
-                  onClick={() => setOverlay((v) => !v)}
-                  className={cx(
-                    'rounded-md px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
-                    'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-                    overlay
-                      ? 'bg-sky-600 text-white ring-sky-600'
-                      : 'bg-neutral-900 text-neutral-400 ring-neutral-800 hover:bg-neutral-800 hover:text-neutral-100',
-                  )}
+                {/* Overlay-assets + deeper analysis moved to Portfolio →
+                    Analytics (§13.3 V3-P9); the overview keeps only the simple
+                    curve (owner: "too technical" here). Carry the active
+                    portfolio so the deep-dive opens the same portfolio (#322). */}
+                <Link
+                  to={{
+                    pathname: '/portfolio/analytics',
+                    search: activeParam
+                      ? `?${ACTIVE_PORTFOLIO_PARAM}=${encodeURIComponent(activeParam)}`
+                      : '',
+                  }}
+                  className="rounded-md px-2.5 py-1 text-xs font-medium text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                 >
-                  {t('portfolio.overview.chart.overlayToggle')}
-                </button>
+                  {t('portfolio.overview.chart.analyticsLink')}
+                </Link>
               </div>
             </div>
             {perfMode ? (
@@ -1286,7 +1259,6 @@ export function PortfolioPage() {
               range={range}
               ranges={PORTFOLIO_RANGES}
               onRangeChange={setRange}
-              overlays={overlay ? chartOverlays : []}
               loading={historyQuery.isLoading || historyQuery.isFetching}
               ariaLabel={
                 perfMode

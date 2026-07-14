@@ -836,10 +836,106 @@
         "displayModeAriaLabel": "Chart display mode",
         "valueMode": "Value €",
         "performanceMode": "Performance %",
-        "overlayToggle": "Overlay assets",
+        "analyticsLink": "Analytics →",
         "perfHint": "Deposits and withdrawals are neutralized (time-weighted return) — the curve only moves when your holdings move.",
         "ariaLabelPerformance": "Portfolio performance over time",
         "ariaLabelValue": "Portfolio value over time"
+      }
+    },
+    "analytics": {
+      "title": "Analytics",
+      "subtitle": "See your portfolio in the most detail — configure the graph, compare a benchmark, and view returns in real terms.",
+      "backToOverview": "← Back to overview",
+      "loadError": "Couldn't load analytics for this portfolio.",
+      "displayModeAriaLabel": "Chart display mode",
+      "valueMode": "Value €",
+      "perfMode": "Performance %",
+      "empty": {
+        "title": "Nothing to analyze yet",
+        "description": "Add a holding to your portfolio to see the analytics deep-dive."
+      },
+      "range": {
+        "heading": "Date range",
+        "m1": "1M",
+        "m3": "3M",
+        "m6": "6M",
+        "y1": "1Y",
+        "ytd": "YTD",
+        "max": "Max",
+        "custom": "Custom",
+        "fromLabel": "From",
+        "toLabel": "To"
+      },
+      "inflation": {
+        "label": "Inflation adjustment",
+        "none": "Nominal (no inflation)",
+        "hicpAt": "Austria HICP",
+        "hicpEu": "Euro area HICP",
+        "cpiUs": "US CPI",
+        "flat": "Custom flat rate",
+        "rateLabel": "Inflation rate, percent per year",
+        "rateSuffix": "%/yr",
+        "realTermsBadge": "Real terms",
+        "realTermsHint": "Values are adjusted for inflation."
+      },
+      "compare": {
+        "heading": "Compare",
+        "none": "None",
+        "asset": "Asset / index",
+        "portfolio": "Portfolio",
+        "conglomerate": "Conglomerate",
+        "searchPlaceholder": "Search an asset or index…",
+        "current": "Comparing: {{label}}",
+        "pickPortfolio": "Choose a portfolio to compare",
+        "pickPortfolioPlaceholder": "Choose a portfolio…",
+        "noPortfolios": "You have no other portfolios to compare.",
+        "pickConglomerate": "Choose a conglomerate to compare",
+        "pickConglomeratePlaceholder": "Choose a conglomerate…",
+        "noConglomerates": "You don't have any conglomerates yet."
+      },
+      "chart": {
+        "ariaLabel": "Portfolio analytics chart",
+        "emptyMessage": "No data for this range yet."
+      },
+      "stats": {
+        "portfolioCaption": "Portfolio",
+        "compareCaption": "Comparison",
+        "totalReturn": "Total return",
+        "cagr": "CAGR",
+        "maxDrawdown": "Max drawdown",
+        "bestDay": "Best day",
+        "worstDay": "Worst day"
+      },
+      "filters": {
+        "heading": "Assets & filters",
+        "assetsHeading": "Show / hide assets",
+        "assetToggle": "Toggle {{symbol}}",
+        "groupsHeading": "Filter by type",
+        "groupToggle": "Toggle {{group}}",
+        "overlayToggle": "Overlay assets",
+        "overlayHint": "Overlay each holding's own move on the chart."
+      },
+      "groups": {
+        "stock": "Stocks",
+        "etf": "ETFs",
+        "index": "Indices",
+        "fx": "Forex",
+        "commodity": "Commodities",
+        "crypto": "Crypto",
+        "custom": "Custom",
+        "cash_like": "Cash-like",
+        "other": "Other"
+      },
+      "contribution": {
+        "sectionHeading": "Per-asset contribution",
+        "caption": "Per-asset contribution table",
+        "empty": "No visible assets — adjust the filters above.",
+        "asset": "Asset",
+        "value": "Value",
+        "cost": "Cost",
+        "pnl": "P/L",
+        "weight": "Weight",
+        "contribution": "Contribution"
       }
     },
     "taxReport": {
@@ -883,6 +979,7 @@
     "section": {
       "subnav": {
         "overview": "Overview",
+        "analytics": "Analytics",
         "transactions": "Transactions",
         "customAssets": "Custom Assets",
         "cash": "Cash",
