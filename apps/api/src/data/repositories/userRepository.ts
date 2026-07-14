@@ -10,6 +10,8 @@ export interface CreateUserInput {
   role?: 'user' | 'admin';
   status?: 'active' | 'disabled';
   mustChangePassword?: boolean;
+  /** Register-form / applicant language; omit to accept the column default (en). */
+  locale?: string;
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -63,6 +65,8 @@ export function createUserRepository(db: Database) {
           role: input.role ?? 'user',
           status: input.status ?? 'active',
           mustChangePassword: input.mustChangePassword ?? false,
+          // Undefined lets Drizzle omit the column so its `en` default applies.
+          ...(input.locale ? { locale: input.locale } : {}),
         })
         .returning();
       if (!row) throw new Error('Failed to insert user');

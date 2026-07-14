@@ -1113,6 +1113,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         role: 'user',
         status: 'active',
         mustChangePassword: false,
+        // Honour the register-form language so a DE registrant lands on a
+        // DE-defaulted account (the welcome mail itself stays EN by convention —
+        // see emailI18n.ts).
+        locale,
       });
       // Self-serve accounts are always the user kind (§5.5): provision the one
       // default portfolio up front so the app opens onto a real workspace.

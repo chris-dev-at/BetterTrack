@@ -97,10 +97,13 @@ describe('registration mode matrix (PROJECTPLAN.md §6.12, §13.4 V4-P4a)', () =
   it('open → account created and signed straight in', async () => {
     await setMode(adminAgent, 'open');
 
-    const res = await register(harness.app, applicant);
+    const res = await register(harness.app, { ...applicant, locale: 'de' });
     expect(res.status).toBe(201);
     expect(res.body.email).toBe(applicant.email);
     expect(res.body.status).toBe('active');
+    // The register-form language is carried onto the account (a DE registrant
+    // lands on a DE-defaulted app).
+    expect(res.body.locale).toBe('de');
     // A session cookie was set (open mode signs the account straight in).
     expect(res.headers['set-cookie']).toBeDefined();
 
@@ -297,6 +300,8 @@ describe('approval queue — approve / reject (§13.4 V4-P4a)', () => {
     // The applicant can now log in.
     const relog = await login(harness.app, applicant.email, applicant.password);
     expect(relog.status).toBe(200);
+    // The language they applied in was carried onto the account.
+    expect(relog.body.locale).toBe('de');
 
     // The request is gone from the queue.
     const after = await adminAgent.get('/api/v1/admin/registration-requests');
@@ -391,5 +396,31 @@ describe('public registration-info discovery (§13.4 V4-P4a)', () => {
       expect(publicRegistrationInfoResponseSchema.parse(res.body)).toEqual({ mode });
       expect(Object.keys(res.body)).toEqual(['mode']);
     }
+  });
+
+  it('is readable from a non-allowlisted origin (the landing/product page) via wildcard CORS', async () => {
+    // The landing lives on the product/apex origin, which is NOT on the
+    // credentialed web+admin allowlist. A bare cross-origin GET from it must
+    // still be readable, so the endpoint serves a permissive non-credentialed
+    // `Access-Control-Allow-Origin: *` (it leaks only the mode).
+    const res = await request(harness.app)
+      .get('/api/v1/auth/registration-info')
+      .set('Origin', 'https://bettertrack.at');
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    // A wildcard ACAO must never ride alongside credentialed CORS.
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+  });
+
+  it('keeps credentialed CORS headers for an allowlisted (web SPA) origin — no wildcard clobber', async () => {
+    // The web/admin SPAs call this with `credentials: 'include'`; the
+    // credentialed middleware must win so the origin-specific ACAO +
+    // Allow-Credentials pair survives (a `*` here would break those callers).
+    const res = await request(harness.app)
+      .get('/api/v1/auth/registration-info')
+      .set('Origin', 'http://localhost:5173');
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
   });
 });

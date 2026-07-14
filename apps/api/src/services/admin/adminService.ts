@@ -487,6 +487,9 @@ export function createAdminService(deps: AdminServiceDeps) {
         role: 'user',
         status: 'active',
         mustChangePassword: false,
+        // Carry the language they applied in onto the account (matches the
+        // decision-mail locale below).
+        locale: request.locale,
       });
       await portfolioRepo.createDefault(user.id);
       await registrationRequestRepo.remove(id);

@@ -404,7 +404,20 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // Public registration-mode discovery (§13.4 V4-P4a). Unauthenticated: the
   // login / register surfaces and the landing page read the active mode to
   // reflect it. Leaks nothing beyond the mode itself.
+  //
+  // The landing (product/apex origin) is NOT on the credentialed CORS allowlist
+  // — that list is only the web+admin SPAs (§4.6) — so a bare cross-origin GET
+  // from it would be blocked by the browser. Since this endpoint is
+  // unauthenticated and leaks only the mode, we serve it with permissive,
+  // NON-credentialed CORS (`Access-Control-Allow-Origin: *`) so any origin can
+  // read it. Only set the wildcard when the credentialed middleware hasn't
+  // already emitted an origin-specific ACAO for an allowlisted (web/admin)
+  // caller — a `*` ACAO alongside `Allow-Credentials: true` is rejected by
+  // browsers, and those SPAs call this with `credentials: 'include'`.
   router.get('/registration-info', async (_req, res) => {
+    if (!res.getHeader('Access-Control-Allow-Origin')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
     res.json(await ctx.auth.getRegistrationInfo());
   });
 
