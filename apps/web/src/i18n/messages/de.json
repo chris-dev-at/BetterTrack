@@ -114,14 +114,14 @@
       "failed": "Passwort konnte nicht geändert werden. Bitte versuche es erneut."
     },
     "pin": {
-      "heading": "Gib deinen PIN ein",
-      "promptWithUser": "Willkommen zurück, {{username}}. Gib deinen {{length}}-stelligen PIN ein, um fortzufahren.",
-      "prompt": "Gib deinen {{length}}-stelligen PIN ein, um fortzufahren.",
+      "heading": "Gib deine PIN ein",
+      "promptWithUser": "Willkommen zurück, {{username}}. Gib deine {{length}}-stellige PIN ein, um fortzufahren.",
+      "prompt": "Gib deine {{length}}-stellige PIN ein, um fortzufahren.",
       "inputLabel": "PIN",
       "fallbackError": "Zu viele falsche PINs. Bitte melde dich mit deinem Passwort an.",
-      "invalidPin": "Falscher PIN. Bitte versuche es erneut.",
+      "invalidPin": "Falsche PIN. Bitte versuche es erneut.",
       "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
-      "verifyFailed": "PIN konnte nicht überprüft werden. Bitte versuche es erneut."
+      "verifyFailed": "Deine PIN konnte nicht überprüft werden. Bitte versuche es erneut."
     },
     "register": {
       "subtitle": "Konto erstellen",
@@ -135,19 +135,19 @@
       "submit": "Konto erstellen",
       "submitApproval": "Konto anfragen",
       "submitting": "Konto wird erstellt…",
-      "approvalHint": "Neue Konten werden von einer Administratorin geprüft, bevor du dich anmelden kannst.",
+      "approvalHint": "Neue Konten werden von einem Administrator geprüft, bevor du dich anmelden kannst.",
       "tokenLabel": "Zugangstoken",
       "tokenHint": "Füge den Registrierungstoken ein, den du erhalten hast.",
       "tokenRequired": "Ein Registrierungstoken ist erforderlich.",
       "invalidToken": "Dieser Registrierungstoken ist ungültig oder abgelaufen.",
-      "usernameTaken": "Dieser Benutzername ist bereits vergeben – wähle einen anderen.",
+      "usernameTaken": "Dieser Benutzername ist bereits vergeben — wähle einen anderen.",
       "emailTaken": "Für diese E-Mail existiert bereits ein Konto.",
       "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
       "failed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut.",
       "closedSubtitle": "Registrierung",
-      "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte eine Administratorin um eine Einladung.",
+      "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "pendingSubtitle": "Fast geschafft",
-      "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch eine Administratorin. Du erhältst eine E-Mail, sobald sie geprüft wurde."
+      "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde."
     }
   },
   "common": {
@@ -356,7 +356,7 @@
     },
     "security": {
       "title": "Sicherheit",
-      "subtitle": "Deine Sitzung, dein PIN und Zwei-Faktor-Optionen.",
+      "subtitle": "Deine Sitzung, deine PIN und Zwei-Faktor-Optionen.",
       "loadError": {
         "title": "Deine Sicherheitseinstellungen konnten nicht geladen werden"
       },
@@ -387,26 +387,26 @@
         "logOutAllOthers": "Alle anderen Geräte abmelden"
       },
       "pin": {
-        "genericError": "Dein PIN konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+        "genericError": "Deine PIN konnte nicht aktualisiert werden. Bitte versuche es erneut.",
         "pinLabel": "PIN",
         "exactDigitsHint": "Genau {{length}} Ziffern.",
         "confirmLabel": "PIN bestätigen",
         "mismatch": "Die PINs stimmen nicht überein.",
-        "savedNotice": "Dein PIN wurde gespeichert.",
+        "savedNotice": "Deine PIN wurde gespeichert.",
         "windowHour": "1 Stunde",
         "windowMinuteOne": "{{count}} Minute",
         "windowMinuteOther": "{{count}} Minuten",
         "windowError": "Das Sperrfenster konnte nicht aktualisiert werden. Bitte versuche es erneut.",
         "lockAfterInactivity": "Nach Inaktivität sperren",
-        "lockDescription": "Solange du BetterTrack aktiv nutzt, bleibt es entsperrt — auch bei Neuladen und neuen Tabs. Der PIN wird erst nach dieser Zeit ohne Aktivität wieder abgefragt.",
+        "lockDescription": "Solange du BetterTrack aktiv nutzt, bleibt es entsperrt — auch bei Neuladen und neuen Tabs. Die PIN wird erst nach dieser Zeit ohne Aktivität wieder abgefragt.",
         "idleForLabel": "Sperren nach Inaktivität von",
         "unlockWindowAriaLabel": "Entsperrfenster",
-        "disabledNotice": "Dein PIN wurde deaktiviert.",
+        "disabledNotice": "Deine PIN wurde deaktiviert.",
         "title": "PIN",
-        "description": "Ein 4-stelliger PIN bestätigt erneut, dass du es bist, nachdem die App eine Weile inaktiv war. Er ist ein Sichtschutz über deiner Sitzung, kein zweiter Faktor.",
+        "description": "Eine 4-stellige PIN bestätigt erneut, dass du es bist, nachdem die App eine Weile inaktiv war. Sie ist ein Sichtschutz über deiner Sitzung, kein zweiter Faktor.",
         "enable": "PIN aktivieren",
-        "saveNew": "Neuen PIN speichern",
-        "isOn": "Dein PIN ist aktiv.",
+        "saveNew": "Neue PIN speichern",
+        "isOn": "Deine PIN ist aktiv.",
         "change": "PIN ändern",
         "disabling": "Wird deaktiviert…",
         "disable": "PIN deaktivieren"
@@ -468,7 +468,7 @@
     },
     "api": {
       "title": "API-Zugriff",
-      "introBefore": "Persönliche API-Schlüssel authentifizieren Skripte und Integrationen als du selbst, begrenzt auf das, was sie lesen oder ändern dürfen. Sende einen Schlüssel als ",
+      "introBefore": "Persönliche API-Schlüssel authentifizieren Skripte und Integrationen in deinem Namen, begrenzt auf das, was sie lesen oder ändern dürfen. Sende einen Schlüssel als ",
       "introMiddle": ". Die API-Dokumentation findest du unter ",
       "introAfter": ".",
       "copied": "Kopiert",
@@ -510,7 +510,7 @@
         },
         "notificationsRead": {
           "label": "Benachrichtigungen · lesen",
-          "description": "Ihren Benachrichtigungs-Posteingang lesen."
+          "description": "Deinen Benachrichtigungs-Posteingang lesen."
         },
         "notificationsWrite": {
           "label": "Benachrichtigungen · schreiben",
@@ -518,11 +518,11 @@
         },
         "chatRead": {
           "label": "Chat · lesen",
-          "description": "Ihre Nachrichten lesen."
+          "description": "Deine Nachrichten lesen."
         },
         "chatWrite": {
           "label": "Chat · schreiben",
-          "description": "Nachrichten in Ihrem Namen senden."
+          "description": "Nachrichten in deinem Namen senden."
         },
         "accountSecurity": {
           "label": "Kontosicherheit",
@@ -530,7 +530,7 @@
         },
         "alertsRead": {
           "label": "Preisalarme · lesen",
-          "description": "Ihre Preisalarme lesen."
+          "description": "Deine Preisalarme lesen."
         },
         "alertsWrite": {
           "label": "Preisalarme · schreiben",
@@ -611,7 +611,7 @@
       },
       "grants": {
         "sectionTitle": "Autorisierte Apps",
-        "sectionDescription": "Drittanbieter-Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App beendet sofort ihre Tokens — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
+        "sectionDescription": "Drittanbieter-Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App macht ihre Tokens sofort ungültig — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
         "loadError": {
           "title": "Deine autorisierten Apps konnten nicht geladen werden"
         },
@@ -644,7 +644,7 @@
     },
     "baseCurrency": {
       "title": "Basiswährung",
-      "description": "Die Währung, in der alle Bewertungen, Diagramme und Berichte angezeigt werden. Beträge bleiben in der nativen Währung des jeweiligen Assets gespeichert — nur die Anzeige-Umrechnung ändert sich.",
+      "description": "Die Währung, in der alle Bewertungen, Diagramme und Berichte angezeigt werden. Beträge bleiben in der nativen Währung der jeweiligen Anlage gespeichert — nur die Anzeige-Umrechnung ändert sich.",
       "label": "Basiswährung",
       "saveError": "Deine Basiswährung konnte nicht gespeichert werden. Bitte versuche es erneut.",
       "option": {
@@ -669,12 +669,12 @@
           "description": "Verkäufe und Dividenden werden ohne Steuer erfasst. Das ist die Standardeinstellung."
         },
         "manual_per_trade": {
-          "label": "Manuell — Steuer pro Trade eingeben",
+          "label": "Manuell — Steuer pro Verkauf eingeben",
           "description": "Du gibst die Steuer bei jedem Verkauf selbst ein — als Betrag oder als Prozentsatz des Gewinns. Es wird nichts für dich berechnet."
         },
         "country_specific": {
           "label": "Österreich (KESt)",
-          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnitts-Einstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
+          "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
         }
       }
     },
@@ -693,8 +693,8 @@
     },
     "sharingMoved": {
       "title": "Portfolio-Freigabe",
-      "description": "Die Freigabe befindet sich jetzt im Tab „Social“. Lege dort fest, wer welches deiner Portfolios sehen kann – jedes Portfolio bleibt privat, bis du es teilst.",
-      "link": "Freigabe im Tab „Social“ verwalten →"
+      "description": "Die Freigabe befindet sich jetzt im Tab „Sozial“. Lege dort fest, wer welches deiner Portfolios sehen kann — jedes Portfolio bleibt privat, bis du es teilst.",
+      "link": "Freigabe im Tab „Sozial“ verwalten →"
     },
     "dangerZone": {
       "title": "Gefahrenzone",
@@ -716,8 +716,8 @@
       "dateAria": "Datum für {{symbol}}",
       "assetLabel": "Anlage",
       "changeAssetAria": "Anlage ändern",
-      "quantityLabel": "Menge",
-      "quantityAria": "Menge für {{symbol}}",
+      "quantityLabel": "Anzahl",
+      "quantityAria": "Anzahl für {{symbol}}",
       "priceLabel": "Preis",
       "priceAria": "Preis für {{symbol}}",
       "amountInvestedLabel": "Investierter Betrag",
@@ -728,15 +728,15 @@
       "feeAria": "Gebühr für {{symbol}}",
       "noteLabel": "Notiz (optional)",
       "noteAria": "Notiz für {{symbol}}",
-      "byQuantity": "Nach Menge",
+      "byQuantity": "Nach Anzahl",
       "byAmount": "Nach Betrag",
       "entryModeAria": "Eingabemodus für {{symbol}}",
-      "derivedAria": "Abgeleitete Menge für {{symbol}}",
+      "derivedAria": "Abgeleitete Anzahl für {{symbol}}",
       "max": "Max",
       "maxAria": "Maximum für {{symbol}} einsetzen",
       "linkHint": "Datum und Preis bleiben verknüpft — setze eines, um das andere zu füllen.",
       "linkManualHint": "Datum und Preis sind unabhängig — setze jedes einzeln.",
-      "payFromCash": "Aus Bargeldbestand bezahlen",
+      "payFromCash": "Aus dem Bargeldbestand bezahlen",
       "addProceedsToCash": "Erlös dem Bargeldbestand gutschreiben",
       "cashPreviewAria": "Vorschau: Bargeld danach",
       "cashAfter": "Bargeld danach",
@@ -809,8 +809,8 @@
         "cash": "Bargeld",
         "asset": "Anlage",
         "qty": "Anzahl",
-        "avgCost": "Ø Kosten",
-        "price": "Preis",
+        "avgCost": "Ø Einstand",
+        "price": "Kurs",
         "day": "Tag",
         "side": "Seite",
         "date": "Datum",
@@ -883,7 +883,7 @@
     },
     "analytics": {
       "title": "Analyse",
-      "subtitle": "Sieh dein Portfolio im Detail — konfiguriere den Graphen, vergleiche eine Benchmark und betrachte die Rendite real.",
+      "subtitle": "Sieh dein Portfolio im Detail — konfiguriere den Graphen, vergleiche eine Benchmark und betrachte die Rendite inflationsbereinigt.",
       "backToOverview": "← Zurück zur Übersicht",
       "loadError": "Analyse für dieses Portfolio konnte nicht geladen werden.",
       "displayModeAriaLabel": "Diagrammanzeige",
@@ -901,7 +901,7 @@
         "y1": "1J",
         "ytd": "lfd. Jahr",
         "max": "Max",
-        "custom": "Benutzerdef.",
+        "custom": "Eigener",
         "fromLabel": "Von",
         "toLabel": "Bis"
       },
@@ -911,7 +911,7 @@
         "hicpAt": "Österreich HVPI",
         "hicpEu": "Eurozone HVPI",
         "cpiUs": "USA VPI",
-        "flat": "Feste Rate",
+        "flat": "Eigene feste Rate",
         "rateLabel": "Inflationsrate, Prozent pro Jahr",
         "rateSuffix": "%/J",
         "realTermsBadge": "Real",
@@ -922,15 +922,15 @@
         "none": "Keiner",
         "asset": "Anlage / Index",
         "portfolio": "Portfolio",
-        "conglomerate": "Conglomerate",
+        "conglomerate": "Konglomerat",
         "searchPlaceholder": "Anlage oder Index suchen…",
         "current": "Vergleich: {{label}}",
         "pickPortfolio": "Portfolio zum Vergleichen wählen",
         "pickPortfolioPlaceholder": "Portfolio wählen…",
         "noPortfolios": "Du hast keine weiteren Portfolios zum Vergleichen.",
-        "pickConglomerate": "Conglomerate zum Vergleichen wählen",
-        "pickConglomeratePlaceholder": "Conglomerate wählen…",
-        "noConglomerates": "Du hast noch keine Conglomerates."
+        "pickConglomerate": "Konglomerat zum Vergleichen wählen",
+        "pickConglomeratePlaceholder": "Konglomerat wählen…",
+        "noConglomerates": "Du hast noch keine Konglomerate."
       },
       "chart": {
         "ariaLabel": "Portfolio-Analysediagramm",
@@ -951,8 +951,8 @@
         "assetToggle": "{{symbol}} umschalten",
         "groupsHeading": "Nach Typ filtern",
         "groupToggle": "{{group}} umschalten",
-        "overlayToggle": "Anlagen einblenden",
-        "overlayHint": "Blende die eigene Bewegung jeder Position im Diagramm ein."
+        "overlayToggle": "Anlagen einzeln einblenden",
+        "overlayHint": "Blende die eigene Entwicklung jedes Bestands zusätzlich im Diagramm ein."
       },
       "groups": {
         "stock": "Aktien",
@@ -961,8 +961,8 @@
         "fx": "Devisen",
         "commodity": "Rohstoffe",
         "crypto": "Krypto",
-        "custom": "Benutzerdefiniert",
-        "cash_like": "Bargeldähnlich",
+        "custom": "Individuell",
+        "cash_like": "Bargeldnah",
         "other": "Sonstiges"
       },
       "contribution": {
@@ -971,7 +971,7 @@
         "empty": "Keine sichtbaren Anlagen — passe die Filter oben an.",
         "asset": "Anlage",
         "value": "Wert",
-        "cost": "Kosten",
+        "cost": "Einstand",
         "pnl": "G/V",
         "weight": "Gewicht",
         "contribution": "Beitrag"
@@ -982,7 +982,7 @@
       "subtitle": "Realisierte Gewinne, Dividenden und Steuer pro Kalenderjahr (Zeitzone Wien).",
       "column": {
         "year": "Jahr",
-        "realized": "Realisiertes G/V",
+        "realized": "Realisierter G/V",
         "dividends": "Dividenden",
         "withheld": "Einbehaltene Steuer",
         "refund": "Erstattung",
@@ -994,10 +994,10 @@
       "tax": "Steuer",
       "sell": {
         "date": "Datum",
-        "quantity": "Menge",
+        "quantity": "Anzahl",
         "proceeds": "Erlös",
         "costBasis": "Einstand",
-        "realized": "Realisiertes G/V",
+        "realized": "Realisierter G/V",
         "tax": "Steuer"
       },
       "detailError": "Die Details für dieses Jahr konnten nicht geladen werden. Bitte versuche es erneut.",
@@ -1007,7 +1007,7 @@
       },
       "empty": {
         "title": "Noch keine Steueraktivität",
-        "description": "Sobald du einen Verkauf oder eine Dividende erfasst, erscheinen realisiertes G/V und Steuer hier nach Jahr."
+        "description": "Sobald du einen Verkauf oder eine Dividende erfasst, erscheinen realisierter G/V und Steuer hier nach Jahr."
       },
       "disabled": {
         "title": "Steuererfassung ist aus",
@@ -1065,8 +1065,8 @@
       "deleteDialogTitle": "Portfolio löschen",
       "deleteDialogDescription": "„{{name}}“ und alles darin endgültig löschen. Dies kann nicht rückgängig gemacht werden.",
       "deleteWarningHeadline": "Dies kann nicht rückgängig gemacht werden. Das Löschen dieses Portfolios entfernt:",
-      "deleteWarningTransactions": "Alle Transaktionen und Positionen in diesem Portfolio",
-      "deleteWarningCash": "Den gesamten Bargeldbestand und alle Bargeldquellen",
+      "deleteWarningTransactions": "Alle Transaktionen und Bestände in diesem Portfolio",
+      "deleteWarningCash": "Den gesamten Bargeldbestand und alle Geldquellen",
       "deleteWarningShares": "Alle Freigaben und öffentlichen Links dazu — sie funktionieren sofort nicht mehr",
       "deleteWarningTax": "Deine bisherigen Steuerbericht-Zahlen ändern sich, da die Historie der realisierten Gewinne/Verluste dieses Portfolios entfernt wird",
       "deletePromotesDefault": "„{{name}}“ wird dein neues Standard-Portfolio.",
@@ -1107,7 +1107,7 @@
       "withdrawButton": "Abheben",
       "showArchived": "Archivierte anzeigen",
       "hideArchived": "Archivierte ausblenden",
-      "mainBadge": "Haupt",
+      "mainBadge": "Hauptquelle",
       "archivedBadge": "Archiviert",
       "totalLabel": "Liquidität gesamt",
       "shareLabel": "Anteil",
@@ -1135,8 +1135,8 @@
         "withdrawal": "Abhebung",
         "buy": "Kauf",
         "sell_proceeds": "Verkaufserlös",
-        "transfer_out": "Umbuchung raus",
-        "transfer_in": "Umbuchung rein",
+        "transfer_out": "Umbuchung ausgehend",
+        "transfer_in": "Umbuchung eingehend",
         "dividend": "Dividende",
         "tax_withholding": "Steuereinbehalt",
         "tax_refund": "Steuererstattung"
@@ -1200,8 +1200,8 @@
       "currencyPlaceholder": "EUR",
       "smoothingLabel": "Werte zwischen Punkten glätten",
       "recordPurchase": "Einen ersten Kauf erfassen",
-      "quantityLabel": "Menge",
-      "quantityAriaLabel": "Anfangsmenge",
+      "quantityLabel": "Anzahl",
+      "quantityAriaLabel": "Anfängliche Anzahl",
       "dateLabel": "Datum",
       "purchaseDateAriaLabel": "Kaufdatum",
       "priceLabel": "Preis ({{currency}})",
@@ -1210,7 +1210,7 @@
       "feeAriaLabel": "Anfangsgebühr",
       "nameRequired": "Gib deiner Anlage einen Namen.",
       "currencyInvalid": "Die Währung muss ein 3-stelliger ISO-Code sein, z. B. EUR.",
-      "quantityInvalid": "Die Anfangsmenge muss größer als 0 sein.",
+      "quantityInvalid": "Die anfängliche Anzahl muss größer als 0 sein.",
       "priceInvalid": "Der Anfangspreis muss 0 oder mehr sein.",
       "feeInvalid": "Die Gebühr muss 0 oder mehr sein.",
       "dateInvalid": "Wähle ein gültiges Kaufdatum.",
@@ -1246,7 +1246,7 @@
       "smoothingLabel": "Werte zwischen Punkten glätten"
     },
     "recategorize": {
-      "message": "Einige eigene Anlagen brauchen eine Kategorie. Wir haben sie auf „Sonstiges“ verschoben — öffne eine und wähle eine passende Kategorie, damit sie korrekt gruppiert wird.",
+      "message": "Einige individuelle Anlagen brauchen eine Kategorie. Wir haben sie auf „Sonstiges“ verschoben — öffne eine und wähle eine passende Kategorie, damit sie korrekt gruppiert wird.",
       "dismiss": "Ausblenden"
     }
   },
@@ -1264,11 +1264,11 @@
       },
       "watchlist": {
         "title": "Watchlists",
-        "description": "Benannte, mehrere Watchlists kommen hierher. Bis dahin lebt deine Watchlist auf der Workboard-Übersicht."
+        "description": "Mehrere benannte Watchlists kommen hierher. Bis dahin findest du deine Watchlist auf der Workboard-Übersicht."
       },
       "backtests": {
         "title": "Backtests",
-        "description": "Eigenständiges Backtesting über einen beliebigen Anlagenkorb hinweg, über den im Konglomerat eingebetteten Backtest hinaus."
+        "description": "Eigenständige Backtests über beliebige Anlagenkörbe — über den ins Konglomerat eingebetteten Backtest hinaus."
       },
       "calculators": {
         "title": "Rechner",
@@ -1280,7 +1280,7 @@
       },
       "savedIdeas": {
         "title": "Gespeicherte Ideen",
-        "description": "Parke Entwurfskörbe und Anlageideen, um sie später erneut anzusehen."
+        "description": "Parke Korb-Entwürfe und Anlageideen, um sie später wieder aufzugreifen."
       }
     },
     "overview": {
@@ -1299,7 +1299,7 @@
         "emptySearchLink": "Nach einer Anlage suchen →",
         "trendHeader": "Trend",
         "assetHeader": "Anlage",
-        "priceHeader": "Preis",
+        "priceHeader": "Kurs",
         "dayHeader": "Tag",
         "alertsHeader": "Alarme",
         "actionsAriaLabel": "Aktionen",
@@ -1320,11 +1320,11 @@
     },
     "calculator": {
       "modeWhole": "Ganze Anteile",
-      "modeFractional": "Fraktioniert",
+      "modeFractional": "Bruchstücke",
       "buyingModeAriaLabel": "Kaufmodus",
       "atLeastOneShareLabel": "Mindestens ein Anteil",
       "atLeastOneShareHint": "Eine Position, die für einen ganzen Anteil zu klein ist, kauft trotzdem genau einen; der Rest wird neu ausbalanciert.",
-      "noPositions": "Dieser Korb hat noch keine Positionen zum Zuweisen.",
+      "noPositions": "Dieser Korb hat noch keine Positionen, auf die ein Budget verteilt werden kann.",
       "assetHeader": "Anlage",
       "qtyHeader": "Anzahl",
       "costHeader": "Kosten",
@@ -1344,14 +1344,14 @@
       "calculate": "Berechnen",
       "calcError": "Kaufliste konnte nicht berechnet werden. Bitte versuche es erneut.",
       "enterBudgetPrompt": "Gib ein Budget ein und berechne, um eine Kaufliste zu sehen.",
-      "staleNotice": "Einige Kurse sind veraltet; die zuletzt bekannten Preise werden angezeigt.",
+      "staleNotice": "Einige Kurse sind veraltet; die zuletzt bekannten Kurse werden angezeigt.",
       "addToPortfolio": "Zum Portfolio hinzufügen"
     },
     "backtest": {
       "range": {
-        "oneYear": "1Y",
-        "threeYear": "3Y",
-        "fiveYear": "5Y",
+        "oneYear": "1J",
+        "threeYear": "3J",
+        "fiveYear": "5J",
         "max": "Max"
       },
       "benchmark": {
@@ -1387,11 +1387,11 @@
     },
     "alerts": {
       "title": "Preisalarme",
-      "subtitle": "Werde benachrichtigt, wenn eine Anlage einen Preis überschreitet oder sich um einen Prozentsatz bewegt. Wird jede Minute anhand des aktuellsten Kurses ausgewertet.",
+      "subtitle": "Werde benachrichtigt, wenn eine Anlage eine Kursmarke über- oder unterschreitet oder sich um einen Prozentsatz bewegt. Wird jede Minute anhand des aktuellsten Kurses ausgewertet.",
       "newAlert": "+ Neuer Alarm",
       "loadError": "Deine Alarme konnten nicht geladen werden. Bitte lade die Seite neu.",
       "emptyTitle": "Noch keine Alarme",
-      "emptyDescription": "Erstelle einen Alarm, um benachrichtigt zu werden, wenn eine Anlage einen Preis erreicht oder sich um einen Prozentsatz bewegt.",
+      "emptyDescription": "Erstelle einen Alarm, um benachrichtigt zu werden, wenn eine Anlage eine Kursmarke erreicht oder sich um einen Prozentsatz bewegt.",
       "emptyCta": "Neuer Alarm →",
       "sharing": {
         "title": "Meine Alarme mit Followern teilen",
@@ -1420,13 +1420,13 @@
         "active": "Aktiv"
       },
       "statusExplainer": {
-        "draft": "Entwurf — wird vom Rechner noch nicht verwendet. Aktiviere, sobald die Gewichte 100 % ergeben.",
-        "active": "Aktiv — dein Live-, validierter Korb, den der Rechner verwendet. Gewichte ergeben 100 %."
+        "draft": "Entwurf — wird vom Rechner noch nicht verwendet. Aktiviere ihn, sobald die Gewichte 100 % ergeben.",
+        "active": "Aktiv — dein validierter Live-Korb, den der Rechner verwendet. Die Gewichte ergeben 100 %."
       }
     },
     "detail": {
       "noPositionsTitle": "Noch keine Positionen",
-      "noPositionsDescription": "Füge Anlagen und Gewichte im Builder hinzu, um diesen Korb zuzuweisen.",
+      "noPositionsDescription": "Füge im Builder Anlagen und Gewichte hinzu, um diesen Korb aufzuteilen.",
       "assetHeader": "Anlage",
       "weightHeader": "Gewicht",
       "deleteDialogTitle": "Konglomerat löschen?",
@@ -1450,7 +1450,7 @@
       "defaultName": "Unbenanntes Konglomerat",
       "nameAriaLabel": "Konglomeratname",
       "closeAriaLabel": "Builder schließen",
-      "activatableHint": "Aktiv = dein Live-, validierter Korb, den der Rechner verwendet; muss 100 % ergeben.",
+      "activatableHint": "Aktiv = dein validierter Live-Korb, den der Rechner verwendet; die Gewichte müssen 100 % ergeben.",
       "notActivatableHint": "Gewichte müssen 100 % (±0,01) ergeben, bevor aktiviert werden kann.",
       "activating": "Wird aktiviert…",
       "reactivate": "Erneut aktivieren",
@@ -1527,14 +1527,14 @@
     "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
-    "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Positionen und dein Nettovermögen.",
+    "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
     "publicActive": "Ein öffentlicher Link ist aktiv. Aus Sicherheitsgründen wird die URL nur einmal bei der Erstellung angezeigt.",
     "publicLinkReady": "Öffentlicher Link erstellt. Kopiere ihn jetzt — er wird nicht erneut angezeigt.",
     "copy": "Link kopieren",
     "copied": "Kopiert!",
     "save": "Speichern",
-    "saving": "Speichern…",
+    "saving": "Wird gespeichert…",
     "cancel": "Abbrechen",
     "error": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
     "stopSharing": "Freigabe beenden",
@@ -1551,24 +1551,24 @@
     "share": "Teilen…"
   },
   "watchlists": {
-    "title": "Merklisten",
+    "title": "Watchlists",
     "subtitle": "Ordne, was du verfolgst, in benannte Listen.",
-    "create": "Neue Merkliste",
-    "createTitle": "Neue Merkliste",
-    "namePlaceholder": "Name der Merkliste",
+    "create": "Neue Watchlist",
+    "createTitle": "Neue Watchlist",
+    "namePlaceholder": "Name der Watchlist",
     "rename": "Umbenennen",
-    "renameTitle": "Merkliste umbenennen",
+    "renameTitle": "Watchlist umbenennen",
     "delete": "Löschen",
     "defaultBadge": "Standard",
-    "deleteConfirm": "Diese Merkliste und ihren gesamten Inhalt löschen?",
-    "nameTaken": "Eine Merkliste mit diesem Namen existiert bereits.",
-    "addTo": "Zur Merkliste hinzufügen",
+    "deleteConfirm": "Diese Watchlist und ihren gesamten Inhalt löschen?",
+    "nameTaken": "Eine Watchlist mit diesem Namen existiert bereits.",
+    "addTo": "Zur Watchlist hinzufügen",
     "pickList": "Liste wählen",
     "itemsOne": "1 Eintrag",
     "itemsOther": "{{count}} Einträge",
-    "empty": "Noch keine Merklisten.",
-    "manage": "Merklisten verwalten",
-    "loadError": "Deine Merklisten konnten nicht geladen werden. Bitte versuche es erneut."
+    "empty": "Noch keine Watchlists.",
+    "manage": "Watchlists verwalten",
+    "loadError": "Deine Watchlists konnten nicht geladen werden. Bitte versuche es erneut."
   },
   "publicShare": {
     "loading": "Geteilte Ansicht wird geladen…",
@@ -1577,9 +1577,9 @@
     "readOnly": "Schreibgeschützte geteilte Ansicht",
     "netWorth": "Nettovermögen",
     "valueOverTime": "Wertverlauf",
-    "holdings": "Positionen",
+    "holdings": "Bestände",
     "positions": "Positionen",
-    "watchedAssets": "Beobachtete Werte",
+    "watchedAssets": "Beobachtete Anlagen",
     "brand": "BetterTrack"
   },
   "social": {
@@ -1599,7 +1599,7 @@
     },
     "item": {
       "positions": "{{count}} Positionen",
-      "assets": "{{count}} Werte"
+      "assets": "{{count}} Anlagen"
     },
     "activity": {
       "notifyLabel": "Benachrichtigen, wenn {{username}} hier kauft, verkauft oder etwas ändert",
@@ -1614,7 +1614,7 @@
     },
     "myShared": {
       "title": "Meine Elemente",
-      "subtitle": "Jedes Portfolio, Konglomerat und jede Watchlist, die dir gehört, ist hier – lege fest, wer welches sehen kann. Alles bleibt privat, bis du es teilst.",
+      "subtitle": "Jedes Portfolio, Konglomerat und jede Watchlist, die dir gehört, ist hier — lege fest, wer welches sehen kann. Alles bleibt privat, bis du es teilst.",
       "emptyTitle": "Du besitzt noch nichts",
       "emptyBody": "Erstelle ein Portfolio, Konglomerat oder eine Watchlist, um hier die Freigabe zu verwalten.",
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
@@ -1637,14 +1637,14 @@
       "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich machen.",
       "empty": "Du folgst noch niemandem.",
       "emptyHint": "Öffne das öffentliche Profil einer Person, um ihr zu folgen.",
-      "error": "Wer dir folgt, konnte nicht geladen werden. Bitte aktualisiere die Seite.",
+      "error": "Deine gefolgten Personen konnten nicht geladen werden. Bitte lade die Seite neu.",
       "followers": {
         "one": "{{count}} Follower",
         "other": "{{count}} Follower"
       },
       "followingStat": {
-        "one": "{{count}} abonniert",
-        "other": "{{count}} abonniert"
+        "one": "{{count}} gefolgt",
+        "other": "{{count}} gefolgt"
       },
       "autoFollow": "Neuen Elementen automatisch folgen",
       "autoFollowHint": "Fügt jedes Element, das diese Person für dich sichtbar macht, automatisch zu deinen gefolgten Elementen hinzu.",
@@ -1666,7 +1666,7 @@
     },
     "chat": {
       "title": "Nachrichten",
-      "subhead": "Direktnachrichten mit deinen Freunden. Teile einen Wert oder eines deiner Elemente direkt im Chat.",
+      "subhead": "Direktnachrichten mit deinen Freunden. Teile eine Anlage oder eines deiner Elemente direkt im Chat.",
       "new": "Neue Nachricht",
       "newPrompt": "Wähle einen Freund zum Chatten aus.",
       "noFriends": "Füge zuerst Freunde hinzu, um zu chatten.",
@@ -1679,7 +1679,7 @@
       "youPrefix": "Du: ",
       "preview": {
         "shared": {
-          "asset": "Wert geteilt",
+          "asset": "Anlage geteilt",
           "portfolio": "Portfolio geteilt",
           "conglomerate": "Konglomerat geteilt",
           "watchlist": "Watchlist geteilt"
@@ -1688,7 +1688,7 @@
       "selectTitle": "Deine Nachrichten",
       "selectBody": "Wähle ein Gespräch aus oder starte ein neues, um zu chatten.",
       "sayHi": "Sag Hallo zu {{username}}",
-      "sayHiBody": "Beginne das Gespräch — du kannst hier direkt einen Wert oder eines deiner Elemente teilen.",
+      "sayHiBody": "Beginne das Gespräch — du kannst hier direkt eine Anlage oder eines deiner Elemente teilen.",
       "notFriend": {
         "title": "Ihr seid nicht verbunden",
         "body": "Du kannst nur mit deinen Freunden chatten. Sende zuerst eine Freundschaftsanfrage."
@@ -1702,14 +1702,14 @@
         "notShared": "Nicht mit dir geteilt",
         "view": "Ansehen",
         "kind": {
-          "asset": "Wert",
+          "asset": "Anlage",
           "portfolio": "Portfolio",
           "conglomerate": "Konglomerat",
           "watchlist": "Watchlist"
         },
         "shortcut": {
-          "prompt": "{{username}} kann das nicht sehen — es ist nicht mit ihm geteilt.",
-          "action": "Nur mit ihm teilen",
+          "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
+          "action": "Nur mit dieser Person teilen",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -1733,9 +1733,9 @@
       "empty": "Du folgst noch keinen Elementen.",
       "emptyHint": "Folge einem geteilten oder öffentlichen Portfolio, einer Watchlist oder einem Konglomerat, um es hier zu behalten.",
       "gone": "Nicht mehr verfügbar",
-      "goneHint": "Dieses Element wurde nicht mehr geteilt oder gelöscht.",
+      "goneHint": "Die Freigabe wurde beendet oder das Element vom Besitzer gelöscht.",
       "by": "von @{{username}}",
-      "error": "Deine gefolgten Elemente konnten nicht geladen werden. Bitte aktualisiere die Seite.",
+      "error": "Deine gefolgten Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "kind": {
         "portfolio": "Portfolio",
         "conglomerate": "Konglomerat",
@@ -1769,7 +1769,7 @@
     "subtitle": "Dadurch werden dein BetterTrack-Konto und alle zugehörigen Daten dauerhaft gelöscht.",
     "warning": {
       "headline": "Das kann nicht rückgängig gemacht werden. Beim Löschen werden entfernt:",
-      "data": "Alle Portfolios, Transaktionen, Geldquellen, eigene Assets, Steuerdaten und Berichte",
+      "data": "Alle Portfolios, Transaktionen, Geldquellen, individuellen Anlagen, Steuerdaten und Berichte",
       "social": "Deine Freundschaften, geteilten Inhalte, Watchlists, Konglomerate, Alarme und Benachrichtigungen",
       "access": "Alle Sitzungen, API-Schlüssel und verbundenen Apps — du wirst überall sofort abgemeldet",
       "chat": "Deine Identität in Chats — von dir gesendete Nachrichten bleiben für deine Freunde als „Gelöschtes Konto“ sichtbar"
@@ -1785,7 +1785,7 @@
       "confirmMismatch": "Der eingegebene Benutzername stimmt nicht mit deinem Konto überein.",
       "wrongPassword": "Dieses Passwort ist falsch.",
       "wrongCode": "Dieser Code ist falsch oder abgelaufen.",
-      "tooMany": "Zu viele Versuche. Bitte warte kurz und versuch es erneut."
+      "tooMany": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
     }
   },
   "admin": {

@@ -107,6 +107,20 @@ describe('TaxReportPage', () => {
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
   });
 
+  test('a failing portfolio list shows the error state instead of an eternal skeleton', async () => {
+    vi.mocked(portfolioApi.listPortfolios).mockRejectedValue(new Error('boom'));
+    renderPage();
+    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+  });
+
+  test('no portfolios at all shows the empty state instead of an eternal skeleton', async () => {
+    vi.mocked(portfolioApi.listPortfolios).mockResolvedValue({ portfolios: [] });
+    renderPage();
+    expect(await screen.findByText(/No tax activity yet/i)).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+  });
+
   test('an uncovered sell (#369) renders its real basis — no fabricated gain on the uncovered portion', async () => {
     const report: TaxYearReportResponse = {
       year: 2026,

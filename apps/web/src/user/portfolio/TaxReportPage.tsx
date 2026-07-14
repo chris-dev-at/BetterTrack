@@ -295,6 +295,33 @@ export function TaxReportPage() {
     );
   }
 
+  // Without a resolvable portfolio the report query never runs (it stays
+  // `isPending` forever) — gate on that instead of showing an eternal skeleton.
+  if (portfoliosQuery.isError) {
+    return (
+      <div className="flex flex-col gap-4">
+        {header}
+        <EmptyState
+          title={t('portfolio.taxReport.loadError.title')}
+          description={t('settings.retryHint')}
+        />
+      </div>
+    );
+  }
+
+  if (!active) {
+    return (
+      <div className="flex flex-col gap-4">
+        {header}
+        <EmptyState
+          icon="🧾"
+          title={t('portfolio.taxReport.empty.title')}
+          description={t('portfolio.taxReport.empty.description')}
+        />
+      </div>
+    );
+  }
+
   const years = reportQuery.data?.years ?? [];
 
   return (

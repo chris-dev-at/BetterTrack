@@ -739,7 +739,14 @@ function ChatThreadPane({
           </button>
         ) : null}
 
-        {messages.length === 0 && !threadQuery.isLoading ? (
+        {threadQuery.isLoading ? (
+          <div className="flex flex-col gap-2">
+            <Skeleton height="h-12" />
+            <Skeleton height="h-12" />
+          </div>
+        ) : threadQuery.isError ? (
+          <Alert tone="error">{t('social.chat.error')}</Alert>
+        ) : messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <Avatar name={otherName} size="lg" />
             <p className="text-base font-semibold text-neutral-100">

@@ -15,8 +15,10 @@ jobs:
     # Headroom for the V3 flow specs added in #426 (cash transfer, share-to-one-
     # friend, second watchlist, chat, alert fire) — the alert flow alone waits
     # out the ~60s worker evaluator tick, and every spec runs on both the desktop
-    # and mobile-viewport projects.
-    timeout-minutes: 35
+    # and mobile-viewport projects. #446 added three more per-project specs
+    # (analytics compare, follows, registration modes), so the budget grew to
+    # match.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17

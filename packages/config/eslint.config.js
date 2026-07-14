@@ -41,13 +41,10 @@ const TAXONOMY_GATED_SOURCES = [
  * later V3 phase migrates its strings.
  */
 const I18N_GATED_SURFACES = [
-  'apps/web/src/user/components/AppLayout.tsx',
-  'apps/web/src/user/components/SubNav.tsx',
-  'apps/web/src/user/components/ProfileMenu.tsx',
-  'apps/web/src/user/auth/**/*.tsx',
-  'apps/web/src/user/settings/**/*.tsx',
-  'apps/web/src/user/portfolio/**/*.tsx',
-  'apps/web/src/user/workboard/**/*.tsx',
+  // The whole user app (V3-P13) plus the shared user-facing widgets. The admin
+  // app (`apps/web/src/admin/**`) is English-by-design and stays out.
+  'apps/web/src/user/**/*.tsx',
+  'apps/web/src/ui/**/*.tsx',
 ];
 
 /**
