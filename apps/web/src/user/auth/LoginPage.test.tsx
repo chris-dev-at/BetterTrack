@@ -77,6 +77,9 @@ beforeEach(() => {
   // Anonymous to start: the bootstrap /auth/me rejects, so the app shows /login.
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'nope'));
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+  // The login screen reads the active registration mode to decide whether to
+  // offer a "create an account" link (§13.4 V4-P4a) — default to closed.
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed' });
 });
 
 // ── OAuth account memory + PIN quick re-auth: the chooser state ladder (§399 §B) ─

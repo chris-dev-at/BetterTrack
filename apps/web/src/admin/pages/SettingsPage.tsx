@@ -1,53 +1,66 @@
 import { useEffect, useState } from 'react';
+import type { FormEvent } from 'react';
 
-import { REGISTRATION_MODES, type RegistrationMode } from '@bettertrack/contracts';
+import {
+  REGISTRATION_MODES,
+  type RegistrationMode,
+  type RegistrationToken,
+} from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
-import { Alert, Badge, Button, PageHeader, Spinner, cx } from '../components/ui';
+import {
+  Alert,
+  Badge,
+  Button,
+  CopyField,
+  EmptyState,
+  PageHeader,
+  Spinner,
+  TextField,
+  cx,
+} from '../components/ui';
 
 function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
+}
+
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString();
 }
 
 interface ModeMeta {
   mode: RegistrationMode;
   title: string;
   description: string;
-  /** V1 only enforces `closed`; the rest are designed + stored but not yet active. */
-  available: boolean;
 }
 
 /**
- * The four registration modes (PROJECTPLAN.md §6.12), in enforcement order. Only
- * `closed` is selectable in V1; the enforcement plumbing already reads this setting
- * so activating a mode later is a switch, not a rebuild.
+ * The four registration modes (PROJECTPLAN.md §6.12, §13.4 V4-P4a), in
+ * enforcement order. All four are live: switching the mode takes effect
+ * immediately (no restart).
  */
 const MODE_META: ModeMeta[] = [
   {
     mode: 'closed',
     title: 'Closed',
-    description: 'Only admin-created users and invite links. The V1 default, fully enforced.',
-    available: true,
+    description: 'Only admin-created users and invite links. The default, fully enforced.',
   },
   {
     mode: 'invite_token',
     title: 'Invite / access-token',
-    description: 'Self-serve registration page that requires a valid token.',
-    available: false,
+    description: 'Self-serve registration page that requires a valid access token (below).',
   },
   {
     mode: 'approval',
     title: 'Approval',
-    description: 'Open registration form; accounts land as pending until an admin approves.',
-    available: false,
+    description: 'Open registration form; accounts wait in the approval queue (below).',
   },
   {
     mode: 'open',
     title: 'Open',
-    description: 'Automatic registration — anyone can create an account.',
-    available: false,
+    description: 'Automatic registration — anyone can create an account and sign straight in.',
   },
 ];
 
@@ -56,11 +69,18 @@ if (MODE_META.length !== REGISTRATION_MODES.length) {
   throw new Error('Registration-mode UI is out of sync with the contract enum.');
 }
 
+const TOKEN_STATUS_TONE: Record<RegistrationToken['status'], 'green' | 'amber' | 'neutral'> = {
+  active: 'green',
+  exhausted: 'neutral',
+  expired: 'neutral',
+  revoked: 'amber',
+};
+
 /**
- * Admin global settings (PROJECTPLAN.md §6.12, §8): the registration-mode selector
- * and a beta-mode toggle placeholder. Reads the stored state via `GET /admin/settings`
- * and persists edits via `PATCH /admin/settings`. In V1 only `closed` is selectable;
- * the other modes render disabled + "Coming soon".
+ * Admin global settings (PROJECTPLAN.md §6.12, §8, §13.4 V4-P4a): the
+ * registration-mode selector plus the two surfaces the self-serve modes need —
+ * registration access tokens (invite-token mode) and the approval queue (approval
+ * mode). Reads state via `GET /admin/settings` and persists edits via `PATCH`.
  */
 export function SettingsPage() {
   const settings = useResource((signal) => api.getSettings(signal), []);
@@ -106,6 +126,9 @@ export function SettingsPage() {
     }
   }
 
+  // Reflect the currently-saved mode (not the unsaved edit) in the section hints.
+  const savedMode = baseline?.registrationMode ?? 'closed';
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -130,8 +153,7 @@ export function SettingsPage() {
                 Registration mode
               </h2>
               <p className="text-sm text-neutral-500">
-                How new accounts come to exist. Only Closed is available in V1; the others are
-                designed and enforced from day one but activate post-v1.
+                How new accounts come to exist. Switching a mode takes effect immediately.
               </p>
             </div>
 
@@ -145,10 +167,8 @@ export function SettingsPage() {
                     htmlFor={inputId}
                     className={cx(
                       'flex items-start gap-3 rounded-md border px-3 py-3',
-                      meta.available
-                        ? 'cursor-pointer border-neutral-700 hover:border-neutral-600'
-                        : 'cursor-not-allowed border-neutral-800 opacity-60',
-                      selected && meta.available ? 'border-sky-600 bg-sky-950/30' : null,
+                      'cursor-pointer border-neutral-700 hover:border-neutral-600',
+                      selected ? 'border-sky-600 bg-sky-950/30' : null,
                     )}
                   >
                     <input
@@ -158,21 +178,30 @@ export function SettingsPage() {
                       className="mt-1 accent-sky-500"
                       value={meta.mode}
                       checked={selected}
-                      disabled={!meta.available}
                       onChange={() => setRegistrationMode(meta.mode)}
                     />
                     <span className="flex flex-col gap-1">
-                      <span className="flex items-center gap-2 text-sm font-medium text-neutral-100">
-                        {meta.title}
-                        {meta.available ? null : <Badge tone="amber">Coming soon</Badge>}
-                      </span>
+                      <span className="text-sm font-medium text-neutral-100">{meta.title}</span>
                       <span className="text-sm text-neutral-500">{meta.description}</span>
                     </span>
                   </label>
                 );
               })}
             </fieldset>
+
+            {saveError ? <Alert tone="error">{saveError}</Alert> : null}
+            {saved && !dirty ? <Alert tone="success">Settings saved.</Alert> : null}
+
+            <div className="flex items-center gap-3">
+              <Button onClick={() => void onSave()} disabled={saving || !dirty}>
+                {saving ? 'Saving…' : 'Save settings'}
+              </Button>
+              {dirty ? <span className="text-sm text-neutral-500">Unsaved changes</span> : null}
+            </div>
           </section>
+
+          <RegistrationTokensSection active={savedMode === 'invite_token'} />
+          <ApprovalQueueSection active={savedMode === 'approval'} />
 
           <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <div className="flex flex-col gap-1">
@@ -206,18 +235,220 @@ export function SettingsPage() {
               />
             </label>
           </section>
-
-          {saveError ? <Alert tone="error">{saveError}</Alert> : null}
-          {saved && !dirty ? <Alert tone="success">Settings saved.</Alert> : null}
-
-          <div className="flex items-center gap-3">
-            <Button onClick={() => void onSave()} disabled={saving || !dirty}>
-              {saving ? 'Saving…' : 'Save settings'}
-            </Button>
-            {dirty ? <span className="text-sm text-neutral-500">Unsaved changes</span> : null}
-          </div>
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Registration access tokens (§13.4 V4-P4a) — admin-issued, hash-only tokens that
+ * gate the invite-token mode. Create single- or multi-use tokens with an optional
+ * expiry; the register URL is shown once. Revoke kills a token immediately.
+ */
+function RegistrationTokensSection({ active }: { active: boolean }) {
+  const tokens = useResource((signal) => api.listRegistrationTokens(signal), []);
+
+  const [label, setLabel] = useState('');
+  const [maxUses, setMaxUses] = useState('1');
+  const [expiresInDays, setExpiresInDays] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [createdUrl, setCreatedUrl] = useState<string | null>(null);
+
+  async function onCreate(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setCreatedUrl(null);
+    setCreating(true);
+    try {
+      const uses = Number.parseInt(maxUses, 10);
+      const days = expiresInDays.trim() === '' ? undefined : Number.parseInt(expiresInDays, 10);
+      const res = await api.createRegistrationToken({
+        ...(label.trim() ? { label: label.trim() } : {}),
+        maxUses: Number.isFinite(uses) ? uses : 1,
+        ...(days !== undefined && Number.isFinite(days) ? { expiresInDays: days } : {}),
+      });
+      setCreatedUrl(res.registerUrl);
+      setLabel('');
+      setMaxUses('1');
+      setExpiresInDays('');
+      tokens.reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function onRevoke(id: string) {
+    setError(null);
+    try {
+      await api.revokeRegistrationToken(id);
+      tokens.reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
+          Registration tokens
+        </h2>
+        <p className="text-sm text-neutral-500">
+          Access tokens for the invite-token registration mode.
+          {active ? null : ' They only take effect while the mode above is Invite / access-token.'}
+        </p>
+      </div>
+
+      <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3">
+        <TextField
+          label="Label (optional)"
+          name="token-label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="beta wave 1"
+        />
+        <TextField
+          label="Max uses"
+          name="token-max-uses"
+          type="number"
+          min={1}
+          value={maxUses}
+          onChange={(e) => setMaxUses(e.target.value)}
+        />
+        <TextField
+          label="Expires in days (optional)"
+          name="token-expires"
+          type="number"
+          min={1}
+          value={expiresInDays}
+          onChange={(e) => setExpiresInDays(e.target.value)}
+          placeholder="never"
+        />
+        <Button type="submit" disabled={creating}>
+          {creating ? 'Creating…' : 'Create token'}
+        </Button>
+      </form>
+
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      {createdUrl ? (
+        <CopyField label="Registration URL (copy now — shown once)" value={createdUrl} />
+      ) : null}
+
+      {tokens.loading ? (
+        <Spinner label="Loading tokens…" />
+      ) : tokens.error ? (
+        <Alert tone="error">{tokens.error}</Alert>
+      ) : tokens.data && tokens.data.tokens.length > 0 ? (
+        <ul className="flex flex-col gap-2">
+          {tokens.data.tokens.map((token) => (
+            <li
+              key={token.id}
+              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="flex items-center gap-2 text-sm text-neutral-100">
+                  {token.label ?? 'Untitled token'}
+                  <Badge tone={TOKEN_STATUS_TONE[token.status]}>{token.status}</Badge>
+                </span>
+                <span className="text-xs text-neutral-500">
+                  {token.useCount}/{token.maxUses} uses
+                  {token.expiresAt
+                    ? ` · expires ${formatDateTime(token.expiresAt)}`
+                    : ' · no expiry'}
+                </span>
+              </span>
+              {token.status === 'active' ? (
+                <Button variant="secondary" onClick={() => void onRevoke(token.id)}>
+                  Revoke
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState>No registration tokens yet.</EmptyState>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Approval queue (§13.4 V4-P4a) — pending applications from the approval mode.
+ * Approve creates the account (and emails the applicant); reject drops it (and
+ * emails the applicant). Either way the row leaves the queue.
+ */
+function ApprovalQueueSection({ active }: { active: boolean }) {
+  const requests = useResource((signal) => api.listRegistrationRequests(signal), []);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  async function act(id: string, kind: 'approve' | 'reject') {
+    setError(null);
+    setBusyId(id);
+    try {
+      if (kind === 'approve') await api.approveRegistrationRequest(id);
+      else await api.rejectRegistrationRequest(id);
+      requests.reload();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+      <div className="flex flex-col gap-1">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
+          Approval queue
+        </h2>
+        <p className="text-sm text-neutral-500">
+          Pending self-serve registrations awaiting review.
+          {active ? null : ' New applications only arrive while the mode above is Approval.'}
+        </p>
+      </div>
+
+      {error ? <Alert tone="error">{error}</Alert> : null}
+
+      {requests.loading ? (
+        <Spinner label="Loading requests…" />
+      ) : requests.error ? (
+        <Alert tone="error">{requests.error}</Alert>
+      ) : requests.data && requests.data.requests.length > 0 ? (
+        <ul className="flex flex-col gap-2">
+          {requests.data.requests.map((req) => (
+            <li
+              key={req.id}
+              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
+            >
+              <span className="flex flex-col gap-0.5">
+                <span className="text-sm text-neutral-100">{req.username}</span>
+                <span className="text-xs text-neutral-500">
+                  {req.email} · requested {formatDateTime(req.createdAt)}
+                </span>
+              </span>
+              <span className="flex items-center gap-2">
+                <Button onClick={() => void act(req.id, 'approve')} disabled={busyId === req.id}>
+                  Approve
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => void act(req.id, 'reject')}
+                  disabled={busyId === req.id}
+                >
+                  Reject
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState>No pending registrations.</EmptyState>
+      )}
+    </section>
   );
 }

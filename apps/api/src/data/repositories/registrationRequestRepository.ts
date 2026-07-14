@@ -58,10 +58,7 @@ export function createRegistrationRequestRepository(db: Database) {
     },
 
     async listAll(): Promise<RegistrationRequestRow[]> {
-      return db
-        .select()
-        .from(registrationRequests)
-        .orderBy(desc(registrationRequests.createdAt));
+      return db.select().from(registrationRequests).orderBy(desc(registrationRequests.createdAt));
     },
 
     async remove(id: string): Promise<void> {
@@ -69,14 +66,10 @@ export function createRegistrationRequestRepository(db: Database) {
     },
 
     async count(): Promise<number> {
-      const rows = await db
-        .select({ id: registrationRequests.id })
-        .from(registrationRequests);
+      const rows = await db.select({ id: registrationRequests.id }).from(registrationRequests);
       return rows.length;
     },
   };
 }
 
-export type RegistrationRequestRepository = ReturnType<
-  typeof createRegistrationRequestRepository
->;
+export type RegistrationRequestRepository = ReturnType<typeof createRegistrationRequestRepository>;

@@ -23,13 +23,7 @@ import type { RegistrationRequestRepository } from '../../data/repositories/regi
 import type { RegistrationTokenRepository } from '../../data/repositories/registrationTokenRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
-import {
-  accountDisabled,
-  badRequest,
-  conflict,
-  tooManyRequests,
-  unauthorized,
-} from '../../errors';
+import { accountDisabled, badRequest, conflict, tooManyRequests, unauthorized } from '../../errors';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { generateToken, hashToken, sha256Base64Url } from '../crypto/tokens';
@@ -116,9 +110,7 @@ export type LoginResult =
  * `invite_token` modes create the account and sign it in (`authenticated`); the
  * `approval` mode parks a pending application and mints NO session (`pending`).
  */
-export type RegisterResult =
-  | ({ status: 'authenticated' } & SessionResult)
-  | { status: 'pending' };
+export type RegisterResult = ({ status: 'authenticated' } & SessionResult) | { status: 'pending' };
 
 export interface VerifyTwoFactorInput {
   pendingToken: string;
@@ -1044,7 +1036,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           throw conflict('That username is already taken.', 'USERNAME_TAKEN');
         }
         if (await registrationRequestRepo.findByEmail(emailAddr)) {
-          throw conflict('A registration request for this email is already pending.', 'EMAIL_TAKEN');
+          throw conflict(
+            'A registration request for this email is already pending.',
+            'EMAIL_TAKEN',
+          );
         }
         if (await registrationRequestRepo.findByUsername(username)) {
           throw conflict('That username is already requested.', 'USERNAME_TAKEN');

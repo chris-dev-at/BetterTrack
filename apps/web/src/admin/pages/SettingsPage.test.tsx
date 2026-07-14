@@ -52,27 +52,83 @@ beforeEach(() => {
   });
   vi.mocked(api.getSettings).mockResolvedValue(settings);
   vi.mocked(api.updateSettings).mockResolvedValue(settings);
+  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [] });
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [] });
 });
 
-test('shows all four registration modes with only Closed selectable', async () => {
+test('shows all four registration modes, every one selectable (V4-P4a)', async () => {
   renderPage();
 
-  // All four modes render as radios.
-  expect(await screen.findByRole('radio', { name: /Closed/i })).toBeInTheDocument();
-  const invite = screen.getByRole('radio', { name: /Invite \/ access-token/i });
-  const approval = screen.getByRole('radio', { name: /Approval/i });
-  const open = screen.getByRole('radio', { name: /^Open/i });
-
-  // Only Closed is enabled; the other three are disabled + marked Coming soon.
-  expect(screen.getByRole('radio', { name: /Closed/i })).toBeEnabled();
-  expect(screen.getByRole('radio', { name: /Closed/i })).toBeChecked();
-  expect(invite).toBeDisabled();
-  expect(approval).toBeDisabled();
-  expect(open).toBeDisabled();
-  expect(screen.getAllByText(/Coming soon/i)).toHaveLength(3);
+  // All four modes render as enabled radios — no "Coming soon".
+  expect(await screen.findByRole('radio', { name: /Closed/i })).toBeChecked();
+  for (const name of [/Closed/i, /Invite \/ access-token/i, /Approval/i, /^Open/i]) {
+    expect(screen.getByRole('radio', { name })).toBeEnabled();
+  }
+  expect(screen.queryByText(/Coming soon/i)).not.toBeInTheDocument();
 
   // The beta-mode toggle placeholder is present.
   expect(screen.getByRole('checkbox', { name: /Beta mode/i })).toBeInTheDocument();
+});
+
+test('switching to a self-serve mode and saving persists it', async () => {
+  vi.mocked(api.updateSettings).mockResolvedValue({ ...settings, registrationMode: 'open' });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('radio', { name: /^Open/i }));
+  await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
+
+  await waitFor(() =>
+    expect(api.updateSettings).toHaveBeenCalledWith({
+      registrationMode: 'open',
+      betaMode: false,
+    }),
+  );
+});
+
+test('creates a registration token and shows the register URL once', async () => {
+  vi.mocked(api.createRegistrationToken).mockResolvedValue({
+    token: {
+      id: 'tok-1',
+      label: 'beta',
+      status: 'active',
+      maxUses: 3,
+      useCount: 0,
+      expiresAt: null,
+      revokedAt: null,
+      createdAt: '2026-07-14T00:00:00.000Z',
+    },
+    registerUrl: 'http://localhost:5173/register?token=RAW-SECRET',
+  });
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('button', { name: /create token/i }));
+
+  await waitFor(() => expect(api.createRegistrationToken).toHaveBeenCalled());
+  expect(await screen.findByText(/RAW-SECRET/)).toBeInTheDocument();
+});
+
+test('approves a pending registration from the queue', async () => {
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [
+      {
+        id: 'req-1',
+        email: 'queue@test.dev',
+        username: 'queue_user',
+        createdAt: '2026-07-14T00:00:00.000Z',
+      },
+    ],
+  });
+  vi.mocked(api.approveRegistrationRequest).mockResolvedValue({
+    ...admin,
+    id: 'new-user',
+    email: 'queue@test.dev',
+    username: 'queue_user',
+    role: 'user',
+  } as never);
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('button', { name: /approve/i }));
+  await waitFor(() => expect(api.approveRegistrationRequest).toHaveBeenCalledWith('req-1'));
 });
 
 test('toggling beta mode and saving persists via updateSettings', async () => {

@@ -3,6 +3,8 @@ import {
   loginResponseSchema,
   meResponseSchema,
   pinQuickAuthResponseSchema,
+  publicRegistrationInfoResponseSchema,
+  registerResponseSchema,
   rememberedDeviceResponseSchema,
   revokeSessionsResponseSchema,
   sessionInfoResponseSchema,
@@ -16,6 +18,9 @@ import {
   type MeResponse,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type PublicRegistrationInfoResponse,
+  type RegisterRequest,
+  type RegisterResponse,
   type PinQuickAuthRequest,
   type PinQuickAuthResponse,
   type PinVerifyRequest,
@@ -269,6 +274,35 @@ export async function acceptInvite(body: AcceptInviteRequest): Promise<MeRespons
     suppressAuthRedirect: true,
   });
   return meResponseSchema.parse(data);
+}
+
+/**
+ * Public registration-mode discovery (§13.4 V4-P4a). Lets the login / register
+ * surfaces reflect the active mode. `suppressAuthRedirect`: unauthenticated.
+ */
+export async function getRegistrationInfo(
+  signal?: AbortSignal,
+): Promise<PublicRegistrationInfoResponse> {
+  const data = await apiRequest<unknown>('/auth/registration-info', {
+    signal,
+    suppressAuthRedirect: true,
+  });
+  return publicRegistrationInfoResponseSchema.parse(data);
+}
+
+/**
+ * Public self-serve registration (§13.4 V4-P4a). Resolves to either the signed-in
+ * user (open / invite-token modes set a session cookie) or the approval-pending
+ * answer (`{ pending: true }`, no session). Closed mode / a bad token / a taken
+ * email throw an {@link ApiError}. `suppressAuthRedirect`: a public call.
+ */
+export async function register(body: RegisterRequest): Promise<RegisterResponse> {
+  const data = await apiRequest<unknown>('/auth/register', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return registerResponseSchema.parse(data);
 }
 
 /**

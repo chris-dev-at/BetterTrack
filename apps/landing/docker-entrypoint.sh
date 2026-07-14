@@ -9,7 +9,11 @@ set -eu
 
 : "${BT_WEB_ORIGIN:=https://web.bettertrack.at}"
 export BT_WEB_ORIGIN
+# The landing reads the active registration mode from the API to reflect it
+# (§13.4 V4-P4a) — inject the API origin alongside the web origin.
+: "${BT_API_ORIGIN:=https://api.bettertrack.at}"
+export BT_API_ORIGIN
 
-envsubst '${BT_WEB_ORIGIN}' \
+envsubst '${BT_WEB_ORIGIN} ${BT_API_ORIGIN}' \
   < /usr/share/nginx/html/env.js.template \
   > /usr/share/nginx/html/env.js

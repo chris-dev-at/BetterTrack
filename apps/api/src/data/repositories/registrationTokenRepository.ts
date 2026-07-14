@@ -77,10 +77,7 @@ export function createRegistrationTokenRepository(db: Database) {
             eq(registrationTokens.id, id),
             isNull(registrationTokens.revokedAt),
             lt(registrationTokens.useCount, registrationTokens.maxUses),
-            or(
-              isNull(registrationTokens.expiresAt),
-              gt(registrationTokens.expiresAt, now),
-            ),
+            or(isNull(registrationTokens.expiresAt), gt(registrationTokens.expiresAt, now)),
           ),
         )
         .returning({ id: registrationTokens.id });

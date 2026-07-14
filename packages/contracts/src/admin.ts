@@ -220,9 +220,7 @@ export const createRegistrationTokenResponseSchema = z.object({
   token: registrationTokenSchema,
   registerUrl: z.string().url(),
 });
-export type CreateRegistrationTokenResponse = z.infer<
-  typeof createRegistrationTokenResponseSchema
->;
+export type CreateRegistrationTokenResponse = z.infer<typeof createRegistrationTokenResponseSchema>;
 
 export const registrationTokenListResponseSchema = z.object({
   tokens: z.array(registrationTokenSchema),
@@ -245,9 +243,7 @@ export type RegistrationRequest = z.infer<typeof registrationRequestSchema>;
 export const registrationRequestListResponseSchema = z.object({
   requests: z.array(registrationRequestSchema),
 });
-export type RegistrationRequestListResponse = z.infer<
-  typeof registrationRequestListResponseSchema
->;
+export type RegistrationRequestListResponse = z.infer<typeof registrationRequestListResponseSchema>;
 
 export const auditLogEntrySchema = z.object({
   id: z.string().uuid(),

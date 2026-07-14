@@ -100,9 +100,7 @@ export type RegisterRequest = z.infer<typeof registerRequestSchema>;
  * exists yet — the applicant cannot sign in until approved. Distinct from the
  * signed-in {@link meResponseSchema} branch (below) by its `pending` discriminant.
  */
-export const registrationPendingResponseSchema = z
-  .object({ pending: z.literal(true) })
-  .strict();
+export const registrationPendingResponseSchema = z.object({ pending: z.literal(true) }).strict();
 export type RegistrationPendingResponse = z.infer<typeof registrationPendingResponseSchema>;
 
 /**

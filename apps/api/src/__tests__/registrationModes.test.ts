@@ -36,17 +36,26 @@ async function setMode(
   agent: ReturnType<typeof request.agent>,
   mode: 'closed' | 'invite_token' | 'approval' | 'open',
 ) {
-  const res = await agent.patch('/api/v1/admin/settings').set(...XRW).send({ registrationMode: mode });
+  const res = await agent
+    .patch('/api/v1/admin/settings')
+    .set(...XRW)
+    .send({ registrationMode: mode });
   expect(res.status).toBe(200);
   expect(res.body.registrationMode).toBe(mode);
 }
 
 function register(app: Application, body: Record<string, unknown>) {
-  return request(app).post('/api/v1/auth/register').set(...XRW).send(body);
+  return request(app)
+    .post('/api/v1/auth/register')
+    .set(...XRW)
+    .send(body);
 }
 
 function login(app: Application, identifier: string, password: string) {
-  return request(app).post('/api/v1/auth/login').set(...XRW).send({ identifier, password });
+  return request(app)
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier, password });
 }
 
 /** Pull the raw registration token out of a create response's register URL. */
@@ -336,7 +345,10 @@ describe('admin-only + audit (§13.4 V4-P4a)', () => {
       .set(...XRW)
       .send({ identifier: seededUser.email, password: seededUser.password });
 
-    for (const path of ['/api/v1/admin/registration-tokens', '/api/v1/admin/registration-requests']) {
+    for (const path of [
+      '/api/v1/admin/registration-tokens',
+      '/api/v1/admin/registration-requests',
+    ]) {
       expect((await request(harness.app).get(path)).status).toBe(404);
       expect((await userAgent.get(path)).status).toBe(404);
     }
@@ -344,7 +356,10 @@ describe('admin-only + audit (§13.4 V4-P4a)', () => {
 
   it('token creation and approval are audit-logged', async () => {
     await setMode(adminAgent, 'invite_token');
-    await adminAgent.post('/api/v1/admin/registration-tokens').set(...XRW).send({});
+    await adminAgent
+      .post('/api/v1/admin/registration-tokens')
+      .set(...XRW)
+      .send({});
 
     await setMode(adminAgent, 'approval');
     await register(harness.app, {

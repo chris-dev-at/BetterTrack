@@ -18,7 +18,8 @@
       "rateLimited": "Zu viele Anmeldeversuche.",
       "accountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
       "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
-      "staySignedIn": "Angemeldet bleiben"
+      "staySignedIn": "Angemeldet bleiben",
+      "createAccount": "Noch kein Konto? Jetzt erstellen"
     },
     "oauthStay": {
       "subtitle": "Anmeldung",
@@ -121,6 +122,32 @@
       "invalidPin": "Falscher PIN. Bitte versuche es erneut.",
       "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
       "verifyFailed": "PIN konnte nicht überprüft werden. Bitte versuche es erneut."
+    },
+    "register": {
+      "subtitle": "Konto erstellen",
+      "loading": "Wird geladen…",
+      "goToSignIn": "Zur Anmeldung",
+      "haveAccount": "Schon ein Konto? Anmelden",
+      "emailLabel": "E-Mail",
+      "usernameLabel": "Benutzername",
+      "usernameHint": "3–40 Zeichen: Buchstaben, Zahlen, Punkt, Bindestrich oder Unterstrich.",
+      "passwordLabel": "Passwort",
+      "submit": "Konto erstellen",
+      "submitApproval": "Konto anfragen",
+      "submitting": "Konto wird erstellt…",
+      "approvalHint": "Neue Konten werden von einer Administratorin geprüft, bevor du dich anmelden kannst.",
+      "tokenLabel": "Zugangstoken",
+      "tokenHint": "Füge den Registrierungstoken ein, den du erhalten hast.",
+      "tokenRequired": "Ein Registrierungstoken ist erforderlich.",
+      "invalidToken": "Dieser Registrierungstoken ist ungültig oder abgelaufen.",
+      "usernameTaken": "Dieser Benutzername ist bereits vergeben – wähle einen anderen.",
+      "emailTaken": "Für diese E-Mail existiert bereits ein Konto.",
+      "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
+      "failed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut.",
+      "closedSubtitle": "Registrierung",
+      "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte eine Administratorin um eine Einladung.",
+      "pendingSubtitle": "Fast geschafft",
+      "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch eine Administratorin. Du erhältst eine E-Mail, sobald sie geprüft wurde."
     }
   },
   "common": {
