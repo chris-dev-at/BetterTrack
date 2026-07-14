@@ -34,43 +34,40 @@ export const ALERT_KIND_ORDER: readonly AlertKind[] = [
   'pct_day_down',
 ];
 
-const KINDS = 'workboard.alerts.kinds';
-const GROUPS = 'workboard.alerts.groups';
-
 export const ALERT_KIND_META: Record<AlertKind, AlertKindMeta> = {
   price_above: {
-    labelKey: `${KINDS}.priceAbove`,
-    groupKey: `${GROUPS}.priceLevel`,
+    labelKey: 'workboard.alerts.kinds.priceAbove',
+    groupKey: 'workboard.alerts.groups.priceLevel',
     unit: 'price',
     ref: false,
   },
   price_below: {
-    labelKey: `${KINDS}.priceBelow`,
-    groupKey: `${GROUPS}.priceLevel`,
+    labelKey: 'workboard.alerts.kinds.priceBelow',
+    groupKey: 'workboard.alerts.groups.priceLevel',
     unit: 'price',
     ref: false,
   },
   pct_up_from_ref: {
-    labelKey: `${KINDS}.pctUpFromRef`,
-    groupKey: `${GROUPS}.fromReference`,
+    labelKey: 'workboard.alerts.kinds.pctUpFromRef',
+    groupKey: 'workboard.alerts.groups.fromReference',
     unit: 'percent',
     ref: true,
   },
   pct_down_from_ref: {
-    labelKey: `${KINDS}.pctDownFromRef`,
-    groupKey: `${GROUPS}.fromReference`,
+    labelKey: 'workboard.alerts.kinds.pctDownFromRef',
+    groupKey: 'workboard.alerts.groups.fromReference',
     unit: 'percent',
     ref: true,
   },
   pct_day_up: {
-    labelKey: `${KINDS}.pctDayUp`,
-    groupKey: `${GROUPS}.onTheDay`,
+    labelKey: 'workboard.alerts.kinds.pctDayUp',
+    groupKey: 'workboard.alerts.groups.onTheDay',
     unit: 'percent',
     ref: false,
   },
   pct_day_down: {
-    labelKey: `${KINDS}.pctDayDown`,
-    groupKey: `${GROUPS}.onTheDay`,
+    labelKey: 'workboard.alerts.kinds.pctDayDown',
+    groupKey: 'workboard.alerts.groups.onTheDay',
     unit: 'percent',
     ref: false,
   },
@@ -85,24 +82,29 @@ export function describeAlertRule(
   const meta = ALERT_KIND_META[alert.kind];
   const amount =
     meta.unit === 'price' ? formatMoney(alert.threshold, currency) : formatPercent(alert.threshold);
-  const RULE = 'workboard.alerts.rule';
   switch (alert.kind) {
     case 'price_above':
-      return t(`${RULE}.priceAbove`, { amount });
+      return t('workboard.alerts.rule.priceAbove', { amount });
     case 'price_below':
-      return t(`${RULE}.priceBelow`, { amount });
+      return t('workboard.alerts.rule.priceBelow', { amount });
     case 'pct_up_from_ref':
       return alert.refPrice != null
-        ? t(`${RULE}.pctUpFromRefPrice`, { amount, ref: formatMoney(alert.refPrice, currency) })
-        : t(`${RULE}.pctUpFromRef`, { amount });
+        ? t('workboard.alerts.rule.pctUpFromRefPrice', {
+            amount,
+            ref: formatMoney(alert.refPrice, currency),
+          })
+        : t('workboard.alerts.rule.pctUpFromRef', { amount });
     case 'pct_down_from_ref':
       return alert.refPrice != null
-        ? t(`${RULE}.pctDownFromRefPrice`, { amount, ref: formatMoney(alert.refPrice, currency) })
-        : t(`${RULE}.pctDownFromRef`, { amount });
+        ? t('workboard.alerts.rule.pctDownFromRefPrice', {
+            amount,
+            ref: formatMoney(alert.refPrice, currency),
+          })
+        : t('workboard.alerts.rule.pctDownFromRef', { amount });
     case 'pct_day_up':
-      return t(`${RULE}.pctDayUp`, { amount });
+      return t('workboard.alerts.rule.pctDayUp', { amount });
     case 'pct_day_down':
-      return t(`${RULE}.pctDayDown`, { amount });
+      return t('workboard.alerts.rule.pctDayDown', { amount });
   }
 }
 
@@ -111,19 +113,17 @@ export interface AlertStatusMeta {
   className: string;
 }
 
-const STATUS = 'workboard.alerts.status';
-
 export const ALERT_STATUS_META: Record<AlertStatus, AlertStatusMeta> = {
   active: {
-    labelKey: `${STATUS}.active`,
+    labelKey: 'workboard.alerts.status.active',
     className: 'bg-emerald-950/60 text-emerald-400 ring-emerald-800',
   },
   triggered: {
-    labelKey: `${STATUS}.triggered`,
+    labelKey: 'workboard.alerts.status.triggered',
     className: 'bg-amber-950/60 text-amber-400 ring-amber-800',
   },
   disabled: {
-    labelKey: `${STATUS}.disabled`,
+    labelKey: 'workboard.alerts.status.disabled',
     className: 'bg-neutral-800 text-neutral-400 ring-neutral-700',
   },
 };

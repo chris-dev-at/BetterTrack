@@ -139,7 +139,7 @@ export function ConsentPage() {
       // service validated and signed this destination — never a raw redirect_uri.
       window.location.href = result.redirectTo;
     },
-    onError: () => setApproveError('Could not complete authorization. Please try again.'),
+    onError: () => setApproveError(t('auth.oauthConsent.approveError')),
   });
 
   // A trusted first-party (official) app skips the scope-approval prompt: as soon

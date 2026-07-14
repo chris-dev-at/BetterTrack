@@ -5,7 +5,8 @@ import type { Time } from 'lightweight-charts';
 
 import type { Holding, PortfolioTotals } from '@bettertrack/contracts';
 
-import { useT, type TranslateFn } from '../../i18n';
+import { useT } from '../../i18n';
+import { assetTypeLabels } from '../portfolio/assetTypeLabels';
 import { getSharedPortfolio } from '../../lib/socialApi';
 import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
@@ -15,19 +16,6 @@ import { ItemFollowButton } from './ItemFollowButton';
 import type { AllocationSegment } from '../../ui/charts';
 import { Alert } from '../components/ui';
 
-/** Mirrors `assetTypeLabels` on the owner's overview, so group names match. */
-function assetTypeLabels(t: TranslateFn): Record<string, string> {
-  return {
-    stock: t('portfolio.overview.assetType.stock'),
-    etf: t('portfolio.overview.assetType.etf'),
-    index: t('portfolio.overview.assetType.index'),
-    fx: t('portfolio.overview.assetType.fx'),
-    commodity: t('portfolio.overview.assetType.commodity'),
-    crypto: t('portfolio.overview.assetType.crypto'),
-    cash_like: t('portfolio.overview.assetType.cashLike'),
-    other: t('portfolio.overview.assetType.other'),
-  };
-}
 
 function DeltaPct({ value }: { value: number | null }) {
   const cls =
@@ -45,7 +33,7 @@ function TotalsHeader({ totals }: { totals: PortfolioTotals }) {
   const t = useT();
   return (
     <section
-      aria-label={t('social.shared.totalsAria')}
+      aria-label={t('portfolio.overview.totalsAriaLabel')}
       className="grid grid-cols-2 gap-3 sm:grid-cols-4"
     >
       <StatCard
@@ -94,7 +82,7 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
   if (byAsset.length === 0) return null;
 
   return (
-    <section aria-label={t('social.shared.allocationAria')} className="grid gap-6 sm:grid-cols-2">
+    <section aria-label={t('portfolio.overview.allocationAriaLabel')} className="grid gap-6 sm:grid-cols-2">
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
         <h3 className="mb-4 text-sm font-semibold text-neutral-200">
           {t('portfolio.overview.allocation.byAssetTitle')}
@@ -248,7 +236,7 @@ export function SharedPortfolioPage() {
           />
         </div>
         <p className="mt-1 text-sm text-neutral-400">
-          {t('social.shared.sharedBy', { username: owner.username })} · {t('social.shared.readOnly')}
+          {t('social.shared.sharedByReadOnly', { username: owner.username })}
         </p>
       </div>
 

@@ -236,7 +236,7 @@ export function AssetSearchBox({
     } catch {
       setConglomerateAddState((s) => ({
         ...s,
-        [item.id]: { status: 'error', message: 'Could not add to that conglomerate.' },
+        [item.id]: { status: 'error', message: t('assets.searchBox.addToConglomerateError') },
       }));
     }
   }

@@ -165,7 +165,8 @@
       "returnedTo": "Du wirst zurückgeleitet zu",
       "revokeHint": ". Du kannst diesen Zugriff jederzeit unter Einstellungen → API-Zugang widerrufen.",
       "authorizing": "Wird autorisiert…",
-      "approve": "Zustimmen"
+      "approve": "Zustimmen",
+      "approveError": "Die Autorisierung konnte nicht abgeschlossen werden. Bitte versuche es erneut."
     }
   },
   "common": {
@@ -199,16 +200,11 @@
     "closeDialogAria": "Dialog schließen",
     "charts": {
       "noAllocationData": "Noch keine Allokationsdaten.",
-      "selectRange": "Chart-Zeitraum wählen"
-    },
-    "notifications": {
-      "title": "Benachrichtigungen",
-      "markAllRead": "Alle als gelesen markieren",
-      "updateError": "Die Benachrichtigung konnte nicht aktualisiert werden. Bitte versuche es erneut.",
-      "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
-      "loadErrorDescription": "Bitte versuche es gleich noch einmal.",
-      "emptyTitle": "Noch keine Benachrichtigungen",
-      "emptyDescription": "Aktivitäten wie Freundschaftsanfragen und geteilte Inhalte erscheinen hier."
+      "selectRange": "Chart-Zeitraum wählen",
+      "loadingChart": "Chart wird geladen…",
+      "noPriceData": "Noch keine Kursdaten für diesen Zeitraum.",
+      "priceChartAria": "Kurschart",
+      "allocationFallbackTitle": "Aufteilung im Überblick"
     }
   },
   "nav": {
@@ -391,7 +387,9 @@
         "unsupported": "Dieser Browser unterstützt keine Push-Benachrichtigungen.",
         "denied": "Benachrichtigungen sind für diese Seite in deinen Browser-Einstellungen blockiert.",
         "error": "Browser-Push konnte nicht geändert werden. Bitte versuche es erneut."
-      }
+      },
+      "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
+      "loadErrorDescription": "Bitte versuche es gleich noch einmal."
     },
     "security": {
       "title": "Sicherheit",
@@ -817,7 +815,13 @@
       "autoHint": "auto",
       "derivedRecords": "· verbucht",
       "derivedResidual": " ({{delta}} ggü. Eingabe, durch Rundung auf 8 Dezimalstellen)",
-      "derivedPrompt": "Gib einen Kurs und einen Betrag über 0 ein, um die Stückzahl abzuleiten."
+      "derivedPrompt": "Gib einen Kurs und einen Betrag über 0 ein, um die Stückzahl abzuleiten.",
+      "linkNoData": "Keine Kursdaten an oder vor diesem Datum.",
+      "linkClosedNote": "Börse geschlossen — Schlusskurs von {{day}} wird verwendet.",
+      "linkNeverAtPrice": "Dieser Kurs kommt in der verfügbaren Historie nicht vor.",
+      "priceHistoryLoading": "Kurshistorie wird geladen…",
+      "unlinkAria": "Datum und Kurs entkoppeln",
+      "linkAria": "Datum und Kurs koppeln"
     },
     "overview": {
       "title": "Portfolio",
@@ -1678,7 +1682,8 @@
       "addedTo": "Zu {{name}} hinzugefügt.",
       "createNewConglomerate": "+ Neues Konglomerat erstellen",
       "selectAria": "{{symbol}} auswählen",
-      "select": "Auswählen →"
+      "select": "Auswählen →",
+      "addToConglomerateError": "Konnte nicht zu diesem Konglomerat hinzugefügt werden."
     }
   },
   "sharing": {
@@ -1957,10 +1962,6 @@
     },
     "shared": {
       "backToFriends": "← Freunde",
-      "sharedBy": "Geteilt von {{username}}",
-      "readOnly": "nur Lesezugriff",
-      "totalsAria": "Portfolio-Summen",
-      "allocationAria": "Allokation",
       "portfolioLoadError": "Dieses geteilte Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
       "portfolioEmptyTitle": "Noch nichts zu zeigen",
       "portfolioEmptyDescription": "{{username}} hat in diesem Portfolio noch keine Bestände erfasst.",
@@ -1971,7 +1972,9 @@
       "noPositionsTitle": "Keine Positionen",
       "noPositionsDescription": "Dieses Konglomerat enthält noch keine Anlagen.",
       "watchlistEmptyTitle": "Leere Watchlist",
-      "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen."
+      "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen.",
+      "sharedByReadOnly": "Geteilt von {{username}} · nur Lesezugriff",
+      "sharedByStatus": "Geteilt von {{username}} · {{status}}"
     }
   },
   "profile": {

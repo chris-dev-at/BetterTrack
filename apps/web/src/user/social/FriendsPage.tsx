@@ -49,16 +49,12 @@ function ChatIcon({ className }: { className?: string }) {
 const REQUESTS_STALE_MS = 15_000;
 const FRIENDS_STALE_MS = 30_000;
 
-/**
- * The identical, no-enumeration success message shown after every
- * `POST /social/requests` — the backend always answers `{ ok: true }`
- * regardless of whether the target exists (PROJECTPLAN.md §6.9), so the UI
- * never has a "user not found" branch to surface.
- */
-const REQUEST_SENT_MESSAGE_KEY = 'social.friends.requestSent';
-
 // ─── Add friend ─────────────────────────────────────────────────────────────
 
+// `social.friends.requestSent` is the identical, no-enumeration success message
+// shown after every `POST /social/requests` — the backend always answers
+// `{ ok: true }` regardless of whether the target exists (PROJECTPLAN.md §6.9),
+// so the UI never has a "user not found" branch to surface.
 function AddFriendForm() {
   const t = useT();
   const queryClient = useQueryClient();
@@ -70,7 +66,7 @@ function AddFriendForm() {
   const mutation = useMutation({
     mutationFn: (value: string) => sendFriendRequest({ identifier: value }),
     onSuccess: () => {
-      setFeedback({ tone: 'success', text: t(REQUEST_SENT_MESSAGE_KEY) });
+      setFeedback({ tone: 'success', text: t('social.friends.requestSent') });
       setIdentifier('');
       void queryClient.invalidateQueries({ queryKey: ['social', 'requests'] });
     },

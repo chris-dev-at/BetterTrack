@@ -12,7 +12,7 @@ import type {
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
-import { useT, type TranslateFn } from '../../i18n';
+import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import {
@@ -29,13 +29,7 @@ import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
-import {
-  dateForPrice,
-  priceForDate,
-  toDailyPoints,
-  weekdayShort,
-  type DailyPoint,
-} from './priceDateLink';
+import { dateForPrice, priceForDate, toDailyPoints, type DailyPoint } from './priceDateLink';
 import { Alert, Button, cx } from './ui';
 
 /** Compact native-currency suffix for the Price field (falls back to the code). */
@@ -461,7 +455,7 @@ function orderTotalForRow(row: Row): number | null {
  */
 export function TransactionDialog(props: TransactionDialogProps) {
   const { portfolioId, onClose, onSubmitted, transaction } = props;
-  const t = useT();
+  const { locale, t } = useI18n();
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
@@ -547,17 +541,28 @@ export function TransactionDialog(props: TransactionDialogProps) {
     setRows((rs) => (rs.length === 1 ? [{ ...rs[0]!, ...patch }] : rs));
   }
 
-  /** Date drives price: fill the close for the picked day (or the prior trading day). */
+  /** Short weekday for a YYYY-MM-DD date in the active UI language (not the number-format locale). */
+function localeWeekdayShort(locale: string, date: string): string {
+  return new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(
+    new Date(`${date}T00:00:00.000Z`),
+  );
+}
+
+/** Date drives price: fill the close for the picked day (or the prior trading day). */
   function resolveDateToPrice(date: string) {
     if (!linked || !hasSeries) return;
     const res = priceForDate(series!, date);
     if (!res) {
-      setLinkNote('No price data on or before that date.');
+      setLinkNote(t('portfolio.transaction.linkNoData'));
       return;
     }
     setSingleRow({ price: truncateMoneyForInput(res.price) });
     setPriceAuto(true);
-    setLinkNote(res.adjusted ? `Market closed — using ${weekdayShort(res.date)} close.` : null);
+    setLinkNote(
+      res.adjusted
+        ? t('portfolio.transaction.linkClosedNote', { day: localeWeekdayShort(locale, res.date) })
+        : null,
+    );
   }
 
   /** Price drives date: jump to the most recent day the series was at that price. */
@@ -569,7 +574,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     if (!Number.isFinite(price) || price <= 0) return;
     const res = dateForPrice(series!, price);
     if (!res) {
-      setLinkNote('Never at this price in available history.');
+      setLinkNote(t('portfolio.transaction.linkNeverAtPrice'));
       return;
     }
     setSingleRow({ date: res.date });
@@ -1738,7 +1743,11 @@ function RowFields({
                   onClick={link.onToggle}
                   disabled={link.loading}
                   aria-pressed={link.linked}
-                  aria-label={link.linked ? 'Unlink date and price' : 'Link date and price'}
+                  aria-label={
+                    link.linked
+                      ? t('portfolio.transaction.unlinkAria')
+                      : t('portfolio.transaction.linkAria')
+                  }
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
                     'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]',
@@ -1762,7 +1771,7 @@ function RowFields({
       {link ? (
         <p className="-mt-3 text-xs text-neutral-500" role="status">
           {link.loading
-            ? 'Loading price history…'
+            ? t('portfolio.transaction.priceHistoryLoading')
             : link.linked
               ? t('portfolio.transaction.linkHint')
               : t('portfolio.transaction.linkManualHint')}

@@ -89,7 +89,7 @@ const queryClient = new QueryClient();
 function UserShell() {
   const { status } = useAuth();
 
-  if (status === 'loading') return <Splash label="Loading…" />;
+  if (status === 'loading') return <Splash />;
   if (status === 'password-change-required') return <ForcedPasswordChangePage />;
   // PIN gate wraps the whole app while a PIN-enabled account hasn't been
   // unlocked this browsing session (§6.1) — the trap sits above routing, so no

@@ -148,8 +148,9 @@ export function PriceChart({
   emptyMessage,
   height = 320,
   className,
-  ariaLabel = 'Price chart',
+  ariaLabel,
 }: PriceChartProps) {
+  const t = useT();
   // Controlled when `range` is provided; otherwise track internally so the
   // toggle works standalone (and in tests with no parent).
   const [internalRange, setInternalRange] = useState<PriceRange>(range ?? defaultRange);
@@ -378,7 +379,7 @@ export function PriceChart({
 
       {loading ? (
         <div className="grid place-items-center rounded-md bg-neutral-900/40" style={{ height }}>
-          <Spinner label="Loading chart…" />
+          <Spinner label={t('common.charts.loadingChart')} />
         </div>
       ) : isEmpty ? (
         <div
@@ -386,13 +387,13 @@ export function PriceChart({
           className="grid place-items-center rounded-md bg-neutral-900/40 text-sm text-neutral-500"
           style={{ height }}
         >
-          {emptyMessage ?? 'No price data for this range yet.'}
+          {emptyMessage ?? t('common.charts.noPriceData')}
         </div>
       ) : (
         <div
           ref={containerRef}
           role="img"
-          aria-label={ariaLabel}
+          aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
           className="w-full"
           style={{ height }}
         />

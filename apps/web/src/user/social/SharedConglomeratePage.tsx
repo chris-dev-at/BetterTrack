@@ -55,10 +55,13 @@ export function SharedConglomeratePage() {
           <ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />
         </div>
         <p className="text-sm text-neutral-500">
-          {t('social.shared.sharedBy', { username: data.owner.username })} ·{' '}
-          {data.status === 'active'
-            ? t('workboard.conglomerates.status.active')
-            : t('workboard.conglomerates.status.draft')}
+          {t('social.shared.sharedByStatus', {
+            username: data.owner.username,
+            status:
+              data.status === 'active'
+                ? t('workboard.conglomerates.status.active')
+                : t('workboard.conglomerates.status.draft'),
+          })}
         </p>
         {data.description ? <p className="text-sm text-neutral-400">{data.description}</p> : null}
       </div>

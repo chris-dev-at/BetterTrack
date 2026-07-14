@@ -1,7 +1,8 @@
-import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
+import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
+import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 
 /**
@@ -25,35 +26,6 @@ function isoDaysAgo(days: number): string {
   return `${y}-${m}-${day}`;
 }
 
-/**
- * Record one SAP.DE buy through the real "+ Transaction" dialog — the
- * tax-at.spec.ts pattern. The date↔price assist is unlinked first so the
- * entered price/date are taken verbatim; the toggle only exists once a price
- * series is available, so a failure to find it is ignored.
- */
-async function recordSapBuy(
-  page: Page,
-  quantity: string,
-  price: string,
-  date: string,
-): Promise<void> {
-  await page.goto('/portfolio');
-  await page.getByRole('button', { name: '+ Transaction' }).click();
-  const dialog = page.getByRole('dialog');
-  await dialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
-  await dialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
-
-  await dialog
-    .getByRole('button', { name: 'Unlink date and price' })
-    .click({ timeout: 20_000 })
-    .catch(() => {});
-
-  await dialog.getByLabel('Date for SAP.DE').fill(date);
-  await dialog.getByLabel('Quantity for SAP.DE').fill(quantity);
-  await dialog.getByLabel('Price for SAP.DE').fill(price);
-  await dialog.getByRole('button', { name: 'Record buy' }).click();
-  await expect(dialog).toBeHidden();
-}
 
 test('analytics: compare vs an index/asset shows side-by-side stats and the contribution table', async ({
   browser,
@@ -68,7 +40,7 @@ test('analytics: compare vs an index/asset shows side-by-side stats and the cont
   const page = owner.page;
 
   // Seed a holding with history: one SAP.DE buy well inside the default 1Y range.
-  await recordSapBuy(page, '5', '100', isoDaysAgo(200));
+  await recordSapTrade(page, { side: 'buy', quantity: '5', price: '100', date: isoDaysAgo(200) });
 
   await page.goto('/portfolio/analytics');
   await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible();

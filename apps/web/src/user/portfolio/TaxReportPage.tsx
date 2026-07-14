@@ -297,7 +297,9 @@ export function TaxReportPage() {
 
   // Without a resolvable portfolio the report query never runs (it stays
   // `isPending` forever) — gate on that instead of showing an eternal skeleton.
-  if (portfoliosQuery.isError) {
+  // A failed settings query must not read as mode 'none' ("tax reporting is
+  // disabled") either — that would send the user to Settings for no reason.
+  if (portfoliosQuery.isError || settingsQuery.isError) {
     return (
       <div className="flex flex-col gap-4">
         {header}

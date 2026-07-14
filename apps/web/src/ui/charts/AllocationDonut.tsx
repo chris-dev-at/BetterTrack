@@ -41,9 +41,10 @@ export function AllocationDonut({
   data,
   size = 200,
   className,
-  title = 'Allocation breakdown',
+  title,
 }: AllocationDonutProps) {
   const t = useT();
+  const chartTitle = title ?? t('common.charts.allocationFallbackTitle');
   const segments = data
     .filter((s) => Number.isFinite(s.value) && s.value > 0)
     .map((s, i) => ({ ...s, color: s.color ?? PALETTE[i % PALETTE.length] }));
@@ -69,7 +70,7 @@ export function AllocationDonut({
 
   return (
     <div className={cx('flex flex-col items-center gap-4 sm:flex-row sm:items-center', className)}>
-      <div role="img" aria-label={`${title}: ${summary}`} style={{ width: size, height: size }}>
+      <div role="img" aria-label={`${chartTitle}: ${summary}`} style={{ width: size, height: size }}>
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie

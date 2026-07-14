@@ -165,7 +165,8 @@
       "returnedTo": "You'll be returned to",
       "revokeHint": ". You can revoke this access anytime in Settings → API Access.",
       "authorizing": "Authorizing…",
-      "approve": "Approve"
+      "approve": "Approve",
+      "approveError": "Could not complete authorization. Please try again."
     }
   },
   "common": {
@@ -199,16 +200,11 @@
     "closeDialogAria": "Close dialog",
     "charts": {
       "noAllocationData": "No allocation data yet.",
-      "selectRange": "Select chart range"
-    },
-    "notifications": {
-      "title": "Notifications",
-      "markAllRead": "Mark all read",
-      "updateError": "Couldn't update that notification. Please try again.",
-      "loadErrorTitle": "Couldn't load notifications",
-      "loadErrorDescription": "Please try again in a moment.",
-      "emptyTitle": "No notifications yet",
-      "emptyDescription": "Activity like friend requests and shares will show up here."
+      "selectRange": "Select chart range",
+      "loadingChart": "Loading chart…",
+      "noPriceData": "No price data for this range yet.",
+      "priceChartAria": "Price chart",
+      "allocationFallbackTitle": "Allocation breakdown"
     }
   },
   "nav": {
@@ -391,7 +387,9 @@
         "unsupported": "This browser does not support push notifications.",
         "denied": "Notifications are blocked for this site in your browser settings.",
         "error": "Couldn't update browser push. Please try again."
-      }
+      },
+      "loadErrorTitle": "Couldn't load notifications",
+      "loadErrorDescription": "Please try again in a moment."
     },
     "security": {
       "title": "Security",
@@ -817,7 +815,13 @@
       "autoHint": "auto",
       "derivedRecords": "· records",
       "derivedResidual": " ({{delta}} vs entered, from 8-decimal rounding)",
-      "derivedPrompt": "Enter a price and amount above 0 to derive the quantity."
+      "derivedPrompt": "Enter a price and amount above 0 to derive the quantity.",
+      "linkNoData": "No price data on or before that date.",
+      "linkClosedNote": "Market closed — using {{day}} close.",
+      "linkNeverAtPrice": "Never at this price in available history.",
+      "priceHistoryLoading": "Loading price history…",
+      "unlinkAria": "Unlink date and price",
+      "linkAria": "Link date and price"
     },
     "overview": {
       "title": "Portfolio",
@@ -1678,7 +1682,8 @@
       "addedTo": "Added to {{name}}.",
       "createNewConglomerate": "+ Create new conglomerate",
       "selectAria": "Select {{symbol}}",
-      "select": "Select →"
+      "select": "Select →",
+      "addToConglomerateError": "Could not add to that conglomerate."
     }
   },
   "sharing": {
@@ -1957,10 +1962,6 @@
     },
     "shared": {
       "backToFriends": "← Friends",
-      "sharedBy": "Shared by {{username}}",
-      "readOnly": "read-only",
-      "totalsAria": "Portfolio totals",
-      "allocationAria": "Allocation",
       "portfolioLoadError": "Could not load this shared portfolio. Please refresh the page.",
       "portfolioEmptyTitle": "Nothing to show yet",
       "portfolioEmptyDescription": "{{username}} hasn't recorded any holdings in this portfolio.",
@@ -1971,7 +1972,9 @@
       "noPositionsTitle": "No positions",
       "noPositionsDescription": "This conglomerate has no assets yet.",
       "watchlistEmptyTitle": "Empty watchlist",
-      "watchlistEmptyDescription": "This friend isn't watching any assets."
+      "watchlistEmptyDescription": "This friend isn't watching any assets.",
+      "sharedByReadOnly": "Shared by {{username}} · read-only",
+      "sharedByStatus": "Shared by {{username}} · {{status}}"
     }
   },
   "profile": {

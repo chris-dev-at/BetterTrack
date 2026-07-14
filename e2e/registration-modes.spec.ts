@@ -19,9 +19,12 @@ test('registration modes: open mode allows self-serve signup at /register', asyn
   const priorMode = await getRegistrationMode(apiRequest);
   await setRegistrationMode(apiRequest, 'open');
 
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  // Everything after the mode flip runs inside the try — even a failed
+  // newContext() must not leave the instance in open registration.
+  let context: Awaited<ReturnType<typeof browser.newContext>> | undefined;
   try {
+    context = await browser.newContext();
+    const page = await context.newPage();
     const uid = Date.now().toString(36);
     const email = `e2e-openreg-${uid}@bettertrack.local`;
     const username = `e2eopenreg${uid}`.slice(0, 40);
@@ -37,6 +40,6 @@ test('registration modes: open mode allows self-serve signup at /register', asyn
   } finally {
     await setRegistrationMode(apiRequest, priorMode);
     await apiRequest.dispose();
-    await context.close();
+    await context?.close();
   }
 });

@@ -44,10 +44,23 @@ function notificationLink(notification: Notification): string | null {
 const POLL_INTERVAL_MS = 30_000;
 const NOTIFICATIONS_QUERY_KEY = ['notifications'];
 
+// Cached per locale — Intl formatter construction is expensive and this runs
+// once per notification row per render. Rebuilt only when the language switches.
+let relativeFormatter: Intl.RelativeTimeFormat | null = null;
+let relativeFormatterLocale = '';
+
+function relativeTimeFormatter(): Intl.RelativeTimeFormat {
+  const locale = getFormatLocale();
+  if (!relativeFormatter || relativeFormatterLocale !== locale) {
+    relativeFormatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+    relativeFormatterLocale = locale;
+  }
+  return relativeFormatter;
+}
+
 /** ISO timestamp → short relative label ("5m ago", "in 2h" never occurs — all past). */
 function formatRelativeTime(iso: string): string {
-  // Built per call so the label follows the active UI locale (V3-P1/P13).
-  const formatter = new Intl.RelativeTimeFormat(getFormatLocale(), { numeric: 'auto' });
+  const formatter = relativeTimeFormatter();
   const diffMs = new Date(iso).getTime() - Date.now();
   const diffMinutes = Math.round(diffMs / 60_000);
   if (Math.abs(diffMinutes) < 60) return formatter.format(diffMinutes, 'minute');
@@ -205,12 +218,12 @@ export function NotificationBell() {
       {open ? (
         <div
           role="dialog"
-          aria-label={t('common.notifications.title')}
+          aria-label={t('settings.notifications.title')}
           className="absolute right-0 z-40 mt-2 w-80 rounded-lg border border-neutral-800 bg-neutral-900 shadow-xl"
         >
           <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
             <span className="text-sm font-medium text-neutral-200">
-              {t('common.notifications.title')}
+              {t('settings.notifications.title')}
             </span>
             <button
               type="button"
@@ -218,13 +231,13 @@ export function NotificationBell() {
               disabled={unreadCount === 0 || markReadMutation.isPending}
               className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
             >
-              {t('common.notifications.markAllRead')}
+              {t('settings.notifications.markAllRead')}
             </button>
           </div>
 
           {markReadMutation.isError ? (
             <div className="px-3 pt-2">
-              <Alert tone="error">{t('common.notifications.updateError')}</Alert>
+              <Alert tone="error">{t('settings.notifications.markReadError')}</Alert>
             </div>
           ) : null}
 
@@ -236,15 +249,15 @@ export function NotificationBell() {
             </div>
           ) : query.isError && items.length === 0 ? (
             <EmptyState
-              title={t('common.notifications.loadErrorTitle')}
-              description={t('common.notifications.loadErrorDescription')}
+              title={t('settings.notifications.loadErrorTitle')}
+              description={t('settings.notifications.loadErrorDescription')}
               className="py-10"
             />
           ) : items.length === 0 ? (
             <EmptyState
               icon="🔔"
-              title={t('common.notifications.emptyTitle')}
-              description={t('common.notifications.emptyDescription')}
+              title={t('settings.notifications.empty.title')}
+              description={t('settings.notifications.empty.description')}
               className="py-10"
             />
           ) : (

@@ -1,5 +1,6 @@
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
+import { useT } from '../i18n';
 import { useAuth } from './AuthContext';
 import { Splash } from './components/ui';
 
@@ -11,10 +12,11 @@ import { Splash } from './components/ui';
  * here we only resolve authenticated vs. anonymous.
  */
 export function RequireUser() {
+  const t = useT();
   const { status } = useAuth();
   const location = useLocation();
 
-  if (status === 'loading') return <Splash label="Checking session…" />;
+  if (status === 'loading') return <Splash label={t('auth.common.checkingSession')} />;
   if (status !== 'authenticated') {
     const from = `${location.pathname}${location.search}`;
     return <Navigate to="/login" replace state={{ from }} />;

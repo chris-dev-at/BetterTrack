@@ -21,9 +21,9 @@ import {
   listTransactions,
 } from '../../lib/portfolioApi';
 import { useT } from '../../i18n';
-import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
+import { assetTypeLabels } from './assetTypeLabels';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 import {
   EM_DASH,
@@ -58,19 +58,6 @@ function toHistoryRange(r: PriceRange): PortfolioHistoryRange {
 
 /** §6.9 caches the series 1 h; mirror that as the client staleTime. */
 const HISTORY_STALE_MS = 3_600_000;
-
-function assetTypeLabels(t: TranslateFn): Record<string, string> {
-  return {
-    stock: t('portfolio.overview.assetType.stock'),
-    etf: t('portfolio.overview.assetType.etf'),
-    index: t('portfolio.overview.assetType.index'),
-    fx: t('portfolio.overview.assetType.fx'),
-    commodity: t('portfolio.overview.assetType.commodity'),
-    crypto: t('portfolio.overview.assetType.crypto'),
-    cash_like: t('portfolio.overview.assetType.cashLike'),
-    other: t('portfolio.overview.assetType.other'),
-  };
-}
 
 // ─── Totals header ────────────────────────────────────────────────────────────
 
