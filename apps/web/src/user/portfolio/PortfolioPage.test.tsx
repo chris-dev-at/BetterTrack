@@ -512,63 +512,33 @@ describe('PortfolioPage — value chart range toggle', () => {
   });
 });
 
-// ─── Chart overlay (#122) ─────────────────────────────────────────────────────
+// ─── Overlay relocated to Analytics (V3-P9, #425) ─────────────────────────────
 
-describe('PortfolioPage — asset overlay on the value chart', () => {
-  const HISTORY_WITH_ASSETS = {
-    ...HISTORY,
-    assets: [
-      {
-        assetId: 'a1',
-        symbol: 'AAPL',
-        name: 'Apple Inc.',
-        currency: 'USD' as const,
-        points: [
-          { date: '2024-05-01', close: 150 },
-          { date: '2024-06-01', close: 155 },
-        ],
-      },
-    ],
-  };
+describe('PortfolioPage — overlay relocated to Analytics', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
 
-  beforeEach(() => {
-    vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
-    vi.mocked(getPortfolioHistory).mockImplementation((_portfolioId, _range, overlay) =>
-      Promise.resolve(overlay ? HISTORY_WITH_ASSETS : HISTORY),
-    );
-  });
-
-  test('toggling "Overlay assets" refetches with overlay=true and shows the asset legend', async () => {
-    const user = userEvent.setup();
+  test('the overview has no overlay toggle and links to the Analytics deep-dive', async () => {
     renderPage();
-    const toggle = await screen.findByRole('button', { name: 'Overlay assets' });
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    // The value curve loads without the per-asset overlay (§13.3: the overview
+    // keeps only the simple curve; the overlay mode moved to Analytics).
+    const link = await screen.findByRole('link', { name: /Analytics/ });
+    expect(link).toHaveAttribute('href', '/portfolio/analytics');
+    // No overlay toggle remains on the overview.
+    expect(screen.queryByRole('button', { name: 'Overlay assets' })).not.toBeInTheDocument();
+    // The overview only ever fetches the plain curve — never the per-asset
+    // overlay history (overlay=true).
     expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith(
       DEFAULT_PORTFOLIO_ID,
       '1M',
       false,
       expect.anything(),
     );
-
-    await user.click(toggle);
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    await waitFor(() =>
-      expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledWith(
-        DEFAULT_PORTFOLIO_ID,
-        '1M',
-        true,
-        expect.anything(),
-      ),
+    expect(vi.mocked(getPortfolioHistory)).not.toHaveBeenCalledWith(
+      DEFAULT_PORTFOLIO_ID,
+      expect.anything(),
+      true,
+      expect.anything(),
     );
-    // The overlay asset's legend chip appears next to the chart ("AAPL" also
-    // exists in the holdings table / donut legend, so scope to the section).
-    const section = screen.getByRole('region', { name: 'Value over time' });
-    await waitFor(() => expect(within(section).getByText('AAPL')).toBeInTheDocument());
-
-    // Toggling off returns to the plain curve (no overlay legend).
-    await user.click(toggle);
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    await waitFor(() => expect(within(section).queryByText('AAPL')).not.toBeInTheDocument());
   });
 });
 

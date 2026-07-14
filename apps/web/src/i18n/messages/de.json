@@ -836,10 +836,106 @@
         "displayModeAriaLabel": "Diagrammanzeige",
         "valueMode": "Wert €",
         "performanceMode": "Performance %",
-        "overlayToggle": "Anlagen einblenden",
+        "analyticsLink": "Analyse →",
         "perfHint": "Ein- und Auszahlungen werden neutralisiert (zeitgewichtete Rendite) — die Kurve bewegt sich nur, wenn sich deine Bestände bewegen.",
         "ariaLabelPerformance": "Portfolio-Performance im Zeitverlauf",
         "ariaLabelValue": "Portfolio-Wert im Zeitverlauf"
+      }
+    },
+    "analytics": {
+      "title": "Analyse",
+      "subtitle": "Sieh dein Portfolio im Detail — konfiguriere den Graphen, vergleiche eine Benchmark und betrachte die Rendite real.",
+      "backToOverview": "← Zurück zur Übersicht",
+      "loadError": "Analyse für dieses Portfolio konnte nicht geladen werden.",
+      "displayModeAriaLabel": "Diagrammanzeige",
+      "valueMode": "Wert €",
+      "perfMode": "Performance %",
+      "empty": {
+        "title": "Noch nichts zu analysieren",
+        "description": "Füge deinem Portfolio eine Position hinzu, um die Analyse zu sehen."
+      },
+      "range": {
+        "heading": "Zeitraum",
+        "m1": "1M",
+        "m3": "3M",
+        "m6": "6M",
+        "y1": "1J",
+        "ytd": "lfd. Jahr",
+        "max": "Max",
+        "custom": "Benutzerdef.",
+        "fromLabel": "Von",
+        "toLabel": "Bis"
+      },
+      "inflation": {
+        "label": "Inflationsanpassung",
+        "none": "Nominal (ohne Inflation)",
+        "hicpAt": "Österreich HVPI",
+        "hicpEu": "Eurozone HVPI",
+        "cpiUs": "USA VPI",
+        "flat": "Feste Rate",
+        "rateLabel": "Inflationsrate, Prozent pro Jahr",
+        "rateSuffix": "%/J",
+        "realTermsBadge": "Real",
+        "realTermsHint": "Werte sind inflationsbereinigt."
+      },
+      "compare": {
+        "heading": "Vergleichen",
+        "none": "Keiner",
+        "asset": "Anlage / Index",
+        "portfolio": "Portfolio",
+        "conglomerate": "Conglomerate",
+        "searchPlaceholder": "Anlage oder Index suchen…",
+        "current": "Vergleich: {{label}}",
+        "pickPortfolio": "Portfolio zum Vergleichen wählen",
+        "pickPortfolioPlaceholder": "Portfolio wählen…",
+        "noPortfolios": "Du hast keine weiteren Portfolios zum Vergleichen.",
+        "pickConglomerate": "Conglomerate zum Vergleichen wählen",
+        "pickConglomeratePlaceholder": "Conglomerate wählen…",
+        "noConglomerates": "Du hast noch keine Conglomerates."
+      },
+      "chart": {
+        "ariaLabel": "Portfolio-Analysediagramm",
+        "emptyMessage": "Noch keine Daten für diesen Zeitraum."
+      },
+      "stats": {
+        "portfolioCaption": "Portfolio",
+        "compareCaption": "Vergleich",
+        "totalReturn": "Gesamtrendite",
+        "cagr": "CAGR",
+        "maxDrawdown": "Max. Drawdown",
+        "bestDay": "Bester Tag",
+        "worstDay": "Schlechtester Tag"
+      },
+      "filters": {
+        "heading": "Anlagen & Filter",
+        "assetsHeading": "Anlagen ein-/ausblenden",
+        "assetToggle": "{{symbol}} umschalten",
+        "groupsHeading": "Nach Typ filtern",
+        "groupToggle": "{{group}} umschalten",
+        "overlayToggle": "Anlagen einblenden",
+        "overlayHint": "Blende die eigene Bewegung jeder Position im Diagramm ein."
+      },
+      "groups": {
+        "stock": "Aktien",
+        "etf": "ETFs",
+        "index": "Indizes",
+        "fx": "Devisen",
+        "commodity": "Rohstoffe",
+        "crypto": "Krypto",
+        "custom": "Benutzerdefiniert",
+        "cash_like": "Bargeldähnlich",
+        "other": "Sonstiges"
+      },
+      "contribution": {
+        "sectionHeading": "Beitrag je Anlage",
+        "caption": "Tabelle: Beitrag je Anlage",
+        "empty": "Keine sichtbaren Anlagen — passe die Filter oben an.",
+        "asset": "Anlage",
+        "value": "Wert",
+        "cost": "Kosten",
+        "pnl": "G/V",
+        "weight": "Gewicht",
+        "contribution": "Beitrag"
       }
     },
     "taxReport": {
@@ -883,6 +979,7 @@
     "section": {
       "subnav": {
         "overview": "Übersicht",
+        "analytics": "Analyse",
         "transactions": "Transaktionen",
         "customAssets": "Individuelle Anlagen",
         "cash": "Bargeld",
