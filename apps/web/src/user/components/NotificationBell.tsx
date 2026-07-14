@@ -13,17 +13,29 @@ import { Alert, cx } from './ui';
 
 /**
  * The in-app deep link for a notification, when its payload carries one. An
- * `alert.triggered` row (§14) links to the asset it fired on so the bell opens
- * the asset page; every other type stays a plain mark-read row for now.
+ * `alert.triggered` row (§14) links to the asset it fired on; a `follow.published`
+ * row (#438) links to the followed user's public profile, where the newly-public
+ * item lives; every other type stays a plain mark-read row for now.
  */
 function notificationLink(notification: Notification): string | null {
-  if (notification.type !== 'alert.triggered') return null;
   const payload = notification.payload;
-  if (payload && typeof payload === 'object' && 'assetId' in payload) {
-    const assetId = (payload as { assetId?: unknown }).assetId;
-    if (typeof assetId === 'string' && assetId.length > 0) {
-      return `/assets/${encodeURIComponent(assetId)}`;
+  if (notification.type === 'alert.triggered') {
+    if (payload && typeof payload === 'object' && 'assetId' in payload) {
+      const assetId = (payload as { assetId?: unknown }).assetId;
+      if (typeof assetId === 'string' && assetId.length > 0) {
+        return `/assets/${encodeURIComponent(assetId)}`;
+      }
     }
+    return null;
+  }
+  if (notification.type === 'follow.published') {
+    if (payload && typeof payload === 'object' && 'actorUsername' in payload) {
+      const username = (payload as { actorUsername?: unknown }).actorUsername;
+      if (typeof username === 'string' && username.length > 0) {
+        return `/u/${encodeURIComponent(username)}`;
+      }
+    }
+    return null;
   }
   return null;
 }

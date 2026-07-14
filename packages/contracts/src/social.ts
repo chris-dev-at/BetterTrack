@@ -87,6 +87,46 @@ export type FriendRequestListResponse = z.infer<typeof friendRequestListResponse
 export const friendsListResponseSchema = z.object({ friends: z.array(friendshipSchema) }).strict();
 export type FriendsListResponse = z.infer<typeof friendsListResponseSchema>;
 
+// --- Follows (person-follow, #438) -------------------------------------------
+
+/**
+ * Following a PERSON (#438), distinct from friendship and from per-item sharing:
+ * any user may follow any other, one-directional and asymmetric (no accept
+ * step). Privacy is enforced purely by the visibility layer — a follow grants no
+ * read access; it only opts the follower into `follow.published` news when one of
+ * the followed user's portfolios / watchlists / conglomerates becomes newly
+ * visible to them (created/switched public, or shared their way).
+ */
+
+/** `POST /social/follows` body — the user to follow, by id. Idempotent. */
+export const followUserRequestSchema = z.object({ userId: z.string().uuid() }).strict();
+export type FollowUserRequest = z.infer<typeof followUserRequestSchema>;
+
+/** One entry in a following/followers list — the other party + when the follow formed. */
+export const followUserSchema = z
+  .object({
+    user: friendUserSchema,
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type FollowUser = z.infer<typeof followUserSchema>;
+
+/** `GET /social/follows` response — the users the caller follows (with counts). */
+export const followingListResponseSchema = z
+  .object({
+    following: z.array(followUserSchema),
+    followingCount: z.number().int().nonnegative(),
+    followerCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type FollowingListResponse = z.infer<typeof followingListResponseSchema>;
+
+/** `GET /social/followers` response — the users who follow the caller. */
+export const followersListResponseSchema = z
+  .object({ followers: z.array(followUserSchema) })
+  .strict();
+export type FollowersListResponse = z.infer<typeof followersListResponseSchema>;
+
 // --- Shared portfolios (§6.9: "Shared With Me" + "My Shared Items") ----------
 
 /**
@@ -468,8 +508,13 @@ export type PublicProfileWatchlist = z.infer<typeof publicProfileWatchlistSchema
  */
 export const publicProfileResponseSchema = z
   .object({
+    /** The owner's id — public-safe (like {@link friendUserSchema}), so a logged-in
+     *  visitor can follow the person from their profile (#438). */
+    userId: z.string().uuid(),
     username: z.string(),
     bio: z.string().nullable(),
+    /** How many people follow this user (#438) — viewer-independent public info. */
+    followerCount: z.number().int().nonnegative(),
     portfolios: z.array(publicProfilePortfolioSchema),
     conglomerates: z.array(publicProfileConglomerateSchema),
     watchlists: z.array(publicProfileWatchlistSchema),

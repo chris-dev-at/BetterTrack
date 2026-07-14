@@ -2,6 +2,8 @@ import {
   activityAlertStateSchema,
   audienceMutationResponseSchema,
   audienceStateSchema,
+  followersListResponseSchema,
+  followingListResponseSchema,
   friendRequestListResponseSchema,
   friendsListResponseSchema,
   mySharedResponseSchema,
@@ -17,6 +19,8 @@ import {
   type AudienceMutationResponse,
   type AudienceState,
   type CreateFriendRequestRequest,
+  type FollowersListResponse,
+  type FollowingListResponse,
   type FriendRequestListResponse,
   type FriendsListResponse,
   type MySharedResponse,
@@ -88,6 +92,32 @@ export async function listFriends(signal?: AbortSignal): Promise<FriendsListResp
 /** `DELETE /social/friends/:userId` — remove a friendship (either side may). */
 export async function removeFriend(userId: string): Promise<void> {
   await apiRequest<unknown>(`/social/friends/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+}
+
+/** `POST /social/follows` — follow a person (#438). Idempotent server-side. */
+export async function followUser(userId: string): Promise<void> {
+  const data = await apiRequest<unknown>('/social/follows', {
+    method: 'POST',
+    body: { userId },
+  });
+  okResponseSchema.parse(data);
+}
+
+/** `DELETE /social/follows/:userId` — unfollow a person; stops their news (#438). */
+export async function unfollowUser(userId: string): Promise<void> {
+  await apiRequest<unknown>(`/social/follows/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+}
+
+/** `GET /social/follows` — the users the caller follows, with counts (#438). */
+export async function listFollowing(signal?: AbortSignal): Promise<FollowingListResponse> {
+  const data = await apiRequest<unknown>('/social/follows', { signal });
+  return followingListResponseSchema.parse(data);
+}
+
+/** `GET /social/followers` — the users who follow the caller (#438). */
+export async function listFollowers(signal?: AbortSignal): Promise<FollowersListResponse> {
+  const data = await apiRequest<unknown>('/social/followers', { signal });
+  return followersListResponseSchema.parse(data);
 }
 
 /**

@@ -56,6 +56,7 @@ import { MySharedItemsPage } from './social/MySharedItemsPage';
 import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfileViewPage } from './social/PublicProfileViewPage';
 import { ProfileSettingsPage } from './social/ProfileSettingsPage';
+import { FollowingPage } from './social/FollowingPage';
 import { SocialIdeasPage, SocialLayout } from './social/SocialSection';
 import { ChatPage } from './social/ChatPage';
 import {
@@ -180,6 +181,7 @@ function UserShell() {
               element={<SharedWatchlistPage />}
             />
             <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
+            <Route path="following" element={<FollowingPage />} />
             <Route path="my-shared" element={<MySharedItemsPage />} />
             <Route path="ideas" element={<SocialIdeasPage />} />
             <Route path="profile" element={<ProfileSettingsPage />} />

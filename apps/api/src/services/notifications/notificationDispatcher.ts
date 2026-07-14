@@ -4,6 +4,7 @@ import type {
   AlertTriggeredEvent,
   ChatMessageEvent,
   ConglomerateSharedEvent,
+  FollowPublishedEvent,
   FriendAcceptedEvent,
   FriendActivityEvent,
   FriendRequestEvent,
@@ -64,6 +65,7 @@ export type DispatchableEvent =
   | WatchlistSharedEvent
   | ConglomerateSharedEvent
   | FriendActivityEvent
+  | FollowPublishedEvent
   | AccountTempPasswordEvent
   | AlertTriggeredEvent
   | ChatMessageEvent;
@@ -76,6 +78,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'watchlist.shared',
   'conglomerate.shared',
   'friend.activity',
+  'follow.published',
   'account.temp_password',
   'alert.triggered',
   'chat.message',
@@ -126,6 +129,12 @@ function eventKeyFor(event: DispatchableEvent): string {
       return `conglomerate.shared:${event.conglomerateId}:${event.actorId}`;
     case 'friend.activity':
       return `friend.activity:${event.refId}`;
+    case 'follow.published':
+      // Deduped per (follower, item, UTC day): the date folds into the key so a
+      // followed user flapping an item public→private→public within a day never
+      // re-notifies (#438 anti-noise), while a genuine re-publish on a later day
+      // is a fresh key. The recipient userId (repo-side) keeps followers distinct.
+      return `follow.published:${event.itemKind}:${event.itemId}:${event.occurredAt.slice(0, 10)}`;
     case 'account.temp_password':
       // Every reset is a fresh notice — the timestamp keys the occurrence.
       return `account.temp_password:${event.occurredAt}`;
@@ -136,6 +145,27 @@ function eventKeyFor(event: DispatchableEvent): string {
     case 'chat.message':
       return `chat.message:${event.messageId}`;
   }
+}
+
+/** The English noun for a followed item's kind (#438). */
+function followItemNoun(itemKind: FollowPublishedEvent['itemKind']): string {
+  switch (itemKind) {
+    case 'portfolio':
+      return 'portfolio';
+    case 'watchlist':
+      return 'watchlist';
+    case 'conglomerate':
+      return 'conglomerate';
+  }
+}
+
+/** The follow-published title + body (EN — inbox strings are stored rendered). */
+function followPublishedCopy(event: FollowPublishedEvent): { title: string; body: string } {
+  const noun = followItemNoun(event.itemKind);
+  return {
+    title: `New ${noun} from ${event.actorUsername}`,
+    body: `${event.actorUsername} published a new ${noun}: ${event.itemName}.`,
+  };
 }
 
 /** The friend-activity body sentence (EN — inbox strings are stored rendered). */
@@ -273,6 +303,29 @@ export function createNotificationDispatcher(
           },
           data: { itemKind: event.itemKind, itemId: event.itemId },
         };
+      case 'follow.published': {
+        const { title, body } = followPublishedCopy(event);
+        return {
+          eventKey,
+          title,
+          body,
+          payload: {
+            eventKey,
+            actorId: event.actorId,
+            actorUsername: event.actorUsername,
+            itemKind: event.itemKind,
+            itemId: event.itemId,
+            itemName: event.itemName,
+          },
+          // The public-profile slug (`username`) drives the deep link — a
+          // newly-public item lives on the followed user's public profile.
+          data: {
+            itemKind: event.itemKind,
+            itemId: event.itemId,
+            username: event.actorUsername,
+          },
+        };
+      }
       case 'account.temp_password':
         return {
           eventKey,
@@ -370,6 +423,11 @@ export function createNotificationDispatcher(
         return;
       case 'friend.activity':
         await email.sendFriendActivity({ to, userId, body: rendered.body, locale });
+        return;
+      case 'follow.published':
+        // The rendered body already names the actor + item; the email reuses it
+        // verbatim in the recipient's locale (#438).
+        await email.sendFollowPublished({ to, userId, body: rendered.body, locale });
         return;
       case 'alert.triggered':
         await email.sendAlertTriggered({

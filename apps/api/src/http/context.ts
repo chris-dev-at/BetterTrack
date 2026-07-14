@@ -12,6 +12,7 @@ import { createConglomerateRepository } from '../data/repositories/conglomerateR
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
+import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
 import {
   createIdempotencyKeyRepository,
   type IdempotencyKeyRepository,
@@ -300,6 +301,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Social graph (§6.9): shared by the social service and the portfolio service
   // (the latter resolves the owner's friends when a portfolio is shared, §6.10).
   const friendshipRepo = createFriendshipRepository(db);
+  // Person-follow graph (#438): follow/unfollow + the follower fan-out that feeds
+  // `follow.published` news. Shared by the social service and the audience layer.
+  const userFollowsRepo = createUserFollowsRepository(db);
   // Public-profile settings + per-viewer activity-alert prefs (§6.9, §14, V3-P6).
   const profileRepo = createProfileRepository(db);
   const shareAudienceRepo = createShareAudienceRepository(db);
@@ -380,6 +384,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const audience = createAudienceService({
     repo: shareAudienceRepo,
     friendship: friendshipRepo,
+    follows: userFollowsRepo,
     notify,
     logger,
   });
@@ -572,6 +577,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Emits friend.request / friend.accepted through the notification center.
   const social = createSocialService({
     repo: friendshipRepo,
+    follows: userFollowsRepo,
     profile: profileRepo,
     audience,
     portfolio,

@@ -25,6 +25,7 @@ export const NOTIFICATION_TYPES = [
   'watchlist.shared',
   'conglomerate.shared',
   'friend.activity',
+  'follow.published',
   'account.invite',
   'account.temp_password',
   'alert.triggered',
@@ -43,7 +44,13 @@ export const NOTIFICATION_CATEGORIES = [
   { key: 'social', types: ['friend.request', 'friend.accepted'] },
   {
     key: 'sharing',
-    types: ['portfolio.shared', 'watchlist.shared', 'conglomerate.shared', 'friend.activity'],
+    types: [
+      'portfolio.shared',
+      'watchlist.shared',
+      'conglomerate.shared',
+      'friend.activity',
+      'follow.published',
+    ],
   },
   { key: 'chat', types: ['chat.message'] },
   { key: 'alerts', types: ['alert.triggered'] },

@@ -5,6 +5,7 @@ import {
   audienceParamSchema,
   conglomerateIdParamSchema,
   createFriendRequestRequestSchema,
+  followUserRequestSchema,
   idParamSchema,
   portfolioIdParamSchema,
   profileItemParamSchema,
@@ -16,6 +17,7 @@ import {
   watchlistIdParamSchema,
   type AudienceParam,
   type CreateFriendRequestRequest,
+  type FollowUserRequest,
   type ProfileItemParam,
   type ProfileUsernameParam,
   type SetActivityAlertRequest,
@@ -130,6 +132,38 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
   router.delete('/friends/:userId', validateParams(userIdParamSchema), async (req, res) => {
     const { userId } = req.valid?.params as { userId: string };
     await ctx.social.removeFriend(req.authUser!.id, userId);
+    res.status(204).send();
+  });
+
+  // POST /social/follows — follow a PERSON (#438). Idempotent; grants no access,
+  // notifies nobody. Bearer `social:write` (the `/social` prefix maps the scope).
+  router.post(
+    '/follows',
+    limiters.social,
+    validateBody(followUserRequestSchema),
+    async (req, res) => {
+      const { userId } = req.valid?.body as FollowUserRequest;
+      await ctx.social.followUser(req.authUser!.id, userId);
+      res.status(202).json({ ok: true });
+    },
+  );
+
+  // GET /social/follows — the users the caller follows, with counts (#438).
+  router.get('/follows', async (req, res) => {
+    const result = await ctx.social.listFollowing(req.authUser!.id);
+    res.json(result);
+  });
+
+  // GET /social/followers — the users who follow the caller (#438).
+  router.get('/followers', async (req, res) => {
+    const result = await ctx.social.listFollowers(req.authUser!.id);
+    res.json(result);
+  });
+
+  // DELETE /social/follows/:userId — unfollow; stops their news immediately (#438).
+  router.delete('/follows/:userId', validateParams(userIdParamSchema), async (req, res) => {
+    const { userId } = req.valid?.params as { userId: string };
+    await ctx.social.unfollowUser(req.authUser!.id, userId);
     res.status(204).send();
   });
 

@@ -44,8 +44,10 @@ const PID = '00000000-0000-0000-0000-000000000001';
 const ASSET_ID = '00000000-0000-0000-0000-000000000002';
 
 const profile: PublicProfileResponse = {
+  userId: '00000000-0000-0000-0000-000000000003',
   username: 'alice',
   bio: 'Long-term investor',
+  followerCount: 0,
   portfolios: [{ portfolioId: PID, name: 'Main', totalValueEur: 1000 }],
   conglomerates: [],
   watchlists: [],

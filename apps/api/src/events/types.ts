@@ -150,6 +150,29 @@ export interface FriendActivityEvent {
 }
 
 /**
+ * `follow.published` → an item owned by a user the recipient FOLLOWS (#438)
+ * became newly visible to them: created/switched to `public_link`, or shared
+ * their way. `userId` is the **recipient** follower; `actorId`/`actorUsername`
+ * identify the followed owner (also the public-profile slug the notification
+ * deep-links to). Emitted once per newly-exposed follower by the audience layer,
+ * which suppresses any follower who simultaneously receives a direct `*.shared`
+ * notice for the same item (the anti-noise "no doubles" rule). `itemName` renders
+ * the news without a follow-up lookup.
+ */
+export interface FollowPublishedEvent {
+  type: 'follow.published';
+  /** Recipient — a follower who newly gained visibility of the item. */
+  userId: string;
+  /** Actor — the followed user who published/exposed the item. */
+  actorId: string;
+  actorUsername: string;
+  itemKind: 'portfolio' | 'watchlist' | 'conglomerate';
+  itemId: string;
+  itemName: string;
+  occurredAt: string;
+}
+
+/**
  * `account.temp_password` → an admin reset the recipient's password (#368).
  * The credential itself NEVER rides this event (it would persist in the queue);
  * the transactional email with the temp password is sent directly at the
@@ -202,6 +225,7 @@ export type DomainEvent =
   | WatchlistSharedEvent
   | ConglomerateSharedEvent
   | FriendActivityEvent
+  | FollowPublishedEvent
   | AccountTempPasswordEvent
   | ChatMessageEvent;
 
@@ -224,6 +248,7 @@ export const DOMAIN_EVENT_TYPES = [
   'watchlist.shared',
   'conglomerate.shared',
   'friend.activity',
+  'follow.published',
   'account.temp_password',
   'chat.message',
 ] as const satisfies readonly DomainEventType[];

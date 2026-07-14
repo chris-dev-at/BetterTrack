@@ -19,6 +19,7 @@ import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Alert, Button, TextField, cx } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
+import { FollowButton } from './FollowButton';
 import {
   ActivityAlertToggle,
   SharedItemRow,
@@ -469,7 +470,8 @@ function FriendCard({
             <FriendShares person={person} username={user.username} />
           </div>
 
-          <div className="flex justify-end border-t border-neutral-800 pt-3">
+          <div className="flex items-center justify-between gap-3 border-t border-neutral-800 pt-3">
+            <FollowButton userId={user.id} username={user.username} />
             <Button
               variant="secondary"
               onClick={onRequestRemove}

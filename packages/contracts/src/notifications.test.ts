@@ -27,6 +27,7 @@ describe('notification taxonomy (#368)', () => {
       'watchlist.shared',
       'conglomerate.shared',
       'friend.activity',
+      'follow.published',
       'account.invite',
       'account.temp_password',
       'alert.triggered',

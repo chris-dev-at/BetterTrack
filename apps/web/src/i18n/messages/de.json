@@ -260,6 +260,10 @@
         "friendActivity": {
           "label": "Aktivität von Freunden",
           "description": "Käufe, Verkäufe und Watchlist-Einträge bei geteilten Elementen, denen du folgst."
+        },
+        "followPublished": {
+          "label": "Neues von Personen, denen du folgst",
+          "description": "Wenn jemand, dem du folgst, ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich macht."
         }
       },
       "routing": {
@@ -1596,6 +1600,33 @@
       "emptyBody": "Erstelle ein Portfolio, Konglomerat oder eine Watchlist, um hier die Freigabe zu verwalten.",
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "publicProfileLink": "Öffentliches Profil verwalten"
+    },
+    "nav": {
+      "friends": "Freunde",
+      "following": "Folge ich",
+      "myItems": "Meine Elemente",
+      "messages": "Nachrichten"
+    },
+    "follow": {
+      "follow": "Folgen",
+      "unfollow": "Entfolgen",
+      "following": "Folge ich",
+      "followAria": "{{username}} folgen",
+      "unfollowAria": "{{username}} entfolgen",
+      "loginToFollow": "Zum Folgen anmelden",
+      "listTitle": "Folge ich",
+      "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich machen.",
+      "empty": "Du folgst noch niemandem.",
+      "emptyHint": "Öffne das öffentliche Profil einer Person, um ihr zu folgen.",
+      "error": "Wer dir folgt, konnte nicht geladen werden. Bitte aktualisiere die Seite.",
+      "followers": {
+        "one": "{{count}} Follower",
+        "other": "{{count}} Follower"
+      },
+      "followingStat": {
+        "one": "{{count}} abonniert",
+        "other": "{{count}} abonniert"
+      }
     },
     "friend": {
       "since": "Befreundet seit {{date}}",

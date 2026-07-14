@@ -260,6 +260,10 @@
         "friendActivity": {
           "label": "Friend activity",
           "description": "Buys, sells and watchlist additions on shared items you follow."
+        },
+        "followPublished": {
+          "label": "New from people you follow",
+          "description": "When someone you follow makes a portfolio, watchlist or conglomerate public."
         }
       },
       "routing": {
@@ -1596,6 +1600,33 @@
       "emptyBody": "Create a portfolio, conglomerate or watchlist and it appears here to manage its sharing.",
       "error": "Could not load your items. Please refresh the page.",
       "publicProfileLink": "Manage your public profile"
+    },
+    "nav": {
+      "friends": "Friends",
+      "following": "Following",
+      "myItems": "My items",
+      "messages": "Messages"
+    },
+    "follow": {
+      "follow": "Follow",
+      "unfollow": "Unfollow",
+      "following": "Following",
+      "followAria": "Follow {{username}}",
+      "unfollowAria": "Unfollow {{username}}",
+      "loginToFollow": "Log in to follow",
+      "listTitle": "Following",
+      "listSubtitle": "People you follow. You get a notification when they make a new portfolio, watchlist or conglomerate public.",
+      "empty": "You're not following anyone yet.",
+      "emptyHint": "Open someone's public profile to follow them.",
+      "error": "Couldn't load who you follow. Please refresh the page.",
+      "followers": {
+        "one": "{{count}} follower",
+        "other": "{{count}} followers"
+      },
+      "followingStat": {
+        "one": "{{count}} following",
+        "other": "{{count}} following"
+      }
     },
     "friend": {
       "since": "Friends since {{date}}",
