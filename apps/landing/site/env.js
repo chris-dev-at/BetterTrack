@@ -4,4 +4,7 @@
  * the "Open the web app" links point at the deployed web origin without a
  * rebuild. This committed copy is the local/dev default.
  */
-window.__BT_LANDING__ = { webOrigin: 'https://web.bettertrack.at' };
+window.__BT_LANDING__ = {
+  webOrigin: 'https://web.bettertrack.at',
+  apiOrigin: 'https://api.bettertrack.at',
+};

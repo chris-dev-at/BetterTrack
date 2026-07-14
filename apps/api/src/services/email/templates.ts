@@ -440,6 +440,47 @@ export function alertTriggeredEmail(params: {
   };
 }
 
+/**
+ * Approval-queue decision emails (PROJECTPLAN.md §6.12, §13.4 V4-P4a). Sent when
+ * an admin approves or rejects a pending registration in `approval` mode; both
+ * render in the language the registrant used on the register form (EN fallback).
+ * Approved links to sign-in; rejected carries no link and no credential.
+ */
+export function registrationApprovedEmail(params: {
+  username: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { username, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.registrationApproved;
+  return {
+    subject: c.subject,
+    html: layout(
+      c.heading,
+      [
+        `<p>${fillHtml(c.body, { username })}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, { username }), '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+export function registrationRejectedEmail(params: { locale?: string }): EmailContent {
+  const { locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.registrationRejected;
+  return {
+    subject: c.subject,
+    html: layout(c.heading, `<p>${escapeHtml(c.body)}</p>`, { lang: loc, footer: copy.footer }),
+    text: c.body,
+  };
+}
+
 export function welcomeEmail(params: { username: string; appUrl: string }): EmailContent {
   const { username, appUrl } = params;
   return {

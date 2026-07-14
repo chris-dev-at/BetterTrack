@@ -6,6 +6,7 @@ import {
   bulkUserActionRequestSchema,
   createInviteRequestSchema,
   createOAuthClientRequestSchema,
+  createRegistrationTokenRequestSchema,
   createUserRequestSchema,
   deleteUserRequestSchema,
   emailLogQuerySchema,
@@ -18,6 +19,7 @@ import {
   type BulkUserActionRequest,
   type CreateInviteRequest,
   type CreateOAuthClientRequest,
+  type CreateRegistrationTokenRequest,
   type CreateUserRequest,
   type DeleteUserRequest,
   type EmailLogQuery,
@@ -39,6 +41,8 @@ import {
   toAppSettings,
   toAuditEntry,
   toEmailLogEntry,
+  toRegistrationRequest,
+  toRegistrationToken,
 } from '../serializers';
 
 const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.ip });
@@ -137,6 +141,64 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     await ctx.admin.revokeInvite(id, actorOf(req));
     res.json({ ok: true });
   });
+
+  // ── Registration access tokens (§6.12, §13.4 V4-P4a) ────────────────────────
+  // Admin-managed tokens that gate the `invite_token` registration mode. Create
+  // returns the register URL (with the raw token) exactly once.
+  router.get('/registration-tokens', async (_req, res) => {
+    const tokens = await ctx.admin.listRegistrationTokens();
+    res.json({ tokens: tokens.map(toRegistrationToken) });
+  });
+
+  router.post(
+    '/registration-tokens',
+    validateBody(createRegistrationTokenRequestSchema),
+    async (req, res) => {
+      const { token, registerUrl } = await ctx.admin.createRegistrationToken(
+        req.valid?.body as CreateRegistrationTokenRequest,
+        actorOf(req),
+      );
+      res.status(201).json({ token: toRegistrationToken(token), registerUrl });
+    },
+  );
+
+  router.post(
+    '/registration-tokens/:id/revoke',
+    validateParams(idParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      await ctx.admin.revokeRegistrationToken(id, actorOf(req));
+      res.json({ ok: true });
+    },
+  );
+
+  // ── Approval queue (§6.12, §13.4 V4-P4a) ────────────────────────────────────
+  // Pending `approval`-mode applications; approve creates the account + emails
+  // the applicant, reject drops the application + emails the applicant.
+  router.get('/registration-requests', async (_req, res) => {
+    const requests = await ctx.admin.listRegistrationRequests();
+    res.json({ requests: requests.map(toRegistrationRequest) });
+  });
+
+  router.post(
+    '/registration-requests/:id/approve',
+    validateParams(idParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const user = await ctx.admin.approveRegistrationRequest(id, actorOf(req));
+      res.json(toAdminUser(user));
+    },
+  );
+
+  router.post(
+    '/registration-requests/:id/reject',
+    validateParams(idParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      await ctx.admin.rejectRegistrationRequest(id, actorOf(req));
+      res.json({ ok: true });
+    },
+  );
 
   router.get('/stats', async (_req, res) => {
     res.json(await ctx.admin.stats());

@@ -14,6 +14,7 @@ import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
 import { ForgotPasswordPage } from './auth/ForgotPasswordPage';
 import { InvitePage } from './auth/InvitePage';
 import { LoginPage } from './auth/LoginPage';
+import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { PortfolioPage } from './portfolio/PortfolioPage';
@@ -97,6 +98,9 @@ function UserShell() {
   return (
     <Routes>
       <Route path="login" element={<LoginPage />} />
+      {/* Public self-serve registration (§6.12, §13.4 V4-P4a): reflects the
+          active registration mode; a closed instance renders a closed notice. */}
+      <Route path="register" element={<RegisterPage />} />
       <Route path="forgot-password" element={<ForgotPasswordPage />} />
       <Route path="reset/:token" element={<ResetPasswordPage />} />
       <Route path="invite/:token" element={<InvitePage />} />

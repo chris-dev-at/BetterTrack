@@ -70,19 +70,38 @@ export const acceptInviteRequestSchema = z
 export type AcceptInviteRequest = z.infer<typeof acceptInviteRequestSchema>;
 
 /**
- * Public self-serve registration (PROJECTPLAN.md §4, §6.12). The route exists as
- * enforcement plumbing from day one: it reads the stored registration mode and,
- * in V1's `closed` mode, always rejects with 403 `REGISTRATION_CLOSED`. The body
- * is validated here so the concrete self-serve flow (post-v1) needs no reshape.
+ * Public self-serve registration (PROJECTPLAN.md §4, §6.12, §13.4 V4-P4a). The
+ * route reads the stored registration mode and gates on it:
+ *  - `closed` — always rejects with 403 `REGISTRATION_CLOSED`.
+ *  - `invite_token` — a valid, unexpired, unexhausted `inviteToken` is required.
+ *  - `approval` — the account lands pending admin review; no session is minted.
+ *  - `open` — the account is created and signed straight in.
+ *
+ * `inviteToken` is only consulted in `invite_token` mode (ignored otherwise);
+ * `locale` records the language the register form was in so a later approval /
+ * rejection decision email renders in it (the applicant has no stored locale yet).
  */
 export const registerRequestSchema = z
   .object({
     email: emailSchema,
     username: usernameSchema,
     password: passwordSchema,
+    /** Access token for `invite_token` mode; ignored in the other modes. */
+    inviteToken: z.string().min(1).max(256).optional(),
+    /** UI language of the register form — used to localize a later decision email. */
+    locale: localeSchema.optional(),
   })
   .strict();
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;
+
+/**
+ * `POST /auth/register` answer in **approval** mode: the account request was
+ * accepted and now waits for an admin. No session is minted and no account
+ * exists yet — the applicant cannot sign in until approved. Distinct from the
+ * signed-in {@link meResponseSchema} branch (below) by its `pending` discriminant.
+ */
+export const registrationPendingResponseSchema = z.object({ pending: z.literal(true) }).strict();
+export type RegistrationPendingResponse = z.infer<typeof registrationPendingResponseSchema>;
 
 /**
  * Self-service password reset (PROJECTPLAN.md §6.1, §14, §13.2 V2-P4). Two public
@@ -276,6 +295,18 @@ export const meResponseSchema = z.object({
   createdAt: z.string().datetime(),
 });
 export type MeResponse = z.infer<typeof meResponseSchema>;
+
+/**
+ * `POST /auth/register` response. Either the signed-in user (open / invite-token
+ * modes set a session cookie exactly like login) or the approval-pending answer
+ * (no session). The branches are disjoint: only pending carries `pending`, only
+ * a real user view carries `id`.
+ */
+export const registerResponseSchema = z.union([
+  meResponseSchema,
+  registrationPendingResponseSchema,
+]);
+export type RegisterResponse = z.infer<typeof registerResponseSchema>;
 
 /**
  * OAuth account memory + PIN quick re-auth (PROJECTPLAN.md §16; owner spec #399

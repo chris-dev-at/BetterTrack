@@ -267,6 +267,13 @@
       "when": 1783920000000,
       "tag": "0037_admin_two_factor_email",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1783930000000,
+      "tag": "0038_registration_modes",
+      "breakpoints": true
     }
   ]
 }

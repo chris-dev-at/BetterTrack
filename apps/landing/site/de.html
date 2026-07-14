@@ -42,6 +42,14 @@
             <a class="btn btn-primary js-web-link" href="https://web.bettertrack.at"
               >Web-App öffnen</a
             >
+            <!-- Nur sichtbar, wenn die Instanz Selbstregistrierung erlaubt
+                 (§13.4 V4-P4a); das Skript unten zeigt sie + setzt den Link. -->
+            <a
+              class="btn btn-primary js-register-cta"
+              href="https://web.bettertrack.at/register"
+              hidden
+              >Konto erstellen</a
+            >
             <a class="btn btn-ghost" href="#features">Funktionen ansehen</a>
           </div>
           <p class="invite-note">
@@ -163,6 +171,32 @@
         for (var i = 0; i < links.length; i++) {
           links[i].setAttribute('href', origin);
         }
+      })();
+
+      // Spiegelt den aktiven Registrierungsmodus wider (§13.4 V4-P4a): Erlaubt die
+      // Instanz Selbstregistrierung, wird der „Konto erstellen"-Button gezeigt und
+      // der Einladungs-Hinweis entfernt. Best-Effort — bei Fehlern bleibt der
+      // geschlossene Standard unverändert.
+      (function () {
+        var cfg = window.__BT_LANDING__ || {};
+        var apiOrigin = cfg.apiOrigin || '';
+        var webOrigin = cfg.webOrigin || '';
+        if (!apiOrigin) return;
+        fetch(apiOrigin + '/api/v1/auth/registration-info')
+          .then(function (r) {
+            return r.ok ? r.json() : null;
+          })
+          .then(function (info) {
+            if (!info || !info.mode || info.mode === 'closed') return;
+            var cta = document.querySelector('.js-register-cta');
+            if (cta) {
+              if (webOrigin) cta.setAttribute('href', webOrigin + '/register');
+              cta.hidden = false;
+            }
+            var note = document.querySelector('.invite-note');
+            if (note) note.hidden = true;
+          })
+          .catch(function () {});
       })();
     </script>
   </body>

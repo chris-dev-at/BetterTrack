@@ -38,6 +38,9 @@ export interface NotificationEmailCopy {
   alertTriggered: { subject: string; heading: string; button: string };
   /** Friend-activity body sentence is supplied by the caller (same as the bell). */
   friendActivity: { subject: string; heading: string; button: string };
+  /** Approval-queue decision emails (§6.12, §13.4 V4-P4a). Approved bolds `{username}`. */
+  registrationApproved: { subject: string; heading: string; body: string; button: string };
+  registrationRejected: { subject: string; heading: string; body: string };
 }
 
 export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy> = {
@@ -91,6 +94,17 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       heading: 'Friend activity',
       button: 'Open BetterTrack',
     },
+    registrationApproved: {
+      subject: 'Your BetterTrack account has been approved',
+      heading: 'Your account is ready',
+      body: 'Your BetterTrack registration was approved, {username}. You can now sign in with the password you chose when you signed up.',
+      button: 'Sign in',
+    },
+    registrationRejected: {
+      subject: 'Your BetterTrack registration',
+      heading: 'Registration not approved',
+      body: 'Thanks for your interest in BetterTrack. Your registration request was not approved, so no account was created. If you think this was a mistake, please contact the administrator.',
+    },
   },
   de: {
     footer:
@@ -141,6 +155,17 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       subject: 'Aktivität von Freunden auf BetterTrack',
       heading: 'Aktivität von Freunden',
       button: 'BetterTrack öffnen',
+    },
+    registrationApproved: {
+      subject: 'Dein BetterTrack-Konto wurde freigeschaltet',
+      heading: 'Dein Konto ist bereit',
+      body: 'Deine BetterTrack-Registrierung wurde freigeschaltet, {username}. Du kannst dich jetzt mit dem Passwort anmelden, das du bei der Registrierung gewählt hast.',
+      button: 'Anmelden',
+    },
+    registrationRejected: {
+      subject: 'Deine BetterTrack-Registrierung',
+      heading: 'Registrierung nicht freigeschaltet',
+      body: 'Danke für dein Interesse an BetterTrack. Deine Registrierungsanfrage wurde nicht freigeschaltet, daher wurde kein Konto erstellt. Falls das ein Fehler war, wende dich bitte an die Administration.',
     },
   },
 };

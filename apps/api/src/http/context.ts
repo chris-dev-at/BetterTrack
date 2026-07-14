@@ -19,6 +19,8 @@ import {
 import { createProfileRepository } from '../data/repositories/profileRepository';
 import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
+import { createRegistrationRequestRepository } from '../data/repositories/registrationRequestRepository';
+import { createRegistrationTokenRepository } from '../data/repositories/registrationTokenRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
@@ -254,6 +256,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const userRepo = createUserRepository(db);
   const inviteRepo = createInviteRepository(db);
+  const registrationTokenRepo = createRegistrationTokenRepository(db);
+  const registrationRequestRepo = createRegistrationRequestRepository(db);
   const passwordResetRepo = createPasswordResetTokenRepository(db);
   const twoFactorRepo = createTwoFactorRepository(db);
   const auditRepo = createAuditRepository(db);
@@ -411,6 +415,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     userRepo,
     inviteRepo,
     passwordResetRepo,
+    registrationTokenRepo,
+    registrationRequestRepo,
     portfolioRepo,
     sessions,
     audit,
@@ -424,6 +430,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     userRepo,
     inviteRepo,
+    registrationTokenRepo,
+    registrationRequestRepo,
     portfolioRepo,
     sessions,
     audit,

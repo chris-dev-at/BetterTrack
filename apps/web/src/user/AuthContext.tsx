@@ -19,6 +19,7 @@ import type {
   PasswordResetComplete,
   PinQuickAuthRequest,
   PinVerifyRequest,
+  RegisterRequest,
   TwoFactorChallengeResponse,
   TwoFactorEmailCodeRequest,
   TwoFactorVerifyRequest,
@@ -175,6 +176,13 @@ export type QuickAuthOutcome =
   | { status: 'authenticated'; me: MeResponse }
   | { status: 'pin_required' };
 
+/**
+ * Result of a self-serve registration (§13.4 V4-P4a). `authenticated` means the
+ * account was created and the app is now signed in; `pending` means the request
+ * is queued for admin approval and no session exists yet.
+ */
+export type RegisterOutcome = { status: 'authenticated'; me: MeResponse } | { status: 'pending' };
+
 interface AuthContextValue {
   status: AuthStatus;
   /** The current user. Null while anonymous/loading, and may be null in the
@@ -202,6 +210,13 @@ interface AuthContextValue {
   /** Request a one-time email login code for a pending 2FA challenge. */
   requestTwoFactorEmailCode: (body: TwoFactorEmailCodeRequest) => Promise<void>;
   acceptInvite: (body: AcceptInviteRequest) => Promise<void>;
+  /**
+   * Public self-serve registration (§13.4 V4-P4a). In open / invite-token modes
+   * the account is created and the app lands authenticated; in approval mode the
+   * result is `{ pending: true }` and NO session — the caller shows the pending
+   * confirmation. Closed mode / bad token / taken email reject with an ApiError.
+   */
+  register: (body: RegisterRequest) => Promise<RegisterOutcome>;
   /**
    * Complete a self-service password reset. A no-2FA account is signed straight
    * in (lands `authenticated`); a 2FA account lands `two_factor_required` with a
@@ -496,6 +511,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applyUser],
   );
 
+  const register = useCallback(
+    async (body: RegisterRequest): Promise<RegisterOutcome> => {
+      const res = await api.register(body);
+      // Approval mode: no session was minted — the applicant waits for an admin.
+      if ('pending' in res) return { status: 'pending' };
+      // Open / invite-token: a session cookie was set and a usable user returned,
+      // so this lands authenticated with a fresh window.
+      recordActivity(res.id);
+      applyUser(res);
+      return { status: 'authenticated', me: res };
+    },
+    [applyUser],
+  );
+
   const completePasswordReset = useCallback(
     async (body: PasswordResetComplete): Promise<LoginOutcome> => {
       const result = await api.completePasswordReset(body);
@@ -604,6 +633,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
+      register,
       completePasswordReset,
       changePassword,
       verifyPin,
@@ -623,6 +653,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       persistSession,
       requestTwoFactorEmailCode,
       acceptInvite,
+      register,
       completePasswordReset,
       changePassword,
       verifyPin,

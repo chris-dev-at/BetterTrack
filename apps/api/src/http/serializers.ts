@@ -6,12 +6,21 @@ import type {
   AuditLogEntry,
   EmailLogEntry,
   MeResponse,
+  RegistrationRequest,
+  RegistrationToken,
   WorkboardItem,
 } from '@bettertrack/contracts';
 
 import type { AlertRecord } from '../data/repositories/alertRepository';
 import type { WorkboardItemWithAsset } from '../data/repositories/workboardRepository';
-import type { AuditLogRow, EmailLogRow, InviteRow, UserRow } from '../data/schema';
+import type {
+  AuditLogRow,
+  EmailLogRow,
+  InviteRow,
+  RegistrationRequestRow,
+  RegistrationTokenRow,
+  UserRow,
+} from '../data/schema';
 import type { AppSettings } from '../services/appSettings/appSettingsService';
 import type { AuthUser } from './types';
 
@@ -88,6 +97,35 @@ export function toAdminInvite(row: InviteRow): AdminInvite {
     expiresAt: toIsoRequired(row.expiresAt),
     usedAt: toIso(row.usedAt),
     revokedAt: toIso(row.revokedAt),
+  };
+}
+
+function registrationTokenStatus(row: RegistrationTokenRow): RegistrationToken['status'] {
+  if (row.revokedAt) return 'revoked';
+  if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) return 'expired';
+  if (row.useCount >= row.maxUses) return 'exhausted';
+  return 'active';
+}
+
+export function toRegistrationToken(row: RegistrationTokenRow): RegistrationToken {
+  return {
+    id: row.id,
+    label: row.label,
+    status: registrationTokenStatus(row),
+    maxUses: row.maxUses,
+    useCount: row.useCount,
+    expiresAt: toIso(row.expiresAt),
+    revokedAt: toIso(row.revokedAt),
+    createdAt: toIsoRequired(row.createdAt),
+  };
+}
+
+export function toRegistrationRequest(row: RegistrationRequestRow): RegistrationRequest {
+  return {
+    id: row.id,
+    email: row.email,
+    username: row.username,
+    createdAt: toIsoRequired(row.createdAt),
   };
 }
 

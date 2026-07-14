@@ -1,11 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
-import type { MeResponse, TwoFactorChallengeResponse } from '@bettertrack/contracts';
+import type {
+  MeResponse,
+  RegistrationMode,
+  TwoFactorChallengeResponse,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
+import * as userApi from '../../lib/userApi';
 import { AdminAccountError, useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
 import { OAuthAccountChooser } from './OAuthAccountChooser';
@@ -67,6 +72,21 @@ export function LoginPage() {
   // Non-null when an OAuth login on a PIN account must offer the "stay signed in
   // — your PIN protects this" choice before the app opens (V4-P2b).
   const [persistChoice, setPersistChoice] = useState<MeResponse | null>(null);
+  // The active registration mode (§13.4 V4-P4a): drives whether a "create an
+  // account" link is offered. Best-effort — a fetch failure just hides the link.
+  const [registrationMode, setRegistrationMode] = useState<RegistrationMode | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const info = await userApi.getRegistrationInfo(controller.signal);
+        setRegistrationMode(info.mode);
+      } catch {
+        // Best-effort: a fetch failure just hides the "create an account" link.
+      }
+    })();
+    return () => controller.abort();
+  }, []);
 
   if (status === 'loading') {
     return (
@@ -265,6 +285,16 @@ export function LoginPage() {
         >
           {t('auth.login.forgotPassword')}
         </Link>
+        {/* Self-serve registration link, shown only when the instance allows it
+            (§13.4 V4-P4a) and never inside the OAuth authorize flow. */}
+        {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
+          <Link
+            to="/register"
+            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
+          >
+            {t('auth.login.createAccount')}
+          </Link>
+        ) : null}
       </form>
     </AuthCard>
   );

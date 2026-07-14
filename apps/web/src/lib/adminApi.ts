@@ -17,6 +17,9 @@ import {
   oauthClientListResponseSchema,
   oauthClientSummarySchema,
   okResponseSchema,
+  createRegistrationTokenResponseSchema,
+  registrationRequestListResponseSchema,
+  registrationTokenListResponseSchema,
   resetPasswordResponseSchema,
   testEmailResponseSchema,
   twoFactorEnrollResponseSchema,
@@ -45,8 +48,12 @@ import {
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
+  type CreateRegistrationTokenRequest,
+  type CreateRegistrationTokenResponse,
   type OAuthClientListResponse,
   type OAuthClientSummary,
+  type RegistrationRequestListResponse,
+  type RegistrationTokenListResponse,
   type ResetPasswordResponse,
   type TestEmailRequest,
   type TestEmailResponse,
@@ -184,6 +191,50 @@ export async function createInvite(body: CreateInviteRequest): Promise<CreateInv
 
 export async function revokeInvite(id: string): Promise<void> {
   const data = await apiRequest<unknown>(`/admin/invites/${id}/revoke`, { method: 'POST' });
+  okResponseSchema.parse(data);
+}
+
+// --- Admin: registration tokens + approval queue (§6.12, §13.4 V4-P4a) -----
+
+export async function listRegistrationTokens(
+  signal?: AbortSignal,
+): Promise<RegistrationTokenListResponse> {
+  const data = await apiRequest<unknown>('/admin/registration-tokens', { signal });
+  return registrationTokenListResponseSchema.parse(data);
+}
+
+export async function createRegistrationToken(
+  body: CreateRegistrationTokenRequest,
+): Promise<CreateRegistrationTokenResponse> {
+  const data = await apiRequest<unknown>('/admin/registration-tokens', { method: 'POST', body });
+  return createRegistrationTokenResponseSchema.parse(data);
+}
+
+export async function revokeRegistrationToken(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/registration-tokens/${id}/revoke`, {
+    method: 'POST',
+  });
+  okResponseSchema.parse(data);
+}
+
+export async function listRegistrationRequests(
+  signal?: AbortSignal,
+): Promise<RegistrationRequestListResponse> {
+  const data = await apiRequest<unknown>('/admin/registration-requests', { signal });
+  return registrationRequestListResponseSchema.parse(data);
+}
+
+export async function approveRegistrationRequest(id: string): Promise<AdminUser> {
+  const data = await apiRequest<unknown>(`/admin/registration-requests/${id}/approve`, {
+    method: 'POST',
+  });
+  return adminUserSchema.parse(data);
+}
+
+export async function rejectRegistrationRequest(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/admin/registration-requests/${id}/reject`, {
+    method: 'POST',
+  });
   okResponseSchema.parse(data);
 }
 
