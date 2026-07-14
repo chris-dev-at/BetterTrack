@@ -111,6 +111,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.friendActivity.label'),
       description: t('settings.notifications.types.friendActivity.description'),
     },
+    'follow.published': {
+      label: t('settings.notifications.types.followPublished.label'),
+      description: t('settings.notifications.types.followPublished.description'),
+    },
     'account.invite': {
       label: t('settings.notifications.types.accountInvite.label'),
       description: t('settings.notifications.types.accountInvite.description'),

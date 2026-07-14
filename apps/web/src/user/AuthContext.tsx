@@ -674,3 +674,12 @@ export function useAuth(): AuthContextValue {
   if (!ctx) throw new Error('useAuth must be used within an AuthProvider.');
   return ctx;
 }
+
+/**
+ * Like {@link useAuth} but returns `null` outside an `AuthProvider` instead of
+ * throwing — for controls that render on both authenticated and public
+ * (maybe-logged-out) surfaces, e.g. the follow button on a public profile (#438).
+ */
+export function useOptionalAuth(): AuthContextValue | null {
+  return useContext(AuthContext);
+}

@@ -1,6 +1,9 @@
 import type {
   ActivityAlertState,
   AudienceState,
+  FollowersListResponse,
+  FollowingListResponse,
+  FollowUser,
   FriendRequest,
   FriendRequestListResponse,
   Friendship,
@@ -26,6 +29,10 @@ import type {
   PendingRequestRow,
 } from '../../data/repositories/friendshipRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
+import type {
+  FollowUserRow,
+  UserFollowsRepository,
+} from '../../data/repositories/userFollowsRepository';
 import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
@@ -47,6 +54,8 @@ import type { AudienceMutationResult, AudienceService } from './audienceService'
 
 export interface SocialServiceDeps {
   repo: FriendshipRepository;
+  /** Person-follow graph (#438) — follow/unfollow + the following/followers lists. */
+  follows: UserFollowsRepository;
   /** Public-profile settings + per-viewer activity-alert preferences (V3-P6). */
   profile: ProfileRepository;
   /** The single sharing-enforcement layer — consulted by every read path here. */
@@ -70,6 +79,14 @@ export interface SocialService {
   cancel(userId: string, requestId: string): Promise<void>;
   listFriends(userId: string): Promise<FriendsListResponse>;
   removeFriend(userId: string, otherUserId: string): Promise<void>;
+  /** Follow a person (#438). Idempotent; 404 when the target isn't a valid follow target. */
+  followUser(userId: string, targetId: string): Promise<void>;
+  /** Unfollow a person (#438). 404 when the caller wasn't following them. */
+  unfollowUser(userId: string, targetId: string): Promise<void>;
+  /** The users the caller follows, with follower/following counts (#438). */
+  listFollowing(userId: string): Promise<FollowingListResponse>;
+  /** The users who follow the caller (#438). */
+  listFollowers(userId: string): Promise<FollowersListResponse>;
   listSharedWithMe(userId: string, opts?: { baseCurrency?: string }): Promise<SharedWithMeResponse>;
   getSharedPortfolio(
     viewerId: string,
@@ -128,6 +145,9 @@ export const DECLINE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
 const REQUEST_NOT_FOUND = () => notFound('Friend request not found.', 'FRIEND_REQUEST_NOT_FOUND');
 const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOUND');
+const FOLLOW_TARGET_NOT_FOUND = () => notFound('User not found.', 'USER_NOT_FOUND');
+const NOT_FOLLOWING = () => notFound('You are not following this user.', 'FOLLOW_NOT_FOUND');
+const CANNOT_FOLLOW_SELF = () => badRequest('You cannot follow yourself.', 'CANNOT_FOLLOW_SELF');
 const SHARED_NOT_FOUND = () => notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
 const SHARED_CONGLOMERATE_NOT_FOUND = () =>
   notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
@@ -159,8 +179,15 @@ function toFriendship(row: FriendRow): Friendship {
   };
 }
 
+function toFollowUser(row: FollowUserRow): FollowUser {
+  return {
+    user: { id: row.id, username: row.username },
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
 export function createSocialService(deps: SocialServiceDeps): SocialService {
-  const { repo, profile, audience, portfolio, conglomerate, workboard, notify } = deps;
+  const { repo, follows, profile, audience, portfolio, conglomerate, workboard, notify } = deps;
 
   // Friend events enter the ONE durable notification pipeline (#368) — the
   // center is fire-and-forget: a queue failure logs and never fails the action.
@@ -345,6 +372,36 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     async removeFriend(userId, otherUserId) {
       const removed = await repo.deleteFriendship(userId, otherUserId);
       if (!removed) throw FRIEND_NOT_FOUND();
+    },
+
+    async followUser(userId, targetId) {
+      if (userId === targetId) throw CANNOT_FOLLOW_SELF();
+      // The target must be a real, active, non-admin account. Validating first
+      // turns an unknown/admin/disabled id into a uniform 404 (never an FK crash),
+      // and keeps admins out of the social graph like friend requests do.
+      const target = await follows.findFollowTarget(targetId);
+      if (!target) throw FOLLOW_TARGET_NOT_FOUND();
+      // Idempotent: a repeat follow is a silent no-op — following grants no access
+      // and emits nothing on its own, so there is nothing to re-fire.
+      await follows.follow(userId, targetId);
+    },
+
+    async unfollowUser(userId, targetId) {
+      const removed = await follows.unfollow(userId, targetId);
+      if (!removed) throw NOT_FOLLOWING();
+    },
+
+    async listFollowing(userId) {
+      const [rows, followerCount] = await Promise.all([
+        follows.listFollowing(userId),
+        follows.countFollowers(userId),
+      ]);
+      return { following: rows.map(toFollowUser), followingCount: rows.length, followerCount };
+    },
+
+    async listFollowers(userId) {
+      const rows = await follows.listFollowers(userId);
+      return { followers: rows.map(toFollowUser) };
     },
 
     async listSharedWithMe(userId, opts) {
@@ -563,7 +620,10 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     async getPublicProfile(username) {
       const owner = await profile.findPublicProfileOwner(username);
       if (!owner) throw PROFILE_NOT_FOUND();
-      const items = await audience.listPublicProfileItems(owner.ownerId);
+      const [items, followerCount] = await Promise.all([
+        audience.listPublicProfileItems(owner.ownerId),
+        follows.countFollowers(owner.ownerId),
+      ]);
       const portfolios = await Promise.all(
         items.portfolios.map(async (p) => {
           const overview = await portfolio.getPortfolio(owner.ownerId, p.portfolioId);
@@ -575,8 +635,12 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         }),
       );
       return {
+        // The owner id is public-safe and lets a logged-in visitor follow the
+        // person straight from their profile (#438).
+        userId: owner.ownerId,
         username: owner.username,
         bio: owner.bio,
+        followerCount,
         portfolios,
         conglomerates: items.conglomerates,
         watchlists: items.watchlists,

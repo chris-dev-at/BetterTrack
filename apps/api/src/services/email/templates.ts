@@ -385,6 +385,34 @@ export function friendActivityEmail(params: {
 }
 
 /**
+ * Follow-published notification email (#438). The body sentence is pre-rendered
+ * by the dispatcher (identical to the bell copy), so this only wraps it with the
+ * localized subject/heading/button chrome — mirroring {@link friendActivityEmail}.
+ */
+export function followPublishedEmail(params: {
+  body: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { body, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.followPublished;
+  return {
+    subject: c.subject,
+    html: layout(
+      c.heading,
+      [
+        `<p>${escapeHtml(body)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [body, '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/**
  * Login 2FA email-code (PROJECTPLAN.md §6.1, §13.2 V2-P5). One of the two second-
  * factor channels: a short-lived, single-use numeric code the user enters at the
  * login challenge. Carries no link and no account data beyond the code itself.

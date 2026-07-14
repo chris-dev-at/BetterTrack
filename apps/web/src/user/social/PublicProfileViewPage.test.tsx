@@ -44,8 +44,10 @@ const PID = '00000000-0000-0000-0000-000000000001';
 const ASSET_ID = '00000000-0000-0000-0000-000000000002';
 
 const profile: PublicProfileResponse = {
+  userId: '00000000-0000-0000-0000-000000000003',
   username: 'alice',
   bio: 'Long-term investor',
+  followerCount: 0,
   portfolios: [{ portfolioId: PID, name: 'Main', totalValueEur: 1000 }],
   conglomerates: [],
   watchlists: [],
@@ -150,5 +152,17 @@ describe('PublicProfileViewPage (/u/:username)', () => {
     );
     expect(chartMocks.createChart).toHaveBeenCalled();
     expect(screen.getByText('BAYN.DE')).toBeInTheDocument();
+  });
+
+  test('offers a logged-out visitor a "log in to follow" link back to sign-in', async () => {
+    vi.mocked(getPublicProfile).mockResolvedValue(profile);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('@alice')).toBeInTheDocument());
+
+    // No AuthProvider here → logged-out: the follow control is a login affordance
+    // (the `social.follow.loginToFollow` string), not an empty/dead render.
+    const loginLink = screen.getByRole('link', { name: /log in to follow/i });
+    expect(loginLink).toHaveAttribute('href', '/login');
   });
 });

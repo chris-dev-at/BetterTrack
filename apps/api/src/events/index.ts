@@ -17,6 +17,7 @@ export type {
   WatchlistSharedEvent,
   ConglomerateSharedEvent,
   FriendActivityEvent,
+  FollowPublishedEvent,
   AccountTempPasswordEvent,
   ChatMessageEvent,
 } from './types';

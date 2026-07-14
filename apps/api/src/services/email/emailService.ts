@@ -7,6 +7,7 @@ import {
   chatMessageEmail,
   conglomerateSharedEmail,
   friendAcceptedEmail,
+  followPublishedEmail,
   friendActivityEmail,
   friendRequestEmail,
   inviteEmail,
@@ -148,6 +149,13 @@ export interface EmailService {
     body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: a user `userId` follows published a newly-visible item (#438). */
+  sendFollowPublished(params: {
+    to: string;
+    userId: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /** Notification email: a price alert `userId` set fired (§14). */
   sendAlertTriggered(params: {
     to: string;
@@ -191,6 +199,7 @@ type EmailTemplateKind =
   | 'watchlist_shared'
   | 'conglomerate_shared'
   | 'friend_activity'
+  | 'follow_published'
   | 'alert_triggered'
   | 'chat_message';
 
@@ -382,6 +391,14 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'friend_activity',
         to,
         friendActivityEmail({ body, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendFollowPublished: ({ to, userId, body, locale }) =>
+      deliver(
+        'follow_published',
+        to,
+        followPublishedEmail({ body, appUrl: config.appOrigin, locale }),
         { userId },
       ),
 

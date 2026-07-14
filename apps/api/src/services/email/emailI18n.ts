@@ -38,6 +38,8 @@ export interface NotificationEmailCopy {
   alertTriggered: { subject: string; heading: string; button: string };
   /** Friend-activity body sentence is supplied by the caller (same as the bell). */
   friendActivity: { subject: string; heading: string; button: string };
+  /** Follow-published body sentence is supplied by the caller (same as the bell, #438). */
+  followPublished: { subject: string; heading: string; button: string };
   /** Approval-queue decision emails (§6.12, §13.4 V4-P4a). Approved bolds `{username}`. */
   registrationApproved: { subject: string; heading: string; body: string; button: string };
   registrationRejected: { subject: string; heading: string; body: string };
@@ -92,6 +94,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     friendActivity: {
       subject: 'Friend activity on BetterTrack',
       heading: 'Friend activity',
+      button: 'Open BetterTrack',
+    },
+    followPublished: {
+      subject: 'New from someone you follow on BetterTrack',
+      heading: 'New from someone you follow',
       button: 'Open BetterTrack',
     },
     registrationApproved: {
@@ -154,6 +161,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     friendActivity: {
       subject: 'Aktivität von Freunden auf BetterTrack',
       heading: 'Aktivität von Freunden',
+      button: 'BetterTrack öffnen',
+    },
+    followPublished: {
+      subject: 'Neues von jemandem, dem du folgst, auf BetterTrack',
+      heading: 'Neues von jemandem, dem du folgst',
       button: 'BetterTrack öffnen',
     },
     registrationApproved: {

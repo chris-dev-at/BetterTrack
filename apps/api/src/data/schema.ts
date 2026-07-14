@@ -1006,6 +1006,34 @@ export const friendships = pgTable(
 );
 
 /**
+ * `user_follows` — one-directional PERSON follow (#438). The follower opts into
+ * `follow.published` news about a followed user's items that become newly visible
+ * to them. Unlike {@link friendships} this is asymmetric with NO accept step, and
+ * it grants no read access on its own — visibility stays enforced by the audience
+ * layer. One row per ordered (follower, followed) pair (PK dedupes a repeat
+ * follow); a self-follow is rejected by the CHECK. Deleting either user cascades
+ * the row away, so an account deletion stops all its news both ways.
+ */
+export const userFollows = pgTable(
+  'user_follows',
+  {
+    followerId: uuid('follower_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    followedId: uuid('followed_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'user_follows_pk', columns: [t.followerId, t.followedId] }),
+    // Reverse lookup: "who follows this user" (the emission fan-out reads it).
+    index('user_follows_followed_idx').on(t.followedId),
+    check('user_follows_no_self', sql`${t.followerId} <> ${t.followedId}`),
+  ],
+);
+
+/**
  * Unified sharing audiences (§13.3 V3-P5) — ONE model + ONE enforcement layer
  * over every shareable kind: each portfolio, each conglomerate, each named
  * watchlist. Three tables:
@@ -1375,6 +1403,8 @@ export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
 export type NewFriendshipRow = typeof friendships.$inferInsert;
+export type UserFollowRow = typeof userFollows.$inferSelect;
+export type NewUserFollowRow = typeof userFollows.$inferInsert;
 export type WatchlistRow = typeof watchlists.$inferSelect;
 export type NewWatchlistRow = typeof watchlists.$inferInsert;
 export type ShareAudienceRow = typeof shareAudiences.$inferSelect;
@@ -1480,6 +1510,7 @@ export const schema = {
   userTaxSettings,
   friendRequests,
   friendships,
+  userFollows,
   shareAudiences,
   shareAudienceMembers,
   shareAudienceLinks,

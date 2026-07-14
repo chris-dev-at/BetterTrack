@@ -16,6 +16,8 @@ import type {
   ShareAudienceRepository,
 } from '../../data/repositories/shareAudienceRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
+import type { ProfileRepository } from '../../data/repositories/profileRepository';
+import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
 import { badRequest } from '../../errors';
 import type { Logger } from '../../logger';
 import { generateToken, hashToken } from '../crypto/tokens';
@@ -59,7 +61,11 @@ export interface AudienceServiceDeps {
   repo: ShareAudienceRepository;
   /** Resolves friend recipients + the actor's username for share events (#368). */
   friendship?: Pick<FriendshipRepository, 'getUsername' | 'listFriends'>;
-  /** The central notification pipeline (#368) — `*.shared` events enter here. */
+  /** Resolves the owner's followers for `follow.published` fan-out (#438). */
+  follows?: Pick<UserFollowsRepository, 'listFollowerIds'>;
+  /** Reachability gate for `follow.published` — is the owner's public profile live (#438). */
+  profile?: Pick<ProfileRepository, 'isProfilePublic'>;
+  /** The central notification pipeline (#368) — `*.shared` + `follow.published` enter here. */
   notify?: NotificationCenter;
   logger?: Logger;
 }
@@ -154,7 +160,7 @@ function linkPath(token: string): string {
 }
 
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
-  const { repo, friendship, notify, logger } = deps;
+  const { repo, friendship, follows, profile, notify, logger } = deps;
 
   /**
    * Tell each friend the picker just admitted that the item is shared with them
@@ -194,6 +200,79 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       }
     } catch (err) {
       logger?.error({ err, kind, subjectId }, 'share event emit failed');
+    }
+  }
+
+  /**
+   * Tell the owner's followers an item became newly visible to them (#438).
+   *
+   * follow.published fires ONLY on a transition INTO `public_link`: that is the
+   * one widening that exposes an item to a follower WITHOUT also sending a direct
+   * `*.shared` notice. `emitShared` already covers `all_friends`/`specific_friends`
+   * — and its recipients are exactly the friends who gain access — so firing follow
+   * news there too would double-notify (the anti-noise "no doubles" rule; here it
+   * falls out of the guard). A follower who could ALREADY see the item under the
+   * prior audience is excluded, so widening friends→public never re-notifies the
+   * friends who already saw it, and re-saving public→public notifies nobody. The
+   * dispatcher's day-bucketed event key handles same-day public↔private flapping.
+   *
+   * **Reachability gate.** A follower has no share link, so the ONLY way they can
+   * open a newly-public item is the owner's `/u/:username` public profile — the
+   * notification's deep link. That page 404s unless the profile is enabled
+   * (`users.profile_public`), which is decoupled from making an item public. So
+   * we notify ONLY when the profile is live; publishing an item without a public
+   * profile shares it link-only and produces no dead-link news (#438, AC#1).
+   *
+   * Best-effort for the mutation, exactly like {@link emitShared}.
+   */
+  async function emitFollowPublished(
+    ownerId: string,
+    kind: ShareKind,
+    subjectId: string,
+    prior: { audience: ShareAudience; memberIds: readonly string[] },
+    nextAudience: ShareAudience,
+  ): Promise<void> {
+    if (!notify || !follows || !friendship || !profile) return;
+    if (nextAudience !== 'public_link') return;
+    try {
+      // Reachability gate (see doc): no working destination → no news.
+      if (!(await profile.isProfilePublic(ownerId))) return;
+      const followerIds = await follows.listFollowerIds(ownerId);
+      if (followerIds.length === 0) return;
+      const friendSet = new Set((await friendship.listFriends(ownerId)).map((f) => f.id));
+      const priorMembers = new Set(prior.memberIds);
+      const couldSeeBefore = (followerId: string): boolean => {
+        switch (prior.audience) {
+          case 'public_link':
+            return true;
+          case 'all_friends':
+            return friendSet.has(followerId);
+          case 'specific_friends':
+            return priorMembers.has(followerId);
+          case 'private':
+            return false;
+        }
+      };
+      const recipients = followerIds.filter((id) => id !== ownerId && !couldSeeBefore(id));
+      if (recipients.length === 0) return;
+      const identity = await repo.getSubjectIdentity(kind, subjectId);
+      if (!identity) return; // subject vanished mid-flight — nothing to name
+      const actorUsername = (await friendship.getUsername(ownerId)) ?? '';
+      const occurredAt = new Date().toISOString();
+      for (const userId of recipients) {
+        await notify.emit({
+          type: 'follow.published',
+          userId,
+          actorId: ownerId,
+          actorUsername,
+          itemKind: kind,
+          itemId: subjectId,
+          itemName: identity.name,
+          occurredAt,
+        });
+      }
+    } catch (err) {
+      logger?.error({ err, kind, subjectId }, 'follow publish emit failed');
     }
   }
 
@@ -251,6 +330,11 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         throw PUBLIC_ACK_REQUIRED();
       }
 
+      // Snapshot the audience BEFORE mutating: the follow-published delta needs to
+      // know who could already see the item, so a follower who already had access
+      // isn't re-notified when it widens to public (#438).
+      const prior = await repo.getOwnedState(kind, subjectId);
+
       const memberIds =
         input.audience === 'specific_friends'
           ? await repo.friendIdsOf(ownerId, input.friendIds ?? [])
@@ -275,6 +359,14 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       // Notify the newly admitted friends (#368) — after the audience committed,
       // so a recipient acting on the bell is already authorized.
       await emitShared(ownerId, kind, subjectId, input.audience, memberIds);
+      // Notify the owner's followers if the item just became public (#438).
+      await emitFollowPublished(
+        ownerId,
+        kind,
+        subjectId,
+        { audience: prior.audience, memberIds: prior.friendIds },
+        input.audience,
+      );
 
       const owned = await repo.getOwnedState(kind, subjectId);
       return { state: toState(kind, subjectId, owned), link };
