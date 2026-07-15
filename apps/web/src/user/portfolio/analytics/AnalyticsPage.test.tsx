@@ -139,6 +139,13 @@ const RESP_FULL: AnalyticsSeriesResponse = {
   from: '2024-01-01',
   to: '2024-06-30',
   inflation: null,
+  // V4-P0: static preset headline rates travel on every response so the
+  // picker can label each preset with its effective annualised %/yr.
+  inflationPresets: [
+    { id: 'hicp-at', pctPerYear: 3.2 },
+    { id: 'hicp-eu', pctPerYear: 2.5 },
+    { id: 'cpi-us', pctPerYear: 3.1 },
+  ],
   primary: {
     kind: 'portfolio',
     label: 'Main',

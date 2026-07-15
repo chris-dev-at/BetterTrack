@@ -39,6 +39,14 @@ import { Alert, Button } from '../components/ui';
 
 // ─── Range mapping ────────────────────────────────────────────────────────────
 
+/**
+ * The asset-detail chart keeps its original §6.3 six-button set (1D / 1W /
+ * 1M / 3M / 1Y / Max) — V4-P0 widened {@link PRICE_RANGES} with 6M and 5Y
+ * for the portfolio surface only, so this page pins its selectable range set
+ * explicitly to stay unaffected (row spec: asset-detail chart out of scope).
+ */
+const ASSET_DETAIL_RANGES: readonly PriceRange[] = ['1D', '1W', '1M', '3M', '1Y', 'Max'];
+
 /** Chart's `PriceRange` tokens use 'Max'; the API contract uses 'MAX'. */
 function toHistoryRange(r: PriceRange): HistoryRange {
   return r === 'Max' ? 'MAX' : r;
@@ -735,6 +743,11 @@ export function AssetDetailPage() {
             series={chartPoints}
             mode={chartMode}
             range={range}
+            // Asset detail keeps its historical §6.3 six-button set — V4-P0
+            // widened the shared range vocabulary for the portfolio surface
+            // (adding 6M and 5Y); pinning them out here keeps this page
+            // untouched, exactly matching the row's "out of scope" note.
+            ranges={ASSET_DETAIL_RANGES}
             onRangeChange={setRange}
             loading={historyQuery.isLoading || historyQuery.isFetching}
             ariaLabel={t('assets.detail.chartAriaLabel', { symbol: asset.symbol })}

@@ -16,8 +16,9 @@ export interface ChartPoint {
 }
 
 /** Range tokens for the {@link PriceChart} toggle (PROJECTPLAN.md §6.3). The
- * parent owns data fetching per range; the chart only surfaces the choice. */
-export const PRICE_RANGES = ['1D', '1W', '1M', '3M', '1Y', 'Max'] as const;
+ * parent owns data fetching per range; the chart only surfaces the choice.
+ * The portfolio surface (§13.4 V4-P0) additionally offers 6M and 5Y. */
+export const PRICE_RANGES = ['1D', '1W', '1M', '3M', '6M', '1Y', '5Y', 'Max'] as const;
 export type PriceRange = (typeof PRICE_RANGES)[number];
 
 /** Drawing mode: `area` for market assets, `step` for custom assets whose

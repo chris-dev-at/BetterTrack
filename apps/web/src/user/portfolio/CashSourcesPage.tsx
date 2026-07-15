@@ -33,6 +33,64 @@ function kindLabel(t: TranslateFn, kind: CashMovement['kind']): string {
   return t(`portfolio.cashSources.kind.${kind}`);
 }
 
+// ── Action iconography (inline SVG, dependency-free — matches the app house style) ─
+//
+// V4-P0: deposit/withdraw/transfer/set-balance carry a small icon plus the
+// label ("icon+label — whichever reads better"). Icons are decorative and
+// `aria-hidden`: the visible + button-labelled text stays the accessible name.
+
+const ACTION_ICON_PROPS = {
+  className: 'h-3.5 w-3.5',
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+  'aria-hidden': true,
+};
+
+function DepositIcon() {
+  return (
+    <svg {...ACTION_ICON_PROPS}>
+      <path d="M12 4v11" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M5 20h14" />
+    </svg>
+  );
+}
+
+function WithdrawIcon() {
+  return (
+    <svg {...ACTION_ICON_PROPS}>
+      <path d="M12 20V9" />
+      <path d="M7 14l5-5 5 5" />
+      <path d="M5 4h14" />
+    </svg>
+  );
+}
+
+function TransferIcon() {
+  return (
+    <svg {...ACTION_ICON_PROPS}>
+      <path d="M6 8h12" />
+      <path d="M15 5l3 3-3 3" />
+      <path d="M18 16H6" />
+      <path d="M9 13l-3 3 3 3" />
+    </svg>
+  );
+}
+
+function SetBalanceIcon() {
+  return (
+    <svg {...ACTION_ICON_PROPS}>
+      <path d="M4 12h6" />
+      <path d="M14 12h6" />
+      <path d="M12 5v14" />
+    </svg>
+  );
+}
+
 // ─── Dialog state ─────────────────────────────────────────────────────────────
 
 type DialogState =
@@ -111,22 +169,25 @@ function SourceRow({
             <button
               type="button"
               onClick={onDeposit}
-              className="rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
+              <DepositIcon />
               {t('portfolio.cashSources.depositButton')}
             </button>
             <button
               type="button"
               onClick={onWithdraw}
-              className="rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-sky-400 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
+              <WithdrawIcon />
               {t('portfolio.cashSources.withdrawButton')}
             </button>
             <button
               type="button"
               onClick={onSetBalance}
-              className="rounded px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-neutral-300 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
             >
+              <SetBalanceIcon />
               {t('portfolio.cashSources.setBalanceAction')}
             </button>
             {!source.isMain ? (
@@ -371,6 +432,7 @@ export function CashSourcesPage() {
         <div className="flex gap-2">
           {active.length > 1 ? (
             <Button variant="secondary" onClick={() => setDialog({ kind: 'transfer' })}>
+              <TransferIcon />
               {t('portfolio.cashSources.transferButton')}
             </Button>
           ) : null}

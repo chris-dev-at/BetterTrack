@@ -970,6 +970,7 @@
         "flat": "Custom flat rate",
         "rateLabel": "Inflation rate, percent per year",
         "rateSuffix": "%/yr",
+        "presetLabel": "{{label}} · ≈ {{rate}} {{suffix}}",
         "realTermsBadge": "Real terms",
         "realTermsHint": "Values are adjusted for inflation."
       },

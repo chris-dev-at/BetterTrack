@@ -10,11 +10,12 @@
  * series uses its native 1982-84=100; both deflate identically).
  *
  * Granularity: annual-average anchors, keyed at each year's January (`YYYY-01`).
- * `deflateSeries` carries the latest month ≤ the target date forward, so a
- * whole calendar year deflates by that year's average — a deliberate v3
- * approximation. Refine to true monthly points from the sources below when the
- * page needs intra-year resolution; the domain math is unchanged (just denser
- * `monthly` arrays).
+ * `deflateSeries` **linearly interpolates** between adjacent anchors (V4-P0
+ * fix, #468) and extrapolates along the last two anchors' slope past the
+ * latest observation — so a six-month window inside a year and a window that
+ * sits entirely past `lastUpdated` both deflate visibly, instead of flat-lining
+ * as a pure carry-forward would. Adding true monthly points from the sources
+ * below sharpens the shape without touching the domain math.
  *
  * ── Update recipe ──────────────────────────────────────────────────────────
  * • HICP-AT / HICP-EU — Eurostat table `prc_hicp_aind` (all-items HICP, annual
@@ -31,7 +32,7 @@
 
 export type InflationIndexId = 'hicp-at' | 'hicp-eu' | 'cpi-us';
 
-/** One monthly index observation (carry-forward between points in the domain). */
+/** One monthly index observation (linearly interpolated between points in the domain). */
 export interface InflationIndexPoint {
   /** ISO `YYYY-MM`. */
   readonly month: string;
@@ -138,3 +139,10 @@ export const INFLATION_INDEX_SERIES: Record<InflationIndexId, InflationIndexSeri
   'hicp-eu': HICP_EU,
   'cpi-us': CPI_US,
 };
+
+/**
+ * All checked-in preset ids, in the order they appear in the picker. Exposed
+ * so the analytics service can enumerate them without hard-coding — a new
+ * series added to {@link INFLATION_INDEX_SERIES} shows up automatically.
+ */
+export const INFLATION_PRESET_IDS: readonly InflationIndexId[] = ['hicp-at', 'hicp-eu', 'cpi-us'];

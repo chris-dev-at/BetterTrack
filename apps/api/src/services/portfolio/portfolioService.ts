@@ -362,11 +362,19 @@ interface HistoryPayload {
   assets: PortfolioHistoryOverlay[];
 }
 
-/** Months of history each non-MAX range covers (§6.9: 1M / 6M / 1Y / Max). */
-const RANGE_MONTHS: Record<Exclude<PortfolioHistoryRange, 'MAX'>, number> = {
+/**
+ * Non-MAX ranges (§6.9 + V4-P0: 1D / 1W / 1M / 6M / 1Y / 5Y / MAX) resolve to
+ * a cutoff via {@link rangeCutoffIso}: day-spans by ISO-day arithmetic, month
+ * spans through {@link monthsBefore} (so a month-boundary edge case like "Mar
+ * 31 − 1M" cannot silently shorten a window, issue #218). The stored series
+ * is daily-resolution; sub-week windows slice fewer points off the same
+ * series (no intraday sourcing — that stays Live Mode's job, §7).
+ */
+const RANGE_MONTHS: Record<'1M' | '6M' | '1Y' | '5Y', number> = {
   '1M': 1,
   '6M': 6,
   '1Y': 12,
+  '5Y': 60,
 };
 
 export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioService {
@@ -2245,6 +2253,30 @@ function sliceRange<P extends { date: string }>(
   today: string,
 ): P[] {
   if (range === 'MAX') return [...series];
-  const cutoff = monthsBefore(today, RANGE_MONTHS[range]);
+  const cutoff = rangeCutoffIso(range, today);
   return series.filter((p) => p.date >= cutoff);
+}
+
+/**
+ * ISO-day cutoff at which a non-MAX range window opens (§6.9 + V4-P0). Day
+ * spans (1D/1W) resolve by exact day arithmetic on the ISO stamp; month/year
+ * spans go through {@link monthsBefore} so the #218 last-day-of-target-month
+ * clamp still guards month-boundary drift. A portfolio younger than the span
+ * is fine — the slice just returns fewer points; the caller renders what it
+ * has (never a crash, never a broken empty chart — V4-P0 acceptance).
+ */
+export function rangeCutoffIso(
+  range: Exclude<PortfolioHistoryRange, 'MAX'>,
+  today: string,
+): string {
+  if (range === '1D') return daysBefore(today, 1);
+  if (range === '1W') return daysBefore(today, 7);
+  return monthsBefore(today, RANGE_MONTHS[range]);
+}
+
+/** Calendar day `days` before `today` (ISO `YYYY-MM-DD`), UTC. Exported for tests. */
+export function daysBefore(today: string, days: number): string {
+  const d = new Date(`${today}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
 }

@@ -970,6 +970,7 @@
         "flat": "Eigene feste Rate",
         "rateLabel": "Inflationsrate, Prozent pro Jahr",
         "rateSuffix": "%/J",
+        "presetLabel": "{{label}} · ≈ {{rate}} {{suffix}}",
         "realTermsBadge": "Real",
         "realTermsHint": "Werte sind inflationsbereinigt."
       },

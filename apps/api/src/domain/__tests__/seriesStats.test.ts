@@ -4,6 +4,7 @@ import {
   computeContributions,
   computeSeriesStats,
   deflateSeries,
+  indexAveragePctPerYear,
   toPerformanceSeries,
   type ContributionInput,
   type SeriesStats,
@@ -232,27 +233,59 @@ describe('deflateSeries — monthly index (HICP/CPI mode)', () => {
     Object.freeze({ month: '2024-01', value: 100 }),
   ]);
 
-  it('deflates a flat nominal series downward, with carry-forward and earliest-entry floor', () => {
+  it('interpolates between anchors + extrapolates past the last one (V4-P0 fix, #468)', () => {
     const series = [
       pt('2023-12-15', 500), // before the earliest entry → floors to the 2024-01 level (100)
-      pt('2024-01-15', 500), // exact month match (100)
-      pt('2024-02-15', 500), // exact month match (101)
-      pt('2024-03-15', 500), // no 2024-03 entry → carries 2024-02 forward (101)
-      pt('2024-05-15', 500), // no 2024-05 entry → carries 2024-04 forward (103)
+      pt('2024-01-15', 500), // exact match (100)
+      pt('2024-02-15', 500), // exact match (101)
+      pt('2024-03-15', 500), // between 2024-02 (101) and 2024-04 (103) → 102
+      pt('2024-05-15', 500), // one month past last anchor; slope = (103−101)/2 = +1/mo → 104
     ];
     const real = deflateSeries(series, { kind: 'index', monthly });
 
-    // Base = first point, so real[0] is the nominal value exactly.
+    // Base = first point: real terms are expressed in start-date money.
     expect(real[0]?.value).toBe(500);
     expect(real[1]?.value ?? Number.NaN).toBeCloseTo(500, 12); // 500 · 100/100
     expect(real[2]?.value ?? Number.NaN).toBeCloseTo(50000 / 101, 9); // ≈ 495.05
-    expect(real[3]?.value ?? Number.NaN).toBeCloseTo(50000 / 101, 9); // carry-forward
-    expect(real[4]?.value ?? Number.NaN).toBeCloseTo(50000 / 103, 9); // ≈ 485.44
-    // A rising index only ever pushes the flat curve down.
+    expect(real[3]?.value ?? Number.NaN).toBeCloseTo(50000 / 102, 9); // interior interpolation
+    expect(real[4]?.value ?? Number.NaN).toBeCloseTo(50000 / 104, 9); // linear extrapolation
+    // A monotonically rising index only ever pushes the flat curve down.
     for (let i = 1; i < real.length; i += 1) {
       expect(real[i]?.value ?? Number.NaN).toBeLessThanOrEqual(real[i - 1]?.value ?? Number.NaN);
     }
     expect(real.map((p) => p.date)).toEqual(series.map((p) => p.date));
+  });
+
+  it('deflates a window whose whole span sits PAST the last anchor (bug #468 root cause)', () => {
+    // Annual anchors that stop before the window — the exact pattern the
+    // checked-in HICP/CPI series ships with, and the reason presets used to
+    // flat-line in real time (baseLevel/indexAt collapsed to 1.0). Extrapolation
+    // along the last slope now produces a genuine deflated series.
+    const annual = [
+      { month: '2023-01', value: 100 },
+      { month: '2024-01', value: 105 },
+      { month: '2025-01', value: 110 },
+    ];
+    const series = [pt('2025-07-15', 1000), pt('2026-07-15', 1000)];
+    const real = deflateSeries(series, { kind: 'index', monthly: annual });
+
+    expect(real[0]?.value).toBe(1000);
+    // Slope past 2025-01 = (110−105)/12 = 5/12 per month. index(2025-07) =
+    // 110 + 5/12·6 = 112.5; index(2026-07) = 110 + 5/12·18 = 117.5.
+    // baseLevel = index(2025-07) = 112.5. real end = 1000 · 112.5/117.5.
+    expect(real[1]?.value ?? Number.NaN).toBeCloseTo(1000 * (112.5 / 117.5), 9);
+    // Strictly below the nominal 1000 — the bug was that this stayed 1000.
+    expect(real[1]?.value ?? Number.NaN).toBeLessThan(1000);
+  });
+
+  it('a single-anchor index carries that level everywhere (no slope to extrapolate)', () => {
+    const series = [pt('2024-01-15', 500), pt('2024-06-15', 500), pt('2024-12-15', 500)];
+    const real = deflateSeries(series, {
+      kind: 'index',
+      monthly: [{ month: '2024-01', value: 100 }],
+    });
+
+    expect(real.map((p) => p.value)).toEqual([500, 500, 500]);
   });
 
   it('an empty monthly index returns the series unchanged, as a fresh copy', () => {
@@ -269,6 +302,40 @@ describe('deflateSeries — monthly index (HICP/CPI mode)', () => {
 
   it('returns [] for an empty series', () => {
     expect(deflateSeries([], { kind: 'index', monthly })).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// indexAveragePctPerYear (V4-P0: %/yr display alongside each preset)
+// ---------------------------------------------------------------------------
+
+describe('indexAveragePctPerYear', () => {
+  it('returns the CAGR from first to last anchor', () => {
+    // 100 → 121 over 2 years: (121/100)^(1/2) − 1 = 10 %/yr.
+    const monthly = [
+      { month: '2020-01', value: 100 },
+      { month: '2022-01', value: 121 },
+    ];
+    expect(indexAveragePctPerYear(monthly) ?? Number.NaN).toBeCloseTo(10, 9);
+  });
+
+  it('reproduces a realistic HICP-style series to ~2 dp (100 → 137 over 10 y ≈ 3.2 %/yr)', () => {
+    const monthly = [
+      { month: '2015-01', value: 100 },
+      { month: '2025-01', value: 137 },
+    ];
+    expect(indexAveragePctPerYear(monthly) ?? Number.NaN).toBeCloseTo(3.198, 2);
+  });
+
+  it('single-anchor / empty / non-positive base → null', () => {
+    expect(indexAveragePctPerYear([])).toBeNull();
+    expect(indexAveragePctPerYear([{ month: '2020-01', value: 100 }])).toBeNull();
+    expect(
+      indexAveragePctPerYear([
+        { month: '2020-01', value: 0 },
+        { month: '2021-01', value: 105 },
+      ]),
+    ).toBeNull();
   });
 });
 
