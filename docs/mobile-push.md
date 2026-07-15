@@ -206,9 +206,20 @@ After merge every payload also carries `data.type`.
 Titles and bodies for each type live in the same `render(...)` function; they
 are English today (i18n of push copy is not in V4). Reference examples:
 `alert.triggered` uses `alertTitle(symbol)` / `alertBody(...)` from
-`apps/api/src/services/alerts/alertMessages.ts`; `chat.message` never includes
-message content in the push body — only who sent it —, mirroring the email
-privacy rule.
+`apps/api/src/services/alerts/alertMessages.ts`; `chat.message` **does embed
+message content in the push body**: when the message has text the body is
+rendered as `"{sender}: {preview}"`, where `preview` is up to 140 characters
+of the message text (`PREVIEW_MAX` at `apps/api/src/services/chat/chatService.ts:46`,
+sliced at `:296`, used at `notificationDispatcher.ts:413–414`); it falls back
+to `"{sender} shared an item with you."` for a chip-only message and
+`"{sender} sent you a message."` otherwise (`notificationDispatcher.ts:415–417`).
+This is **materially less private than the email surface**, which renders
+only the actor's username with no content
+(`apps/api/src/services/email/templates.ts:289–310`) — the mobile client's
+lock-screen / notification-shade visibility settings should account for
+this. The `data` map itself is content-free (only `conversationId` and
+`messageId`, per §3.2), so any content-hiding UI can key off `data.type`
+without inspecting `notification.body`.
 
 ---
 
