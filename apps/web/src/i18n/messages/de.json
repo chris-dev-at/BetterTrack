@@ -261,6 +261,17 @@
     "backups": {
       "description": "Automatische Backups zu Google Drive und anderswo."
     },
+    "alertSharing": {
+      "title": "Meine Alarme mit Followern teilen",
+      "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
+      "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
+      "toggleAria": "Meine Alarme mit Followern teilen",
+      "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "confirmTitle": "Deine Alarme mit allen Followern teilen?",
+      "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
+      "confirmCancel": "Abbrechen",
+      "confirmEnable": "Ich verstehe — Alarme teilen"
+    },
     "notifications": {
       "title": "Benachrichtigungen",
       "subtitle": "Lege für jede Art von Aktivität fest, über welche Kanäle du benachrichtigt wirst — Glocke in der App, E-Mail, Handy-Push, Browser-Push — oder schalte alles auf einmal stumm.",
@@ -1453,17 +1464,6 @@
       "emptyTitle": "Noch keine Alarme",
       "emptyDescription": "Erstelle einen Alarm, um benachrichtigt zu werden, wenn eine Anlage eine Kursmarke erreicht oder sich um einen Prozentsatz bewegt.",
       "emptyCta": "Neuer Alarm →",
-      "sharing": {
-        "title": "Meine Alarme mit Followern teilen",
-        "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
-        "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
-        "toggleAria": "Meine Alarme mit Followern teilen",
-        "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
-        "confirmTitle": "Deine Alarme mit allen Followern teilen?",
-        "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
-        "confirmCancel": "Abbrechen",
-        "confirmEnable": "Ich verstehe — Alarme teilen"
-      },
       "kinds": {
         "priceAbove": "Kurs steigt über",
         "priceBelow": "Kurs fällt unter",
@@ -1859,7 +1859,9 @@
       "messageAria": "{{username}} eine Nachricht senden",
       "remove": "Entfernen",
       "sharesHeading": "Teilt mit dir",
-      "sharesEmpty": "{{username}} teilt noch nichts mit dir."
+      "sharesEmpty": "{{username}} teilt noch nichts mit dir.",
+      "followHeading": "Neuigkeiten über diese Person",
+      "followHint": "Folge, um zu erfahren, wenn sie ein Portfolio, eine Watchlist oder ein Konglomerat öffentlich macht."
     },
     "chat": {
       "title": "Nachrichten",

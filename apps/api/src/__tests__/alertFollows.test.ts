@@ -82,6 +82,19 @@ function follow(
     .send({ userId, ...prefs });
 }
 
+/**
+ * Open the owner's public profile so non-friend followers can follow them
+ * (V4-P0b: public profiles are the follow path for non-friends). Orthogonal to
+ * alert sharing — followers still receive nothing until {@link shareAlerts}.
+ */
+async function enablePublicProfile(agent: Agent): Promise<void> {
+  const res = await agent
+    .put('/api/v1/social/profile')
+    .set(...XRW)
+    .send({ isPublic: true, acknowledgePublic: true });
+  expect(res.status).toBe(200);
+}
+
 /** Enable the owner's alert sharing through the real endpoint (ack included). */
 async function shareAlerts(agent: Agent): Promise<void> {
   const res = await agent
@@ -131,6 +144,9 @@ describe('alert-follow prefs — settable at follow time and via PATCH, per pers
     const other = await harness.seedUser({ email: 'other@bt.test', username: 'other' });
     const me = await harness.seedUser({ email: 'me@bt.test', username: 'me' });
     const agent = await loginAgent(harness.app, me.email, me.password);
+    // Both targets open a public profile so the non-friend `me` can follow them.
+    await enablePublicProfile(await loginAgent(harness.app, owner.email, owner.password));
+    await enablePublicProfile(await loginAgent(harness.app, other.email, other.password));
 
     // Follow-time prefs on one person; plain follow on the other (defaults OFF).
     expect((await follow(agent, owner.id, { notifyOnAlertFire: true })).status).toBe(202);
@@ -220,6 +236,7 @@ describe('trigger matrix — created-only, fired-only, both, neither (all four c
     const neither = await harness.seedUser({ email: 'n@bt.test', username: 'neitheron' });
 
     const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    await enablePublicProfile(ownerAgent);
     await shareAlerts(ownerAgent);
 
     const agents: Array<
@@ -285,6 +302,7 @@ describe('visibility — the owner controls whether followers get anything', () 
 
     const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
     const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
     await follow(followerAgent, owner.id, { notifyOnAlertCreate: true, notifyOnAlertFire: true });
 
     const assetId = await seedAsset();
@@ -340,6 +358,7 @@ describe('visibility — the owner controls whether followers get anything', () 
 
     const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
     const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
     await shareAlerts(ownerAgent);
     await follow(followerAgent, owner.id, { notifyOnAlertCreate: true });
 
@@ -366,5 +385,23 @@ describe('visibility — the owner controls whether followers get anything', () 
       .send();
     await createAlert(ownerAgent, assetId, 300);
     expect(await notifs(follower.id, 'follow.alert.created')).toHaveLength(1);
+  });
+
+  it("the following entry mirrors the owner's alert-sharing (gates the row switches, V4-P0b)", async () => {
+    const owner = await harness.seedUser({ email: 'owner@bt.test', username: 'owner' });
+    const follower = await harness.seedUser({ email: 'fan@bt.test', username: 'fan' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const followerAgent = await loginAgent(harness.app, follower.email, follower.password);
+    await enablePublicProfile(ownerAgent);
+    await follow(followerAgent, owner.id);
+
+    // Owner not sharing yet → the switches stay hidden client-side.
+    const before = (await followerAgent.get('/api/v1/social/follows')).body;
+    expect(before.following[0]).toMatchObject({ sharesAlertActivity: false });
+
+    // Owner opts in → the flag flips, so the Friends-tab row reveals the switches.
+    await shareAlerts(ownerAgent);
+    const after = (await followerAgent.get('/api/v1/social/follows')).body;
+    expect(after.following[0]).toMatchObject({ sharesAlertActivity: true });
   });
 });

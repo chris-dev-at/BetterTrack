@@ -17,6 +17,12 @@ vi.mock('../../lib/notificationsApi', () => ({
   deleteNotifications: vi.fn(),
 }));
 
+vi.mock('../../lib/alertsApi', () => ({
+  ALERT_SHARING_QUERY_KEY: ['alerts', 'sharing'],
+  getAlertSharing: vi.fn(),
+  updateAlertSharing: vi.fn(),
+}));
+
 import {
   NOTIFICATION_TYPES,
   type Notification,
@@ -35,6 +41,7 @@ import {
   unarchiveNotification,
 } from '../../lib/notificationsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
+import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { NotificationSettingsPage } from './SettingsSection';
 
 function makeQueryClient() {
@@ -104,6 +111,45 @@ beforeEach(() => {
   vi.mocked(unarchiveNotification).mockResolvedValue(undefined);
   vi.mocked(deleteNotification).mockResolvedValue(undefined);
   vi.mocked(deleteNotifications).mockResolvedValue(undefined);
+  vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: false });
+});
+
+describe('NotificationSettingsPage — alert sharing (V4-P0b relocation)', () => {
+  test('enabling walks the warning dialog and sends the ack (#455)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: true });
+    renderPage();
+
+    const toggle = await screen.findByRole('switch', { name: 'Share my alerts with followers' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    // Enabling never writes directly — the strong warning comes first.
+    await user.click(toggle);
+    expect(updateAlertSharing).not.toHaveBeenCalled();
+    expect(screen.getByText(/which assets you watch and your price targets/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'I understand — share my alerts' }));
+    await waitFor(() =>
+      expect(updateAlertSharing).toHaveBeenCalledWith({
+        visibleToFollowers: true,
+        acknowledgeFollowers: true,
+      }),
+    );
+  });
+
+  test('disabling needs no confirmation (#455)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: true });
+    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: false });
+    renderPage();
+
+    const toggle = await screen.findByRole('switch', { name: 'Share my alerts with followers' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(updateAlertSharing).toHaveBeenCalledWith({ visibleToFollowers: false }),
+    );
+  });
 });
 
 describe('NotificationSettingsPage', () => {

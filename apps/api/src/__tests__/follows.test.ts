@@ -140,6 +140,8 @@ describe('follows — CRUD, lists, isolation', () => {
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    // A non-friend is followable only through a public profile (V4-P0b rule).
+    await enablePublicProfile(aliceAgent);
 
     expect((await follow(bobAgent, alice.id)).status).toBe(202);
     // Idempotent: a repeat follow is still a 202, and never a duplicate row.
@@ -190,6 +192,42 @@ describe('follows — CRUD, lists, isolation', () => {
   });
 });
 
+describe('follow eligibility — friends vs. public profiles (V4-P0b)', () => {
+  it('a FRIEND is followable without a public profile; a non-friend without one is not', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const carol = await harness.seedUser({ email: 'carol@bt.test', username: 'carol' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
+
+    // Alice has NO public profile. bob is her friend; carol is not.
+    await befriend(aliceAgent, bobAgent, 'bob');
+
+    // The friend follows straight from the friend row — no public profile needed.
+    expect((await follow(bobAgent, alice.id)).status).toBe(202);
+    // The non-friend has no follow surface: the same opaque 404 as an unknown id.
+    expect((await follow(carolAgent, alice.id)).status).toBe(404);
+    // ...and no follow row was created for carol.
+    expect(
+      followersListResponseSchema
+        .parse((await aliceAgent.get('/api/v1/social/followers')).body)
+        .followers.map((f) => f.user.username),
+    ).toEqual(['bob']);
+  });
+
+  it('a non-friend becomes followable once the target opens a public profile', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const carol = await harness.seedUser({ email: 'carol@bt.test', username: 'carol' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
+
+    expect((await follow(carolAgent, alice.id)).status).toBe(404); // no profile yet
+    await enablePublicProfile(aliceAgent);
+    expect((await follow(carolAgent, alice.id)).status).toBe(202); // now reachable
+  });
+});
+
 describe('follow.published — emission matrix + anti-noise', () => {
   it('AC1: making a portfolio public notifies exactly the followers, with a working link', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
@@ -198,10 +236,11 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
 
-    expect((await follow(bobAgent, alice.id)).status).toBe(202); // carol does NOT follow
-
-    // Alice opts into a public profile so the bell's `/u/alice` deep link resolves.
+    // Alice opts into a public profile so she is followable and the bell's
+    // `/u/alice` deep link resolves.
     await enablePublicProfile(aliceAgent);
+
+    expect((await follow(bobAgent, alice.id)).status).toBe(202); // carol does NOT follow
 
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid);
@@ -236,6 +275,9 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    // bob follows as a FRIEND (no public profile needed, V4-P0b) — this is the
+    // only follow path while Alice has no profile.
+    await befriend(aliceAgent, bobAgent, 'bob');
     await follow(bobAgent, alice.id);
 
     // Alice publishes an item but never opts into a public profile: `/u/alice`
@@ -261,8 +303,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
-    await follow(bobAgent, alice.id);
     await enablePublicProfile(aliceAgent);
+    await follow(bobAgent, alice.id);
 
     const pid = await createPortfolio(aliceAgent, 'Fresh');
     await makePublic(aliceAgent, pid);
@@ -307,7 +349,9 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const carol = await harness.seedUser({ email: 'carol@bt.test', username: 'carol' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
-    // carol follows but is NOT a friend.
+    // carol follows but is NOT a friend — reachable only via Alice's public
+    // profile, which grants her no read access to friends-only items.
+    await enablePublicProfile(aliceAgent);
     await follow(carolAgent, alice.id);
 
     const pid = await defaultPortfolioId(aliceAgent);
@@ -359,8 +403,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
-    await follow(bobAgent, alice.id);
     await enablePublicProfile(aliceAgent);
+    await follow(bobAgent, alice.id);
 
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid);
@@ -376,8 +420,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
-    await follow(bobAgent, alice.id);
     await enablePublicProfile(aliceAgent);
+    await follow(bobAgent, alice.id);
 
     const firstPid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, firstPid);
@@ -395,8 +439,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
-    await follow(bobAgent, alice.id);
     await enablePublicProfile(aliceAgent);
+    await follow(bobAgent, alice.id);
 
     const lists = await aliceAgent.get('/api/v1/workboard/watchlists');
     const wid = lists.body.watchlists.find((w: { isDefault: boolean }) => w.isDefault).id as string;
@@ -419,6 +463,7 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await enablePublicProfile(aliceAgent);
     await follow(bobAgent, alice.id);
     // bob routes follow.published OFF for the in-app channel.
     expect(
@@ -433,7 +478,6 @@ describe('follow.published — emission matrix + anti-noise', () => {
           })
       ).status,
     ).toBe(200);
-    await enablePublicProfile(aliceAgent);
 
     const pid = await defaultPortfolioId(aliceAgent);
     await makePublic(aliceAgent, pid);
@@ -449,10 +493,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
-    await follow(bobAgent, alice.id);
-    await follow(carolAgent, alice.id);
-
-    // alice opts into a public profile so the slug resolves.
+    // alice opts into a public profile so the slug resolves and she is
+    // followable by the two non-friends.
     expect(
       (
         await aliceAgent
@@ -461,6 +503,8 @@ describe('follow.published — emission matrix + anti-noise', () => {
           .send({ isPublic: true, acknowledgePublic: true })
       ).status,
     ).toBe(200);
+    await follow(bobAgent, alice.id);
+    await follow(carolAgent, alice.id);
 
     const profile = publicProfileResponseSchema.parse(
       (await request(harness.app).get('/api/v1/social/profiles/alice')).body,

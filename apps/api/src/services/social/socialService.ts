@@ -228,6 +228,7 @@ function toFollowingEntry(row: FollowingUserRow): FollowingEntry {
     autoFollowItems: row.autoFollowItems,
     notifyOnAlertCreate: row.notifyOnAlertCreate,
     notifyOnAlertFire: row.notifyOnAlertFire,
+    sharesAlertActivity: row.sharesAlertActivity,
   };
 }
 
@@ -436,6 +437,15 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // and keeps admins out of the social graph like friend requests do.
       const target = await follows.findFollowTarget(targetId);
       if (!target) throw FOLLOW_TARGET_NOT_FOUND();
+      // Follow eligibility (V4-P0b): a person is followable when they are the
+      // caller's FRIEND — the Friends-tab follow path, no public profile needed —
+      // OR they expose a public profile (the follow path for non-friends). A
+      // non-friend without a public profile has no follow surface and 404s here,
+      // with the same opaque "not a follow target" code as an unknown user so the
+      // check can't be used to probe friendships or profiles.
+      const followable =
+        (await repo.areFriends(userId, targetId)) || (await profile.isProfilePublic(targetId));
+      if (!followable) throw FOLLOW_TARGET_NOT_FOUND();
       // Idempotent: a repeat follow is a silent no-op — following grants no access
       // and emits nothing on its own, so there is nothing to re-fire. A repeat
       // follow also never flips prefs; changing those is PATCH's job (#439/#455).
