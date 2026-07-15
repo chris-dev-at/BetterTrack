@@ -12,11 +12,13 @@ import {
   emailLogQuerySchema,
   idParamSchema,
   testEmailRequestSchema,
+  updateAccountDefaultsRequestSchema,
   updateAppSettingsRequestSchema,
   updateOAuthClientRequestSchema,
   updateUserRequestSchema,
   type AuditQuery,
   type BulkUserActionRequest,
+  type UpdateAccountDefaultsRequest,
   type CreateInviteRequest,
   type CreateOAuthClientRequest,
   type CreateRegistrationTokenRequest,
@@ -218,6 +220,26 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     );
     res.json(toAppSettings(settings));
   });
+
+  // New-account defaults (§13.4 V4-P0d): what every NEW account starts with —
+  // chat on/off, default portfolio visibility, an inert developer-status flag, and
+  // the seed notification matrix. Applied at registration only, never retroactively;
+  // every write is audit-logged in the service.
+  router.get('/account-defaults', async (_req, res) => {
+    res.json(await ctx.admin.getAccountDefaults());
+  });
+
+  router.patch(
+    '/account-defaults',
+    validateBody(updateAccountDefaultsRequestSchema),
+    async (req, res) => {
+      const defaults = await ctx.admin.updateAccountDefaults(
+        req.valid?.body as UpdateAccountDefaultsRequest,
+        actorOf(req),
+      );
+      res.json(defaults);
+    },
+  );
 
   router.get('/email/status', async (_req, res) => {
     res.json(ctx.admin.emailStatus());

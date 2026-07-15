@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import {
+  CHAT_BANNED_ERROR_CODE,
   REALTIME_SERVER_EVENTS,
   SHARE_KINDS,
   realtimeChatMessageSchema,
@@ -11,6 +12,8 @@ import {
   type ChatMessage,
   type ShareKind,
 } from '@bettertrack/contracts';
+
+import { ApiError } from '../../lib/apiClient';
 
 import {
   getThread,
@@ -682,6 +685,11 @@ function ChatThreadPane({
     },
   });
 
+  // A CHAT_BANNED send (403) means an admin banned this account from chat: swap the
+  // composer for a neutral notice. Reading + incoming messages are unaffected.
+  const banned =
+    sendMutation.error instanceof ApiError && sendMutation.error.code === CHAT_BANNED_ERROR_CODE;
+
   if (convoQuery.isLoading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -767,13 +775,20 @@ function ChatThreadPane({
         <div ref={bottomRef} />
       </div>
 
-      {sendMutation.isError ? (
+      {sendMutation.isError && !banned ? (
         <div className="px-3">
           <Alert tone="error">{t('social.chat.sendError')}</Alert>
         </div>
       ) : null}
 
-      {other ? (
+      {banned ? (
+        // Admin chat ban (§13.4 V4-P0d): a neutral, localized notice — the server
+        // refused the send (CHAT_BANNED). Existing history stays readable above and
+        // incoming messages still arrive; only sending is closed off.
+        <p className="border-t border-neutral-800 px-4 py-3 text-center text-xs text-neutral-500">
+          {t('social.chat.banned')}
+        </p>
+      ) : other ? (
         <MessageComposer
           disabled={!conversationId || sendMutation.isPending}
           onSendText={(body) => sendMutation.mutateAsync({ body })}

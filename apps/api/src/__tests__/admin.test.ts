@@ -487,3 +487,70 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     expect(bulk.body.skipped).toBe(1);
   });
 });
+
+describe('per-user chat ban (PROJECTPLAN.md §13.4 V4-P0d)', () => {
+  it('bans and unbans a user and audits both, without touching sessions', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const created = await adminAgent
+      .post('/api/v1/admin/users')
+      .set(...XRW)
+      .send({ email: 'chatty@test.dev', username: 'chatty_user' });
+    const userId = created.body.user.id as string;
+    expect(created.body.user.chatBanned).toBe(false);
+
+    const banned = await adminAgent
+      .patch(`/api/v1/admin/users/${userId}`)
+      .set(...XRW)
+      .send({ chatBanned: true });
+    expect(banned.status).toBe(200);
+    expect(banned.body.chatBanned).toBe(true);
+
+    const unbanned = await adminAgent
+      .patch(`/api/v1/admin/users/${userId}`)
+      .set(...XRW)
+      .send({ chatBanned: false });
+    expect(unbanned.status).toBe(200);
+    expect(unbanned.body.chatBanned).toBe(false);
+
+    const audit = await adminAgent.get(`/api/v1/admin/users/${userId}/audit`);
+    const actions = (audit.body.entries as Array<{ action: string }>).map((e) => e.action);
+    expect(actions).toContain('user.chat_banned');
+    expect(actions).toContain('user.chat_unbanned');
+  });
+});
+
+describe('account defaults panel (PROJECTPLAN.md §13.4 V4-P0d)', () => {
+  it('returns the lean defaults, persists a change, and audits it', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+
+    const initial = await adminAgent.get('/api/v1/admin/account-defaults');
+    expect(initial.status).toBe(200);
+    expect(initial.body.chatEnabled).toBe(true);
+    expect(initial.body.defaultPortfolioVisibility).toBe('private');
+    expect(initial.body.developerStatus).toBe(false);
+    // Pre-seeded with the V4-P0c lean email default: email off for a non-account type…
+    expect(initial.body.notificationMatrix['friend.request'].email).toBe(false);
+    // …and on for the account/security category.
+    expect(initial.body.notificationMatrix['account.temp_password'].email).toBe(true);
+
+    const patched = await adminAgent
+      .patch('/api/v1/admin/account-defaults')
+      .set(...XRW)
+      .send({ chatEnabled: false, developerStatus: true, defaultPortfolioVisibility: 'friends' });
+    expect(patched.status).toBe(200);
+    expect(patched.body.chatEnabled).toBe(false);
+    expect(patched.body.developerStatus).toBe(true);
+    expect(patched.body.defaultPortfolioVisibility).toBe('friends');
+
+    // Persisted across reads.
+    const reread = await adminAgent.get('/api/v1/admin/account-defaults');
+    expect(reread.body.chatEnabled).toBe(false);
+    expect(reread.body.developerStatus).toBe(true);
+
+    const audit = await adminAgent.get('/api/v1/admin/audit');
+    const actions = (audit.body.entries as Array<{ action: string }>).map((e) => e.action);
+    expect(actions).toContain('account_defaults.updated');
+  });
+});

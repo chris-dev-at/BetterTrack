@@ -431,6 +431,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     registrationTokenRepo,
     registrationRequestRepo,
     portfolioRepo,
+    notificationRepo,
     sessions,
     audit,
     passwordHasher,
@@ -446,6 +447,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     registrationTokenRepo,
     registrationRequestRepo,
     portfolioRepo,
+    notificationRepo,
     sessions,
     audit,
     passwordHasher,
@@ -605,6 +607,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const chat = createChatService({
     repo: chatRepo,
     friendship: friendshipRepo,
+    users: userRepo,
     audience,
     assets: assetRepo,
     events,

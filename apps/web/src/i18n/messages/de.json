@@ -1894,6 +1894,7 @@
       },
       "loadEarlier": "Ältere Nachrichten laden",
       "sendError": "Deine Nachricht konnte nicht gesendet werden. Bitte versuche es erneut.",
+      "banned": "Du kannst derzeit keine Nachrichten senden. Diese Unterhaltung kannst du weiterhin lesen.",
       "composerPlaceholder": "Nachricht",
       "send": "Senden",
       "attach": "Element teilen",

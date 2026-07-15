@@ -17,6 +17,7 @@ import {
 
 import type { AppConfig } from '../../config/env';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
+import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { PasswordResetTokenRepository } from '../../data/repositories/passwordResetTokenRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { RegistrationRequestRepository } from '../../data/repositories/registrationRequestRepository';
@@ -24,6 +25,7 @@ import type { RegistrationTokenRepository } from '../../data/repositories/regist
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { UserRow } from '../../data/schema';
 import { accountDisabled, badRequest, conflict, tooManyRequests, unauthorized } from '../../errors';
+import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type { AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { generateToken, hashToken, sha256Base64Url } from '../crypto/tokens';
@@ -58,6 +60,8 @@ export interface AuthServiceDeps {
   /** Approval-queue applications for the `approval` mode (§13.4 V4-P4a). */
   registrationRequestRepo: RegistrationRequestRepository;
   portfolioRepo: PortfolioRepository;
+  /** Per-(channel, type) override seeding for the V4-P0d account-defaults matrix. */
+  notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
@@ -369,6 +373,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     registrationTokenRepo,
     registrationRequestRepo,
     portfolioRepo,
+    notificationRepo,
     sessions,
     audit,
     passwordHasher,
@@ -883,6 +888,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // default portfolio up front so the app opens onto a real workspace.
       await portfolioRepo.createDefault(user.id);
 
+      // Email-invite is a self-serve registration path too (§13.4 V4-P0d): apply
+      // the admin-configured account defaults — chat on/off, portfolio visibility,
+      // notification-matrix seeds — to this new account only, mirroring `register`.
+      await applyAccountDefaultsAtRegistration(
+        { appSettings, userRepo, notificationRepo },
+        user.id,
+      );
+
       await inviteRepo.markUsed(invite.id, new Date());
       await audit.record({
         actorId: user.id,
@@ -1121,6 +1134,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Self-serve accounts are always the user kind (§5.5): provision the one
       // default portfolio up front so the app opens onto a real workspace.
       await portfolioRepo.createDefault(user.id);
+
+      // Apply the admin-configured account defaults (§13.4 V4-P0d) to this new
+      // account only — chat on/off, portfolio visibility, notification-matrix
+      // seeds. Read live, so a change applies to this (the next) registration and
+      // never retroactively.
+      await applyAccountDefaultsAtRegistration(
+        { appSettings, userRepo, notificationRepo },
+        user.id,
+      );
 
       await audit.record({
         actorId: user.id,

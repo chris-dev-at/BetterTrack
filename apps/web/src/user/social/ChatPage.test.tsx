@@ -28,6 +28,7 @@ import {
   openConversation,
   sendChatMessage,
 } from '../../lib/chatApi';
+import { ApiError } from '../../lib/apiClient';
 import { getAudience, setAudience } from '../../lib/socialApi';
 import { ChatPage } from './ChatPage';
 
@@ -395,5 +396,27 @@ describe('ChatPage — composer focus', () => {
       expect(input).toHaveValue('retry me');
       expect(document.activeElement).toBe(input);
     });
+  });
+
+  test('a CHAT_BANNED send swaps the composer for a neutral banned notice', async () => {
+    vi.mocked(sendChatMessage).mockRejectedValue(
+      new ApiError(403, 'CHAT_BANNED', 'You cannot send messages.'),
+    );
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+    const input = await screen.findByPlaceholderText('Message');
+
+    await user.type(input, 'hi');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    // The neutral, localized notice appears and the composer is gone — reading the
+    // history is unaffected.
+    await waitFor(() =>
+      expect(screen.getByText(/can't send messages right now/i)).toBeInTheDocument(),
+    );
+    expect(screen.queryByPlaceholderText('Message')).not.toBeInTheDocument();
+    // The generic send-error alert is NOT shown for a ban.
+    expect(screen.queryByText(/couldn't send your message/i)).not.toBeInTheDocument();
   });
 });

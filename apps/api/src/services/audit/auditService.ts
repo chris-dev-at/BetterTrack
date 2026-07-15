@@ -32,6 +32,9 @@ export const AuditAction = {
   UserCreated: 'user.created',
   UserDisabled: 'user.disabled',
   UserEnabled: 'user.enabled',
+  // Per-user chat moderation (§13.4 V4-P0d).
+  UserChatBanned: 'user.chat_banned',
+  UserChatUnbanned: 'user.chat_unbanned',
   UserRoleChanged: 'user.role_changed',
   UserUsernameChanged: 'user.username_changed',
   UserEmailChanged: 'user.email_changed',
@@ -50,6 +53,8 @@ export const AuditAction = {
   EmailSendFailed: 'email.send_failed',
   EmailTestSent: 'email.test_sent',
   SettingsUpdated: 'settings.updated',
+  /** New-account defaults panel changed (§13.4 V4-P0d). */
+  AccountDefaultsUpdated: 'account_defaults.updated',
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',

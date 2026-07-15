@@ -1894,6 +1894,7 @@
       },
       "loadEarlier": "Load earlier messages",
       "sendError": "Couldn't send your message. Please try again.",
+      "banned": "You can't send messages right now. You can still read this conversation.",
       "composerPlaceholder": "Message",
       "send": "Send",
       "attach": "Share an item",

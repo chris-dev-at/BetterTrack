@@ -1,4 +1,5 @@
 import request from 'supertest';
+import { eq } from 'drizzle-orm';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -513,5 +514,84 @@ describe('chat — chat.message notification matrix', () => {
       (n: { type: string }) => n.type === 'chat.message',
     );
     expect(carolChat).toHaveLength(1);
+  });
+});
+
+/**
+ * Per-user chat ban (§13.4 V4-P0d). A banned sender is refused on the send path
+ * (403 CHAT_BANNED) for a cookie session AND a `chat:write` bearer alike; reading
+ * stays allowed, incoming messages still arrive, and unban restores sending on the
+ * very next send with no restart or cache flush.
+ */
+describe('chat ban enforcement', () => {
+  async function banById(userId: string, banned: boolean): Promise<void> {
+    await harness.db
+      .update(schema.users)
+      .set({ chatBanned: banned })
+      .where(eq(schema.users.id, userId));
+  }
+
+  it('refuses a banned sender (cookie session) with 403 CHAT_BANNED', async () => {
+    const alice = await seedPerson('alice');
+    const bob = await seedPerson('bob');
+    await befriend(alice, bob);
+    const conversationId = (await openConversation(alice.agent, bob.id)).body.conversation.id;
+
+    await banById(alice.id, true);
+
+    const blocked = await sendMessage(alice.agent, conversationId, { body: 'hi' });
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.error.code).toBe('CHAT_BANNED');
+  });
+
+  it('refuses a banned sender over a valid chat:write bearer token', async () => {
+    const alice = await seedPerson('alice');
+    const bob = await seedPerson('bob');
+    await befriend(alice, bob);
+    const conversationId = (await openConversation(alice.agent, bob.id)).body.conversation.id;
+
+    // Mint a scoped bearer for Alice, then ban her — the scope is valid, the ban
+    // is enforced regardless of how she authenticates.
+    const keyRes = await alice.agent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'mobile', scopes: ['chat:read', 'chat:write'] });
+    expect(keyRes.status).toBe(201);
+    const token: string = keyRes.body.token;
+
+    await banById(alice.id, true);
+
+    const blocked = await request(harness.app)
+      .post(`/api/v1/chat/conversations/${conversationId}/messages`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ body: 'hi from mobile' });
+    expect(blocked.status).toBe(403);
+    expect(blocked.body.error.code).toBe('CHAT_BANNED');
+  });
+
+  it('keeps threads readable both ways and delivers incoming while banned; unban is instant', async () => {
+    const alice = await seedPerson('alice');
+    const bob = await seedPerson('bob');
+    await befriend(alice, bob);
+    const conversationId = (await openConversation(alice.agent, bob.id)).body.conversation.id;
+    await sendMessage(alice.agent, conversationId, { body: 'before ban' });
+
+    await banById(alice.id, true);
+
+    // Alice can still READ her thread while banned…
+    const aliceThread = await getThread(alice.agent, conversationId);
+    expect(aliceThread.status).toBe(200);
+    expect(aliceThread.body.messages).toHaveLength(1);
+
+    // …and an INCOMING message from Bob (not banned) still lands.
+    const incoming = await sendMessage(bob.agent, conversationId, { body: 'you there?' });
+    expect(incoming.status).toBe(201);
+    const afterIncoming = await getThread(alice.agent, conversationId);
+    expect(afterIncoming.body.messages).toHaveLength(2);
+
+    // Unban restores sending on the very next send — no restart, no cache flush.
+    await banById(alice.id, false);
+    const restored = await sendMessage(alice.agent, conversationId, { body: 'im back' });
+    expect(restored.status).toBe(201);
   });
 });

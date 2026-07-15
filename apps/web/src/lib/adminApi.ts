@@ -4,6 +4,7 @@ import {
   adminTwoFactorStatusResponseSchema,
   adminUserListResponseSchema,
   adminUserSchema,
+  accountDefaultsResponseSchema,
   appSettingsResponseSchema,
   auditLogListResponseSchema,
   bulkUserActionResponseSchema,
@@ -32,6 +33,7 @@ import {
   type AdminTwoFactorStatusResponse,
   type AdminUser,
   type AdminUserListResponse,
+  type AccountDefaults,
   type AppSettingsResponse,
   type AuditLogListResponse,
   type BulkUserActionRequest,
@@ -65,6 +67,7 @@ import {
   type TwoFactorMethodEnabledResponse,
   type TwoFactorRecoveryCodesResponse,
   type TwoFactorVerifyRequest,
+  type UpdateAccountDefaultsRequest,
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
   type UpdateUserRequest,
@@ -305,6 +308,20 @@ export async function getSettings(signal?: AbortSignal): Promise<AppSettingsResp
 export async function updateSettings(body: UpdateAppSettingsRequest): Promise<AppSettingsResponse> {
   const data = await apiRequest<unknown>('/admin/settings', { method: 'PATCH', body });
   return appSettingsResponseSchema.parse(data);
+}
+
+// --- Admin: new-account defaults (§13.4 V4-P0d) ---------------------------
+
+export async function getAccountDefaults(signal?: AbortSignal): Promise<AccountDefaults> {
+  const data = await apiRequest<unknown>('/admin/account-defaults', { signal });
+  return accountDefaultsResponseSchema.parse(data);
+}
+
+export async function updateAccountDefaults(
+  body: UpdateAccountDefaultsRequest,
+): Promise<AccountDefaults> {
+  const data = await apiRequest<unknown>('/admin/account-defaults', { method: 'PATCH', body });
+  return accountDefaultsResponseSchema.parse(data);
 }
 
 // --- Admin: email log -----------------------------------------------------

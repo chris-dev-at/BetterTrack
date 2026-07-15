@@ -1,12 +1,13 @@
-import type {
-  ChatChip,
-  ChatChipKind,
-  ChatConversation,
-  ChatConversationListResponse,
-  ChatMessage,
-  ChatThreadResponse,
-  SendChatMessageRequest,
-  ShareKind,
+import {
+  CHAT_BANNED_ERROR_CODE,
+  type ChatChip,
+  type ChatChipKind,
+  type ChatConversation,
+  type ChatConversationListResponse,
+  type ChatMessage,
+  type ChatThreadResponse,
+  type SendChatMessageRequest,
+  type ShareKind,
 } from '@bettertrack/contracts';
 
 import type { AssetRepository } from '../../data/repositories/assetRepository';
@@ -17,6 +18,7 @@ import type {
   ConversationParticipants,
 } from '../../data/repositories/chatRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type { EventBus } from '../../events';
 import { badRequest, forbidden, notFound } from '../../errors';
 import type { Logger } from '../../logger';
@@ -49,6 +51,8 @@ const DEFAULT_THREAD_LIMIT = 40;
 export interface ChatServiceDeps {
   repo: ChatRepository;
   friendship: FriendshipRepository;
+  /** Chat-ban check on the send path (§13.4 V4-P0d) — read fresh, no cache. */
+  users: Pick<UserRepository, 'findById'>;
   /** The ONE sharing-enforcement layer (#332) — chip resolution routes through it. */
   audience: AudienceService;
   /** §10 asset visibility for `asset` chips (global or the viewer's own custom asset). */
@@ -82,7 +86,7 @@ export interface ChatService {
 }
 
 export function createChatService(deps: ChatServiceDeps): ChatService {
-  const { repo, friendship, audience, assets, events, notify, logger } = deps;
+  const { repo, friendship, users, audience, assets, events, notify, logger } = deps;
 
   /** Whether `userId` is one of the conversation's participants. The gate keys on
    * the CALLER's side only, so a deleted other side (#362) keeps history readable. */
@@ -248,6 +252,14 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
       const participants = await repo.findParticipants(conversationId);
       if (!participants || !isParticipant(participants, userId)) {
         throw notFound('Conversation not found.');
+      }
+      // Admin chat ban (§13.4 V4-P0d): a banned sender is refused with a stable
+      // CHAT_BANNED code (403) for a cookie session and a `chat:write` bearer token
+      // alike — the handler is scope-gated, the ban is enforced here on the send
+      // path only. Read fresh every send, so an unban restores sending instantly.
+      const sender = await users.findById(userId);
+      if (sender?.chatBanned) {
+        throw forbidden('You cannot send messages.', CHAT_BANNED_ERROR_CODE);
       }
       // Unfriending closes the thread to new messages (history stays readable);
       // a deleted other side (#362) closes it the same way — there is no one to

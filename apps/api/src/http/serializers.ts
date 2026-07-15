@@ -76,6 +76,7 @@ export function toAdminUser(row: UserRow): AdminUser {
     role: row.role,
     status: row.status,
     mustChangePassword: row.mustChangePassword,
+    chatBanned: row.chatBanned,
     lastLoginAt: toIso(row.lastLoginAt),
     createdAt: toIsoRequired(row.createdAt),
   };
