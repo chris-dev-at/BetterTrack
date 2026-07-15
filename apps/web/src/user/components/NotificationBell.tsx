@@ -12,33 +12,76 @@ import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, cx } from './ui';
 
-/**
- * The in-app deep link for a notification, when its payload carries one. An
- * `alert.triggered` row (§14) links to the asset it fired on; a `follow.published`
- * row (#438) links to the followed user's public profile, where the newly-public
- * item lives; every other type stays a plain mark-read row for now.
- */
-function notificationLink(notification: Notification): string | null {
-  const payload = notification.payload;
-  if (notification.type === 'alert.triggered') {
-    if (payload && typeof payload === 'object' && 'assetId' in payload) {
-      const assetId = (payload as { assetId?: unknown }).assetId;
-      if (typeof assetId === 'string' && assetId.length > 0) {
-        return `/assets/${encodeURIComponent(assetId)}`;
-      }
-    }
-    return null;
-  }
-  if (notification.type === 'follow.published') {
-    if (payload && typeof payload === 'object' && 'actorUsername' in payload) {
-      const username = (payload as { actorUsername?: unknown }).actorUsername;
-      if (typeof username === 'string' && username.length > 0) {
-        return `/u/${encodeURIComponent(username)}`;
-      }
-    }
-    return null;
+/** Read a string field from a notification payload, or null when absent/empty. */
+function payloadString(payload: unknown, key: string): string | null {
+  if (payload && typeof payload === 'object' && key in payload) {
+    const value = (payload as Record<string, unknown>)[key];
+    if (typeof value === 'string' && value.length > 0) return value;
   }
   return null;
+}
+
+const enc = encodeURIComponent;
+
+/**
+ * The in-app deep link for a notification — the canonical route-key contract
+ * (V4-P0c). EVERY notification type click-navigates to its target, keyed off
+ * `type` plus the id(s) the dispatcher stamps into the row payload; the FCM
+ * `data` map (docs/mobile-push.md §4) carries the same ids so the app deep-links
+ * identically. When the id an entry needs is missing (a legacy row from before a
+ * key existed) the function falls back to the type's landing surface rather than
+ * returning null, so no notification is ever a dead click.
+ */
+function notificationLink(notification: Notification): string | null {
+  const p = notification.payload;
+  switch (notification.type) {
+    // Price alerts (own + followed) → the asset the alert watches (§14, #455).
+    case 'alert.triggered':
+    case 'follow.alert.created':
+    case 'follow.alert.fired': {
+      const assetId = payloadString(p, 'assetId');
+      return assetId ? `/assets/${enc(assetId)}` : '/workboard/alerts';
+    }
+    // Friend request → the requests section of the Friends tab (V4-P0b).
+    case 'friend.request':
+      return '/social/friends#requests';
+    case 'friend.accepted':
+      return '/social/friends';
+    // Shared items → the recipient's Shared-With-Me view for that item.
+    case 'portfolio.shared': {
+      const id = payloadString(p, 'portfolioId');
+      return id ? `/social/shared-with-me/${enc(id)}` : '/social/friends';
+    }
+    case 'watchlist.shared': {
+      const id = payloadString(p, 'watchlistId');
+      return id ? `/social/shared-with-me/watchlists/${enc(id)}` : '/social/friends';
+    }
+    case 'conglomerate.shared': {
+      const id = payloadString(p, 'conglomerateId');
+      return id ? `/social/shared-with-me/conglomerates/${enc(id)}` : '/social/friends';
+    }
+    // Friend activity + newly-published items → the actor's public profile (#438).
+    case 'friend.activity':
+    case 'follow.published': {
+      const username = payloadString(p, 'actorUsername');
+      return username ? `/u/${enc(username)}` : '/social/friends';
+    }
+    // Chat → the DM thread (scroll-to-message is the thread page's concern).
+    case 'chat.message': {
+      const conversationId = payloadString(p, 'conversationId');
+      return conversationId ? `/social/chat/c/${enc(conversationId)}` : '/social/chat';
+    }
+    // Account/security → the matching settings page.
+    case 'account.temp_password':
+      return '/settings/security';
+    case 'account.invite':
+      return '/settings/account';
+    // The one-off lean-email-defaults notice (V4-P0c) → the matrix it explains.
+    case 'account.notice':
+      return '/settings/notifications';
+    default:
+      return null;
+  }
 }
 
 const POLL_INTERVAL_MS = 30_000;

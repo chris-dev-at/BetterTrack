@@ -3,7 +3,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { notificationSettingsResponseSchema } from '@bettertrack/contracts';
+import {
+  ACCOUNT_SECURITY_NOTIFICATION_TYPES,
+  NOTIFICATION_TYPES,
+  notificationSettingsResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createProfileRepository } from '../data/repositories/profileRepository';
@@ -196,12 +200,61 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     // Test env: SMTP unset, no FCM key, no VAPID — only in-app is live.
     expect(settings.channels).toEqual({ inapp: true, email: false, push: false, webpush: false });
     expect(settings.webPushPublicKey).toBeNull();
+    // Lean email defaults (V4-P0c): a non-account type defaults email OFF; the
+    // bell / phone-push / web-push channels are unchanged (all ON).
     expect(settings.matrix['friend.activity']).toEqual({
       inapp: true,
-      email: true,
+      email: false,
       push: true,
       webpush: true,
     });
+  });
+
+  it('new account: email defaults ON only for the account/security category, OFF everywhere else (V4-P0c)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const res = await agent.get('/api/v1/settings/notifications');
+    const settings = notificationSettingsResponseSchema.parse(res.body);
+
+    const emailOn = ACCOUNT_SECURITY_NOTIFICATION_TYPES as readonly string[];
+    for (const type of NOTIFICATION_TYPES) {
+      const cell = settings.matrix[type];
+      // Bell + both push channels default ON for EVERY type — unchanged.
+      expect(cell).toMatchObject({ inapp: true, push: true, webpush: true });
+      // Email defaults ON only for account/security types.
+      expect(cell.email).toBe(emailOn.includes(type));
+    }
+    // The account/security set is exactly {account.invite, account.temp_password}.
+    expect([...emailOn].sort()).toEqual(['account.invite', 'account.temp_password']);
+  });
+
+  it('migration = pure default flip: explicit email overrides survive byte-identical (V4-P0c)', async () => {
+    // An "existing user" who, before the flip, explicitly turned email ON for one
+    // sharing type and OFF for another. The lean-defaults change is a pure
+    // service-level flip (no settings rows migrated), so those explicit choices
+    // survive untouched while every un-overridden non-account type flips to OFF.
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    await harness.db.insert(schema.notificationSettings).values({
+      userId: alice.id,
+      channel: 'email',
+      enabled: true,
+      config: { 'portfolio.shared': true, 'watchlist.shared': false },
+    });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const settings = notificationSettingsResponseSchema.parse(
+      (await agent.get('/api/v1/settings/notifications')).body,
+    );
+    // Explicit survivors — the exact cells the user set, unchanged.
+    expect(settings.matrix['portfolio.shared'].email).toBe(true); // explicit ON survives
+    expect(settings.matrix['watchlist.shared'].email).toBe(false); // explicit OFF survives
+    // Un-overridden non-account types flipped to OFF…
+    expect(settings.matrix['friend.activity'].email).toBe(false);
+    expect(settings.matrix['alert.triggered'].email).toBe(false);
+    // …and account/security stays ON.
+    expect(settings.matrix['account.temp_password'].email).toBe(true);
+    expect(settings.matrix['account.invite'].email).toBe(true);
   });
 
   it('global mute persists via PATCH and suppresses delivery end-to-end', async () => {

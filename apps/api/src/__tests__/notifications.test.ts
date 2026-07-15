@@ -123,7 +123,7 @@ describe('POST /api/v1/notifications/mark-read', () => {
     expect(res.status).toBe(401);
   });
 
-  it('marks exactly the given ids read, idempotently, lowering unreadCount', async () => {
+  it('marks exactly the given ids read — which archives them (V4-P0c) — lowering unreadCount', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
     const a = await seedNotification(harness, alice.id, { title: 'a' });
@@ -132,12 +132,15 @@ describe('POST /api/v1/notifications/mark-read', () => {
     const res = await markRead(agent, { ids: [a.id] });
     expect(res.status).toBe(200);
 
+    // Reading archives: `a` leaves the active inbox, `b` stays unread.
     const page = await listNotifications(agent);
     expect(page.unreadCount).toBe(1);
-    const readRow = page.items.find((n) => n.id === a.id);
-    const unreadRow = page.items.find((n) => n.id === b.id);
-    expect(readRow?.readAt).not.toBeNull();
-    expect(unreadRow?.readAt).toBeNull();
+    expect(page.items.map((n) => n.id)).toEqual([b.id]);
+    expect(page.items.find((n) => n.id === b.id)?.readAt).toBeNull();
+
+    const archived = await listNotifications(agent, '?view=archived');
+    expect(archived.items.map((n) => n.id)).toEqual([a.id]);
+    expect(archived.items[0]?.readAt).not.toBeNull();
 
     // Idempotent: repeating the same mark-read is a no-op, not an error.
     const again = await markRead(agent, { ids: [a.id] });
@@ -146,7 +149,7 @@ describe('POST /api/v1/notifications/mark-read', () => {
     expect(pageAgain.unreadCount).toBe(1);
   });
 
-  it('{all:true} marks every unread row for the user read', async () => {
+  it('{all:true} reads every unread row — archiving them all, emptying the inbox', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
     await seedNotification(harness, alice.id, { title: 'a' });
@@ -157,7 +160,10 @@ describe('POST /api/v1/notifications/mark-read', () => {
 
     const page = await listNotifications(agent);
     expect(page.unreadCount).toBe(0);
-    expect(page.items.every((n) => n.readAt !== null)).toBe(true);
+    expect(page.items).toHaveLength(0); // all read ⇒ all archived
+    const archived = await listNotifications(agent, '?view=archived');
+    expect(archived.items).toHaveLength(2);
+    expect(archived.items.every((n) => n.readAt !== null)).toBe(true);
 
     const again = await markRead(agent, { all: true });
     expect(again.status).toBe(200);

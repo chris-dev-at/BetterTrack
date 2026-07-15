@@ -222,7 +222,9 @@ describe('NotificationBell', () => {
     await user.click(await screen.findByRole('button', { name: /Notifications/ }));
     expect(await screen.findByText('New friend request')).toBeInTheDocument();
 
-    await user.click(screen.getByText('New friend request'));
+    // "Mark all read" triggers a background refetch that fails — the dropdown
+    // stays open (unlike clicking a row, which now deep-links and closes it).
+    await user.click(screen.getByRole('button', { name: 'Mark all read' }));
 
     await waitFor(() => expect(vi.mocked(listNotifications)).toHaveBeenCalledTimes(2));
     expect(screen.getByText('New friend request')).toBeInTheDocument();
@@ -331,4 +333,64 @@ describe('NotificationBell', () => {
       ids: ['00000000-0000-0000-0000-000000000003'],
     });
   });
+
+  // V4-P0c: EVERY notification type click-navigates to its target — no null
+  // links. One representative row per type, asserting the resolved href against
+  // the docs/mobile-push.md §4 route-key contract.
+  const DEEP_LINK_MATRIX: { type: string; payload: Record<string, unknown>; href: string }[] = [
+    { type: 'alert.triggered', payload: { assetId: 'a1' }, href: '/assets/a1' },
+    { type: 'follow.alert.created', payload: { assetId: 'a2' }, href: '/assets/a2' },
+    { type: 'follow.alert.fired', payload: { assetId: 'a3' }, href: '/assets/a3' },
+    { type: 'friend.request', payload: { requestId: 'r1' }, href: '/social/friends#requests' },
+    { type: 'friend.accepted', payload: { requestId: 'r2' }, href: '/social/friends' },
+    {
+      type: 'portfolio.shared',
+      payload: { portfolioId: 'pf1' },
+      href: '/social/shared-with-me/pf1',
+    },
+    {
+      type: 'watchlist.shared',
+      payload: { watchlistId: 'wl1' },
+      href: '/social/shared-with-me/watchlists/wl1',
+    },
+    {
+      type: 'conglomerate.shared',
+      payload: { conglomerateId: 'cg1' },
+      href: '/social/shared-with-me/conglomerates/cg1',
+    },
+    { type: 'friend.activity', payload: { actorUsername: 'bob' }, href: '/u/bob' },
+    { type: 'follow.published', payload: { actorUsername: 'carol' }, href: '/u/carol' },
+    {
+      type: 'chat.message',
+      payload: { conversationId: 'c1', messageId: 'm1' },
+      href: '/social/chat/c/c1',
+    },
+    { type: 'account.temp_password', payload: {}, href: '/settings/security' },
+    { type: 'account.invite', payload: {}, href: '/settings/account' },
+    { type: 'account.notice', payload: {}, href: '/settings/notifications' },
+  ];
+
+  test.each(DEEP_LINK_MATRIX)(
+    'a $type notification deep-links to $href',
+    async ({ type, payload, href }) => {
+      const user = userEvent.setup();
+      vi.mocked(listNotifications).mockResolvedValue({
+        items: [
+          notification({
+            id: '00000000-0000-0000-0000-0000000000ff',
+            type,
+            title: `${type} title`,
+            payload,
+          }),
+        ],
+        nextCursor: null,
+        unreadCount: 1,
+      });
+      renderBell();
+
+      await user.click(await screen.findByRole('button', { name: /Notifications/ }));
+      const link = screen.getByRole('link', { name: new RegExp(`${type} title`) });
+      expect(link).toHaveAttribute('href', href);
+    },
+  );
 });

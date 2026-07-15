@@ -205,7 +205,8 @@ function RequestsSection() {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    // `#requests` is the deep-link anchor for friend.request notifications (V4-P0c).
+    <div id="requests" className="flex flex-col gap-8 scroll-mt-20">
       <section className="flex flex-col gap-3">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           {t('social.friends.incomingTitle')}

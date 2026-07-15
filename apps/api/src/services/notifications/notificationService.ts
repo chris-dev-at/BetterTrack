@@ -28,20 +28,11 @@ import { notFound } from '../../errors';
 
 const DEFAULT_LIMIT = 20;
 
-/**
- * Auto-archive threshold (#437): a READ notification whose read happened more
- * than this many days ago leaves the bell on the next list fetch (the lazy
- * sweep in {@link NotificationService.list}) and reappears under Archived.
- * One constant, tune here.
- */
-export const AUTO_ARCHIVE_READ_AFTER_DAYS = 7;
-const AUTO_ARCHIVE_READ_AFTER_MS = AUTO_ARCHIVE_READ_AFTER_DAYS * 24 * 60 * 60 * 1000;
-
 export interface NotificationServiceDeps {
   repo: NotificationRepository;
   devices: DeviceTokenRepository;
   webPushSubs: PushSubscriptionRepository;
-  /** Clock seam (#437) so the auto-archive sweep is deterministic under test. */
+  /** Clock seam so read=archive stamping is deterministic under test (#437, V4-P0c). */
   now?: () => Date;
 }
 
@@ -93,13 +84,9 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
   return {
     async list(userId, params) {
       const limit = params.limit ?? DEFAULT_LIMIT;
-      // Lazy auto-archive sweep (#437): before every list fetch, move rows
-      // read more than the threshold ago out of the active view. Cheap,
-      // idempotent, deterministic under an injected clock — and since every
-      // client (bell poll, settings page, mobile) reads through here, an
-      // over-threshold row leaves the bell on its next refresh.
-      const at = now();
-      await repo.sweepAutoArchive(userId, new Date(at.getTime() - AUTO_ARCHIVE_READ_AFTER_MS), at);
+      // Read ⟺ archived (V4-P0c): reading a notification archives it eagerly at
+      // mark-read time, so the active view already shows unread only — no lazy
+      // sweep needed (the #437 threshold sweep is superseded).
       const [{ items, nextCursor }, unreadCount] = await Promise.all([
         repo.listForUser(userId, { cursor: params.cursor, limit, view: params.view ?? 'active' }),
         // Unread among ACTIVE only (#437) — the badge, identical in every view.
@@ -109,10 +96,12 @@ export function createNotificationService(deps: NotificationServiceDeps): Notifi
     },
 
     async markRead(userId, body) {
+      // Reading archives (V4-P0c): the row leaves the active inbox and lands
+      // under Archived in the same stroke.
       if ('all' in body) {
-        await repo.markAllRead(userId);
+        await repo.markAllRead(userId, now());
       } else {
-        await repo.markRead(userId, body.ids);
+        await repo.markRead(userId, body.ids, now());
       }
     },
 

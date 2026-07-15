@@ -98,6 +98,21 @@ function friendRequestEvent(overrides: Partial<FriendRequestEvent> = {}): Friend
   };
 }
 
+/**
+ * Opt a user into email for the given types (V4-P0c: email defaults OFF for
+ * every non-account/security type, so the dispatcher's email fan-out only runs
+ * when the user explicitly enabled it). Writes an email settings row with the
+ * per-type overrides ON — the same shape the settings matrix persists.
+ */
+async function enableEmailFor(userId: string, ...types: string[]): Promise<void> {
+  await db.insert(notificationSettings).values({
+    userId,
+    channel: 'email',
+    enabled: true,
+    config: Object.fromEntries(types.map((type) => [type, true])),
+  });
+}
+
 describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
   beforeEach(async () => {
     await setup({ env: SMTP_ENV }, recordingTransport());
@@ -105,6 +120,7 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
 
   it('sends a friend.request email and logs it as `sent`', async () => {
     const recipient = await harness.seedUser({ email: 'rex@bt.test', username: 'rex' });
+    await enableEmailFor(recipient.id, 'friend.request');
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id, actorUsername: 'anna' }));
 
     const rows = await logFor(recipient.email);
@@ -116,6 +132,7 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
 
   it('sends friend.accepted and portfolio.shared emails', async () => {
     const recipient = await harness.seedUser({ email: 'rec@bt.test', username: 'rec' });
+    await enableEmailFor(recipient.id, 'friend.accepted', 'portfolio.shared');
 
     await dispatcher.dispatch({
       type: 'friend.accepted',
@@ -172,6 +189,8 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
       enabled: true,
       config: { 'friend.request': false },
     });
+    // Email defaults OFF for friend.request now (V4-P0c) — opt in explicitly.
+    await enableEmailFor(recipient.id, 'friend.request');
 
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
 
@@ -205,6 +224,7 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
 
   it('does not re-email a redelivered event (deduped via the in-app row)', async () => {
     const recipient = await harness.seedUser({ email: 'once@bt.test', username: 'once' });
+    await enableEmailFor(recipient.id, 'friend.request');
     const event = friendRequestEvent({ userId: recipient.id });
 
     await dispatcher.dispatch(event);
@@ -222,6 +242,7 @@ describe('notification email dispatch with SMTP unconfigured (PROJECTPLAN.md §6
 
   it('logs `suppressed` and sends nothing', async () => {
     const recipient = await harness.seedUser({ email: 'nomail@bt.test', username: 'nomail' });
+    await enableEmailFor(recipient.id, 'friend.request');
     await dispatcher.dispatch(friendRequestEvent({ userId: recipient.id }));
 
     const rows = await logFor(recipient.email);

@@ -542,7 +542,11 @@ describe('alert.triggered delivery through the notification matrix (§6.10, §14
         occurredAt,
       });
 
-    // Default matrix (email on) → an email is sent.
+    // Email defaults OFF for alert.triggered now (V4-P0c) — opt in explicitly.
+    await harnessWithEmail.ctx.notificationSettings.update(user.id, {
+      matrix: { 'alert.triggered': { inapp: true, email: true, push: true, webpush: true } },
+    });
+    // Email enabled → an email is sent.
     await dispatch('2026-07-07T10:00:00.000Z');
     expect(sent).toHaveLength(1);
     expect(sent[0]!.subject).toBe('Price alert: AAPL');
