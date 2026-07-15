@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
 import { cx } from './ui';
 
-const REVEAL_MS = 500;
+/** The mask glyph rendered in place of a typed PIN digit. */
+const MASK_GLYPH = '•';
 
 interface PinInputProps {
   label: string;
@@ -21,15 +22,16 @@ interface PinInputProps {
 /**
  * Segmented per-digit PIN entry (owner directive, issue #270): one box per
  * digit, auto-advance on input, backspace moves back, paste of a full PIN
- * distributes across boxes, and digits are masked shortly after entry — never
- * `type="password"`, which is what makes browsers offer a saved site password
- * as autofill on a PIN field.
+ * distributes across boxes, and the DOM value is ALWAYS a mask glyph — never a
+ * real digit, not even briefly (V4-P0 (a), supersedes the #288 in-value contract).
  *
- * Masking is purely visual: the input `value` is ALWAYS the real digit (or
- * empty), and a mask is drawn over it with CSS (`-webkit-text-security`). Writing
- * a mask glyph into the value was the #288 bug — a non-digit `•` in a box whose
- * `pattern="[0-9]*"` demands digits fails native numeric validation and blocks
- * submit.
+ * The parent-controlled {@link PinInputProps.value} holds the real digits —
+ * that is the source of truth for both {@link PinInputProps.onComplete} and any
+ * form-level submit. Each box renders {@link MASK_GLYPH} when its digit is
+ * present and an empty string otherwise, so the digit is never in the DOM at
+ * any moment during entry; the pattern `[0-9]*` is intentionally absent so a
+ * mask-glyph value does not fail native numeric validation on submit (the #288
+ * failure mode kept the digit visible; V4-P0 flips the trade-off).
  */
 export function PinInput({
   label,
@@ -43,34 +45,6 @@ export function PinInput({
 }: PinInputProps) {
   const baseId = label.toLowerCase().replace(/\s+/g, '-');
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
-  const [revealedIndexes, setRevealedIndexes] = useState<ReadonlySet<number>>(new Set());
-  const revealTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-
-  useEffect(
-    () => () => {
-      for (const timer of revealTimers.current.values()) clearTimeout(timer);
-    },
-    [],
-  );
-
-  // Each digit reveals independently so typing into a later box doesn't mask
-  // an earlier one before its own timeout elapses.
-  function revealBriefly(index: number) {
-    const existing = revealTimers.current.get(index);
-    if (existing) clearTimeout(existing);
-    setRevealedIndexes((prev) => new Set(prev).add(index));
-    revealTimers.current.set(
-      index,
-      setTimeout(() => {
-        setRevealedIndexes((prev) => {
-          const next = new Set(prev);
-          next.delete(index);
-          return next;
-        });
-        revealTimers.current.delete(index);
-      }, REVEAL_MS),
-    );
-  }
 
   function focusIndex(index: number) {
     inputsRef.current[index]?.focus();
@@ -83,13 +57,15 @@ export function PinInput({
   }
 
   function handleChange(index: number, raw: string) {
+    // The input's DOM value is `MASK_GLYPH` or empty; a keystroke may briefly
+    // leave both the mask and the typed digit (`•4`) — strip the mask and any
+    // other non-digit, then take the last digit typed.
     const digits = raw.replace(/\D/g, '');
     if (!digits) return;
     const next = value.split('');
-    next[index] = digits.slice(-1);
+    next[index] = digits.slice(-1) as string;
     const joined = next.join('').slice(0, length);
     onChange(joined);
-    revealBriefly(index);
     if (index < length - 1) focusIndex(index + 1);
     if (joined.length === length) onComplete?.(joined);
   }
@@ -117,7 +93,6 @@ export function PinInput({
     const digits = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, length);
     if (!digits) return;
     onChange(digits);
-    for (let i = 0; i < digits.length; i++) revealBriefly(i);
     focusIndex(Math.min(digits.length, length - 1));
     if (digits.length === length) onComplete?.(digits);
   }
@@ -127,10 +102,10 @@ export function PinInput({
       <label htmlFor={`${baseId}-0`} className="text-sm font-medium text-neutral-300">
         {label}
       </label>
-      <div role="group" className="flex flex-wrap gap-2">
+      <div role="group" data-pin-input="true" className="flex flex-wrap gap-2">
         {Array.from({ length }, (_, index) => {
           const digit = value[index] ?? '';
-          const masked = digit !== '' && !revealedIndexes.has(index);
+          const displayed = digit ? MASK_GLYPH : '';
           return (
             <input
               key={index}
@@ -141,15 +116,14 @@ export function PinInput({
               aria-label={index === 0 ? label : `${label} digit ${index + 1}`}
               type="text"
               inputMode="numeric"
-              pattern="[0-9]*"
               autoComplete="off"
               maxLength={1}
               disabled={disabled}
               autoFocus={autoFocus && index === 0}
-              // The value is ALWAYS the real digit (or empty) so numeric
-              // validation never sees a mask glyph (#288); the dot is CSS-only.
-              value={digit}
-              data-masked={masked ? 'true' : undefined}
+              // The DOM value is the mask glyph or empty — NEVER a raw digit,
+              // not even briefly (V4-P0). Real digits live in parent state.
+              value={displayed}
+              data-filled={digit ? 'true' : undefined}
               onChange={(e) => handleChange(index, e.target.value)}
               onKeyDown={(e) => handleKeyDown(index, e)}
               onPaste={handlePaste}
@@ -159,7 +133,6 @@ export function PinInput({
                 'bg-neutral-950 ring-1 ring-inset ring-neutral-700',
                 'focus:outline-none focus:ring-2 focus:ring-sky-500',
                 'disabled:cursor-not-allowed disabled:text-neutral-500',
-                masked && '[-webkit-text-security:disc]',
               )}
             />
           );

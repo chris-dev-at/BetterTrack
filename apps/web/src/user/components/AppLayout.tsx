@@ -4,6 +4,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useI18n } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { Disclaimer, ErrorBoundary, TAGLINE } from '../../ui';
+import { legalUrl, type LegalPage } from '../legal';
 import { CmdKPalette } from './CmdKPalette';
 import { NotificationBell } from './NotificationBell';
 import { ProfileMenu } from './ProfileMenu';
@@ -25,19 +26,15 @@ const NAV_ITEMS = [
 
 /**
  * The legal document set on the product site (ask #31 / Play launch). Each page
- * lives at `/<page>/` (EN) with a `/<page>/de/` variant, so a DE-locale user
- * lands on the German document directly.
+ * lives at `/<page>/` (EN) with a `/<page>/de/` variant; {@link legalUrl}
+ * (shared with the register-form consent notice) builds the actual URL.
  */
-const LEGAL_LINKS = [
+const LEGAL_LINKS: ReadonlyArray<{ page: LegalPage; labelKey: string }> = [
   { page: 'terms', labelKey: 'footer.terms' },
   { page: 'privacy', labelKey: 'footer.privacy' },
   { page: 'impressum', labelKey: 'footer.impressum' },
   { page: 'cookies', labelKey: 'footer.cookies' },
-] as const;
-
-function legalUrl(page: string, locale: string): string {
-  return `https://bettertrack.at/${page}/${locale === 'de' ? 'de/' : ''}`;
-}
+];
 
 export function AppLayout() {
   const { t, locale } = useI18n();

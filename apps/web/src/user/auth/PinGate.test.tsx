@@ -305,3 +305,61 @@ test('with the PIN disabled the app never asks for a PIN', async () => {
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
 });
+
+// ── Page-wide capture & masked entry (V4-P0 (a)) ─────────────────────────────
+
+test('typing anywhere on the lock screen lands in the PIN boxes and auto-submits (V4-P0 (a))', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+  vi.mocked(api.verifyPin).mockResolvedValue(pinUser);
+
+  const u = userEvent.setup();
+  renderAt('/portfolio');
+  await screen.findByText('Enter your PIN');
+
+  // The sign-out button is a plausible page-level focus target — a keystroke
+  // there must route into the PIN state (implicit focus) rather than be lost.
+  const signOut = screen.getByRole('button', { name: 'Sign out' });
+  signOut.focus();
+
+  await u.keyboard('4242');
+
+  // The real digits reached the API — the DOM only ever held mask glyphs.
+  expect(api.verifyPin).toHaveBeenCalledWith({ pin: '4242' });
+});
+
+test('Backspace outside the boxes edits the PIN entry (V4-P0 (a))', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+  vi.mocked(api.verifyPin).mockResolvedValue(pinUser);
+
+  const u = userEvent.setup();
+  renderAt('/portfolio');
+  await screen.findByText('Enter your PIN');
+
+  const signOut = screen.getByRole('button', { name: 'Sign out' });
+  signOut.focus();
+
+  // Type '12', undo the '2', then finish '424' → net PIN '1424'.
+  await u.keyboard('12{Backspace}424');
+
+  expect(api.verifyPin).toHaveBeenCalledWith({ pin: '1424' });
+});
+
+test('the lock screen never renders a typed PIN digit in the DOM (V4-P0 (a))', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(pinUser);
+
+  renderAt('/portfolio');
+  await screen.findByText('Enter your PIN');
+
+  // Type the first three digits — enough to prove the masking rule without
+  // triggering the auto-submit that would unmount the PIN gate. After every
+  // keystroke, no box's DOM value contains a plain digit, not even briefly.
+  const labels = ['PIN', 'PIN digit 2', 'PIN digit 3'];
+  for (let i = 0; i < labels.length; i += 1) {
+    fireEvent.change(screen.getByLabelText(labels[i] as string), {
+      target: { value: String(i + 1) },
+    });
+    for (const box of screen.getAllByRole('textbox') as HTMLInputElement[]) {
+      expect(box.value).not.toMatch(/[0-9]/);
+    }
+  }
+});

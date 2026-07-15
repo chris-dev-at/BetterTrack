@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { MIN_PASSWORD_LENGTH, type RegistrationMode } from '@bettertrack/contracts';
@@ -9,7 +9,29 @@ import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
+import { legalUrl } from '../legal';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
+
+/**
+ * Splice React nodes into an i18n string that carries `{{name}}` placeholders,
+ * keeping surrounding punctuation and word order translator-controlled. Used
+ * for the register-form legal-consent notice (V4-P0 (e)) where each link's
+ * label and URL are supplied by the caller.
+ */
+function interpolateNodes(template: string, nodes: Record<string, ReactNode>): ReactNode[] {
+  const parts: ReactNode[] = [];
+  const regex = /\{\{(\w+)\}\}/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(template)) !== null) {
+    if (match.index > cursor) parts.push(template.slice(cursor, match.index));
+    const name = match[1] as string;
+    parts.push(nodes[name] ?? match[0]);
+    cursor = regex.lastIndex;
+  }
+  if (cursor < template.length) parts.push(template.slice(cursor));
+  return parts;
+}
 
 type ModeState =
   | { phase: 'loading' }
@@ -216,6 +238,56 @@ export function RegisterPage() {
           required
           hint={t('auth.common.minPasswordHint', { count: MIN_PASSWORD_LENGTH })}
         />
+        {/* Legal consent notice (V4-P0 (e), §13.4). The versioned re-accept
+            flow is V6-5; this ships the up-front notice + links only. */}
+        <p className="text-xs leading-relaxed text-neutral-500">
+          {interpolateNodes(t('auth.register.legalConsent'), {
+            terms: (
+              <a
+                key="terms"
+                href={legalUrl('terms', locale)}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-sky-400 hover:text-sky-300"
+              >
+                {t('footer.terms')}
+              </a>
+            ),
+            privacy: (
+              <a
+                key="privacy"
+                href={legalUrl('privacy', locale)}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-sky-400 hover:text-sky-300"
+              >
+                {t('footer.privacy')}
+              </a>
+            ),
+            impressum: (
+              <a
+                key="impressum"
+                href={legalUrl('impressum', locale)}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-sky-400 hover:text-sky-300"
+              >
+                {t('footer.impressum')}
+              </a>
+            ),
+            cookies: (
+              <a
+                key="cookies"
+                href={legalUrl('cookies', locale)}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-sky-400 hover:text-sky-300"
+              >
+                {t('footer.cookies')}
+              </a>
+            ),
+          })}
+        </p>
         <Button type="submit" disabled={submitting}>
           {submitting
             ? t('auth.register.submitting')
