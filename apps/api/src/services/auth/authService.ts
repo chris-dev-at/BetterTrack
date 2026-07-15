@@ -888,6 +888,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // default portfolio up front so the app opens onto a real workspace.
       await portfolioRepo.createDefault(user.id);
 
+      // Email-invite is a self-serve registration path too (§13.4 V4-P0d): apply
+      // the admin-configured account defaults — chat on/off, portfolio visibility,
+      // notification-matrix seeds — to this new account only, mirroring `register`.
+      await applyAccountDefaultsAtRegistration(
+        { appSettings, userRepo, notificationRepo },
+        user.id,
+      );
+
       await inviteRepo.markUsed(invite.id, new Date());
       await audit.record({
         actorId: user.id,

@@ -1,7 +1,7 @@
 import {
+  NOTIFICATION_SETTING_CHANNELS,
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
-  type NotificationSettingChannel,
 } from '@bettertrack/contracts';
 
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
@@ -11,8 +11,9 @@ import type { AppSettingsService } from '../appSettings/appSettingsService';
 /**
  * Apply the admin-configured account defaults to a freshly-created account
  * (PROJECTPLAN.md §13.4 V4-P0d). Called from EVERY self-serve registration path
- * (open / invite-token `register`, and the approval-queue approval) right after
- * the user row + default portfolio exist. It reads the defaults live, so a change
+ * (open / invite-token `register`, the email-invite `acceptInvite`, and the
+ * approval-queue approval) right after the user row + default portfolio exist. It
+ * reads the defaults live, so a change
  * takes effect for the next registration only and never touches an existing
  * account (the caller never runs this for anyone but the account it just made).
  *
@@ -35,13 +36,6 @@ export interface ApplyAccountDefaultsDeps {
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
 }
 
-const MATRIX_CHANNELS: readonly NotificationSettingChannel[] = [
-  'inapp',
-  'email',
-  'push',
-  'webpush',
-];
-
 export async function applyAccountDefaultsAtRegistration(
   deps: ApplyAccountDefaultsDeps,
   userId: string,
@@ -60,7 +54,7 @@ export async function applyAccountDefaultsAtRegistration(
   }
 
   // Seed only the notification cells that differ from the code lean default.
-  for (const channel of MATRIX_CHANNELS) {
+  for (const channel of NOTIFICATION_SETTING_CHANNELS) {
     const overrides: Record<string, boolean> = {};
     for (const type of NOTIFICATION_TYPES) {
       const value = defaults.notificationMatrix[type][channel];

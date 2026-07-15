@@ -494,4 +494,34 @@ describe('account defaults applied at registration (PROJECTPLAN.md §13.4 V4-P0d
     // with no elevated role or behavior.
     expect(row?.role).toBe('user');
   });
+
+  it('applies the chat-off default to an email-invite-accepted account too', async () => {
+    // Email invites are a self-serve registration path regardless of mode: the
+    // owner's primary onboarding flow must honour the account defaults.
+    const defaultsPatch = await adminAgent
+      .patch('/api/v1/admin/account-defaults')
+      .set(...XRW)
+      .send({ chatEnabled: false });
+    expect(defaultsPatch.status).toBe(200);
+
+    const invite = await adminAgent
+      .post('/api/v1/admin/invites')
+      .set(...XRW)
+      .send({ email: 'invited-chatoff@test.dev' });
+    expect(invite.status).toBe(201);
+    const token = (invite.body.inviteUrl as string).split('/invite/')[1];
+
+    const accept = await request
+      .agent(harness.app)
+      .post('/api/v1/auth/accept-invite')
+      .set(...XRW)
+      .send({ token, username: 'invited_chatoff', password: 'invited-strong-1' });
+    expect(accept.status).toBe(201);
+
+    const users = await adminAgent.get('/api/v1/admin/users?search=invited_chatoff');
+    const row = (users.body.users as Array<{ username: string; chatBanned: boolean }>).find(
+      (u) => u.username === 'invited_chatoff',
+    );
+    expect(row?.chatBanned).toBe(true);
+  });
 });
