@@ -22,7 +22,7 @@ Your context window is the scarcest resource — spend it on decisions, not data
 
 ## The mission
 
-Drive BetterTrack through the **current milestone — V3, per `PROJECTPLAN.md` §13.3** (V1 §13 and V2 §13.2 are shipped) with `MODELUSE.md` + the `docs/multi-factory.md` difficulty routing as tier governance. The milestone arc beyond v3 is fully pre-planned: **`factory/V4_KICKOFF.md` → `factory/V5_KICKOFF.md`** (each self-detects the project stage and carries its own prep checklist; §13.4/§13.5 hold the specs). Run the factory, supervise on a 45-minute heartbeat (review the interval's issue cycles, PRs, merges at each beat — do NOT deep-review the code yourself), keep the app healthy, and when the milestone is declared done, personally QA it (endgame protocol below).
+Drive BetterTrack through the **current milestone — V4, per `PROJECTPLAN.md` §13.4** (V1 §13, V2 §13.2 and V3 §13.3 are shipped) with `MODELUSE.md` + the `docs/multi-factory.md` difficulty routing as tier governance. The milestone arc beyond v4 is fully pre-planned: **`factory/V5_KICKOFF.md`** (self-detects the project stage and carries its own prep checklist; §13.5 holds the specs, §13.6 the owner-locked v6 scope). Run the factory, supervise on a 45-minute heartbeat (review the interval's issue cycles, PRs, merges at each beat — do NOT deep-review the code yourself), keep the app healthy, and when the milestone is declared done, personally QA it (endgame protocol below).
 
 ## Infrastructure map
 
@@ -54,7 +54,7 @@ Drive BetterTrack through the **current milestone — V3, per `PROJECTPLAN.md` �
 
 ## Milestone endgame protocol (owner directive)
 
-When the composer declares the milestone done (a **"check v\<N\>"** issue appears — today that is **"check v3"** — or the queue empties with the milestone complete):
+When the composer declares the milestone done (a **"check v\<N\>"** issue appears — today that is **"check v4"** — or the queue empties with the milestone complete):
 
 1. Stop the heartbeat; QA **personally in Chrome** on the public live instance (https://web.bettertrack.at) — use the attached Chrome instance directly, not just screenshots, when needed.
 2. Sweep **ALL features left-to-right across the 5 tabs**.
