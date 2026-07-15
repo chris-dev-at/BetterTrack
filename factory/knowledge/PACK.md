@@ -13,14 +13,18 @@ unlisted stock) — browse assets via a local search index, build & backtest
 **Conglomerates** (user-defined ETF-style weighted baskets), turn a budget into a
 buy list, and share portfolios with friends. Five-tab product:
 **Portfolio | Workboard | Assets | Social | Profile Menu**. Future surfaces ship
-as visible "Coming soon" pages. **V1 (core + tiny friend sharing) and V2
+as visible "Coming soon" pages. **V1 (core + tiny friend sharing), V2
 (multi-portfolio UI, cash balance, PIN lock, 2FA, admin rework, sharing
-expansion, notification matrix, personal API keys + OAuth apps) are SHIPPED.
-Current milestone: V3 (§13.3)** — Net Worth & cash sources, tax engine (AT),
-analytics deep-dive, sharing audiences everywhere + multiple watchlists, friend
-rows/public profiles/chat, realtime + Live Mode, price alerts, late-listing
-backtest modes, i18n EN/DE, PWA + web-push + FCM prep, bettertrack.at go-live
-surfaces.
+expansion, notification matrix, personal API keys + OAuth apps) and V3 (i18n
+EN/DE, Net Worth & cash sources, AT tax engine + dividends, sharing audiences +
+multi-watchlists, friend rows/public profiles/chat, realtime + Live Mode,
+analytics deep-dive, price alerts + follows, PWA/web-push/FCM prep,
+bettertrack.at go-live) are SHIPPED. Current milestone: V4 (§13.4)** — the
+v3-feedback P0 family, mobile platform enablement (bearer scopes + parity,
+idempotency keys, OAuth account chooser, account deletion, FCM go-live),
+registration modes + Google login + passkeys, product ops (Sentry, health,
+announcements), data export + offsite backup, custom-benchmark + rebalanced
+backtests, broker CSV imports, Ideas, Telegram/Discord channels.
 
 ## Architecture
 
@@ -52,8 +56,8 @@ flow backward, and `domain/` imports nothing but types.
 rate-limit state; auth = httpOnly session cookies + argon2id; market data via
 `yahoo-finance2` behind the provider interface (cached/coalesced/swappable); email
 via Nodemailer/SMTP (Gmail app-password preset, optional); IDs = UUIDv7. Realtime
-(Socket.IO) is designed-for and **lands in V3-P7** — until that merges, surfaces
-rely on TanStack Query refetch (which stays as the fallback afterwards).
+(Socket.IO) **shipped in V3-P7**: authed gateway bridged to the event bus, with
+TanStack Query poll refetch as the permanent fallback.
 
 ## Conventions
 
@@ -102,85 +106,100 @@ instead of looping: a bug surviving two fix attempts moves up one difficulty.
   Coming-Soon placeholders, config/CI/compose, templates, e2e, docs, i18n string
   sweeps.
 
-## V3 phases (PROJECTPLAN §13.3) — one line each, "done when" essence
+## V4 phases (PROJECTPLAN §13.4) — one line each, "done when" essence
 
-V1 (§13) and V2 (§13.2) are fully shipped. The earliest §13.3 phase whose
-acceptance criteria the code doesn't meet is the current phase; disjoint arcs run
-in parallel via `mf-meta` claims. Binding rules: S-items only in surface bundles
-(3–6 items, one surface, one difficulty); **after V3-P1 every PR ships its
-user-facing strings through i18n with EN + DE keys** (hardcoded string = blocking
-review finding); audience controls carry the privacy friction ladder (strong
-warning on public / light confirm on all-friends / none on specific friends).
+V1 (§13), V2 (§13.2) and V3 (§13.3) are fully shipped. The earliest §13.4 phase
+whose acceptance criteria the code doesn't meet is the current phase; disjoint
+arcs run in parallel via `mf-meta` claims. Binding rules: S-items only in surface
+bundles (3–6 items, one surface, one difficulty); every PR ships its user-facing
+strings through i18n with EN + DE keys (hardcoded string = blocking review
+finding); audience controls carry the privacy friction ladder (strong warning on
+public / light confirm on all-friends / none on specific friends). Ordering:
+**V4-P1…P3 compose and merge before everything except the V4-P0 bundle** (they
+block the parallel Android-app track); the P0b/c/d feedback arcs queue after P3.
+Owner-provided items are all env-gated and never block: Firebase key (P3), Google
+OAuth credentials (P4), Drive/rclone credentials (P6), Telegram bot token (P10).
 
-- **V3-P0 — v2-feedback quick wins (S bundle, diff:normal):** portfolio-selection
-  reset BUG (Transactions/Custom-Assets nav reverts to default — regression
-  test); withdraw-all cash BUG (full withdrawal leaves €0.01 — must land at
-  exactly €0.00, regression test); "Total Value"→"Net Worth" app-wide (grep
-  gate); liquidity bar → integrated redesign; calculator stepper → decimal
-  precision (1/0.1/0.01/0.001).
-- **V3-P1 — i18n foundation (L, diff:intermediate):** EN source-of-truth + DE
-  first translation; per-user language picker in Settings; all strings extracted;
-  locale-aware dates/numbers; localized emails; a new language = one locale file plus
-  a registry entry (zero code); CI gate on hardcoded strings.
-- **V3-P2 — Custom assets v2 (M, diff:intermediate):** real category on custom
-  assets (catalog taxonomy — the CUSTOM slice dies; migration → `other` +
-  re-categorize banner); per-asset value-smoothing toggle (linear between marks,
-  mark-day values stay exact).
-- **V3-P3 — Cash sources (L, diff:max):** V2 cash ledger becomes **Main** + named
-  sources (bank/retirement/cash/custom), each with balance + history; atomic
-  paired transfers; source picker on deposit/withdraw/buy/sell; "set balance to
-  X" op on every source (app computes the signed delta, records it as a normal
-  movement); Net Worth + liquidity roll-up; internal transfers are NEVER TWR
-  external flows.
-- **V3-P4 — Realized P/L, tax, dividends (L, diff:max; needs P3):**
-  moving-average cost basis; per-calendar-year realized P/L; tax modes None /
-  Manual-per-trade / Country-specific (AT only: 27.5 % on gains + dividends,
-  same-year loss offset with refund, hard Jan-1 reset, NO cross-year carry);
-  dividend transactions land in a chosen cash source; per-year P/L + dividends +
-  taxes report. Owner's required test: +450 € taxed, then −100 € loss ⇒ year
-  total tax = 27.5 % × 350 €.
-- **V3-P5 — Sharing audiences (L, diff:intermediate):** ONE picker + enforcement
-  layer for EVERY portfolio/conglomerate/watchlist — private / specific friends /
-  all friends / public link (≥128-bit, revocable); friction ladder lives in the
-  picker; multiple named watchlists (General default) with per-list audience;
-  V2-P9-grade privacy tests per kind × audience.
-- **V3-P6 — Friend rows + public profiles (M/L, diff:intermediate; needs P5):**
-  friend rows expand in place (their shares to me by kind + my shares to them +
-  actions; kind counts collapsed); opt-in public profile (slug URL) composing
-  public items, strong warning, instant unpublish.
-- **V3-P7 — Realtime + Live Mode (L, diff:hard):** authed WebSocket bridged to
-  the event bus (bell/quote push, poll fallback, flagged rollout); Live Mode per
-  §6.3 (shared poll loop → Redis ring → `asset:{id}` fan-out, 1 m–12 h,
-  auto-stop).
-- **V3-P8 — Friend chat (L, diff:intermediate; needs P7a):** 1:1 DMs, unread
-  badges, realtime + poll fallback, `chat.message` in the notification matrix;
-  share-in-chat chips NEVER widen access.
-- **V3-P9 — Analytics page (L, diff:hard; needs P2):** Portfolio → Analytics:
-  per-asset hide/show, category/type filters, free ranges, value/perf-% modes,
-  contribution table; overlay-assets mode MOVES here from the overview; compare
-  vs index/asset/other portfolio/conglomerate with side-by-side stats (total %,
-  CAGR, max drawdown); inflation real-terms mode (HICP/CPI/custom flat rate).
-- **V3-P10 — Backtest modes, alerts, market data (4 disjoint arcs):**
-  late-listing modes clip/cash-until-listing/redistribute + entry markers +
-  entry-day rebalance primitive (diff:max); §14 price-alert spec verbatim with
-  minute evaluator + idempotency (diff:intermediate); gold + crypto symbols
-  (diff:easy); per-user base currency through the §5.3 core (diff:hard).
-- **V3-P11 — Platform & security (M/L, diff:intermediate):** session manager
-  (list + revoke one/all-others); PWA (manifest/SW/offline shell) + web-push
-  channel (VAPID, opt-in from settings only, matrix column); FCM prep:
-  `device_tokens` + authed register endpoints + env-gated FCM channel
-  (server-only — the phone app is a separate future project).
-- **V3-P12 — bettertrack.at surfaces (M, diff:normal):** static product landing
-  page (root origin, own tiny compose site); `mobile.` placeholder page;
-  5-origin topology config (product/web/admin/api/mobile) behind Cloudflare +
-  always-on-Mac deploy guide.
-- **V3-P13 — DE sweep, polish, e2e, v3 gate:** human-eye DE pass (du-Form,
-  consistent finance vocabulary); empty/error-state + responsive sweeps;
-  Playwright extended (cash transfer, AT-tax sell w/ refund, analytics compare,
-  share-to-one-friend, second watchlist, chat, alert fire); pre-release Fable
-  review; file **check v3**.
+- **V4-P0 — v3-feedback quick wins (S/M bundle, diff:normal):** PIN entry never
+  renders digits (masked dots + lock-screen page-wide key capture); portfolio
+  chart ranges add 1D/1W/5Y; FIX inflation presets not deflating (custom % works,
+  HICP/CPI presets don't) + show each preset's %/yr; cash-source action icons
+  (deposit/withdraw/transfer/set-balance); registration legal-consent notice
+  linking the four legal docs; prominent "Sign up" treatment (layout reserves the
+  P4 Google button spot); remember-me always on (toggle gone, "stay signed in"
+  stays); Social tab: friends top, requests bottom.
+- **V4-P0b — Follows rework (M/L, diff:intermediate):** the standalone Following
+  page dies; the Friends tab absorbs it — friend-row expansion becomes a
+  profile-in-place with shared items, a "News about this person" follow toggle
+  and the alert-follow switches; following a FRIEND needs NO public profile
+  (server rule change if needed); the alerts/sharing setting gets a Settings
+  home; items turning public always notify followers; /following redirects.
+- **V4-P0c — Notification UX (M, diff:intermediate):** email defaults OFF for
+  every type except the account/security category (new accounts + one-time
+  migration, §16-logged); read = archive (+ Archive view); every notification
+  type deep-links on click (alert → asset, friend request → requests, chat →
+  thread, …); route keys shared with FCM payloads via docs/mobile-push.md.
+- **V4-P0d — Admin controls (M, diff:intermediate):** per-user chat ban
+  (server-enforced, threads stay readable, instant unban); account-defaults
+  panel for NEW accounts (notification matrix, chat on/off, portfolio starter
+  defaults, inert developer-status default for V6-9); light admin IA regroup
+  (deep redesign stays V6-1).
+- **V4-P1 — Mobile API enablement I (M/L, diff:hard, security):** API-key/OAuth
+  scope expansion (social:write, notifications:r/w, account:security, chat:r/w —
+  naming planner-refined, §16-logged), enforced per route group in the bearer
+  middleware, scope pickers with plain-language descriptions, strictly additive;
+  bearer parity for settings/security/sessions/notifications/chat/social writes
+  (inventory the cookie-only routes first; CSRF stays a cookie-only concern).
+- **V4-P2 — Mobile API enablement II (M/L; three arcs):** Idempotency-Key UUID
+  on ALL portfolio mutations with key→response persisted ≥48 h and replay on
+  duplicates (offline-queue backbone, diff:hard); OAuth account chooser — the
+  authorize page ALWAYS interposes "signed in as X — Continue / Use another
+  account", incl. first-party auto-approve clients (diff:normal); account
+  deletion — re-auth + typed confirm, hard-delete everything, chat anonymized,
+  sessions revoked; Play-required (diff:hard).
+- **V4-P3 — FCM push go-live (M, diff:intermediate; needs V3-P11c):** real FCM
+  sends with owner Firebase credentials (env-gated), unregistered-token cleanup,
+  docs/mobile-push.md payload + deep-link contract for the app track; physical
+  Android device test at the gate.
+- **V4-P4 — Registration modes + Google login + passkeys (L, diff:hard, auth):**
+  admin-switchable closed/invite-token/approval-queue/open (§6.12) with invite
+  management + decision emails + mode-aware surfaces; Google OAuth sign-in
+  (links by verified email or registers per active mode); WebAuthn passkeys
+  (multiple named, Settings → Security, alongside 2FA).
+- **V4-P5 — Product ops (M; two arcs):** Sentry api+web (env-gated DSN,
+  unit-tested PII scrubber, release tags) + bull-board admin-only + admin health
+  page (DB/Redis/provider/queue/gateway, version, uptime); announcements —
+  admin EN+DE composer, dismissible banner + inbox entry, per-user dismissal.
+- **V4-P6 — Data lifecycle (M; two arcs):** account data export (async zip —
+  JSON of every user-owned entity + CSVs; expiring re-auth-gated link; 1/day)
+  and offsite backup (daily pg_dump → age/GPG encrypt → Google Drive via
+  rclone, 30-day retention, documented restore drill).
+- **V4-P7 — Backtest: custom benchmark + rebalanced mode (L, diff:max,
+  engine):** benchmark = any catalog asset OR one of the user's conglomerates
+  through the same engine, full stats side-by-side + delta column; scheduled
+  monthly/quarterly/yearly rebalancing generalizing the V3 entry-day primitive
+  (shared code, not duplicated); late-listing composition §16-logged.
+- **V4-P8 — Broker CSV imports (L, diff:max, money-math):** framework + Trade
+  Republic/George/Flatex/IBKR mappers; autodetect → normalized staging →
+  preview with mapped/unmapped/duplicate flags → transactional apply into a
+  chosen portfolio + cash source; content-hash dedupe; per-row error tolerance;
+  anonymized fixtures per broker; explicit non-goal: broker-API sync.
+- **V4-P9 — Ideas (M/L, diff:intermediate; needs v3 chat + audiences):** "Save
+  as idea" persists a named Workboard state (conglomerate ref or ad-hoc set +
+  backtest params + thesis note); an Ideas list reopens it exactly; audience
+  picker + friction ladder apply; new group in friend rows/Shared-With-Me; chat
+  chips carry ideas or bare asset suggestions — sending never widens access.
+- **V4-P10 — Telegram & Discord channels (S/M bundle, diff:normal):** two
+  NotificationChannel impls — Telegram bot (env-gated token, code-handshake
+  link/unlink) and Discord per-user webhook (validated + test button); matrix
+  columns appear only when configured; secrets never logged.
+- **V4-P11 — DE sweep, e2e, v4 gate:** human-eye DE pass; empty/error/loading
+  sweep; Playwright extended (bearer scopes, deletion, invite registration,
+  mocked Google login, virtual-authenticator passkey, import preview→apply,
+  benchmark compare, idea share→clone, announcements); pre-release top-tier
+  review (Opus 4.8 max); file **check v4**.
 
-After all V3-P0…P13: the composer files one `awaiting-owner` **"check v3"** issue
+After all V4-P0…P11: the composer files one `awaiting-owner` **"check v4"** issue
 and pauses feature planning (only bug-fix/hardening allowed) until the owner
 responds.
 
