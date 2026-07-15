@@ -28,11 +28,7 @@ import {
   markNotificationsRead,
   unarchiveNotification,
 } from '../../lib/notificationsApi';
-import {
-  ALERT_SHARING_QUERY_KEY,
-  getAlertSharing,
-  updateAlertSharing,
-} from '../../lib/alertsApi';
+import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
 import {
   disableWebPush,
@@ -827,7 +823,9 @@ function AlertSharingControl() {
           aria-checked={on}
           aria-label={t('settings.alertSharing.toggleAria')}
           disabled={mutation.isPending}
-          onClick={() => (on ? mutation.mutate({ visibleToFollowers: false }) : setConfirming(true))}
+          onClick={() =>
+            on ? mutation.mutate({ visibleToFollowers: false }) : setConfirming(true)
+          }
           className={cx(
             'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60',
             on ? 'bg-sky-600' : 'bg-neutral-700',
@@ -841,11 +839,12 @@ function AlertSharingControl() {
           />
         </button>
       </div>
-      {mutation.isError ? (
-        <Alert tone="error">{t('settings.alertSharing.error')}</Alert>
-      ) : null}
+      {mutation.isError ? <Alert tone="error">{t('settings.alertSharing.error')}</Alert> : null}
       {confirming ? (
-        <Dialog title={t('settings.alertSharing.confirmTitle')} onClose={() => setConfirming(false)}>
+        <Dialog
+          title={t('settings.alertSharing.confirmTitle')}
+          onClose={() => setConfirming(false)}
+        >
           <div className="flex flex-col gap-4">
             <p className="text-sm text-amber-400">{t('settings.alertSharing.confirmWarning')}</p>
             <div className="flex justify-end gap-2">
