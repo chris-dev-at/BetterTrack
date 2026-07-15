@@ -70,9 +70,13 @@ TanStack Query poll refetch as the permanent fallback.
   in seconds); an integration mode uses real Postgres 17 + Redis 7 via
   `TEST_DATABASE_URL`/`TEST_REDIS_URL`. Tests required by an issue land in the same
   change. **Never delete or skip a failing test to get green.** Domain (money-math)
-  code is the most-tested; changes there need thorough unit tests.
+  code is the most-tested; changes there need thorough unit tests. Factory agents
+  test per touched package (`pnpm --filter <pkg> test`), never the root suite (CI
+  runs it on the PR); e2e (Playwright) runs in the nightly workflow, not PR CI.
 - **Git / factory flow:** the factory works on branch **`task/<N>`** off `main`,
-  one issue per run. PR body must contain **`Closes #<N>`**, a summary, and real
+  one issue per run. Run `pnpm format` before every commit — unformatted files are
+  the factory's most common CI failure (`format:check` gates the PR). PR body must
+  contain **`Closes #<N>`**, a summary, and real
   test output. PRs are **squash-merged** with `--delete-branch`. Commit/PR titles
   are conventional: `feat(scope): …`, `fix(web): …`, `[P<n>] …`. Reviewer posts one
   comment ending in a `FACTORY-VERDICT: APPROVE|REQUEST_CHANGES` line; approve only
@@ -208,8 +212,8 @@ responds.
 ```
 pnpm typecheck            # tsc --noEmit across all packages (CI gate)
 pnpm lint                 # ESLint flat config across the repo
-pnpm format:check         # Prettier check (pnpm format rewrites in place)
-pnpm test                 # Vitest, all packages (PGlite + ioredis-mock, no Docker)
+pnpm format               # Prettier REWRITE — run before every commit (CI gates format:check)
+pnpm test                 # Vitest, all packages — CI-only; in the factory use --filter
 pnpm build                # contracts (tsc) + api (tsup) + web (vite)
 pnpm --filter @bettertrack/api test      # single package's tests
 pnpm --filter @bettertrack/web test
