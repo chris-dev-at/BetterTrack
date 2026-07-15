@@ -10,6 +10,11 @@
 # volume already mounted there at /backups — no extra compose service needed,
 # keeping the five-service topology (§4.6) intact. Takes a gzip'd `pg_dump`,
 # verifies the archive, then prunes dumps older than BACKUP_RETENTION_DAYS.
+#
+# Offsite (V4-P6 arc-b, optional): a companion `offsite.sh` runs in a small
+# `backup-offsite` sidecar (infra/docker-compose.offsite.yml) that encrypts
+# the newest local dump with age and uploads it via rclone. Wire both scripts
+# in host cron; see docs/ops.md.
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"

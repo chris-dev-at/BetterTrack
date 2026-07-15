@@ -1,0 +1,51 @@
+name: bettertrack
+
+# Optional offsite backup sidecar (PROJECTPLAN.md §13.4 V4-P6 arc-b;
+# §16 Decision Log 2026-07-15).
+#
+# Adds a sixth service (`backup-offsite`) to the base topology. Owners who do
+# NOT need offsite backup NEVER include this override — the base five-service
+# topology (§4.6) is unchanged.
+#
+# The service is `profiles: [offsite]`-gated, so plain `up -d` — even with
+# this override on the compose stack — leaves it stopped. Invoke as a one-shot
+# after backup.sh (see docs/ops.md for the full runbook and the host cron
+# line):
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.subdomains.yml \
+#     -f docker-compose.offsite.yml \
+#     run --rm backup-offsite
+#
+# Required env (in infra/.env when this override is included):
+#   BT_BACKUP_AGE_RECIPIENT_HOST_FILE — host path to the age recipient (public)
+#   BT_BACKUP_RCLONE_CONFIG_HOST_FILE — host path to rclone.conf (Drive tokens)
+#   BT_BACKUP_RCLONE_REMOTE           — e.g. gdrive:bettertrack-backups
+# Optional:
+#   BT_BACKUP_REMOTE_RETENTION_DAYS   — default 30
+#
+# Fallbacks intentionally omitted: unset host paths must fail compose so
+# operators notice, not silently mount nothing.
+services:
+  backup-offsite:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    restart: 'no'
+    profiles: ['offsite']
+    environment:
+      BT_BACKUP_SOURCE_DIR: '/backups'
+      BT_BACKUP_AGE_RECIPIENT_FILE: '/etc/bettertrack/age-recipient'
+      BT_BACKUP_RCLONE_REMOTE: '${BT_BACKUP_RCLONE_REMOTE:-}'
+      BT_BACKUP_REMOTE_RETENTION_DAYS: '${BT_BACKUP_REMOTE_RETENTION_DAYS:-30}'
+      # rclone reads its config from $RCLONE_CONFIG; the compose bind mount
+      # below places the file at this fixed in-container path.
+      RCLONE_CONFIG: '/etc/bettertrack/rclone.conf'
+    volumes:
+      - pgbackups:/backups:ro
+      - '${BT_BACKUP_AGE_RECIPIENT_HOST_FILE}:/etc/bettertrack/age-recipient:ro'
+      - '${BT_BACKUP_RCLONE_CONFIG_HOST_FILE}:/etc/bettertrack/rclone.conf:ro'
+
+volumes:
+  pgbackups:
