@@ -581,8 +581,8 @@ export function FriendsPage() {
         <p className="mt-1 text-sm text-neutral-400">{t('social.friends.subtitle')}</p>
       </div>
       <AddFriendForm />
-      <RequestsSection />
       <FriendsListSection />
+      <RequestsSection />
     </div>
   );
 }
