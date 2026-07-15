@@ -71,7 +71,9 @@ describe('FriendsPage', () => {
       outgoing: [],
     });
     vi.mocked(listFriends).mockResolvedValue({
-      friends: [{ user: { id: 'u-fri', username: 'fiona' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+      friends: [
+        { user: { id: 'u-fri', username: 'fiona' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
     });
     renderPage();
 
