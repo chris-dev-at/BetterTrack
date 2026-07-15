@@ -34,6 +34,7 @@ vi.mock('../../lib/workboardApi', () => ({
 import { ApiError } from '../../lib/apiClient';
 import { approveAuthorization, getAuthorizationDetails } from '../../lib/oauthApi';
 import * as userApi from '../../lib/userApi';
+import { AuthProvider } from '../AuthContext';
 import { UserApp } from '../UserApp';
 import { ConsentPage } from './ConsentPage';
 
@@ -97,6 +98,10 @@ beforeEach(() => {
     writable: true,
     value: { ...originalLocation, href: 'http://localhost/', assign: vi.fn() },
   });
+  // Default to signed-in as `jane` — every test that renders the consent screen
+  // needs an authenticated user for the "Signed in as …" line and the logout
+  // path. Individual tests override to test the unauthenticated redirect.
+  vi.mocked(userApi.getMe).mockResolvedValue(meUser);
 });
 afterEach(() => {
   Object.defineProperty(window, 'location', {
@@ -106,22 +111,29 @@ afterEach(() => {
   });
 });
 
-/** Render just the consent screen for an already-authenticated user. */
+/**
+ * Render the consent screen wrapped in a real AuthProvider so `useAuth()` (used
+ * by V4-P2b for the "Signed in as X" line and the "Use another account" logout)
+ * behaves like it does in the app. The bootstrap `/auth/me` is mocked above.
+ */
 function renderConsent() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[AUTHORIZE_PATH]}>
-        <Routes>
-          <Route path="/oauth/authorize" element={<ConsentPage />} />
-          <Route path="/" element={<div>Home</div>} />
-        </Routes>
+        <AuthProvider>
+          <Routes>
+            <Route path="/oauth/authorize" element={<ConsentPage />} />
+            <Route path="/" element={<div>Home</div>} />
+            <Route path="/login" element={<div>Login page stub</div>} />
+          </Routes>
+        </AuthProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-test('renders the requested scopes in plain language and approving navigates to redirectTo', async () => {
+test('third-party card shows the signed-in account plus Use another account, and approving navigates to redirectTo', async () => {
   vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
   vi.mocked(approveAuthorization).mockResolvedValue(APPROVED);
   const user = userEvent.setup();
@@ -133,6 +145,10 @@ test('renders the requested scopes in plain language and approving navigates to 
     screen.getByText('View your portfolios, holdings, transactions and cash balances'),
   ).toBeInTheDocument();
   expect(screen.getByText('Search assets and read market data')).toBeInTheDocument();
+  // V4-P2b: the signed-in identity and switch-account escape hatch are always
+  // shown, so a browser-shared session can't authorize under the wrong account.
+  expect(screen.getByText('Signed in as jane')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Use another account' })).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Approve' }));
 
@@ -151,20 +167,56 @@ test('renders the requested scopes in plain language and approving navigates to 
   );
 });
 
-test('a first-party (official) app skips the prompt and auto-approves', async () => {
+test('first-party client interposes an account chooser — never auto-approves before an explicit Continue', async () => {
+  // V4-P2b (owner directive 2026-07-07): the authorize page ALWAYS interposes
+  // "Signed in as X — Continue / Use another account", INCLUDING first-party
+  // clients. Android Custom Tabs share browser cookies, so a silent auto-approve
+  // could sign the app in as whoever the browser is currently signed in as.
   vi.mocked(getAuthorizationDetails).mockResolvedValue({
     ...DETAILS,
     client: { ...DETAILS.client, name: 'BetterTrack Mobile', firstParty: true },
   });
   vi.mocked(approveAuthorization).mockResolvedValue(APPROVED);
+  const user = userEvent.setup();
   renderConsent();
 
-  // Branded as the official app, no scope-approval button, and it authorizes on
-  // its own — the "Login with BetterTrack" moment, no consent to click.
+  // Branded as the official app; the scope-approval prompt is still skipped,
+  // but the account confirmation is now the required click.
   expect(await screen.findByText('Official BetterTrack app')).toBeInTheDocument();
-  await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
-  expect(approveAuthorization).toHaveBeenCalledTimes(1);
+  expect(screen.getByText('Signed in as jane')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Use another account' })).toBeInTheDocument();
+  // Scope prompt stays hidden for a first-party client (auto-approve).
   expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  // Give the previous auto-approve effect two microtask ticks to fire (it must
+  // never fire in the new flow) before asserting approve was not called.
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(approveAuthorization).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  await waitFor(() => expect(approveAuthorization).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
+});
+
+test('Use another account signs the current session out and lands on the login screen carrying the untouched authorize URL', async () => {
+  vi.mocked(getAuthorizationDetails).mockResolvedValue({
+    ...DETAILS,
+    client: { ...DETAILS.client, name: 'BetterTrack Mobile', firstParty: true },
+  });
+  vi.mocked(userApi.logout).mockResolvedValue(undefined);
+  const user = userEvent.setup();
+  renderConsent();
+
+  await screen.findByText('Official BetterTrack app');
+  await user.click(screen.getByRole('button', { name: 'Use another account' }));
+
+  // The session gets torn down and the router lands on /login. The full
+  // authorize URL (query included) travels as `state.from` so the #419 login
+  // ladder can round-trip back here after re-authentication.
+  await waitFor(() => expect(userApi.logout).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Login page stub')).toBeInTheDocument();
+  expect(approveAuthorization).not.toHaveBeenCalled();
 });
 
 test('cancelling does not issue a code or navigate to the redirect URI', async () => {

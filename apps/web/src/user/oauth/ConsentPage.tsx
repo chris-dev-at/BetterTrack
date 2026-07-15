@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useMutation, useQuery } from '@tanstack/react-query';
 
@@ -12,18 +12,30 @@ import {
   getAuthorizationDetails,
   type OAuthAuthorizeParams,
 } from '../../lib/oauthApi';
+import { useAuth } from '../AuthContext';
 import { Alert, Button, Spinner } from '../components/ui';
 
 /**
- * OAuth consent screen (PROJECTPLAN.md §6.13 part 2). A third-party app sends the
- * browser here with a standard authorization-code request; the user reviews the
- * app and the requested scopes in plain language and Approves or Cancels.
+ * OAuth consent screen (PROJECTPLAN.md §6.13 part 2, V4-P2b). A third-party app
+ * sends the browser here with a standard authorization-code request; the user
+ * confirms which account they're signed in as and — for third-party clients —
+ * reviews the requested scopes in plain language before Approving or Cancelling.
+ *
+ * V4-P2b account-chooser interpose (owner directive 2026-07-07): the authorize
+ * page ALWAYS interposes "signed in as X — Continue / Use another account",
+ * including first-party auto-approve clients. Android Custom Tabs share the
+ * browser session, so silently reusing whoever is signed in the browser would
+ * open the mobile app as an account the user never picked. Auto-approve still
+ * skips the scope prompt for first-party clients — it never skips this
+ * confirmation.
  *
  * This route sits inside `RequireUser`, so the login-then-consent flow is free:
  * an anonymous visitor is bounced to `/login` with the full `/oauth/authorize?…`
  * URL (path **and** query) stashed in `state.from`, and after signing in the
- * login page returns them here with `state` + PKCE (`code_challenge`) intact. The
- * PIN gate (above routing) also applies with no special-casing.
+ * login page returns them here with `state` + PKCE (`code_challenge`) intact.
+ * "Use another account" is logout → the same login round-trip, so the untouched
+ * authorize query survives the switch. The PIN gate (above routing) also
+ * applies with no special-casing.
  *
  * Security posture (§10): we NEVER navigate to `redirect_uri` on our own. An
  * invalid/unknown client or a bad redirect URI is a 400 from the details
@@ -119,8 +131,11 @@ export function ConsentPage() {
   const t = useT();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { user, logout } = useAuth();
   const [cancelled, setCancelled] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   // Memoized on the raw query string so PKCE/state are carried verbatim and the
   // details query isn't refetched on unrelated re-renders.
@@ -144,18 +159,21 @@ export function ConsentPage() {
     onError: () => setApproveError(t('auth.oauthConsent.approveError')),
   });
 
-  // A trusted first-party (official) app skips the scope-approval prompt: as soon
-  // as the (validated) details load, auto-approve exactly once and redirect back.
-  // The user is already authenticated here (RequireUser), so this is just the
-  // "Login with BetterTrack" moment — no consent to click.
-  const autoApproved = useRef(false);
-  const isFirstParty = query.data?.client.firstParty ?? false;
-  useEffect(() => {
-    if (isFirstParty && !autoApproved.current && !cancelled && !approveError) {
-      autoApproved.current = true;
-      approve.mutate();
+  // "Use another account" — end this session, then land on /login carrying the
+  // ORIGINAL untouched authorize URL as the return target so the #419 chooser
+  // ladder picks up from there and, on a successful login, comes right back
+  // to this same authorize request (PKCE + state intact).
+  async function handleUseAnotherAccount() {
+    if (switching) return;
+    setSwitching(true);
+    const returnTo = `${location.pathname}${location.search}`;
+    try {
+      await logout();
+    } catch {
+      // logout() already clears the local session on any error path — proceed.
     }
-  }, [isFirstParty, cancelled, approveError, approve]);
+    navigate('/login', { state: { from: returnTo }, replace: true });
+  }
 
   // ── Malformed request: missing a required param, so we can't even ask. ──
   if (params == null) {
@@ -212,35 +230,51 @@ export function ConsentPage() {
   }
 
   const details = query.data;
+  // The signed-in username is the identity the app is about to be authorized as
+  // — this component only ever renders under RequireUser, so `user` is set. The
+  // fallback keeps TypeScript happy without leaking anything if it ever wasn't.
+  const username = user?.username ?? '';
+  const signedInAs = t('auth.oauthConsent.signedInAs', { username });
 
-  // ── First-party (official) app: trusted, no scope prompt — just sign in. ──
+  // ── First-party (official) app: trusted, no scope prompt — but the account
+  // confirmation is still interposed (V4-P2b, owner 2026-07-07). ──
   if (details.client.firstParty) {
     return (
       <ConsentShell>
         <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
           {approveError ? <Alert tone="error">{approveError}</Alert> : null}
           <AppIdentity name={details.client.name} logoUrl={null} firstParty />
-          {approveError ? (
+          <p className="text-sm text-neutral-400">{signedInAs}</p>
+          <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button
+              className="sm:flex-1"
+              disabled={approve.isPending || switching}
               onClick={() => {
                 setApproveError(null);
-                autoApproved.current = true;
                 approve.mutate();
               }}
             >
-              {t('common.continue')}
+              {approve.isPending
+                ? t('auth.oauthConsent.authorizing')
+                : t('auth.oauthConsent.continue')}
             </Button>
-          ) : (
-            <div className="flex items-center gap-3 text-sm text-neutral-400">
-              <Spinner label={t('auth.oauthConsent.signingIn', { name: details.client.name })} />
-            </div>
-          )}
+            <Button
+              variant="secondary"
+              className="sm:flex-1"
+              disabled={approve.isPending || switching}
+              onClick={() => void handleUseAnotherAccount()}
+            >
+              {t('auth.oauthConsent.useAnotherAccount')}
+            </Button>
+          </div>
         </div>
       </ConsentShell>
     );
   }
 
-  // ── Third-party app: show who's asking + the scopes, and ask to approve. ──
+  // ── Third-party app: show who's asking, the signed-in account, and the
+  // scopes; Approve doubles as Continue and Cancel/Use another account sit
+  // alongside (V4-P2b). ──
   return (
     <ConsentShell>
       <div className="flex flex-col gap-5 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
@@ -250,6 +284,7 @@ export function ConsentPage() {
           logoUrl={details.client.logoUrl}
           firstParty={false}
         />
+        <p className="text-sm text-neutral-400">{signedInAs}</p>
         <p className="text-sm text-neutral-400">
           <span className="font-medium text-neutral-200">{details.client.name}</span>{' '}
           {t('auth.oauthConsent.wantsAccess')}
@@ -278,7 +313,7 @@ export function ConsentPage() {
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
           <Button
             className="sm:flex-1"
-            disabled={approve.isPending}
+            disabled={approve.isPending || switching}
             onClick={() => {
               setApproveError(null);
               approve.mutate();
@@ -291,12 +326,20 @@ export function ConsentPage() {
           <Button
             variant="secondary"
             className="sm:flex-1"
-            disabled={approve.isPending}
+            disabled={approve.isPending || switching}
             onClick={() => setCancelled(true)}
           >
             {t('common.cancel')}
           </Button>
         </div>
+        <button
+          type="button"
+          className="text-center text-sm font-medium text-neutral-400 hover:text-neutral-200 disabled:opacity-60"
+          disabled={approve.isPending || switching}
+          onClick={() => void handleUseAnotherAccount()}
+        >
+          {t('auth.oauthConsent.useAnotherAccount')}
+        </button>
       </div>
     </ConsentShell>
   );
