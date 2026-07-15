@@ -223,7 +223,9 @@ export function PublicProfileViewPage() {
                 count: data.followerCount,
               })}
             </p>
-            {data.bio ? <p className="mt-1 text-sm text-neutral-400">{data.bio}</p> : null}
+            {data.bio ? (
+              <p className="mt-1 break-words text-sm text-neutral-400">{data.bio}</p>
+            ) : null}
           </div>
           <div className="flex flex-col items-end gap-2">
             <FollowButton userId={data.userId} username={data.username} />

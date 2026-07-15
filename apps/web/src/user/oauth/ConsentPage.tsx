@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { Wordmark } from '../../components/Wordmark';
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import {
   approveAuthorization,
@@ -82,11 +83,12 @@ function AppIdentity({
   logoUrl: string | null;
   firstParty: boolean;
 }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-3">
       {firstParty ? (
         <div className="grid h-12 w-12 place-items-center rounded-xl bg-sky-500/15 text-base font-bold text-sky-300 ring-1 ring-sky-500/40">
-          BT
+          {t('auth.oauthConsent.logoBadge')}
         </div>
       ) : logoUrl ? (
         <img
@@ -102,9 +104,11 @@ function AppIdentity({
       <div className="min-w-0">
         <div className="truncate font-semibold text-neutral-100">{name}</div>
         {firstParty ? (
-          <div className="text-xs font-medium text-sky-400">Official BetterTrack app</div>
+          <div className="text-xs font-medium text-sky-400">
+            {t('auth.oauthConsent.firstParty')}
+          </div>
         ) : (
-          <div className="text-xs text-neutral-500">Third-party app</div>
+          <div className="text-xs text-neutral-500">{t('auth.oauthConsent.thirdParty')}</div>
         )}
       </div>
     </div>
@@ -112,6 +116,7 @@ function AppIdentity({
 }
 
 export function ConsentPage() {
+  const t = useT();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [cancelled, setCancelled] = useState(false);
@@ -136,7 +141,7 @@ export function ConsentPage() {
       // service validated and signed this destination — never a raw redirect_uri.
       window.location.href = result.redirectTo;
     },
-    onError: () => setApproveError('Could not complete authorization. Please try again.'),
+    onError: () => setApproveError(t('auth.oauthConsent.approveError')),
   });
 
   // A trusted first-party (official) app skips the scope-approval prompt: as soon
@@ -157,9 +162,7 @@ export function ConsentPage() {
     return (
       <ConsentShell>
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <Alert tone="error">
-            This authorization request is invalid or incomplete. Return to the app and try again.
-          </Alert>
+          <Alert tone="error">{t('auth.oauthConsent.invalidRequest')}</Alert>
         </div>
       </ConsentShell>
     );
@@ -170,11 +173,13 @@ export function ConsentPage() {
     return (
       <ConsentShell>
         <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <h1 className="text-lg font-semibold text-neutral-100">Authorization cancelled</h1>
-          <p className="text-sm text-neutral-400">
-            No access was granted. You can safely close this window or return to BetterTrack.
-          </p>
-          <Button onClick={() => navigate('/', { replace: true })}>Go to BetterTrack</Button>
+          <h1 className="text-lg font-semibold text-neutral-100">
+            {t('auth.oauthConsent.cancelledTitle')}
+          </h1>
+          <p className="text-sm text-neutral-400">{t('auth.oauthConsent.cancelledBody')}</p>
+          <Button onClick={() => navigate('/', { replace: true })}>
+            {t('auth.oauthConsent.goToApp')}
+          </Button>
         </div>
       </ConsentShell>
     );
@@ -184,7 +189,7 @@ export function ConsentPage() {
     return (
       <ConsentShell>
         <div className="grid place-items-center rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <Spinner label="Loading authorization request…" />
+          <Spinner label={t('auth.oauthConsent.loading')} />
         </div>
       </ConsentShell>
     );
@@ -195,8 +200,8 @@ export function ConsentPage() {
     const err = query.error;
     const message =
       err instanceof ApiError && err.status === 400
-        ? "This app's authorization request is invalid. For your security we won't continue. Contact the app's developer."
-        : 'Could not load the authorization request. Please try again in a moment.';
+        ? t('auth.oauthConsent.badClient')
+        : t('auth.oauthConsent.loadError');
     return (
       <ConsentShell>
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-6">
@@ -223,11 +228,11 @@ export function ConsentPage() {
                 approve.mutate();
               }}
             >
-              Continue
+              {t('common.continue')}
             </Button>
           ) : (
             <div className="flex items-center gap-3 text-sm text-neutral-400">
-              <Spinner label={`Signing you in to ${details.client.name}…`} />
+              <Spinner label={t('auth.oauthConsent.signingIn', { name: details.client.name })} />
             </div>
           )}
         </div>
@@ -246,8 +251,8 @@ export function ConsentPage() {
           firstParty={false}
         />
         <p className="text-sm text-neutral-400">
-          <span className="font-medium text-neutral-200">{details.client.name}</span> wants access
-          to your BetterTrack account. If you approve, it will be able to:
+          <span className="font-medium text-neutral-200">{details.client.name}</span>{' '}
+          {t('auth.oauthConsent.wantsAccess')}
         </p>
 
         <ul className="flex flex-col gap-2">
@@ -265,9 +270,9 @@ export function ConsentPage() {
         </ul>
 
         <p className="break-all text-xs text-neutral-500">
-          You'll be returned to{' '}
-          <code className="font-mono text-neutral-400">{details.redirectUri}</code>. You can revoke
-          this access anytime in Settings → API Access.
+          {t('auth.oauthConsent.returnedTo')}{' '}
+          <code className="font-mono text-neutral-400">{details.redirectUri}</code>
+          {t('auth.oauthConsent.revokeHint')}
         </p>
 
         <div className="flex flex-col gap-2 sm:flex-row-reverse">
@@ -279,7 +284,9 @@ export function ConsentPage() {
               approve.mutate();
             }}
           >
-            {approve.isPending ? 'Authorizing…' : 'Approve'}
+            {approve.isPending
+              ? t('auth.oauthConsent.authorizing')
+              : t('auth.oauthConsent.approve')}
           </Button>
           <Button
             variant="secondary"
@@ -287,7 +294,7 @@ export function ConsentPage() {
             disabled={approve.isPending}
             onClick={() => setCancelled(true)}
           >
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       </div>

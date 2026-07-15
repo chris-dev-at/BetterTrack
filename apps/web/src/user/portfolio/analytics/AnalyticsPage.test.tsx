@@ -69,6 +69,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getAnalyticsSeries } from '../../../lib/analyticsApi';
+import { listConglomerates } from '../../../lib/conglomerateApi';
 import { formatDate } from '../../../lib/format';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
 import { AnalyticsPage } from './AnalyticsPage';
@@ -360,6 +361,18 @@ describe('AnalyticsPage — compare mode', () => {
         { time: '2024-06-30', value: 1100 },
       ]),
     );
+  });
+
+  test('a failing compare-target list shows an error, not the "none yet" empty label', async () => {
+    vi.mocked(listConglomerates).mockRejectedValue(new Error('boom'));
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Conglomerate' }));
+
+    expect(await screen.findByText('Something went wrong. Please try again.')).toBeInTheDocument();
+    expect(screen.queryByText("You don't have any conglomerates yet.")).not.toBeInTheDocument();
   });
 
   test('compare vs an asset/index renders both series overlaid + side-by-side stats', async () => {

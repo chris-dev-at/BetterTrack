@@ -1,5 +1,6 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
+import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { formatPercent, formatQuantity } from '../../lib/format';
 import type { AllocationSegment } from './types';
@@ -36,12 +37,9 @@ const PALETTE = [
  * The legend is rendered as our own list (not Recharts' canvas-measured one) so
  * labels, colours and shares are real DOM — accessible and reliably testable.
  */
-export function AllocationDonut({
-  data,
-  size = 200,
-  className,
-  title = 'Allocation breakdown',
-}: AllocationDonutProps) {
+export function AllocationDonut({ data, size = 200, className, title }: AllocationDonutProps) {
+  const t = useT();
+  const chartTitle = title ?? t('common.charts.allocationFallbackTitle');
   const segments = data
     .filter((s) => Number.isFinite(s.value) && s.value > 0)
     .map((s, i) => ({ ...s, color: s.color ?? PALETTE[i % PALETTE.length] }));
@@ -58,7 +56,7 @@ export function AllocationDonut({
         )}
         style={{ minHeight: size }}
       >
-        No allocation data yet.
+        {t('common.charts.noAllocationData')}
       </div>
     );
   }
@@ -67,7 +65,11 @@ export function AllocationDonut({
 
   return (
     <div className={cx('flex flex-col items-center gap-4 sm:flex-row sm:items-center', className)}>
-      <div role="img" aria-label={`${title}: ${summary}`} style={{ width: size, height: size }}>
+      <div
+        role="img"
+        aria-label={`${chartTitle}: ${summary}`}
+        style={{ width: size, height: size }}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie

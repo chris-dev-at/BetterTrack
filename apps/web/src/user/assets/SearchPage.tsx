@@ -1,3 +1,4 @@
+import { useT } from '../../i18n';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 
 /**
@@ -5,13 +6,14 @@ import { AssetSearchBox } from '../components/AssetSearchBox';
  * The global ⌘K palette reuses the same `AssetSearchBox` component.
  */
 export function SearchPage() {
+  const t = useT();
   return (
     <section className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Search</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          Find stocks, ETFs, indices, FX pairs and your custom assets.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+          {t('assets.search.title')}
+        </h1>
+        <p className="mt-1 text-sm text-neutral-400">{t('assets.search.subtitle')}</p>
       </div>
       <AssetSearchBox />
     </section>

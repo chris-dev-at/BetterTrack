@@ -177,8 +177,8 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       button: 'BetterTrack öffnen',
     },
     followPublished: {
-      subject: 'Neues von jemandem, dem du folgst, auf BetterTrack',
-      heading: 'Neues von jemandem, dem du folgst',
+      subject: 'Neues von einer Person, der du folgst — auf BetterTrack',
+      heading: 'Neues von einer Person, der du folgst',
       button: 'BetterTrack öffnen',
     },
     followAlertCreated: {
@@ -192,15 +192,15 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       button: 'BetterTrack öffnen',
     },
     registrationApproved: {
-      subject: 'Dein BetterTrack-Konto wurde freigeschaltet',
+      subject: 'Dein BetterTrack-Konto wurde freigegeben',
       heading: 'Dein Konto ist bereit',
-      body: 'Deine BetterTrack-Registrierung wurde freigeschaltet, {username}. Du kannst dich jetzt mit dem Passwort anmelden, das du bei der Registrierung gewählt hast.',
+      body: 'Deine BetterTrack-Registrierung wurde freigegeben, {username}. Du kannst dich jetzt mit dem Passwort anmelden, das du bei der Registrierung gewählt hast.',
       button: 'Anmelden',
     },
     registrationRejected: {
       subject: 'Deine BetterTrack-Registrierung',
-      heading: 'Registrierung nicht freigeschaltet',
-      body: 'Danke für dein Interesse an BetterTrack. Deine Registrierungsanfrage wurde nicht freigeschaltet, daher wurde kein Konto erstellt. Falls das ein Fehler war, wende dich bitte an die Administration.',
+      heading: 'Registrierung nicht freigegeben',
+      body: 'Danke für dein Interesse an BetterTrack. Deine Registrierungsanfrage wurde nicht freigegeben, daher wurde kein Konto erstellt. Falls du das für einen Irrtum hältst, wende dich bitte an die Administration.',
     },
   },
 };

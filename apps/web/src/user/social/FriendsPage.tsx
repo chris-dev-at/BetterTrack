@@ -49,18 +49,14 @@ function ChatIcon({ className }: { className?: string }) {
 const REQUESTS_STALE_MS = 15_000;
 const FRIENDS_STALE_MS = 30_000;
 
-/**
- * The identical, no-enumeration success message shown after every
- * `POST /social/requests` — the backend always answers `{ ok: true }`
- * regardless of whether the target exists (PROJECTPLAN.md §6.9), so the UI
- * never has a "user not found" branch to surface.
- */
-const REQUEST_SENT_MESSAGE =
-  "If that account exists, we've sent your friend request. They'll see it if they accept.";
-
 // ─── Add friend ─────────────────────────────────────────────────────────────
 
+// `social.friends.requestSent` is the identical, no-enumeration success message
+// shown after every `POST /social/requests` — the backend always answers
+// `{ ok: true }` regardless of whether the target exists (PROJECTPLAN.md §6.9),
+// so the UI never has a "user not found" branch to surface.
 function AddFriendForm() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [identifier, setIdentifier] = useState('');
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; text: string } | null>(
@@ -70,12 +66,11 @@ function AddFriendForm() {
   const mutation = useMutation({
     mutationFn: (value: string) => sendFriendRequest({ identifier: value }),
     onSuccess: () => {
-      setFeedback({ tone: 'success', text: REQUEST_SENT_MESSAGE });
+      setFeedback({ tone: 'success', text: t('social.friends.requestSent') });
       setIdentifier('');
       void queryClient.invalidateQueries({ queryKey: ['social', 'requests'] });
     },
-    onError: () =>
-      setFeedback({ tone: 'error', text: 'Could not send that request. Please try again.' }),
+    onError: () => setFeedback({ tone: 'error', text: t('social.friends.requestError') }),
   });
 
   function handleSubmit(e: FormEvent) {
@@ -89,21 +84,21 @@ function AddFriendForm() {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-3">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-        Add a friend
+        {t('social.friends.addTitle')}
       </h2>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="flex-1">
           <TextField
-            label="Username or email"
+            label={t('social.friends.identifierLabel')}
             name="identifier"
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
-            placeholder="jane or jane@example.com"
+            placeholder={t('social.friends.identifierPlaceholder')}
             autoComplete="off"
           />
         </div>
         <Button type="submit" disabled={mutation.isPending || !identifier.trim()}>
-          {mutation.isPending ? 'Sending…' : 'Send request'}
+          {mutation.isPending ? t('social.friends.sending') : t('social.friends.sendRequest')}
         </Button>
       </div>
       {feedback ? <Alert tone={feedback.tone}>{feedback.text}</Alert> : null}
@@ -124,16 +119,19 @@ function IncomingRequestRow({
   onDecline: () => void;
   pendingAction: 'accept' | 'decline' | null;
 }) {
+  const t = useT();
   const busy = pendingAction !== null;
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
       <span className="text-sm font-medium text-neutral-100">{request.user.username}</span>
       <span className="flex gap-2">
         <Button onClick={onAccept} disabled={busy}>
-          {pendingAction === 'accept' ? 'Accepting…' : 'Accept'}
+          {pendingAction === 'accept' ? t('social.friends.accepting') : t('social.friends.accept')}
         </Button>
         <Button variant="secondary" onClick={onDecline} disabled={busy}>
-          {pendingAction === 'decline' ? 'Declining…' : 'Decline'}
+          {pendingAction === 'decline'
+            ? t('social.friends.declining')
+            : t('social.friends.decline')}
         </Button>
       </span>
     </li>
@@ -149,17 +147,19 @@ function OutgoingRequestRow({
   onCancel: () => void;
   pending: boolean;
 }) {
+  const t = useT();
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
       <span className="text-sm font-medium text-neutral-100">{request.user.username}</span>
       <Button variant="secondary" onClick={onCancel} disabled={pending}>
-        {pending ? 'Cancelling…' : 'Cancel'}
+        {pending ? t('social.friends.cancelling') : t('common.cancel')}
       </Button>
     </li>
   );
 }
 
 function RequestsSection() {
+  const t = useT();
   const queryClient = useQueryClient();
 
   const { data, isLoading, isError } = useQuery({
@@ -198,22 +198,21 @@ function RequestsSection() {
   }
 
   if (isError || !data) {
-    return (
-      <Alert tone="error">Could not load your friend requests. Please refresh the page.</Alert>
-    );
+    return <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>;
   }
 
   return (
     <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-3">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Incoming requests
+          {t('social.friends.incomingTitle')}
         </h2>
-        {actionFailed ? (
-          <Alert tone="error">That action didn't go through. Please try again.</Alert>
-        ) : null}
+        {actionFailed ? <Alert tone="error">{t('social.friends.actionError')}</Alert> : null}
         {data.incoming.length === 0 ? (
-          <EmptyState title="No incoming requests" description="New friend requests appear here." />
+          <EmptyState
+            title={t('social.friends.incomingEmptyTitle')}
+            description={t('social.friends.incomingEmptyDescription')}
+          />
         ) : (
           <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
             {data.incoming.map((request) => (
@@ -237,12 +236,12 @@ function RequestsSection() {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Pending requests
+          {t('social.friends.outgoingTitle')}
         </h2>
         {data.outgoing.length === 0 ? (
           <EmptyState
-            title="No pending requests"
-            description="Requests you send are listed here until they're accepted or declined."
+            title={t('social.friends.outgoingEmptyTitle')}
+            description={t('social.friends.outgoingEmptyDescription')}
           />
         ) : (
           <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
@@ -276,17 +275,18 @@ function RemoveFriendDialog({
   pending: boolean;
   error: boolean;
 }) {
+  const t = useT();
   return (
-    <Dialog title="Remove friend?" onClose={onClose}>
+    <Dialog title={t('social.friends.removeTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-neutral-400">
-          <span className="font-medium text-neutral-200">{username}</span> will no longer be your
-          friend and won't be notified.
+          <span className="font-medium text-neutral-200">{username}</span>{' '}
+          {t('social.friends.removeBody')}
         </p>
-        {error ? <Alert tone="error">Could not remove this friend. Please try again.</Alert> : null}
+        {error ? <Alert tone="error">{t('social.friends.removeError')}</Alert> : null}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} disabled={pending}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -294,7 +294,7 @@ function RemoveFriendDialog({
             disabled={pending}
             className="bg-red-700 hover:bg-red-600 disabled:bg-red-900"
           >
-            {pending ? 'Removing…' : 'Remove'}
+            {pending ? t('social.friends.removing') : t('common.remove')}
           </Button>
         </div>
       </div>
@@ -487,6 +487,7 @@ function FriendCard({
 }
 
 function FriendsListSection() {
+  const t = useT();
   const queryClient = useQueryClient();
   const [removeTarget, setRemoveTarget] = useState<Friendship | null>(null);
 
@@ -523,17 +524,19 @@ function FriendsListSection() {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">Could not load your friends. Please refresh the page.</Alert>;
+    return <Alert tone="error">{t('social.friends.friendsLoadError')}</Alert>;
   }
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Friends</h2>
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+        {t('common.friends')}
+      </h2>
       {data.friends.length === 0 ? (
         <EmptyState
           icon="🫂"
-          title="No friends yet"
-          description="Add a friend by username or email above to start sharing."
+          title={t('social.friends.emptyTitle')}
+          description={t('social.friends.emptyDescription')}
         />
       ) : (
         <ul className="flex flex-col gap-3">
@@ -568,14 +571,14 @@ function FriendsListSection() {
  * manage the friends list (PROJECTPLAN.md §6.9).
  */
 export function FriendsPage() {
+  const t = useT();
   return (
     <div className="flex flex-col gap-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">Friends</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          Add friends by username or email, respond to requests, and manage who you're connected
-          with.
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+          {t('common.friends')}
+        </h1>
+        <p className="mt-1 text-sm text-neutral-400">{t('social.friends.subtitle')}</p>
       </div>
       <AddFriendForm />
       <RequestsSection />

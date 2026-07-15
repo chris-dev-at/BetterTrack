@@ -1,3 +1,4 @@
+import { useT } from '../i18n';
 import { cx } from '../lib/cx';
 
 export interface SkeletonProps {
@@ -19,10 +20,11 @@ export interface SkeletonProps {
  * state rather than reading an empty box.
  */
 export function Skeleton({ variant = 'block', width, height = 'h-4', className }: SkeletonProps) {
+  const t = useT();
   return (
     <span
       role="status"
-      aria-label="Loading"
+      aria-label={t('common.loadingLabel')}
       className={cx(
         'inline-block animate-pulse rounded bg-neutral-800',
         width ?? (variant === 'block' ? 'w-full' : 'w-24'),

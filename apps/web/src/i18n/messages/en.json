@@ -148,6 +148,25 @@
       "closedMessage": "Registration is currently closed. Ask an administrator for an invite.",
       "pendingSubtitle": "Almost there",
       "pendingMessage": "Thanks! Your registration is pending administrator approval. You'll receive an email once it's reviewed."
+    },
+    "oauthConsent": {
+      "logoBadge": "BT",
+      "firstParty": "Official BetterTrack app",
+      "thirdParty": "Third-party app",
+      "invalidRequest": "This authorization request is invalid or incomplete. Return to the app and try again.",
+      "cancelledTitle": "Authorization cancelled",
+      "cancelledBody": "No access was granted. You can safely close this window or return to BetterTrack.",
+      "goToApp": "Go to BetterTrack",
+      "loading": "Loading authorization request…",
+      "badClient": "This app's authorization request is invalid. For your security we won't continue. Contact the app's developer.",
+      "loadError": "Could not load the authorization request. Please try again in a moment.",
+      "signingIn": "Signing you in to {{name}}…",
+      "wantsAccess": "wants access to your BetterTrack account. If you approve, it will be able to:",
+      "returnedTo": "You'll be returned to",
+      "revokeHint": ". You can revoke this access anytime in Settings → API Access.",
+      "authorizing": "Authorizing…",
+      "approve": "Approve",
+      "approveError": "Could not complete authorization. Please try again."
     }
   },
   "common": {
@@ -170,7 +189,23 @@
     "friends": "Friends",
     "soon": "Soon",
     "comingSoon": "Coming soon",
-    "genericError": "Something went wrong. Please try again."
+    "genericError": "Something went wrong. Please try again.",
+    "continue": "Continue",
+    "dismiss": "Dismiss",
+    "errorTitle": "Something went wrong.",
+    "loadingLabel": "Loading",
+    "quickSearchAria": "Quick search",
+    "escKey": "Esc",
+    "escToClose": "to close",
+    "closeDialogAria": "Close dialog",
+    "charts": {
+      "noAllocationData": "No allocation data yet.",
+      "selectRange": "Select chart range",
+      "loadingChart": "Loading chart…",
+      "noPriceData": "No price data for this range yet.",
+      "priceChartAria": "Price chart",
+      "allocationFallbackTitle": "Allocation breakdown"
+    }
   },
   "nav": {
     "portfolio": "Portfolio",
@@ -359,7 +394,9 @@
         "unsupported": "This browser does not support push notifications.",
         "denied": "Notifications are blocked for this site in your browser settings.",
         "error": "Couldn't update browser push. Please try again."
-      }
+      },
+      "loadErrorTitle": "Couldn't load notifications",
+      "loadErrorDescription": "Please try again in a moment."
     },
     "security": {
       "title": "Security",
@@ -781,7 +818,17 @@
         "valueAria": "Manual tax for this sale",
         "placeholder": "0",
         "invalid": "Enter a valid tax amount, or a rate between 0 and 100 %."
-      }
+      },
+      "autoHint": "auto",
+      "derivedRecords": "· records",
+      "derivedResidual": " ({{delta}} vs entered, from 8-decimal rounding)",
+      "derivedPrompt": "Enter a price and amount above 0 to derive the quantity.",
+      "linkNoData": "No price data on or before that date.",
+      "linkClosedNote": "Market closed — using {{day}} close.",
+      "linkNeverAtPrice": "Never at this price in available history.",
+      "priceHistoryLoading": "Loading price history…",
+      "unlinkAria": "Unlink date and price",
+      "linkAria": "Link date and price"
     },
     "overview": {
       "title": "Portfolio",
@@ -1410,6 +1457,67 @@
         "confirmWarning": "This shows every follower which assets you watch and your price targets — anyone can follow you. Followers who opted in will be notified when you create an alert or one of your alerts fires. You can turn this off at any time.",
         "confirmCancel": "Cancel",
         "confirmEnable": "I understand — share my alerts"
+      },
+      "kinds": {
+        "priceAbove": "Price rises above",
+        "priceBelow": "Price falls below",
+        "pctUpFromRef": "Rises % from reference",
+        "pctDownFromRef": "Falls % from reference",
+        "pctDayUp": "Up % on the day",
+        "pctDayDown": "Down % on the day"
+      },
+      "groups": {
+        "priceLevel": "Price level",
+        "fromReference": "Move from reference",
+        "onTheDay": "Move on the day"
+      },
+      "rule": {
+        "priceAbove": "Price rises above {{amount}}",
+        "priceBelow": "Price falls below {{amount}}",
+        "pctUpFromRefPrice": "Rises {{amount}} from {{ref}}",
+        "pctUpFromRef": "Rises {{amount}} from reference",
+        "pctDownFromRefPrice": "Falls {{amount}} from {{ref}}",
+        "pctDownFromRef": "Falls {{amount}} from reference",
+        "pctDayUp": "Up {{amount}} on the day",
+        "pctDayDown": "Down {{amount}} on the day"
+      },
+      "status": {
+        "active": "Active",
+        "triggered": "Triggered",
+        "disabled": "Disabled"
+      },
+      "dialog": {
+        "createTitle": "New price alert",
+        "editTitle": "Edit alert",
+        "createDescription": "Get notified when this rule fires. Alerts are evaluated every minute against the latest quote.",
+        "editDescription": "The rule kind and asset are fixed — adjust the threshold or repeat behaviour.",
+        "errorNoAsset": "Pick an asset for this alert.",
+        "errorThreshold": "Enter a threshold greater than 0.",
+        "saveError": "Could not save the alert. Please try again.",
+        "changeAsset": "Change",
+        "assetLabel": "Asset",
+        "assetPlaceholder": "Search an asset to alert on…",
+        "whenLabel": "When",
+        "thresholdPrice": "Threshold price ({{currency}})",
+        "thresholdPercent": "Percent change",
+        "refMeasured": "Measured from the reference captured at creation ({{price}}).",
+        "refWillCapture": "The current price ({{price}}) is captured as the reference when you create this alert.",
+        "refWillCaptureNoPrice": "The current market price is captured as the reference when you create this alert.",
+        "repeatLabel": "Repeat",
+        "repeatOnHint": "Re-fires on every crossing, at most once per 24 h.",
+        "repeatOffHint": "One-shot — fires once, then pauses until you re-arm it.",
+        "saveChanges": "Save changes",
+        "create": "Create alert"
+      },
+      "list": {
+        "repeat": "Repeat (24 h)",
+        "oneShot": "One-shot",
+        "lastFired": "Last fired {{time}}",
+        "neverFired": "Never fired",
+        "rearming": "Re-arming…",
+        "rearm": "Re-arm",
+        "deleting": "Deleting…",
+        "updateError": "Couldn't update that alert. Please try again."
       }
     },
     "conglomerates": {
@@ -1496,7 +1604,29 @@
   },
   "assets": {
     "detail": {
-      "chartAriaLabel": "Price chart for {{symbol}}"
+      "chartAriaLabel": "Price chart for {{symbol}}",
+      "stale": "Stale",
+      "asOf": "As of {{time}}",
+      "delayedNote": "Data may be delayed.",
+      "alerts": {
+        "title": "Your alerts on this asset",
+        "loadError": "Could not load your alerts. Please try again.",
+        "emptyTitle": "No alerts on this asset yet",
+        "emptyDescription": "Create an alert to get notified when it crosses a price or moves by a percentage."
+      },
+      "appearsIn": {
+        "title": "Appears in",
+        "emptyTitle": "Not in any conglomerate or portfolio",
+        "emptyDescription": "Add this asset to a conglomerate or record a transaction to see it here."
+      },
+      "watchlistAddError": "Failed to add to Watchlist. Please try again.",
+      "quickActions": "Quick actions",
+      "addToPortfolio": "+ Portfolio",
+      "addToConglomerate": "+ Conglomerate",
+      "backToSearch": "← Back to Search",
+      "backShort": "← Search",
+      "loadError": "Could not load asset details. The asset may not exist or the server is temporarily unavailable.",
+      "disclaimer": "Market data comes from an unofficial source and may be delayed or inaccurate."
     },
     "live": {
       "badge": "LIVE",
@@ -1507,6 +1637,60 @@
       "waiting": "Waiting for live prices…",
       "fallbackNote": "Live updates every 60 s while the stream reconnects.",
       "chartAriaLabel": "Live price chart for {{symbol}}"
+    },
+    "nav": {
+      "overview": "Overview",
+      "search": "Search",
+      "stocks": "Stocks",
+      "etfs": "ETFs",
+      "crypto": "Crypto",
+      "commodities": "Commodities",
+      "customAssets": "Custom Assets"
+    },
+    "comingSoon": {
+      "overview": {
+        "title": "Assets Overview",
+        "description": "A calm entry point — search, recently viewed assets and catalog counts. Use Search to look up any asset today."
+      },
+      "stocks": "Browse and filter the stock catalog.",
+      "etfs": "Browse and filter the ETF catalog.",
+      "crypto": "Browse and filter the crypto catalog.",
+      "commodities": "Browse and filter the commodities catalog.",
+      "customAssets": "Browse the custom assets you've created across your portfolios."
+    },
+    "search": {
+      "title": "Search",
+      "subtitle": "Find stocks, ETFs, indices, FX pairs and your custom assets."
+    },
+    "searchBox": {
+      "placeholder": "Search stocks, ETFs, indices…",
+      "inputAria": "Search assets",
+      "loadingResults": "Loading results",
+      "failed": "Search failed. Please try again.",
+      "noResultsTitle": "No results found",
+      "noResultsDescription": "Nothing matched \"{{query}}\". Try a different symbol or name.",
+      "searchingMore": "Searching the market for more results…",
+      "resultsAria": "Search results",
+      "openAria": "Open {{symbol}} — {{name}}",
+      "toConglomerate": "→ Conglomerate",
+      "toPortfolio": "→ Portfolio",
+      "addToConglomerateAria": "Add {{symbol}} to a Conglomerate",
+      "recordBuyAria": "Record a buy for {{symbol}}",
+      "onWatchlistAria": "{{symbol}} is on your watchlist",
+      "retryWatchlistAria": "Retry adding {{symbol}} to your watchlist",
+      "addToWatchlistAria": "Add {{symbol}} to watchlist",
+      "onWatchlistTitle": "On your watchlist",
+      "addToWatchlistTitle": "Add to watchlist",
+      "chooseWatchlistAria": "Choose a watchlist for {{symbol}}",
+      "watchlistsMenuAria": "Watchlists for {{symbol}}",
+      "pickerMenuAria": "Add {{symbol}} to a conglomerate",
+      "pickerTitle": "Add to conglomerate",
+      "noConglomerates": "You don't have any conglomerates yet.",
+      "addedTo": "Added to {{name}}.",
+      "createNewConglomerate": "+ Create new conglomerate",
+      "selectAria": "Select {{symbol}}",
+      "select": "Select →",
+      "addToConglomerateError": "Could not add to that conglomerate."
     }
   },
   "sharing": {
@@ -1748,6 +1932,56 @@
         "conglomerate": "Conglomerate",
         "watchlist": "Watchlist"
       }
+    },
+    "ideas": {
+      "title": "Ideas",
+      "description": "A lightweight feed of investment ideas shared between friends."
+    },
+    "friends": {
+      "subtitle": "Add friends by username or email, respond to requests, and manage who you're connected with.",
+      "addTitle": "Add a friend",
+      "identifierLabel": "Username or email",
+      "identifierPlaceholder": "jane or jane@example.com",
+      "sending": "Sending…",
+      "sendRequest": "Send request",
+      "requestSent": "If that account exists, we've sent your friend request. They'll see it if they accept.",
+      "requestError": "Could not send that request. Please try again.",
+      "requestsLoadError": "Could not load your friend requests. Please refresh the page.",
+      "actionError": "That action didn't go through. Please try again.",
+      "incomingTitle": "Incoming requests",
+      "incomingEmptyTitle": "No incoming requests",
+      "incomingEmptyDescription": "New friend requests appear here.",
+      "outgoingTitle": "Pending requests",
+      "outgoingEmptyTitle": "No pending requests",
+      "outgoingEmptyDescription": "Requests you send are listed here until they're accepted or declined.",
+      "accepting": "Accepting…",
+      "accept": "Accept",
+      "declining": "Declining…",
+      "decline": "Decline",
+      "cancelling": "Cancelling…",
+      "removeTitle": "Remove friend?",
+      "removeBody": "will no longer be your friend and won't be notified.",
+      "removeError": "Could not remove this friend. Please try again.",
+      "removing": "Removing…",
+      "friendsLoadError": "Could not load your friends. Please refresh the page.",
+      "emptyTitle": "No friends yet",
+      "emptyDescription": "Add a friend by username or email above to start sharing."
+    },
+    "shared": {
+      "backToFriends": "← Friends",
+      "portfolioLoadError": "Could not load this shared portfolio. Please refresh the page.",
+      "portfolioEmptyTitle": "Nothing to show yet",
+      "portfolioEmptyDescription": "{{username}} hasn't recorded any holdings in this portfolio.",
+      "portfolioChartAria": "Shared portfolio value over time",
+      "conglomerateUnavailableTitle": "This conglomerate isn't available",
+      "watchlistUnavailableTitle": "This watchlist isn't available",
+      "unavailableDescription": "The owner may have stopped sharing it, or you're no longer friends.",
+      "noPositionsTitle": "No positions",
+      "noPositionsDescription": "This conglomerate has no assets yet.",
+      "watchlistEmptyTitle": "Empty watchlist",
+      "watchlistEmptyDescription": "This friend isn't watching any assets.",
+      "sharedByReadOnly": "Shared by {{username}} · read-only",
+      "sharedByStatus": "Shared by {{username}} · {{status}}"
     }
   },
   "profile": {

@@ -5,6 +5,8 @@ import type { Time } from 'lightweight-charts';
 
 import type { Holding, PortfolioTotals } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
+import { assetTypeLabels } from '../portfolio/assetTypeLabels';
 import { getSharedPortfolio } from '../../lib/socialApi';
 import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
@@ -13,17 +15,6 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import { ItemFollowButton } from './ItemFollowButton';
 import type { AllocationSegment } from '../../ui/charts';
 import { Alert } from '../components/ui';
-
-const TYPE_LABELS: Record<string, string> = {
-  stock: 'Stocks',
-  etf: 'ETFs',
-  index: 'Indices',
-  fx: 'FX',
-  commodity: 'Commodities',
-  crypto: 'Crypto',
-  cash_like: 'Cash-like',
-  other: 'Other',
-};
 
 function DeltaPct({ value }: { value: number | null }) {
   const cls =
@@ -38,17 +29,27 @@ function DeltaPct({ value }: { value: number | null }) {
 }
 
 function TotalsHeader({ totals }: { totals: PortfolioTotals }) {
+  const t = useT();
   return (
-    <section aria-label="Portfolio totals" className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatCard label="Market value" value={<MoneyText amount={totals.marketValueEur} />} />
-      <StatCard label="Invested" value={<MoneyText amount={totals.investedEur} />} />
+    <section
+      aria-label={t('portfolio.overview.totalsAriaLabel')}
+      className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+    >
       <StatCard
-        label="Unrealized P/L"
+        label={t('portfolio.overview.field.marketValue')}
+        value={<MoneyText amount={totals.marketValueEur} />}
+      />
+      <StatCard
+        label={t('portfolio.overview.field.invested')}
+        value={<MoneyText amount={totals.investedEur} />}
+      />
+      <StatCard
+        label={t('portfolio.overview.field.unrealizedPnl')}
         value={<MoneyText amount={totals.unrealizedPnlEur} signed />}
         subValue={<DeltaPct value={totals.unrealizedPnlPct} />}
       />
       <StatCard
-        label="Day change"
+        label={t('portfolio.overview.field.dayChange')}
         value={<MoneyText amount={totals.dayChangeEur} signed />}
         subValue={<DeltaPct value={totals.dayChangePct} />}
       />
@@ -57,6 +58,7 @@ function TotalsHeader({ totals }: { totals: PortfolioTotals }) {
 }
 
 function AllocationSection({ holdings }: { holdings: Holding[] }) {
+  const t = useT();
   const byAsset: AllocationSegment[] = holdings
     .filter((h) => h.marketValueEur != null && h.marketValueEur > 0)
     .map((h) => ({ label: h.asset.symbol, value: h.marketValueEur! }));
@@ -70,22 +72,36 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
     const key = h.asset.category ?? h.asset.type;
     byTypeMap.set(key, (byTypeMap.get(key) ?? 0) + h.marketValueEur);
   }
+  const typeLabels = assetTypeLabels(t);
   const byType: AllocationSegment[] = [...byTypeMap].map(([type, value]) => ({
-    label: TYPE_LABELS[type] ?? type,
+    label: typeLabels[type] ?? type,
     value,
   }));
 
   if (byAsset.length === 0) return null;
 
   return (
-    <section aria-label="Allocation" className="grid gap-6 sm:grid-cols-2">
+    <section
+      aria-label={t('portfolio.overview.allocationAriaLabel')}
+      className="grid gap-6 sm:grid-cols-2"
+    >
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">By asset</h3>
-        <AllocationDonut data={byAsset} title="Allocation by asset" />
+        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
+          {t('portfolio.overview.allocation.byAssetTitle')}
+        </h3>
+        <AllocationDonut
+          data={byAsset}
+          title={t('portfolio.overview.allocation.byAssetChartTitle')}
+        />
       </div>
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-        <h3 className="mb-4 text-sm font-semibold text-neutral-200">By type</h3>
-        <AllocationDonut data={byType} title="Allocation by type" />
+        <h3 className="mb-4 text-sm font-semibold text-neutral-200">
+          {t('portfolio.overview.allocation.byTypeTitle')}
+        </h3>
+        <AllocationDonut
+          data={byType}
+          title={t('portfolio.overview.allocation.byTypeChartTitle')}
+        />
       </div>
     </section>
   );
@@ -96,28 +112,29 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
  * §6.9 point 4) — no expand-to-transactions, no record/edit/delete buttons.
  */
 function HoldingsTable({ holdings }: { holdings: Holding[] }) {
+  const t = useT();
   return (
     <div className="overflow-x-auto rounded-lg border border-neutral-800">
       <table className="w-full text-left text-sm">
         <thead>
           <tr className="border-b border-neutral-800 bg-neutral-900/60 text-xs uppercase tracking-wide text-neutral-500">
             <th scope="col" className="px-3 py-2">
-              Asset
+              {t('portfolio.overview.field.asset')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Qty
+              {t('portfolio.overview.field.qty')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Price
+              {t('portfolio.overview.field.price')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Market value
+              {t('portfolio.overview.field.marketValue')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Unrealized P/L
+              {t('portfolio.overview.field.unrealizedPnl')}
             </th>
             <th scope="col" className="px-3 py-2 text-right">
-              Day
+              {t('portfolio.overview.field.day')}
             </th>
           </tr>
         </thead>
@@ -168,6 +185,7 @@ function HoldingsTable({ holdings }: { holdings: Holding[] }) {
  * blocks. There is no transaction ledger and zero edit/add/delete affordances.
  */
 export function SharedPortfolioPage() {
+  const t = useT();
   const { portfolioId } = useParams<{ portfolioId: string }>();
 
   const query = useQuery({
@@ -201,9 +219,7 @@ export function SharedPortfolioPage() {
   }
 
   if (query.isError || !query.data) {
-    return (
-      <Alert tone="error">Could not load this shared portfolio. Please refresh the page.</Alert>
-    );
+    return <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>;
   }
 
   const { name, owner, totals, holdings } = query.data;
@@ -215,7 +231,7 @@ export function SharedPortfolioPage() {
           to="/social/friends"
           className="text-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
-          ← Friends
+          {t('social.shared.backToFriends')}
         </Link>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{name}</h1>
@@ -225,32 +241,44 @@ export function SharedPortfolioPage() {
             ownerId={owner.id}
           />
         </div>
-        <p className="mt-1 text-sm text-neutral-400">Shared by {owner.username} · read-only</p>
+        <p className="mt-1 text-sm text-neutral-400">
+          {t('social.shared.sharedByReadOnly', { username: owner.username })}
+        </p>
       </div>
 
       {holdings.length === 0 ? (
         <EmptyState
-          title="Nothing to show yet"
-          description={`${owner.username} hasn't recorded any holdings in this portfolio.`}
+          title={t('social.shared.portfolioEmptyTitle')}
+          description={t('social.shared.portfolioEmptyDescription', { username: owner.username })}
         />
       ) : (
         <>
           <TotalsHeader totals={totals} />
 
-          <section aria-label="Value over time" className="flex flex-col gap-3">
-            <h2 className="text-lg font-semibold text-neutral-200">Value over time</h2>
+          <section
+            aria-label={t('portfolio.overview.chart.heading')}
+            className="flex flex-col gap-3"
+          >
+            <h2 className="text-lg font-semibold text-neutral-200">
+              {t('portfolio.overview.chart.heading')}
+            </h2>
             <PriceChart
               series={chartPoints}
               mode="area"
               showRangeToggle={false}
-              ariaLabel="Shared portfolio value over time"
+              ariaLabel={t('social.shared.portfolioChartAria')}
             />
           </section>
 
           <AllocationSection holdings={holdings} />
 
-          <section aria-label="Holdings" className="flex flex-col gap-3">
-            <h2 className="text-lg font-semibold text-neutral-200">Holdings</h2>
+          <section
+            aria-label={t('portfolio.overview.holdingsAriaLabel')}
+            className="flex flex-col gap-3"
+          >
+            <h2 className="text-lg font-semibold text-neutral-200">
+              {t('portfolio.overview.holdingsHeading')}
+            </h2>
             <HoldingsTable holdings={holdings} />
           </section>
         </>

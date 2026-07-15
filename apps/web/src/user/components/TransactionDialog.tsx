@@ -12,7 +12,7 @@ import type {
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
-import { useT, type TranslateFn } from '../../i18n';
+import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import {
@@ -29,13 +29,7 @@ import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
-import {
-  dateForPrice,
-  priceForDate,
-  toDailyPoints,
-  weekdayShort,
-  type DailyPoint,
-} from './priceDateLink';
+import { dateForPrice, priceForDate, toDailyPoints, type DailyPoint } from './priceDateLink';
 import { Alert, Button, cx } from './ui';
 
 /** Compact native-currency suffix for the Price field (falls back to the code). */
@@ -454,6 +448,13 @@ function orderTotalForRow(row: Row): number | null {
   return row.side === 'buy' ? gross + fee : gross - fee;
 }
 
+/** Short weekday for a YYYY-MM-DD date in the active UI language (not the number-format locale). */
+function localeWeekdayShort(locale: string, date: string): string {
+  return new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(
+    new Date(`${date}T00:00:00.000Z`),
+  );
+}
+
 /**
  * Record / edit transactions (PROJECTPLAN.md §6.9, §7.3 `TransactionDialog`).
  * Single (locked asset or free search pick), edit, and bulk-prefilled in one
@@ -461,7 +462,7 @@ function orderTotalForRow(row: Row): number | null {
  */
 export function TransactionDialog(props: TransactionDialogProps) {
   const { portfolioId, onClose, onSubmitted, transaction } = props;
-  const t = useT();
+  const { locale, t } = useI18n();
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
@@ -552,12 +553,16 @@ export function TransactionDialog(props: TransactionDialogProps) {
     if (!linked || !hasSeries) return;
     const res = priceForDate(series!, date);
     if (!res) {
-      setLinkNote('No price data on or before that date.');
+      setLinkNote(t('portfolio.transaction.linkNoData'));
       return;
     }
     setSingleRow({ price: truncateMoneyForInput(res.price) });
     setPriceAuto(true);
-    setLinkNote(res.adjusted ? `Market closed — using ${weekdayShort(res.date)} close.` : null);
+    setLinkNote(
+      res.adjusted
+        ? t('portfolio.transaction.linkClosedNote', { day: localeWeekdayShort(locale, res.date) })
+        : null,
+    );
   }
 
   /** Price drives date: jump to the most recent day the series was at that price. */
@@ -569,7 +574,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     if (!Number.isFinite(price) || price <= 0) return;
     const res = dateForPrice(series!, price);
     if (!res) {
-      setLinkNote('Never at this price in available history.');
+      setLinkNote(t('portfolio.transaction.linkNeverAtPrice'));
       return;
     }
     setSingleRow({ date: res.date });
@@ -1126,9 +1131,10 @@ export interface RowUncovered {
 
 /** Small "auto" marker so a fetched value is never mistaken for a typed one. */
 function AutoHint() {
+  const t = useT();
   return (
     <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide text-[#F6B82E]">
-      auto
+      {t('portfolio.transaction.autoHint')}
     </span>
   );
 }
@@ -1737,7 +1743,11 @@ function RowFields({
                   onClick={link.onToggle}
                   disabled={link.loading}
                   aria-pressed={link.linked}
-                  aria-label={link.linked ? 'Unlink date and price' : 'Link date and price'}
+                  aria-label={
+                    link.linked
+                      ? t('portfolio.transaction.unlinkAria')
+                      : t('portfolio.transaction.linkAria')
+                  }
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
                     'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F6B82E]',
@@ -1761,7 +1771,7 @@ function RowFields({
       {link ? (
         <p className="-mt-3 text-xs text-neutral-500" role="status">
           {link.loading
-            ? 'Loading price history…'
+            ? t('portfolio.transaction.priceHistoryLoading')
             : link.linked
               ? t('portfolio.transaction.linkHint')
               : t('portfolio.transaction.linkManualHint')}
@@ -1778,19 +1788,21 @@ function RowFields({
             <>
               ≈{' '}
               <span className="font-mono text-neutral-200">{formatQuantity(derived.quantity)}</span>{' '}
-              {symbol} · records{' '}
+              {symbol} {t('portfolio.transaction.derivedRecords')}{' '}
               <span className="font-mono text-neutral-200">
                 {formatMoney(derived.recordedAmount, row.asset.currency)}
               </span>
               {Math.abs(derived.residual) >= 0.005
-                ? ` (${derived.residual > 0 ? '+' : '−'}${formatMoney(
-                    Math.abs(derived.residual),
-                    row.asset.currency,
-                  )} vs entered, from 8-decimal rounding)`
+                ? t('portfolio.transaction.derivedResidual', {
+                    delta: `${derived.residual > 0 ? '+' : '−'}${formatMoney(
+                      Math.abs(derived.residual),
+                      row.asset.currency,
+                    )}`,
+                  })
                 : ''}
             </>
           ) : (
-            'Enter a price and amount above 0 to derive the quantity.'
+            t('portfolio.transaction.derivedPrompt')
           )}
         </p>
       ) : null}

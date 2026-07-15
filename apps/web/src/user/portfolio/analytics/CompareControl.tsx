@@ -118,7 +118,9 @@ export function CompareControl({
           label={t('portfolio.analytics.compare.pickPortfolio')}
           placeholder={t('portfolio.analytics.compare.pickPortfolioPlaceholder')}
           emptyLabel={t('portfolio.analytics.compare.noPortfolios')}
+          errorLabel={t('common.genericError')}
           loading={portfoliosQuery.isLoading}
+          error={portfoliosQuery.isError}
           options={otherPortfolios.map((p) => ({ id: p.id, name: p.name }))}
           selectedId={value?.kind === 'portfolio' ? value.id : ''}
           onPick={(id, name) => onChange({ kind: 'portfolio', id, label: name })}
@@ -130,7 +132,9 @@ export function CompareControl({
           label={t('portfolio.analytics.compare.pickConglomerate')}
           placeholder={t('portfolio.analytics.compare.pickConglomeratePlaceholder')}
           emptyLabel={t('portfolio.analytics.compare.noConglomerates')}
+          errorLabel={t('common.genericError')}
           loading={conglomeratesQuery.isLoading}
+          error={conglomeratesQuery.isError}
           options={conglomerates.map((c) => ({ id: c.id, name: c.name }))}
           selectedId={value?.kind === 'conglomerate' ? value.id : ''}
           onPick={(id, name) => onChange({ kind: 'conglomerate', id, label: name })}
@@ -140,12 +144,14 @@ export function CompareControl({
   );
 }
 
-/** A labelled `<select>` over `{id,name}` options, with loading + empty states. */
+/** A labelled `<select>` over `{id,name}` options, with loading + error + empty states. */
 function PickerSelect({
   label,
   placeholder,
   emptyLabel,
+  errorLabel,
   loading,
+  error,
   options,
   selectedId,
   onPick,
@@ -153,13 +159,18 @@ function PickerSelect({
   label: string;
   placeholder: string;
   emptyLabel: string;
+  errorLabel: string;
   loading: boolean;
+  error: boolean;
   options: { id: string; name: string }[];
   selectedId: string;
   onPick: (id: string, name: string) => void;
 }) {
   if (loading) {
     return <p className="text-xs text-neutral-500">{placeholder}</p>;
+  }
+  if (error) {
+    return <p className="text-xs text-rose-400">{errorLabel}</p>;
   }
   if (options.length === 0) {
     return <p className="text-xs text-neutral-500">{emptyLabel}</p>;

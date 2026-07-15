@@ -72,7 +72,9 @@ export function FollowButton({
   }
 
   const isFollowing = followingQuery.data?.following.some((f) => f.user.id === userId) ?? false;
-  const busy = followMutation.isPending || unfollowMutation.isPending;
+  // Also hold the button while the following set is still loading, so a click
+  // can't act on a not-yet-known state (it would flash Follow → Following).
+  const busy = followMutation.isPending || unfollowMutation.isPending || followingQuery.isLoading;
 
   if (isFollowing) {
     return (

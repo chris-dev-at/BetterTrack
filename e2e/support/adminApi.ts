@@ -19,6 +19,42 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   }
 }
 
+/** The four global registration modes (§6.12) — mirrors `@bettertrack/contracts`. */
+export type RegistrationMode = 'closed' | 'invite_token' | 'approval' | 'open';
+
+/**
+ * Reads the current global registration mode via `GET /admin/settings`, so a
+ * spec that flips it can restore the exact prior state afterwards.
+ */
+export async function getRegistrationMode(request: APIRequestContext): Promise<RegistrationMode> {
+  const res = await request.get(`${API_BASE_URL}/api/v1/admin/settings`);
+  if (!res.ok()) {
+    throw new Error(`Reading app settings failed: ${res.status()} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { registrationMode: RegistrationMode };
+  return body.registrationMode;
+}
+
+/**
+ * Switches the global registration mode via `PATCH /admin/settings` (§6.12,
+ * live change — no restart). Test setup only; callers must restore the prior
+ * mode so the rest of the suite keeps the seed default.
+ */
+export async function setRegistrationMode(
+  request: APIRequestContext,
+  mode: RegistrationMode,
+): Promise<void> {
+  const res = await request.patch(`${API_BASE_URL}/api/v1/admin/settings`, {
+    headers: CSRF_HEADERS,
+    data: { registrationMode: mode },
+  });
+  if (!res.ok()) {
+    throw new Error(
+      `Setting registration mode ${mode} failed: ${res.status()} ${await res.text()}`,
+    );
+  }
+}
+
 /**
  * Creates an invite for `email` via the admin API and returns its token, so
  * the spec can drive the real invite-accept page in a browser context. Test

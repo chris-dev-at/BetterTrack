@@ -349,9 +349,9 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
               key={token.id}
               className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
             >
-              <span className="flex flex-col gap-0.5">
+              <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="flex items-center gap-2 text-sm text-neutral-100">
-                  {token.label ?? 'Untitled token'}
+                  <span className="truncate">{token.label ?? 'Untitled token'}</span>
                   <Badge tone={TOKEN_STATUS_TONE[token.status]}>{token.status}</Badge>
                 </span>
                 <span className="text-xs text-neutral-500">
@@ -425,9 +425,9 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
               key={req.id}
               className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
             >
-              <span className="flex flex-col gap-0.5">
-                <span className="text-sm text-neutral-100">{req.username}</span>
-                <span className="text-xs text-neutral-500">
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="truncate text-sm text-neutral-100">{req.username}</span>
+                <span className="break-words text-xs text-neutral-500">
                   {req.email} · requested {formatDateTime(req.createdAt)}
                 </span>
               </span>

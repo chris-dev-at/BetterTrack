@@ -14,6 +14,7 @@ import {
 } from 'lightweight-charts';
 import { useEffect, useRef, useState } from 'react';
 
+import { useT } from '../../i18n';
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
 import { formatPercent } from '../../lib/format';
@@ -147,8 +148,9 @@ export function PriceChart({
   emptyMessage,
   height = 320,
   className,
-  ariaLabel = 'Price chart',
+  ariaLabel,
 }: PriceChartProps) {
+  const t = useT();
   // Controlled when `range` is provided; otherwise track internally so the
   // toggle works standalone (and in tests with no parent).
   const [internalRange, setInternalRange] = useState<PriceRange>(range ?? defaultRange);
@@ -377,7 +379,7 @@ export function PriceChart({
 
       {loading ? (
         <div className="grid place-items-center rounded-md bg-neutral-900/40" style={{ height }}>
-          <Spinner label="Loading chart…" />
+          <Spinner label={t('common.charts.loadingChart')} />
         </div>
       ) : isEmpty ? (
         <div
@@ -385,13 +387,13 @@ export function PriceChart({
           className="grid place-items-center rounded-md bg-neutral-900/40 text-sm text-neutral-500"
           style={{ height }}
         >
-          {emptyMessage ?? 'No price data for this range yet.'}
+          {emptyMessage ?? t('common.charts.noPriceData')}
         </div>
       ) : (
         <div
           ref={containerRef}
           role="img"
-          aria-label={ariaLabel}
+          aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
           className="w-full"
           style={{ height }}
         />
@@ -409,10 +411,11 @@ function RangeToggle({
   ranges: readonly PriceRange[];
   onSelect: (range: PriceRange) => void;
 }) {
+  const t = useT();
   return (
     <div
       role="group"
-      aria-label="Select chart range"
+      aria-label={t('common.charts.selectRange')}
       className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
     >
       {ranges.map((token) => {

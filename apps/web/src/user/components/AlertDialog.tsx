@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 
 import type { Alert, AlertKind, CreateAlertRequest } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ALERTS_QUERY_KEY, createAlert, updateAlert } from '../../lib/alertsApi';
 import { ApiError } from '../../lib/apiClient';
 import { formatMoney } from '../../lib/format';
@@ -33,14 +34,14 @@ export interface AlertDialogProps {
   existing?: Alert | null;
 }
 
-/** Group the kinds under their caption for the `<optgroup>` layout. */
-function groupedKinds(): { group: string; kinds: AlertKind[] }[] {
-  const groups: { group: string; kinds: AlertKind[] }[] = [];
+/** Group the kinds under their caption key for the `<optgroup>` layout. */
+function groupedKinds(): { groupKey: string; kinds: AlertKind[] }[] {
+  const groups: { groupKey: string; kinds: AlertKind[] }[] = [];
   for (const kind of ALERT_KIND_ORDER) {
-    const { group } = ALERT_KIND_META[kind];
+    const { groupKey } = ALERT_KIND_META[kind];
     const last = groups[groups.length - 1];
-    if (last && last.group === group) last.kinds.push(kind);
-    else groups.push({ group, kinds: [kind] });
+    if (last && last.groupKey === groupKey) last.kinds.push(kind);
+    else groups.push({ groupKey, kinds: [kind] });
   }
   return groups;
 }
@@ -56,6 +57,7 @@ function groupedKinds(): { group: string; kinds: AlertKind[] }[] {
  *   the threshold and repeat behaviour are editable.
  */
 export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertDialogProps) {
+  const t = useT();
   const queryClient = useQueryClient();
   const editing = !!existing;
 
@@ -103,12 +105,12 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
     e.preventDefault();
     setFormError(null);
     if (!selectedAsset) {
-      setFormError('Pick an asset for this alert.');
+      setFormError(t('workboard.alerts.dialog.errorNoAsset'));
       return;
     }
     const value = Number(threshold);
     if (!threshold.trim() || !Number.isFinite(value) || value <= 0) {
-      setFormError('Enter a threshold greater than 0.');
+      setFormError(t('workboard.alerts.dialog.errorThreshold'));
       return;
     }
     mutation.mutate();
@@ -134,16 +136,18 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
     (mutation.error instanceof ApiError
       ? mutation.error.message
       : mutation.error
-        ? 'Could not save the alert. Please try again.'
+        ? t('workboard.alerts.dialog.saveError')
         : null);
 
   return (
     <Dialog
-      title={editing ? 'Edit alert' : 'New price alert'}
+      title={
+        editing ? t('workboard.alerts.dialog.editTitle') : t('workboard.alerts.dialog.createTitle')
+      }
       description={
         editing
-          ? 'The rule kind and asset are fixed — adjust the threshold or repeat behaviour.'
-          : 'Get notified when this rule fires. Alerts are evaluated every minute against the latest quote.'
+          ? t('workboard.alerts.dialog.editDescription')
+          : t('workboard.alerts.dialog.createDescription')
       }
       onClose={onClose}
     >
@@ -161,15 +165,17 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
                 onClick={() => setSelectedAsset(null)}
                 className="shrink-0 text-xs font-medium text-sky-400 hover:text-sky-300"
               >
-                Change
+                {t('workboard.alerts.dialog.changeAsset')}
               </button>
             ) : null}
           </div>
         ) : (
           <div className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-neutral-300">Asset</span>
+            <span className="text-sm font-medium text-neutral-300">
+              {t('workboard.alerts.dialog.assetLabel')}
+            </span>
             <AssetSearchBox
-              placeholder="Search an asset to alert on…"
+              placeholder={t('workboard.alerts.dialog.assetPlaceholder')}
               onSelect={(item) =>
                 setSelectedAsset({
                   id: item.id,
@@ -185,11 +191,11 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
         {/* Kind — a grouped selector when creating; locked in edit mode. */}
         <div className="flex flex-col gap-1.5">
           <label htmlFor="alert-kind" className="text-sm font-medium text-neutral-300">
-            When
+            {t('workboard.alerts.dialog.whenLabel')}
           </label>
           {editing ? (
             <p className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-300 ring-1 ring-inset ring-neutral-700">
-              {kindMeta.label}
+              {t(kindMeta.labelKey)}
             </p>
           ) : (
             <select
@@ -199,10 +205,10 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
               className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
             >
               {groups.map((g) => (
-                <optgroup key={g.group} label={g.group}>
+                <optgroup key={g.groupKey} label={t(g.groupKey)}>
                   {g.kinds.map((k) => (
                     <option key={k} value={k}>
-                      {ALERT_KIND_META[k].label}
+                      {t(ALERT_KIND_META[k].labelKey)}
                     </option>
                   ))}
                 </optgroup>
@@ -214,7 +220,9 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
         {/* Threshold — price or percent per the kind. */}
         <div className="flex flex-col gap-1.5">
           <label htmlFor="alert-threshold" className="text-sm font-medium text-neutral-300">
-            {kindMeta.unit === 'price' ? `Threshold price (${currency})` : 'Percent change'}
+            {kindMeta.unit === 'price'
+              ? t('workboard.alerts.dialog.thresholdPrice', { currency })
+              : t('workboard.alerts.dialog.thresholdPercent')}
           </label>
           <div className="flex items-center gap-2">
             <input
@@ -235,10 +243,14 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
           {kindMeta.ref ? (
             <p className="text-xs text-neutral-500">
               {editing && existing?.refPrice != null
-                ? `Measured from the reference captured at creation (${formatMoney(existing.refPrice, currency)}).`
+                ? t('workboard.alerts.dialog.refMeasured', {
+                    price: formatMoney(existing.refPrice, currency),
+                  })
                 : referencePrice != null
-                  ? `The current price (${formatMoney(referencePrice, currency)}) is captured as the reference when you create this alert.`
-                  : 'The current market price is captured as the reference when you create this alert.'}
+                  ? t('workboard.alerts.dialog.refWillCapture', {
+                      price: formatMoney(referencePrice, currency),
+                    })
+                  : t('workboard.alerts.dialog.refWillCaptureNoPrice')}
             </p>
           ) : null}
         </div>
@@ -252,11 +264,11 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
             className="mt-0.5 h-4 w-4 rounded border-neutral-600 bg-neutral-950 text-sky-500 focus:ring-sky-500"
           />
           <span className="text-sm text-neutral-300">
-            Repeat
+            {t('workboard.alerts.dialog.repeatLabel')}
             <span className="block text-xs text-neutral-500">
               {repeat
-                ? 'Re-fires on every crossing, at most once per 24 h.'
-                : 'One-shot — fires once, then pauses until you re-arm it.'}
+                ? t('workboard.alerts.dialog.repeatOnHint')
+                : t('workboard.alerts.dialog.repeatOffHint')}
             </span>
           </span>
         </label>
@@ -265,10 +277,14 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
 
         <div className={cx('flex justify-end gap-2')}>
           <Button variant="secondary" onClick={onClose} disabled={mutation.isPending}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button type="submit" disabled={mutation.isPending}>
-            {mutation.isPending ? 'Saving…' : editing ? 'Save changes' : 'Create alert'}
+            {mutation.isPending
+              ? t('common.saving')
+              : editing
+                ? t('workboard.alerts.dialog.saveChanges')
+                : t('workboard.alerts.dialog.create')}
           </Button>
         </div>
       </form>

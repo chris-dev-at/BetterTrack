@@ -3,12 +3,14 @@ import { Link } from 'react-router-dom';
 
 import type { Alert } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ALERTS_QUERY_KEY, deleteAlert, rearmAlert } from '../../lib/alertsApi';
 import { formatDateTime } from '../../lib/format';
 import { ALERT_STATUS_META, describeAlertRule } from './alertMeta';
 import { Alert as AlertBanner, cx } from './ui';
 
 function StatusBadge({ alert }: { alert: Alert }) {
+  const t = useT();
   const meta = ALERT_STATUS_META[alert.status];
   return (
     <span
@@ -17,7 +19,7 @@ function StatusBadge({ alert }: { alert: Alert }) {
         meta.className,
       )}
     >
-      {meta.label}
+      {t(meta.labelKey)}
     </span>
   );
 }
@@ -31,6 +33,7 @@ function AlertRow({
   showAsset: boolean;
   onEdit: (alert: Alert) => void;
 }) {
+  const t = useT();
   const queryClient = useQueryClient();
 
   const rearmMutation = useMutation({
@@ -57,18 +60,22 @@ function AlertRow({
             </Link>
           ) : null}
           <p className="text-sm font-medium text-neutral-100">
-            {describeAlertRule(alert, alert.asset.currency)}
+            {describeAlertRule(t, alert, alert.asset.currency)}
           </p>
         </div>
         <StatusBadge alert={alert} />
       </div>
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-neutral-500">
-        <span>{alert.repeat ? 'Repeat (24 h)' : 'One-shot'}</span>
+        <span>
+          {alert.repeat ? t('workboard.alerts.list.repeat') : t('workboard.alerts.list.oneShot')}
+        </span>
         {alert.lastTriggeredAt ? (
-          <span>Last fired {formatDateTime(alert.lastTriggeredAt)}</span>
+          <span>
+            {t('workboard.alerts.list.lastFired', { time: formatDateTime(alert.lastTriggeredAt) })}
+          </span>
         ) : (
-          <span>Never fired</span>
+          <span>{t('workboard.alerts.list.neverFired')}</span>
         )}
       </div>
 
@@ -80,7 +87,9 @@ function AlertRow({
             disabled={busy}
             className="font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
           >
-            {rearmMutation.isPending ? 'Re-arming…' : 'Re-arm'}
+            {rearmMutation.isPending
+              ? t('workboard.alerts.list.rearming')
+              : t('workboard.alerts.list.rearm')}
           </button>
         ) : null}
         <button
@@ -89,7 +98,7 @@ function AlertRow({
           disabled={busy}
           className="font-medium text-neutral-300 hover:text-neutral-100 disabled:cursor-not-allowed disabled:text-neutral-600"
         >
-          Edit
+          {t('common.edit')}
         </button>
         <button
           type="button"
@@ -97,12 +106,12 @@ function AlertRow({
           disabled={busy}
           className="font-medium text-red-400 hover:text-red-300 disabled:cursor-not-allowed disabled:text-neutral-600"
         >
-          {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+          {deleteMutation.isPending ? t('workboard.alerts.list.deleting') : t('common.delete')}
         </button>
       </div>
 
       {rearmMutation.isError || deleteMutation.isError ? (
-        <AlertBanner tone="error">Couldn't update that alert. Please try again.</AlertBanner>
+        <AlertBanner tone="error">{t('workboard.alerts.list.updateError')}</AlertBanner>
       ) : null}
     </li>
   );

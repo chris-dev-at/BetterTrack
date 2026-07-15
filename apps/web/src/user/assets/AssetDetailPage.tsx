@@ -103,6 +103,7 @@ function AssetHeader({
   detail: AssetDetailResponse;
   liveQuote: QuoteResponse | undefined;
 }) {
+  const t = useT();
   const { asset } = detail;
   // Prefer the most recent quote: live-poll result first, then initial detail.
   const quote = liveQuote?.quote ?? detail.quote;
@@ -166,11 +167,11 @@ function AssetHeader({
       <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-500">
         {stale ? (
           <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-amber-400 ring-1 ring-amber-800">
-            Stale
+            {t('assets.detail.stale')}
           </span>
         ) : null}
-        {asOf ? <span>As of {formatDateTime(asOf)}</span> : null}
-        <span>Data may be delayed.</span>
+        {asOf ? <span>{t('assets.detail.asOf', { time: formatDateTime(asOf) })}</span> : null}
+        <span>{t('assets.detail.delayedNote')}</span>
       </div>
     </div>
   );
@@ -213,6 +214,7 @@ function AlertsSection({
   asset: AlertDialogAsset;
   referencePrice: number | null;
 }) {
+  const t = useT();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<AlertType | null>(null);
 
@@ -229,23 +231,23 @@ function AlertsSection({
     <section aria-labelledby="alerts-heading" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         <h2 id="alerts-heading" className="text-base font-semibold text-neutral-200">
-          Your alerts on this asset
+          {t('assets.detail.alerts.title')}
         </h2>
         <Button variant="secondary" onClick={() => setCreating(true)}>
-          + New alert
+          {t('workboard.alerts.newAlert')}
         </Button>
       </div>
 
       {isLoading ? (
         <Skeleton height="h-24" />
       ) : isError ? (
-        <Alert tone="error">Could not load your alerts. Please try again.</Alert>
+        <Alert tone="error">{t('assets.detail.alerts.loadError')}</Alert>
       ) : alerts.length === 0 ? (
         <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
           <EmptyState
             icon="🔔"
-            title="No alerts on this asset yet"
-            description="Create an alert to get notified when it crosses a price or moves by a percentage."
+            title={t('assets.detail.alerts.emptyTitle')}
+            description={t('assets.detail.alerts.emptyDescription')}
           />
         </div>
       ) : (
@@ -265,16 +267,17 @@ function AlertsSection({
 }
 
 function AppearsInSection() {
+  const t = useT();
   return (
     <section aria-labelledby="appears-in-heading" className="flex flex-col gap-3">
       <h2 id="appears-in-heading" className="text-base font-semibold text-neutral-200">
-        Appears in
+        {t('assets.detail.appearsIn.title')}
       </h2>
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
         <EmptyState
           icon="📂"
-          title="Not in any conglomerate or portfolio"
-          description="Add this asset to a conglomerate or record a transaction to see it here."
+          title={t('assets.detail.appearsIn.emptyTitle')}
+          description={t('assets.detail.appearsIn.emptyDescription')}
         />
       </div>
     </section>
@@ -333,6 +336,7 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
  * General + a specific-list picker stub, mirroring #256's search rows).
  */
 function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: string }) {
+  const t = useT();
   const { watchedIds } = useWatchlistMembership();
   const addMutation = useAddToWatchlist();
   const [listPickerOpen, setListPickerOpen] = useState(false);
@@ -422,7 +426,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
       ) : null}
 
       {addMutation.isError ? (
-        <Alert tone="error">Failed to add to Watchlist. Please try again.</Alert>
+        <Alert tone="error">{t('assets.detail.watchlistAddError')}</Alert>
       ) : null}
     </div>
   );
@@ -571,18 +575,19 @@ function usePollFallbackFrames(
 
 /** Quick actions (§6.3): reachable near the top, right under the header. */
 function ActionBar({ assetId, symbol }: { assetId: string; symbol: string }) {
+  const t = useT();
   return (
     <section aria-labelledby="actions-heading" className="flex flex-col gap-3">
       <h2 id="actions-heading" className="sr-only">
-        Quick actions
+        {t('assets.detail.quickActions')}
       </h2>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" disabled title="Coming soon">
-            + Portfolio
+          <Button variant="secondary" disabled title={t('common.comingSoon')}>
+            {t('assets.detail.addToPortfolio')}
           </Button>
-          <Button variant="secondary" disabled title="Coming soon">
-            + Conglomerate
+          <Button variant="secondary" disabled title={t('common.comingSoon')}>
+            {t('assets.detail.addToConglomerate')}
           </Button>
         </div>
         <WatchlistIconButton assetId={assetId} symbol={symbol} />
@@ -666,12 +671,9 @@ export function AssetDetailPage() {
     return (
       <div className="flex flex-col gap-4">
         <Link to="/assets/search" className="text-sm text-sky-400 hover:underline">
-          ← Back to Search
+          {t('assets.detail.backToSearch')}
         </Link>
-        <Alert tone="error">
-          Could not load asset details. The asset may not exist or the server is temporarily
-          unavailable.
-        </Alert>
+        <Alert tone="error">{t('assets.detail.loadError')}</Alert>
       </div>
     );
   }
@@ -688,7 +690,7 @@ export function AssetDetailPage() {
     <div className="flex flex-col gap-8">
       <div className="flex items-center gap-3">
         <Link to="/assets/search" className="text-sm text-neutral-500 hover:text-neutral-300">
-          ← Search
+          {t('assets.detail.backShort')}
         </Link>
       </div>
 
@@ -751,9 +753,7 @@ export function AssetDetailPage() {
         referencePrice={quoteQuery.data?.quote?.price ?? detail.quote?.price ?? null}
       />
 
-      <Disclaimer>
-        Market data comes from an unofficial source and may be delayed or inaccurate.
-      </Disclaimer>
+      <Disclaimer>{t('assets.detail.disclaimer')}</Disclaimer>
     </div>
   );
 }

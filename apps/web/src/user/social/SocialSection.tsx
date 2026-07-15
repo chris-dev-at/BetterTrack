@@ -31,10 +31,6 @@ export function SocialLayout() {
 // ─── Not-yet-built surfaces (own feature issues) ──────────────────────────────
 
 export function SocialIdeasPage() {
-  return (
-    <ComingSoon
-      title="Ideas"
-      description="A lightweight feed of investment ideas shared between friends."
-    />
-  );
+  const t = useT();
+  return <ComingSoon title={t('social.ideas.title')} description={t('social.ideas.description')} />;
 }
