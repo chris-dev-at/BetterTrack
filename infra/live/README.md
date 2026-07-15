@@ -30,7 +30,7 @@ box. In order:
 3. **Self-update** — when `infra/live/updater.sh` differs from the running
    control-dir copy, the updater copies it over, byte-verifies the copy
    converged (the restart-loop guard), then restarts its own container as the
-   tick's last action so the *next* tick runs the new version.
+   tick's last action so the _next_ tick runs the new version.
 
 Failures in any step are logged (`edge-sync:` / `edge-conf:` / `self-update:`
 prefixes in `logs/updater.log`) but never fail the deploy — `deployed.sha` is
