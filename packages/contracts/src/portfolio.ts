@@ -496,8 +496,13 @@ export type PortfolioResponse = z.infer<typeof portfolioResponseSchema>;
 
 // --- Value over time (`GET /portfolios/:id/history`) ----------------------------
 
-/** Portfolio history ranges (§6.9): 1M / 6M / 1Y / Max. */
-export const PORTFOLIO_HISTORY_RANGES = ['1M', '6M', '1Y', 'MAX'] as const;
+/**
+ * Portfolio history ranges (§6.9 + V4-P0): 1D / 1W / 1M / 6M / 1Y / 5Y / MAX.
+ * The stored series is daily-resolution, so 1D/1W windows the same daily
+ * series (no intraday sourcing — that's Live Mode). Portfolios younger than
+ * the selected span degrade to whatever exists, never a broken empty chart.
+ */
+export const PORTFOLIO_HISTORY_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y', 'MAX'] as const;
 export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
 export type PortfolioHistoryRange = z.infer<typeof portfolioHistoryRangeSchema>;
 

@@ -499,15 +499,13 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
 describe('PortfolioPage — value chart range toggle', () => {
   beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
 
-  test('offers only 1M/1Y/Max — no 6M or 5Y buttons', async () => {
+  test('offers 1D/1W/1M/6M/1Y/5Y/Max (V4-P0 spans) — 3M stays intentionally omitted', async () => {
     renderPage();
     // Wait on the headline net-worth figure (#311) — unique on the page.
     await waitFor(() => expect(screen.getByText('326.350,00 €')).toBeInTheDocument());
-    for (const r of ['1M', '1Y', 'Max']) {
+    for (const r of ['1D', '1W', '1M', '6M', '1Y', '5Y', 'Max']) {
       expect(screen.getByRole('button', { name: r })).toBeInTheDocument();
     }
-    expect(screen.queryByRole('button', { name: '6M' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: '5Y' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '3M' })).not.toBeInTheDocument();
   });
 });

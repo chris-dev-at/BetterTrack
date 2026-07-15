@@ -1211,6 +1211,111 @@ describe('GET /api/v1/portfolios/:id/history (performance-% mode, #125)', () => 
   });
 });
 
+describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => {
+  /** Deterministic marketing-friendly ladder: every 30 d back through the last 5 y. */
+  async function seed30DayLadder(h: TestHarness) {
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(h, { currency: 'EUR' });
+    // 60 stored closes at 30-day steps: −(60·30) days … today. Prices step by
+    // 1 unit per stop, so any window's endpoints have known values.
+    const rows: { assetId: string; date: string; close: string }[] = [];
+    for (let i = 60; i >= 0; i -= 1) {
+      rows.push({ assetId: asset.id, date: dayOffset(-i * 30), close: `${100 + (60 - i)}` });
+    }
+    await h.db.insert(schema.priceHistory).values(rows);
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        executedAt: tsOffset(-60 * 30),
+      });
+    return { agent, pid };
+  }
+
+  it('1D windows to at most yesterday-onwards, 1W to at most the last week', async () => {
+    const { agent, pid } = await seed30DayLadder(harness);
+
+    const day = await agent.get(`/api/v1/portfolios/${pid}/history?range=1D`);
+    expect(day.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(day.body).success).toBe(true);
+    // Cutoff = yesterday: every returned point sits at or after yesterday.
+    const dayCutoff = dayOffset(-1);
+    for (const p of day.body.points as Array<{ date: string }>) {
+      expect(p.date >= dayCutoff).toBe(true);
+    }
+
+    const week = await agent.get(`/api/v1/portfolios/${pid}/history?range=1W`);
+    expect(week.status).toBe(200);
+    const weekCutoff = dayOffset(-7);
+    for (const p of week.body.points as Array<{ date: string }>) {
+      expect(p.date >= weekCutoff).toBe(true);
+    }
+    // 1W is a strict superset of 1D.
+    expect((week.body.points as unknown[]).length).toBeGreaterThanOrEqual(
+      (day.body.points as unknown[]).length,
+    );
+  });
+
+  it('5Y windows to at most 5 years back, and is a strict superset of 1Y', async () => {
+    const { agent, pid } = await seed30DayLadder(harness);
+
+    const five = await agent.get(`/api/v1/portfolios/${pid}/history?range=5Y`);
+    expect(five.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(five.body).success).toBe(true);
+    // Every point sits at or after ~5y ago; a slack of a week absorbs the
+    // month-clamp difference between "5 · 12 months" and "1830 days".
+    for (const p of five.body.points as Array<{ date: string }>) {
+      expect(p.date >= dayOffset(-1830 - 7)).toBe(true);
+    }
+    expect((five.body.points as unknown[]).length).toBeGreaterThanOrEqual(1);
+
+    const year = await agent.get(`/api/v1/portfolios/${pid}/history?range=1Y`);
+    expect(year.status).toBe(200);
+    expect((five.body.points as unknown[]).length).toBeGreaterThanOrEqual(
+      (year.body.points as unknown[]).length,
+    );
+    // Silent-drop safety: 5Y is never longer than MAX.
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(max.status).toBe(200);
+    expect((max.body.points as unknown[]).length).toBeGreaterThanOrEqual(
+      (five.body.points as unknown[]).length,
+    );
+  });
+
+  it('graceful when history is shorter than the selected range (5Y over a 3-day portfolio → whole history)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness, { currency: 'EUR' });
+    await harness.db.insert(schema.priceHistory).values([
+      { assetId: asset.id, date: dayOffset(-2), close: '100' },
+      { assetId: asset.id, date: dayOffset(-1), close: '110' },
+    ]);
+    await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId: asset.id, side: 'buy', quantity: 1, price: 100, executedAt: tsOffset(-2) });
+
+    const five = await agent.get(`/api/v1/portfolios/${pid}/history?range=5Y`);
+    expect(five.status).toBe(200);
+    expect(portfolioHistoryResponseSchema.safeParse(five.body).success).toBe(true);
+    // No crash, no broken empty chart — the whole 3-day series comes through.
+    expect((five.body.points as unknown[]).length).toBeGreaterThan(0);
+
+    const day = await agent.get(`/api/v1/portfolios/${pid}/history?range=1D`);
+    expect(day.status).toBe(200);
+    // Even 1D degrades gracefully on a portfolio started 2 d ago — the slice
+    // just yields whatever falls inside the last day (possibly zero points).
+    expect(Array.isArray(day.body.points)).toBe(true);
+  });
+});
+
 describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', () => {
   /** Deterministic daily closes for the last 7 calendar days (−6 … today). */
   function marketCloses(): Map<string, number> {

@@ -1,5 +1,6 @@
 import type {
   AnalyticsContributionRow,
+  AnalyticsInflationPreset,
   AnalyticsMode,
   AnalyticsSeries,
   AnalyticsSeriesPoint,
@@ -13,6 +14,7 @@ import {
   computeContributions,
   computeSeriesStats,
   deflateSeries,
+  indexAveragePctPerYear,
   toPerformanceSeries,
   type Deflator,
   type StatSeriesPoint,
@@ -22,7 +24,24 @@ import type { MarketDataService } from '../../providers';
 import type { BacktestService } from '../backtest/backtestService';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
 import type { PortfolioService } from '../portfolio/portfolioService';
-import { INFLATION_INDEX_SERIES } from './inflationSeries';
+import { INFLATION_INDEX_SERIES, INFLATION_PRESET_IDS } from './inflationSeries';
+
+/**
+ * Preset metadata (V4-P0): each checked-in index preset's headline %/yr,
+ * computed once at module load from the domain's {@link indexAveragePctPerYear}
+ * so the analytics response can label each preset with its effective annual
+ * rate. Static per deployment (the series data ships with the code), so
+ * cheap to inline in every response. `Object.freeze` guards the shared tuple
+ * against accidental mutation by callers.
+ */
+const INFLATION_PRESETS: AnalyticsInflationPreset[] = Object.freeze(
+  INFLATION_PRESET_IDS.map(
+    (id): AnalyticsInflationPreset => ({
+      id,
+      pctPerYear: indexAveragePctPerYear(INFLATION_INDEX_SERIES[id].monthly),
+    }),
+  ),
+) as AnalyticsInflationPreset[];
 
 /**
  * Analytics deep-dive service (PROJECTPLAN §13.3 V3-P9).
@@ -370,6 +389,7 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
               pctPerYear: query.inflation === 'flat' ? (query.inflationRate ?? null) : null,
             }
           : null,
+        inflationPresets: INFLATION_PRESETS,
         primary,
         compare,
         contributions,

@@ -186,6 +186,22 @@ export const analyticsInflationAppliedSchema = z
   .strict();
 export type AnalyticsInflationApplied = z.infer<typeof analyticsInflationAppliedSchema>;
 
+/**
+ * One inflation-index preset's headline number (V4-P0): the annualised %/yr
+ * over its checked-in observations, so a UI can label the preset as "≈ 2.6
+ * %/yr" without re-computing anything (`pctPerYear` is null when the series
+ * is too short to state a rate — single-anchor / empty; see the domain's
+ * {@link indexAveragePctPerYear}). Only the checked-in *preset* modes appear
+ * here (never `flat`, whose rate the user chooses live).
+ */
+export const analyticsInflationPresetSchema = z
+  .object({
+    id: z.enum(['hicp-at', 'hicp-eu', 'cpi-us']),
+    pctPerYear: z.number().nullable(),
+  })
+  .strict();
+export type AnalyticsInflationPreset = z.infer<typeof analyticsInflationPresetSchema>;
+
 /** `GET /analytics/portfolios/:portfolioId/series` response. */
 export const analyticsSeriesResponseSchema = z
   .object({
@@ -198,6 +214,12 @@ export const analyticsSeriesResponseSchema = z
     to: z.string().regex(ISO_DATE),
     /** The applied inflation mode, or `null` in nominal mode. */
     inflation: analyticsInflationAppliedSchema.nullable(),
+    /**
+     * Per-preset headline %/yr, one entry per checked-in index preset. Static
+     * per deployment (the preset series ships with the code), so the picker
+     * can label each option with its effective annualised rate (V4-P0).
+     */
+    inflationPresets: z.array(analyticsInflationPresetSchema),
     /** The filtered/visibility-masked portfolio curve + its stats. */
     primary: analyticsSeriesSchema,
     /** The compare overlay + its stats, or `null` when no compare target. */

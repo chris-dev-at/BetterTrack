@@ -6,6 +6,7 @@ import type { Time } from 'lightweight-charts';
 import {
   ANALYTICS_INFLATION_MODES,
   type AnalyticsInflationMode,
+  type AnalyticsInflationPreset,
   type AnalyticsMode,
   type PortfolioAsset,
   type PortfolioHistoryRange,
@@ -306,6 +307,7 @@ export function AnalyticsPage() {
               onInflationChange={setInflation}
               rate={inflationRate}
               onRateChange={setInflationRate}
+              presets={data?.inflationPresets ?? []}
             />
           </div>
         </div>
@@ -449,12 +451,20 @@ function InflationControl({
   onInflationChange,
   rate,
   onRateChange,
+  presets,
 }: {
   t: TranslateFn;
   inflation: 'none' | AnalyticsInflationMode;
   onInflationChange: (mode: 'none' | AnalyticsInflationMode) => void;
   rate: string;
   onRateChange: (rate: string) => void;
+  /**
+   * Per-preset effective %/yr, from the analytics response (V4-P0). Each
+   * option's label ends with e.g. "≈ 2.6 %/yr" so users see what the preset
+   * actually does before selecting it. Falls back to no suffix while the
+   * response is loading.
+   */
+  presets: readonly AnalyticsInflationPreset[];
 }) {
   const labels: Record<'none' | AnalyticsInflationMode, string> = {
     none: t('portfolio.analytics.inflation.none'),
@@ -462,6 +472,20 @@ function InflationControl({
     'hicp-eu': t('portfolio.analytics.inflation.hicpEu'),
     'cpi-us': t('portfolio.analytics.inflation.cpiUs'),
     flat: t('portfolio.analytics.inflation.flat'),
+  };
+  const rateSuffix = t('portfolio.analytics.inflation.rateSuffix');
+  const presetRate = new Map(presets.map((p) => [p.id, p.pctPerYear]));
+  const decorate = (id: AnalyticsInflationMode): string => {
+    const base = labels[id];
+    if (id === 'flat') return base;
+    const rate = presetRate.get(id as AnalyticsInflationPreset['id']);
+    if (rate == null) return base;
+    // "≈ 2.6 %/yr", localised via the rateSuffix key (EN "%/yr", DE "%/J").
+    return t('portfolio.analytics.inflation.presetLabel', {
+      label: base,
+      rate: rate.toFixed(1),
+      suffix: rateSuffix,
+    });
   };
   return (
     <div className="flex items-center gap-2">
@@ -477,7 +501,7 @@ function InflationControl({
         <option value="none">{labels.none}</option>
         {ANALYTICS_INFLATION_MODES.map((id) => (
           <option key={id} value={id}>
-            {labels[id]}
+            {decorate(id)}
           </option>
         ))}
       </select>

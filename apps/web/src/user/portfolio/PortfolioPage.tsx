@@ -44,12 +44,13 @@ import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 // ─── Range mapping ──────────────────────────────────────────────────────────
 
 /**
- * The value-over-time chart offers only these ranges (PROJECTPLAN.md §6.9): the
- * portfolio history endpoint is month-granular ({@link PortfolioHistoryRange})
- * with no day-level `1D`/`1W`/`3M` window, so it sticks to the subset of the
- * chart's range tokens it can actually serve.
+ * The value-over-time chart offers this set (PROJECTPLAN.md §6.9 + §13.4
+ * V4-P0): day-, week-, month- and multi-year windows over the same daily
+ * series. A portfolio younger than the selected range degrades to whatever
+ * exists — see {@link PortfolioHistoryRange}. 3M is intentionally omitted
+ * (it does not map to a contract range and the picker prefers a smaller set).
  */
-const PORTFOLIO_RANGES: readonly PriceRange[] = ['1M', '1Y', 'Max'];
+const PORTFOLIO_RANGES: readonly PriceRange[] = ['1D', '1W', '1M', '6M', '1Y', '5Y', 'Max'];
 
 /** The chart's `PriceRange` tokens use 'Max'; the contract uses 'MAX'. */
 function toHistoryRange(r: PriceRange): PortfolioHistoryRange {

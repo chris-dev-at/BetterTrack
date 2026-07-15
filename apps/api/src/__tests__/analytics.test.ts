@@ -233,6 +233,20 @@ describe('analytics — filtered series, stats & contributions', () => {
     );
   });
 
+  it('exposes the per-preset effective %/yr on every response (V4-P0)', async () => {
+    const res = await agent.get(`/api/v1/analytics/portfolios/${pid}/series`);
+    expect(res.status).toBe(200);
+    const presets = res.body.inflationPresets as Array<{ id: string; pctPerYear: number | null }>;
+    // One entry per checked-in preset id.
+    expect(presets.map((p) => p.id).sort()).toEqual(['cpi-us', 'hicp-at', 'hicp-eu']);
+    // Every preset ships enough data to state a genuine annualised rate (~2-4 %/yr).
+    for (const preset of presets) {
+      expect(preset.pctPerYear).not.toBeNull();
+      expect(preset.pctPerYear!).toBeGreaterThan(0);
+      expect(preset.pctPerYear!).toBeLessThan(15);
+    }
+  });
+
   it('rejects a flat inflation mode without a rate, and mismatched compare params', async () => {
     const noRate = await agent.get(`/api/v1/analytics/portfolios/${pid}/series?inflation=flat`);
     expect(noRate.status).toBe(400);

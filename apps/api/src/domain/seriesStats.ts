@@ -187,11 +187,17 @@ export type Deflator =
  * curve visibly downward (the V3-P9 acceptance test).
  *
  *  - `flat`: `value · (1 + r/100)^(−yearsElapsed)` with ACT/365.25 years.
- *  - `index`: `value · index(startMonth)/index(pointMonth)`, where a month's
- *    index level is the latest monthly entry at-or-before it (carry-forward
- *    over missing months); months before the earliest entry use the earliest
- *    entry's level. Entries sort stably by month, so of duplicate months the
- *    last one in input order wins. An empty index leaves the series unchanged.
+ *  - `index`: `value · index(startMonth)/index(pointMonth)`. The index level
+ *    for a `YYYY-MM` month is **linearly interpolated** between the anchors
+ *    that bracket it (fractional-month-of-year units), so any window shorter
+ *    than the anchor spacing — a 6-month window inside a year of annual
+ *    anchors — still deflates smoothly (V4-P0 preset-fix). Months before the
+ *    earliest anchor floor to that anchor's value; months **after the latest
+ *    anchor extrapolate** linearly along the slope of the last two anchors —
+ *    without extrapolation a portfolio whose whole history sits past the last
+ *    checked-in observation would flatline (bug #468, root cause). Entries
+ *    sort stably by month; a single-anchor set carries that value everywhere.
+ *    An empty index leaves the series unchanged.
  *
  * Dates are preserved; the result is always a fresh array of fresh points
  * (inputs are never mutated). Empty input ⇒ `[]`.
@@ -211,31 +217,89 @@ export function deflateSeries(
     }));
   }
 
-  if (deflator.monthly.length === 0) {
-    return series.map((pt) => ({ date: pt.date, value: pt.value }));
-  }
-  const sorted = [...deflator.monthly].sort((a, b) =>
-    a.month < b.month ? -1 : a.month > b.month ? 1 : 0,
-  );
-  const earliest = sorted[0];
-  if (earliest === undefined) {
-    // Unreachable: monthly.length > 0 checked above.
-    return series.map((pt) => ({ date: pt.date, value: pt.value }));
-  }
-  /** Index level for a `YYYY-MM` month: latest entry ≤ it, earliest as floor. */
-  const indexAt = (month: string): number => {
-    let level = earliest.value;
-    for (const entry of sorted) {
-      if (entry.month <= month) level = entry.value;
-      else break;
-    }
-    return level;
-  };
+  const indexAt = buildIndexResolver(deflator.monthly);
+  if (!indexAt) return series.map((pt) => ({ date: pt.date, value: pt.value }));
   const baseLevel = indexAt(first.date.slice(0, 7));
   return series.map((pt) => ({
     date: pt.date,
     value: pt.value * (baseLevel / indexAt(pt.date.slice(0, 7))),
   }));
+}
+
+/**
+ * ISO `YYYY-MM` → a comparable month-of-anchor number (year * 12 + month). Any
+ * strictly monotonic-in-month mapping would do; year*12+month keeps the
+ * arithmetic exact so the interpolation weight is a plain rational number.
+ */
+function monthKey(month: string): number {
+  const y = Number(month.slice(0, 4));
+  const m = Number(month.slice(5, 7));
+  return y * 12 + (m - 1);
+}
+
+/**
+ * Build the `indexAt(month)` resolver used by both {@link deflateSeries} and
+ * {@link indexAveragePctPerYear} — one code path so the fix and the "%/yr"
+ * label a UI shows agree on how a given month reads. `null` when the anchor
+ * set is empty (caller degrades to the identity).
+ */
+function buildIndexResolver(
+  monthly: ReadonlyArray<{ readonly month: string; readonly value: number }>,
+): ((month: string) => number) | null {
+  if (monthly.length === 0) return null;
+  const sorted = [...monthly].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  const earliest = sorted[0]!;
+  const latest = sorted[sorted.length - 1]!;
+  return (month: string): number => {
+    if (month <= earliest.month) return earliest.value;
+    if (month >= latest.month) {
+      // Linear extrapolation along the slope of the last two anchors, so a
+      // window whose points all sit past the last observation still deflates.
+      // With a single anchor no slope exists → carry forward the level.
+      if (sorted.length === 1) return latest.value;
+      const prev = sorted[sorted.length - 2]!;
+      const dx = monthKey(latest.month) - monthKey(prev.month);
+      if (dx === 0) return latest.value;
+      const slope = (latest.value - prev.value) / dx;
+      return latest.value + slope * (monthKey(month) - monthKey(latest.month));
+    }
+    // Interior: find the bracket (a, b) with a.month <= month < b.month and
+    // interpolate linearly. `sorted` is already ascending; a single pass is
+    // fine (analytics anchor sets are tiny — one per year).
+    for (let i = 1; i < sorted.length; i += 1) {
+      const b = sorted[i]!;
+      const a = sorted[i - 1]!;
+      if (month < b.month) {
+        const dx = monthKey(b.month) - monthKey(a.month);
+        if (dx === 0) return a.value;
+        const t = (monthKey(month) - monthKey(a.month)) / dx;
+        return a.value + (b.value - a.value) * t;
+      }
+    }
+    // Unreachable: the `>= latest.month` guard above catches this.
+    return latest.value;
+  };
+}
+
+/**
+ * Effective annualised %/yr an inflation-index preset averaged over its
+ * checked-in observations. Computed as the CAGR from the first to the last
+ * anchor `(last/first)^(1/years) − 1`, so a UI can show "≈ 2.6 %/yr" next to
+ * the preset label (V4-P0). Uses the same {@link buildIndexResolver} range —
+ * empty / single-anchor / non-positive base all resolve to `null`.
+ */
+export function indexAveragePctPerYear(
+  monthly: ReadonlyArray<{ readonly month: string; readonly value: number }>,
+): number | null {
+  if (monthly.length < 2) return null;
+  const sorted = [...monthly].sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : 0));
+  const first = sorted[0]!;
+  const last = sorted[sorted.length - 1]!;
+  if (first.value <= 0) return null;
+  const months = monthKey(last.month) - monthKey(first.month);
+  if (months <= 0) return null;
+  const years = months / 12;
+  return (Math.pow(last.value / first.value, 1 / years) - 1) * 100;
 }
 
 // ---------------------------------------------------------------------------

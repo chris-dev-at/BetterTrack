@@ -272,4 +272,24 @@ describe('CashSourcesPage', () => {
       ),
     );
   });
+
+  test('deposit/withdraw/set-balance/transfer actions render an icon alongside the label (V4-P0)', async () => {
+    renderPage();
+    await screen.findAllByText('Main');
+
+    // The icons are decorative (aria-hidden), so the accessible name stays the
+    // label text — the button still resolves via getByRole/name for a11y…
+    const bank = rowFor('Bank');
+    const depositBtn = within(bank).getByRole('button', { name: 'Deposit' });
+    const withdrawBtn = within(bank).getByRole('button', { name: 'Withdraw' });
+    const setBalanceBtn = within(bank).getByRole('button', { name: 'Set balance' });
+    const transferBtn = screen.getByRole('button', { name: 'Transfer' });
+
+    // …and every action button visibly renders an `aria-hidden` svg alongside.
+    for (const btn of [depositBtn, withdrawBtn, setBalanceBtn, transferBtn]) {
+      const svg = btn.querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(svg?.getAttribute('aria-hidden')).toBe('true');
+    }
+  });
 });
