@@ -4,8 +4,12 @@
 #
 # The running script lives OUTSIDE the app clone, in the live control dir on the
 # prod host (mounted into the bettertrack-live-updater container). This file is
-# the version-controlled copy the deployment adopts. To ADOPT a new version, from
-# the control dir on the prod host (the app clone lives at ./app under it):
+# the version-controlled copy the deployment adopts. Since the self-update step
+# below (#460 follow-up) the adoption is AUTOMATIC: on every successful deploy
+# tick the running updater byte-compares this file against its own copy and,
+# when they differ, copies it over and restarts its container. The manual
+# procedure is only needed to BOOTSTRAP a box whose running updater predates
+# self-update:
 #
 #   1. cp app/infra/live/updater.sh ./updater.sh     # over the old control-dir copy
 #   2. docker restart bettertrack-live-updater-1
@@ -67,10 +71,112 @@ log_deploy_reason() {
   fi
 }
 
+dc() { docker compose -p "$PROJECT" -f "$BASE" -f "$OVR" --env-file "$ENVF" "$@"; }
+
+# ── Post-deploy adoption steps (#460 follow-up) ──────────────────────────────
+# After every SUCCESSFUL deploy, the tick additionally adopts the non-secret
+# live-box artifacts straight from the repo, so routine changes ride a normal
+# PR merge and need no hands on the box. deployed.sha is already written by the
+# time these run — failures here are logged loudly but NEVER fail the deploy,
+# and a broken edge conf can never take the edge down (validation below).
+#
+# Explicitly OUT of scope, forever: live.env, ddns.env, secrets/, keys of any
+# kind, compose.override.yml, and all non-product control-dir content —
+# secrets and machine-local config stay control-dir-only.
+
+# Overlay-copy every subdirectory of the repo's product html into the served
+# mount. Non-destructive: control-dir-only pages and files are never deleted;
+# on conflicts the repo copy wins. nginx serves the mount live, so adopted
+# pages are public immediately — no reload needed.
+sync_product_html() {
+  _src="$APP/infra/live/edge/html/product"
+  _dst="$CONTROL/edge/html/product"
+  [ -d "$_src" ] || return 0
+  [ -d "$_dst" ] || { log "edge-sync: SKIP — ${_dst} missing on this box"; return 0; }
+  for _dir in "$_src"/*/; do
+    [ -d "$_dir" ] || continue
+    _name="$(basename "$_dir")"
+    if cp -R "${_src}/${_name}" "${_dst}/" 2>>"$LOG"; then
+      log "edge-sync: adopted product/${_name}/ from repo"
+    else
+      log "edge-sync: FAILED to adopt product/${_name}/ (see output above)"
+    fi
+  done
+}
+
+# Adopt a changed bt-live-edge.conf, but only if nginx accepts it: nginx reads
+# the mounted file at (re)load time only, so overwriting it does NOT touch the
+# running config. Sequence: keep the previous copy as *.prev, overwrite the
+# mounted file with the repo candidate, `nginx -t` inside the web container
+# (validates the FULL config with the candidate in place), then reload on pass
+# or restore *.prev on fail. A rejected conf therefore never gets loaded, and
+# the deploy always continues. Machine-local edge config the conf depends on
+# (edge/legacy-upstream.inc — see the canonical conf's legacy block) lives
+# outside the repo, so a candidate referencing a missing include fails -t here
+# and is kept out, rather than taking the edge down.
+adopt_edge_conf() {
+  _src="$APP/infra/live/edge/bt-live-edge.conf"
+  _dst="$CONTROL/edge/bt-live-edge.conf"
+  _prev="$CONTROL/edge/bt-live-edge.conf.prev"
+  _web="${PROJECT}-web-1"
+  [ -f "$_src" ] || return 0
+  cmp -s "$_src" "$_dst" && return 0
+  # If the RUNNING config already fails -t, a candidate failure would be
+  # indistinguishable from a candidate problem — refuse to adopt blind.
+  if ! docker exec "$_web" nginx -t >>"$LOG" 2>&1; then
+    log "edge-conf: SKIP — current config already fails nginx -t (or web is down); fix by hand"
+    return 0
+  fi
+  if ! cp "$_dst" "$_prev" 2>>"$LOG"; then
+    log "edge-conf: FAILED to save previous conf — not adopting"
+    return 0
+  fi
+  if ! cp "$_src" "$_dst" 2>>"$LOG"; then
+    log "edge-conf: FAILED to stage candidate — restoring previous conf"
+    cp "$_prev" "$_dst" 2>>"$LOG" || log "edge-conf: RESTORE FAILED — check ${_dst} by hand NOW"
+    return 0
+  fi
+  if docker exec "$_web" nginx -t >>"$LOG" 2>&1; then
+    if docker exec "$_web" nginx -s reload >>"$LOG" 2>&1; then
+      log "edge-conf: adopted bt-live-edge.conf from repo (validated, nginx reloaded; previous kept as .prev)"
+    else
+      log "edge-conf: reload FAILED after a PASSING validation — new conf is on disk but not loaded; investigate"
+    fi
+  else
+    cp "$_prev" "$_dst" 2>>"$LOG" || log "edge-conf: RESTORE FAILED — check ${_dst} by hand NOW"
+    log "edge-conf: VALIDATION FAILED — kept previous conf, deploy continues (nginx -t output above)"
+  fi
+}
+
+# Self-update — must run LAST in the tick: when the canonical updater differs
+# from the running copy, adopt it and restart this container so the NEXT tick
+# runs the new version. Restart-loop guard: restart only after cmp confirms
+# the copy actually converged byte-for-byte; if it didn't, log and leave the
+# old version running (the next deploy tick retries). The restart is
+# backgrounded and followed by exit so this (soon to be killed) process never
+# runs half a tick on old code — and the container's restart policy brings the
+# new copy up even if the backgrounded restart loses the race with our exit.
+self_update() {
+  _src="$APP/infra/live/updater.sh"
+  _dst="$CONTROL/updater.sh"
+  [ -f "$_src" ] || return 0
+  cmp -s "$_src" "$_dst" && return 0
+  if cp "$_src" "$_dst" 2>>"$LOG" && cmp -s "$_src" "$_dst"; then
+    log "self-update: adopted canonical updater.sh — restarting ${PROJECT}-updater-1 to pick it up"
+    docker restart "${PROJECT}-updater-1" >>"$LOG" 2>&1 &
+    exit 0
+  fi
+  log "self-update: copy did NOT converge — keeping the running version (no restart; retry next deploy)"
+}
+
+# Test hook: `BT_UPDATER_LIB=1 . ./updater.sh` sources the config + functions
+# WITHOUT starting the poll loop (or touching global git config), so the
+# adoption functions above can be exercised one at a time — see
+# infra/live/README.md. Production entrypoints never set this.
+if [ "${BT_UPDATER_LIB:-0}" != "1" ]; then
+
 # The clone is owned by the host user; silence git's "dubious ownership" guard.
 git config --global --add safe.directory "$APP" 2>/dev/null || true
-
-dc() { docker compose -p "$PROJECT" -f "$BASE" -f "$OVR" --env-file "$ENVF" "$@"; }
 
 log "updater started (interval=${INTERVAL}s, project=${PROJECT}, control=${CONTROL})"
 
@@ -120,6 +226,11 @@ while true; do
           dc up -d db redis api web worker landing >>"$LOG" 2>&1; then
           printf '%s\n' "$REMOTE" >"$DEPLOYED_SHA"
           log "update complete -> ${REMOTE}"
+          # Post-deploy adoptions (#460 follow-up). Never fail the deploy;
+          # self_update can restart this container, so it must stay LAST.
+          sync_product_html
+          adopt_edge_conf
+          self_update
         else
           log "update FAILED at ${REMOTE} — retrying next tick (see output above)"
         fi
@@ -134,3 +245,5 @@ while true; do
   fi
   sleep "$INTERVAL"
 done
+
+fi # BT_UPDATER_LIB guard
