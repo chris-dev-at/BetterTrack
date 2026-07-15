@@ -4,7 +4,53 @@ Canonical, version-controlled copies of the files that drive the **live**
 (`bettertrack.at`) deployment's self-updating deploy loop. The scripts that
 actually run live OUTSIDE this repo, in the control dir on the prod host (mounted
 into the deploy containers); the copies here are the source of truth the
-deployment **adopts** with a single `cp` + container restart.
+deployment **adopts automatically** (see the pipeline section below) — the
+manual `cp` procedures further down are only for bootstrapping a box whose
+running updater predates the self-adopting pipeline, or for emergencies.
+
+## The self-adopting pipeline (#460 follow-up)
+
+After every **successful** deploy, the same updater tick additionally adopts the
+non-secret live-box artifacts straight from the freshly fast-forwarded clone, so
+a routine change to any of them deploys from a merged PR alone — no hands on the
+box. In order:
+
+1. **Static product pages** — every subdirectory of
+   `infra/live/edge/html/product/` is overlay-copied into the control dir's
+   served `edge/html/product/` mount. Non-destructive: control-dir-only pages
+   and files are never deleted; on conflicts the repo copy wins. Served live
+   immediately (no reload). One `edge-sync:` log line per adopted directory.
+2. **Edge conf** — when `edge/bt-live-edge.conf` differs from the running copy,
+   the updater saves the running copy as `bt-live-edge.conf.prev`, stages the
+   candidate onto the mounted path (nginx only reads it at (re)load, so this is
+   inert), validates the full config with `nginx -t` inside the web container,
+   and only on pass reloads nginx. On failure it restores `.prev` and logs
+   loudly — **a conf nginx rejects can never take the edge down**, and the
+   deploy always continues.
+3. **Self-update** — when `infra/live/updater.sh` differs from the running
+   control-dir copy, the updater copies it over, byte-verifies the copy
+   converged (the restart-loop guard), then restarts its own container as the
+   tick's last action so the _next_ tick runs the new version.
+
+Failures in any step are logged (`edge-sync:` / `edge-conf:` / `self-update:`
+prefixes in `logs/updater.log`) but never fail the deploy — `deployed.sha` is
+written before the pipeline runs.
+
+**Out of scope, forever:** `live.env`, `ddns.env`, `secrets/`, keys of any kind,
+`compose.override.yml`, and all non-product control-dir content. Secrets and
+machine-local config stay control-dir-only; the pipeline only ever touches the
+three artifact classes above.
+
+**Per-box bootstrap requirements** (already in place on the current prod host):
+
+- `edge/legacy-upstream.inc` in the control dir, holding the single
+  `proxy_pass http://<target>;` line for that box's route to the legacy-sites
+  server, mounted into the web container at
+  `/etc/nginx/conf.d/legacy-upstream.inc` (compose override). The canonical
+  edge conf `include`s it, so `nginx -t` fails — and the conf is kept out —
+  on any box that forgot to provide it.
+- One final manual updater adoption (see the `updater.sh` section) on any box
+  whose running updater predates the pipeline; from then on it self-updates.
 
 ## `updater.sh`
 
@@ -53,15 +99,22 @@ assumptions.
 
 ### Adopt (on the prod host)
 
-From the control dir (the app clone lives at `./app` under it):
+**Automatic** since the self-adopting pipeline: a merged change to this file is
+copied over and the updater container restarted on the next successful deploy
+tick. The manual procedure below is only needed to **bootstrap** a box whose
+running updater predates self-update (it is read once at container start, so
+the restart is what picks up the new version). From the control dir (the app
+clone lives at `./app` under it):
 
 ```sh
 cp app/infra/live/updater.sh ./updater.sh      # over the old control-dir copy
 docker restart bettertrack-live-updater-1
 ```
 
-The script is read once at container start, so the restart is what picks up the
-new version.
+For testing, `BT_UPDATER_LIB=1 . ./updater.sh` sources the config and functions
+without starting the poll loop, so the adoption functions (`sync_product_html`,
+`adopt_edge_conf`, `self_update`) can be exercised one at a time against
+overridden `CONTROL`/`APP` paths.
 
 ### Deploy marker on `start.sh`-driven builds
 
@@ -89,12 +142,20 @@ WebSocket upgrade forwarding (#396) has to live here too, under its own
 `$bt_connection_upgrade` map so it never collides with the template's
 `$connection_upgrade` (a duplicate map name makes nginx refuse to boot).
 
+The legacy-sites reroute block deliberately contains **no proxy target**: it
+`include`s the control-dir-only `edge/legacy-upstream.inc` (see the pipeline
+section's bootstrap requirements), so the same canonical conf runs on any box
+regardless of how that box reaches the legacy server.
+
 ### Adopt (on the prod host)
 
-From the control dir (the app clone lives at `./app` under it):
+**Automatic** since the self-adopting pipeline: a merged change is validated
+with `nginx -t` and swapped + reloaded on the next successful deploy tick (kept
+out on validation failure). Manual fallback, from the control dir:
 
 ```sh
 cp app/infra/live/edge/bt-live-edge.conf ./edge/bt-live-edge.conf   # over the old copy
+docker exec bettertrack-live-web-1 nginx -t                         # validate BEFORE reloading
 docker exec bettertrack-live-web-1 nginx -s reload                  # or: docker restart bettertrack-live-web-1
 ```
 
@@ -119,9 +180,10 @@ legal set is repo-canonical.
 
 ### Adopt (on the prod host)
 
-The live `web` nginx serves the control dir's `edge/html` mount directly, so
-adopting page updates is a copy — **no nginx reload needed** (only
-`bt-live-edge.conf` changes need one):
+**Automatic** since the self-adopting pipeline: every subdirectory here is
+overlay-copied into the served mount on each successful deploy tick (the live
+`web` nginx serves the control dir's `edge/html` mount directly, so no reload
+is involved). Manual fallback, from the control dir:
 
 ```sh
 cp -R app/infra/live/edge/html/product/terms     ./edge/html/product/
@@ -129,6 +191,3 @@ cp -R app/infra/live/edge/html/product/privacy   ./edge/html/product/
 cp -R app/infra/live/edge/html/product/impressum ./edge/html/product/
 cp -R app/infra/live/edge/html/product/cookies   ./edge/html/product/
 ```
-
-`privacy` overwrites the pre-GDPR-upgrade page; `terms`, `impressum` and
-`cookies` are new directories.
