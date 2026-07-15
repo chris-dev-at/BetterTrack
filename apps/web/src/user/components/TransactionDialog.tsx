@@ -448,6 +448,13 @@ function orderTotalForRow(row: Row): number | null {
   return row.side === 'buy' ? gross + fee : gross - fee;
 }
 
+/** Short weekday for a YYYY-MM-DD date in the active UI language (not the number-format locale). */
+function localeWeekdayShort(locale: string, date: string): string {
+  return new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(
+    new Date(`${date}T00:00:00.000Z`),
+  );
+}
+
 /**
  * Record / edit transactions (PROJECTPLAN.md §6.9, §7.3 `TransactionDialog`).
  * Single (locked asset or free search pick), edit, and bulk-prefilled in one
@@ -541,14 +548,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     setRows((rs) => (rs.length === 1 ? [{ ...rs[0]!, ...patch }] : rs));
   }
 
-  /** Short weekday for a YYYY-MM-DD date in the active UI language (not the number-format locale). */
-function localeWeekdayShort(locale: string, date: string): string {
-  return new Intl.DateTimeFormat(locale, { weekday: 'short', timeZone: 'UTC' }).format(
-    new Date(`${date}T00:00:00.000Z`),
-  );
-}
-
-/** Date drives price: fill the close for the picked day (or the prior trading day). */
+  /** Date drives price: fill the close for the picked day (or the prior trading day). */
   function resolveDateToPrice(date: string) {
     if (!linked || !hasSeries) return;
     const res = priceForDate(series!, date);

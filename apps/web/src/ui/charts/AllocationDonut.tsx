@@ -37,12 +37,7 @@ const PALETTE = [
  * The legend is rendered as our own list (not Recharts' canvas-measured one) so
  * labels, colours and shares are real DOM — accessible and reliably testable.
  */
-export function AllocationDonut({
-  data,
-  size = 200,
-  className,
-  title,
-}: AllocationDonutProps) {
+export function AllocationDonut({ data, size = 200, className, title }: AllocationDonutProps) {
   const t = useT();
   const chartTitle = title ?? t('common.charts.allocationFallbackTitle');
   const segments = data
@@ -70,7 +65,11 @@ export function AllocationDonut({
 
   return (
     <div className={cx('flex flex-col items-center gap-4 sm:flex-row sm:items-center', className)}>
-      <div role="img" aria-label={`${chartTitle}: ${summary}`} style={{ width: size, height: size }}>
+      <div
+        role="img"
+        aria-label={`${chartTitle}: ${summary}`}
+        style={{ width: size, height: size }}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie

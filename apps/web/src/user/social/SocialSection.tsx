@@ -32,10 +32,5 @@ export function SocialLayout() {
 
 export function SocialIdeasPage() {
   const t = useT();
-  return (
-    <ComingSoon
-      title={t('social.ideas.title')}
-      description={t('social.ideas.description')}
-    />
-  );
+  return <ComingSoon title={t('social.ideas.title')} description={t('social.ideas.description')} />;
 }

@@ -70,8 +70,7 @@ function AddFriendForm() {
       setIdentifier('');
       void queryClient.invalidateQueries({ queryKey: ['social', 'requests'] });
     },
-    onError: () =>
-      setFeedback({ tone: 'error', text: t('social.friends.requestError') }),
+    onError: () => setFeedback({ tone: 'error', text: t('social.friends.requestError') }),
   });
 
   function handleSubmit(e: FormEvent) {
@@ -130,7 +129,9 @@ function IncomingRequestRow({
           {pendingAction === 'accept' ? t('social.friends.accepting') : t('social.friends.accept')}
         </Button>
         <Button variant="secondary" onClick={onDecline} disabled={busy}>
-          {pendingAction === 'decline' ? t('social.friends.declining') : t('social.friends.decline')}
+          {pendingAction === 'decline'
+            ? t('social.friends.declining')
+            : t('social.friends.decline')}
         </Button>
       </span>
     </li>
@@ -197,9 +198,7 @@ function RequestsSection() {
   }
 
   if (isError || !data) {
-    return (
-      <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>
-    );
+    return <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>;
   }
 
   return (
@@ -208,9 +207,7 @@ function RequestsSection() {
         <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           {t('social.friends.incomingTitle')}
         </h2>
-        {actionFailed ? (
-          <Alert tone="error">{t('social.friends.actionError')}</Alert>
-        ) : null}
+        {actionFailed ? <Alert tone="error">{t('social.friends.actionError')}</Alert> : null}
         {data.incoming.length === 0 ? (
           <EmptyState
             title={t('social.friends.incomingEmptyTitle')}

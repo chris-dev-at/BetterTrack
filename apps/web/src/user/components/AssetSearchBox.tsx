@@ -278,7 +278,11 @@ export function AssetSearchBox({
       />
 
       {showSkeleton ? (
-        <ul className="flex flex-col gap-2" aria-label={t('assets.searchBox.loadingResults')} aria-busy="true">
+        <ul
+          className="flex flex-col gap-2"
+          aria-label={t('assets.searchBox.loadingResults')}
+          aria-busy="true"
+        >
           {Array.from({ length: 4 }, (_, i) => (
             <li key={i} className="flex items-center gap-3 rounded-md bg-neutral-900 p-3">
               <Skeleton variant="block" width="w-16" height="h-4" />
@@ -312,7 +316,11 @@ export function AssetSearchBox({
       ) : null}
 
       {results.length > 0 ? (
-        <ul className="flex flex-col gap-1" role="list" aria-label={t('assets.searchBox.resultsAria')}>
+        <ul
+          className="flex flex-col gap-1"
+          role="list"
+          aria-label={t('assets.searchBox.resultsAria')}
+        >
           {results.map((item) =>
             onSelect ? (
               <SelectRow key={item.id} item={item} onSelect={() => onSelect(item)} />
@@ -513,7 +521,9 @@ function WatchlistControl({
               ? t('assets.searchBox.retryWatchlistAria', { symbol: item.symbol })
               : t('assets.searchBox.addToWatchlistAria', { symbol: item.symbol })
         }
-        title={added ? t('assets.searchBox.onWatchlistTitle') : t('assets.searchBox.addToWatchlistTitle')}
+        title={
+          added ? t('assets.searchBox.onWatchlistTitle') : t('assets.searchBox.addToWatchlistTitle')
+        }
         className={cx(
           'rounded p-1.5 transition-colors',
           added ? 'text-sky-400' : 'text-neutral-500 hover:bg-neutral-700 hover:text-neutral-100',
@@ -611,7 +621,9 @@ function ConglomeratePicker({
       className="absolute right-0 top-full z-10 mt-1 w-64 rounded-md border border-neutral-700 bg-neutral-900 p-2 shadow-xl"
     >
       <div className="flex items-center justify-between px-1 pb-1">
-        <span className="text-xs font-medium text-neutral-400">{t('assets.searchBox.pickerTitle')}</span>
+        <span className="text-xs font-medium text-neutral-400">
+          {t('assets.searchBox.pickerTitle')}
+        </span>
         <button
           type="button"
           onClick={onClose}
@@ -625,7 +637,9 @@ function ConglomeratePicker({
       {isLoading ? (
         <p className="px-1 py-2 text-xs text-neutral-500">{t('common.loading')}</p>
       ) : conglomerates.length === 0 ? (
-        <p className="px-1 py-2 text-xs text-neutral-500">{t('assets.searchBox.noConglomerates')}</p>
+        <p className="px-1 py-2 text-xs text-neutral-500">
+          {t('assets.searchBox.noConglomerates')}
+        </p>
       ) : (
         <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
           {conglomerates.map((c) => (

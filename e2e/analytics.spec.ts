@@ -26,7 +26,6 @@ function isoDaysAgo(days: number): string {
   return `${y}-${m}-${day}`;
 }
 
-
 test('analytics: compare vs an index/asset shows side-by-side stats and the contribution table', async ({
   browser,
 }) => {

@@ -177,9 +177,7 @@ describe('ChatPage — thread + share chip enforcement', () => {
   test('a failing thread load shows an error, not the "say hi" empty state', async () => {
     vi.mocked(getThread).mockRejectedValue(new Error('boom'));
     renderAt('/social/chat/u2');
-    await waitFor(() =>
-      expect(screen.getByText(/couldn't load your chats/i)).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText(/couldn't load your chats/i)).toBeInTheDocument());
     expect(screen.queryByText(/say hi/i)).toBeNull();
   });
 });

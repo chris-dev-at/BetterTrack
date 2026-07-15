@@ -266,7 +266,7 @@ export function TaxReportPage() {
     </div>
   );
 
-  // Gate on the tax mode first: the report is only meaningful with one active.
+  // Loading skeleton first, while either query is still pending.
   if (settingsQuery.isPending || portfoliosQuery.isPending) {
     return (
       <div className="flex flex-col gap-4">
@@ -276,6 +276,24 @@ export function TaxReportPage() {
     );
   }
 
+  // Surface a failed settings/portfolios query as an error *before* the tax-mode
+  // gate below. On a settings failure `mode` falls back to 'none', so without
+  // this ordering the page would read as "tax reporting disabled" and send the
+  // user to Settings for no reason. It also avoids an eternal skeleton when the
+  // portfolio list fails (the report query never runs without a resolved one).
+  if (portfoliosQuery.isError || settingsQuery.isError) {
+    return (
+      <div className="flex flex-col gap-4">
+        {header}
+        <EmptyState
+          title={t('portfolio.taxReport.loadError.title')}
+          description={t('settings.retryHint')}
+        />
+      </div>
+    );
+  }
+
+  // Gate on the tax mode: the report is only meaningful with one active.
   if (!taxActive) {
     return (
       <div className="flex flex-col gap-4">
@@ -291,22 +309,6 @@ export function TaxReportPage() {
         >
           {t('portfolio.taxReport.disabled.link')}
         </Link>
-      </div>
-    );
-  }
-
-  // Without a resolvable portfolio the report query never runs (it stays
-  // `isPending` forever) — gate on that instead of showing an eternal skeleton.
-  // A failed settings query must not read as mode 'none' ("tax reporting is
-  // disabled") either — that would send the user to Settings for no reason.
-  if (portfoliosQuery.isError || settingsQuery.isError) {
-    return (
-      <div className="flex flex-col gap-4">
-        {header}
-        <EmptyState
-          title={t('portfolio.taxReport.loadError.title')}
-          description={t('settings.retryHint')}
-        />
       </div>
     );
   }

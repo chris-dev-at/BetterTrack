@@ -45,7 +45,6 @@ async function depositToMain(page: Page, amount: string): Promise<void> {
   await expect(rows.nth(0)).toContainText(/1[.,]000/);
 }
 
-
 test('AT tax mode: an intra-year loss sell refunds tax in the per-year report', async ({
   browser,
 }) => {

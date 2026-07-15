@@ -43,9 +43,7 @@ export function AssetsOverviewPage() {
 
 export function StocksPage() {
   const t = useT();
-  return (
-    <ComingSoon title={t('assets.nav.stocks')} description={t('assets.comingSoon.stocks')} />
-  );
+  return <ComingSoon title={t('assets.nav.stocks')} description={t('assets.comingSoon.stocks')} />;
 }
 
 export function EtfsPage() {

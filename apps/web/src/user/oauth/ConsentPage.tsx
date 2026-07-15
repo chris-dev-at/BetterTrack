@@ -104,7 +104,9 @@ function AppIdentity({
       <div className="min-w-0">
         <div className="truncate font-semibold text-neutral-100">{name}</div>
         {firstParty ? (
-          <div className="text-xs font-medium text-sky-400">{t('auth.oauthConsent.firstParty')}</div>
+          <div className="text-xs font-medium text-sky-400">
+            {t('auth.oauthConsent.firstParty')}
+          </div>
         ) : (
           <div className="text-xs text-neutral-500">{t('auth.oauthConsent.thirdParty')}</div>
         )}
@@ -171,7 +173,9 @@ export function ConsentPage() {
     return (
       <ConsentShell>
         <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-          <h1 className="text-lg font-semibold text-neutral-100">{t('auth.oauthConsent.cancelledTitle')}</h1>
+          <h1 className="text-lg font-semibold text-neutral-100">
+            {t('auth.oauthConsent.cancelledTitle')}
+          </h1>
           <p className="text-sm text-neutral-400">{t('auth.oauthConsent.cancelledBody')}</p>
           <Button onClick={() => navigate('/', { replace: true })}>
             {t('auth.oauthConsent.goToApp')}
@@ -280,7 +284,9 @@ export function ConsentPage() {
               approve.mutate();
             }}
           >
-            {approve.isPending ? t('auth.oauthConsent.authorizing') : t('auth.oauthConsent.approve')}
+            {approve.isPending
+              ? t('auth.oauthConsent.authorizing')
+              : t('auth.oauthConsent.approve')}
           </Button>
           <Button
             variant="secondary"

@@ -10,10 +10,10 @@ export function SearchPage() {
   return (
     <section className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">{t('assets.search.title')}</h1>
-        <p className="mt-1 text-sm text-neutral-400">
-          {t('assets.search.subtitle')}
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight text-neutral-100">
+          {t('assets.search.title')}
+        </h1>
+        <p className="mt-1 text-sm text-neutral-400">{t('assets.search.subtitle')}</p>
       </div>
       <AssetSearchBox />
     </section>

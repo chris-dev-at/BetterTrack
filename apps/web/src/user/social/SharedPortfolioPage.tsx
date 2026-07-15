@@ -16,7 +16,6 @@ import { ItemFollowButton } from './ItemFollowButton';
 import type { AllocationSegment } from '../../ui/charts';
 import { Alert } from '../components/ui';
 
-
 function DeltaPct({ value }: { value: number | null }) {
   const cls =
     value == null
@@ -82,18 +81,27 @@ function AllocationSection({ holdings }: { holdings: Holding[] }) {
   if (byAsset.length === 0) return null;
 
   return (
-    <section aria-label={t('portfolio.overview.allocationAriaLabel')} className="grid gap-6 sm:grid-cols-2">
+    <section
+      aria-label={t('portfolio.overview.allocationAriaLabel')}
+      className="grid gap-6 sm:grid-cols-2"
+    >
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
         <h3 className="mb-4 text-sm font-semibold text-neutral-200">
           {t('portfolio.overview.allocation.byAssetTitle')}
         </h3>
-        <AllocationDonut data={byAsset} title={t('portfolio.overview.allocation.byAssetChartTitle')} />
+        <AllocationDonut
+          data={byAsset}
+          title={t('portfolio.overview.allocation.byAssetChartTitle')}
+        />
       </div>
       <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
         <h3 className="mb-4 text-sm font-semibold text-neutral-200">
           {t('portfolio.overview.allocation.byTypeTitle')}
         </h3>
-        <AllocationDonut data={byType} title={t('portfolio.overview.allocation.byTypeChartTitle')} />
+        <AllocationDonut
+          data={byType}
+          title={t('portfolio.overview.allocation.byTypeChartTitle')}
+        />
       </div>
     </section>
   );
@@ -211,9 +219,7 @@ export function SharedPortfolioPage() {
   }
 
   if (query.isError || !query.data) {
-    return (
-      <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>
-    );
+    return <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>;
   }
 
   const { name, owner, totals, holdings } = query.data;

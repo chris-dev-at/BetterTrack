@@ -371,9 +371,7 @@ describe('AnalyticsPage — compare mode', () => {
 
     await user.click(screen.getByRole('button', { name: 'Conglomerate' }));
 
-    expect(
-      await screen.findByText('Something went wrong. Please try again.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('Something went wrong. Please try again.')).toBeInTheDocument();
     expect(screen.queryByText("You don't have any conglomerates yet.")).not.toBeInTheDocument();
   });
 
