@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cookie Note — BetterTrack</title>
+    <meta
+      name="description"
+      content="BetterTrack sets two first-party cookies — a session cookie and an optional remembered-device cookie. No ads, no analytics, no third-party cookies."
+    />
+    <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
+    <link rel="stylesheet" href="/style.css?v=2" />
+    <link rel="alternate" hreflang="en" href="https://bettertrack.at/cookies/" />
+    <link rel="alternate" hreflang="de" href="https://bettertrack.at/cookies/de/" />
+    <style>
+      /* Page-local additions on top of the shared /style.css (kept inline so the
+         shared stylesheet stays untouched by the legal-pages drop). */
+      .lang-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.85rem;
+      }
+      .lang-switch a {
+        color: var(--text-3);
+        text-decoration: none;
+      }
+      .lang-switch a[aria-current] {
+        color: var(--text);
+        font-weight: 600;
+      }
+      @media (max-width: 560px) {
+        .nav-links .lang-switch,
+        .nav-links .lang-switch a {
+          display: inline-flex;
+        }
+      }
+      .prose ul {
+        margin-top: 0.8rem;
+        padding-left: 1.25rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+      .prose li::marker {
+        color: var(--gold);
+      }
+      .doc-meta {
+        color: var(--text-3);
+        font-size: 0.85rem;
+        margin-top: 0.6rem;
+      }
+      .prose code {
+        background: var(--surface-2);
+        border: 1px solid var(--line-soft);
+        border-radius: 4px;
+        padding: 0.05rem 0.35rem;
+        font-size: 0.88em;
+        color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap">
+        <a class="wordmark" href="/"
+          ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+        >
+        <div class="nav-links">
+          <a href="/features/">Features</a>
+          <a href="/security/">Security</a>
+          <a href="/roadmap/">Roadmap</a>
+          <span class="lang-switch" aria-label="Language"
+            ><a href="/cookies/" aria-current="page">EN</a><span>·</span
+            ><a href="/cookies/de/">DE</a></span
+          >
+          <a class="btn" href="https://web.bettertrack.at">Open the app</a>
+        </div>
+      </div>
+    </nav>
+
+    <section class="block">
+      <div class="wrap prose">
+        <span class="kicker">Legal</span>
+        <h2 style="margin-top: 0.4rem">Cookie note</h2>
+        <p class="doc-meta">
+          Version 1.0 — effective 15 July 2026. <a href="/cookies/de/">Deutsche Fassung</a>
+        </p>
+        <p>
+          BetterTrack sets exactly <strong>two first-party cookies</strong>, both strictly
+          functional and both set only in response to something you do. There are no third-party,
+          advertising or analytics cookies — which is why there is no cookie banner.
+        </p>
+
+        <h2>Session cookie (<code>bt_sid</code>)</h2>
+        <p>
+          Keeps you signed in to the web app. Set when you log in. By default it is a
+          browser-session cookie that expires when your browser session ends; if you choose "stay
+          signed in", it persists for up to 30 days. It is httpOnly and secure — no script on the
+          page can read it.
+        </p>
+
+        <h2>Remembered-device cookie (<code>bt_rdid</code>)</h2>
+        <p>
+          Set <strong>only</strong> if you use "remember this device" (available with PIN quick
+          re-auth). It stores an opaque device ID so the login page can offer "Continue as you" and
+          a quick PIN sign-in instead of full credentials. It lives for up to about 400 days and is
+          refreshed each time you use it. Choosing "Use another account" on the login page removes
+          it immediately.
+        </p>
+
+        <h2>Local storage</h2>
+        <p>
+          The web app also keeps a few purely client-side entries in your browser's local storage —
+          your language choice and, on a remembered device, the display record for the account
+          chooser (username and avatar). These never leave your browser and are not tracking.
+        </p>
+
+        <h2>Clearing them</h2>
+        <p>
+          Log out to end your session, use "Use another account" to clear the remembered device, or
+          delete cookies and site data for <code>bettertrack.at</code> in your browser settings at
+          any time.
+        </p>
+
+        <p class="doc-meta">
+          How cookie data is processed is described in the <a href="/privacy/">privacy policy</a>.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap foot">
+        <div class="col">
+          <a class="wordmark" href="/"
+            ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+          >
+        </div>
+        <div class="col">
+          <span class="h">Product</span><a href="/features/">Features</a
+          ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
+        </div>
+        <div class="col">
+          <span class="h">App</span><a href="https://web.bettertrack.at">Web app</a
+          ><a href="https://mobile.bettertrack.at">Mobile (in development)</a>
+        </div>
+        <div class="col">
+          <span class="h">Legal</span><a href="/terms/">Terms</a><a href="/privacy/">Privacy</a
+          ><a href="/impressum/">Impressum</a><a href="/cookies/">Cookies</a
+          ><a href="mailto:bettertrack.service@gmail.com">Contact</a>
+        </div>
+        <p class="fine">
+          © 2026 BetterTrack — invite-only beta. Market data can be delayed; nothing here is
+          investment advice.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

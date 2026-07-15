@@ -223,6 +223,13 @@
     "shareProfile": "Profil teilen",
     "logout": "Abmelden"
   },
+  "footer": {
+    "legal": "Rechtliches",
+    "terms": "Nutzungsbedingungen",
+    "privacy": "Datenschutzerklärung",
+    "impressum": "Impressum",
+    "cookies": "Cookies"
+  },
   "language": {
     "title": "Sprache",
     "description": "Die Sprache, die BetterTrack in der App und in deinen E-Mails verwendet.",

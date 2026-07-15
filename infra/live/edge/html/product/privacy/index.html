@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy — BetterTrack</title>
+    <meta
+      name="description"
+      content="What BetterTrack stores, why, on which legal basis, and your GDPR rights — no ads, no analytics, no sale of data."
+    />
+    <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
+    <link rel="stylesheet" href="/style.css?v=2" />
+    <link rel="alternate" hreflang="en" href="https://bettertrack.at/privacy/" />
+    <link rel="alternate" hreflang="de" href="https://bettertrack.at/privacy/de/" />
+    <style>
+      /* Page-local additions on top of the shared /style.css (kept inline so the
+         shared stylesheet stays untouched by the legal-pages drop). */
+      .lang-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.85rem;
+      }
+      .lang-switch a {
+        color: var(--text-3);
+        text-decoration: none;
+      }
+      .lang-switch a[aria-current] {
+        color: var(--text);
+        font-weight: 600;
+      }
+      @media (max-width: 560px) {
+        .nav-links .lang-switch,
+        .nav-links .lang-switch a {
+          display: inline-flex;
+        }
+      }
+      .prose ul {
+        margin-top: 0.8rem;
+        padding-left: 1.25rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+      .prose li::marker {
+        color: var(--gold);
+      }
+      .doc-meta {
+        color: var(--text-3);
+        font-size: 0.85rem;
+        margin-top: 0.6rem;
+      }
+      .placeholder {
+        color: var(--gold);
+        border: 1px dashed rgba(246, 184, 46, 0.45);
+        border-radius: 4px;
+        padding: 0 0.3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap">
+        <a class="wordmark" href="/"
+          ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+        >
+        <div class="nav-links">
+          <a href="/features/">Features</a>
+          <a href="/security/">Security</a>
+          <a href="/roadmap/">Roadmap</a>
+          <span class="lang-switch" aria-label="Language"
+            ><a href="/privacy/" aria-current="page">EN</a><span>·</span
+            ><a href="/privacy/de/">DE</a></span
+          >
+          <a class="btn" href="https://web.bettertrack.at">Open the app</a>
+        </div>
+      </div>
+    </nav>
+
+    <section class="block">
+      <div class="wrap prose">
+        <span class="kicker">Legal</span>
+        <h2 style="margin-top: 0.4rem">Privacy Policy</h2>
+        <p class="doc-meta">
+          Version 2.0 — effective 15 July 2026. <a href="/privacy/de/">Deutsche Fassung</a>
+        </p>
+        <p>
+          Short version: we store what you enter and the minimum needed to run the service. No
+          advertising, no analytics, no sale or sharing of your data. This page is the formal GDPR
+          notice behind that promise — it covers the web app at
+          <a href="https://web.bettertrack.at">web.bettertrack.at</a>, the BetterTrack mobile app,
+          and this site.
+        </p>
+
+        <h2>1. Controller</h2>
+        <p>
+          The controller within the meaning of Art. 4(7) GDPR is the operator of BetterTrack:
+          <span class="placeholder">[OWNER: fill in — full legal name]</span>,
+          <span class="placeholder">[OWNER: fill in — street address, postal code, city]</span>,
+          Austria. Contact:
+          <a href="mailto:bettertrack.service@gmail.com">bettertrack.service@gmail.com</a>. See also
+          the <a href="/impressum/">Impressum</a>.
+        </p>
+
+        <h2>2. What we process</h2>
+        <ul>
+          <li>
+            <strong>Account data</strong> — username, e-mail address, password (stored only as a
+            hash), optional second factor and PIN settings.
+          </li>
+          <li>
+            <strong>Financial data you enter yourself</strong> — portfolios, transactions, holdings,
+            cash movements, watchlists, baskets/conglomerates, alerts and notes. This data is
+            self-entered; it is never pulled from or verified against any bank or broker.
+          </li>
+          <li>
+            <strong>Messages</strong> — 1:1 friend-chat messages you exchange within the service.
+          </li>
+          <li>
+            <strong>Push/device data</strong> — if you enable notifications: an FCM push token
+            (Firebase Cloud Messaging, mobile app) or a browser web-push subscription (web app).
+            Created only after your explicit opt-in.
+          </li>
+          <li>
+            <strong>Technical minimum</strong> — session data, security logs (e.g. failed logins)
+            and e-mail delivery logs for the notifications you enabled.
+          </li>
+          <li>
+            <strong>Cookies</strong> — two first-party cookies; see the
+            <a href="/cookies/">cookie note</a> (§8).
+          </li>
+        </ul>
+
+        <h2>3. Purposes and legal bases (Art. 6 GDPR)</h2>
+        <ul>
+          <li>
+            <strong>Providing the service</strong> — account, financial data, chat, sessions:
+            performance of the usage contract, Art. 6(1)(b) GDPR.
+          </li>
+          <li>
+            <strong>Push notifications</strong> — FCM token / web-push subscription: your consent,
+            Art. 6(1)(a) GDPR; you withdraw it at any time by disabling notifications, which deletes
+            the token.
+          </li>
+          <li>
+            <strong>Security and abuse prevention</strong> — security logs, rate limiting:
+            legitimate interest in a secure service, Art. 6(1)(f) GDPR.
+          </li>
+        </ul>
+
+        <h2>4. Recipients and processors</h2>
+        <p>
+          We do not sell data, we do not share it for advertising, and we run no ads and no
+          analytics. The only third parties involved are:
+        </p>
+        <ul>
+          <li>
+            <strong>Google (Firebase Cloud Messaging)</strong> — delivers push notifications to the
+            mobile app; sees the push token and message payload metadata. Only used if you enable
+            notifications.
+          </li>
+          <li>
+            <strong>Cloudflare</strong> — fronts the site for TLS and DDoS protection; traffic
+            passes through it in transit.
+          </li>
+          <li>
+            <strong>Market-data providers</strong> — receive the ticker symbols being looked up,
+            never your identity or holdings.
+          </li>
+        </ul>
+        <p>
+          Hosting runs on operator-managed servers in Austria — there is no third-party hosting
+          provider with access to your data.
+        </p>
+
+        <h2>5. International transfers</h2>
+        <p>
+          Google (Firebase Cloud Messaging) and Cloudflare may process data in the United States.
+          These transfers rely on an EU adequacy decision (EU–US Data Privacy Framework) and/or EU
+          Standard Contractual Clauses (Art. 46 GDPR). Your account and financial data stay on
+          servers in Austria.
+        </p>
+
+        <h2>6. Retention</h2>
+        <ul>
+          <li>
+            <strong>Account, financial data, messages</strong> — kept until you delete them or your
+            account; account deletion removes them permanently.
+          </li>
+          <li>
+            <strong>Push tokens / web-push subscriptions</strong> — deleted when you disable
+            notifications or delete your account.
+          </li>
+          <li>
+            <strong>Security and delivery logs</strong> — kept for a short, limited window and then
+            rotated out.
+          </li>
+          <li>
+            <strong>Backups</strong> — encrypted disaster-recovery backups are rotated
+            automatically; deleted data disappears from them as the rotation completes.
+          </li>
+        </ul>
+
+        <h2>7. Your rights (GDPR)</h2>
+        <p>You have the right to:</p>
+        <ul>
+          <li>
+            <strong>access</strong> your data (Art. 15) and <strong>rectify</strong> it (Art. 16);
+          </li>
+          <li>
+            <strong>erasure</strong> (Art. 17) — delete your account yourself at any time, in the
+            app under Settings → Account → Delete account or directly at
+            <a href="https://web.bettertrack.at/account/delete">web.bettertrack.at/account/delete</a
+            >; this permanently removes your account and all associated data;
+          </li>
+          <li>
+            <strong>restriction of processing</strong> (Art. 18) and
+            <strong>data portability</strong> (Art. 20);
+          </li>
+          <li><strong>object</strong> to processing based on legitimate interest (Art. 21);</li>
+          <li>
+            <strong>withdraw consent</strong> at any time with effect for the future (Art. 7(3));
+          </li>
+          <li>
+            <strong>complain</strong> to a supervisory authority — in Austria the Datenschutzbehörde
+            (<a href="https://www.dsb.gv.at" rel="noreferrer">dsb.gv.at</a>), or the authority of
+            your place of residence.
+          </li>
+        </ul>
+        <p>
+          For any request you cannot handle in the app, write to
+          <a href="mailto:bettertrack.service@gmail.com">bettertrack.service@gmail.com</a>.
+        </p>
+
+        <h2>8. Cookies</h2>
+        <p>
+          The service sets two first-party cookies: a session cookie that keeps you signed in, and —
+          only if you use "remember this device" — a remembered-device cookie for PIN quick re-auth.
+          No third-party, advertising or analytics cookies. Details, lifetimes and how to clear
+          them: <a href="/cookies/">cookie note</a>.
+        </p>
+
+        <h2>9. Security</h2>
+        <p>
+          All traffic is encrypted in transit (HTTPS/TLS). Passwords are stored only as salted
+          hashes. Your data is private by default — it is visible only to you and to exactly the
+          people you explicitly share individual items with, and revoking a share closes access
+          immediately.
+        </p>
+
+        <h2>10. Changes to this policy</h2>
+        <p>
+          If the service changes in a way that affects this policy, we update this page and change
+          the version and date at the top. The current version always lives at
+          <a href="https://bettertrack.at/privacy/">bettertrack.at/privacy/</a>.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap foot">
+        <div class="col">
+          <a class="wordmark" href="/"
+            ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+          >
+        </div>
+        <div class="col">
+          <span class="h">Product</span><a href="/features/">Features</a
+          ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
+        </div>
+        <div class="col">
+          <span class="h">App</span><a href="https://web.bettertrack.at">Web app</a
+          ><a href="https://mobile.bettertrack.at">Mobile (in development)</a>
+        </div>
+        <div class="col">
+          <span class="h">Legal</span><a href="/terms/">Terms</a><a href="/privacy/">Privacy</a
+          ><a href="/impressum/">Impressum</a><a href="/cookies/">Cookies</a
+          ><a href="mailto:bettertrack.service@gmail.com">Contact</a>
+        </div>
+        <p class="fine">
+          © 2026 BetterTrack — invite-only beta. Market data can be delayed; nothing here is
+          investment advice.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
