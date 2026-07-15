@@ -21,6 +21,15 @@ const REMEMBERED_KEY = 'bettertrack.oauthRemembered';
  * remembering the identity.
  */
 const ASKED_KEY = 'bettertrack.oauthRememberAsked';
+/**
+ * The identifier (email or username) most recently used to sign in — set on
+ * every successful login so the next visit to /login prefills the field
+ * (V4-P0 (g), replaces the removed "remember me" toggle). This is UI-only
+ * memory: a plain string, no session, no server side. It is deliberately
+ * SEPARATE from the {@link REMEMBERED_KEY} record above — writing this never
+ * touches the #419 remembered-device binding and never auto-creates one.
+ */
+const LAST_IDENTIFIER_KEY = 'bettertrack.lastLoginIdentifier';
 
 function safeGet(key: string): string | null {
   try {
@@ -113,4 +122,29 @@ export function markAskedToRemember(userId: string): void {
   if (ids.includes(userId)) return;
   ids.push(userId);
   safeSet(ASKED_KEY, JSON.stringify(ids));
+}
+
+// ── Last-login identifier prefill (V4-P0 (g)) ────────────────────────────────
+// Purely local UI memory for the login form; no session, no server side.
+// Kept in this module because it's the same storage layer, but its key is
+// distinct and it never touches the OAuth chooser record above (§16, #419).
+
+/** The identifier most recently used to sign in, or null when none is stored. */
+export function readLastLoginIdentifier(): string | null {
+  const raw = safeGet(LAST_IDENTIFIER_KEY);
+  if (raw == null) return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Persist the identifier just used for a successful login. Blank writes are ignored. */
+export function writeLastLoginIdentifier(identifier: string): void {
+  const trimmed = identifier.trim();
+  if (!trimmed) return;
+  safeSet(LAST_IDENTIFIER_KEY, trimmed);
+}
+
+/** Forget the last-login identifier (currently unused by the app; kept for parity). */
+export function clearLastLoginIdentifier(): void {
+  safeRemove(LAST_IDENTIFIER_KEY);
 }

@@ -12,12 +12,14 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as userApi from '../../lib/userApi';
 import { AdminAccountError, useAuth } from '../AuthContext';
-import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
+import { Alert, AuthCard, Button, Spinner, TextField, cx } from '../components/ui';
 import { OAuthAccountChooser } from './OAuthAccountChooser';
 import {
   hasBeenAskedToRemember,
   markAskedToRemember,
+  readLastLoginIdentifier,
   readRememberedAccount,
+  writeLastLoginIdentifier,
   type RememberedAccount,
 } from './rememberedAccount';
 
@@ -59,7 +61,10 @@ export function LoginPage() {
     oauthContext ? readRememberedAccount() : null,
   );
 
-  const [identifier, setIdentifier] = useState('');
+  // Always-on username memory (V4-P0 (g)): the identifier prefills from the
+  // last successful login — no toggle, no ask. Stays out of the OAuth chooser
+  // path, which is driven by the #419 device binding above.
+  const [identifier, setIdentifier] = useState(() => readLastLoginIdentifier() ?? '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -124,6 +129,11 @@ export function LoginPage() {
         staySignedIn: oauthContext ? false : staySignedIn,
         oauthLogin: oauthContext,
       });
+      // Password verified (login only returns a session/challenge after a
+      // successful password) — remember the identifier for the next visit
+      // (V4-P0 (g)). Wrong passwords never reach here, so the memory only
+      // ever holds an identifier the server has just recognized.
+      writeLastLoginIdentifier(identifier);
       if (outcome.status === 'two_factor_required') {
         // Password verified but 2FA is on — collect the second factor next.
         setChallenge(outcome.challenge);
@@ -285,17 +295,31 @@ export function LoginPage() {
         >
           {t('auth.login.forgotPassword')}
         </Link>
-        {/* Self-serve registration link, shown only when the instance allows it
-            (§13.4 V4-P4a) and never inside the OAuth authorize flow. */}
-        {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
+      </form>
+      {/* Self-serve registration treatment (V4-P0 (f), §13.4). Sits below the
+          sign-in form as a designed, stand-out card, not a bottom-anchor link,
+          and reserves the vertical stack the P4 Google sign-in button will slot
+          into (below Sign up) — no re-design when V4-P4 lands. Shown only when
+          the instance allows registration and never inside an OAuth flow. */}
+      {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
+        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
+          <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
+            {t('auth.login.newHere')}
+          </p>
           <Link
             to="/register"
-            className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
+            className={cx(
+              'inline-flex w-full items-center justify-center rounded-md px-3 py-2 text-sm font-semibold',
+              'border border-sky-700 bg-neutral-950 text-sky-300 transition-colors',
+              'hover:border-sky-500 hover:bg-neutral-900 hover:text-sky-200',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+            )}
           >
-            {t('auth.login.createAccount')}
+            {t('auth.login.signUp')}
           </Link>
-        ) : null}
-      </form>
+          {/* V4-P4 will slot the Google sign-in button in below Sign up. */}
+        </div>
+      ) : null}
     </AuthCard>
   );
 }

@@ -491,3 +491,77 @@ test('chooser: a wrong PIN shows an error and stays on the PIN step', async () =
   expect(screen.getByLabelText('PIN')).toBeInTheDocument();
   expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
 });
+
+// ── Always-on username memory (V4-P0 (g)) ────────────────────────────────────
+const LAST_IDENTIFIER_KEY = 'bettertrack.lastLoginIdentifier';
+
+test('a successful login stores the identifier for prefill on the next visit', async () => {
+  vi.mocked(api.login).mockResolvedValue(user);
+
+  const u = userEvent.setup();
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  // The blank login form on a fresh device has NO toggle for username memory —
+  // memory is always on (V4-P0 (g) supersedes any prior opt-in control).
+  expect(screen.queryByLabelText(/remember me/i)).not.toBeInTheDocument();
+  expect(screen.queryByLabelText(/remember username/i)).not.toBeInTheDocument();
+
+  await u.type(screen.getByLabelText('Email or username'), 'jane@bettertrack.test');
+  await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+  await screen.findByRole('button', { name: 'Account menu' });
+
+  // Whatever the user typed is persisted verbatim (email or username).
+  expect(localStorage.getItem(LAST_IDENTIFIER_KEY)).toBe('jane@bettertrack.test');
+});
+
+test('the identifier prefills from the last successful login on the next visit', async () => {
+  localStorage.setItem(LAST_IDENTIFIER_KEY, 'jane@bettertrack.test');
+
+  renderApp();
+  const field = (await screen.findByLabelText('Email or username')) as HTMLInputElement;
+  expect(field.value).toBe('jane@bettertrack.test');
+});
+
+test('a bad password does NOT overwrite the remembered identifier', async () => {
+  localStorage.setItem(LAST_IDENTIFIER_KEY, 'previous@bettertrack.test');
+  vi.mocked(api.login).mockRejectedValue(
+    new ApiError(401, 'INVALID_CREDENTIALS', 'Incorrect email/username or password.'),
+  );
+
+  const u = userEvent.setup();
+  renderApp();
+  const field = (await screen.findByLabelText('Email or username')) as HTMLInputElement;
+  // Prefilled from the earlier successful login; the user overwrites it and mistypes.
+  await u.clear(field);
+  await u.type(field, 'someoneelse@bettertrack.test');
+  await u.type(screen.getByLabelText('Password'), 'wrong-password');
+  await u.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  await screen.findByText(/incorrect email\/username or password/i);
+  // Memory was not clobbered by the failed attempt — the last SUCCESSFUL
+  // identifier still wins on the next visit.
+  expect(localStorage.getItem(LAST_IDENTIFIER_KEY)).toBe('previous@bettertrack.test');
+});
+
+// ── Prominent Sign-up treatment (V4-P0 (f)) ──────────────────────────────────
+
+test('the login screen exposes a designed Sign-up entry alongside the sign-in form', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open' });
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  // A prominent "Sign up" link — no more bottom-anchor "Create one" prose.
+  const signUp = await screen.findByRole('link', { name: 'Sign up' });
+  expect(signUp).toHaveAttribute('href', '/register');
+  expect(screen.queryByText(/create one/i)).not.toBeInTheDocument();
+});
+
+test('the Sign-up entry is hidden when the instance keeps registration closed', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed' });
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
+});

@@ -19,7 +19,8 @@
       "accountDisabled": "This account has been suspended. Please contact the administrator.",
       "invalidCredentials": "Incorrect email/username or password.",
       "staySignedIn": "Stay signed in",
-      "createAccount": "Don't have an account? Create one"
+      "newHere": "New to BetterTrack?",
+      "signUp": "Sign up"
     },
     "oauthStay": {
       "subtitle": "Signing in",
@@ -147,7 +148,8 @@
       "closedSubtitle": "Registration",
       "closedMessage": "Registration is currently closed. Ask an administrator for an invite.",
       "pendingSubtitle": "Almost there",
-      "pendingMessage": "Thanks! Your registration is pending administrator approval. You'll receive an email once it's reviewed."
+      "pendingMessage": "Thanks! Your registration is pending administrator approval. You'll receive an email once it's reviewed.",
+      "legalConsent": "By signing up you agree to our {{terms}}, {{privacy}}, {{impressum}} and {{cookies}}."
     },
     "oauthConsent": {
       "logoBadge": "BT",

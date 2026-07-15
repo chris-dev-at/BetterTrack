@@ -52,6 +52,8 @@ function setMode(mode: RegistrationMode) {
 beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
+  // Isolate the persisted locale choice — some tests seed 'de' explicitly.
+  localStorage.clear();
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'nope'));
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
@@ -138,4 +140,57 @@ test('a taken email surfaces a friendly error', async () => {
   await u.click(screen.getByRole('button', { name: 'Create account' }));
 
   expect(await screen.findByText(/an account already exists for this email/i)).toBeInTheDocument();
+});
+
+// ── Legal consent notice (V4-P0 (e)) ─────────────────────────────────────────
+
+test('the register form shows a legal-consent notice linking all four legal documents', async () => {
+  setMode('open');
+  renderAt('/register');
+  await screen.findByLabelText('Email');
+
+  // The notice announces the consent verbatim, then carries the four links.
+  expect(screen.getByText(/By signing up you agree/i)).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Terms of Service' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/terms/',
+  );
+  expect(screen.getByRole('link', { name: 'Privacy Policy' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/privacy/',
+  );
+  expect(screen.getByRole('link', { name: 'Impressum' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/impressum/',
+  );
+  expect(screen.getByRole('link', { name: 'Cookies' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/cookies/',
+  );
+});
+
+test('the legal-consent links resolve to the DE variants when the locale is German', async () => {
+  setMode('open');
+  // Seed the persisted locale so I18nProvider boots into DE.
+  localStorage.setItem('bettertrack.locale', 'de');
+  renderAt('/register');
+  await screen.findByLabelText(/E-Mail/);
+
+  // Same four links, DE labels, /de/ URL variants.
+  expect(screen.getByRole('link', { name: 'Nutzungsbedingungen' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/terms/de/',
+  );
+  expect(screen.getByRole('link', { name: 'Datenschutzerklärung' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/privacy/de/',
+  );
+  expect(screen.getByRole('link', { name: 'Impressum' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/impressum/de/',
+  );
+  expect(screen.getByRole('link', { name: 'Cookies' })).toHaveAttribute(
+    'href',
+    'https://bettertrack.at/cookies/de/',
+  );
 });
