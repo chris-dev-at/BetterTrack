@@ -316,7 +316,13 @@ export function createNotificationDispatcher(
             activity: event.activity,
             assetSymbol: event.assetSymbol,
           },
-          data: { itemKind: event.itemKind, itemId: event.itemId },
+          // `username` (public-profile slug) mirrors `follow.published` so the
+          // deep link lands on the actor's profile on both web and FCM (V4-P0c).
+          data: {
+            itemKind: event.itemKind,
+            itemId: event.itemId,
+            username: event.actorUsername,
+          },
         };
       case 'follow.published': {
         const { title, body } = followPublishedCopy(event);

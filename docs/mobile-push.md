@@ -193,7 +193,7 @@ event; `fcm.ts` then merges `type` onto it before sending. Source:
 | `portfolio.shared`      | `portfolioId`                                                   | `notificationDispatcher.ts:277`     |
 | `watchlist.shared`      | `watchlistId`                                                   | `notificationDispatcher.ts:290`     |
 | `conglomerate.shared`   | `conglomerateId`                                                | `notificationDispatcher.ts:303`     |
-| `friend.activity`       | `itemKind`, `itemId`                                            | `notificationDispatcher.ts:319`     |
+| `friend.activity`       | `itemKind`, `itemId`, `username` (public-profile slug of actor) | `notificationDispatcher.ts:319–324` |
 | `follow.published`      | `itemKind`, `itemId`, `username` (public-profile slug of actor) | `notificationDispatcher.ts:337–341` |
 | `follow.alert.created`  | `alertId`, `assetId`                                            | `notificationDispatcher.ts:374`     |
 | `follow.alert.fired`    | `alertId`, `assetId`                                            | `notificationDispatcher.ts:374`     |
@@ -223,35 +223,45 @@ without inspecting `notification.body`.
 
 ---
 
-## 4. Deep-link keys
+## 4. Deep-link keys — finalized route-key contract (V4-P0c)
 
 Deep-link routing uses `data.type` as the discriminator plus the type's `data`
-ids from §3.2. Recommended mapping today (drawn straight from the ids above; no
-extra keys are transmitted):
+ids from §3.2. This is the **canonical contract**: the web in-app deep links
+(`notificationLink()` in `apps/web/src/user/components/NotificationBell.tsx`)
+resolve to the SAME target from the SAME ids the FCM `data` map carries, so a
+tap deep-links identically on web and Android. Every id below rides both the
+in-app row payload and the FCM `data` map (the in-app payload additionally keeps
+`actorUsername`, the raw slug the web uses for the two public-profile targets;
+`data.username` is its FCM twin).
 
-- `alert.triggered`, `follow.alert.created`, `follow.alert.fired`
-  → asset detail for `data.assetId`
-- `chat.message` → chat conversation `data.conversationId`, scroll to
-  `data.messageId`
-- `portfolio.shared` → the shared portfolio (`data.portfolioId`)
-- `watchlist.shared` → the shared watchlist (`data.watchlistId`)
-- `conglomerate.shared` → the shared conglomerate (`data.conglomerateId`)
-- `friend.request` → friend-requests screen (deep target uses `data.requestId`)
-- `friend.accepted` → the friends list
-- `friend.activity`, `follow.published` → the actor's public profile for
-  `data.itemKind` + `data.itemId` (`follow.published` also carries
-  `data.username` — the public-profile slug — for a direct nav)
-- `account.temp_password` → security / password screen
+| `type`                  | Target                                | Route key(s)                     | Web route                                         |
+| ----------------------- | ------------------------------------- | -------------------------------- | ------------------------------------------------- |
+| `alert.triggered`       | Asset the alert fired on              | `assetId`                        | `/assets/{assetId}`                               |
+| `follow.alert.created`  | Asset the followed alert watches      | `assetId`                        | `/assets/{assetId}`                               |
+| `follow.alert.fired`    | Asset the followed alert watches      | `assetId`                        | `/assets/{assetId}`                               |
+| `friend.request`        | Friend-requests section (Friends tab) | _(none)_                         | `/social/friends#requests`                        |
+| `friend.accepted`       | Friends list                          | _(none)_                         | `/social/friends`                                 |
+| `portfolio.shared`      | The shared portfolio                  | `portfolioId`                    | `/social/shared-with-me/{portfolioId}`            |
+| `watchlist.shared`      | The shared watchlist                  | `watchlistId`                    | `/social/shared-with-me/watchlists/{watchlistId}` |
+| `conglomerate.shared`   | The shared conglomerate               | `conglomerateId`                 | `/social/shared-with-me/conglomerates/{id}`       |
+| `friend.activity`       | Actor's public profile                | `username` (`itemKind`+`itemId`) | `/u/{username}`                                   |
+| `follow.published`      | Actor's public profile                | `username` (`itemKind`+`itemId`) | `/u/{username}`                                   |
+| `chat.message`          | The DM thread (scroll to `messageId`) | `conversationId`, `messageId`    | `/social/chat/c/{conversationId}`                 |
+| `account.temp_password` | Security settings                     | _(none)_                         | `/settings/security`                              |
+| `account.invite`        | Account settings                      | _(none)_                         | `/settings/account`                               |
 
-> **Route-key matrix finalized by V4-P0c.**
-> V4-P0c ("Notification UX") owns the canonical route-key contract for every
-> notification type across in-app deep links + FCM. Until P0c lands, the map
-> above IS the contract — the app should route off `data.type` + the ids
-> above. When P0c ships, this section is replaced with the finalized matrix
-> and the payload keys are guaranteed identical to the in-app deep links
-> (PROJECTPLAN.md §13.4 V4-P0c: "the route-key contract lands in
-> docs/mobile-push.md so FCM payloads (P3) carry identical deep-link keys").
-> Any addition made in P0c will be **additive** on top of today's keys.
+Fallbacks (web): when a row predates the id key it needs, the web falls back to
+the type's landing surface rather than a dead click — alerts → `/workboard/alerts`,
+shared/social types → `/social/friends`, chat → `/social/chat`. The app SHOULD
+mirror this so no notification is ever a no-op tap.
+
+`account.invite` is email-only in production (never push/in-app dispatched, §3.1)
+— its row is listed here only so a bearer client that synthesizes one still has a
+target. The one-off `account.notice` in-app announcement (V4-P0c lean email
+defaults) is web/in-app only, never pushed, and deep-links to
+`/settings/notifications`.
+
+Any future addition stays **additive** on top of these keys.
 
 ---
 

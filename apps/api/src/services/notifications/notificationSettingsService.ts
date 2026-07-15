@@ -1,5 +1,6 @@
 import {
   NOTIFICATION_TYPES,
+  notificationChannelDefaultEnabled,
   type NotificationChannelAvailability,
   type NotificationMatrix,
   type NotificationSettingsResponse,
@@ -20,10 +21,12 @@ import type { UserRepository } from '../../data/repositories/userRepository';
  * push (FCM), browser push (web-push) — plus the global mute flag, for the
  * `GET/PATCH /settings/notifications` surface.
  *
- * §6.10 defaults, enforced here rather than in the schema:
- *  - **Every channel defaults on.** A type with no stored override reads
- *    `enabled: true` on each channel; only explicit overrides (or mute) change
- *    delivery.
+ * §6.10 defaults, enforced here rather than in the schema (V4-P0c lean email
+ * defaults, §16):
+ *  - **In-app / push / web-push default on; email defaults on ONLY for the
+ *    account/security category** ({@link notificationChannelDefaultEnabled}). A
+ *    type with no stored override resolves to that per-(channel, type) default;
+ *    only explicit overrides (or mute / a channel master-off) change delivery.
  *  - **Overrides live in `notification_settings.config`** (jsonb), one map per
  *    (userId, channel) row — additive for the two new channels, no migration of
  *    existing rows.
@@ -61,16 +64,21 @@ export function createNotificationSettingsService(
 
   /**
    * Resolve one channel's effective state for a type from the stored channel
-   * state, applying §6.10 precedence: per-type override, then the channel-wide
-   * `enabled` flag, then the channel default (on).
+   * state, applying §6.10 precedence (V4-P0c): an explicit per-type override
+   * wins; else a channel master-off (`enabled: false`) forces off; else the
+   * per-(channel, type) default ({@link notificationChannelDefaultEnabled} —
+   * email on only for account/security, every other channel on).
    */
   function effective(
+    channel: 'inapp' | 'email' | 'push' | 'webpush',
     state: { enabled: boolean; overrides: Record<string, boolean> } | undefined,
     type: NotificationType,
   ): boolean {
-    if (!state) return true;
+    const fallback = notificationChannelDefaultEnabled(channel, type);
+    if (!state) return fallback;
     const override = state.overrides[type];
-    return typeof override === 'boolean' ? override : state.enabled;
+    if (typeof override === 'boolean') return override;
+    return state.enabled ? fallback : false;
   }
 
   async function read(userId: string): Promise<NotificationSettingsResponse> {
@@ -82,10 +90,10 @@ export function createNotificationSettingsService(
       NOTIFICATION_TYPES.map((type) => [
         type,
         {
-          inapp: effective(states.inapp, type),
-          email: effective(states.email, type),
-          push: effective(states.push, type),
-          webpush: effective(states.webpush, type),
+          inapp: effective('inapp', states.inapp, type),
+          email: effective('email', states.email, type),
+          push: effective('push', states.push, type),
+          webpush: effective('webpush', states.webpush, type),
         },
       ]),
     ) as NotificationMatrix;

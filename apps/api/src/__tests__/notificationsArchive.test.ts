@@ -5,16 +5,17 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { notificationListResponseSchema } from '@bettertrack/contracts';
 
-import { AUTO_ARCHIVE_READ_AFTER_DAYS } from '../services/notifications/notificationService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import * as schema from '../data/schema';
 
 /**
- * Issue #437 — notification archive state + hard deletion. Covers the three
- * list views and their default, archive-implies-read, unarchive, the bulk
- * archive-all-read, the auto-archive sweep under a CONTROLLED clock, badge
- * math (unread among ACTIVE only), single + bulk deletion, and strict per-user
- * isolation on every new mutation.
+ * Issue #437 — notification archive state + hard deletion — plus V4-P0c's
+ * read ⟺ archived semantics (reading a notification archives it eagerly, so the
+ * inbox shows unread only and history lives under Archived; the lazy auto-archive
+ * sweep is retired). Covers the three list views and their default,
+ * archive-implies-read, read-implies-archive, unarchive, bulk archive-all-read,
+ * badge math (unread among ACTIVE only), single + bulk deletion, and strict
+ * per-user isolation on every mutation.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -257,72 +258,66 @@ describe('POST /api/v1/notifications/archive-all-read (#437)', () => {
   });
 });
 
-describe(`auto-archive sweep — read > ${AUTO_ARCHIVE_READ_AFTER_DAYS} days ago (controlled clock, #437)`, () => {
-  it('a read row older than the threshold leaves the bell and appears under Archived', async () => {
+describe('read ⟺ archived: reading a notification archives it (V4-P0c)', () => {
+  const markRead = (agent: Agent, body: Record<string, unknown>) =>
+    agent
+      .post('/api/v1/notifications/mark-read')
+      .set(...XRW)
+      .send(body);
+
+  it('mark-read {ids} archives the row: it leaves the active inbox for Archived', async () => {
     const { alice, agent } = await seedAlice();
-    const thresholdMs = AUTO_ARCHIVE_READ_AFTER_DAYS * DAY_MS;
-    const overThreshold = await seedNotification(alice.id, {
-      title: 'read 8 days ago',
-      readAt: new Date(T0.getTime() - 8 * DAY_MS),
-    });
-    const underThreshold = await seedNotification(alice.id, {
-      title: 'read 6 days ago',
-      readAt: new Date(T0.getTime() - 6 * DAY_MS),
-    });
-    const exactlyThreshold = await seedNotification(alice.id, {
-      title: 'read exactly 7 days ago',
-      readAt: new Date(T0.getTime() - thresholdMs),
-    });
-    const oldUnread = await seedNotification(alice.id, { title: 'ancient but unread' });
+    const target = await seedNotification(alice.id, { title: 'read me' });
+    const other = await seedNotification(alice.id, { title: 'stays unread' });
 
+    await markRead(agent, { ids: [target.id] }).expect(200);
+
+    // Active view shows unread only — the read row is gone, the badge drops.
     const active = await listNotifications(agent);
-    // Strictly OLDER than the threshold archives; exactly-at and newer stay.
-    // Unread rows are never auto-archived, however old.
-    expect(active.items.map((n) => n.id).sort()).toEqual(
-      [underThreshold.id, exactlyThreshold.id, oldUnread.id].sort(),
-    );
+    expect(active.items.map((n) => n.id)).toEqual([other.id]);
+    expect(active.unreadCount).toBe(1);
 
+    // …and it lands under Archived, stamped read + archived at the same instant.
     const archived = await listNotifications(agent, '?view=archived');
-    expect(archived.items.map((n) => n.id)).toEqual([overThreshold.id]);
-    // The sweep stamps the controlled clock's instant.
+    expect(archived.items.map((n) => n.id)).toEqual([target.id]);
+    expect(archived.items[0]?.readAt).toBe(T0.toISOString());
     expect(archived.items[0]?.archivedAt).toBe(T0.toISOString());
-    expect(archived.items[0]?.readAt).toBe(new Date(T0.getTime() - 8 * DAY_MS).toISOString());
   });
 
-  it('advancing the clock past the threshold archives on the next fetch', async () => {
+  it('mark-read {all} archives every unread row; a later read keeps its own stamp', async () => {
     const { alice, agent } = await seedAlice();
-    const row = await seedNotification(alice.id, { title: 'freshly read', readAt: T0 });
+    await seedNotification(alice.id, { title: 'a' });
+    await seedNotification(alice.id, { title: 'b' });
 
-    // Six days later: still active.
-    clock.now = new Date(T0.getTime() + 6 * DAY_MS);
-    expect((await listNotifications(agent)).items.map((n) => n.id)).toEqual([row.id]);
-    expect((await listNotifications(agent, '?view=archived')).items).toHaveLength(0);
-
-    // Seven days + 1ms later: the very next fetch sweeps it out of the bell.
-    clock.now = new Date(T0.getTime() + AUTO_ARCHIVE_READ_AFTER_DAYS * DAY_MS + 1);
+    await markRead(agent, { all: true }).expect(200);
     const active = await listNotifications(agent);
     expect(active.items).toHaveLength(0);
     expect(active.unreadCount).toBe(0);
-    const archived = await listNotifications(agent, '?view=archived');
-    expect(archived.items.map((n) => n.id)).toEqual([row.id]);
-    expect(archived.items[0]?.archivedAt).toBe(clock.now.toISOString());
+    expect((await listNotifications(agent, '?view=archived')).items).toHaveLength(2);
+
+    // A fresh row read a minute later archives at the NEW instant — no re-stamp
+    // of the earlier ones (mark-read only touches unread rows).
+    clock.now = new Date(T0.getTime() + 60_000);
+    const late = await seedNotification(alice.id, { title: 'c' });
+    await markRead(agent, { ids: [late.id] }).expect(200);
+    const archivedLate = (await listNotifications(agent, '?view=archived')).items.find(
+      (n) => n.id === late.id,
+    );
+    expect(archivedLate?.archivedAt).toBe(clock.now.toISOString());
   });
 
-  it("the sweep only touches the CALLER's rows", async () => {
-    const { agent } = await seedAlice();
-    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
-    const bobsOld = await seedNotification(bob.id, {
-      title: "bob's old read",
-      readAt: new Date(T0.getTime() - 30 * DAY_MS),
-    });
+  it('mark-read is idempotent and never re-stamps an already-read row', async () => {
+    const { alice, agent } = await seedAlice();
+    const row = await seedNotification(alice.id, { title: 'once' });
 
-    await listNotifications(agent); // alice's fetch sweeps alice only
+    await markRead(agent, { ids: [row.id] }).expect(200);
+    clock.now = new Date(T0.getTime() + 5 * 60_000);
+    await markRead(agent, { ids: [row.id] }).expect(200);
 
-    const [bobsRow] = await harness.db
-      .select()
-      .from(schema.notifications)
-      .where(eq(schema.notifications.id, bobsOld.id));
-    expect(bobsRow?.archivedAt).toBeNull();
+    const archived = (await listNotifications(agent, '?view=archived')).items[0];
+    // The ORIGINAL read/archive instant survives the repeat.
+    expect(archived?.readAt).toBe(T0.toISOString());
+    expect(archived?.archivedAt).toBe(T0.toISOString());
   });
 });
 

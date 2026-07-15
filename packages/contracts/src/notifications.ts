@@ -62,6 +62,35 @@ export const NOTIFICATION_CATEGORIES = [
 ] as const satisfies readonly { key: string; types: readonly NotificationType[] }[];
 export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['key'];
 
+/**
+ * The **account/security category** (V4-P0c). These are the only notification
+ * types whose EMAIL channel defaults ON — every other type's email default
+ * flipped to OFF (the "lean email defaults" refinement, §16). Mirrors the
+ * `account` category above; a contract test guards the two stay in lock-step.
+ */
+export const ACCOUNT_SECURITY_NOTIFICATION_TYPES = [
+  'account.invite',
+  'account.temp_password',
+] as const satisfies readonly NotificationType[];
+
+/** Whether a type belongs to the account/security category (email-default-on set). */
+export function isAccountSecurityNotificationType(type: string): boolean {
+  return (ACCOUNT_SECURITY_NOTIFICATION_TYPES as readonly string[]).includes(type);
+}
+
+/**
+ * The default enabled state for a (channel, type) cell with **no stored
+ * override** (V4-P0c lean email defaults, §6.10). Email defaults ON only for
+ * the account/security category and OFF for everything else; the in-app bell,
+ * phone push and browser push channels are unchanged — every type defaults ON.
+ * The single source of truth both the settings surface and the dispatcher's
+ * fan-out gate resolve through, so web and the delivery core cannot drift.
+ */
+export function notificationChannelDefaultEnabled(channel: string, type: string): boolean {
+  if (channel === 'email') return isAccountSecurityNotificationType(type);
+  return true;
+}
+
 // ── Device tokens (phone push, #368/#351) ────────────────────────────────────
 
 /** Platforms a push device token can belong to. `web` is reserved for FCM-web. */

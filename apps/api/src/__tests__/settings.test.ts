@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   NOTIFICATION_TYPES,
   accountSettingsResponseSchema,
+  isAccountSecurityNotificationType,
   meResponseSchema,
   notificationSettingsResponseSchema,
 } from '@bettertrack/contracts';
@@ -68,7 +69,7 @@ describe('GET /api/v1/settings/notifications', () => {
     expect(res.status).toBe(401);
   });
 
-  it('defaults every type to both channels on when the user has no rows', async () => {
+  it('defaults bell/push on for every type; email on only for account/security (V4-P0c)', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
@@ -77,7 +78,7 @@ describe('GET /api/v1/settings/notifications', () => {
     for (const type of NOTIFICATION_TYPES) {
       expect(settings!.matrix[type]).toEqual({
         inapp: true,
-        email: true,
+        email: isAccountSecurityNotificationType(type),
         push: true,
         webpush: true,
       });
@@ -101,10 +102,10 @@ describe('PATCH /api/v1/settings/notifications', () => {
       push: true,
       webpush: true,
     });
-    // Untouched types keep the default.
+    // Untouched types keep the default (email off for this non-account type, V4-P0c).
     expect(patched.body.matrix['friend.accepted']).toEqual({
       inapp: true,
-      email: true,
+      email: false,
       push: true,
       webpush: true,
     });
@@ -149,7 +150,7 @@ describe('PATCH /api/v1/settings/notifications', () => {
     });
     expect(settings!.matrix['friend.accepted']).toEqual({
       inapp: true,
-      email: true,
+      email: false, // non-account default (V4-P0c)
       push: true,
       webpush: true,
     });
@@ -187,7 +188,7 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const aliceSettings = await getSettings(aliceAgent);
     expect(aliceSettings!.matrix['friend.request']).toEqual({
       inapp: true,
-      email: true,
+      email: false, // non-account default (V4-P0c); untouched by Bob's write
       push: true,
       webpush: true,
     });

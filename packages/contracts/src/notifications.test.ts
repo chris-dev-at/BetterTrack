@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACCOUNT_SECURITY_NOTIFICATION_TYPES,
   DEVICE_PLATFORMS,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_TYPES,
+  isAccountSecurityNotificationType,
+  notificationChannelDefaultEnabled,
   registerDeviceRequestSchema,
   webPushSubscribeRequestSchema,
 } from './notifications';
@@ -37,6 +40,28 @@ describe('notification taxonomy (#368)', () => {
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual(['inapp', 'email', 'push', 'webpush']);
     expect(DEVICE_PLATFORMS).toEqual(['android', 'ios', 'web']);
+  });
+});
+
+describe('lean email defaults (V4-P0c)', () => {
+  it('the account/security set is exactly the `account` category', () => {
+    const accountCategory = NOTIFICATION_CATEGORIES.find((c) => c.key === 'account');
+    expect([...ACCOUNT_SECURITY_NOTIFICATION_TYPES].sort()).toEqual(
+      [...(accountCategory?.types ?? [])].sort(),
+    );
+    for (const type of ACCOUNT_SECURITY_NOTIFICATION_TYPES) {
+      expect(isAccountSecurityNotificationType(type)).toBe(true);
+    }
+  });
+
+  it('email defaults ON only for account/security; other channels default ON for every type', () => {
+    for (const type of NOTIFICATION_TYPES) {
+      const accountSecurity = isAccountSecurityNotificationType(type);
+      expect(notificationChannelDefaultEnabled('email', type)).toBe(accountSecurity);
+      expect(notificationChannelDefaultEnabled('inapp', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('push', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('webpush', type)).toBe(true);
+    }
   });
 });
 

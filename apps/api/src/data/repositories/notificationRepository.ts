@@ -1,6 +1,6 @@
 import { and, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 
-import type { NotificationView } from '@bettertrack/contracts';
+import { notificationChannelDefaultEnabled, type NotificationView } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { notifications, notificationSettings } from '../schema';
@@ -82,6 +82,10 @@ export function createNotificationRepository(db: Database) {
      * marker airtight even with a second dispatcher replica.
      */
     async insert(input: InsertNotificationInput): Promise<string | null> {
+      // Read ⟺ archived (V4-P0c): a row written already-read — a presence-
+      // suppressed row, or a hidden dedupe marker (in-app off / muted) — is
+      // archived on insert too, so it never lingers as a read-but-active row.
+      const readAt = input.readAt ?? null;
       const [row] = await db
         .insert(notifications)
         .values({
@@ -90,7 +94,8 @@ export function createNotificationRepository(db: Database) {
           title: input.title,
           body: input.body,
           payload: input.payload ?? null,
-          readAt: input.readAt ?? null,
+          readAt,
+          archivedAt: readAt,
           hidden: input.hidden ?? false,
         })
         .onConflictDoNothing()
@@ -121,10 +126,12 @@ export function createNotificationRepository(db: Database) {
      * Whether a single notification `type` is enabled on a `channel` for the
      * user — the dispatcher's per-(type, channel) fan-out gate (§6.10 matrix).
      *
-     * Precedence, in order:
+     * Precedence, in order (V4-P0c lean email defaults, §16):
      *  1. an explicit per-type override in `config` (the matrix cell) wins;
-     *  2. otherwise the row's channel-wide `enabled` flag (legacy/global toggle);
-     *  3. otherwise, with no row at all, the channel default — in-app on, email on.
+     *  2. otherwise a channel master-off (`enabled: false`) forces off;
+     *  3. otherwise the per-(channel, type) default
+     *     ({@link notificationChannelDefaultEnabled}) — in-app on, email on ONLY
+     *     for the account/security category.
      */
     async typeChannelEnabled(
       userId: string,
@@ -138,11 +145,11 @@ export function createNotificationRepository(db: Database) {
           and(eq(notificationSettings.userId, userId), eq(notificationSettings.channel, channel)),
         )
         .limit(1);
-      // No row → the channel default (both in-app and email default on, §6.10).
-      if (!row) return true;
+      // No row → the per-(channel, type) default (§6.10, V4-P0c).
+      if (!row) return notificationChannelDefaultEnabled(channel, type);
       const override = (row.config as Record<string, boolean> | null)?.[type];
       if (typeof override === 'boolean') return override;
-      return row.enabled;
+      return row.enabled ? notificationChannelDefaultEnabled(channel, type) : false;
     },
 
     /**
@@ -161,10 +168,10 @@ export function createNotificationRepository(db: Database) {
         .where(eq(notificationSettings.userId, userId));
       const resolve = (channel: NotificationChannel): boolean => {
         const row = rows.find((r) => r.channel === channel);
-        if (!row) return true;
+        if (!row) return notificationChannelDefaultEnabled(channel, type);
         const override = (row.config as Record<string, boolean> | null)?.[type];
         if (typeof override === 'boolean') return override;
-        return row.enabled;
+        return row.enabled ? notificationChannelDefaultEnabled(channel, type) : false;
       };
       return {
         inapp: resolve('inapp'),
@@ -297,49 +304,38 @@ export function createNotificationRepository(db: Database) {
     },
 
     /**
-     * Mark exactly the given (owned, unread) rows read. Ids belonging to
-     * another user, or already-read rows, are silently excluded — idempotent
-     * and no cross-user leak.
+     * Mark exactly the given owned rows read — and, since read ⟺ archived
+     * (V4-P0c), archive them in the same statement so the inbox (active view)
+     * shows unread only and history lands under Archived. Both timestamps ride a
+     * `coalesce` so a repeat preserves the original read/archive time (idempotent)
+     * and never resurrects an already-archived row. Ids belonging to another user
+     * are silently excluded — no cross-user leak.
      */
-    async markRead(userId: string, ids: readonly string[]): Promise<void> {
+    async markRead(userId: string, ids: readonly string[], now: Date): Promise<void> {
       if (ids.length === 0) return;
+      const nowIso = now.toISOString();
       await db
         .update(notifications)
-        .set({ readAt: new Date() })
+        .set({
+          readAt: sql`coalesce(${notifications.readAt}, ${nowIso}::timestamptz)`,
+          archivedAt: sql`coalesce(${notifications.archivedAt}, ${nowIso}::timestamptz)`,
+        })
         .where(and(eq(notifications.userId, userId), inArray(notifications.id, [...ids])));
     },
 
-    /** Mark every unread row for the user read (idempotent — a no-op if none). */
-    async markAllRead(userId: string): Promise<void> {
+    /**
+     * Mark every unread row for the user read — and archive it (read ⟺ archived,
+     * V4-P0c). Idempotent (a no-op when none are unread); only unread rows are
+     * touched, so already-read/archived timestamps are preserved.
+     */
+    async markAllRead(userId: string, now: Date): Promise<void> {
       await db
         .update(notifications)
-        .set({ readAt: new Date() })
+        .set({ readAt: now, archivedAt: now })
         .where(and(eq(notifications.userId, userId), isNull(notifications.readAt)));
     },
 
-    // ── Archive state + deletion (#437) ──────────────────────────────────────
-
-    /**
-     * Auto-archive sweep: stamp `archived_at = now` on every still-active row
-     * whose read happened before `readBefore` (= now minus the service's
-     * threshold). Runs lazily ahead of each list fetch — cheap, idempotent,
-     * strictly user-scoped, and it never touches unread rows or hidden dedupe
-     * markers.
-     */
-    async sweepAutoArchive(userId: string, readBefore: Date, now: Date): Promise<void> {
-      await db
-        .update(notifications)
-        .set({ archivedAt: now })
-        .where(
-          and(
-            eq(notifications.userId, userId),
-            eq(notifications.hidden, false),
-            isNull(notifications.archivedAt),
-            isNotNull(notifications.readAt),
-            lt(notifications.readAt, readBefore),
-          ),
-        );
-    },
+    // ── Archive state + deletion (#437, read=archive V4-P0c) ─────────────────
 
     /**
      * Archive one owned row: stamps `archived_at` and — archive-implies-read
