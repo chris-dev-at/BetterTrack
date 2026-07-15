@@ -56,6 +56,33 @@ beforeEach(() => {
 });
 
 describe('FriendsPage', () => {
+  test('renders the friends list above the requests section (V4-P0 h)', async () => {
+    vi.mocked(listFriendRequests).mockResolvedValue({
+      incoming: [
+        {
+          id: 'req-order',
+          direction: 'incoming',
+          status: 'pending',
+          user: { id: 'u-inc', username: 'ivan' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+          respondedAt: null,
+        },
+      ],
+      outgoing: [],
+    });
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [{ user: { id: 'u-fri', username: 'fiona' }, createdAt: '2026-01-01T00:00:00.000Z' }],
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('fiona')).toBeInTheDocument());
+    const friend = screen.getByText('fiona');
+    const incomingHeader = screen.getByText('Incoming requests');
+    expect(
+      friend.compareDocumentPosition(incomingHeader) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   test('sends a friend request and shows the same success feedback regardless of the target', async () => {
     vi.mocked(sendFriendRequest).mockResolvedValue(undefined);
     const user = userEvent.setup();
