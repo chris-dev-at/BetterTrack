@@ -889,7 +889,23 @@ setInterval(async () => {
   }
 }, 2000);
 
+// LAN-only guard (owner order 2026-07-08): when bound beyond loopback via
+// MF_CONTROL_HOST, accept ONLY private/loopback sources — anything arriving
+// from a public address (e.g. an accidental router port-forward) is dropped
+// before any handler runs. The router forwards no 8790 today; this is the belt.
+const PRIVATE_SRC =
+  /^(::1|::ffff:)?(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|169\.254\.)/;
+function isPrivateSource(addr) {
+  if (!addr) return false;
+  const a = addr.replace(/^::ffff:/, '');
+  return a === '::1' || PRIVATE_SRC.test(a);
+}
+
 const server = createServer(async (req, res) => {
+  if (!isPrivateSource(req.socket.remoteAddress)) {
+    req.socket.destroy();
+    return;
+  }
   const url = new URL(req.url, 'http://x');
   try {
     if (req.method === 'GET' && url.pathname === '/') {
@@ -942,6 +958,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`multi-factory control → http://127.0.0.1:${PORT}`);
+const HOST = process.env.MF_CONTROL_HOST || '127.0.0.1';
+server.listen(PORT, HOST, () => {
+  console.log(`multi-factory control → http://${HOST}:${PORT} (private-source-only guard active)`);
 });
