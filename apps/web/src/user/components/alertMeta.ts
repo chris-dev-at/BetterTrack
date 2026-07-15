@@ -1,7 +1,7 @@
 import type { Alert, AlertKind, AlertStatus } from '@bettertrack/contracts';
 
 import type { TranslateFn } from '../../i18n';
-import { formatMoney, formatPercent } from '../../lib/format';
+import { formatPercent, formatUnitPrice } from '../../lib/format';
 
 /**
  * Shared presentation metadata for price alerts (PROJECTPLAN.md §14). Both the
@@ -80,8 +80,12 @@ export function describeAlertRule(
   currency = 'EUR',
 ): string {
   const meta = ALERT_KIND_META[alert.kind];
+  // Thresholds and references are per-unit PRICES (§7.1 rule 4) — a sub-cent
+  // alert on a micro-priced token must not describe itself as "above 0,00 €".
   const amount =
-    meta.unit === 'price' ? formatMoney(alert.threshold, currency) : formatPercent(alert.threshold);
+    meta.unit === 'price'
+      ? formatUnitPrice(alert.threshold, currency)
+      : formatPercent(alert.threshold);
   switch (alert.kind) {
     case 'price_above':
       return t('workboard.alerts.rule.priceAbove', { amount });
@@ -91,14 +95,14 @@ export function describeAlertRule(
       return alert.refPrice != null
         ? t('workboard.alerts.rule.pctUpFromRefPrice', {
             amount,
-            ref: formatMoney(alert.refPrice, currency),
+            ref: formatUnitPrice(alert.refPrice, currency),
           })
         : t('workboard.alerts.rule.pctUpFromRef', { amount });
     case 'pct_down_from_ref':
       return alert.refPrice != null
         ? t('workboard.alerts.rule.pctDownFromRefPrice', {
             amount,
-            ref: formatMoney(alert.refPrice, currency),
+            ref: formatUnitPrice(alert.refPrice, currency),
           })
         : t('workboard.alerts.rule.pctDownFromRef', { amount });
     case 'pct_day_up':

@@ -6,7 +6,7 @@ import type { Alert, AlertKind, CreateAlertRequest } from '@bettertrack/contract
 import { useT } from '../../i18n';
 import { ALERTS_QUERY_KEY, createAlert, updateAlert } from '../../lib/alertsApi';
 import { ApiError } from '../../lib/apiClient';
-import { formatMoney } from '../../lib/format';
+import { formatUnitPrice } from '../../lib/format';
 import { truncateMoneyForInput } from '../../lib/moneyInput';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
@@ -244,11 +244,11 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
             <p className="text-xs text-neutral-500">
               {editing && existing?.refPrice != null
                 ? t('workboard.alerts.dialog.refMeasured', {
-                    price: formatMoney(existing.refPrice, currency),
+                    price: formatUnitPrice(existing.refPrice, currency),
                   })
                 : referencePrice != null
                   ? t('workboard.alerts.dialog.refWillCapture', {
-                      price: formatMoney(referencePrice, currency),
+                      price: formatUnitPrice(referencePrice, currency),
                     })
                   : t('workboard.alerts.dialog.refWillCaptureNoPrice')}
             </p>
