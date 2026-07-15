@@ -401,6 +401,12 @@ docker compose exec -T db bash -c \
 docker compose start api worker
 ```
 
+**Offsite backup (optional).** An age-encrypted copy of each daily dump can be
+uploaded to Google Drive (or any rclone remote) via the `backup-offsite`
+sidecar in `infra/docker-compose.offsite.yml`. Full runbook — age keypair
+generation, rclone Drive setup, host-cron wiring, retention contract, and the
+end-to-end restore drill — lives in `docs/ops.md`.
+
 ## Quality gates
 
 These are exactly what CI runs (`.github/workflows/ci.yml`):
