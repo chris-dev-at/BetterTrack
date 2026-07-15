@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { PIN_LENGTH } from '@bettertrack/contracts';
 
@@ -36,6 +36,12 @@ function pinErrorMessage(t: TranslateFn, err: unknown): string {
  * button press (#288). A wrong PIN shakes the card, clears the boxes and refocuses
  * the first; five wrong PINs in a row drop the session server-side and bounce the
  * user to the full login screen. The user can always sign out instead.
+ *
+ * **Page-wide capture (V4-P0 (a)):** a document keydown listener routes digit
+ * keystrokes into the PIN boxes even when focus is elsewhere on the gate (a
+ * scrolled body, the Sign-out button) — so "typing anywhere" fills the PIN and
+ * Backspace edits it. Native input focus still wins when a box itself is focused,
+ * so the per-box masking rules keep applying.
  */
 export function PinGate() {
   const t = useT();
@@ -50,24 +56,68 @@ export function PinGate() {
   // Drives the brief shake on the card after a wrong PIN; cleared when the CSS
   // animation ends so a later reject can retrigger it.
   const [shake, setShake] = useState(false);
+  // The page-wide keydown handler runs off refs so a single listener can read
+  // the latest state without re-registering on every keystroke.
+  const pinRef = useRef(pin);
+  const submittingRef = useRef(submitting);
+  useEffect(() => {
+    pinRef.current = pin;
+  }, [pin]);
+  useEffect(() => {
+    submittingRef.current = submitting;
+  }, [submitting]);
 
-  async function submit(value: string) {
-    // Guard against a double-fire (auto-complete + a stray Enter/click).
-    if (submitting) return;
-    setError(null);
-    setSubmitting(true);
-    try {
-      // Success releases the trap via the AuthContext.
-      await verifyPin({ pin: value });
-    } catch (err) {
-      setError(pinErrorMessage(t, err));
-      setPin('');
-      setAttempt((n) => n + 1);
-      setShake(true);
-    } finally {
-      setSubmitting(false);
+  const submit = useCallback(
+    async (value: string) => {
+      // Guard against a double-fire (auto-complete + a stray Enter/click).
+      if (submittingRef.current) return;
+      setError(null);
+      setSubmitting(true);
+      try {
+        // Success releases the trap via the AuthContext.
+        await verifyPin({ pin: value });
+      } catch (err) {
+        setError(pinErrorMessage(t, err));
+        setPin('');
+        setAttempt((n) => n + 1);
+        setShake(true);
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [t, verifyPin],
+  );
+
+  // Page-wide keystroke capture (V4-P0 (a)). Digit keys land in the PIN state;
+  // Backspace edits it — whether focus is on a PIN box, the Sign-out button, or
+  // the body. When a PIN box itself has focus, defer to its own onChange so the
+  // per-box masking rules run. pinRef is bumped SYNCHRONOUSLY inside the handler
+  // so a rapid burst of keystrokes doesn't read a stale value before React commits.
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      // Native input handling wins when a PIN box (or any input) is focused.
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+      // Ignore browser shortcuts (Ctrl-R, Cmd-Q, …). Shift is fine (row keys).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (submittingRef.current) return;
+
+      if (/^[0-9]$/.test(e.key) && pinRef.current.length < PIN_LENGTH) {
+        e.preventDefault();
+        const next = (pinRef.current + e.key).slice(0, PIN_LENGTH);
+        pinRef.current = next;
+        setPin(next);
+        if (next.length === PIN_LENGTH) void submit(next);
+      } else if (e.key === 'Backspace' && pinRef.current.length > 0) {
+        e.preventDefault();
+        const next = pinRef.current.slice(0, -1);
+        pinRef.current = next;
+        setPin(next);
+      }
     }
-  }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [submit]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-[#0b0e14] px-4 py-12">

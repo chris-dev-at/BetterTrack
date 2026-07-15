@@ -19,7 +19,8 @@
       "accountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
       "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
       "staySignedIn": "Angemeldet bleiben",
-      "createAccount": "Noch kein Konto? Jetzt erstellen"
+      "newHere": "Neu bei BetterTrack?",
+      "signUp": "Konto erstellen"
     },
     "oauthStay": {
       "subtitle": "Anmeldung",
@@ -147,7 +148,8 @@
       "closedSubtitle": "Registrierung",
       "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "pendingSubtitle": "Fast geschafft",
-      "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde."
+      "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
+      "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu."
     },
     "oauthConsent": {
       "logoBadge": "BT",

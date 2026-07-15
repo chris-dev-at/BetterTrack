@@ -1,18 +1,22 @@
 import { useState } from 'react';
 
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { PinInput } from './PinInput';
+
+const MASK = '•';
 
 /** Thin controlled wrapper so tests can drive `value` like a real caller would. */
 function Harness({
   length = 4,
   onComplete,
+  onChange,
 }: {
   length?: number;
   onComplete?: (value: string) => void;
+  onChange?: (value: string) => void;
 }) {
   const [value, setValue] = useState('');
   return (
@@ -20,15 +24,14 @@ function Harness({
       label="PIN"
       length={length}
       value={value}
-      onChange={setValue}
+      onChange={(v) => {
+        setValue(v);
+        onChange?.(v);
+      }}
       onComplete={onComplete}
     />
   );
 }
-
-afterEach(() => {
-  vi.useRealTimers();
-});
 
 describe('PinInput', () => {
   test('renders one box per digit of the configured length', () => {
@@ -42,7 +45,8 @@ describe('PinInput', () => {
 
     await user.type(screen.getByLabelText('PIN'), '42');
 
-    expect(screen.getByLabelText('PIN')).toHaveValue('4');
+    // The first box carries the mask glyph — never the typed digit (V4-P0).
+    expect(screen.getByLabelText('PIN')).toHaveValue(MASK);
     expect(document.activeElement).toBe(screen.getByLabelText('PIN digit 3'));
   });
 
@@ -56,41 +60,42 @@ describe('PinInput', () => {
     fireEvent.keyDown(screen.getByLabelText('PIN digit 3'), { key: 'Backspace' });
 
     expect(document.activeElement).toBe(screen.getByLabelText('PIN digit 2'));
-    expect(screen.getByLabelText('PIN')).toHaveValue('4');
+    // First box still holds a digit (in parent state) — DOM value is the mask.
+    expect(screen.getByLabelText('PIN')).toHaveValue(MASK);
+    // Second box was cleared — DOM value is empty.
+    expect(screen.getByLabelText('PIN digit 2')).toHaveValue('');
   });
 
-  test('pasting a full PIN distributes it across the boxes', () => {
+  test('pasting a full PIN distributes it across the boxes — masked in the DOM', () => {
     render(<Harness />);
 
     fireEvent.paste(screen.getByLabelText('PIN'), {
       clipboardData: { getData: () => '4242' },
     });
 
-    expect(screen.getByLabelText('PIN')).toHaveValue('4');
-    expect(screen.getByLabelText('PIN digit 2')).toHaveValue('2');
-    expect(screen.getByLabelText('PIN digit 3')).toHaveValue('4');
-    expect(screen.getByLabelText('PIN digit 4')).toHaveValue('2');
+    // Every box shows the mask glyph; a raw digit never appears in the DOM.
+    for (const box of screen.getAllByRole('textbox') as HTMLInputElement[]) {
+      expect(box).toHaveValue(MASK);
+    }
   });
 
-  test('a digit shows briefly then masks — but the value stays the real digit (#288)', () => {
-    vi.useFakeTimers();
+  test('the DOM never contains a typed PIN digit — masked dots only (V4-P0 (a))', () => {
     render(<Harness />);
 
-    const box = screen.getByLabelText('PIN');
-    fireEvent.change(box, { target: { value: '4' } });
-    expect(box).toHaveValue('4');
-    expect(box).not.toHaveAttribute('data-masked');
-
-    act(() => {
-      vi.advanceTimersByTime(600);
-    });
-    // Masking is visual only: the box carries a `data-masked` marker but its
-    // value is never a non-digit glyph, so numeric validation still passes.
-    expect(box).toHaveValue('4');
-    expect(box).toHaveAttribute('data-masked', 'true');
+    // Type each digit into its own box and check the DOM after every keystroke:
+    // no box's value ever matches /[0-9]/ (masked-dots-only, no flash window).
+    const labels = ['PIN', 'PIN digit 2', 'PIN digit 3', 'PIN digit 4'];
+    for (let i = 0; i < labels.length; i += 1) {
+      fireEvent.change(screen.getByLabelText(labels[i] as string), {
+        target: { value: String(i + 1) },
+      });
+      for (const box of screen.getAllByRole('textbox') as HTMLInputElement[]) {
+        expect(box.value).not.toMatch(/[0-9]/);
+      }
+    }
   });
 
-  test('onComplete fires with the real digits once the last box is filled (#288)', () => {
+  test('onComplete fires with the real digits — from parent state, not DOM value (#288)', () => {
     const onComplete = vi.fn();
     render(<Harness onComplete={onComplete} />);
 
@@ -104,23 +109,15 @@ describe('PinInput', () => {
     expect(onComplete).toHaveBeenCalledWith('4242');
   });
 
-  test('every box submits a real digit — never a mask glyph — as its value (#288)', () => {
-    vi.useFakeTimers();
-    render(<Harness />);
+  test('the parent controller sees the real PIN even though the DOM masks it', () => {
+    const onChange = vi.fn<(value: string) => void>();
+    render(<Harness onChange={onChange} />);
 
-    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('PIN'), { target: { value: '4' } });
     fireEvent.change(screen.getByLabelText('PIN digit 2'), { target: { value: '2' } });
-    fireEvent.change(screen.getByLabelText('PIN digit 3'), { target: { value: '3' } });
-    fireEvent.change(screen.getByLabelText('PIN digit 4'), { target: { value: '4' } });
 
-    // Let every reveal timer lapse so all four boxes are in their masked state.
-    act(() => {
-      vi.advanceTimersByTime(600);
-    });
-
-    for (const box of screen.getAllByRole('textbox')) {
-      expect(box.getAttribute('value') ?? (box as HTMLInputElement).value).toMatch(/^[0-9]$/);
-    }
+    // Parent state received the real digits — that's what a submit consumes.
+    expect(onChange).toHaveBeenLastCalledWith('42');
   });
 
   test('no box is a password field, password-ish name/id, or autofill-permissive', () => {
@@ -132,7 +129,9 @@ describe('PinInput', () => {
       expect(box.getAttribute('name') ?? '').not.toMatch(/password/i);
       expect(box).toHaveAttribute('autocomplete', 'off');
       expect(box).toHaveAttribute('inputmode', 'numeric');
-      expect(box).toHaveAttribute('pattern', '[0-9]*');
+      // No `pattern="[0-9]*"` — a mask-glyph value must not fail native
+      // numeric validation on submit (V4-P0 supersedes the #288 in-value fix).
+      expect(box).not.toHaveAttribute('pattern');
     }
   });
 });
