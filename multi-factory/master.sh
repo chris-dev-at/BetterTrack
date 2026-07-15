@@ -25,7 +25,7 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs
 : "${WORKERS:=2}"
 : "${MF_TICK:=15}"                # seconds between master loop ticks
 : "${MF_STALL_SECS:=3600}"        # heartbeat silence that counts as a worker stall
-: "${COMPOSER_BATCH:=6}"          # issues per composer run (bigger batches amortize the per-cycle orientation cost of the priciest role)
+: "${COMPOSER_BATCH:=10}"         # issues per composer run (owner 2026-07-16: big batches — amortize the per-cycle cost of the priciest role)
 : "${MF_COMPOSER_COOLDOWN:=900}"  # min seconds between composer runs (base; also the floor after a reset)
 : "${MF_COMPOSER_BACKOFF_MAX:=14400}"  # cap on the idle-backoff cooldown (empty composer runs)
 : "${MF_DRY_RUN:=0}"
