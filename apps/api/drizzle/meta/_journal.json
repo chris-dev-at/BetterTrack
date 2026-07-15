@@ -295,6 +295,13 @@
       "when": 1783960000000,
       "tag": "0041_alert_follows",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1783970000000,
+      "tag": "0042_chat_ban",
+      "breakpoints": true
     }
   ]
 }

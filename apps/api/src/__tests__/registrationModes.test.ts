@@ -424,3 +424,74 @@ describe('public registration-info discovery (§13.4 V4-P4a)', () => {
     expect(res.headers['access-control-allow-credentials']).toBe('true');
   });
 });
+
+describe('account defaults applied at registration (PROJECTPLAN.md §13.4 V4-P0d)', () => {
+  /** Read one type's email-channel effective state for a session agent. */
+  async function friendRequestEmail(agent: ReturnType<typeof request.agent>): Promise<boolean> {
+    const res = await agent.get('/api/v1/settings/notifications');
+    expect(res.status).toBe(200);
+    return res.body.matrix['friend.request'].email as boolean;
+  }
+
+  it('applies a changed notification default to the NEXT registration only', async () => {
+    await setMode(adminAgent, 'open');
+
+    // First registrant lands under the lean default: friend.request email OFF.
+    const first = request.agent(harness.app);
+    const r1 = await first
+      .post('/api/v1/auth/register')
+      .set(...XRW)
+      .send({ email: 'before@test.dev', username: 'before_user', password: 'before-strong-1' });
+    expect(r1.status).toBe(201);
+    expect(await friendRequestEmail(first)).toBe(false);
+
+    // Admin flips the account-default matrix cell ON (registration seed only — the
+    // lean default function is untouched).
+    const current = await adminAgent.get('/api/v1/admin/account-defaults');
+    const matrix = current.body.notificationMatrix;
+    matrix['friend.request'].email = true;
+    const patched = await adminAgent
+      .patch('/api/v1/admin/account-defaults')
+      .set(...XRW)
+      .send({ notificationMatrix: matrix });
+    expect(patched.status).toBe(200);
+
+    // Second registrant is seeded with the new default: friend.request email ON.
+    const second = request.agent(harness.app);
+    const r2 = await second
+      .post('/api/v1/auth/register')
+      .set(...XRW)
+      .send({ email: 'after@test.dev', username: 'after_user', password: 'after-strong-1' });
+    expect(r2.status).toBe(201);
+    expect(await friendRequestEmail(second)).toBe(true);
+
+    // The pre-change account is untouched — still OFF (never retroactive).
+    expect(await friendRequestEmail(first)).toBe(false);
+  });
+
+  it('registers a chat-off account chat-disabled and stores an inert developer-status', async () => {
+    await setMode(adminAgent, 'open');
+    const defaultsPatch = await adminAgent
+      .patch('/api/v1/admin/account-defaults')
+      .set(...XRW)
+      .send({ chatEnabled: false, developerStatus: true });
+    expect(defaultsPatch.status).toBe(200);
+
+    const res = await register(harness.app, {
+      email: 'chatoff@test.dev',
+      username: 'chatoff_user',
+      password: 'chatoff-strong-1',
+    });
+    expect(res.status).toBe(201);
+
+    // The new account is chat-banned (chat-off default) — the admin list shows it…
+    const users = await adminAgent.get('/api/v1/admin/users?search=chatoff_user');
+    const row = (
+      users.body.users as Array<{ username: string; role: string; chatBanned: boolean }>
+    ).find((u) => u.username === 'chatoff_user');
+    expect(row?.chatBanned).toBe(true);
+    // …while the developer-status default is INERT: the account is a plain user
+    // with no elevated role or behavior.
+    expect(row?.role).toBe('user');
+  });
+});

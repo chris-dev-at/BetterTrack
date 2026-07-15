@@ -56,6 +56,34 @@ export async function setRegistrationMode(
 }
 
 /**
+ * Chat-bans (or unbans) a user by username via the admin API (§13.4 V4-P0d):
+ * looks the user up in the admin list, then PATCHes `chatBanned`. Test setup
+ * only — driving the ban toggle in the admin UI is covered by unit tests.
+ */
+export async function setChatBanByUsername(
+  request: APIRequestContext,
+  username: string,
+  banned: boolean,
+): Promise<void> {
+  const list = await request.get(
+    `${API_BASE_URL}/api/v1/admin/users?search=${encodeURIComponent(username)}`,
+  );
+  if (!list.ok()) {
+    throw new Error(`Reading admin users failed: ${list.status()} ${await list.text()}`);
+  }
+  const body = (await list.json()) as { users: Array<{ id: string; username: string }> };
+  const target = body.users.find((u) => u.username === username);
+  if (!target) throw new Error(`Admin user not found for chat ban: ${username}`);
+  const res = await request.patch(`${API_BASE_URL}/api/v1/admin/users/${target.id}`, {
+    headers: CSRF_HEADERS,
+    data: { chatBanned: banned },
+  });
+  if (!res.ok()) {
+    throw new Error(`Setting chat ban for ${username} failed: ${res.status()} ${await res.text()}`);
+  }
+}
+
+/**
  * Creates an invite for `email` via the admin API and returns its token, so
  * the spec can drive the real invite-accept page in a browser context. Test
  * setup only — invite *creation* isn't part of the happy path under test.

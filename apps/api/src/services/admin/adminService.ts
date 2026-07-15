@@ -1,11 +1,13 @@
 import type { Redis } from 'ioredis';
 
 import type {
+  AccountDefaults,
   BulkUserActionRequest,
   BulkUserActionResponse,
   CreateInviteRequest,
   CreateRegistrationTokenRequest,
   CreateUserRequest,
+  UpdateAccountDefaultsRequest,
   UpdateAppSettingsRequest,
   UpdateUserRequest,
 } from '@bettertrack/contracts';
@@ -13,12 +15,14 @@ import type {
 import type { AppConfig } from '../../config/env';
 import type { EmailLogPage, EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
+import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { RegistrationRequestRepository } from '../../data/repositories/registrationRequestRepository';
 import type { RegistrationTokenRepository } from '../../data/repositories/registrationTokenRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, RegistrationTokenRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
+import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
 import type { AppSettings, AppSettingsService } from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { clearLoginThrottle } from '../auth/loginThrottle';
@@ -39,6 +43,8 @@ export interface AdminServiceDeps {
   /** Approval-queue applications for the `approval` mode (§13.4 V4-P4a). */
   registrationRequestRepo: RegistrationRequestRepository;
   portfolioRepo: PortfolioRepository;
+  /** Per-(channel, type) override seeding for the V4-P0d account-defaults matrix. */
+  notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
   sessions: SessionService;
   audit: AuditService;
   passwordHasher: PasswordHasher;
@@ -65,6 +71,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     registrationTokenRepo,
     registrationRequestRepo,
     portfolioRepo,
+    notificationRepo,
     sessions,
     audit,
     passwordHasher,
@@ -275,6 +282,20 @@ export function createAdminService(deps: AdminServiceDeps) {
             meta: { username: trimmed },
           });
         }
+      }
+
+      // Chat ban toggle (§13.4 V4-P0d): server-enforced in the send path. Banning
+      // never touches the user's sessions or threads — reading stays allowed — and
+      // unban restores sending on the next send with no cache flush.
+      if (input.chatBanned !== undefined && input.chatBanned !== target.chatBanned) {
+        await userRepo.setChatBanned(target.id, input.chatBanned);
+        await audit.record({
+          actorId: actor.id,
+          action: input.chatBanned ? AuditAction.UserChatBanned : AuditAction.UserChatUnbanned,
+          targetType: 'user',
+          targetId: target.id,
+          ip: actor.ip,
+        });
       }
 
       return loadUser(id);
@@ -492,6 +513,12 @@ export function createAdminService(deps: AdminServiceDeps) {
         locale: request.locale,
       });
       await portfolioRepo.createDefault(user.id);
+      // Approval completes a self-serve registration — apply the same account
+      // defaults (§13.4 V4-P0d) a direct signup gets, to this new account only.
+      await applyAccountDefaultsAtRegistration(
+        { appSettings, userRepo, notificationRepo },
+        user.id,
+      );
       await registrationRequestRepo.remove(id);
 
       await audit.record({
@@ -601,6 +628,29 @@ export function createAdminService(deps: AdminServiceDeps) {
         meta: { changed: input },
       });
       return settings;
+    },
+
+    /** Current new-account defaults, lean fallbacks filled in (§13.4 V4-P0d). */
+    getAccountDefaults: (): Promise<AccountDefaults> => appSettings.getAccountDefaults(),
+
+    /**
+     * Persist a new-account-defaults change and audit it (§13.4 V4-P0d). The change
+     * applies to the NEXT registration only — never to any existing account.
+     */
+    async updateAccountDefaults(
+      input: UpdateAccountDefaultsRequest,
+      actor: AdminActor,
+    ): Promise<AccountDefaults> {
+      const defaults = await appSettings.updateAccountDefaults(input, actor.id);
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.AccountDefaultsUpdated,
+        targetType: 'app_settings',
+        targetId: null,
+        ip: actor.ip,
+        meta: { changed: input },
+      });
+      return defaults;
     },
 
     /**

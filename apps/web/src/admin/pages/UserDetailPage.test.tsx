@@ -32,6 +32,7 @@ const jane: AdminUser = {
   role: 'user',
   status: 'active',
   mustChangePassword: false,
+  chatBanned: false,
   lastLoginAt: null,
   createdAt: '2026-02-02T00:00:00.000Z',
 };

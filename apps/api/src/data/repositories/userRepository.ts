@@ -163,6 +163,18 @@ export function createUserRepository(db: Database) {
         .where(eq(users.id, id));
     },
 
+    /**
+     * Set (or clear) the per-user chat ban (§13.4 V4-P0d). The send path reads
+     * this column fresh on every message, so a ban takes effect on the next send
+     * and an unban restores sending instantly — there is no cached ban state.
+     */
+    async setChatBanned(id: string, banned: boolean): Promise<void> {
+      await db
+        .update(users)
+        .set({ chatBanned: banned, updatedAt: new Date() })
+        .where(eq(users.id, id));
+    },
+
     /** Whether the user shares their whole watchlist with friends (§6.9, §13.2 V2-P9). */
     async getWatchlistVisibility(id: string): Promise<'private' | 'friends'> {
       const [row] = await db

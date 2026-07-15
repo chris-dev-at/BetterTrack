@@ -128,6 +128,14 @@ export const users = pgTable(
     // over the whole alert list, NOT the V3-P5 audience model: followers are
     // not friends, so the friend-scoped rungs don't map (§16 2026-07-14).
     alertsVisibleToFollowers: boolean('alerts_visible_to_followers').notNull().default(false),
+    // Per-user chat ban (§13.4 V4-P0d). While true the send path (chatService)
+    // rejects a DM with CHAT_BANNED for both a cookie session and a `chat:write`
+    // bearer token; reading existing threads stays allowed and unban is instant —
+    // this column IS the state, so there is no cached ban to flush. It doubles as
+    // the chat-off account default: a NEW account registered while the admin's
+    // account-default has chat disabled starts with this flag set (never applied
+    // retroactively to existing accounts).
+    chatBanned: boolean('chat_banned').notNull().default(false),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

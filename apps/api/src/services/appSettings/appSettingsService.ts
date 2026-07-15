@@ -1,6 +1,14 @@
 import {
+  NOTIFICATION_TYPES,
+  notificationChannelDefaultEnabled,
+  notificationMatrixSchema,
+  portfolioVisibilitySchema,
   registrationModeSchema,
+  type AccountDefaults,
+  type NotificationMatrix,
+  type PortfolioVisibility,
   type RegistrationMode,
+  type UpdateAccountDefaultsRequest,
   type UpdateAppSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -23,9 +31,41 @@ import { forbidden } from '../../errors';
 export const REGISTRATION_MODE_KEY = 'registration_mode';
 export const BETA_MODE_KEY = 'beta_mode';
 
+/** Account-defaults keys (§13.4 V4-P0d) — one row each; applied at registration. */
+export const ACCOUNT_DEFAULT_CHAT_ENABLED_KEY = 'account_default_chat_enabled';
+export const ACCOUNT_DEFAULT_PORTFOLIO_VISIBILITY_KEY = 'account_default_portfolio_visibility';
+export const ACCOUNT_DEFAULT_DEVELOPER_STATUS_KEY = 'account_default_developer_status';
+export const ACCOUNT_DEFAULT_NOTIFICATION_MATRIX_KEY = 'account_default_notification_matrix';
+
 /** Defaults applied when a key has no row yet (§6.12). */
 export const DEFAULT_REGISTRATION_MODE: RegistrationMode = 'closed';
 export const DEFAULT_BETA_MODE = false;
+
+/** Account-defaults fallbacks (§13.4 V4-P0d): chat on, portfolios private, dev off. */
+export const DEFAULT_ACCOUNT_CHAT_ENABLED = true;
+export const DEFAULT_ACCOUNT_PORTFOLIO_VISIBILITY: PortfolioVisibility = 'private';
+export const DEFAULT_ACCOUNT_DEVELOPER_STATUS = false;
+
+/**
+ * The lean notification matrix a fresh account resolves to with NO stored
+ * overrides (V4-P0c): the account-defaults panel is pre-seeded with exactly this,
+ * so an unchanged panel writes no overrides at registration. Built from the ONE
+ * source of truth ({@link notificationChannelDefaultEnabled}) so web, the
+ * dispatcher and this default can never drift.
+ */
+export function leanDefaultNotificationMatrix(): NotificationMatrix {
+  return Object.fromEntries(
+    NOTIFICATION_TYPES.map((type) => [
+      type,
+      {
+        inapp: notificationChannelDefaultEnabled('inapp', type),
+        email: notificationChannelDefaultEnabled('email', type),
+        push: notificationChannelDefaultEnabled('push', type),
+        webpush: notificationChannelDefaultEnabled('webpush', type),
+      },
+    ]),
+  ) as NotificationMatrix;
+}
 
 /**
  * Which registration modes permit self-serve account creation. `closed` is
@@ -86,9 +126,76 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
     };
   }
 
+  /**
+   * Resolve the account defaults, filling every unset key with its lean fallback
+   * (§13.4 V4-P0d). A stored notification matrix that no longer parses (schema
+   * drift) falls back to the lean matrix rather than throwing.
+   */
+  async function getAccountDefaults(): Promise<AccountDefaults> {
+    const rows = await repo.getAll();
+    const byKey = new Map(rows.map((row) => [row.key, row]));
+
+    const chatRow = byKey.get(ACCOUNT_DEFAULT_CHAT_ENABLED_KEY);
+    const visibilityParsed = portfolioVisibilitySchema.safeParse(
+      byKey.get(ACCOUNT_DEFAULT_PORTFOLIO_VISIBILITY_KEY)?.value,
+    );
+    const developerRow = byKey.get(ACCOUNT_DEFAULT_DEVELOPER_STATUS_KEY);
+    const matrixParsed = notificationMatrixSchema.safeParse(
+      byKey.get(ACCOUNT_DEFAULT_NOTIFICATION_MATRIX_KEY)?.value,
+    );
+
+    return {
+      chatEnabled:
+        typeof chatRow?.value === 'boolean' ? chatRow.value : DEFAULT_ACCOUNT_CHAT_ENABLED,
+      defaultPortfolioVisibility: visibilityParsed.success
+        ? visibilityParsed.data
+        : DEFAULT_ACCOUNT_PORTFOLIO_VISIBILITY,
+      developerStatus:
+        typeof developerRow?.value === 'boolean'
+          ? developerRow.value
+          : DEFAULT_ACCOUNT_DEVELOPER_STATUS,
+      notificationMatrix: matrixParsed.success
+        ? matrixParsed.data
+        : leanDefaultNotificationMatrix(),
+    };
+  }
+
   return {
     get,
     getRegistrationMode,
+    getAccountDefaults,
+
+    /**
+     * Persist a partial account-defaults change (§13.4 V4-P0d). Only the supplied
+     * keys are written; the change takes effect for the NEXT registration only and
+     * never touches an existing account. Returns the full resolved defaults.
+     */
+    async updateAccountDefaults(
+      input: UpdateAccountDefaultsRequest,
+      updatedBy: string | null,
+    ): Promise<AccountDefaults> {
+      if (input.chatEnabled !== undefined) {
+        await repo.upsert(ACCOUNT_DEFAULT_CHAT_ENABLED_KEY, input.chatEnabled, updatedBy);
+      }
+      if (input.defaultPortfolioVisibility !== undefined) {
+        await repo.upsert(
+          ACCOUNT_DEFAULT_PORTFOLIO_VISIBILITY_KEY,
+          input.defaultPortfolioVisibility,
+          updatedBy,
+        );
+      }
+      if (input.developerStatus !== undefined) {
+        await repo.upsert(ACCOUNT_DEFAULT_DEVELOPER_STATUS_KEY, input.developerStatus, updatedBy);
+      }
+      if (input.notificationMatrix !== undefined) {
+        await repo.upsert(
+          ACCOUNT_DEFAULT_NOTIFICATION_MATRIX_KEY,
+          input.notificationMatrix,
+          updatedBy,
+        );
+      }
+      return getAccountDefaults();
+    },
 
     /**
      * Reject with 403 `REGISTRATION_CLOSED` unless the stored mode permits

@@ -72,6 +72,24 @@ export function UserDetailPage() {
     }
   }
 
+  async function toggleChatBan() {
+    if (!user) return;
+    setBanner(null);
+    setBusy(true);
+    try {
+      await api.updateUser(user.id, { chatBanned: !user.chatBanned });
+      users.reload();
+      setBanner({
+        tone: 'success',
+        text: user.chatBanned ? 'Chat unbanned.' : 'User banned from chat.',
+      });
+    } catch (err) {
+      setBanner({ tone: 'error', text: errorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function sendTestEmail() {
     if (!user) return;
     setBanner(null);
@@ -119,6 +137,7 @@ export function UserDetailPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={user.role === 'admin' ? 'sky' : 'neutral'}>{user.role}</Badge>
           <Badge tone={user.status === 'active' ? 'green' : 'red'}>{user.status}</Badge>
+          {user.chatBanned ? <Badge tone="red">chat banned</Badge> : null}
           {user.mustChangePassword ? <Badge tone="amber">must change password</Badge> : null}
         </div>
       </div>
@@ -144,6 +163,9 @@ export function UserDetailPage() {
             onClick={() => void toggleStatus()}
           >
             {user.status === 'active' ? 'Disable' : 'Enable'}
+          </Button>
+          <Button variant="secondary" disabled={busy} onClick={() => void toggleChatBan()}>
+            {user.chatBanned ? 'Unban from chat' : 'Ban from chat'}
           </Button>
           <Button variant="secondary" disabled={busy} onClick={() => setDialog({ type: 'reset' })}>
             Reset password

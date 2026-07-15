@@ -35,6 +35,15 @@ export const chatChipKindSchema = z.enum(CHAT_CHIP_KINDS);
 export type ChatChipKind = z.infer<typeof chatChipKindSchema>;
 
 /**
+ * Stable error code the send path returns (HTTP 403) when the sender is chat-banned
+ * by an admin (§13.4 V4-P0d). The single source of truth both the API enforcement
+ * and the SPA's neutral banned-notice branch key on — for a cookie session and a
+ * `chat:write` bearer token alike. Reading a thread is never blocked, so this
+ * appears only on `POST …/messages`.
+ */
+export const CHAT_BANNED_ERROR_CODE = 'CHAT_BANNED';
+
+/**
  * The chip reference a client attaches when sending — a bare pointer, nothing
  * more. The server validates the sender may reference it (owns the shareable, or
  * can see the asset) and stores only these two fields; the item's identity is

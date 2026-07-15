@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
+import { portfolioVisibilitySchema } from './portfolio';
+import { notificationMatrixSchema } from './settings';
 
 /**
  * Global registration mode (PROJECTPLAN.md §4, §6.12, §13.4 V4-P4a). Governs how
@@ -54,6 +56,53 @@ export const updateAppSettingsRequestSchema = z
   });
 export type UpdateAppSettingsRequest = z.infer<typeof updateAppSettingsRequestSchema>;
 
+/**
+ * Account defaults (§13.4 V4-P0d) — what a NEW account starts with. The admin
+ * configures these once; they are applied at REGISTRATION only and never touch
+ * an existing account. Every field carries its own registration-time meaning:
+ *  - `chatEnabled` — a `false` default registers the account chat-disabled (its
+ *    `chatBanned` flag is set); `true` (the default) leaves the account able to chat.
+ *  - `defaultPortfolioVisibility` — the new account's default portfolio visibility
+ *    for portfolios they create later (the auto-provisioned "Main" stays private).
+ *  - `developerStatus` — a stored, INERT flag consumed only when V6-9 ships; it
+ *    has zero behavioral effect today.
+ *  - `notificationMatrix` — the per-type × channel matrix a new account is seeded
+ *    with, pre-filled with the V4-P0c lean email default. Only cells that differ
+ *    from the code lean default are written as overrides at registration.
+ */
+export const accountDefaultsSchema = z
+  .object({
+    chatEnabled: z.boolean(),
+    defaultPortfolioVisibility: portfolioVisibilitySchema,
+    developerStatus: z.boolean(),
+    notificationMatrix: notificationMatrixSchema,
+  })
+  .strict();
+export type AccountDefaults = z.infer<typeof accountDefaultsSchema>;
+
+/** `GET /admin/account-defaults` — the current defaults, lean values filled in. */
+export const accountDefaultsResponseSchema = accountDefaultsSchema;
+export type AccountDefaultsResponse = z.infer<typeof accountDefaultsResponseSchema>;
+
+/** `PATCH /admin/account-defaults` — partial update; at least one field required. */
+export const updateAccountDefaultsRequestSchema = z
+  .object({
+    chatEnabled: z.boolean().optional(),
+    defaultPortfolioVisibility: portfolioVisibilitySchema.optional(),
+    developerStatus: z.boolean().optional(),
+    notificationMatrix: notificationMatrixSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (d) =>
+      d.chatEnabled !== undefined ||
+      d.defaultPortfolioVisibility !== undefined ||
+      d.developerStatus !== undefined ||
+      d.notificationMatrix !== undefined,
+    { message: 'Provide at least one default to update.' },
+  );
+export type UpdateAccountDefaultsRequest = z.infer<typeof updateAccountDefaultsRequestSchema>;
+
 export const adminUserSchema = z.object({
   id: z.string().uuid(),
   email: z.string(),
@@ -61,6 +110,8 @@ export const adminUserSchema = z.object({
   role: roleSchema,
   status: userStatusSchema,
   mustChangePassword: z.boolean(),
+  /** Admin chat ban (§13.4 V4-P0d): while true the user cannot send DMs. */
+  chatBanned: z.boolean(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
 });
@@ -94,6 +145,8 @@ export const updateUserRequestSchema = z
     role: roleSchema.optional(),
     username: usernameSchema.optional(),
     email: emailSchema.optional(),
+    /** Admin chat ban toggle (§13.4 V4-P0d): true bans, false unbans (instant). */
+    chatBanned: z.boolean().optional(),
   })
   .strict()
   .refine(
@@ -101,7 +154,8 @@ export const updateUserRequestSchema = z
       d.status !== undefined ||
       d.role !== undefined ||
       d.username !== undefined ||
-      d.email !== undefined,
+      d.email !== undefined ||
+      d.chatBanned !== undefined,
     { message: 'Provide at least one field to update.' },
   );
 export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
