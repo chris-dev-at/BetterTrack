@@ -203,8 +203,10 @@ export function AutoFollowToggle({ userId, username }: { userId: string; usernam
  * (created-only, fired-only, both, or neither; both default OFF). Notify-only:
  * nothing is copied into the caller's own alert list, and nothing arrives
  * unless the followed person shares their alerts with followers. Rendered ONLY
- * while the caller follows the person, off the same deduped following query as
- * the FollowButton.
+ * while the caller follows the person AND that person currently shares their
+ * alert activity (`sharesAlertActivity`, V4-P0b) — so the switches never appear
+ * when they'd deliver nothing — off the same deduped following query as the
+ * FollowButton.
  */
 export function AlertFollowToggles({ userId, username }: { userId: string; username: string }) {
   const t = useT();
@@ -219,7 +221,7 @@ export function AlertFollowToggles({ userId, username }: { userId: string; usern
     },
   });
 
-  if (!entry) return null;
+  if (!entry || !entry.sharesAlertActivity) return null;
 
   return (
     <>

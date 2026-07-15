@@ -132,12 +132,18 @@ export type FollowUser = z.infer<typeof followUserSchema>;
  * One entry in the caller's OWN following list — the other party plus the
  * caller's per-followed-person prefs (#439, #455). The prefs never appear on
  * the followers list: they are the follower's private settings.
+ *
+ * `sharesAlertActivity` (V4-P0b) mirrors the followed person's own
+ * "share my alerts with followers" opt-in, so the Friends-tab row expansion can
+ * render the alert-follow switches ONLY while the sharer actually exposes their
+ * alerts — the switches are notify-only and deliver nothing otherwise.
  */
 export const followingEntrySchema = followUserSchema
   .extend({
     autoFollowItems: z.boolean(),
     notifyOnAlertCreate: z.boolean(),
     notifyOnAlertFire: z.boolean(),
+    sharesAlertActivity: z.boolean(),
   })
   .strict();
 export type FollowingEntry = z.infer<typeof followingEntrySchema>;

@@ -5,15 +5,18 @@ import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
 /**
- * Follows smoke (#438 person follows / #439 item follows, via issue #446). The
- * owner shares the default "Main" portfolio with one specific friend (the
- * sharing-audience pattern). That friend then follows the owner as a person
- * from the friend card, opens the shared portfolio and bookmarks it with the
- * item-follow button — and the Following page must list both: the person row
- * (with the per-person auto-follow switch) and the followed item, whose row
- * links back into the shared view.
+ * Follows smoke (#438 person follows / #439 item follows), reworked for V4-P0b:
+ * the standalone Following page is retired, so following now lives entirely in
+ * the Friends tab. The owner shares the default "Main" portfolio with one
+ * specific friend. That friend follows the owner as a person straight from the
+ * friend-card expansion (no public profile needed), sees the per-person
+ * auto-follow switch there, opens the shared portfolio and bookmarks it — and
+ * the Friends tab lists the bookmark, whose row links back into the shared view.
+ * When the owner opts into alert sharing (from its new Settings home), the
+ * alert-follow switches appear in the same row expansion; and the retired
+ * `/social/following` path redirects to the Friends tab.
  */
-test('follows: follow a person and a shared portfolio, both listed on Following', async ({
+test('follows: follow + bookmark from the Friends tab, alert switches, /following redirect', async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -40,14 +43,19 @@ test('follows: follow a person and a shared portfolio, both listed on Following'
   await picker.getByRole('button', { name: 'Save' }).click();
   await expect(picker).toBeHidden();
 
-  // Follower expands the owner's friend card and follows the person — the
-  // button flips from "Follow <user>" to "Following" (aria: "Unfollow <user>").
+  // Follower expands the owner's friend card and follows the person straight
+  // from the row (V4-P0b — a friend needs no public profile). The button flips
+  // from "Follow <user>" to "Following" (aria: "Unfollow <user>"), and the
+  // per-person auto-follow switch (#439) appears in the same expansion.
   await follower.page.goto('/social/friends');
   await follower.page.getByRole('button', { name: owner.username }).click();
   await follower.page.getByRole('button', { name: `Follow ${owner.username}` }).click();
   await expect(
     follower.page.getByRole('button', { name: `Unfollow ${owner.username}` }),
   ).toBeVisible({ timeout: 15_000 });
+  await expect(
+    follower.page.getByRole('switch', { name: `Auto-follow new items from ${owner.username}` }),
+  ).toBeVisible();
 
   // Open the shared portfolio from the same card and bookmark it (#439): the
   // item-follow button flips from "Follow this item" to "Unfollow this item".
@@ -62,56 +70,55 @@ test('follows: follow a person and a shared portfolio, both listed on Following'
     timeout: 15_000,
   });
 
-  // The Following page lists the person (with the per-person auto-follow-items
-  // switch, #439) and the followed item with its owner attribution.
-  await follower.page.goto('/social/following');
-  await expect(follower.page.getByText(`@${owner.username}`, { exact: true })).toBeVisible({
-    timeout: 15_000,
-  });
-  await expect(
-    follower.page.getByRole('switch', { name: `Auto-follow new items from ${owner.username}` }),
-  ).toBeVisible();
-
+  // The Friends tab now hosts the followed-items collection: the bookmark shows
+  // with its owner attribution and links back into the friend-shared view.
+  await follower.page.goto('/social/friends');
   const itemRow = follower.page.getByRole('listitem').filter({ hasText: 'Main' });
   await expect(itemRow).toBeVisible({ timeout: 15_000 });
   await expect(itemRow).toContainText('Portfolio');
   await expect(itemRow).toContainText(`by @${owner.username}`);
-
-  // The followed-item row links back into the friend-shared view.
   await itemRow.getByRole('link').click();
   await expect(follower.page.getByText(new RegExp(`shared by ${owner.username}`, 'i'))).toBeVisible(
     { timeout: 15_000 },
   );
 
   // ── Alert follows (#455) ──────────────────────────────────────────────────
-  // The owner opts in to sharing their alerts with followers — the toggle on
-  // Workboard → Alerts raises the all-followers friction dialog first.
-  await owner.page.goto('/workboard/alerts');
+  // The owner opts in to sharing their alerts with followers — the control now
+  // lives under Settings → Notifications (V4-P0b relocation) and raises the
+  // all-followers friction dialog first.
+  await owner.page.goto('/settings/notifications');
   const shareToggle = owner.page.getByRole('switch', { name: 'Share my alerts with followers' });
   await expect(shareToggle).toHaveAttribute('aria-checked', 'false');
   await shareToggle.click();
   await owner.page.getByRole('button', { name: 'I understand — share my alerts' }).click();
   await expect(shareToggle).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
 
-  // The follower's Following row carries the two independent alert triggers
-  // (created / fired), both default OFF; flipping one persists.
-  await follower.page.goto('/social/following');
+  // The follower's friend-row expansion now carries the two independent alert
+  // triggers (created / fired) — they render ONLY while the owner shares their
+  // alerts (V4-P0b). Both default OFF; flipping one persists across a reload.
+  await follower.page.goto('/social/friends');
+  await follower.page.getByRole('button', { name: owner.username }).click();
   const createTrigger = follower.page.getByRole('switch', {
     name: `Notify me about new alerts from ${owner.username}`,
   });
   const fireTrigger = follower.page.getByRole('switch', {
     name: `Notify me when alerts from ${owner.username} fire`,
   });
-  await expect(createTrigger).toHaveAttribute('aria-checked', 'false');
+  await expect(createTrigger).toHaveAttribute('aria-checked', 'false', { timeout: 15_000 });
   await expect(fireTrigger).toHaveAttribute('aria-checked', 'false');
   await createTrigger.click();
   await expect(createTrigger).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
   await follower.page.reload();
+  await follower.page.getByRole('button', { name: owner.username }).click();
   await expect(
     follower.page.getByRole('switch', {
       name: `Notify me about new alerts from ${owner.username}`,
     }),
   ).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
+
+  // The retired Following page redirects to the Friends tab.
+  await follower.page.goto('/social/following');
+  await expect(follower.page).toHaveURL(/\/social\/friends$/);
 
   await owner.context.close();
   await follower.context.close();

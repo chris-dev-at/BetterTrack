@@ -8,23 +8,14 @@ import type { Alert } from '@bettertrack/contracts';
 
 vi.mock('../../lib/alertsApi', () => ({
   ALERTS_QUERY_KEY: ['alerts'],
-  ALERT_SHARING_QUERY_KEY: ['alerts', 'sharing'],
   listAlerts: vi.fn(),
   createAlert: vi.fn(),
   updateAlert: vi.fn(),
   rearmAlert: vi.fn(),
   deleteAlert: vi.fn(),
-  getAlertSharing: vi.fn(),
-  updateAlertSharing: vi.fn(),
 }));
 
-import {
-  deleteAlert,
-  getAlertSharing,
-  listAlerts,
-  rearmAlert,
-  updateAlertSharing,
-} from '../../lib/alertsApi';
+import { deleteAlert, listAlerts, rearmAlert } from '../../lib/alertsApi';
 import { AlertsPage } from './AlertsPage';
 
 function asset(overrides: Partial<Alert['asset']> = {}): Alert['asset'] {
@@ -65,7 +56,6 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: false });
 });
 
 describe('AlertsPage', () => {
@@ -145,47 +135,5 @@ describe('AlertsPage', () => {
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     await user.click(screen.getByText('Delete'));
     expect(deleteAlert).toHaveBeenCalledWith('al1');
-  });
-
-  test('enabling alert sharing walks the warning dialog and sends the ack (#455)', async () => {
-    const user = userEvent.setup();
-    vi.mocked(listAlerts).mockResolvedValue({ items: [] });
-    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: true });
-    renderPage();
-
-    const toggle = await screen.findByRole('switch', {
-      name: 'Share my alerts with followers',
-    });
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
-
-    // Enabling never writes directly — the strong warning comes first.
-    await user.click(toggle);
-    expect(updateAlertSharing).not.toHaveBeenCalled();
-    expect(screen.getByText(/which assets you watch and your price targets/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'I understand — share my alerts' }));
-    await waitFor(() =>
-      expect(updateAlertSharing).toHaveBeenCalledWith({
-        visibleToFollowers: true,
-        acknowledgeFollowers: true,
-      }),
-    );
-  });
-
-  test('disabling alert sharing needs no confirmation (#455)', async () => {
-    const user = userEvent.setup();
-    vi.mocked(listAlerts).mockResolvedValue({ items: [] });
-    vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: true });
-    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: false });
-    renderPage();
-
-    const toggle = await screen.findByRole('switch', {
-      name: 'Share my alerts with followers',
-    });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await user.click(toggle);
-    await waitFor(() =>
-      expect(updateAlertSharing).toHaveBeenCalledWith({ visibleToFollowers: false }),
-    );
   });
 });

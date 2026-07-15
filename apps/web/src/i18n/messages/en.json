@@ -261,6 +261,17 @@
     "backups": {
       "description": "Automatic backups to Google Drive and elsewhere."
     },
+    "alertSharing": {
+      "title": "Share my alerts with followers",
+      "offHint": "Your alerts are private. Followers cannot see them or be notified about them.",
+      "onHint": "Followers who opted in are notified when you create an alert or one of your alerts fires.",
+      "toggleAria": "Share my alerts with followers",
+      "error": "Could not update alert sharing. Please try again.",
+      "confirmTitle": "Share your alerts with all followers?",
+      "confirmWarning": "This shows every follower which assets you watch and your price targets — anyone can follow you. Followers who opted in will be notified when you create an alert or one of your alerts fires. You can turn this off at any time.",
+      "confirmCancel": "Cancel",
+      "confirmEnable": "I understand — share my alerts"
+    },
     "notifications": {
       "title": "Notifications",
       "subtitle": "Route each kind of activity to the channels you want — in-app bell, email, phone push, browser push — or mute everything at once.",
@@ -1453,17 +1464,6 @@
       "emptyTitle": "No alerts yet",
       "emptyDescription": "Create an alert to get notified when an asset hits a price or moves by a percentage.",
       "emptyCta": "New alert →",
-      "sharing": {
-        "title": "Share my alerts with followers",
-        "offHint": "Your alerts are private. Followers cannot see them or be notified about them.",
-        "onHint": "Followers who opted in are notified when you create an alert or one of your alerts fires.",
-        "toggleAria": "Share my alerts with followers",
-        "error": "Could not update alert sharing. Please try again.",
-        "confirmTitle": "Share your alerts with all followers?",
-        "confirmWarning": "This shows every follower which assets you watch and your price targets — anyone can follow you. Followers who opted in will be notified when you create an alert or one of your alerts fires. You can turn this off at any time.",
-        "confirmCancel": "Cancel",
-        "confirmEnable": "I understand — share my alerts"
-      },
       "kinds": {
         "priceAbove": "Price rises above",
         "priceBelow": "Price falls below",
@@ -1859,7 +1859,9 @@
       "messageAria": "Message {{username}}",
       "remove": "Remove",
       "sharesHeading": "Shares with you",
-      "sharesEmpty": "{{username}} isn't sharing anything with you yet."
+      "sharesEmpty": "{{username}} isn't sharing anything with you yet.",
+      "followHeading": "News about this person",
+      "followHint": "Follow to hear when they make a portfolio, watchlist or conglomerate public."
     },
     "chat": {
       "title": "Messages",

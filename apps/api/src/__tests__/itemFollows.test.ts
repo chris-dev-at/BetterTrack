@@ -322,7 +322,9 @@ describe('auto-follow — the #438 event matrix auto-adds for opted-in followers
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     const carolAgent = await loginAgent(harness.app, carol.email, carol.password);
 
-    // bob opts into auto-follow AT FOLLOW TIME; carol follows with the default (OFF).
+    // Alice opts into a public profile so the two non-friends can follow her
+    // (V4-P0b). bob opts into auto-follow AT FOLLOW TIME; carol takes the default.
+    await enablePublicProfile(aliceAgent);
     expect(
       (
         await bobAgent
@@ -340,7 +342,6 @@ describe('auto-follow — the #438 event matrix auto-adds for opted-in followers
       ).status,
     ).toBe(202);
 
-    await enablePublicProfile(aliceAgent);
     const pid = await createPortfolio(aliceAgent, 'Fresh');
     await putAudience(aliceAgent, 'portfolio', pid, {
       audience: 'public_link',
@@ -368,7 +369,12 @@ describe('auto-follow — the #438 event matrix auto-adds for opted-in followers
     const emma = await harness.seedUser({ email: 'emma@bt.test', username: 'emma' });
     const dave = await harness.seedUser({ email: 'dave@bt.test', username: 'dave' });
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const emmaAgent = await loginAgent(harness.app, emma.email, emma.password);
     const daveAgent = await loginAgent(harness.app, dave.email, dave.password);
+
+    // Both targets open a public profile so the non-friend dave can follow them (V4-P0b).
+    await enablePublicProfile(aliceAgent);
+    await enablePublicProfile(emmaAgent);
 
     // dave follows alice and emma; both prefs default OFF.
     for (const target of [alice.id, emma.id]) {

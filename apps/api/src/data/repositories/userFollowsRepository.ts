@@ -23,6 +23,8 @@ export interface FollowingUserRow extends FollowUserRow {
   autoFollowItems: boolean;
   notifyOnAlertCreate: boolean;
   notifyOnAlertFire: boolean;
+  /** The followed person's OWN "share my alerts with followers" opt-in (V4-P0b). */
+  sharesAlertActivity: boolean;
 }
 
 /** The caller-settable per-follow prefs (#439 auto-follow, #455 alert triggers). */
@@ -123,6 +125,7 @@ export function createUserFollowsRepository(db: Database) {
           autoFollowItems: userFollows.autoFollowItems,
           notifyOnAlertCreate: userFollows.notifyOnAlertCreate,
           notifyOnAlertFire: userFollows.notifyOnAlertFire,
+          sharesAlertActivity: users.alertsVisibleToFollowers,
         })
         .from(userFollows)
         .innerJoin(users, eq(users.id, userFollows.followedId))
@@ -160,6 +163,7 @@ export function createUserFollowsRepository(db: Database) {
           autoFollowItems: userFollows.autoFollowItems,
           notifyOnAlertCreate: userFollows.notifyOnAlertCreate,
           notifyOnAlertFire: userFollows.notifyOnAlertFire,
+          sharesAlertActivity: users.alertsVisibleToFollowers,
         })
         .from(userFollows)
         .innerJoin(users, eq(users.id, userFollows.followedId))
