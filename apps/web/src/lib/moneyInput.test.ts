@@ -23,7 +23,9 @@ describe('truncateMoneyForInput', () => {
   test('negatives truncate toward zero (cut the string), never -0.00', () => {
     expect(truncateMoneyForInput(-231.499320001)).toBe('-231.49');
     expect(truncateMoneyForInput(-0.5)).toBe('-0.50');
-    expect(truncateMoneyForInput(-0.001)).toBe('0.00');
+    // A negative sub-cent magnitude keeps its sign via the sub-cent branch
+    // (below); only a true zero magnitude drops it.
+    expect(truncateMoneyForInput(-0)).toBe('0.00');
   });
 
   test('float-safe: string-cut, not Math.trunc(v*100)/100', () => {
@@ -35,9 +37,23 @@ describe('truncateMoneyForInput', () => {
     expect(truncateMoneyForInput(0.1 + 0.2)).toBe('0.30'); // 0.30000000000000004
   });
 
-  test('sub-cent magnitudes collapse to 0.00 (cents is the floor of this rule)', () => {
-    expect(truncateMoneyForInput(0.000012)).toBe('0.00');
-    expect(truncateMoneyForInput(1e-7)).toBe('0.00');
+  test('sub-cent magnitudes stay visible — up to 6 significant decimals, truncated (owner ruling 2026-07-14)', () => {
+    expect(truncateMoneyForInput(0.000012)).toBe('0.000012');
+    expect(truncateMoneyForInput(0.00000424)).toBe('0.00000424'); // SHIB-USD-style quote
+    expect(truncateMoneyForInput(1e-7)).toBe('0.0000001'); // exponential toString expanded
+    // Truncated — never rounded — after the 6th significant decimal.
+    expect(truncateMoneyForInput(0.0000123456789)).toBe('0.0000123456');
+    expect(truncateMoneyForInput(0.0099999999)).toBe('0.00999999');
+  });
+
+  test('sub-cent trims trailing zeros and keeps the sign', () => {
+    expect(truncateMoneyForInput(0.005)).toBe('0.005');
+    expect(truncateMoneyForInput(-0.000012)).toBe('-0.000012');
+  });
+
+  test('sub-cent boundaries: 0.01 keeps the cents rule; immeasurably small still collapses', () => {
+    expect(truncateMoneyForInput(0.01)).toBe('0.01');
+    expect(truncateMoneyForInput(1e-21)).toBe('0.00'); // below toFixed(20) resolution
   });
 
   test('non-finite input yields "" (blank the field, never NaN)', () => {

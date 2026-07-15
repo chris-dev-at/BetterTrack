@@ -194,7 +194,11 @@ function StatsRow({
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatCard label="Prev Close" value={<MoneyText amount={prevClose} currency={currency} />} />
+      {/* Previous close is a per-unit price (§7.1 rule 4) — sub-cent tokens keep precision. */}
+      <StatCard
+        label="Prev Close"
+        value={<MoneyText amount={prevClose} currency={currency} unitPrice />}
+      />
     </div>
   );
 }
