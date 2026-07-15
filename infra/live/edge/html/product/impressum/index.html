@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Impressum — BetterTrack</title>
+    <meta
+      name="description"
+      content="Impressum (legal notice) for BetterTrack — operator identity and contact per §5 ECG (Austria)."
+    />
+    <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
+    <link rel="stylesheet" href="/style.css?v=2" />
+    <link rel="alternate" hreflang="en" href="https://bettertrack.at/impressum/" />
+    <link rel="alternate" hreflang="de" href="https://bettertrack.at/impressum/de/" />
+    <style>
+      /* Page-local additions on top of the shared /style.css (kept inline so the
+         shared stylesheet stays untouched by the legal-pages drop). */
+      .lang-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.85rem;
+      }
+      .lang-switch a {
+        color: var(--text-3);
+        text-decoration: none;
+      }
+      .lang-switch a[aria-current] {
+        color: var(--text);
+        font-weight: 600;
+      }
+      @media (max-width: 560px) {
+        .nav-links .lang-switch,
+        .nav-links .lang-switch a {
+          display: inline-flex;
+        }
+      }
+      .prose ul {
+        margin-top: 0.8rem;
+        padding-left: 1.25rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+      .prose li::marker {
+        color: var(--gold);
+      }
+      .doc-meta {
+        color: var(--text-3);
+        font-size: 0.85rem;
+        margin-top: 0.6rem;
+      }
+      .placeholder {
+        color: var(--gold);
+        border: 1px dashed rgba(246, 184, 46, 0.45);
+        border-radius: 4px;
+        padding: 0 0.3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap">
+        <a class="wordmark" href="/"
+          ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+        >
+        <div class="nav-links">
+          <a href="/features/">Features</a>
+          <a href="/security/">Security</a>
+          <a href="/roadmap/">Roadmap</a>
+          <span class="lang-switch" aria-label="Language"
+            ><a href="/impressum/" aria-current="page">EN</a><span>·</span
+            ><a href="/impressum/de/">DE</a></span
+          >
+          <a class="btn" href="https://web.bettertrack.at">Open the app</a>
+        </div>
+      </div>
+    </nav>
+
+    <section class="block">
+      <div class="wrap prose">
+        <span class="kicker">Legal</span>
+        <h2 style="margin-top: 0.4rem">Impressum (legal notice)</h2>
+        <p class="doc-meta">
+          Disclosure per §5 E-Commerce-Gesetz (ECG) and §25 Mediengesetz (Austria).
+          <a href="/impressum/de/">Deutsche Fassung</a>
+        </p>
+
+        <h2>Service provider</h2>
+        <p>
+          <span class="placeholder">[OWNER: fill in — full legal name]</span><br />
+          <span class="placeholder">[OWNER: fill in — street address, postal code, city]</span
+          ><br />
+          Austria
+        </p>
+        <p>
+          E-mail: <a href="mailto:bettertrack.service@gmail.com">bettertrack.service@gmail.com</a>
+        </p>
+
+        <h2>Purpose of the service</h2>
+        <p>
+          Operation of BetterTrack — a personal, currently invite-only portfolio-tracking web and
+          mobile service. BetterTrack is an informational tool only; it provides no investment
+          advice, no brokerage and no payment services (see the
+          <a href="/terms/">Terms of Service</a>).
+        </p>
+
+        <h2>Responsible for content</h2>
+        <p>Same as the service provider above.</p>
+        <p class="doc-meta">
+          <span class="placeholder"
+            >[OWNER: add VAT ID, trade-register or chamber details here if and when they
+            apply]</span
+          >
+        </p>
+
+        <h2>Dispute resolution</h2>
+        <p>
+          We are neither obliged nor willing to participate in dispute-resolution proceedings before
+          a consumer arbitration board.
+        </p>
+
+        <h2>Liability for links</h2>
+        <p>
+          This site links to external websites over whose content we have no control; the respective
+          operator is responsible for the content of linked pages.
+        </p>
+
+        <h2>Copyright</h2>
+        <p>
+          The content of this site (text, graphics, the BetterTrack name and logo) is protected by
+          copyright. Use beyond viewing requires the operator's prior consent.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap foot">
+        <div class="col">
+          <a class="wordmark" href="/"
+            ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+          >
+        </div>
+        <div class="col">
+          <span class="h">Product</span><a href="/features/">Features</a
+          ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
+        </div>
+        <div class="col">
+          <span class="h">App</span><a href="https://web.bettertrack.at">Web app</a
+          ><a href="https://mobile.bettertrack.at">Mobile (in development)</a>
+        </div>
+        <div class="col">
+          <span class="h">Legal</span><a href="/terms/">Terms</a><a href="/privacy/">Privacy</a
+          ><a href="/impressum/">Impressum</a><a href="/cookies/">Cookies</a
+          ><a href="mailto:bettertrack.service@gmail.com">Contact</a>
+        </div>
+        <p class="fine">
+          © 2026 BetterTrack — invite-only beta. Market data can be delayed; nothing here is
+          investment advice.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

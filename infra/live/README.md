@@ -101,3 +101,34 @@ docker exec bettertrack-live-web-1 nginx -s reload                  # or: docker
 Unlike the updater, this file is read by nginx at (re)load, so the reload is what
 picks up the change. `nginx -s reload` is zero-downtime; the restart is the
 fallback if a reload is refused.
+
+## `edge/html/product/` — product-site legal pages
+
+Canonical copies of the **legal document set** served on the product origin
+(`bettertrack.at`): Terms of Service (`/terms/` + `/terms/de/`), the privacy
+policy (`/privacy/` + `/privacy/de/`), the Impressum (`/impressum/` +
+`/impressum/de/`), and the cookie note (`/cookies/` + `/cookies/de/`). Each
+document is one directory holding `index.html` (EN) and `de/index.html` (DE),
+self-contained static HTML that links the product site's existing shared
+`/style.css` (which stays a live-box file — the pages only add page-local
+inline styles on top, so dropping them in changes nothing else).
+
+The rest of the product site (`index`, `features`, `security`, `roadmap`,
+`style.css`, images) intentionally remains control-dir-only for now; only the
+legal set is repo-canonical.
+
+### Adopt (on the prod host)
+
+The live `web` nginx serves the control dir's `edge/html` mount directly, so
+adopting page updates is a copy — **no nginx reload needed** (only
+`bt-live-edge.conf` changes need one):
+
+```sh
+cp -R app/infra/live/edge/html/product/terms     ./edge/html/product/
+cp -R app/infra/live/edge/html/product/privacy   ./edge/html/product/
+cp -R app/infra/live/edge/html/product/impressum ./edge/html/product/
+cp -R app/infra/live/edge/html/product/cookies   ./edge/html/product/
+```
+
+`privacy` overwrites the pre-GDPR-upgrade page; `terms`, `impressum` and
+`cookies` are new directories.

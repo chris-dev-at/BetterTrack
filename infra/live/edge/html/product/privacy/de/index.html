@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Datenschutzerklärung — BetterTrack</title>
+    <meta
+      name="description"
+      content="Was BetterTrack speichert, warum, auf welcher Rechtsgrundlage, und deine DSGVO-Rechte — keine Werbung, keine Analytics, kein Datenverkauf."
+    />
+    <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
+    <link rel="stylesheet" href="/style.css?v=2" />
+    <link rel="alternate" hreflang="en" href="https://bettertrack.at/privacy/" />
+    <link rel="alternate" hreflang="de" href="https://bettertrack.at/privacy/de/" />
+    <style>
+      /* Page-local additions on top of the shared /style.css (kept inline so the
+         shared stylesheet stays untouched by the legal-pages drop). */
+      .lang-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        font-size: 0.85rem;
+      }
+      .lang-switch a {
+        color: var(--text-3);
+        text-decoration: none;
+      }
+      .lang-switch a[aria-current] {
+        color: var(--text);
+        font-weight: 600;
+      }
+      @media (max-width: 560px) {
+        .nav-links .lang-switch,
+        .nav-links .lang-switch a {
+          display: inline-flex;
+        }
+      }
+      .prose ul {
+        margin-top: 0.8rem;
+        padding-left: 1.25rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+      .prose li::marker {
+        color: var(--gold);
+      }
+      .doc-meta {
+        color: var(--text-3);
+        font-size: 0.85rem;
+        margin-top: 0.6rem;
+      }
+      .placeholder {
+        color: var(--gold);
+        border: 1px dashed rgba(246, 184, 46, 0.45);
+        border-radius: 4px;
+        padding: 0 0.3rem;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap">
+        <a class="wordmark" href="/"
+          ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+        >
+        <div class="nav-links">
+          <a href="/features/">Features</a>
+          <a href="/security/">Security</a>
+          <a href="/roadmap/">Roadmap</a>
+          <span class="lang-switch" aria-label="Sprache"
+            ><a href="/privacy/">EN</a><span>·</span
+            ><a href="/privacy/de/" aria-current="page">DE</a></span
+          >
+          <a class="btn" href="https://web.bettertrack.at">App öffnen</a>
+        </div>
+      </div>
+    </nav>
+
+    <section class="block">
+      <div class="wrap prose">
+        <span class="kicker">Rechtliches</span>
+        <h2 style="margin-top: 0.4rem">Datenschutzerklärung</h2>
+        <p class="doc-meta">
+          Version 2.0 — gültig ab 15. Juli 2026. <a href="/privacy/">English version</a>
+        </p>
+        <p>
+          Kurzfassung: Wir speichern, was du eingibst, und das Minimum, das der Betrieb des Dienstes
+          braucht. Keine Werbung, keine Analytics, kein Verkauf oder Teilen deiner Daten. Diese
+          Seite ist die formale DSGVO-Information hinter diesem Versprechen — sie gilt für die
+          Web-App unter
+          <a href="https://web.bettertrack.at">web.bettertrack.at</a>, die BetterTrack-Mobile-App
+          und diese Website.
+        </p>
+
+        <h2>1. Verantwortlicher</h2>
+        <p>
+          Verantwortlicher im Sinne von Art. 4 Z 7 DSGVO ist der Betreiber von BetterTrack:
+          <span class="placeholder">[OWNER: fill in — full legal name]</span>,
+          <span class="placeholder">[OWNER: fill in — street address, postal code, city]</span>,
+          Österreich. Kontakt:
+          <a href="mailto:bettertrack.service@gmail.com">bettertrack.service@gmail.com</a>. Siehe
+          auch das <a href="/impressum/de/">Impressum</a>.
+        </p>
+
+        <h2>2. Welche Daten wir verarbeiten</h2>
+        <ul>
+          <li>
+            <strong>Kontodaten</strong> — Benutzername, E-Mail-Adresse, Passwort (nur als Hash
+            gespeichert), optionale Zwei-Faktor- und PIN-Einstellungen.
+          </li>
+          <li>
+            <strong>Selbst eingegebene Finanzdaten</strong> — Portfolios, Transaktionen, Bestände,
+            Cash-Bewegungen, Watchlists, Baskets/Konglomerate, Alarme und Notizen. Diese Daten gibst
+            du selbst ein; sie werden niemals von einer Bank oder einem Broker abgerufen oder damit
+            abgeglichen.
+          </li>
+          <li>
+            <strong>Nachrichten</strong> — 1:1-Freunde-Chat-Nachrichten, die du im Dienst
+            austauschst.
+          </li>
+          <li>
+            <strong>Push-/Gerätedaten</strong> — wenn du Benachrichtigungen aktivierst: ein
+            FCM-Push-Token (Firebase Cloud Messaging, Mobile-App) oder ein Browser-Web-Push-Abo
+            (Web-App). Entsteht nur nach deinem ausdrücklichen Opt-in.
+          </li>
+          <li>
+            <strong>Technisches Minimum</strong> — Sitzungsdaten, Sicherheitsprotokolle (z. B.
+            fehlgeschlagene Logins) und E-Mail-Zustellprotokolle für die von dir aktivierten
+            Benachrichtigungen.
+          </li>
+          <li>
+            <strong>Cookies</strong> — zwei First-Party-Cookies; siehe den
+            <a href="/cookies/de/">Cookie-Hinweis</a>
+            (§8).
+          </li>
+        </ul>
+
+        <h2>3. Zwecke und Rechtsgrundlagen (Art. 6 DSGVO)</h2>
+        <ul>
+          <li>
+            <strong>Bereitstellung des Dienstes</strong> — Konto, Finanzdaten, Chat, Sitzungen:
+            Erfüllung des Nutzungsvertrags, Art. 6 Abs. 1 lit. b DSGVO.
+          </li>
+          <li>
+            <strong>Push-Benachrichtigungen</strong> — FCM-Token / Web-Push-Abo: deine Einwilligung,
+            Art. 6 Abs. 1 lit. a DSGVO; du widerrufst sie jederzeit, indem du Benachrichtigungen
+            deaktivierst — das löscht das Token.
+          </li>
+          <li>
+            <strong>Sicherheit und Missbrauchsabwehr</strong> — Sicherheitsprotokolle,
+            Rate-Limiting: berechtigtes Interesse an einem sicheren Dienst, Art. 6 Abs. 1 lit. f
+            DSGVO.
+          </li>
+        </ul>
+
+        <h2>4. Empfänger und Auftragsverarbeiter</h2>
+        <p>
+          Wir verkaufen keine Daten, teilen sie nicht zu Werbezwecken und betreiben weder Werbung
+          noch Analytics. Die einzigen beteiligten Dritten sind:
+        </p>
+        <ul>
+          <li>
+            <strong>Google (Firebase Cloud Messaging)</strong> — stellt Push-Benachrichtigungen an
+            die Mobile-App zu; sieht das Push-Token und Metadaten der Nachricht. Nur im Einsatz,
+            wenn du Benachrichtigungen aktivierst.
+          </li>
+          <li>
+            <strong>Cloudflare</strong> — ist der Website für TLS- und DDoS-Schutz vorgeschaltet;
+            Datenverkehr läuft auf dem Transportweg durch Cloudflare.
+          </li>
+          <li>
+            <strong>Marktdaten-Anbieter</strong> — erhalten die abgefragten Tickersymbole, niemals
+            deine Identität oder Bestände.
+          </li>
+        </ul>
+        <p>
+          Das Hosting läuft auf vom Betreiber selbst verwalteten Servern in Österreich — es gibt
+          keinen Dritt-Hosting-Anbieter mit Zugriff auf deine Daten.
+        </p>
+
+        <h2>5. Internationale Datenübermittlung</h2>
+        <p>
+          Google (Firebase Cloud Messaging) und Cloudflare können Daten in den USA verarbeiten.
+          Diese Übermittlungen stützen sich auf einen EU-Angemessenheitsbeschluss (EU–US Data
+          Privacy Framework) und/oder EU-Standardvertragsklauseln (Art. 46 DSGVO). Deine Konto- und
+          Finanzdaten bleiben auf Servern in Österreich.
+        </p>
+
+        <h2>6. Speicherdauer</h2>
+        <ul>
+          <li>
+            <strong>Konto, Finanzdaten, Nachrichten</strong> — gespeichert, bis du sie oder dein
+            Konto löschst; die Kontolöschung entfernt sie dauerhaft.
+          </li>
+          <li>
+            <strong>Push-Tokens / Web-Push-Abos</strong> — gelöscht, wenn du Benachrichtigungen
+            deaktivierst oder dein Konto löschst.
+          </li>
+          <li>
+            <strong>Sicherheits- und Zustellprotokolle</strong> — für ein kurzes, begrenztes
+            Zeitfenster aufbewahrt und dann rotiert.
+          </li>
+          <li>
+            <strong>Backups</strong> — verschlüsselte Notfall-Backups werden automatisch rotiert;
+            gelöschte Daten verschwinden daraus mit Abschluss der Rotation.
+          </li>
+        </ul>
+
+        <h2>7. Deine Rechte (DSGVO)</h2>
+        <p>Du hast das Recht auf:</p>
+        <ul>
+          <li>
+            <strong>Auskunft</strong> über deine Daten (Art. 15) und
+            <strong>Berichtigung</strong> (Art. 16);
+          </li>
+          <li>
+            <strong>Löschung</strong> (Art. 17) — lösche dein Konto jederzeit selbst, in der App
+            unter Einstellungen → Konto → Konto löschen oder direkt unter
+            <a href="https://web.bettertrack.at/account/delete">web.bettertrack.at/account/delete</a
+            >; das entfernt dein Konto und alle zugehörigen Daten dauerhaft;
+          </li>
+          <li>
+            <strong>Einschränkung der Verarbeitung</strong> (Art. 18) und
+            <strong>Datenübertragbarkeit</strong>
+            (Art. 20);
+          </li>
+          <li>
+            <strong>Widerspruch</strong> gegen Verarbeitung auf Basis berechtigten Interesses (Art.
+            21);
+          </li>
+          <li>
+            <strong>Widerruf von Einwilligungen</strong> jederzeit mit Wirkung für die Zukunft (Art.
+            7 Abs. 3);
+          </li>
+          <li>
+            <strong>Beschwerde</strong> bei einer Aufsichtsbehörde — in Österreich die
+            Datenschutzbehörde (<a href="https://www.dsb.gv.at" rel="noreferrer">dsb.gv.at</a>) oder
+            die Behörde deines Wohnsitzstaats.
+          </li>
+        </ul>
+        <p>
+          Für alles, was du nicht in der App selbst erledigen kannst, schreib an
+          <a href="mailto:bettertrack.service@gmail.com">bettertrack.service@gmail.com</a>.
+        </p>
+
+        <h2>8. Cookies</h2>
+        <p>
+          Der Dienst setzt zwei First-Party-Cookies: ein Sitzungs-Cookie, das dich angemeldet hält,
+          und — nur wenn du "Dieses Gerät merken" nutzt — ein Remembered-Device-Cookie für die
+          schnelle PIN-Anmeldung. Keine Drittanbieter-, Werbe- oder Analytics-Cookies. Details,
+          Laufzeiten und wie du sie löschst:
+          <a href="/cookies/de/">Cookie-Hinweis</a>.
+        </p>
+
+        <h2>9. Sicherheit</h2>
+        <p>
+          Der gesamte Datenverkehr ist auf dem Transportweg verschlüsselt (HTTPS/TLS). Passwörter
+          werden ausschließlich als gesalzene Hashes gespeichert. Deine Daten sind standardmäßig
+          privat — sichtbar nur für dich und genau die Personen, mit denen du einzelne Inhalte
+          ausdrücklich teilst; das Zurückziehen einer Freigabe beendet den Zugriff sofort.
+        </p>
+
+        <h2>10. Änderungen dieser Erklärung</h2>
+        <p>
+          Ändert sich der Dienst so, dass es diese Erklärung betrifft, aktualisieren wir diese Seite
+          und passen Version und Datum oben an. Die aktuelle Fassung findest du immer unter
+          <a href="https://bettertrack.at/privacy/de/">bettertrack.at/privacy/de/</a>.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      <div class="wrap foot">
+        <div class="col">
+          <a class="wordmark" href="/"
+            ><img src="/BT_AppIcon.png" alt="" />Better<span class="t">Track</span></a
+          >
+        </div>
+        <div class="col">
+          <span class="h">Product</span><a href="/features/">Features</a
+          ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
+        </div>
+        <div class="col">
+          <span class="h">App</span><a href="https://web.bettertrack.at">Web-App</a
+          ><a href="https://mobile.bettertrack.at">Mobile (in Entwicklung)</a>
+        </div>
+        <div class="col">
+          <span class="h">Rechtliches</span><a href="/terms/de/">Nutzungsbedingungen</a
+          ><a href="/privacy/de/">Datenschutz</a><a href="/impressum/de/">Impressum</a
+          ><a href="/cookies/de/">Cookies</a
+          ><a href="mailto:bettertrack.service@gmail.com">Kontakt</a>
+        </div>
+        <p class="fine">
+          © 2026 BetterTrack — geschlossene Beta. Marktdaten können verzögert sein; nichts hier ist
+          Anlageberatung.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

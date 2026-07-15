@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 
-import { useT } from '../../i18n';
+import { useI18n } from '../../i18n';
 import { Wordmark } from '../../components/Wordmark';
 import { Disclaimer, ErrorBoundary, TAGLINE } from '../../ui';
 import { CmdKPalette } from './CmdKPalette';
@@ -23,8 +23,24 @@ const NAV_ITEMS = [
   { to: '/social', labelKey: 'nav.social' },
 ] as const;
 
+/**
+ * The legal document set on the product site (ask #31 / Play launch). Each page
+ * lives at `/<page>/` (EN) with a `/<page>/de/` variant, so a DE-locale user
+ * lands on the German document directly.
+ */
+const LEGAL_LINKS = [
+  { page: 'terms', labelKey: 'footer.terms' },
+  { page: 'privacy', labelKey: 'footer.privacy' },
+  { page: 'impressum', labelKey: 'footer.impressum' },
+  { page: 'cookies', labelKey: 'footer.cookies' },
+] as const;
+
+function legalUrl(page: string, locale: string): string {
+  return `https://bettertrack.at/${page}/${locale === 'de' ? 'de/' : ''}`;
+}
+
 export function AppLayout() {
-  const t = useT();
+  const { t, locale } = useI18n();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const location = useLocation();
 
@@ -101,6 +117,24 @@ export function AppLayout() {
       </main>
       <footer className="mx-auto max-w-6xl px-4 pb-8">
         <Disclaimer>{TAGLINE}</Disclaimer>
+        <nav
+          aria-label={t('footer.legal')}
+          className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-neutral-600"
+        >
+          {LEGAL_LINKS.map((link, index) => (
+            <span key={link.page} className="flex items-center gap-x-2">
+              {index > 0 ? <span aria-hidden="true">·</span> : null}
+              <a
+                href={legalUrl(link.page, locale)}
+                target="_blank"
+                rel="noreferrer"
+                className="transition-colors hover:text-neutral-400"
+              >
+                {t(link.labelKey)}
+              </a>
+            </span>
+          ))}
+        </nav>
       </footer>
       <CmdKPalette isOpen={paletteOpen} onClose={closePalette} />
     </div>
