@@ -2225,7 +2225,10 @@
   "admin": {
     "nav": {
       "security": "Sicherheit",
-      "health": "Zustand"
+      "health": "Zustand",
+      "menu": "Admin-Menü",
+      "openMenu": "Admin-Menü öffnen",
+      "closeMenu": "Admin-Menü schließen"
     },
     "security": {
       "title": "Sicherheit",
