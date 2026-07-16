@@ -19,8 +19,9 @@ export function createBacktestRouter(ctx: AppContext): Router {
 
   router.use(requireUser);
 
-  // POST /backtest/preview — inline {positions, range, benchmark?, mode?} →
-  // base-100 series + stats (+ §14 entry events in the late-listing modes).
+  // POST /backtest/preview — inline {positions, range, benchmark?, mode?,
+  // rebalance?} → base-100 series + stats (+ §14 entry events in the
+  // late-listing modes, + V4-P7 rebalance events under a schedule).
   router.post('/preview', validateBody(backtestPreviewRequestSchema), async (req, res) => {
     const body = req.valid?.body as BacktestPreviewRequest;
     const result = await ctx.backtest.runPreview(
@@ -30,6 +31,7 @@ export function createBacktestRouter(ctx: AppContext): Router {
         range: body.range,
         benchmark: body.benchmark ?? null,
         mode: body.mode,
+        rebalance: body.rebalance,
       },
       { baseCurrency: req.authUser!.baseCurrency },
     );

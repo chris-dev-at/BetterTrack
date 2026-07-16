@@ -179,12 +179,27 @@ process_acks(){
 }
 
 stall_check(){
-  local w af n age pr verdict
+  local w af sf n age sphase smtime skip pr verdict
   for w in $(seq 1 "$WORKERS"); do
     af=$ASSIGN/worker-$w.json; [ -f "$af" ] || continue
+    sf=$STATUS/worker-$w.json; skip=$STATUS/.stallskip-$w
     age=$(file_age "$STATUS/worker-$w.hb")
-    [ "$age" -ge "$MF_STALL_SECS" ] || continue
+    if [ "$age" -lt "$MF_STALL_SECS" ]; then rm -f "$skip"; continue; fi
     n=$(jq -r '.issue' "$af")
+    # False-stall guard (issue #497): a live worker whose heartbeat toucher died is
+    # not a dead worker. If its status file shows an ACTIVE phase AND was itself
+    # written within the stall window, treat the worker as alive — skip the reset,
+    # log once. Only a truly dead worker (stale hb AND stale status mtime) recovers.
+    sphase=$(jq -r '.phase // ""' "$sf" 2>/dev/null)
+    smtime=$(file_age "$sf")
+    case "$sphase" in
+      writing|reviewing|fixing|triage)
+        if [ "$smtime" -lt "$MF_STALL_SECS" ]; then
+          [ -f "$skip" ] || { log "worker $w heartbeat stale (${age}s) but status active ($sphase, ${smtime}s) — treating as alive, skipping reset"; : >"$skip"; }
+          continue
+        fi;;
+    esac
+    rm -f "$skip"
     log "worker $w STALLED on issue #$n (heartbeat ${age}s old) — recovering"
     # Killed-mid-run recovery semantics: authoritative re-check, then reset/reassign.
     case "$(gh api "repos/$REPO/issues/$n" --jq .state 2>/dev/null || echo unknown)" in

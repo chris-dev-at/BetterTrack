@@ -125,7 +125,7 @@ AGY_LIMIT_RE='quota|rate.?limit|too many requests|RESOURCE_EXHAUSTED|model is ov
 
 cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
   local model=$1 effort=$2 prompt=$3
-  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0
+  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0 transient_tries=0
   while true; do
     local out rc start dur res
     start=$(date +%s)
@@ -157,6 +157,14 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
       ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
       log "  ↳ codex run timed out after ${MF_ROLE_TIMEOUT}s"
       return 1
+    fi
+    # Transient transport/stream drop: bounded in-place retry with short spacing,
+    # same class + wording as cc() — does not count against the single generic retry.
+    if [ "$(cc_classify "$out")" = transient ] && [ "$transient_tries" -lt "${CC_TRANSIENT_MAX:-3}" ]; then
+      transient_tries=$((transient_tries+1))
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
+      log "  ↳ transient transport error — retry $transient_tries/${CC_TRANSIENT_MAX:-3}"
+      sleep "${CC_TRANSIENT_SLEEP:-45}"; continue
     fi
     tries=$((tries+1))
     if [ "$tries" -lt 2 ]; then

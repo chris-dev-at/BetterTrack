@@ -141,16 +141,31 @@ process_acks
 check "done worker acked (assignment removed)" "0" "$(ls "$MFSTATE"/assignments/*.json 2>/dev/null | wc -l | tr -d ' ')"
 
 echo "— stall detection with fabricated state files"
+# Truly dead worker: stale heartbeat AND stale status mtime → recovered (as always).
 printf '%s\n' '{"issue":250,"assigned_at":"x","touches":["a/**"],"relocated":false}' >"$MFSTATE/assignments/worker-2.json"
 printf '%s\n' '{"phase":"writing","issue":250,"pr":null,"updated_at":"x"}' >"$MFSTATE/status/worker-2.json"
 touch -t 202001010000 "$MFSTATE/status/worker-2.hb"
+backdate "$MFSTATE/status/worker-2.json" 4000   # status file itself is also stale
 echo open >"$T/ghdeps/250"
 MF_STALL_SECS=3600 stall_check
-check "stalled assignment cleared for reschedule" "0" "$(ls "$MFSTATE"/assignments/*.json 2>/dev/null | wc -l | tr -d ' ')"
+check "truly-dead worker (stale hb+status) recovered" "0" "$(ls "$MFSTATE"/assignments/*.json 2>/dev/null | wc -l | tr -d ' ')"
+# Live-but-silent worker (issue #497): stale heartbeat, but the status file shows an
+# active phase and was written within the stall window → alive, assignment kept.
+printf '%s\n' '{"issue":252,"assigned_at":"x","touches":["a/**"],"relocated":false}' >"$MFSTATE/assignments/worker-2.json"
+printf '%s\n' '{"phase":"writing","issue":252,"pr":null,"updated_at":"x"}' >"$MFSTATE/status/worker-2.json"
+touch -t 202001010000 "$MFSTATE/status/worker-2.hb"   # dead heartbeat toucher
+echo open >"$T/ghdeps/252"
+MF_STALL_SECS=3600 stall_check
+check "live-but-silent worker NOT reset (active phase, fresh status)" "1" "$(ls "$MFSTATE"/assignments/*.json 2>/dev/null | wc -l | tr -d ' ')"
+check "skip-reset logged once (marker written)" "1" "$([ -f "$MFSTATE/status/.stallskip-2" ] && echo 1 || echo 0)"
+rm -f "$MFSTATE"/assignments/*.json "$MFSTATE"/status/.stallskip-2
+# A fresh heartbeat is never a stall regardless of status.
 printf '%s\n' '{"issue":251,"assigned_at":"x","touches":["a/**"],"relocated":false}' >"$MFSTATE/assignments/worker-2.json"
+printf '%s\n' '{"phase":"writing","issue":251,"pr":null,"updated_at":"x"}' >"$MFSTATE/status/worker-2.json"
 date -Is >"$MFSTATE/status/worker-2.hb" 2>/dev/null || date >"$MFSTATE/status/worker-2.hb"
 MF_STALL_SECS=3600 stall_check
 check "fresh heartbeat NOT treated as stall" "1" "$(ls "$MFSTATE"/assignments/*.json 2>/dev/null | wc -l | tr -d ' ')"
+rm -f "$MFSTATE"/assignments/*.json
 
 echo "— composer idle back-off (unchanged snapshot doubles, changed snapshot resets)"
 rm -f "$MFSTATE"/assignments/*.json "$MFSTATE"/merge-queue/*.json 2>/dev/null || true
@@ -180,6 +195,41 @@ backdate "$MFSTATE/control/.composer-last" 3601
 echo '[{"number":260,"title":"new issue appeared","body":"x","labels":["autopilot"]}]' >"$TICK_ISSUES"
 composer_step run
 check "open-issue set change resets backoff to base (900)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
+
+echo "— cc() transient transport classifier (factory/lib.sh, issue #497)"
+# lib.sh is the source of the classifier + regexes. Sourcing it redefines log/notify
+# with the real implementations, so re-stub them right after to keep the rest quiet.
+. ../factory/lib.sh
+log(){ :; }; notify(){ :; }
+check "classify: connection closed mid-response → transient" "transient" "$(cc_classify 'API Error: Connection closed mid-response. The response above may be incomplete.')"
+check "classify: ECONNRESET → transient" "transient" "$(cc_classify 'read ECONNRESET')"
+check "classify: ETIMEDOUT → transient" "transient" "$(cc_classify 'connect ETIMEDOUT 93.184.216.34:443')"
+check "classify: stream disconnected → transient" "transient" "$(cc_classify 'stream disconnected before completion')"
+check "classify: socket hang up → transient" "transient" "$(cc_classify 'Error: socket hang up')"
+check "classify: fetch failed → transient" "transient" "$(cc_classify 'TypeError: fetch failed')"
+check "classify: usage limit → limit" "limit" "$(cc_classify 'Claude usage limit reached; limit will reset at 5pm')"
+check "classify: 429 → limit" "limit" "$(cc_classify 'request failed: HTTP 429 Too Many Requests')"
+check "classify: overloaded → limit" "limit" "$(cc_classify 'Error: overloaded_error')"
+check "classify: genuine failure → genuine" "genuine" "$(cc_classify 'is_error true — the test suite failed with 3 assertion errors')"
+check "classify: empty text → genuine" "genuine" "$(cc_classify '')"
+check "classify: transport wins over limit noise → transient" "transient" "$(cc_classify 'rate_limit_event ... then: socket hang up')"
+
+echo "— worker heartbeat supervision (factory resilience, issue #497)"
+# Source worker.sh in MF_SOURCE_ONLY mode (lib.sh + boot skipped) so the hb_* helpers
+# are defined. HB resolves from WORKER_ID/STATUS set at source time; a real background
+# toucher is spawned offline, then killed and re-ensured to prove self-healing.
+export WORKER_ID=9
+MF_SOURCE_ONLY=1 . ./worker.sh
+hb_start
+hb_alive; check "hb_start spawns a live toucher" "0" "$?"
+HB_FIRST=$HB_PID
+kill "$HB_FIRST" 2>/dev/null; wait "$HB_FIRST" 2>/dev/null || true
+hb_alive; check "hb_alive false after the toucher is killed" "1" "$?"
+hb_ensure
+hb_alive; check "hb_ensure respawns a dead toucher" "0" "$?"
+[ -n "$HB_PID" ] && [ "$HB_PID" != "$HB_FIRST" ] && ok "respawn has a fresh pid" || bad "respawn should have a fresh pid"
+hb_stop
+check "hb_stop clears the pid" "" "$HB_PID"
 
 echo "— difficulty routing (mflib.sh pure helpers)"
 . ./mflib.sh
