@@ -48,12 +48,14 @@ export type IdempotencyErrorCode =
   (typeof IDEMPOTENCY_ERROR_CODES)[keyof typeof IDEMPOTENCY_ERROR_CODES];
 
 /**
- * The three shareable kinds one audience model governs (V3-P5, §13.3): each
- * portfolio, each conglomerate, each watchlist. Defined here — the neutral,
- * import-free contracts root — so both `social.ts` and `workboard.ts` reference
- * it without an import cycle.
+ * The shareable kinds one audience model governs (V3-P5, §13.3, §13.4 V4-P9):
+ * each portfolio, each conglomerate, each watchlist, and each saved **idea** (a
+ * named Workboard analysis). Defined here — the neutral, import-free contracts
+ * root — so both `social.ts` and `workboard.ts` reference it without an import
+ * cycle. Ideas join as the fourth kind through the SAME audience model — never a
+ * parallel sharing path (V4-P9).
  */
-export const SHARE_KINDS = ['portfolio', 'conglomerate', 'watchlist'] as const;
+export const SHARE_KINDS = ['portfolio', 'conglomerate', 'watchlist', 'idea'] as const;
 export const shareKindSchema = z.enum(SHARE_KINDS);
 export type ShareKind = z.infer<typeof shareKindSchema>;
 

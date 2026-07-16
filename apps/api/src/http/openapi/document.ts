@@ -190,6 +190,12 @@ const componentSchemas = {
   BacktestPreviewRequest: contracts.backtestPreviewRequestSchema,
   BacktestResponse: contracts.backtestResponseSchema,
 
+  // Ideas (§13.4 V4-P9)
+  IdeaListResponse: contracts.ideaListResponseSchema,
+  IdeaResponse: contracts.ideaResponseSchema,
+  CreateIdeaRequest: contracts.createIdeaRequestSchema,
+  UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
+
   // Analytics (§13.3 V3-P9)
   AnalyticsSeriesResponse: contracts.analyticsSeriesResponseSchema,
 
@@ -1593,6 +1599,61 @@ const endpoints: EndpointDef[] = [
     body: R.BacktestPreviewRequest,
     status: 200,
     response: R.BacktestResponse,
+  },
+
+  // Ideas (§13.4 V4-P9) — saved & shareable Workboard analyses
+  {
+    method: 'get',
+    path: '/ideas',
+    tag: 'Ideas',
+    summary: 'The caller’s saved ideas, newest first.',
+    status: 200,
+    response: R.IdeaListResponse,
+  },
+  {
+    method: 'post',
+    path: '/ideas',
+    tag: 'Ideas',
+    summary: 'Save a named Workboard state (conglomerate ref or ad-hoc set) + thesis.',
+    body: R.CreateIdeaRequest,
+    status: 201,
+    response: R.IdeaResponse,
+  },
+  {
+    method: 'get',
+    path: '/ideas/{ideaId}',
+    tag: 'Ideas',
+    summary: 'One of the caller’s own ideas — the exact saved state.',
+    params: contracts.ideaIdParamSchema,
+    status: 200,
+    response: R.IdeaResponse,
+  },
+  {
+    method: 'patch',
+    path: '/ideas/{ideaId}',
+    tag: 'Ideas',
+    summary: 'Rename, re-note, or re-save the Workboard state.',
+    params: contracts.ideaIdParamSchema,
+    body: R.UpdateIdeaRequest,
+    status: 200,
+    response: R.IdeaResponse,
+  },
+  {
+    method: 'delete',
+    path: '/ideas/{ideaId}',
+    tag: 'Ideas',
+    summary: 'Delete an own idea (and its audience row).',
+    params: contracts.ideaIdParamSchema,
+    status: 204,
+  },
+  {
+    method: 'post',
+    path: '/ideas/{ideaId}/clone',
+    tag: 'Ideas',
+    summary: 'Clone an audience-admitted idea into an own private copy.',
+    params: contracts.ideaIdParamSchema,
+    status: 201,
+    response: R.IdeaResponse,
   },
 
   // Analytics (§13.3 V3-P9)

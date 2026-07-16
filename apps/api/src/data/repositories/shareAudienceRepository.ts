@@ -7,6 +7,7 @@ import type { Database } from '../db';
 import {
   conglomerates,
   friendships,
+  ideas,
   portfolios,
   shareAudienceLinks,
   shareAudienceMembers,
@@ -62,6 +63,12 @@ export interface FriendWatchlistRow extends OwnerRef {
   watchlistId: string;
   name: string;
   itemCount: number;
+}
+/** One friend-shared idea in Shared With Me (V4-P9). */
+export interface FriendIdeaRow extends OwnerRef {
+  ideaId: string;
+  name: string;
+  hasThesis: boolean;
 }
 
 /** The owner-facing audience state for one subject (feeds the AudiencePicker). */
@@ -197,6 +204,28 @@ export function createShareAudienceRepository(db: Database) {
       return row;
     },
 
+    /**
+     * Authorize the viewer to read one friend-shared idea, or `undefined` (V4-P9).
+     * Friendship AND audience AND the idea existing + owner active, in one query
+     * (§6.9) — the identical authorization-is-the-join the other kinds use. The
+     * idea's name is resolved AFTER this passes via {@link getSubjectIdentity}, so
+     * a denied read discloses nothing.
+     */
+    async authorizeIdeaRead(viewerId: string, ideaId: string): Promise<OwnerRef | undefined> {
+      const [row] = await db
+        .select({ ownerId: ideas.ownerId, ownerUsername: users.username })
+        .from(ideas)
+        .innerJoin(users, and(eq(users.id, ideas.ownerId), eq(users.status, 'active')))
+        .innerJoin(
+          shareAudiences,
+          and(eq(shareAudiences.kind, 'idea'), eq(shareAudiences.subjectId, ideas.id)),
+        )
+        .innerJoin(friendships, friendshipWith(viewerId, ideas.ownerId))
+        .where(and(eq(ideas.id, ideaId), audienceGrants(viewerId)))
+        .limit(1);
+      return row;
+    },
+
     // ── Shared With Me listings (same authorization, as a set) ──────────────
 
     async listFriendPortfolios(viewerId: string): Promise<FriendPortfolioRow[]> {
@@ -266,6 +295,26 @@ export function createShareAudienceRepository(db: Database) {
         .innerJoin(friendships, friendshipWith(viewerId, watchlists.userId))
         .where(audienceGrants(viewerId))
         .orderBy(asc(users.username), asc(watchlists.name));
+    },
+
+    async listFriendIdeas(viewerId: string): Promise<FriendIdeaRow[]> {
+      return db
+        .select({
+          ideaId: ideas.id,
+          name: ideas.name,
+          hasThesis: sql<boolean>`${ideas.thesis} is not null`.mapWith(Boolean),
+          ownerId: ideas.ownerId,
+          ownerUsername: users.username,
+        })
+        .from(ideas)
+        .innerJoin(users, and(eq(users.id, ideas.ownerId), eq(users.status, 'active')))
+        .innerJoin(
+          shareAudiences,
+          and(eq(shareAudiences.kind, 'idea'), eq(shareAudiences.subjectId, ideas.id)),
+        )
+        .innerJoin(friendships, friendshipWith(viewerId, ideas.ownerId))
+        .where(audienceGrants(viewerId))
+        .orderBy(asc(users.username), asc(ideas.name));
     },
 
     // ── Public-profile listings (owner's own `public_link` items, no viewer) ─
@@ -354,6 +403,11 @@ export function createShareAudienceRepository(db: Database) {
       kind: ShareKind,
       subjectId: string,
     ): Promise<{ name: string } | undefined> {
+      // Ideas are not surfaced on the public profile / logged-out drill-in (V4-P9
+      // ships them as a friend-shareable + clone kind; a public read-only idea
+      // view is a follow-up web surface). A public idea is reachable by friends +
+      // followers, never as an anonymous public-profile item — so this 404s.
+      if (kind === 'idea') return undefined;
       if (kind === 'portfolio') {
         const [row] = await db
           .select({ name: portfolios.name })
@@ -420,6 +474,9 @@ export function createShareAudienceRepository(db: Database) {
       kind: ShareKind,
       subjectId: string,
     ): Promise<NamedOwnerRef | undefined> {
+      // Ideas are not item-followable (V4-P9 out-of-scope; only follow.published
+      // fan-out applies), so there is no public follow target for an idea.
+      if (kind === 'idea') return undefined;
       const publicAudience = and(
         eq(shareAudiences.kind, kind),
         eq(shareAudiences.audience, 'public_link'),
@@ -517,6 +574,14 @@ export function createShareAudienceRepository(db: Database) {
       kind: ShareKind,
       subjectId: string,
     ): Promise<{ name: string } | undefined> {
+      if (kind === 'idea') {
+        const [row] = await db
+          .select({ name: ideas.name })
+          .from(ideas)
+          .where(eq(ideas.id, subjectId))
+          .limit(1);
+        return row;
+      }
       if (kind === 'portfolio') {
         const [row] = await db
           .select({ name: portfolios.name })
@@ -548,6 +613,14 @@ export function createShareAudienceRepository(db: Database) {
      * audience mutation so a foreign/unknown subject 404s (no IDOR, §8).
      */
     async ownsSubject(ownerId: string, kind: ShareKind, subjectId: string): Promise<boolean> {
+      if (kind === 'idea') {
+        const [row] = await db
+          .select({ id: ideas.id })
+          .from(ideas)
+          .where(and(eq(ideas.id, subjectId), eq(ideas.ownerId, ownerId)))
+          .limit(1);
+        return row !== undefined;
+      }
       if (kind === 'portfolio') {
         const [row] = await db
           .select({ id: portfolios.id })

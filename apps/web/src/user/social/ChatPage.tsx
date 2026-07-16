@@ -50,6 +50,7 @@ function ChipIcon({ kind, className }: { kind: ChatChip['kind']; className?: str
     portfolio: 'M12 3v9l7 3M12 3a9 9 0 100 18 9 9 0 000-18z',
     conglomerate: 'M4 5h7v7H4zM13 5h7v4h-7zM13 11h7v8h-7zM4 14h7v5H4z',
     watchlist: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7zm10 3a3 3 0 100-6 3 3 0 000 6z',
+    idea: 'M9 18h6M10 21h4M12 3a6 6 0 00-4 10.5c.6.6 1 1.3 1 2.5h6c0-1.2.4-1.9 1-2.5A6 6 0 0012 3z',
   };
   return (
     <svg
@@ -99,6 +100,10 @@ function chipHref(chip: ChatChip): string {
         : `/social/shared-with-me/conglomerates/${chip.subjectId}`;
     case 'watchlist':
       return owned ? '/workboard/watchlist' : `/social/shared-with-me/watchlists/${chip.subjectId}`;
+    case 'idea':
+      // The Ideas web surface is a follow-up (V4-P9 backend-only here); route to
+      // the Workboard for an owned idea and the shared-item path otherwise.
+      return owned ? '/workboard' : `/social/shared-with-me/ideas/${chip.subjectId}`;
   }
 }
 
