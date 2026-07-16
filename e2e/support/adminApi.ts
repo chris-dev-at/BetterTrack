@@ -1,4 +1,7 @@
 import { createHmac } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import type { APIRequestContext, Browser, BrowserContext } from '@playwright/test';
 
@@ -8,17 +11,48 @@ import { ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL, WEB_BASE_URL } from './confi
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 
 /**
- * Cached admin TOTP secret for the lifetime of this test-runner process. The
- * mandatory admin-2FA gate (§6.12, #400) 403s every admin route with
- * `ADMIN_2FA_SETUP_REQUIRED` until the admin has a confirmed 2FA method, so
- * every {@link loginAsAdmin} either enrolls TOTP once (fresh admin — the
- * setup-gate-exempt endpoints stay reachable) and caches the secret, or reuses
- * the cached secret to complete a login 2FA challenge. Nightly starts with a
- * fresh Postgres so the enrollment path always runs; re-running against a
- * persistent local stack means resetting the DB (the seeded admin already
- * carries a confirmed method whose secret this process never saw).
+ * Cross-process store for the enrolled admin TOTP secret. The mandatory
+ * admin-2FA gate (§6.12, #400) 403s every admin route until the admin has a
+ * confirmed 2FA method; once enrolled, the API keeps the secret encrypted at
+ * rest and never returns the plaintext again, so any later process that hits
+ * the login 2FA challenge needs the shared secret from the original enroll.
+ * Playwright spawns a fresh worker for a retried spec (issue #515), so an
+ * in-process cache alone can't survive the first spec's crash — every follow-on
+ * {@link loginAsAdmin} would then die on the challenge branch. A file under
+ * `os.tmpdir()` covers BOTH the retry AND the "re-run without resetting the
+ * stack" acceptance path: the previous run's enrolled secret is still the DB's
+ * secret. The file is a plain base32 string, mode 0600. Override via
+ * `E2E_ADMIN_TOTP_FILE` to shard across concurrent stacks on the same host.
  */
+const ADMIN_TOTP_SECRET_FILE =
+  process.env.E2E_ADMIN_TOTP_FILE ?? join(tmpdir(), 'bettertrack-e2e-admin-totp');
+
+/** In-process mirror of the persisted secret; primed lazily from disk on first read. */
 let cachedAdminTotpSecret: string | null = null;
+
+function readAdminTotpSecret(): string | null {
+  if (cachedAdminTotpSecret) return cachedAdminTotpSecret;
+  try {
+    const raw = readFileSync(ADMIN_TOTP_SECRET_FILE, 'utf8').trim();
+    if (raw.length > 0) {
+      cachedAdminTotpSecret = raw;
+      return raw;
+    }
+  } catch {
+    // File doesn't exist yet (fresh boot) — the enroll branch will create it.
+  }
+  return null;
+}
+
+function persistAdminTotpSecret(secret: string): void {
+  cachedAdminTotpSecret = secret;
+  try {
+    mkdirSync(dirname(ADMIN_TOTP_SECRET_FILE), { recursive: true });
+    writeFileSync(ADMIN_TOTP_SECRET_FILE, secret, { mode: 0o600 });
+  } catch {
+    // Best-effort — in-process cache still covers this worker's remaining specs.
+  }
+}
 
 /** RFC 4648 base32 decode — only what the admin-2FA enroll endpoint returns (uppercase, no padding). */
 function base32Decode(input: string): Buffer {
@@ -79,11 +113,13 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
     | { twoFactorRequired: true; pendingToken: string; channels: string[] };
 
   if ('twoFactorRequired' in body && body.twoFactorRequired) {
-    if (!cachedAdminTotpSecret) {
+    const secret = readAdminTotpSecret();
+    if (!secret) {
       throw new Error(
-        'Admin login is 2FA-challenged but no TOTP secret is cached in this process — ' +
-          'the seeded admin already carries a confirmed 2FA method from a prior boot. ' +
-          'Reset the compose stack (or `pnpm --filter @bettertrack/api admin:break-glass ' +
+        'Admin login is 2FA-challenged but no TOTP secret is available — the seeded ' +
+          'admin already carries a confirmed 2FA method from a prior boot but the ' +
+          `shared secret file (${ADMIN_TOTP_SECRET_FILE}) is missing. Reset the ` +
+          'compose stack (or `pnpm --filter @bettertrack/api admin:break-glass ' +
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
@@ -91,7 +127,7 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
       headers: CSRF_HEADERS,
       data: {
         pendingToken: body.pendingToken,
-        code: generateTotpCode(cachedAdminTotpSecret),
+        code: generateTotpCode(secret),
       },
     });
     if (!verifyRes.ok()) {
@@ -125,7 +161,7 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
     throw new Error(`Admin TOTP enroll failed: ${enrollRes.status()} ${await enrollRes.text()}`);
   }
   const { secret } = (await enrollRes.json()) as { secret: string };
-  cachedAdminTotpSecret = secret;
+  persistAdminTotpSecret(secret);
   const confirmRes = await request.post(`${API_BASE_URL}/api/v1/admin/security/2fa/totp/confirm`, {
     headers: CSRF_HEADERS,
     data: { code: generateTotpCode(secret) },
