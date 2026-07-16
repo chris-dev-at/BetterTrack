@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
@@ -62,6 +63,10 @@ import {
 } from '../services/account/accountSettingsService';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import {
+  createAnnouncementService,
+  type AnnouncementService,
+} from '../services/announcements/announcementService';
 import {
   createAdminTwoFactorService,
   type AdminTwoFactorService,
@@ -191,6 +196,13 @@ export interface AppContext {
   accountDeletion: AccountDeletionService;
   /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
   alerts: AlertService;
+  /**
+   * Admin-composed announcements (§13.4 V4-P5b): admin CRUD + publish fan-out
+   * into every user's inbox and the user surface — currently-active banners
+   * (rendered in the viewer's locale) and per-user dismissal. Delivery is
+   * banner + inbox only; the notification matrix is not consulted.
+   */
+  announcements: AnnouncementService;
   /**
    * The notification delivery core (#368): matrix resolve → inbox row / email /
    * FCM / web-push, idempotent under redelivery. In production it runs inside
@@ -750,6 +762,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     twoFactor,
   });
 
+  // Admin-composed announcements (§13.4 V4-P5b): CRUD + publish fan-out into every
+  // user's inbox via the shared `fanOutAnnouncement` primitive, plus the user
+  // surface (currently-active banners + per-user dismissal). Delivery is banner +
+  // inbox only — the notification matrix is not consulted.
+  const announcements = createAnnouncementService({
+    repo: createAnnouncementRepository(db),
+    users: userRepo,
+    notifications: notificationRepo,
+    audit,
+    logger,
+  });
+
   // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
   // the worker fires them and emits `alert.triggered` onto the durable
   // notification queue (#368), which the worker's dispatch job fans out.
@@ -862,6 +886,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     accountSettings,
     accountDeletion,
     alerts,
+    announcements,
     notificationDispatcher,
     notify,
     presence,

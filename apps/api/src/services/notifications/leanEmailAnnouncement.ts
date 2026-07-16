@@ -1,4 +1,10 @@
-import { resolveEmailLocale, type EmailLocale } from '../email/emailI18n';
+import type { EmailLocale } from '../email/emailI18n';
+
+import {
+  fanOutAnnouncement,
+  type AnnouncementCopyMap,
+  type AnnouncementFanOutResult,
+} from './announcementFanOut';
 
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
@@ -20,6 +26,11 @@ import type { Logger } from '../../logger';
  * collapses a re-run to a no-op — so running it again after a later deploy is
  * safe (and only reaches users who joined before the announcement, i.e. never
  * a brand-new account, which already starts with the lean defaults).
+ *
+ * The user-facing fan-out itself is now the shared {@link fanOutAnnouncement}
+ * primitive (§13.4 V4-P5b) — this migration and the composed announcements the
+ * admin composer publishes share the exact insert path, matrix bypass and
+ * dedupe invariant.
  */
 
 /** The notification `type` for the one-off notice — account category, never event-dispatched. */
@@ -28,12 +39,7 @@ export const ANNOUNCEMENT_NOTIFICATION_TYPE = 'account.notice';
 /** The fixed dedupe key that makes the announcement one-per-user, forever. */
 export const ANNOUNCEMENT_EVENT_KEY = 'account.notice:lean-email-defaults:v4p0c';
 
-interface AnnouncementCopy {
-  title: string;
-  body: string;
-}
-
-const ANNOUNCEMENT_COPY: Record<EmailLocale, AnnouncementCopy> = {
+const ANNOUNCEMENT_COPY: AnnouncementCopyMap = {
   en: {
     title: 'Email notifications are now off by default',
     body: 'To keep your inbox quiet, most email notifications are now off by default — only account and security emails stay on. Open Settings → Notifications to turn any of them back on.',
@@ -51,31 +57,27 @@ export interface AnnounceLeanEmailDefaultsDeps {
 }
 
 /** Result of the announcement run — how many rows were newly inserted vs skipped. */
-export interface AnnounceLeanEmailDefaultsResult {
-  users: number;
-  inserted: number;
-}
+export type AnnounceLeanEmailDefaultsResult = AnnouncementFanOutResult;
 
 export async function announceLeanEmailDefaults(
   deps: AnnounceLeanEmailDefaultsDeps,
 ): Promise<AnnounceLeanEmailDefaultsResult> {
   const { users, notifications, logger } = deps;
-  const all = await users.list();
-  let inserted = 0;
-  for (const user of all) {
-    const copy = ANNOUNCEMENT_COPY[resolveEmailLocale(user.locale)];
-    const id = await notifications.insert({
-      userId: user.id,
-      type: ANNOUNCEMENT_NOTIFICATION_TYPE,
-      title: copy.title,
-      body: copy.body,
-      payload: { eventKey: ANNOUNCEMENT_EVENT_KEY, notice: 'lean-email-defaults' },
-    });
-    if (id) inserted += 1;
-  }
+  const result = await fanOutAnnouncement({
+    users,
+    notifications,
+    type: ANNOUNCEMENT_NOTIFICATION_TYPE,
+    eventKey: ANNOUNCEMENT_EVENT_KEY,
+    copy: ANNOUNCEMENT_COPY,
+    payload: { notice: 'lean-email-defaults' },
+  });
   logger?.info(
-    { users: all.length, inserted },
+    { users: result.users, inserted: result.inserted },
     'lean email defaults: in-app announcement delivered',
   );
-  return { users: all.length, inserted };
+  return result;
 }
+
+// Re-exported so the test suite's `EmailLocale` import path keeps working after
+// this file was slimmed to a thin wrapper around the shared fan-out helper.
+export type { EmailLocale };

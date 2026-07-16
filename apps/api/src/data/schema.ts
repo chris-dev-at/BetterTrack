@@ -1505,8 +1505,91 @@ export const oauthRefreshTokens = pgTable(
   (t) => [uniqueIndex('oauth_refresh_tokens_token_hash_unique').on(t.tokenHash)],
 );
 
+/**
+ * Admin-composed in-app announcements (§13.4 V4-P5b). One row per composed
+ * announcement — severity + per-locale (EN + DE) title/body + an optional
+ * active window (start/end, inclusive; NULL start = start immediately, NULL end
+ * = no auto-off) — plus an `active` flag the admin toggles independently of the
+ * window (a dry-run save stays off). `published_at` is stamped when the row is
+ * flipped active for the first time; it drives the one-time fan-out into every
+ * user's inbox (`account.notice` type, deduped per-user by a shared eventKey).
+ * The composer is nulled out (not cascaded) if their admin account is later
+ * removed, so the announcement itself survives (audit + inbox history stay).
+ *
+ * Delivery is banner + inbox only — no email/push/Telegram/Discord routing goes
+ * through the notification matrix. Dismissal is per-user (see
+ * {@link announcementDismissals}); a newly published announcement re-appears
+ * for every user even if they dismissed a prior one.
+ */
+export const announcementSeverityEnum = pgEnum('announcement_severity', [
+  'info',
+  'warning',
+  'critical',
+]);
+
+export const announcements = pgTable(
+  'announcements',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    severity: announcementSeverityEnum('severity').notNull().default('info'),
+    // Per-locale content stored server-side; the API resolves the viewer locale
+    // (via `resolveEmailLocale`, the same seam the notification emails use) and
+    // renders the matching pair. EN is the source-of-truth fallback.
+    titleEn: text('title_en').notNull(),
+    bodyEn: text('body_en').notNull(),
+    titleDe: text('title_de').notNull(),
+    bodyDe: text('body_de').notNull(),
+    startsAt: timestamp('starts_at', { withTimezone: true }),
+    endsAt: timestamp('ends_at', { withTimezone: true }),
+    active: boolean('active').notNull().default(false),
+    // Stamped the first time `active` flips on — the moment the fan-out job runs.
+    // Later re-publishes update this to the latest publish timestamp; the shared
+    // eventKey (announcement:<id>:v1) keeps a re-publish idempotent per user.
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('announcements_active_window_idx').on(t.active, t.startsAt, t.endsAt),
+    check(
+      'announcements_window_order',
+      sql`${t.startsAt} is null or ${t.endsAt} is null or ${t.startsAt} <= ${t.endsAt}`,
+    ),
+  ],
+);
+
+/**
+ * Per-user announcement dismissal (§13.4 V4-P5b). One row per (user × announcement);
+ * a dismissed row stops appearing in the user's banner list forever. Idempotent by
+ * PK (a repeat dismissal is a no-op). Cascades away with the user OR with the
+ * announcement — a deleted announcement is gone; its dismissal history is not load
+ * bearing. Rows are the audit trail: created_at doubles as the dismiss timestamp.
+ */
+export const announcementDismissals = pgTable(
+  'announcement_dismissals',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    announcementId: uuid('announcement_id')
+      .notNull()
+      .references(() => announcements.id, { onDelete: 'cascade' }),
+    dismissedAt: timestamp('dismissed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      name: 'announcement_dismissals_pk',
+      columns: [t.userId, t.announcementId],
+    }),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
+export type AnnouncementRow = typeof announcements.$inferSelect;
+export type NewAnnouncementRow = typeof announcements.$inferInsert;
+export type AnnouncementDismissalRow = typeof announcementDismissals.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type OAuthClientRow = typeof oauthClients.$inferSelect;
 export type OAuthGrantRow = typeof oauthGrants.$inferSelect;
@@ -1667,6 +1750,9 @@ export const schema = {
   sharedItemActivityPrefs,
   appSettings,
   idempotencyKeys,
+  announcements,
+  announcementDismissals,
+  announcementSeverityEnum,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
