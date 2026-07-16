@@ -40,6 +40,7 @@ const GOOGLE_ERROR_KEYS: Record<string, string> = {
   google_email_taken: 'auth.google.errorEmailTaken',
   google_invite_required: 'auth.google.errorInviteRequired',
   google_account_disabled: 'auth.google.errorAccountDisabled',
+  google_admin: 'auth.google.errorAdmin',
   google_already_linked: 'auth.google.errorAlreadyLinked',
 };
 

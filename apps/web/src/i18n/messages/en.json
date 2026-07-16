@@ -183,6 +183,7 @@
       "errorEmailTaken": "An account already exists for this email. Sign in with your password, then link Google in Settings.",
       "errorInviteRequired": "Google sign-up needs a valid invite. Open your invite link and choose “Continue with Google”.",
       "errorAccountDisabled": "This account has been suspended. Please contact the administrator.",
+      "errorAdmin": "Google sign-in isn't available for administrator accounts. Please sign in with your password.",
       "errorAlreadyLinked": "That Google account is already linked to another user."
     }
   },

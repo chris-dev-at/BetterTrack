@@ -92,6 +92,26 @@ export interface GoogleAuthServiceDeps {
   logger: Logger;
 }
 
+/**
+ * Google sign-in must NEVER mint a session for an admin account. Mandatory
+ * admin-login 2FA (#400, §6.12) is enforced only because the *password* path
+ * withholds the session until the shared TOTP challenge passes (authService's
+ * `two_factor_required` — see `requireAdminTwoFactor`, which trusts that invariant
+ * and checks a per-user flag, not the current session). The Google callback has no
+ * second-factor step, so signing an admin in here would hand out an admin-capable
+ * session with the mandatory TOTP skipped. Admin-app Google login is out of V4-P4b
+ * scope — the §16-(b) deviation only sanctions skipping *user* app-2FA, not this
+ * mandatory-admin control — so refuse it with a friendly sign-in-page error.
+ */
+function assertNotAdmin(user: UserRow): void {
+  if (user.role === 'admin') {
+    throw forbidden(
+      'Google sign-in is not available for administrator accounts. Please sign in with your password.',
+      'GOOGLE_ADMIN_UNSUPPORTED',
+    );
+  }
+}
+
 export interface GoogleAuthService {
   /** Whether Google sign-in is configured on this deployment (env-gated). */
   isEnabled(): boolean;
@@ -146,6 +166,12 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
    * normal web login, so the session is persistent.
    */
   async function signInUser(user: UserRow, ip?: string | null): Promise<GoogleCallbackResult> {
+    // Authoritative gate (#400): the Google callback must never mint an admin
+    // session — there is no second-factor step here. Still reachable e.g. for an
+    // account linked as a user and later promoted to admin (resolveSignIn step 1);
+    // the verified-email and Settings-link paths refuse earlier, before they
+    // mutate. See {@link assertNotAdmin}.
+    assertNotAdmin(user);
     const persistent = true;
     const sessionId = await sessions.create(user.id, persistent);
     const now = new Date();
@@ -379,6 +405,10 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       const existing = await userRepo.findByEmail(claims.email);
       if (existing) {
         if (existing.status !== 'active') throw accountDisabled();
+        // Refuse admins BEFORE the verified-email auto-link mutates anything
+        // (#400): an admin must not silently acquire a Google identity, let alone
+        // a session that skips the mandatory 2FA challenge. See {@link assertNotAdmin}.
+        assertNotAdmin(existing);
         // Only link when the account has no Google identity yet; if it already
         // linked a different Google account, sign them in without a duplicate.
         if (!(await identityRepo.findByUserProvider(existing.id, GOOGLE_PROVIDER))) {
@@ -416,6 +446,10 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     if (!user || user.status !== 'active') {
       throw badRequest('Google linking failed.', 'GOOGLE_FAILED');
     }
+    // Keep admins and federated sign-in disjoint (#400): an admin account never
+    // links a Google identity, so no linked identity can later mint an admin
+    // session that skips the mandatory 2FA challenge. See {@link assertNotAdmin}.
+    assertNotAdmin(user);
     const existing = await identityRepo.findByProviderSubject(GOOGLE_PROVIDER, claims.sub);
     if (existing) {
       // Idempotent when it is already this user's; otherwise the Google account

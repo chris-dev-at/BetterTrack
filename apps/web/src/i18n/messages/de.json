@@ -183,6 +183,7 @@
       "errorEmailTaken": "Für diese E-Mail-Adresse besteht bereits ein Konto. Melde dich mit deinem Passwort an und verknüpfe Google anschließend in den Einstellungen.",
       "errorInviteRequired": "Für die Google-Registrierung ist eine gültige Einladung nötig. Öffne deinen Einladungslink und wähle „Weiter mit Google“.",
       "errorAccountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an die Administration.",
+      "errorAdmin": "Die Google-Anmeldung ist für Administrationskonten nicht verfügbar. Bitte melde dich mit deinem Passwort an.",
       "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft."
     }
   },

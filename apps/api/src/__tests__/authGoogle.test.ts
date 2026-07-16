@@ -121,6 +121,21 @@ function hasSessionCookie(res: request.Response): boolean {
   return cookies.some((c) => /^bt_sid=[^;]+/.test(c) && !/^bt_sid=;/.test(c));
 }
 
+/** Password-login a seeded user and return the session-carrying agent. */
+async function loginUser(
+  app: Application,
+  email: string,
+  password: string,
+): Promise<ReturnType<typeof request.agent>> {
+  const agent = request.agent(app);
+  const res = await agent
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier: email, password });
+  expect(res.status).toBe(200);
+  return agent;
+}
+
 async function createInviteToken(adminAgent: ReturnType<typeof request.agent>): Promise<string> {
   const created = await adminAgent
     .post('/api/v1/admin/registration-tokens')
@@ -508,5 +523,178 @@ describe('Google sign-in — Settings link status + unlink (§13.4 V4-P4b)', () 
         .from(externalIdentities)
         .where(eq(externalIdentities.userId, user.id)),
     ).toHaveLength(0);
+  });
+});
+
+// ── Admin accounts are refused (mandatory admin-login 2FA, #400) ──────────────
+// The Google callback has no second-factor step, so an admin resolved here would
+// get an admin-capable session with the mandatory TOTP skipped — defeating #400.
+describe('Google sign-in — admin accounts are refused (#400)', () => {
+  let g: GoogleHarness;
+  beforeEach(async () => {
+    g = await makeGoogleHarness();
+    await setMode(g.adminAgent, 'open');
+  });
+
+  it('refuses an admin matched by verified email — no link, no session', async () => {
+    const boss = await g.harness.seedAdmin({ email: 'ceo@example.com', username: 'ceo' });
+    g.setClaims(claims({ sub: 'sub-admin-email', email: 'ceo@example.com', emailVerified: true }));
+
+    const agent = request.agent(g.harness.app);
+    const res = await runGoogleFlow(agent);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/login?error=google_admin');
+    expect(hasSessionCookie(res)).toBe(false);
+
+    // Refused BEFORE the verified-email auto-link mutates: no identity planted.
+    const identities = await g.harness.db
+      .select()
+      .from(externalIdentities)
+      .where(eq(externalIdentities.userId, boss.id));
+    expect(identities).toHaveLength(0);
+  });
+
+  it('refuses an admin who already holds a linked identity (e.g. promoted after linking)', async () => {
+    const boss = await g.harness.seedAdmin({ email: 'cto@example.com', username: 'cto' });
+    // Simulate an identity linked while the account was still a user, pre-promotion.
+    await g.harness.db.insert(externalIdentities).values({
+      userId: boss.id,
+      provider: 'google',
+      subject: 'sub-admin-existing',
+      email: 'cto@example.com',
+      emailVerified: true,
+    });
+    g.setClaims(
+      claims({ sub: 'sub-admin-existing', email: 'cto@example.com', emailVerified: true }),
+    );
+
+    const agent = request.agent(g.harness.app);
+    const res = await runGoogleFlow(agent);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/login?error=google_admin');
+    expect(hasSessionCookie(res)).toBe(false);
+    // The refused sign-in never established a session.
+    expect((await agent.get('/api/v1/auth/me')).status).toBe(401);
+  });
+
+  it('refuses a Settings link initiated by an admin account — no identity planted', async () => {
+    // The admin agent is authenticated, so /google/start turns this into a LINK
+    // flow (linkUserId = admin.id); linkToUser must refuse it (intent: link).
+    g.setClaims(
+      claims({ sub: 'sub-admin-link', email: 'admin-google@gmail.com', emailVerified: true }),
+    );
+    const res = await runGoogleFlow(g.adminAgent);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/settings/security?error=google_admin');
+
+    const identities = await g.harness.db
+      .select()
+      .from(externalIdentities)
+      .where(eq(externalIdentities.subject, 'sub-admin-link'));
+    expect(identities).toHaveLength(0);
+  });
+});
+
+// ── Settings → Security: authenticated "link Google to my account" flow ───────
+describe('Google sign-in — Settings link flow (§13.4 V4-P4b)', () => {
+  let g: GoogleHarness;
+  beforeEach(async () => {
+    g = await makeGoogleHarness();
+    await setMode(g.adminAgent, 'open');
+  });
+
+  it('an authenticated user links a fresh Google account from Settings', async () => {
+    const user = await g.harness.seedUser({
+      email: 'linker@example.com',
+      username: 'linker',
+      password: 'link-password-1',
+    });
+    const agent = await loginUser(g.harness.app, user.email, user.password);
+    // A live session makes this a LINK flow regardless of the Google email — use
+    // an unrelated address so it is unmistakably a link, not a verified-email match.
+    g.setClaims(
+      claims({ sub: 'sub-settings-link', email: 'someone.else@gmail.com', emailVerified: true }),
+    );
+
+    const res = await runGoogleFlow(agent);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/settings/security?google=linked');
+
+    const identities = await g.harness.db
+      .select()
+      .from(externalIdentities)
+      .where(eq(externalIdentities.userId, user.id));
+    expect(identities).toHaveLength(1);
+    expect(identities[0]!.subject).toBe('sub-settings-link');
+
+    // The link surfaces on the status endpoint the Settings page reads.
+    const status = await agent.get('/api/v1/auth/google/link-status');
+    expect(status.status).toBe(200);
+    expect(status.body).toMatchObject({ linked: true, email: 'someone.else@gmail.com' });
+  });
+
+  it('refuses linking a Google account already linked to another user (GOOGLE_ALREADY_LINKED)', async () => {
+    // user1 claims the Google account first (via their own Settings link).
+    const u1 = await g.harness.seedUser({
+      email: 'first@example.com',
+      username: 'first',
+      password: 'first-password-1',
+    });
+    const a1 = await loginUser(g.harness.app, u1.email, u1.password);
+    g.setClaims(claims({ sub: 'sub-shared', email: 'shared@gmail.com', emailVerified: true }));
+    expect((await runGoogleFlow(a1)).headers.location).toContain('google=linked');
+
+    // user2 tries to link the SAME Google account → conflict, nothing linked.
+    const u2 = await g.harness.seedUser({
+      email: 'second@example.com',
+      username: 'second',
+      password: 'second-password-1',
+    });
+    const a2 = await loginUser(g.harness.app, u2.email, u2.password);
+    g.setClaims(claims({ sub: 'sub-shared', email: 'shared@gmail.com', emailVerified: true }));
+    const res = await runGoogleFlow(a2);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/settings/security?error=google_already_linked');
+
+    expect(
+      await g.harness.db
+        .select()
+        .from(externalIdentities)
+        .where(eq(externalIdentities.userId, u2.id)),
+    ).toHaveLength(0);
+    // The identity still belongs to user1 — the link was never moved.
+    const shared = await g.harness.db
+      .select()
+      .from(externalIdentities)
+      .where(eq(externalIdentities.subject, 'sub-shared'));
+    expect(shared).toHaveLength(1);
+    expect(shared[0]!.userId).toBe(u1.id);
+  });
+
+  it('refuses linking a second Google account when one is already linked (GOOGLE_ALREADY_LINKED)', async () => {
+    const user = await g.harness.seedUser({
+      email: 'already@example.com',
+      username: 'already',
+      password: 'already-password-1',
+    });
+    const agent = await loginUser(g.harness.app, user.email, user.password);
+
+    // First link succeeds.
+    g.setClaims(claims({ sub: 'sub-a', email: 'a@gmail.com', emailVerified: true }));
+    expect((await runGoogleFlow(agent)).headers.location).toContain('google=linked');
+
+    // A second, DIFFERENT Google account is refused — one identity per provider.
+    g.setClaims(claims({ sub: 'sub-b', email: 'b@gmail.com', emailVerified: true }));
+    const res = await runGoogleFlow(agent);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/settings/security?error=google_already_linked');
+
+    // Still exactly the original identity.
+    const identities = await g.harness.db
+      .select()
+      .from(externalIdentities)
+      .where(eq(externalIdentities.userId, user.id));
+    expect(identities).toHaveLength(1);
+    expect(identities[0]!.subject).toBe('sub-a');
   });
 });

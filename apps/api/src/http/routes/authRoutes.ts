@@ -589,6 +589,8 @@ function googleErrorParam(code: string): string {
       return 'google_invite_required';
     case 'ACCOUNT_DISABLED':
       return 'google_account_disabled';
+    case 'GOOGLE_ADMIN_UNSUPPORTED':
+      return 'google_admin';
     case 'GOOGLE_ALREADY_LINKED':
       return 'google_already_linked';
     default:
