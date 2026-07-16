@@ -59,7 +59,8 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await owner.getByRole('button', { name: 'Select MSFT', exact: true }).click();
   await owner.getByRole('button', { name: 'Auto-balance' }).click();
   const positionsRegion = owner.getByRole('region', { name: 'Positions' });
-  await expect(positionsRegion.getByRole('status')).toHaveText('100.0%');
+  // Locale-agnostic 2-dp: EN "100.00%" (en-GB) vs DE "100,00 %" (de-AT with narrow space).
+  await expect(positionsRegion.getByRole('status')).toHaveText(/^100[.,]00\s*%$/);
   await owner.getByRole('button', { name: 'Activate' }).click();
   await expect(owner).toHaveURL(/\/workboard\/conglomerates\/[^/]+$/, { timeout: 20_000 });
 
@@ -108,7 +109,8 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   const cashLabel = owner
     .getByRole('region', { name: 'Portfolio totals' })
     .getByText('Cash', { exact: true });
-  await expect(cashLabel.locator('xpath=following-sibling::p[1]')).toContainText('600,00', {
+  // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
+  await expect(cashLabel.locator('xpath=following-sibling::p[1]')).toContainText(/600[.,]00/, {
     timeout: 15_000,
   });
 
@@ -131,10 +133,18 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
     timeout: 15_000,
   });
 
-  // enable friend sharing on the (default "Main") portfolio
-  await owner.goto('/settings/account');
-  await owner.getByRole('radio', { name: 'Yes' }).click();
-  await expect(owner.getByRole('radio', { name: 'Yes' })).toHaveAttribute('aria-checked', 'true');
+  // Enable friend sharing on the (default "Main") portfolio. V3-P5/#377 retired
+  // the Settings visibility toggle; ALL sharing now lives on /social/my-shared
+  // and flows through the AudiencePicker. Share to "all_friends" so anyone who
+  // later becomes a friend of the owner inherits access via the audience model.
+  await owner.goto('/social/my-shared');
+  const mainRow = owner.getByRole('listitem').filter({ hasText: 'Main' });
+  await mainRow.getByRole('button', { name: 'Share' }).click();
+  const audiencePicker = owner.getByRole('dialog', { name: /Share/ });
+  await expect(audiencePicker).toBeVisible();
+  await audiencePicker.getByText('All friends', { exact: true }).click();
+  await audiencePicker.getByRole('button', { name: 'Save' }).click();
+  await expect(audiencePicker).toBeHidden();
 
   // owner sends the friend request
   await owner.goto('/social/friends');
@@ -142,15 +152,19 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await owner.getByRole('button', { name: 'Send request' }).click();
   await expect(owner.getByText(/we've sent your friend request/i)).toBeVisible();
 
-  // second account accepts the request and sees the shared portfolio
+  // second account accepts the request and sees the shared portfolio via the
+  // friend card's expansion (V4-P0b — the standalone Shared-With-Me tab is
+  // retired; per-friend shares live inside the friend row).
   await friend.goto('/social/friends');
   await expect(friend.getByText(ownerUsername)).toBeVisible({ timeout: 15_000 });
   await friend.getByRole('button', { name: 'Accept' }).click();
 
-  await friend.goto('/social/shared-with-me');
+  const friendCard = friend.getByRole('button', { name: ownerUsername });
+  await expect(friendCard).toBeVisible({ timeout: 15_000 });
+  await friendCard.click();
+
   const sharedLink = friend.getByRole('link', { name: 'Main' });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
-  await expect(friend.getByText(ownerUsername)).toBeVisible();
   await sharedLink.click();
 
   await expect(friend.getByText(new RegExp(`shared by ${ownerUsername}`, 'i'))).toBeVisible();
@@ -160,20 +174,23 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   });
 
   // V2-P11: owner shares the watchlist to friends; the already-accepted friend
-  // sees it read-only under Shared With Me.
+  // sees the "General" watchlist read-only inside the same friend-card row.
   await owner.goto('/workboard');
   await owner.getByRole('button', { name: 'Share with friends' }).click();
   await expect(owner.getByRole('button', { name: 'Shared with friends' })).toBeVisible();
 
-  await friend.goto('/social/shared-with-me');
-  const watchlistLink = friend.getByRole('link', {
-    name: new RegExp(`${ownerUsername}.s watchlist`),
-  });
+  await friend.goto('/social/friends');
+  const friendCardAgain = friend.getByRole('button', { name: ownerUsername });
+  await expect(friendCardAgain).toBeVisible({ timeout: 15_000 });
+  await friendCardAgain.click();
+  const watchlistLink = friend.getByRole('link', { name: 'General' });
   await expect(watchlistLink).toBeVisible({ timeout: 15_000 });
   await watchlistLink.click();
 
+  // SharedWatchlistPage heading is `${owner}'s ${watchlistName}` — the default
+  // watchlist is "General", so the composed heading is "ownerusername's General".
   await expect(
-    friend.getByRole('heading', { name: new RegExp(`${ownerUsername}.s watchlist`) }),
+    friend.getByRole('heading', { name: new RegExp(`${ownerUsername}.s General`) }),
   ).toBeVisible();
   await expect(friend.getByText('AAPL')).toBeVisible();
   await expect(friend.getByText('V', { exact: true })).toBeVisible();
