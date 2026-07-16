@@ -123,6 +123,14 @@ const envSchema = z.object({
   // env-gated — it never blocks launch (§13.4 preamble).
   BT_GOOGLE_CLIENT_ID: z.string().optional(),
   BT_GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Test-only endpoint overrides (§13.4 V4-P11, #520): point the three Google
+  // OAuth URLs at the e2e fake IdP so the redirect chain + jose verification run
+  // network-free against a per-run signing key. Unset in every real deployment —
+  // when absent the flow uses the exact production Google constants. Never set
+  // these in production. Validated as URLs so a typo fails fast at boot.
+  BT_GOOGLE_AUTHORIZE_ENDPOINT: z.string().url().optional(),
+  BT_GOOGLE_TOKEN_ENDPOINT: z.string().url().optional(),
+  BT_GOOGLE_JWKS_URI: z.string().url().optional(),
 
   // ── Account data export (§13.4 V4-P6a, #494) ───────────────────────────────
   // Directory the export job writes the assembled zips into (and the cleanup job
@@ -131,6 +139,15 @@ const envSchema = z.object({
   // so a stock deploy works without configuration; set an explicit durable path
   // in production so a mid-download restart never loses a ready file.
   BT_EXPORT_DIR: z.string().optional(),
+
+  // ── Telegram notification channel (§13.4 V4-P10) ───────────────────────────
+  // Owner-provided bot token that lets the API deliver notifications through
+  // Telegram. Unset ⇒ the channel is entirely INVISIBLE: no Telegram column in
+  // the settings matrix, `/settings/telegram/*` responds `available: false` (or
+  // 404 on the writes), and nothing crashes at boot (per §13.4 preamble — owner
+  // items never block launch). Never logged (secret). Discord is per-user by
+  // webhook URL, so no server env is required.
+  BT_TELEGRAM_BOT_TOKEN: z.string().optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -380,6 +397,10 @@ export interface AppConfig {
     enabled: boolean;
     clientId?: string;
     clientSecret?: string;
+    /** Test-only OAuth endpoint overrides (§13.4 V4-P11, #520); unset in production. */
+    authorizeEndpoint?: string;
+    tokenEndpoint?: string;
+    jwksUri?: string;
   };
   /**
    * Account data export (§13.4 V4-P6a, #494). `dir` is the directory the export
@@ -388,6 +409,15 @@ export interface AppConfig {
    */
   dataExport: {
     dir: string;
+  };
+  /**
+   * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the bot
+   * token is set; when false the channel is invisible everywhere (matrix column
+   * hidden, link routes 4xx). The token itself is a secret and never logged.
+   */
+  telegram: {
+    enabled: boolean;
+    botToken?: string;
   };
   /**
    * Progressive rate limiting (PROJECTPLAN.md §10). Each schedule pairs a
@@ -523,9 +553,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: Boolean(e.BT_GOOGLE_CLIENT_ID && e.BT_GOOGLE_CLIENT_SECRET),
       clientId: e.BT_GOOGLE_CLIENT_ID,
       clientSecret: e.BT_GOOGLE_CLIENT_SECRET,
+      authorizeEndpoint: e.BT_GOOGLE_AUTHORIZE_ENDPOINT,
+      tokenEndpoint: e.BT_GOOGLE_TOKEN_ENDPOINT,
+      jwksUri: e.BT_GOOGLE_JWKS_URI,
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
+    },
+    telegram: {
+      enabled: Boolean(e.BT_TELEGRAM_BOT_TOKEN && e.BT_TELEGRAM_BOT_TOKEN.trim() !== ''),
+      botToken: e.BT_TELEGRAM_BOT_TOKEN,
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far
     // under the steady-state `limit`; the first over-limit is a short cooldown

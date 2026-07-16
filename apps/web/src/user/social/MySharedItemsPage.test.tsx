@@ -13,7 +13,14 @@ vi.mock('../../lib/socialApi', () => ({
   setAudience: vi.fn(),
 }));
 
+vi.mock('../../lib/alertsApi', () => ({
+  ALERT_SHARING_QUERY_KEY: ['alerts', 'sharing'],
+  getAlertSharing: vi.fn(),
+  updateAlertSharing: vi.fn(),
+}));
+
 import { getAudience, listFriends, listMyShared } from '../../lib/socialApi';
+import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { MySharedItemsPage } from './MySharedItemsPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
@@ -43,6 +50,7 @@ beforeEach(() => {
     link: { active: false, createdAt: null },
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+  vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: false });
 });
 
 describe('MySharedItemsPage', () => {
@@ -175,5 +183,91 @@ describe('MySharedItemsPage', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     expect(screen.getByRole('radio', { name: /only me/i })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
+  });
+
+  test('shows an ideas group with a per-item audience entry point (V4-P9)', async () => {
+    const IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [
+        {
+          ideaId: IDEA_ID,
+          name: 'Momentum basket',
+          hasThesis: true,
+          audience: 'private',
+          friendCount: 0,
+        },
+      ],
+    });
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'idea',
+      subjectId: IDEA_ID,
+      audience: 'private',
+      friendIds: [],
+      link: { active: false, createdAt: null },
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Momentum basket')).toBeInTheDocument());
+    expect(screen.getByText('Ideas')).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /share/i }));
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    expect(getAudience).toHaveBeenCalledWith('idea', IDEA_ID, expect.anything());
+  });
+});
+
+// The "share my alerts" control moved out of Settings into the Social "My items"
+// area (#532) — same behaviour, incl. the all-followers friction dialog + ack.
+describe('MySharedItemsPage — alert sharing (relocated from Settings)', () => {
+  test('shows the alert-sharing control even when the caller owns nothing', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(EMPTY);
+    renderPage();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('switch', { name: 'Share my alerts with followers' }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  test('enabling walks the warning dialog and sends the ack (#455)', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(EMPTY);
+    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: true });
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole('switch', { name: 'Share my alerts with followers' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    // Enabling never writes directly — the strong warning comes first.
+    await user.click(toggle);
+    expect(updateAlertSharing).not.toHaveBeenCalled();
+    expect(screen.getByText(/which assets you watch and your price targets/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'I understand — share my alerts' }));
+    await waitFor(() =>
+      expect(updateAlertSharing).toHaveBeenCalledWith({
+        visibleToFollowers: true,
+        acknowledgeFollowers: true,
+      }),
+    );
+  });
+
+  test('disabling needs no confirmation (#455)', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(EMPTY);
+    vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: true });
+    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: false });
+    const user = userEvent.setup();
+    renderPage();
+
+    const toggle = await screen.findByRole('switch', { name: 'Share my alerts with followers' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(updateAlertSharing).toHaveBeenCalledWith({ visibleToFollowers: false }),
+    );
   });
 });

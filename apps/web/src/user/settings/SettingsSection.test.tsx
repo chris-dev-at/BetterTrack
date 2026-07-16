@@ -6,6 +6,14 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('../../lib/settingsApi', () => ({
   getNotificationSettings: vi.fn(),
   updateNotificationSettings: vi.fn(),
+  getTelegramSettings: vi.fn(),
+  startTelegramLink: vi.fn(),
+  confirmTelegramLink: vi.fn(),
+  unlinkTelegram: vi.fn(),
+  getDiscordSettings: vi.fn(),
+  saveDiscordWebhook: vi.fn(),
+  testDiscordWebhook: vi.fn(),
+  removeDiscordWebhook: vi.fn(),
 }));
 
 vi.mock('../../lib/notificationsApi', () => ({
@@ -15,12 +23,6 @@ vi.mock('../../lib/notificationsApi', () => ({
   unarchiveNotification: vi.fn(),
   deleteNotification: vi.fn(),
   deleteNotifications: vi.fn(),
-}));
-
-vi.mock('../../lib/alertsApi', () => ({
-  ALERT_SHARING_QUERY_KEY: ['alerts', 'sharing'],
-  getAlertSharing: vi.fn(),
-  updateAlertSharing: vi.fn(),
 }));
 
 import {
@@ -40,8 +42,18 @@ import {
   markNotificationsRead,
   unarchiveNotification,
 } from '../../lib/notificationsApi';
-import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
-import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
+import {
+  confirmTelegramLink,
+  getDiscordSettings,
+  getNotificationSettings,
+  getTelegramSettings,
+  removeDiscordWebhook,
+  saveDiscordWebhook,
+  startTelegramLink,
+  testDiscordWebhook,
+  unlinkTelegram,
+  updateNotificationSettings,
+} from '../../lib/settingsApi';
 import { NotificationSettingsPage } from './SettingsSection';
 
 function makeQueryClient() {
@@ -76,7 +88,14 @@ const EMPTY_LIST_RESPONSE: NotificationListResponse = {
   unreadCount: 0,
 };
 
-const ALL_ON: NotificationTypeRouting = { inapp: true, email: true, push: true, webpush: true };
+const ALL_ON: NotificationTypeRouting = {
+  inapp: true,
+  email: true,
+  telegram: true,
+  discord: true,
+  push: true,
+  webpush: true,
+};
 
 /** A full four-channel routing matrix (every cell on) with per-type overrides. */
 function makeMatrix(overrides: Partial<NotificationMatrix> = {}): NotificationMatrix {
@@ -96,7 +115,16 @@ function makeSettings(
     matrix: makeMatrix(),
     muted: false,
     // Email is live, the push channels are not — their columns must be absent.
-    channels: { inapp: true, email: true, push: false, webpush: false },
+    // Telegram + Discord default to unavailable in unit tests (no bot token,
+    // no saved webhook), so their columns stay hidden.
+    channels: {
+      inapp: true,
+      email: true,
+      telegram: false,
+      discord: false,
+      push: false,
+      webpush: false,
+    },
     webPushPublicKey: null,
     ...overrides,
   };
@@ -111,44 +139,64 @@ beforeEach(() => {
   vi.mocked(unarchiveNotification).mockResolvedValue(undefined);
   vi.mocked(deleteNotification).mockResolvedValue(undefined);
   vi.mocked(deleteNotifications).mockResolvedValue(undefined);
-  vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: false });
-});
-
-describe('NotificationSettingsPage — alert sharing (V4-P0b relocation)', () => {
-  test('enabling walks the warning dialog and sends the ack (#455)', async () => {
-    const user = userEvent.setup();
-    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: true });
-    renderPage();
-
-    const toggle = await screen.findByRole('switch', { name: 'Share my alerts with followers' });
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
-
-    // Enabling never writes directly — the strong warning comes first.
-    await user.click(toggle);
-    expect(updateAlertSharing).not.toHaveBeenCalled();
-    expect(screen.getByText(/which assets you watch and your price targets/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'I understand — share my alerts' }));
-    await waitFor(() =>
-      expect(updateAlertSharing).toHaveBeenCalledWith({
-        visibleToFollowers: true,
-        acknowledgeFollowers: true,
-      }),
-    );
+  // V4-P10: Telegram + Discord channels default to unavailable in unit tests.
+  vi.mocked(getTelegramSettings).mockResolvedValue({
+    available: false,
+    linked: false,
+    pending: false,
+    chatIdMasked: null,
+    botUsername: null,
+    pendingCode: null,
+    pendingExpiresAt: null,
   });
-
-  test('disabling needs no confirmation (#455)', async () => {
-    const user = userEvent.setup();
-    vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: true });
-    vi.mocked(updateAlertSharing).mockResolvedValue({ visibleToFollowers: false });
-    renderPage();
-
-    const toggle = await screen.findByRole('switch', { name: 'Share my alerts with followers' });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await user.click(toggle);
-    await waitFor(() =>
-      expect(updateAlertSharing).toHaveBeenCalledWith({ visibleToFollowers: false }),
-    );
+  vi.mocked(getDiscordSettings).mockResolvedValue({
+    available: true,
+    linked: false,
+    webhookIdMasked: null,
+    configuredAt: null,
+  });
+  vi.mocked(startTelegramLink).mockResolvedValue({
+    available: true,
+    linked: false,
+    pending: true,
+    chatIdMasked: null,
+    botUsername: 'bettertrack_bot',
+    pendingCode: 'abc123',
+    pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+  });
+  vi.mocked(confirmTelegramLink).mockResolvedValue({
+    linked: false,
+    settings: {
+      available: true,
+      linked: false,
+      pending: true,
+      chatIdMasked: null,
+      botUsername: 'bettertrack_bot',
+      pendingCode: 'abc123',
+      pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+    },
+  });
+  vi.mocked(unlinkTelegram).mockResolvedValue({
+    available: true,
+    linked: false,
+    pending: false,
+    chatIdMasked: null,
+    botUsername: 'bettertrack_bot',
+    pendingCode: null,
+    pendingExpiresAt: null,
+  });
+  vi.mocked(saveDiscordWebhook).mockResolvedValue({
+    available: true,
+    linked: true,
+    webhookIdMasked: '…abcd',
+    configuredAt: new Date().toISOString(),
+  });
+  vi.mocked(testDiscordWebhook).mockResolvedValue({ ok: true });
+  vi.mocked(removeDiscordWebhook).mockResolvedValue({
+    available: true,
+    linked: false,
+    webhookIdMasked: null,
+    configuredAt: null,
   });
 });
 
@@ -179,7 +227,14 @@ describe('NotificationSettingsPage', () => {
     vi.mocked(getNotificationSettings).mockResolvedValue(
       makeSettings({
         matrix: makeMatrix({
-          'friend.request': { inapp: false, email: true, push: true, webpush: true },
+          'friend.request': {
+            inapp: false,
+            email: true,
+            telegram: true,
+            discord: true,
+            push: true,
+            webpush: true,
+          },
         }),
       }),
     );
@@ -195,7 +250,14 @@ describe('NotificationSettingsPage', () => {
     vi.mocked(updateNotificationSettings).mockResolvedValue(
       makeSettings({
         matrix: makeMatrix({
-          'friend.request': { inapp: true, email: false, push: true, webpush: true },
+          'friend.request': {
+            inapp: true,
+            email: false,
+            telegram: true,
+            discord: true,
+            push: true,
+            webpush: true,
+          },
         }),
       }),
     );
@@ -205,7 +267,16 @@ describe('NotificationSettingsPage', () => {
     await user.click(await screen.findByRole('switch', { name: 'Friend requests via Email' }));
 
     expect(updateNotificationSettings).toHaveBeenCalledWith({
-      matrix: { 'friend.request': { inapp: true, email: false, push: true, webpush: true } },
+      matrix: {
+        'friend.request': {
+          inapp: true,
+          email: false,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      },
     });
     await waitFor(() =>
       expect(screen.getByRole('switch', { name: 'Friend requests via Email' })).not.toBeChecked(),
@@ -227,8 +298,22 @@ describe('NotificationSettingsPage', () => {
     // online later.
     expect(updateNotificationSettings).toHaveBeenCalledWith({
       matrix: {
-        'friend.request': { inapp: false, email: false, push: true, webpush: true },
-        'friend.accepted': { inapp: false, email: false, push: true, webpush: true },
+        'friend.request': {
+          inapp: false,
+          email: false,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+        'friend.accepted': {
+          inapp: false,
+          email: false,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
       },
     });
   });
@@ -619,5 +704,97 @@ describe('NotificationSettingsPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Archive “Sticky”' }));
 
     expect(await screen.findByText(/Couldn't update your notifications/i)).toBeInTheDocument();
+  });
+});
+
+describe('NotificationSettingsPage — Telegram & Discord channels (V4-P10)', () => {
+  test('matrix columns absent when both channels are unconfigured', async () => {
+    // channels.telegram: false and channels.discord: false (the default fixture)
+    renderPage();
+    expect(
+      await screen.findByRole('switch', { name: 'Friend requests via In-app' }),
+    ).toBeInTheDocument();
+    // Neither column renders — the grid never lists Telegram / Discord cells.
+    expect(
+      screen.queryByRole('switch', { name: 'Friend requests via Telegram' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('switch', { name: 'Friend requests via Discord' }),
+    ).not.toBeInTheDocument();
+    // Setup cards likewise stay hidden — Telegram is unavailable server-side,
+    // and Discord's card renders only once its query resolves (linked or not).
+    expect(screen.queryByText(/Telegram-Verknüpfung|Start Telegram link/)).not.toBeInTheDocument();
+  });
+
+  test('renders columns + Discord webhook setup once the channels come online', async () => {
+    vi.mocked(getNotificationSettings).mockResolvedValue(
+      makeSettings({
+        channels: {
+          inapp: true,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: false,
+          webpush: false,
+        },
+      }),
+    );
+    renderPage();
+
+    // Grid columns show for both new channels.
+    expect(
+      await screen.findByRole('switch', { name: 'Friend requests via Telegram' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Friend requests via Discord' })).toBeInTheDocument();
+    // Discord card is available server-side but not yet linked → setup form renders.
+    expect(await screen.findByLabelText('Webhook URL')).toBeInTheDocument();
+  });
+
+  test('surfaces an invalid webhook error at save time (no persistence)', async () => {
+    const user = userEvent.setup();
+    class ApiErrorLike extends Error {
+      code = 'invalid_webhook';
+    }
+    vi.mocked(saveDiscordWebhook).mockRejectedValueOnce(new ApiErrorLike('invalid_webhook'));
+    renderPage();
+
+    const input = await screen.findByLabelText('Webhook URL');
+    await user.type(input, 'https://discord.com/api/webhooks/1/x');
+    await user.click(screen.getByRole('button', { name: 'Save webhook' }));
+
+    expect(await screen.findByText(/Discord rejected this webhook/)).toBeInTheDocument();
+  });
+
+  test('starts + confirms the Telegram link handshake', async () => {
+    vi.mocked(getTelegramSettings).mockResolvedValue({
+      available: true,
+      linked: false,
+      pending: false,
+      chatIdMasked: null,
+      botUsername: 'bettertrack_bot',
+      pendingCode: null,
+      pendingExpiresAt: null,
+    });
+    vi.mocked(confirmTelegramLink).mockResolvedValueOnce({
+      linked: true,
+      settings: {
+        available: true,
+        linked: true,
+        pending: false,
+        chatIdMasked: '…1234',
+        botUsername: 'bettertrack_bot',
+        pendingCode: null,
+        pendingExpiresAt: null,
+      },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Start Telegram link' }));
+    expect(startTelegramLink).toHaveBeenCalledTimes(1);
+    // The deep link + confirm button surface once the pending code lands.
+    expect(await screen.findByRole('link', { name: 'Open Telegram bot' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: "I've started the bot" }));
+    expect(confirmTelegramLink).toHaveBeenCalledTimes(1);
   });
 });

@@ -149,7 +149,13 @@
       "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "pendingSubtitle": "Fast geschafft",
       "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
-      "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu."
+      "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu.",
+      "google": {
+        "connecting": "Verbindung mit Google…",
+        "connectedAs": "Mit Google verbunden als {{email}}. Richte dein Konto unten fertig ein.",
+        "emailLockedHint": "Von Google festgelegt und nicht änderbar.",
+        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte fahre erneut mit Google fort."
+      }
     },
     "oauthConsent": {
       "logoBadge": "BT",
@@ -275,17 +281,6 @@
     "backups": {
       "description": "Automatische Backups zu Google Drive und anderswo."
     },
-    "alertSharing": {
-      "title": "Meine Alarme mit Followern teilen",
-      "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
-      "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
-      "toggleAria": "Meine Alarme mit Followern teilen",
-      "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
-      "confirmTitle": "Deine Alarme mit allen Followern teilen?",
-      "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
-      "confirmCancel": "Abbrechen",
-      "confirmEnable": "Ich verstehe — Alarme teilen"
-    },
     "notifications": {
       "title": "Benachrichtigungen",
       "subtitle": "Lege für jede Art von Aktivität fest, über welche Kanäle du benachrichtigt wirst — Glocke in der App, E-Mail, Handy-Push, Browser-Push — oder schalte alles auf einmal stumm.",
@@ -398,6 +393,8 @@
       "channels": {
         "inapp": "In der App",
         "email": "E-Mail",
+        "telegram": "Telegram",
+        "discord": "Discord",
         "push": "Handy-Push",
         "webpush": "Browser-Push"
       },
@@ -428,6 +425,40 @@
         "unsupported": "Dieser Browser unterstützt keine Push-Benachrichtigungen.",
         "denied": "Benachrichtigungen sind für diese Seite in deinen Browser-Einstellungen blockiert.",
         "error": "Browser-Push konnte nicht geändert werden. Bitte versuche es erneut."
+      },
+      "telegram": {
+        "title": "Telegram",
+        "description": "Empfange Benachrichtigungen über den BetterTrack-Telegram-Bot. Einmal Chat verknüpfen — jederzeit trennen.",
+        "startLink": "Telegram-Verknüpfung starten",
+        "openBot": "Telegram-Bot öffnen",
+        "codeHint": "Sende /start {{code}} im Bot, um die Verknüpfung abzuschließen.",
+        "confirm": "Ich habe den Bot gestartet",
+        "confirming": "Prüfe …",
+        "pending": "Warte auf die /start-Nachricht …",
+        "linked": "Verknüpft mit Chat {{id}}",
+        "unlink": "Telegram trennen",
+        "unavailable": "Der Telegram-Kanal ist auf dieser Installation nicht verfügbar.",
+        "confirmError": "Verknüpfung konnte noch nicht bestätigt werden. Versuche es erneut, sobald du im Chat auf Start gedrückt hast.",
+        "startError": "Telegram-Verknüpfung konnte nicht gestartet werden. Bitte versuche es erneut.",
+        "unlinkError": "Telegram konnte nicht getrennt werden. Bitte versuche es erneut."
+      },
+      "discord": {
+        "title": "Discord",
+        "description": "Empfange Benachrichtigungen über einen benutzerspezifischen Discord-Webhook. Die URL wird verschlüsselt gespeichert und nie zurückgezeigt.",
+        "urlLabel": "Webhook-URL",
+        "urlPlaceholder": "https://discord.com/api/webhooks/…",
+        "save": "Webhook speichern",
+        "saving": "Speichere …",
+        "test": "Testnachricht senden",
+        "testing": "Sende …",
+        "testSuccess": "Testnachricht zugestellt.",
+        "testFailed": "Discord hat die Testnachricht abgelehnt. Prüfe die Webhook-URL und versuche es erneut.",
+        "linked": "Webhook gespeichert ({{id}})",
+        "remove": "Webhook entfernen",
+        "invalidUrl": "Das sieht nicht wie eine Discord-Webhook-URL aus.",
+        "invalidWebhook": "Discord hat diesen Webhook abgelehnt — ist er noch gültig?",
+        "sendFailed": "Discord konnte die Testnachricht nicht annehmen. Bitte versuche es erneut.",
+        "removeError": "Der Webhook konnte nicht entfernt werden. Bitte versuche es erneut."
       },
       "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
       "loadErrorDescription": "Bitte versuche es gleich noch einmal."
@@ -561,7 +592,10 @@
         "linkedNotice": "Google-Konto verknüpft.",
         "wrongPassword": "Dein Passwort ist falsch.",
         "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
-        "loadError": "Der Google-Verknüpfungsstatus konnte nicht geladen werden."
+        "loadError": "Der Google-Verknüpfungsstatus konnte nicht geladen werden.",
+        "errorMismatch": "Die E-Mail dieses Google-Kontos stimmt nicht mit der E-Mail deines Kontos überein. Du kannst nur das Google-Konto mit derselben E-Mail wie dieses Konto verbinden.",
+        "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft.",
+        "errorAdmin": "Google ist für Administratorkonten nicht verfügbar."
       }
     },
     "api": {
@@ -1555,7 +1589,8 @@
         "pickConglomeratePlaceholder": "Konglomerat auswählen…",
         "loading": "Konglomerate werden geladen…",
         "noConglomerates": "Noch keine Konglomerate.",
-        "clear": "Benchmark entfernen"
+        "clear": "Benchmark entfernen",
+        "saved": "Eigene Benchmark"
       },
       "mode": {
         "clip": "Auf gemeinsame Historie kürzen",
@@ -1755,6 +1790,41 @@
       "statLargest": "Größte",
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
       "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel."
+    },
+    "ideas": {
+      "list": {
+        "title": "Ideen",
+        "subtitle": "Gespeicherte Workboard-Analysen — jede exakt wie gespeichert wieder öffnen oder mit Freunden teilen.",
+        "emptyTitle": "Noch keine gespeicherten Ideen",
+        "emptyBody": "Speichere einen Korb samt Backtest aus einem Konglomerat oder dem Builder, um später darauf zurückzukommen.",
+        "open": "Öffnen",
+        "share": "Teilen",
+        "thesisNone": "Keine These",
+        "loadError": "Deine Ideen konnten nicht geladen werden.",
+        "deleteTitle": "Idee löschen",
+        "deleteBody": "\"{{name}}\" löschen? Das kann nicht rückgängig gemacht werden.",
+        "deleteError": "Die Idee konnte nicht gelöscht werden."
+      },
+      "save": {
+        "action": "Als Idee speichern",
+        "title": "Als Idee speichern",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. Dividendenwachstum-Korb",
+        "thesisLabel": "These (optional)",
+        "thesisPlaceholder": "Warum dieser Korb — deine Begründung.",
+        "submit": "Idee speichern",
+        "saving": "Wird gespeichert…",
+        "error": "Die Idee konnte nicht gespeichert werden.",
+        "successBody": "\"{{name}}\" ist in deiner Ideen-Liste.",
+        "viewIdeas": "In Ideen ansehen"
+      },
+      "open": {
+        "backLink": "← Ideen",
+        "loadError": "Diese Idee konnte nicht geladen werden.",
+        "thesisHeading": "These",
+        "backtestHeading": "Backtest",
+        "conglomerateGone": "Das von dieser Idee referenzierte Konglomerat ist nicht mehr verfügbar."
+      }
     }
   },
   "assets": {
@@ -1941,11 +2011,16 @@
       "watchlist": {
         "one": "{{count}} Watchlist",
         "other": "{{count}} Watchlists"
+      },
+      "idea": {
+        "one": "{{count}} Idee",
+        "other": "{{count}} Ideen"
       }
     },
     "item": {
       "positions": "{{count}} Positionen",
-      "assets": "{{count}} Anlagen"
+      "assets": "{{count}} Anlagen",
+      "ideaThesis": "Enthält eine These"
     },
     "activity": {
       "notifyLabel": "Benachrichtigen, wenn {{username}} hier kauft, verkauft oder etwas ändert",
@@ -1956,7 +2031,8 @@
     "kind": {
       "portfolios": "Portfolios",
       "conglomerates": "Konglomerate",
-      "watchlists": "Watchlists"
+      "watchlists": "Watchlists",
+      "ideas": "Ideen"
     },
     "myShared": {
       "title": "Meine Elemente",
@@ -1965,6 +2041,18 @@
       "emptyBody": "Erstelle ein Portfolio, Konglomerat oder eine Watchlist, um hier die Freigabe zu verwalten.",
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "publicProfileLink": "Öffentliches Profil verwalten"
+    },
+    "alertSharing": {
+      "heading": "Meine Alarme",
+      "title": "Meine Alarme mit Followern teilen",
+      "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
+      "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
+      "toggleAria": "Meine Alarme mit Followern teilen",
+      "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "confirmTitle": "Deine Alarme mit allen Followern teilen?",
+      "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
+      "confirmCancel": "Abbrechen",
+      "confirmEnable": "Ich verstehe — Alarme teilen"
     },
     "nav": {
       "friends": "Freunde",
@@ -1993,14 +2081,11 @@
         "other": "{{count}} gefolgt"
       },
       "autoFollow": "Neuen Elementen automatisch folgen",
-      "autoFollowHint": "Fügt jedes Element, das diese Person für dich sichtbar macht, automatisch zu deinen gefolgten Elementen hinzu.",
+      "autoFollowHint": "Folgt automatisch jedem Element, das diese Person neu für dich sichtbar macht, damit dich seine Neuigkeiten erreichen.",
       "autoFollowAria": "Neuen Elementen von {{username}} automatisch folgen",
-      "alertCreate": "Über neue Alarme benachrichtigen",
-      "alertCreateHint": "Erhalte eine Benachrichtigung, wenn diese Person einen neuen Preisalarm erstellt. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
-      "alertCreateAria": "Über neue Alarme von {{username}} benachrichtigen",
-      "alertFire": "Benachrichtigen, wenn Alarme auslösen",
-      "alertFireHint": "Erhalte eine Benachrichtigung, wenn einer ihrer Preisalarme auslöst. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
-      "alertFireAria": "Benachrichtigen, wenn Alarme von {{username}} auslösen"
+      "alertFollow": "Ihren Alarmen folgen",
+      "alertFollowHint": "Werde benachrichtigt, wenn diese Person einen neuen Preisalarm erstellt oder einer ihrer Alarme auslöst. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
+      "alertFollowAria": "Alarmen von {{username}} folgen"
     },
     "friend": {
       "since": "Befreundet seit {{date}}",
@@ -2030,7 +2115,8 @@
           "asset": "Anlage geteilt",
           "portfolio": "Portfolio geteilt",
           "conglomerate": "Konglomerat geteilt",
-          "watchlist": "Watchlist geteilt"
+          "watchlist": "Watchlist geteilt",
+          "idea": "Hat eine Idee geteilt"
         }
       },
       "selectTitle": "Deine Nachrichten",
@@ -2076,21 +2162,7 @@
       "follow": "Element folgen",
       "following": "Gefolgt",
       "followAria": "Diesem Element folgen",
-      "unfollowAria": "Diesem Element entfolgen",
-      "unfollow": "Entfolgen",
-      "sectionTitle": "Gefolgte Elemente",
-      "sectionSubtitle": "Portfolios, Watchlists und Konglomerate, denen du folgst. Neue Elemente von Personen mit Auto-Folgen erscheinen hier automatisch.",
-      "empty": "Du folgst noch keinen Elementen.",
-      "emptyHint": "Folge einem geteilten oder öffentlichen Portfolio, einer Watchlist oder einem Konglomerat, um es hier zu behalten.",
-      "gone": "Nicht mehr verfügbar",
-      "goneHint": "Die Freigabe wurde beendet oder das Element vom Besitzer gelöscht.",
-      "by": "von @{{username}}",
-      "error": "Deine gefolgten Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
-      "kind": {
-        "portfolio": "Portfolio",
-        "conglomerate": "Konglomerat",
-        "watchlist": "Watchlist"
-      }
+      "unfollowAria": "Diesem Element entfolgen"
     },
     "ideas": {
       "title": "Ideen",
@@ -2141,6 +2213,18 @@
       "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen.",
       "sharedByReadOnly": "Geteilt von {{username}} · nur Lesezugriff",
       "sharedByStatus": "Geteilt von {{username}} · {{status}}"
+    },
+    "sharedIdea": {
+      "backLink": "← Freunde",
+      "loadError": "Diese Idee konnte nicht geladen werden.",
+      "notAvailableTitle": "Idee nicht verfügbar",
+      "notAvailableBody": "Diese Idee wird nicht mit dir geteilt oder existiert nicht mehr.",
+      "ownerLine": "Geteilt von {{username}}",
+      "hasThesis": "Enthält eine These.",
+      "readOnlyNote": "Diese Idee ist schreibgeschützt. Klone sie, um eine eigene Kopie zu öffnen und zu bearbeiten.",
+      "clone": "In meine Ideen klonen",
+      "cloning": "Wird geklont…",
+      "cloneError": "Diese Idee konnte nicht geklont werden."
     }
   },
   "profile": {

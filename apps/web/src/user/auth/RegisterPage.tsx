@@ -39,6 +39,30 @@ type ModeState =
   | { phase: 'error' }
   | { phase: 'ready'; mode: RegistrationMode };
 
+/**
+ * Google-assisted registration state (owner order 2026-07-16). `off` — a plain
+ * visit; `loading` — resolving the pending ticket after the OAuth round-trip;
+ * `connected` — the ticket resolved, so the form shows the "Connected to Google"
+ * state (email locked); `expired` — the ticket is gone, so the form falls back to
+ * plain registration with a notice.
+ */
+type GoogleConnectState =
+  | { phase: 'off' }
+  | { phase: 'loading' }
+  | { phase: 'connected'; email: string; name: string | null }
+  | { phase: 'expired' };
+
+/**
+ * Seed the username field from a Google display name, sanitized to the username
+ * charset (§6.1). Returns '' when nothing usable remains — the field then stays
+ * blank for the user to fill. Purely a prefill; the field is always editable.
+ */
+function usernameFromName(name: string | null): string {
+  if (!name) return '';
+  const cleaned = name.replace(/[^a-zA-Z0-9_.-]/g, '');
+  return cleaned.length >= 3 ? cleaned.slice(0, 40) : '';
+}
+
 /** Friendly message for the failure codes `POST /auth/register` can return. */
 function registerErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
@@ -55,6 +79,8 @@ function registerErrorMessage(t: TranslateFn, err: unknown): string {
         return t('auth.register.invalidToken');
       case 'REGISTRATION_CLOSED':
         return t('auth.register.closedMessage');
+      case 'GOOGLE_REGISTER_TICKET_INVALID':
+        return t('auth.register.google.ticketExpired');
       default:
         if (err.status === 429) return t('auth.register.rateLimited');
         if (err.status >= 500) return t('common.genericError');
@@ -75,7 +101,7 @@ export function RegisterPage() {
   const t = useT();
   const { locale } = useI18n();
   const navigate = useNavigate();
-  const { register } = useAuth();
+  const { register, googleRegister } = useAuth();
   const [searchParams] = useSearchParams();
 
   const [state, setState] = useState<ModeState>({ phase: 'loading' });
@@ -90,6 +116,11 @@ export function RegisterPage() {
   const [pending, setPending] = useState(false);
   // Whether "Continue with Google" is offered (§13.4 V4-P4b) — env-gated server-side.
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  // Google-assisted registration (owner order 2026-07-16). A `?google=connected`
+  // visit resolves the pending ticket; everything else stays `off`.
+  const [google, setGoogle] = useState<GoogleConnectState>(() =>
+    searchParams.get('google') === 'connected' ? { phase: 'loading' } : { phase: 'off' },
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -105,6 +136,26 @@ export function RegisterPage() {
     })();
     return () => controller.abort();
   }, []);
+
+  // Resolve the pending Google ticket on a `?google=connected` landing. The
+  // verified email is prefilled + locked; the display name seeds the username.
+  // A missing/expired ticket falls back to a plain form with a notice.
+  useEffect(() => {
+    if (searchParams.get('google') !== 'connected') return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const ticket = await api.getGoogleRegisterTicket(controller.signal);
+        setEmail(ticket.email);
+        setUsername((current) => (current.length > 0 ? current : usernameFromName(ticket.name)));
+        setGoogle({ phase: 'connected', email: ticket.email, name: ticket.name });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setGoogle({ phase: 'expired' });
+      }
+    })();
+    return () => controller.abort();
+  }, [searchParams]);
 
   if (state.phase === 'loading') {
     return (
@@ -164,20 +215,42 @@ export function RegisterPage() {
     );
   }
 
+  // Still resolving the Google ticket — hold the connecting spinner rather than
+  // flashing the plain form before the connected state lands.
+  if (google.phase === 'loading') {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#0b0e14]">
+        <Spinner label={t('auth.register.google.connecting')} />
+      </div>
+    );
+  }
+
+  const connected = google.phase === 'connected' ? google : null;
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      const outcome = await register({
-        email,
-        username,
-        password,
-        // Only meaningful in invite-token mode; the server ignores it otherwise.
-        ...(mode === 'invite_token' ? { inviteToken: inviteToken.trim() } : {}),
-        // Record the form language so an approval decision email localizes.
-        locale,
-      });
+      // The connected form submits against the server-side ticket (email + the
+      // subject to link come from there, never this payload); a plain form uses
+      // the ordinary register path.
+      const outcome = connected
+        ? await googleRegister({
+            username,
+            password,
+            ...(mode === 'invite_token' ? { inviteToken: inviteToken.trim() } : {}),
+            locale,
+          })
+        : await register({
+            email,
+            username,
+            password,
+            // Only meaningful in invite-token mode; the server ignores it otherwise.
+            ...(mode === 'invite_token' ? { inviteToken: inviteToken.trim() } : {}),
+            // Record the form language so an approval decision email localizes.
+            locale,
+          });
       if (outcome.status === 'pending') {
         setPending(true);
         return;
@@ -197,6 +270,14 @@ export function RegisterPage() {
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
       >
         {error ? <Alert tone="error">{error}</Alert> : null}
+        {google.phase === 'expired' ? (
+          <Alert tone="error">{t('auth.register.google.ticketExpired')}</Alert>
+        ) : null}
+        {connected ? (
+          <Alert tone="success">
+            {t('auth.register.google.connectedAs', { email: connected.email })}
+          </Alert>
+        ) : null}
         {mode === 'approval' ? (
           <p className="text-sm text-neutral-400">{t('auth.register.approvalHint')}</p>
         ) : null}
@@ -216,15 +297,20 @@ export function RegisterPage() {
           name="email"
           type="email"
           autoComplete="email"
-          autoFocus={mode !== 'invite_token'}
-          value={email}
+          autoFocus={mode !== 'invite_token' && !connected}
+          value={connected ? connected.email : email}
           onChange={(e) => setEmail(e.target.value)}
           required
+          // Google-assisted: the verified email is locked to the ticket's value.
+          readOnly={Boolean(connected)}
+          disabled={Boolean(connected)}
+          hint={connected ? t('auth.register.google.emailLockedHint') : undefined}
         />
         <TextField
           label={t('auth.register.usernameLabel')}
           name="username"
           autoComplete="username"
+          autoFocus={Boolean(connected)}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           minLength={3}
@@ -306,10 +392,10 @@ export function RegisterPage() {
           {t('auth.register.haveAccount')}
         </Link>
       </form>
-      {/* "Continue with Google" (§13.4 V4-P4b). Registers subject to the active
-          mode; in invite-token mode the token rides along so the Google path
-          honours the same gate as the form. */}
-      {googleEnabled ? (
+      {/* "Continue with Google" (§13.4 V4-P4b), in the #467 layout. Hidden once
+          connected — the OAuth round-trip is done and the account is a submit
+          away. Choosing it re-runs the connect → prefill → submit flow. */}
+      {googleEnabled && !connected ? (
         <div className="mt-4 flex flex-col gap-3">
           <div className="flex items-center gap-3">
             <span className="h-px flex-1 bg-neutral-800" />
@@ -318,7 +404,7 @@ export function RegisterPage() {
             </span>
             <span className="h-px flex-1 bg-neutral-800" />
           </div>
-          <GoogleButton inviteToken={mode === 'invite_token' ? inviteToken.trim() : undefined} />
+          <GoogleButton />
         </div>
       ) : null}
     </AuthCard>

@@ -29,14 +29,15 @@ function GoogleGlyph() {
  * "Continue with Google" (§13.4 V4-P4b). A full-page navigation to the server's
  * OAuth start (NOT a fetch) — the flow is two browser redirects and must set
  * cookies + carry the top-level redirect back from Google. Rendered only when
- * the deployment has Google configured (the caller gates on `googleEnabled`). An
- * `inviteToken` rides through for the invite-token registration mode.
+ * the deployment has Google configured (the caller gates on `googleEnabled`). A
+ * brand-new identity lands back on the connected register form, where any invite
+ * token is entered — so nothing rides through `start`.
  */
-export function GoogleButton({ inviteToken }: { inviteToken?: string }) {
+export function GoogleButton() {
   const t = useT();
   return (
     <a
-      href={googleStartUrl({ inviteToken })}
+      href={googleStartUrl()}
       className="inline-flex w-full items-center justify-center gap-2.5 rounded-md border border-neutral-300 bg-white px-3 py-2 text-sm font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
     >
       <GoogleGlyph />

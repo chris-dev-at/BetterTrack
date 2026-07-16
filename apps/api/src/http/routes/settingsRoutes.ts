@@ -3,16 +3,21 @@ import { Router } from 'express';
 import {
   createApiKeyRequestSchema,
   createOAuthClientRequestSchema,
+  discordWebhookRequestSchema,
   idParamSchema,
   updateAccountSettingsRequestSchema,
   updateNotificationSettingsRequestSchema,
   updateTaxSettingsRequestSchema,
   type CreateApiKeyRequest,
   type CreateOAuthClientRequest,
+  type DiscordWebhookRequest,
   type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
   type UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
+
+import { DiscordSetupError } from '../../services/notifications/discordSetupService';
+import { TelegramSetupError } from '../../services/notifications/telegramSetupService';
 
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
@@ -44,6 +49,92 @@ export function createSettingsRouter(ctx: AppContext): Router {
       res.json(settings);
     },
   );
+
+  // ── Telegram channel setup (§13.4 V4-P10) ──────────────────────────────────
+  // Env-gated at the service layer: with the bot token unset, GET returns the
+  // "not available" body and the writes 400 with `not_available` — never a 500.
+
+  router.get('/telegram', async (req, res) => {
+    const settings = await ctx.telegramSetup.get(req.authUser!.id);
+    res.json(settings);
+  });
+
+  // POST /settings/telegram/link — issue a fresh link code + deep link.
+  router.post('/telegram/link', async (req, res) => {
+    try {
+      const settings = await ctx.telegramSetup.startLink(req.authUser!.id);
+      res.json(settings);
+    } catch (err) {
+      if (err instanceof TelegramSetupError) {
+        res.status(400).json({ error: { code: err.code, message: err.code } });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // POST /settings/telegram/confirm — poll for the `/start <code>` event and
+  // attach the chat id when it arrives.
+  router.post('/telegram/confirm', async (req, res) => {
+    try {
+      const result = await ctx.telegramSetup.confirmLink(req.authUser!.id);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof TelegramSetupError) {
+        res.status(400).json({ error: { code: err.code, message: err.code } });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // DELETE /settings/telegram — unlink; idempotent.
+  router.delete('/telegram', async (req, res) => {
+    const settings = await ctx.telegramSetup.unlink(req.authUser!.id);
+    res.json(settings);
+  });
+
+  // ── Discord channel setup (§13.4 V4-P10) ───────────────────────────────────
+  // Per-user webhook URL — validated by shape (superRefine on the request)
+  // and by a live test send before persisting. The URL is never returned.
+
+  router.get('/discord', async (req, res) => {
+    const settings = await ctx.discordSetup.get(req.authUser!.id);
+    res.json(settings);
+  });
+
+  // POST /settings/discord/webhook — save (or replace) the caller's webhook.
+  router.post('/discord/webhook', validateBody(discordWebhookRequestSchema), async (req, res) => {
+    const body = req.valid?.body as DiscordWebhookRequest;
+    try {
+      const settings = await ctx.discordSetup.save(req.authUser!.id, body.url);
+      res.json(settings);
+    } catch (err) {
+      if (err instanceof DiscordSetupError) {
+        res.status(400).json({ error: { code: err.code, message: err.code } });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // POST /settings/discord/test — fire a diagnostic message.
+  router.post('/discord/test', async (req, res) => {
+    const outcome = await ctx.discordSetup.test(req.authUser!.id);
+    if (outcome === 'ok') {
+      res.json({ ok: true });
+      return;
+    }
+    res.status(400).json({
+      error: { code: outcome === 'gone' ? 'no_webhook' : 'send_failed', message: outcome },
+    });
+  });
+
+  // DELETE /settings/discord — remove the caller's webhook.
+  router.delete('/discord', async (req, res) => {
+    const settings = await ctx.discordSetup.remove(req.authUser!.id);
+    res.json(settings);
+  });
 
   // GET /settings/account — the caller's account defaults (default portfolio
   // visibility, §6.9, V2-P9).

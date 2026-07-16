@@ -84,14 +84,8 @@ async function makeGoogleHarness(): Promise<GoogleHarness> {
 }
 
 /** Drive `start` → `callback`, carrying the state cookie on the agent. */
-async function runGoogleFlow(
-  agent: ReturnType<typeof request.agent>,
-  opts: { inviteToken?: string } = {},
-) {
-  const startPath =
-    '/api/v1/auth/google/start' +
-    (opts.inviteToken ? `?inviteToken=${encodeURIComponent(opts.inviteToken)}` : '');
-  const start = await agent.get(startPath);
+async function runGoogleFlow(agent: ReturnType<typeof request.agent>) {
+  const start = await agent.get('/api/v1/auth/google/start');
   expect(start.status).toBe(302);
   expect(start.headers.location).toContain('accounts.google.com');
   const state = new URL(String(start.headers.location)).searchParams.get('state');
@@ -99,6 +93,37 @@ async function runGoogleFlow(
   return agent.get(
     `/api/v1/auth/google/callback?state=${encodeURIComponent(state!)}&code=authcode`,
   );
+}
+
+/** Submit the connected register form for the pending ticket this agent holds. */
+async function completeGoogleRegister(
+  agent: ReturnType<typeof request.agent>,
+  body: { username: string; password: string; inviteToken?: string; email?: string },
+) {
+  return agent
+    .post('/api/v1/auth/google/register')
+    .set(...XRW)
+    .send(body);
+}
+
+/**
+ * Connect (start → callback) then submit the connected register form on ONE
+ * agent, so the pending-ticket cookie set at the callback rides into the submit.
+ * A brand-new identity always lands on `/register?google=connected` first (owner
+ * order 2026-07-16 — no account is created at the callback).
+ */
+async function connectAndRegister(
+  g: GoogleHarness,
+  profile: GoogleClaims,
+  form: { username: string; password: string; inviteToken?: string; email?: string },
+) {
+  const agent = request.agent(g.harness.app);
+  g.setClaims(profile);
+  const connect = await runGoogleFlow(agent);
+  expect(connect.status).toBe(302);
+  expect(connect.headers.location).toContain('/register?google=connected');
+  const submit = await completeGoogleRegister(agent, form);
+  return { agent, connect, submit };
 }
 
 function claims(overrides: Partial<GoogleClaims> = {}): GoogleClaims {
@@ -145,6 +170,37 @@ async function createInviteToken(adminAgent: ReturnType<typeof request.agent>): 
   return new URL(created.body.registerUrl).searchParams.get('token') as string;
 }
 
+// ── Endpoint overrides are additive (§13.4 V4-P11, #520) ─────────────────────
+describe('Google sign-in — authorize-endpoint override is additive (§13.4 V4-P11, #520)', () => {
+  it('bounces `start` to the production Google authorize endpoint by default', async () => {
+    const harness = await createTestApp({
+      env: GOOGLE_ENV,
+      googleVerifier: { exchangeAndVerify: async () => claims() },
+    });
+    const agent = request.agent(harness.app);
+    const start = await agent.get('/api/v1/auth/google/start');
+    expect(start.status).toBe(302);
+    expect(String(start.headers.location)).toMatch(
+      /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/,
+    );
+  });
+
+  it('bounces `start` to the overridden authorize endpoint when configured', async () => {
+    const override = 'https://fake-idp.test/authorize';
+    const harness = await createTestApp({
+      env: { ...GOOGLE_ENV, BT_GOOGLE_AUTHORIZE_ENDPOINT: override },
+      googleVerifier: { exchangeAndVerify: async () => claims() },
+    });
+    const agent = request.agent(harness.app);
+    const start = await agent.get('/api/v1/auth/google/start');
+    expect(start.status).toBe(302);
+    const location = String(start.headers.location);
+    expect(location.startsWith(`${override}?`)).toBe(true);
+    // The state param + the rest of the query are unchanged — only the base moved.
+    expect(new URL(location).searchParams.get('state')).toBeTruthy();
+  });
+});
+
 // ── Env-gated OFF (no Google client configured) ──────────────────────────────
 describe('Google sign-in — env-gated off (§13.4 V4-P4b)', () => {
   let harness: TestHarness;
@@ -173,6 +229,15 @@ describe('Google sign-in — env-gated off (§13.4 V4-P4b)', () => {
     expect((await request(app).get('/api/v1/auth/google/callback?state=x&code=y')).status).toBe(
       404,
     );
+    expect((await request(app).get('/api/v1/auth/google/register-ticket')).status).toBe(404);
+    expect(
+      (
+        await request(app)
+          .post('/api/v1/auth/google/register')
+          .set(...XRW)
+          .send({ username: 'someone', password: 'a-strong-password-1' })
+      ).status,
+    ).toBe(404);
     expect((await agent.get('/api/v1/auth/google/link-status')).status).toBe(404);
     expect(
       (
@@ -235,14 +300,16 @@ describe('Google sign-in — existing identity signs in like password login (§1
 
   it('a linked (provider, sub) mints a session + audit + session-manager entry', async () => {
     const profile = claims({ sub: 'sub-existing', email: 'existing@example.com' });
-    // First flow (open mode) registers + links the identity.
-    g.setClaims(profile);
-    const reg = await runGoogleFlow(request.agent(g.harness.app));
-    expect(reg.status).toBe(302);
-    expect(reg.headers.location).toContain('google=signed_in');
+    // Connect → submit registers + links the identity (open mode).
+    const { submit } = await connectAndRegister(g, profile, {
+      username: 'exist_user',
+      password: 'exist-strong-pass-1',
+    });
+    expect(submit.status).toBe(201);
 
     // A brand-new browser signs in through the SAME Google identity.
     const agent = request.agent(g.harness.app);
+    g.setClaims(profile);
     const signIn = await runGoogleFlow(agent);
     expect(signIn.status).toBe(302);
     expect(signIn.headers.location).toContain('google=signed_in');
@@ -272,7 +339,7 @@ describe('Google sign-in — existing identity signs in like password login (§1
   });
 });
 
-// ── Link-by-verified-email ───────────────────────────────────────────────────
+// ── Link-by-verified-email (LOGIN path — unchanged) ──────────────────────────
 describe('Google sign-in — verified-email linking (§13.4 V4-P4b)', () => {
   let g: GoogleHarness;
   beforeEach(async () => {
@@ -311,7 +378,7 @@ describe('Google sign-in — verified-email linking (§13.4 V4-P4b)', () => {
     expect(pw.body.id).toBe(user.id);
   });
 
-  it('an UNVERIFIED email never links — it falls through to the registration path', async () => {
+  it('an UNVERIFIED email never auto-links — it lands on the connected register form', async () => {
     const user = await g.harness.seedUser({
       email: 'noverify@example.com',
       password: 'orig-password-1',
@@ -322,9 +389,10 @@ describe('Google sign-in — verified-email linking (§13.4 V4-P4b)', () => {
 
     const agent = request.agent(g.harness.app);
     const res = await runGoogleFlow(agent);
-    // Register path hits the taken email → error, and crucially NO link happened.
+    // No auto-link on an unverified email; it falls through to the connected form
+    // (a later submit would fail EMAIL_TAKEN) — crucially, NO link happened.
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('error=google_email_taken');
+    expect(res.headers.location).toContain('/register?google=connected');
     const identities = await g.harness.db
       .select()
       .from(externalIdentities)
@@ -339,14 +407,15 @@ describe('Google sign-in — verified-email linking (§13.4 V4-P4b)', () => {
     expect(pw.status).toBe(200);
   });
 
-  it('an unverified email with NO existing account still registers a new account', async () => {
-    g.setClaims(
+  it('an unverified email with NO existing account registers via connect → submit', async () => {
+    const { agent, submit } = await connectAndRegister(
+      g,
       claims({ sub: 'sub-fresh', email: 'fresh-unverified@example.com', emailVerified: false }),
+      { username: 'fresh_user', password: 'fresh-strong-pass-1' },
     );
-    const agent = request.agent(g.harness.app);
-    const res = await runGoogleFlow(agent);
-    expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('google=signed_in');
+    expect(submit.status).toBe(201);
+    const me = await agent.get('/api/v1/auth/me');
+    expect(me.body.email).toBe('fresh-unverified@example.com');
     const identities = await g.harness.db
       .select()
       .from(externalIdentities)
@@ -356,70 +425,116 @@ describe('Google sign-in — verified-email linking (§13.4 V4-P4b)', () => {
   });
 });
 
-// ── Mode matrix for a NEW Google identity ────────────────────────────────────
-describe('Google sign-in — registration mode matrix (§13.4 V4-P4b)', () => {
+// ── Mode matrix for a NEW Google identity (connect → prefill → submit) ────────
+describe('Google-assisted registration — mode matrix (owner order 2026-07-16)', () => {
   let g: GoogleHarness;
   beforeEach(async () => {
     g = await makeGoogleHarness();
   });
 
-  it('open → account created + signed in', async () => {
+  it('open → connected form submit creates the account (with a usable password) + signs in', async () => {
     await setMode(g.adminAgent, 'open');
-    g.setClaims(claims({ sub: 'sub-open', email: 'open@example.com' }));
-    const agent = request.agent(g.harness.app);
-    const res = await runGoogleFlow(agent);
-    expect(res.headers.location).toContain('google=signed_in');
+    const { agent, submit } = await connectAndRegister(
+      g,
+      claims({ sub: 'sub-open', email: 'open@example.com', name: 'Open Person' }),
+      { username: 'open_user', password: 'open-strong-pass-1' },
+    );
+    expect(submit.status).toBe(201);
+    expect(submit.body.email).toBe('open@example.com');
     const me = await agent.get('/api/v1/auth/me');
     expect(me.status).toBe(200);
     expect(me.body.email).toBe('open@example.com');
+
+    // Password rules are unchanged: the account carries the usable password the
+    // applicant set on the form, so it can ALSO password-login.
+    const pw = await request(g.harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: 'open@example.com', password: 'open-strong-pass-1' });
+    expect(pw.status).toBe(200);
   });
 
-  it('closed → friendly rejection, no account row created (regression)', async () => {
+  it('no account/identity row exists before the connected form is submitted', async () => {
+    await setMode(g.adminAgent, 'open');
+    const agent = request.agent(g.harness.app);
+    g.setClaims(claims({ sub: 'sub-presubmit', email: 'presubmit@example.com' }));
+    const connect = await runGoogleFlow(agent);
+    expect(connect.status).toBe(302);
+    expect(connect.headers.location).toContain('/register?google=connected');
+    // The callback established no session and created nothing yet.
+    expect(hasSessionCookie(connect)).toBe(false);
+    expect(
+      await g.harness.db.select().from(users).where(eq(users.email, 'presubmit@example.com')),
+    ).toHaveLength(0);
+    expect(
+      await g.harness.db
+        .select()
+        .from(externalIdentities)
+        .where(eq(externalIdentities.subject, 'sub-presubmit')),
+    ).toHaveLength(0);
+
+    // The ticket display view reflects the pending sign-up (email locked, name).
+    const ticket = await agent.get('/api/v1/auth/google/register-ticket');
+    expect(ticket.status).toBe(200);
+    expect(ticket.body.email).toBe('presubmit@example.com');
+  });
+
+  it('closed → friendly rejection at the callback, no account row, no ticket', async () => {
     await setMode(g.adminAgent, 'closed');
     g.setClaims(claims({ sub: 'sub-closed', email: 'closed@example.com' }));
-    const res = await runGoogleFlow(request.agent(g.harness.app));
+    const agent = request.agent(g.harness.app);
+    const res = await runGoogleFlow(agent);
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('error=google_registration_closed');
     expect(hasSessionCookie(res)).toBe(false);
-    const rows = await g.harness.db
-      .select()
-      .from(users)
-      .where(eq(users.email, 'closed@example.com'));
-    expect(rows).toHaveLength(0);
+    expect(
+      await g.harness.db.select().from(users).where(eq(users.email, 'closed@example.com')),
+    ).toHaveLength(0);
+    // No ticket was minted, so the connected form has nothing to submit against.
+    const ticket = await agent.get('/api/v1/auth/google/register-ticket');
+    expect(ticket.status).toBe(404);
   });
 
-  it('invite_token → completes only when a valid token is carried into the flow', async () => {
+  it('invite_token → the connected form completes only with a valid token entered', async () => {
     await setMode(g.adminAgent, 'invite_token');
+    const agent = request.agent(g.harness.app);
     g.setClaims(claims({ sub: 'sub-invite', email: 'invite@example.com' }));
+    const connect = await runGoogleFlow(agent);
+    expect(connect.headers.location).toContain('/register?google=connected');
 
-    // Without a token → rejected, no account.
-    const noToken = await runGoogleFlow(request.agent(g.harness.app));
-    expect(noToken.headers.location).toContain('error=google_invite_required');
+    // Submit WITHOUT a token → rejected, no account (the ticket survives for a retry).
+    const noToken = await completeGoogleRegister(agent, {
+      username: 'inv_user',
+      password: 'inv-strong-pass-1',
+    });
+    expect(noToken.status).toBe(400);
     expect(
       await g.harness.db.select().from(users).where(eq(users.email, 'invite@example.com')),
     ).toHaveLength(0);
 
-    // With a valid token carried through start → completes.
+    // Submit WITH a valid token → completes on the SAME still-live ticket.
     const token = await createInviteToken(g.adminAgent);
-    g.setClaims(claims({ sub: 'sub-invite', email: 'invite@example.com' }));
-    const agent = request.agent(g.harness.app);
-    const ok = await runGoogleFlow(agent, { inviteToken: token });
-    expect(ok.headers.location).toContain('google=signed_in');
+    const ok = await completeGoogleRegister(agent, {
+      username: 'inv_user',
+      password: 'inv-strong-pass-1',
+      inviteToken: token,
+    });
+    expect(ok.status).toBe(201);
     const me = await agent.get('/api/v1/auth/me');
     expect(me.body.email).toBe('invite@example.com');
   });
 
-  it('approval → pending application; admin approve creates + links + emails; Google then signs in', async () => {
+  it('approval → pending application carrying the Google linkage + a usable password', async () => {
     await setMode(g.adminAgent, 'approval');
-    g.setClaims(
+    const { submit } = await connectAndRegister(
+      g,
       claims({ sub: 'sub-approval', email: 'approval@example.com', name: 'Ada Lovelace' }),
+      { username: 'ada_user', password: 'ada-strong-pass-1' },
     );
-
-    const pending = await runGoogleFlow(request.agent(g.harness.app));
-    expect(pending.status).toBe(302);
-    expect(pending.headers.location).toContain('google=pending');
-    expect(hasSessionCookie(pending)).toBe(false);
-    // No account exists yet.
+    expect(submit.status).toBe(202);
+    expect(submit.body.pending).toBe(true);
+    // No session and no account exists yet.
+    expect(hasSessionCookie(submit)).toBe(false);
     expect(
       await g.harness.db.select().from(users).where(eq(users.email, 'approval@example.com')),
     ).toHaveLength(0);
@@ -450,13 +565,94 @@ describe('Google sign-in — registration mode matrix (§13.4 V4-P4b)', () => {
       .where(eq(externalIdentities.subject, 'sub-approval'));
     expect(identities).toHaveLength(1);
 
+    // It ALSO keeps the usable password the applicant set — password login works.
+    const pw = await request(g.harness.app)
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: 'approval@example.com', password: 'ada-strong-pass-1' });
+    expect(pw.status).toBe(200);
+
     // Google sign-in for that identity now works (existing identity path).
     g.setClaims(claims({ sub: 'sub-approval', email: 'approval@example.com' }));
-    const agent = request.agent(g.harness.app);
-    const signIn = await runGoogleFlow(agent);
+    const signInAgent = request.agent(g.harness.app);
+    const signIn = await runGoogleFlow(signInAgent);
     expect(signIn.headers.location).toContain('google=signed_in');
-    const me = await agent.get('/api/v1/auth/me');
+    const me = await signInAgent.get('/api/v1/auth/me');
     expect(me.body.email).toBe('approval@example.com');
+  });
+});
+
+// ── Ticket is single-use, browser-bound, expiring, and the email is authoritative ─
+describe('Google-assisted registration — ticket security (owner order 2026-07-16)', () => {
+  let g: GoogleHarness;
+  beforeEach(async () => {
+    g = await makeGoogleHarness();
+    await setMode(g.adminAgent, 'open');
+  });
+
+  it('a second submit with the same ticket fails — single-use', async () => {
+    const { agent, submit } = await connectAndRegister(
+      g,
+      claims({ sub: 'sub-once', email: 'once@example.com' }),
+      { username: 'once_user', password: 'once-strong-pass-1' },
+    );
+    expect(submit.status).toBe(201);
+    // The ticket was spent on success — a replay finds no ticket.
+    const replay = await completeGoogleRegister(agent, {
+      username: 'once_user2',
+      password: 'once-strong-pass-1',
+    });
+    expect(replay.status).toBe(400);
+    expect(replay.body.error.code).toBe('GOOGLE_REGISTER_TICKET_INVALID');
+  });
+
+  it('a ticket is unusable from another browser session', async () => {
+    const agent = request.agent(g.harness.app);
+    g.setClaims(claims({ sub: 'sub-bound', email: 'bound@example.com' }));
+    const connect = await runGoogleFlow(agent);
+    expect(connect.headers.location).toContain('/register?google=connected');
+
+    // A DIFFERENT agent (no `bt_goog_reg` cookie) cannot submit the pending ticket.
+    const other = request.agent(g.harness.app);
+    const res = await completeGoogleRegister(other, {
+      username: 'bound_user',
+      password: 'bound-strong-pass-1',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('GOOGLE_REGISTER_TICKET_INVALID');
+    expect(
+      await g.harness.db.select().from(users).where(eq(users.email, 'bound@example.com')),
+    ).toHaveLength(0);
+  });
+
+  it('the register ticket is stored with a ~10-minute expiry', async () => {
+    const agent = request.agent(g.harness.app);
+    g.setClaims(claims({ sub: 'sub-ttl', email: 'ttl@example.com' }));
+    await runGoogleFlow(agent);
+    const keys = await g.harness.ctx.redis.keys('google_register_ticket:*');
+    expect(keys).toHaveLength(1);
+    const ttl = await g.harness.ctx.redis.ttl(keys[0]!);
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(600);
+  });
+
+  it('a tampered form email is ignored — the account uses the ticket’s email', async () => {
+    const { agent, submit } = await connectAndRegister(
+      g,
+      claims({ sub: 'sub-tamper', email: 'realmail@example.com' }),
+      {
+        username: 'tamper_user',
+        password: 'tamper-strong-pass-1',
+        // The form tries to smuggle a different email — it must be ignored.
+        email: 'attacker@evil.com',
+      },
+    );
+    expect(submit.status).toBe(201);
+    const me = await agent.get('/api/v1/auth/me');
+    expect(me.body.email).toBe('realmail@example.com');
+    expect(
+      await g.harness.db.select().from(users).where(eq(users.email, 'attacker@evil.com')),
+    ).toHaveLength(0);
   });
 });
 
@@ -468,10 +664,30 @@ describe('Google sign-in — Settings link status + unlink (§13.4 V4-P4b)', () 
     await setMode(g.adminAgent, 'open');
   });
 
-  it('a Google-only account (no password) cannot unlink — Google is the only sign-in', async () => {
+  it('a Google-only account (no usable password) cannot unlink — Google is the only sign-in', async () => {
+    // A password-less Google account (e.g. a legacy sign-up): seed it directly
+    // with its Google identity, then sign in via the existing-identity path.
+    const [row] = await g.harness.db
+      .insert(users)
+      .values({
+        email: 'only@example.com',
+        username: 'onlyuser',
+        passwordHash: 'unusable-placeholder',
+        hasUsablePassword: false,
+      })
+      .returning();
+    await g.harness.db.insert(externalIdentities).values({
+      userId: row!.id,
+      provider: 'google',
+      subject: 'sub-only',
+      email: 'only@example.com',
+      emailVerified: true,
+    });
+
     g.setClaims(claims({ sub: 'sub-only', email: 'only@example.com' }));
     const agent = request.agent(g.harness.app);
-    await runGoogleFlow(agent);
+    const signIn = await runGoogleFlow(agent);
+    expect(signIn.headers.location).toContain('google=signed_in');
 
     const status = await agent.get('/api/v1/auth/google/link-status');
     expect(status.status).toBe(200);
@@ -493,7 +709,7 @@ describe('Google sign-in — Settings link status + unlink (§13.4 V4-P4b)', () 
     });
     g.setClaims(claims({ sub: 'sub-both', email: 'both@example.com', emailVerified: true }));
     const agent = request.agent(g.harness.app);
-    await runGoogleFlow(agent); // links Google to the password account + signs in
+    await runGoogleFlow(agent); // verified-email match links Google + signs in
 
     const status = await agent.get('/api/v1/auth/google/link-status');
     expect(status.body).toMatchObject({ linked: true, canUnlink: true });
@@ -579,7 +795,8 @@ describe('Google sign-in — admin accounts are refused (#400)', () => {
 
   it('refuses a Settings link initiated by an admin account — no identity planted', async () => {
     // The admin agent is authenticated, so /google/start turns this into a LINK
-    // flow (linkUserId = admin.id); linkToUser must refuse it (intent: link).
+    // flow (linkUserId = admin.id); linkToUser refuses admins BEFORE the
+    // email-match guard (intent: link).
     g.setClaims(
       claims({ sub: 'sub-admin-link', email: 'admin-google@gmail.com', emailVerified: true }),
     );
@@ -595,25 +812,24 @@ describe('Google sign-in — admin accounts are refused (#400)', () => {
   });
 });
 
-// ── Settings → Security: authenticated "link Google to my account" flow ───────
-describe('Google sign-in — Settings link flow (§13.4 V4-P4b)', () => {
+// ── Settings → Security: email-match-only "link Google to my account" ─────────
+describe('Google sign-in — Settings connect is email-match-only (owner order 2026-07-16)', () => {
   let g: GoogleHarness;
   beforeEach(async () => {
     g = await makeGoogleHarness();
     await setMode(g.adminAgent, 'open');
   });
 
-  it('an authenticated user links a fresh Google account from Settings', async () => {
+  it('links the Google account whose VERIFIED email matches this account (happy path)', async () => {
     const user = await g.harness.seedUser({
       email: 'linker@example.com',
       username: 'linker',
       password: 'link-password-1',
     });
     const agent = await loginUser(g.harness.app, user.email, user.password);
-    // A live session makes this a LINK flow regardless of the Google email — use
-    // an unrelated address so it is unmistakably a link, not a verified-email match.
+    // Email-match-only: the Google email MUST equal the account email.
     g.setClaims(
-      claims({ sub: 'sub-settings-link', email: 'someone.else@gmail.com', emailVerified: true }),
+      claims({ sub: 'sub-settings-link', email: 'linker@example.com', emailVerified: true }),
     );
 
     const res = await runGoogleFlow(agent);
@@ -627,48 +843,64 @@ describe('Google sign-in — Settings link flow (§13.4 V4-P4b)', () => {
     expect(identities).toHaveLength(1);
     expect(identities[0]!.subject).toBe('sub-settings-link');
 
-    // The link surfaces on the status endpoint the Settings page reads.
     const status = await agent.get('/api/v1/auth/google/link-status');
     expect(status.status).toBe(200);
-    expect(status.body).toMatchObject({ linked: true, email: 'someone.else@gmail.com' });
+    expect(status.body).toMatchObject({ linked: true, email: 'linker@example.com' });
   });
 
-  it('refuses linking a Google account already linked to another user (GOOGLE_ALREADY_LINKED)', async () => {
-    // user1 claims the Google account first (via their own Settings link).
-    const u1 = await g.harness.seedUser({
-      email: 'first@example.com',
-      username: 'first',
-      password: 'first-password-1',
+  it('refuses a connect whose Google email does NOT match the account email — no identity, session intact', async () => {
+    const user = await g.harness.seedUser({
+      email: 'matchme@example.com',
+      username: 'matchme',
+      password: 'match-password-1',
     });
-    const a1 = await loginUser(g.harness.app, u1.email, u1.password);
-    g.setClaims(claims({ sub: 'sub-shared', email: 'shared@gmail.com', emailVerified: true }));
-    expect((await runGoogleFlow(a1)).headers.location).toContain('google=linked');
+    const agent = await loginUser(g.harness.app, user.email, user.password);
+    // A live session makes this a LINK flow; the mismatched Google email is refused.
+    g.setClaims(
+      claims({ sub: 'sub-mismatch', email: 'someone.else@gmail.com', emailVerified: true }),
+    );
 
-    // user2 tries to link the SAME Google account → conflict, nothing linked.
-    const u2 = await g.harness.seedUser({
-      email: 'second@example.com',
-      username: 'second',
-      password: 'second-password-1',
-    });
-    const a2 = await loginUser(g.harness.app, u2.email, u2.password);
-    g.setClaims(claims({ sub: 'sub-shared', email: 'shared@gmail.com', emailVerified: true }));
-    const res = await runGoogleFlow(a2);
+    const res = await runGoogleFlow(agent);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('/settings/security?error=google_already_linked');
+    expect(res.headers.location).toContain('/settings/security?error=google_email_mismatch');
 
+    // No identity planted — neither on the account nor for the Google subject.
     expect(
       await g.harness.db
         .select()
         .from(externalIdentities)
-        .where(eq(externalIdentities.userId, u2.id)),
+        .where(eq(externalIdentities.userId, user.id)),
     ).toHaveLength(0);
-    // The identity still belongs to user1 — the link was never moved.
-    const shared = await g.harness.db
-      .select()
-      .from(externalIdentities)
-      .where(eq(externalIdentities.subject, 'sub-shared'));
-    expect(shared).toHaveLength(1);
-    expect(shared[0]!.userId).toBe(u1.id);
+    expect(
+      await g.harness.db
+        .select()
+        .from(externalIdentities)
+        .where(eq(externalIdentities.subject, 'sub-mismatch')),
+    ).toHaveLength(0);
+    // The session is untouched — still signed in as the same account.
+    const me = await agent.get('/api/v1/auth/me');
+    expect(me.body.id).toBe(user.id);
+  });
+
+  it('refuses a connect whose matching email is UNVERIFIED — no identity', async () => {
+    const user = await g.harness.seedUser({
+      email: 'unv@example.com',
+      username: 'unvuser',
+      password: 'unv-password-1',
+    });
+    const agent = await loginUser(g.harness.app, user.email, user.password);
+    // Email equals the account email but Google has NOT verified it → refused.
+    g.setClaims(claims({ sub: 'sub-unv', email: 'unv@example.com', emailVerified: false }));
+
+    const res = await runGoogleFlow(agent);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('error=google_email_mismatch');
+    expect(
+      await g.harness.db
+        .select()
+        .from(externalIdentities)
+        .where(eq(externalIdentities.userId, user.id)),
+    ).toHaveLength(0);
   });
 
   it('refuses linking a second Google account when one is already linked (GOOGLE_ALREADY_LINKED)', async () => {
@@ -679,12 +911,13 @@ describe('Google sign-in — Settings link flow (§13.4 V4-P4b)', () => {
     });
     const agent = await loginUser(g.harness.app, user.email, user.password);
 
-    // First link succeeds.
-    g.setClaims(claims({ sub: 'sub-a', email: 'a@gmail.com', emailVerified: true }));
+    // First link succeeds (matching email).
+    g.setClaims(claims({ sub: 'sub-a', email: 'already@example.com', emailVerified: true }));
     expect((await runGoogleFlow(agent)).headers.location).toContain('google=linked');
 
-    // A second, DIFFERENT Google account is refused — one identity per provider.
-    g.setClaims(claims({ sub: 'sub-b', email: 'b@gmail.com', emailVerified: true }));
+    // A second, DIFFERENT Google account presenting the SAME matching email clears
+    // the email guard but is refused — one identity per provider.
+    g.setClaims(claims({ sub: 'sub-b', email: 'already@example.com', emailVerified: true }));
     const res = await runGoogleFlow(agent);
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('/settings/security?error=google_already_linked');
@@ -696,5 +929,44 @@ describe('Google sign-in — Settings link flow (§13.4 V4-P4b)', () => {
       .where(eq(externalIdentities.userId, user.id));
     expect(identities).toHaveLength(1);
     expect(identities[0]!.subject).toBe('sub-a');
+  });
+
+  it('cannot hijack another user’s Google identity — the email guard rejects it', async () => {
+    // u1 links their own Google account (email matches).
+    const u1 = await g.harness.seedUser({
+      email: 'owner@example.com',
+      username: 'owner',
+      password: 'owner-password-1',
+    });
+    const a1 = await loginUser(g.harness.app, u1.email, u1.password);
+    g.setClaims(claims({ sub: 'sub-shared', email: 'owner@example.com', emailVerified: true }));
+    expect((await runGoogleFlow(a1)).headers.location).toContain('google=linked');
+
+    // u2 tries to connect the SAME Google account, whose email is owner@example.com
+    // (not u2's) → email mismatch, nothing moved.
+    const u2 = await g.harness.seedUser({
+      email: 'other@example.com',
+      username: 'other',
+      password: 'other-password-1',
+    });
+    const a2 = await loginUser(g.harness.app, u2.email, u2.password);
+    g.setClaims(claims({ sub: 'sub-shared', email: 'owner@example.com', emailVerified: true }));
+    const res = await runGoogleFlow(a2);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('/settings/security?error=google_email_mismatch');
+
+    expect(
+      await g.harness.db
+        .select()
+        .from(externalIdentities)
+        .where(eq(externalIdentities.userId, u2.id)),
+    ).toHaveLength(0);
+    // The identity still belongs to u1 — the link was never moved.
+    const shared = await g.harness.db
+      .select()
+      .from(externalIdentities)
+      .where(eq(externalIdentities.subject, 'sub-shared'));
+    expect(shared).toHaveLength(1);
+    expect(shared[0]!.userId).toBe(u1.id);
   });
 });

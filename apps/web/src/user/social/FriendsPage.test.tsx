@@ -11,10 +11,8 @@ vi.mock('../../lib/socialApi', () => ({
   cancelFriendRequest: vi.fn(),
   listFriends: vi.fn(),
   listSharedWithMe: vi.fn(),
-  listItemFollows: vi.fn(),
   removeFriend: vi.fn(),
   setActivityAlert: vi.fn(),
-  unfollowItem: vi.fn(),
 }));
 
 import { MemoryRouter } from 'react-router-dom';
@@ -25,7 +23,6 @@ import {
   declineFriendRequest,
   listFriendRequests,
   listFriends,
-  listItemFollows,
   listSharedWithMe,
   removeFriend,
   sendFriendRequest,
@@ -56,7 +53,6 @@ beforeEach(() => {
   vi.mocked(listFriendRequests).mockResolvedValue(EMPTY_REQUESTS);
   vi.mocked(listFriends).mockResolvedValue(EMPTY_FRIENDS);
   vi.mocked(listSharedWithMe).mockResolvedValue(EMPTY_SHARED);
-  vi.mocked(listItemFollows).mockResolvedValue({ items: [] });
 });
 
 describe('FriendsPage', () => {
@@ -281,25 +277,44 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   });
 
-  // The followed-items (bookmarks) collection moved off the retired Following
-  // page onto the Friends tab (V4-P0b) — it must still list a bookmark.
-  test('lists the followed-items collection on the Friends tab', async () => {
-    vi.mocked(listItemFollows).mockResolvedValue({
-      items: [
+  test('shows a friend-shared idea in the expanded friend overview (V4-P9)', async () => {
+    const GRACE_ID = 'u7';
+    const SHARED_IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        { user: { id: GRACE_ID, username: 'grace' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+    vi.mocked(listSharedWithMe).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [
         {
-          kind: 'portfolio',
-          subjectId: '00000000-0000-0000-0000-0000000000f0',
-          followedAt: '2026-07-01T10:00:00.000Z',
-          viewable: true,
-          name: 'Growth',
-          owner: { id: 'u-owner', username: 'zoe' },
-          via: 'friend',
+          ideaId: SHARED_IDEA_ID,
+          name: 'Momentum basket',
+          owner: { id: GRACE_ID, username: 'grace' },
+          hasThesis: true,
+          activityAlertsEnabled: false,
         },
       ],
     });
+    const user = userEvent.setup();
     renderPage();
 
-    await waitFor(() => expect(screen.getByText('Growth')).toBeInTheDocument());
-    expect(screen.getByText('by @zoe')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('grace')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'grace' }));
+    // The idea appears as a read-only deep link into the shared-idea view.
+    const link = screen.getByRole('link', { name: /momentum basket/i });
+    expect(link).toHaveAttribute('href', `/social/shared-with-me/ideas/${SHARED_IDEA_ID}`);
+  });
+
+  // The aggregated "Followed items" collection was removed from Social (#532):
+  // item-follows survive only as notification subscriptions, with no list here.
+  test('renders no Followed-items section', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('No friends yet')).toBeInTheDocument());
+    expect(screen.queryByText('Followed items')).not.toBeInTheDocument();
   });
 });

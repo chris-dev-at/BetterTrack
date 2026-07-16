@@ -113,6 +113,8 @@ function buildInertContext(): AppContext {
     chat: inertService('chat'),
     notifications: inertService('notifications'),
     notificationSettings: inertService('notificationSettings'),
+    telegramSetup: inertService('telegramSetup'),
+    discordSetup: inertService('discordSetup'),
     accountSettings: inertService('accountSettings'),
     accountDeletion: inertService('accountDeletion'),
     dataExport: inertService('dataExport'),

@@ -6,6 +6,7 @@ import {
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_SETTING_CHANNELS,
   NOTIFICATION_VIEWS,
+  type DiscordSettingsResponse,
   type MarkReadRequest,
   type Notification,
   type NotificationCategoryKey,
@@ -14,7 +15,7 @@ import {
   type NotificationType,
   type NotificationTypeRouting,
   type NotificationView,
-  type UpdateAlertSharingRequest,
+  type TelegramSettingsResponse,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -28,8 +29,18 @@ import {
   markNotificationsRead,
   unarchiveNotification,
 } from '../../lib/notificationsApi';
-import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
-import { getNotificationSettings, updateNotificationSettings } from '../../lib/settingsApi';
+import {
+  confirmTelegramLink,
+  getDiscordSettings,
+  getNotificationSettings,
+  getTelegramSettings,
+  removeDiscordWebhook,
+  saveDiscordWebhook,
+  startTelegramLink,
+  testDiscordWebhook,
+  unlinkTelegram,
+  updateNotificationSettings,
+} from '../../lib/settingsApi';
 import {
   disableWebPush,
   enableWebPush,
@@ -152,6 +163,8 @@ function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, strin
   return {
     inapp: t('settings.notifications.channels.inapp'),
     email: t('settings.notifications.channels.email'),
+    telegram: t('settings.notifications.channels.telegram'),
+    discord: t('settings.notifications.channels.discord'),
     push: t('settings.notifications.channels.push'),
     webpush: t('settings.notifications.channels.webpush'),
   };
@@ -343,6 +356,287 @@ function NotificationMatrixGrid({
       </table>
     </div>
   );
+}
+
+/**
+ * Telegram channel setup panel (§13.4 V4-P10). Rendered whenever the deployment
+ * has the bot token configured — the initial `available` flag arrives with the
+ * settings response and drives whether the whole card renders.
+ */
+const TELEGRAM_KEY = ['settings', 'telegram'] as const;
+
+function TelegramLinkPanel({ initial }: { initial: TelegramSettingsResponse }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: TELEGRAM_KEY,
+    queryFn: ({ signal }) => getTelegramSettings(signal),
+    initialData: initial,
+    staleTime: 15_000,
+  });
+  const settings = query.data ?? initial;
+
+  const startMutation = useMutation({
+    mutationFn: () => startTelegramLink(),
+    onSuccess: (data) => queryClient.setQueryData(TELEGRAM_KEY, data),
+  });
+  const confirmMutation = useMutation({
+    mutationFn: () => confirmTelegramLink(),
+    onSuccess: (result) => queryClient.setQueryData(TELEGRAM_KEY, result.settings),
+  });
+  const unlinkMutation = useMutation({
+    mutationFn: () => unlinkTelegram(),
+    onSuccess: (data) => queryClient.setQueryData(TELEGRAM_KEY, data),
+  });
+
+  const deepLink =
+    settings.botUsername && settings.pendingCode
+      ? `https://t.me/${settings.botUsername}?start=${settings.pendingCode}`
+      : null;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-neutral-100">
+            {t('settings.notifications.telegram.title')}
+          </p>
+          <p className="text-xs text-neutral-500">
+            {t('settings.notifications.telegram.description')}
+          </p>
+        </div>
+        {settings.linked ? (
+          <button
+            type="button"
+            onClick={() => unlinkMutation.mutate()}
+            disabled={unlinkMutation.isPending}
+            className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {t('settings.notifications.telegram.unlink')}
+          </button>
+        ) : settings.pending && deepLink ? (
+          <div className="flex flex-col items-end gap-1">
+            <a
+              href={deepLink}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-400 hover:bg-sky-500/10"
+            >
+              {t('settings.notifications.telegram.openBot')}
+            </a>
+            <button
+              type="button"
+              onClick={() => confirmMutation.mutate()}
+              disabled={confirmMutation.isPending}
+              className="text-xs font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:text-neutral-600"
+            >
+              {confirmMutation.isPending
+                ? t('settings.notifications.telegram.confirming')
+                : t('settings.notifications.telegram.confirm')}
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => startMutation.mutate()}
+            disabled={startMutation.isPending}
+            className="rounded-md border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-400 hover:bg-sky-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {t('settings.notifications.telegram.startLink')}
+          </button>
+        )}
+      </div>
+      {settings.linked && settings.chatIdMasked ? (
+        <span className="text-xs text-emerald-400">
+          {t('settings.notifications.telegram.linked', { id: settings.chatIdMasked })}
+        </span>
+      ) : null}
+      {settings.pending && settings.pendingCode ? (
+        <span className="text-xs text-neutral-400">
+          {t('settings.notifications.telegram.codeHint', { code: settings.pendingCode })}
+        </span>
+      ) : null}
+      {startMutation.isError ? (
+        <Alert tone="error">{t('settings.notifications.telegram.startError')}</Alert>
+      ) : null}
+      {confirmMutation.isError ||
+      (confirmMutation.data && !confirmMutation.data.linked && confirmMutation.isSuccess) ? (
+        <Alert tone="error">{t('settings.notifications.telegram.confirmError')}</Alert>
+      ) : null}
+      {unlinkMutation.isError ? (
+        <Alert tone="error">{t('settings.notifications.telegram.unlinkError')}</Alert>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Discord webhook setup panel (§13.4 V4-P10). No env gate on the server —
+ * every user can save a personal webhook.
+ */
+const DISCORD_KEY = ['settings', 'discord'] as const;
+
+function DiscordWebhookPanel({ initial }: { initial: DiscordSettingsResponse }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [url, setUrl] = useState('');
+  const [saveErrorKey, setSaveErrorKey] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<'ok' | 'error' | null>(null);
+  const query = useQuery({
+    queryKey: DISCORD_KEY,
+    queryFn: ({ signal }) => getDiscordSettings(signal),
+    initialData: initial,
+    staleTime: 15_000,
+  });
+  const settings = query.data ?? initial;
+
+  const saveMutation = useMutation({
+    mutationFn: (raw: string) => saveDiscordWebhook({ url: raw }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(DISCORD_KEY, data);
+      setUrl('');
+      setSaveErrorKey(null);
+    },
+    onError: (err: unknown) => {
+      // Map the API error code to an i18n key; fall back to a generic message.
+      const code = readErrorCode(err);
+      setSaveErrorKey(
+        code === 'invalid_webhook'
+          ? 'settings.notifications.discord.invalidWebhook'
+          : code === 'send_failed'
+            ? 'settings.notifications.discord.sendFailed'
+            : 'settings.notifications.discord.invalidUrl',
+      );
+    },
+  });
+  const testMutation = useMutation({
+    mutationFn: () => testDiscordWebhook(),
+    onSuccess: () => setTestResult('ok'),
+    onError: () => setTestResult('error'),
+  });
+  const removeMutation = useMutation({
+    mutationFn: () => removeDiscordWebhook(),
+    onSuccess: (data) => {
+      queryClient.setQueryData(DISCORD_KEY, data);
+      setTestResult(null);
+    },
+  });
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium text-neutral-100">
+          {t('settings.notifications.discord.title')}
+        </p>
+        <p className="text-xs text-neutral-500">
+          {t('settings.notifications.discord.description')}
+        </p>
+      </div>
+      {settings.linked && settings.webhookIdMasked ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-emerald-400">
+            {t('settings.notifications.discord.linked', { id: settings.webhookIdMasked })}
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setTestResult(null);
+                testMutation.mutate();
+              }}
+              disabled={testMutation.isPending}
+              className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs font-medium text-neutral-200 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {testMutation.isPending
+                ? t('settings.notifications.discord.testing')
+                : t('settings.notifications.discord.test')}
+            </button>
+            <button
+              type="button"
+              onClick={() => removeMutation.mutate()}
+              disabled={removeMutation.isPending}
+              className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {t('settings.notifications.discord.remove')}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveMutation.mutate(url.trim());
+          }}
+          className="flex flex-col gap-2"
+        >
+          <label className="flex flex-col gap-1 text-xs text-neutral-500">
+            <span>{t('settings.notifications.discord.urlLabel')}</span>
+            <input
+              type="url"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder={t('settings.notifications.discord.urlPlaceholder')}
+              className="rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 focus:border-sky-500 focus:outline-none"
+              required
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={saveMutation.isPending || url.trim() === ''}
+            className="self-start rounded-md border border-sky-500 px-3 py-1.5 text-sm font-medium text-sky-400 hover:bg-sky-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saveMutation.isPending
+              ? t('settings.notifications.discord.saving')
+              : t('settings.notifications.discord.save')}
+          </button>
+        </form>
+      )}
+      {saveErrorKey ? <Alert tone="error">{t(saveErrorKey)}</Alert> : null}
+      {testResult === 'ok' ? (
+        <Alert tone="success">{t('settings.notifications.discord.testSuccess')}</Alert>
+      ) : null}
+      {testResult === 'error' ? (
+        <Alert tone="error">{t('settings.notifications.discord.testFailed')}</Alert>
+      ) : null}
+      {removeMutation.isError ? (
+        <Alert tone="error">{t('settings.notifications.discord.removeError')}</Alert>
+      ) : null}
+    </div>
+  );
+}
+
+/** Extract the API error code from an `ApiError` thrown by `apiRequest`. */
+function readErrorCode(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null) return null;
+  const maybeCode = (err as { code?: unknown }).code;
+  return typeof maybeCode === 'string' ? maybeCode : null;
+}
+
+/**
+ * Card wrapper: fetches the Telegram state once and only renders the panel
+ * when the deployment has Telegram configured (bot token set). No render when
+ * unavailable — the matrix column stays hidden and the settings page shows
+ * neither the row nor the setup card.
+ */
+function TelegramSetupCard() {
+  const query = useQuery({
+    queryKey: TELEGRAM_KEY,
+    queryFn: ({ signal }) => getTelegramSettings(signal),
+    staleTime: 15_000,
+  });
+  if (!query.data || !query.data.available) return null;
+  return <TelegramLinkPanel initial={query.data} />;
+}
+
+/** Card wrapper: unlike Telegram, Discord is always available server-side. */
+function DiscordSetupCard() {
+  const query = useQuery({
+    queryKey: DISCORD_KEY,
+    queryFn: ({ signal }) => getDiscordSettings(signal),
+    staleTime: 15_000,
+  });
+  if (!query.data) return null;
+  return <DiscordWebhookPanel initial={query.data} />;
 }
 
 /**
@@ -787,94 +1081,6 @@ function NotificationList() {
  * VAPID), the compact per-type × per-channel grid, and the full, paged
  * notification list — all wired to `GET/PATCH /settings/notifications`.
  */
-/**
- * The owner's alert-visibility control (#455), rehomed here from the Alerts
- * panel (V4-P0b): a switch exposing every current and future alert to the
- * caller's FOLLOWERS. Alerts reveal watched assets + price targets and anyone
- * may follow, so enabling walks the §16 friction ladder — a strong warning
- * dialog whose confirm sends the explicit acknowledgment the server requires.
- * Disabling is immediate and stops follower delivery at once.
- */
-function AlertSharingControl() {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const [confirming, setConfirming] = useState(false);
-
-  const { data } = useQuery({
-    queryKey: ALERT_SHARING_QUERY_KEY,
-    queryFn: ({ signal }) => getAlertSharing(signal),
-    staleTime: 30_000,
-  });
-  const mutation = useMutation({
-    mutationFn: (body: UpdateAlertSharingRequest) => updateAlertSharing(body),
-    onSuccess: (result) => {
-      queryClient.setQueryData(ALERT_SHARING_QUERY_KEY, result);
-      setConfirming(false);
-    },
-  });
-
-  if (!data) return null;
-  const on = data.visibleToFollowers;
-
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-neutral-100">{t('settings.alertSharing.title')}</p>
-          <p className="text-xs text-neutral-500">
-            {t(on ? 'settings.alertSharing.onHint' : 'settings.alertSharing.offHint')}
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={on}
-          aria-label={t('settings.alertSharing.toggleAria')}
-          disabled={mutation.isPending}
-          onClick={() =>
-            on ? mutation.mutate({ visibleToFollowers: false }) : setConfirming(true)
-          }
-          className={cx(
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60',
-            on ? 'bg-sky-600' : 'bg-neutral-700',
-          )}
-        >
-          <span
-            className={cx(
-              'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform',
-              on ? 'translate-x-[18px]' : 'translate-x-1',
-            )}
-          />
-        </button>
-      </div>
-      {mutation.isError ? <Alert tone="error">{t('settings.alertSharing.error')}</Alert> : null}
-      {confirming ? (
-        <Dialog
-          title={t('settings.alertSharing.confirmTitle')}
-          onClose={() => setConfirming(false)}
-        >
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-amber-400">{t('settings.alertSharing.confirmWarning')}</p>
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setConfirming(false)}>
-                {t('settings.alertSharing.confirmCancel')}
-              </Button>
-              <Button
-                disabled={mutation.isPending}
-                onClick={() =>
-                  mutation.mutate({ visibleToFollowers: true, acknowledgeFollowers: true })
-                }
-              >
-                {t('settings.alertSharing.confirmEnable')}
-              </Button>
-            </div>
-          </div>
-        </Dialog>
-      ) : null}
-    </div>
-  );
-}
-
 export function NotificationSettingsPage() {
   const t = useT();
   const queryClient = useQueryClient();
@@ -939,7 +1145,8 @@ export function NotificationSettingsPage() {
             <WebPushOptIn publicKey={query.data.webPushPublicKey} />
           ) : null}
 
-          <AlertSharingControl />
+          <TelegramSetupCard />
+          <DiscordSetupCard />
 
           <NotificationMatrixGrid
             settings={query.data}

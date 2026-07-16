@@ -12,7 +12,7 @@ import { Wordmark } from '../../components/Wordmark';
 import { PriceChart } from '../../ui/charts';
 import { Avatar } from '../components/Avatar';
 import { Splash } from '../components/ui';
-import { AlertFollowToggles, AutoFollowToggle, FollowButton } from './FollowButton';
+import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
 import { ItemFollowButton } from './ItemFollowButton';
 import { KindIcon } from './SharedPeople';
 
@@ -230,7 +230,7 @@ export function PublicProfileViewPage() {
           <div className="flex flex-col items-end gap-2">
             <FollowButton userId={data.userId} username={data.username} />
             <AutoFollowToggle userId={data.userId} username={data.username} />
-            <AlertFollowToggles userId={data.userId} username={data.username} />
+            <AlertFollowToggle userId={data.userId} username={data.username} />
           </div>
         </div>
 

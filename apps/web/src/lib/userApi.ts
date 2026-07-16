@@ -1,5 +1,6 @@
 import {
   googleLinkStatusResponseSchema,
+  googleRegisterTicketResponseSchema,
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
@@ -19,6 +20,8 @@ import {
   type ExportRequestResponse,
   type ExportStatusResponse,
   type GoogleLinkStatusResponse,
+  type GoogleRegisterRequest,
+  type GoogleRegisterTicketResponse,
   type InviteValidationResponse,
   type LoginRequest,
   type LoginResponse,
@@ -305,9 +308,43 @@ export async function getRegistrationInfo(
  * invite-token registration). Returns the absolute URL to assign to
  * `window.location`, so cookies + the top-level redirect back from Google behave.
  */
-export function googleStartUrl(opts: { inviteToken?: string } = {}): string {
-  const base = `${apiBaseUrl()}/auth/google/start`;
-  return opts.inviteToken ? `${base}?inviteToken=${encodeURIComponent(opts.inviteToken)}` : base;
+export function googleStartUrl(): string {
+  return `${apiBaseUrl()}/auth/google/start`;
+}
+
+/**
+ * Google-assisted registration (owner order 2026-07-16). After the OAuth
+ * round-trip lands the browser on the connected register form (`?google=connected`),
+ * this reads the pending ticket's display values — the verified email (locked) and
+ * the Google name to seed the username — via the signed httpOnly ticket cookie.
+ * A 404 means no/expired ticket, so the form falls back to a plain registration.
+ * `suppressAuthRedirect`: a public, unauthenticated call.
+ */
+export async function getGoogleRegisterTicket(
+  signal?: AbortSignal,
+): Promise<GoogleRegisterTicketResponse> {
+  const data = await apiRequest<unknown>('/auth/google/register-ticket', {
+    signal,
+    suppressAuthRedirect: true,
+  });
+  return googleRegisterTicketResponseSchema.parse(data);
+}
+
+/**
+ * Submit the connected register form (owner order 2026-07-16). The email + the
+ * Google subject to link are taken from the server-side ticket (via its cookie),
+ * never this body — a tampered email is ignored. Resolves to the signed-in user
+ * (open / invite-token, session set) or the approval-pending answer. A bad token /
+ * taken username / expired ticket throws an {@link ApiError}. `suppressAuthRedirect`:
+ * a public call.
+ */
+export async function googleRegister(body: GoogleRegisterRequest): Promise<RegisterResponse> {
+  const data = await apiRequest<unknown>('/auth/google/register', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return registerResponseSchema.parse(data);
 }
 
 /** The caller's Google link state for Settings → Security (§13.4 V4-P4b). */

@@ -21,15 +21,32 @@ import { portfolioVisibilitySchema } from './portfolio';
  */
 
 /** The user-toggleable notification channels (grid columns), in display order. */
-export const NOTIFICATION_SETTING_CHANNELS = ['inapp', 'email', 'push', 'webpush'] as const;
+export const NOTIFICATION_SETTING_CHANNELS = [
+  'inapp',
+  'email',
+  'telegram',
+  'discord',
+  'push',
+  'webpush',
+] as const;
 export type NotificationSettingChannel = (typeof NOTIFICATION_SETTING_CHANNELS)[number];
 
 /**
  * One notification type's routing: which channels it fans out to. All-false =
- * muted for that type.
+ * muted for that type. Telegram + Discord (V4-P10) are additive channels that
+ * default ON per type once the user configures them (matching the push
+ * channels' behaviour), so an existing user with no override lights the cell
+ * up as soon as the link/webhook is saved.
  */
 export const notificationTypeRoutingSchema = z
-  .object({ inapp: z.boolean(), email: z.boolean(), push: z.boolean(), webpush: z.boolean() })
+  .object({
+    inapp: z.boolean(),
+    email: z.boolean(),
+    telegram: z.boolean(),
+    discord: z.boolean(),
+    push: z.boolean(),
+    webpush: z.boolean(),
+  })
   .strict();
 export type NotificationTypeRouting = z.infer<typeof notificationTypeRoutingSchema>;
 
@@ -50,10 +67,21 @@ export type NotificationMatrix = z.infer<typeof notificationMatrixSchema>;
 
 /**
  * Which channels the deployment can actually deliver on. `inapp` is always
- * true; the rest reflect server config (SMTP / FCM service account / VAPID).
+ * true; the rest reflect server config (SMTP / FCM service account / VAPID)
+ * plus per-user setup for the V4-P10 channels: `telegram` reports whether the
+ * caller has a linked chat (bot token set AND link confirmed), `discord`
+ * whether the caller has saved a validated webhook. Rendering the matrix
+ * column keys off this so an unconfigured channel never surfaces.
  */
 export const notificationChannelAvailabilitySchema = z
-  .object({ inapp: z.boolean(), email: z.boolean(), push: z.boolean(), webpush: z.boolean() })
+  .object({
+    inapp: z.boolean(),
+    email: z.boolean(),
+    telegram: z.boolean(),
+    discord: z.boolean(),
+    push: z.boolean(),
+    webpush: z.boolean(),
+  })
   .strict();
 export type NotificationChannelAvailability = z.infer<typeof notificationChannelAvailabilitySchema>;
 
@@ -229,3 +257,129 @@ export type ExportRequestResponse = z.infer<typeof exportRequestResponseSchema>;
 /** `GET /account/export/download?token=` query — the raw download token. */
 export const exportDownloadQuerySchema = z.object({ token: z.string().min(1).max(200) }).strict();
 export type ExportDownloadQuery = z.infer<typeof exportDownloadQuerySchema>;
+
+// --- Telegram + Discord channels (§13.4 V4-P10) ----------------------------
+//
+// Two additive NotificationChannels the user configures per-account. The bot
+// token is server-side / env-gated (Telegram); the Discord webhook URL is
+// per-user, stored encrypted at rest. Both surface as extra matrix columns
+// through `channels.telegram`/`channels.discord` in the notifications response.
+
+/** Cap on the raw link-code characters returned by `/settings/telegram/link`. */
+export const TELEGRAM_LINK_CODE_MAX = 24;
+
+/**
+ * `GET /settings/telegram` — the caller's Telegram link state.
+ *  - `available` = deployment has the bot token configured (matrix column
+ *    lights up); `null` in every other field when false.
+ *  - `linked` = a chat is confirmed for the caller (`chatId` present, no
+ *    pending code). The chatId is masked (last 4 digits) — the full value is
+ *    never returned to the browser.
+ *  - `pending` = a link code is issued and unused; `expiresAt` is set.
+ *  - `botUsername` powers the deep link (`https://t.me/<bot>?start=<code>`).
+ */
+export const telegramSettingsResponseSchema = z
+  .object({
+    available: z.boolean(),
+    linked: z.boolean(),
+    pending: z.boolean(),
+    /** Masked chat id (`…1234`) once linked; null otherwise. */
+    chatIdMasked: z.string().nullable(),
+    /** Bot @username served with the response so the SPA builds the deep link. */
+    botUsername: z.string().nullable(),
+    /** Raw code visible on the response of a link-start; else null. */
+    pendingCode: z.string().max(TELEGRAM_LINK_CODE_MAX).nullable(),
+    /** ISO datetime the pending code expires; null when there is no pending. */
+    pendingExpiresAt: z.string().datetime().nullable(),
+  })
+  .strict();
+export type TelegramSettingsResponse = z.infer<typeof telegramSettingsResponseSchema>;
+
+/**
+ * `POST /settings/telegram/link` — issue a fresh single-use link code + expiry;
+ * response carries the same shape as `GET /settings/telegram`, so the caller
+ * immediately has the deep link's `start` parameter. An existing pending code
+ * is replaced (short expiry, single use so idempotency is fine).
+ */
+export type TelegramLinkResponse = TelegramSettingsResponse;
+
+/**
+ * `POST /settings/telegram/confirm` — the SPA polls (or the user clicks
+ * "I've started the bot") to check whether the bot has received `/start
+ * <code>` yet. On success, transitions from `pending` → `linked`.
+ */
+export const telegramConfirmResponseSchema = z
+  .object({
+    linked: z.boolean(),
+    settings: telegramSettingsResponseSchema,
+  })
+  .strict();
+export type TelegramConfirmResponse = z.infer<typeof telegramConfirmResponseSchema>;
+
+/**
+ * `POST /settings/discord/webhook` body — a candidate Discord webhook URL that
+ * MUST match the standard `discord(app)?.com/api/webhooks/...` shape. The
+ * handler additionally sends a live test message and rejects on any non-2xx
+ * from Discord (so a mistyped or stale URL never persists).
+ */
+export const discordWebhookRequestSchema = z
+  .object({
+    /** Raw webhook URL — refined below to keep the error UX clean. */
+    url: z.string().min(1).max(2048),
+  })
+  .strict()
+  .superRefine((body, ctx) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(body.url);
+    } catch {
+      ctx.addIssue({ code: 'custom', path: ['url'], message: 'invalid_url' });
+      return;
+    }
+    if (parsed.protocol !== 'https:') {
+      ctx.addIssue({ code: 'custom', path: ['url'], message: 'invalid_scheme' });
+      return;
+    }
+    const host = parsed.host.toLowerCase();
+    const validHost =
+      host === 'discord.com' ||
+      host === 'discordapp.com' ||
+      host === 'canary.discord.com' ||
+      host === 'ptb.discord.com';
+    if (!validHost) {
+      ctx.addIssue({ code: 'custom', path: ['url'], message: 'invalid_host' });
+      return;
+    }
+    if (!parsed.pathname.startsWith('/api/webhooks/')) {
+      ctx.addIssue({ code: 'custom', path: ['url'], message: 'invalid_path' });
+    }
+  });
+export type DiscordWebhookRequest = z.infer<typeof discordWebhookRequestSchema>;
+
+/**
+ * `GET /settings/discord` — the caller's Discord webhook state. The URL is
+ * NEVER returned to the browser (it is a secret); only whether one is
+ * configured and a short label (`configuredAt` + a `webhookIdMasked` for the
+ * user to recognize it) surface. `available` mirrors `linked` here — a webhook
+ * either exists or the channel is unavailable to this account.
+ */
+export const discordSettingsResponseSchema = z
+  .object({
+    available: z.boolean(),
+    linked: z.boolean(),
+    /** Masked webhook id (`…abcd`) once configured; null otherwise. */
+    webhookIdMasked: z.string().nullable(),
+    /** ISO datetime the webhook was saved; null otherwise. */
+    configuredAt: z.string().datetime().nullable(),
+  })
+  .strict();
+export type DiscordSettingsResponse = z.infer<typeof discordSettingsResponseSchema>;
+
+/**
+ * `POST /settings/discord/test` — dispatch a diagnostic message via the saved
+ * webhook. The handler returns `{ ok: true }` when Discord accepts the send;
+ * anything else is a 4xx with an i18n'd reason (`no_webhook` when the caller
+ * has none, `send_failed` when Discord rejected).
+ */
+export const discordTestResponseSchema = z.object({ ok: z.boolean() }).strict();
+export type DiscordTestResponse = z.infer<typeof discordTestResponseSchema>;

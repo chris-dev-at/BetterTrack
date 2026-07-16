@@ -1754,6 +1754,74 @@ export const exportJobs = pgTable(
 export type ExportJobRow = typeof exportJobs.$inferSelect;
 export type NewExportJobRow = typeof exportJobs.$inferInsert;
 
+/**
+ * Per-user Telegram chat link (§13.4 V4-P10). One row per user (PK on `user_id`)
+ * carrying either a **pending** link code (`chat_id` NULL, `link_code`/
+ * `link_code_expires_at` set) or a **linked** chat (`chat_id` set,
+ * `link_code`/`link_code_expires_at` NULL, `linked_at` stamped). A repeat
+ * link-start replaces the pending pair; unlink deletes the row. The bot token
+ * itself lives in env (`BT_TELEGRAM_BOT_TOKEN`) — this table only carries the
+ * per-user relationship + code state.
+ *
+ * `chat_id` is a Telegram numeric id (bigint would fit; text keeps it fully
+ * opaque and future-proof). The code is a URL-safe random string (SHA-hash of
+ * the raw plaintext would add nothing — its expiry is short, its space large,
+ * and it exists only in-flight between the SPA and Telegram). The row cascades
+ * away with the owner (§10 scoping).
+ */
+export const telegramLinks = pgTable(
+  'telegram_links',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Numeric Telegram chat id (as text — Telegram's ids can exceed int4 range
+    // and are opaque to us). NULL while a link is pending.
+    chatId: text('chat_id'),
+    // The bot's @username at link time — cached so /settings/telegram can
+    // return the deep link without a fresh getMe roundtrip on every read.
+    botUsername: text('bot_username'),
+    // Pending link code the user pastes into the Telegram bot with `/start`.
+    // Cleared once the code is confirmed. NOT unique — code space is large
+    // enough that a collision is a fresh row, and we look up by (userId, code)
+    // through the row's own PK anyway.
+    linkCode: text('link_code'),
+    linkCodeExpiresAt: timestamp('link_code_expires_at', { withTimezone: true }),
+    // Stamped when a chatId lands. NULL while pending.
+    linkedAt: timestamp('linked_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Speeds up the confirm flow's "does anyone have this pending code?" lookup
+    // (Telegram's `/start <code>` webhook arrives without a user context).
+    index('telegram_links_link_code_idx').on(t.linkCode),
+  ],
+);
+
+export type TelegramLinkRow = typeof telegramLinks.$inferSelect;
+export type NewTelegramLinkRow = typeof telegramLinks.$inferInsert;
+
+/**
+ * Per-user Discord webhook (§13.4 V4-P10). One row per user (PK on `user_id`)
+ * carrying the ENCRYPTED webhook URL (via `services/crypto/secretBox`) plus a
+ * short masked identifier the settings surface renders back so the user can
+ * recognize it. The plaintext URL never leaves the API process. Rows cascade
+ * with the owner.
+ */
+export const discordWebhooks = pgTable('discord_webhooks', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  // secretBox envelope (`v1.<iv>.<tag>.<ct>`) of the raw webhook URL.
+  encryptedUrl: text('encrypted_url').notNull(),
+  // Short masked slug of the webhook id segment for the settings UI.
+  webhookIdMasked: text('webhook_id_masked').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type DiscordWebhookRow = typeof discordWebhooks.$inferSelect;
+export type NewDiscordWebhookRow = typeof discordWebhooks.$inferInsert;
 // --- Broker CSV imports (§13.4 V4-P8) ---------------------------------------
 
 /** Batch lifecycle: staged (`pending`) until confirmed (`applied`). */
@@ -1905,6 +1973,8 @@ export const schema = {
   exportJobs,
   announcements,
   announcementDismissals,
+  telegramLinks,
+  discordWebhooks,
   announcementSeverityEnum,
   exportJobStatusEnum,
 

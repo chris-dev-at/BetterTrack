@@ -1,4 +1,4 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 
@@ -25,6 +25,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import type { PasswordHasher } from '../password/passwordHasher';
+import { checkPasswordPolicy } from '../password/passwordPolicy';
 import type { SessionService } from '../sessions/sessionService';
 import type { GoogleClaims, GoogleTokenVerifier } from './googleVerifier';
 
@@ -36,21 +37,36 @@ export const GOOGLE_PROVIDER = 'google';
 // tight enough to bound a leaked state value.
 const STATE_TTL_SECONDS = 10 * 60;
 const stateKey = (state: string) => `google_oauth_state:${state}`;
-const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+/** Google's real production authorize endpoint — the default when no override is set. */
+export const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+
+// A brand-new Google identity no longer instant-registers at the callback (owner
+// order 2026-07-16). The verified claims are parked in this single-use ticket for
+// the connected register form to submit against — short-lived, and the browser is
+// bound to it by the httpOnly cookie the route drops (see cookies.ts).
+const REGISTER_TICKET_TTL_SECONDS = 10 * 60;
+const registerTicketKey = (ticket: string) => `google_register_ticket:${ticket}`;
+
+/** Normalized (trimmed, lower-cased) email — the comparison key for link matching. */
+const normalizeEmail = (email: string): string => email.trim().toLowerCase();
+
+/** The verified Google claims parked in a pending-registration ticket. */
+interface RegisterTicket {
+  sub: string;
+  email: string;
+  emailVerified: boolean;
+  name?: string;
+}
 
 /** The flow context bound to a `state` value across the Google round-trip. */
 interface StateContext {
   /** Present ⇒ an authenticated "link Google to my account" flow, not a sign-in. */
   linkUserId?: string;
-  /** A registration token carried into the invite-token registration path. */
-  inviteToken?: string;
 }
 
 export interface StartInput {
   /** When set, this is a LINK flow for the already-signed-in user (from Settings). */
   linkUserId?: string | null;
-  /** A registration token carried in for the invite-token mode (RegisterPage). */
-  inviteToken?: string | null;
 }
 
 /**
@@ -59,11 +75,23 @@ export interface StartInput {
  * `intent` so a link failure lands back on Settings and a sign-in failure on the
  * login page.
  */
+/** A minted session, shared by the sign-in and connected-registration outcomes. */
+type AuthenticatedResult = {
+  status: 'authenticated';
+  user: UserRow;
+  sessionId: string;
+  persistent: boolean;
+};
+
 export type GoogleCallbackResult =
-  | { status: 'authenticated'; user: UserRow; sessionId: string; persistent: boolean }
+  | AuthenticatedResult
   | { status: 'linked'; userId: string }
-  | { status: 'pending' }
+  /** A brand-new identity: land the browser on the connected register form with this ticket. */
+  | { status: 'register'; ticket: string }
   | { status: 'error'; code: string; intent: 'login' | 'link' };
+
+/** Outcome of submitting the connected register form (`POST /auth/google/register`). */
+export type GoogleRegisterResult = AuthenticatedResult | { status: 'pending' };
 
 export interface GoogleLinkStatus {
   enabled: boolean;
@@ -129,6 +157,29 @@ export interface GoogleAuthService {
     code?: string;
     ip?: string | null;
   }): Promise<GoogleCallbackResult>;
+  /**
+   * Display values (email, name) for a pending-registration ticket — what the
+   * connected register form prefills. Returns `null` for an unknown/expired
+   * ticket. Read-only: it does NOT consume the ticket.
+   */
+  peekRegisterTicket(ticket: string): Promise<{ email: string; name: string | null } | null>;
+  /**
+   * Create the account from a pending Google ticket on explicit form submit. The
+   * email + the subject to link are taken from the TICKET, never the caller — a
+   * tampered form email cannot redirect the account. Password rules are unchanged
+   * (the form still sets one). Applies the active registration mode. The ticket is
+   * single-use: spent only on success, so a validation failure leaves it live for
+   * a retry.
+   */
+  completeRegistration(input: {
+    /** The ticket reference from the signed httpOnly cookie (never the body). */
+    ticket: string;
+    username: string;
+    password: string;
+    inviteToken?: string | null;
+    locale?: string | null;
+    ip?: string | null;
+  }): Promise<GoogleRegisterResult>;
   /** The caller's Google link state for Settings → Security. */
   getLinkStatus(userId: string): Promise<GoogleLinkStatus>;
   /** Unlink Google after a password re-auth; refused when it is the only sign-in method. */
@@ -157,6 +208,11 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
   /** The server-side callback the code is redirected to — identical on both legs. */
   const redirectUri = () => `${config.topology.apiOrigin}/api/v1/auth/google/callback`;
 
+  // The authorize endpoint the browser is bounced to. The real Google URL unless
+  // a test-only override is configured (env `BT_GOOGLE_AUTHORIZE_ENDPOINT`, threaded
+  // via config.google.authorizeEndpoint) — the e2e fake IdP points this at itself.
+  const authorizeEndpoint = config.google.authorizeEndpoint ?? GOOGLE_AUTHORIZE_ENDPOINT;
+
   /**
    * Mint a session on the SAME path a password login takes (§13.4 V4-P4b
    * acceptance): create the session, stamp last-login, and audit a `login.success`
@@ -165,7 +221,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
    * this audit exactly as they do for a password login. A Google sign-in is a
    * normal web login, so the session is persistent.
    */
-  async function signInUser(user: UserRow, ip?: string | null): Promise<GoogleCallbackResult> {
+  async function signInUser(user: UserRow, ip?: string | null): Promise<AuthenticatedResult> {
     // Authoritative gate (#400): the Google callback must never mint an admin
     // session — there is no second-factor step here. Still reachable e.g. for an
     // account linked as a user and later promoted to admin (resolveSignIn step 1);
@@ -196,43 +252,41 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     return { status: 'authenticated', user: { ...user, lastLoginAt: now }, sessionId, persistent };
   }
 
-  /** A random, unusable argon2id hash for a password-less (Google) account. */
-  const unusablePasswordHash = () => passwordHasher.hash(randomBytes(24).toString('hex'));
-
-  /** Sanitize a username seed from the Google email local-part (fallback: name). */
-  function usernameSeed(claims: GoogleClaims): string {
-    const local = claims.email.split('@')[0] ?? '';
-    let base = local.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    if (base.length < 3 && claims.name) {
-      base = claims.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    }
-    if (base.length < 3) base = `user${base}`;
-    // Leave room for a numeric disambiguation suffix within the 40-char cap.
-    return base.slice(0, 30);
+  /** Park verified claims in a fresh single-use ticket; return its opaque reference. */
+  async function createRegisterTicket(claims: GoogleClaims): Promise<string> {
+    const ticket = randomBytes(32).toString('base64url');
+    const payload: RegisterTicket = {
+      sub: claims.sub,
+      email: normalizeEmail(claims.email),
+      emailVerified: claims.emailVerified,
+      ...(claims.name ? { name: claims.name } : {}),
+    };
+    await redis.set(
+      registerTicketKey(ticket),
+      JSON.stringify(payload),
+      'EX',
+      REGISTER_TICKET_TTL_SECONDS,
+    );
+    return ticket;
   }
 
-  /** First free username from `seed`, appending a random suffix on collision. */
-  async function uniqueUsername(
-    seed: string,
-    taken: (candidate: string) => Promise<boolean>,
-  ): Promise<string> {
-    if (!(await taken(seed))) return seed;
-    for (let i = 0; i < 50; i += 1) {
-      const suffix = randomInt(1000, 1_000_000).toString();
-      const candidate = `${seed.slice(0, 40 - suffix.length)}${suffix}`;
-      if (!(await taken(candidate))) return candidate;
+  /** Read a ticket WITHOUT consuming it (peek / display), or `null` if gone. */
+  async function readRegisterTicket(ticket: string): Promise<RegisterTicket | null> {
+    const raw = await redis.get(registerTicketKey(ticket));
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as RegisterTicket;
+    } catch {
+      return null;
     }
-    throw new Error('Could not allocate a unique username for the Google account');
   }
 
   async function buildAuthorizeUrl({
     linkUserId,
-    inviteToken,
   }: StartInput): Promise<{ url: string; state: string }> {
     const state = randomBytes(32).toString('base64url');
     const context: StateContext = {};
     if (linkUserId) context.linkUserId = linkUserId;
-    if (inviteToken && inviteToken.trim().length > 0) context.inviteToken = inviteToken.trim();
     await redis.set(stateKey(state), JSON.stringify(context), 'EX', STATE_TTL_SECONDS);
 
     const params = new URLSearchParams({
@@ -242,45 +296,81 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       scope: 'openid email profile',
       state,
     });
-    return { url: `${GOOGLE_AUTHORIZE_ENDPOINT}?${params.toString()}`, state };
+    return { url: `${authorizeEndpoint}?${params.toString()}`, state };
   }
 
   /**
-   * Register a brand-new Google identity subject to the active mode (§13.4 V4-P4b
-   * acceptance): `closed` rejects; `approval` parks a pending application (no
-   * account); `invite_token` requires a valid token carried into the flow; `open`
-   * creates the account and signs in. Reuses the #453 registration machinery.
+   * Create the account from a pending ticket on explicit form submit (owner order
+   * 2026-07-16). Subject to the active mode: `closed` rejects (defensive — a ticket
+   * is never minted in closed mode); `approval` parks a pending application (no
+   * account); `invite_token` requires a valid token entered ON the form; `open`
+   * creates the account and signs in. The email + subject to link are taken from
+   * the ticket, never the caller. Unlike the old callback-time path, the account
+   * carries a USABLE password the applicant set on the connected form.
    */
-  async function registerNew(
-    claims: GoogleClaims,
-    inviteToken: string | undefined,
-    ip?: string | null,
-  ): Promise<GoogleCallbackResult> {
+  async function completeRegistration({
+    ticket,
+    username,
+    password,
+    inviteToken,
+    locale,
+    ip,
+  }: {
+    ticket: string;
+    username: string;
+    password: string;
+    inviteToken?: string | null;
+    locale?: string | null;
+    ip?: string | null;
+  }): Promise<GoogleRegisterResult> {
+    // Peek (not consume): a validation failure below must leave the ticket live
+    // so the user can fix the form and resubmit — it is spent only on success.
+    const claims = await readRegisterTicket(ticket);
+    if (!claims) {
+      throw badRequest(
+        'Your Google sign-up session expired. Please connect Google again.',
+        'GOOGLE_REGISTER_TICKET_INVALID',
+      );
+    }
+    const emailAddr = claims.email; // already normalized when the ticket was minted
+    const uname = username.trim();
+    const formLocale = locale ?? 'en';
+
     const mode = await appSettings.getRegistrationMode();
-    // Closed keeps blocking everything — friendly rejection, no account row (regression).
+    // Defensive: the callback never mints a ticket in closed mode, but re-check.
     if (mode === 'closed') {
       throw forbidden('Self-serve registration is disabled.', 'REGISTRATION_CLOSED');
     }
-    const emailAddr = claims.email.trim().toLowerCase();
 
+    // Password rules stay exactly as they are today — Google prefills, it does
+    // not replace credentials (owner order 2026-07-16).
+    const policy = checkPasswordPolicy(password);
+    if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
+    const passwordHash = await passwordHasher.hash(password);
+
+    // Approval parks the details as a PENDING application (never a user row),
+    // carrying the Google linkage through to admin approval. Uniqueness is checked
+    // against live accounts AND other pending applications.
     if (mode === 'approval') {
       if (await userRepo.findByEmail(emailAddr)) {
         throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
       }
-      // An outstanding application for this email is idempotent — still pending.
-      if (await registrationRequestRepo.findByEmail(emailAddr)) return { status: 'pending' };
-      const username = await uniqueUsername(usernameSeed(claims), async (candidate) =>
-        Boolean(
-          (await userRepo.findByUsername(candidate)) ??
-          (await registrationRequestRepo.findByUsername(candidate)),
-        ),
-      );
+      if (await userRepo.findByUsername(uname)) {
+        throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+      }
+      if (await registrationRequestRepo.findByEmail(emailAddr)) {
+        throw conflict('A registration request for this email is already pending.', 'EMAIL_TAKEN');
+      }
+      if (await registrationRequestRepo.findByUsername(uname)) {
+        throw conflict('That username is already requested.', 'USERNAME_TAKEN');
+      }
       const request = await registrationRequestRepo.create({
         email: emailAddr,
-        username,
-        // Password-less: approval mints a random unusable hash on the account.
-        passwordHash: null,
-        locale: 'en',
+        username: uname,
+        // A usable password the applicant chose — the approved account keeps it
+        // alongside the linked Google identity.
+        passwordHash,
+        locale: formLocale,
         provider: GOOGLE_PROVIDER,
         providerSubject: claims.sub,
         providerEmailVerified: claims.emailVerified,
@@ -292,10 +382,11 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
         ip,
         meta: { via: 'google' },
       });
+      await redis.del(registerTicketKey(ticket));
       return { status: 'pending' };
     }
 
-    // invite_token mode: a valid, unexhausted token MUST have been carried in.
+    // invite_token mode: a valid, unexhausted token entered on the form is required.
     let tokenId: string | null = null;
     if (mode === 'invite_token') {
       const raw = inviteToken?.trim();
@@ -320,9 +411,9 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     if (await userRepo.findByEmail(emailAddr)) {
       throw conflict('An account already exists for this email.', 'EMAIL_TAKEN');
     }
-    const username = await uniqueUsername(usernameSeed(claims), async (candidate) =>
-      Boolean(await userRepo.findByUsername(candidate)),
-    );
+    if (await userRepo.findByUsername(uname)) {
+      throw conflict('That username is already taken.', 'USERNAME_TAKEN');
+    }
 
     if (tokenId) {
       const claimed = await registrationTokenRepo.consumeUse(tokenId, new Date());
@@ -336,14 +427,12 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
 
     const user = await userRepo.create({
       email: emailAddr,
-      username,
-      // Random unusable hash + the flag: password login can never succeed and
-      // Google-unlink is refused until the user sets a password (via reset).
-      passwordHash: await unusablePasswordHash(),
-      hasUsablePassword: false,
+      username: uname,
+      passwordHash,
       role: 'user',
       status: 'active',
       mustChangePassword: false,
+      locale: formLocale,
     });
     await portfolioRepo.createDefault(user.id);
     await applyAccountDefaultsAtRegistration({ appSettings, userRepo, notificationRepo }, user.id);
@@ -375,13 +464,14 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       username: user.username,
       audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
     });
+    // Single-use: burn the ticket only now that the account exists.
+    await redis.del(registerTicketKey(ticket));
     return signInUser(user, ip);
   }
 
   /** Resolution order: existing identity → verified-email link → register (§13.4). */
   async function resolveSignIn(
     claims: GoogleClaims,
-    inviteToken: string | undefined,
     ip?: string | null,
   ): Promise<GoogleCallbackResult> {
     // 1. Existing (provider, sub) → sign in.
@@ -432,8 +522,17 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       }
     }
 
-    // 3. No identity, no verified-email match → register subject to the mode.
-    return registerNew(claims, inviteToken, ip);
+    // 3. No identity, no verified-email match → do NOT instant-register (owner
+    // order 2026-07-16). `closed` keeps its friendly rejection at the callback;
+    // every other mode parks the verified claims in a one-time ticket and lands
+    // the browser on the connected register form, where the account is created
+    // only on explicit submit.
+    const mode = await appSettings.getRegistrationMode();
+    if (mode === 'closed') {
+      throw forbidden('Self-serve registration is disabled.', 'REGISTRATION_CLOSED');
+    }
+    const ticket = await createRegisterTicket(claims);
+    return { status: 'register', ticket };
   }
 
   /** Authenticated "link Google to my account" flow (from Settings → Security). */
@@ -450,6 +549,18 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
     // links a Google identity, so no linked identity can later mint an admin
     // session that skips the mandatory 2FA challenge. See {@link assertNotAdmin}.
     assertNotAdmin(user);
+    // Email-match-only (owner order 2026-07-16): a Settings connect may only ever
+    // attach the Google identity whose VERIFIED email equals this account's email
+    // (case-insensitive) — never an arbitrary Google account. A mismatched or
+    // unverified email links nothing and changes no session; the sign-in
+    // verified-email auto-link path already matches BY email, so this makes the
+    // Settings path enforce the same rule.
+    if (!claims.emailVerified || normalizeEmail(claims.email) !== normalizeEmail(user.email)) {
+      throw badRequest(
+        'This Google account’s email does not match your account email.',
+        'GOOGLE_EMAIL_MISMATCH',
+      );
+    }
     const existing = await identityRepo.findByProviderSubject(GOOGLE_PROVIDER, claims.sub);
     if (existing) {
       // Idempotent when it is already this user's; otherwise the Google account
@@ -521,7 +632,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
           throw badRequest('Google verification failed.', 'GOOGLE_VERIFY_FAILED');
         }
         if (context.linkUserId) return await linkToUser(context.linkUserId, claims, ip);
-        return await resolveSignIn(claims, context.inviteToken, ip);
+        return await resolveSignIn(claims, ip);
       } catch (err) {
         const code = err instanceof ApiError ? err.code : 'GOOGLE_FAILED';
         if (!(err instanceof ApiError)) {
@@ -530,6 +641,14 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
         return { status: 'error', code, intent };
       }
     },
+
+    async peekRegisterTicket(ticket) {
+      const parsed = await readRegisterTicket(ticket);
+      if (!parsed) return null;
+      return { email: parsed.email, name: parsed.name ?? null };
+    },
+
+    completeRegistration,
 
     async getLinkStatus(userId) {
       const identity = await identityRepo.findByUserProvider(userId, GOOGLE_PROVIDER);

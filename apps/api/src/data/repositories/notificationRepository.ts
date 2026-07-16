@@ -21,10 +21,12 @@ import { notifications, notificationSettings } from '../schema';
 /** The notification channel discriminator (`notification_channel` enum). */
 export type NotificationChannel = 'inapp' | 'email' | 'telegram' | 'discord' | 'push' | 'webpush';
 
-/** The four user-routable matrix channels (#368) resolved for one type. */
+/** The six user-routable matrix channels (#368, V4-P10) resolved for one type. */
 export interface TypeRouting {
   inapp: boolean;
   email: boolean;
+  telegram: boolean;
+  discord: boolean;
   push: boolean;
   webpush: boolean;
 }
@@ -176,6 +178,8 @@ export function createNotificationRepository(db: Database) {
       return {
         inapp: resolve('inapp'),
         email: resolve('email'),
+        telegram: resolve('telegram'),
+        discord: resolve('discord'),
         push: resolve('push'),
         webpush: resolve('webpush'),
       };

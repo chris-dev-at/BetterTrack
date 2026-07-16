@@ -60,6 +60,8 @@ export function leanDefaultNotificationMatrix(): NotificationMatrix {
       {
         inapp: notificationChannelDefaultEnabled('inapp', type),
         email: notificationChannelDefaultEnabled('email', type),
+        telegram: notificationChannelDefaultEnabled('telegram', type),
+        discord: notificationChannelDefaultEnabled('discord', type),
         push: notificationChannelDefaultEnabled('push', type),
         webpush: notificationChannelDefaultEnabled('webpush', type),
       },

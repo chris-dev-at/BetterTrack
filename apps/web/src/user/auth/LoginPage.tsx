@@ -294,6 +294,39 @@ export function LoginPage() {
           <Alert tone={googleNotice.tone}>{googleNotice.text}</Alert>
         </div>
       ) : null}
+      {/* Addendum (owner 2026-07-16): top-to-bottom the login surface offers the
+          prominent Sign-up FIRST, then Google, then the password form — no "OR"
+          divider, just spacing. The OAuth-authorize flow keeps only the password
+          form (its post-sign-in redirect would drop the sign-up / Google context). */}
+      {/* (1) Self-serve registration treatment (V4-P0 (f), §13.4): a designed,
+          stand-out card, shown only when the instance allows registration. */}
+      {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
+        <div className="mb-4 flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
+          <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
+            {t('auth.login.newHere')}
+          </p>
+          <Link
+            to="/register"
+            className={cx(
+              'inline-flex w-full items-center justify-center rounded-md px-3 py-2 text-sm font-semibold',
+              'border border-sky-700 bg-neutral-950 text-sky-300 transition-colors',
+              'hover:border-sky-500 hover:bg-neutral-900 hover:text-sky-200',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+            )}
+          >
+            {t('auth.login.signUp')}
+          </Link>
+        </div>
+      ) : null}
+      {/* (2) Google sign-in (§13.4 V4-P4b). Shown whenever the deployment has
+          Google configured (so existing Google-linked users can sign in even in
+          `closed` mode), but never inside the OAuth-authorize flow. */}
+      {googleEnabled && !oauthContext ? (
+        <div className="mb-4">
+          <GoogleButton />
+        </div>
+      ) : null}
+      {/* (3) Password login form. */}
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
@@ -341,43 +374,6 @@ export function LoginPage() {
           {t('auth.login.forgotPassword')}
         </Link>
       </form>
-      {/* Google sign-in (§13.4 V4-P4b) — the slot #467 reserved below the form.
-          Shown whenever the deployment has Google configured (so existing
-          Google-linked users can sign in even in `closed` mode), but never inside
-          the OAuth-authorize flow (its post-sign-in redirect would drop context). */}
-      {googleEnabled && !oauthContext ? (
-        <div className="mt-4 flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <span className="h-px flex-1 bg-neutral-800" />
-            <span className="text-xs uppercase tracking-wide text-neutral-600">
-              {t('common.or')}
-            </span>
-            <span className="h-px flex-1 bg-neutral-800" />
-          </div>
-          <GoogleButton />
-        </div>
-      ) : null}
-      {/* Self-serve registration treatment (V4-P0 (f), §13.4). Sits below the
-          sign-in form as a designed, stand-out card, not a bottom-anchor link.
-          Shown only when the instance allows registration and never in OAuth. */}
-      {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
-        <div className="mt-4 flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
-          <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
-            {t('auth.login.newHere')}
-          </p>
-          <Link
-            to="/register"
-            className={cx(
-              'inline-flex w-full items-center justify-center rounded-md px-3 py-2 text-sm font-semibold',
-              'border border-sky-700 bg-neutral-950 text-sky-300 transition-colors',
-              'hover:border-sky-500 hover:bg-neutral-900 hover:text-sky-200',
-              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
-            )}
-          >
-            {t('auth.login.signUp')}
-          </Link>
-        </div>
-      ) : null}
     </AuthCard>
   );
 }

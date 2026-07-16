@@ -47,6 +47,8 @@ const componentSchemas = {
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
   GoogleLinkStatusResponse: contracts.googleLinkStatusResponseSchema,
   GoogleUnlinkRequest: contracts.googleUnlinkRequestSchema,
+  GoogleRegisterTicketResponse: contracts.googleRegisterTicketResponseSchema,
+  GoogleRegisterRequest: contracts.googleRegisterRequestSchema,
   ChangePasswordRequest: contracts.changePasswordRequestSchema,
   DeleteAccountRequest: contracts.deleteAccountRequestSchema,
   PasswordResetRequest: contracts.passwordResetRequestSchema,
@@ -260,6 +262,13 @@ const componentSchemas = {
   NotificationSettingsResponse: contracts.notificationSettingsResponseSchema,
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
+
+  // Telegram + Discord channels (§13.4 V4-P10)
+  TelegramSettingsResponse: contracts.telegramSettingsResponseSchema,
+  TelegramConfirmResponse: contracts.telegramConfirmResponseSchema,
+  DiscordSettingsResponse: contracts.discordSettingsResponseSchema,
+  DiscordWebhookRequest: contracts.discordWebhookRequestSchema,
+  DiscordTestResponse: contracts.discordTestResponseSchema,
 
   // Account data export (§13.4 V4-P6a, #494)
   ExportRequest: contracts.exportRequestSchema,
@@ -742,9 +751,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/google/start',
     tag: 'Auth',
     summary:
-      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; an inviteToken rides through for invite-token registration. 404 when Google is not configured.',
+      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; anonymous is a sign-in/registration. 404 when Google is not configured.',
     public: true,
-    query: z.object({ inviteToken: z.string().optional() }),
     status: 302,
   },
   {
@@ -752,7 +760,7 @@ const endpoints: EndpointDef[] = [
     path: '/auth/google/callback',
     tag: 'Auth',
     summary:
-      'Google’s redirect back: validate state, verify the ID token, then sign in / link / register per the active mode. Sets the session cookie on success and always redirects to the SPA. 404 when Google is not configured.',
+      'Google’s redirect back: validate state, verify the ID token, then sign in / link, or land a brand-new identity on the connected register form via a one-time ticket. Sets the session cookie on a sign-in and always redirects to the SPA. 404 when Google is not configured.',
     public: true,
     query: z.object({
       state: z.string().optional(),
@@ -760,6 +768,27 @@ const endpoints: EndpointDef[] = [
       error: z.string().optional(),
     }),
     status: 302,
+  },
+  {
+    method: 'get',
+    path: '/auth/google/register-ticket',
+    tag: 'Auth',
+    summary:
+      'Display values (email to lock, name to seed the username) for a pending Google sign-up, referenced by the signed httpOnly ticket cookie. 404 when Google is not configured or no ticket is pending.',
+    public: true,
+    status: 200,
+    response: R.GoogleRegisterTicketResponse,
+  },
+  {
+    method: 'post',
+    path: '/auth/google/register',
+    tag: 'Auth',
+    summary:
+      'Create the account from a pending Google ticket (email + linked subject taken from the ticket, never the body) per the active mode: open/invite-token → account 201, approval → 202 pending. 404 when Google is not configured.',
+    public: true,
+    body: R.GoogleRegisterRequest,
+    status: 201,
+    response: R.MeResponse,
   },
   {
     method: 'get',
@@ -2386,6 +2415,77 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAccountSettingsRequest,
     status: 200,
     response: R.AccountSettingsResponse,
+  },
+
+  // Telegram + Discord channels (§13.4 V4-P10)
+  {
+    method: 'get',
+    path: '/settings/telegram',
+    tag: 'Settings',
+    summary:
+      'The caller’s Telegram link state (available / linked / pending). Bot token is env-gated.',
+    status: 200,
+    response: R.TelegramSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/telegram/link',
+    tag: 'Settings',
+    summary:
+      'Issue a fresh single-use Telegram link code — the SPA uses it in the `https://t.me/<bot>?start=<code>` deep link.',
+    status: 200,
+    response: R.TelegramSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/telegram/confirm',
+    tag: 'Settings',
+    summary:
+      'Poll for the bot’s `/start <code>` update and attach the chat id when it arrives; idempotent.',
+    status: 200,
+    response: R.TelegramConfirmResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/telegram',
+    tag: 'Settings',
+    summary: 'Unlink the caller’s Telegram chat (idempotent).',
+    status: 200,
+    response: R.TelegramSettingsResponse,
+  },
+  {
+    method: 'get',
+    path: '/settings/discord',
+    tag: 'Settings',
+    summary: 'The caller’s Discord webhook state (never returns the raw URL).',
+    status: 200,
+    response: R.DiscordSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/discord/webhook',
+    tag: 'Settings',
+    summary:
+      'Save (or replace) the caller’s Discord webhook — shape-validated and live-tested before persisting; URL encrypted at rest.',
+    body: R.DiscordWebhookRequest,
+    status: 200,
+    response: R.DiscordSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/discord/test',
+    tag: 'Settings',
+    summary: 'Send a diagnostic message to the caller’s saved Discord webhook.',
+    status: 200,
+    response: R.DiscordTestResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/discord',
+    tag: 'Settings',
+    summary: 'Remove the caller’s Discord webhook (idempotent).',
+    status: 200,
+    response: R.DiscordSettingsResponse,
   },
   {
     method: 'get',
