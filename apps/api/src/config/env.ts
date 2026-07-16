@@ -113,6 +113,14 @@ const envSchema = z.object({
   // to rotate 2FA encryption independently of session signing.
   TOTP_ISSUER: z.string().min(1).default('BetterTrack'),
   TOTP_ENCRYPTION_KEY: z.string().min(1).optional(),
+
+  // ── Google sign-in (§13.4 V4-P4b) ──────────────────────────────────────────
+  // OAuth 2.0 authorization-code client for "Continue with Google". BOTH set ⇒
+  // the feature is on; either unset ⇒ it is fully OFF (the `/auth/google/*`
+  // routes 404 and no button renders on any auth surface). Owner-provided and
+  // env-gated — it never blocks launch (§13.4 preamble).
+  BT_GOOGLE_CLIENT_ID: z.string().optional(),
+  BT_GOOGLE_CLIENT_SECRET: z.string().optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -349,6 +357,16 @@ export interface AppConfig {
     encryptionKey: Buffer;
   };
   /**
+   * Google sign-in (§13.4 V4-P4b). `enabled` is true iff BOTH the client id and
+   * secret are set; everything else keys off it — the routes 404 and the auth
+   * surfaces render no button when it is false.
+   */
+  google: {
+    enabled: boolean;
+    clientId?: string;
+    clientSecret?: string;
+  };
+  /**
    * Progressive rate limiting (PROJECTPLAN.md §10). Each schedule pairs a
    * generous steady-state allowance with an escalating cooldown ladder; the
    * middleware and the auth service read them from here and never inline the
@@ -477,6 +495,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     twoFactor: {
       issuer: e.TOTP_ISSUER,
       encryptionKey: twoFactorEncryptionKey,
+    },
+    google: {
+      enabled: Boolean(e.BT_GOOGLE_CLIENT_ID && e.BT_GOOGLE_CLIENT_SECRET),
+      clientId: e.BT_GOOGLE_CLIENT_ID,
+      clientSecret: e.BT_GOOGLE_CLIENT_SECRET,
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far
     // under the steady-state `limit`; the first over-limit is a short cooldown

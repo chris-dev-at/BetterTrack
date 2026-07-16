@@ -20,6 +20,7 @@ import {
 } from '../data/repositories/idempotencyKeyRepository';
 import { createProfileRepository } from '../data/repositories/profileRepository';
 import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
+import { createIdentityRepository } from '../data/repositories/identityRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createRegistrationRequestRepository } from '../data/repositories/registrationRequestRepository';
 import { createRegistrationTokenRepository } from '../data/repositories/registrationTokenRepository';
@@ -80,6 +81,11 @@ import {
   type ConglomerateService,
 } from '../services/conglomerate/conglomerateService';
 import { createAuthService, type AuthService } from '../services/auth/authService';
+import {
+  createGoogleAuthService,
+  type GoogleAuthService,
+} from '../services/auth/googleAuthService';
+import { createGoogleVerifier, type GoogleTokenVerifier } from '../services/auth/googleVerifier';
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createChatService, type ChatService } from '../services/chat';
 import { createCurrencyService } from '../services/currency/currencyService';
@@ -137,6 +143,8 @@ export interface AppContext {
   redis: Redis;
   logger: Logger;
   auth: AuthService;
+  /** Google sign-in — OAuth start/callback resolution, link status + unlink (§13.4 V4-P4b). */
+  google: GoogleAuthService;
   /** TOTP enroll/confirm/disable + recovery codes — the Settings → Security 2FA core (§6.1). */
   twoFactor: TwoFactorService;
   /** Mandatory admin-login 2FA management — enrollment wizard + admin Security settings (§6.12, #400). */
@@ -253,6 +261,13 @@ export interface BuildContextDeps {
   backfill?: BackfillScheduler;
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
   passwordHasher?: PasswordHasher;
+  /**
+   * Test seam (§13.4 V4-P4b): the Google token/ID-token verifier. Injected so
+   * tests exercise the whole sign-in flow with canned claims and no network.
+   * Defaults to the real jose-based verifier when Google is configured, else a
+   * throwing stub that the 404-gated routes never reach.
+   */
+  googleVerifier?: GoogleTokenVerifier;
   /** Test seam: fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
   /**
@@ -282,6 +297,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const inviteRepo = createInviteRepository(db);
   const registrationTokenRepo = createRegistrationTokenRepository(db);
   const registrationRequestRepo = createRegistrationRequestRepository(db);
+  // Federated (Google) sign-in identities (§13.4 V4-P4b) — shared by the Google
+  // auth service and the admin approval path (which links a Google application).
+  const identityRepo = createIdentityRepository(db);
   const passwordResetRepo = createPasswordResetTokenRepository(db);
   const twoFactorRepo = createTwoFactorRepository(db);
   const auditRepo = createAuditRepository(db);
@@ -461,6 +479,41 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     appSettings,
     twoFactor,
   });
+
+  // Google sign-in (§13.4 V4-P4b): OAuth authorization-code flow, verified-email
+  // linking + mode-aware registration reuse, and the Settings link/unlink surface.
+  // Fully env-gated — the verifier is only the real jose-based one when configured;
+  // otherwise a throwing stub the 404-gated routes never reach (tests inject one).
+  const googleVerifier =
+    deps.googleVerifier ??
+    (config.google.enabled && config.google.clientId && config.google.clientSecret
+      ? createGoogleVerifier({
+          clientId: config.google.clientId,
+          clientSecret: config.google.clientSecret,
+        })
+      : {
+          exchangeAndVerify: () => {
+            throw new Error('Google sign-in is not configured');
+          },
+        });
+  const google = createGoogleAuthService({
+    config,
+    redis,
+    userRepo,
+    identityRepo,
+    registrationTokenRepo,
+    registrationRequestRepo,
+    portfolioRepo,
+    notificationRepo,
+    sessions,
+    audit,
+    passwordHasher,
+    email,
+    appSettings,
+    verifier: googleVerifier,
+    logger,
+  });
+
   const admin = createAdminService({
     config,
     redis,
@@ -468,6 +521,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,
+    identityRepo,
     portfolioRepo,
     notificationRepo,
     sessions,
@@ -768,6 +822,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     redis,
     logger,
     auth,
+    google,
     twoFactor,
     adminTwoFactor,
     admin,

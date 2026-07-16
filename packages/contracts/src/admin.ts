@@ -25,7 +25,15 @@ export type RegistrationMode = z.infer<typeof registrationModeSchema>;
  * sign up.
  */
 export const publicRegistrationInfoResponseSchema = z
-  .object({ mode: registrationModeSchema })
+  .object({
+    mode: registrationModeSchema,
+    /**
+     * Whether Google sign-in is configured on this deployment (§13.4 V4-P4b).
+     * Env-gated: `false` ⇒ the auth surfaces render no "Continue with Google"
+     * button and `/auth/google/*` 404s. Leaks only the on/off bit.
+     */
+    googleEnabled: z.boolean(),
+  })
   .strict();
 export type PublicRegistrationInfoResponse = z.infer<typeof publicRegistrationInfoResponseSchema>;
 

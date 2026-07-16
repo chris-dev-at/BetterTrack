@@ -302,6 +302,13 @@
       "when": 1783970000000,
       "tag": "0042_chat_ban",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1783980000000,
+      "tag": "0043_google_login",
+      "breakpoints": true
     }
   ]
 }

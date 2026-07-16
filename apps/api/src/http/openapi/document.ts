@@ -45,6 +45,8 @@ const componentSchemas = {
   LoginRequest: contracts.loginRequestSchema,
   RegisterRequest: contracts.registerRequestSchema,
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
+  GoogleLinkStatusResponse: contracts.googleLinkStatusResponseSchema,
+  GoogleUnlinkRequest: contracts.googleUnlinkRequestSchema,
   ChangePasswordRequest: contracts.changePasswordRequestSchema,
   DeleteAccountRequest: contracts.deleteAccountRequestSchema,
   PasswordResetRequest: contracts.passwordResetRequestSchema,
@@ -674,6 +676,51 @@ const endpoints: EndpointDef[] = [
     body: R.AcceptInviteRequest,
     status: 201,
     response: R.MeResponse,
+  },
+  // Google sign-in (§13.4 V4-P4b). Env-gated: all four 404 when no Google client
+  // is configured. `start`/`callback` are browser redirects (no JSON body).
+  {
+    method: 'get',
+    path: '/auth/google/start',
+    tag: 'Auth',
+    summary:
+      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; an inviteToken rides through for invite-token registration. 404 when Google is not configured.',
+    public: true,
+    query: z.object({ inviteToken: z.string().optional() }),
+    status: 302,
+  },
+  {
+    method: 'get',
+    path: '/auth/google/callback',
+    tag: 'Auth',
+    summary:
+      'Google’s redirect back: validate state, verify the ID token, then sign in / link / register per the active mode. Sets the session cookie on success and always redirects to the SPA. 404 when Google is not configured.',
+    public: true,
+    query: z.object({
+      state: z.string().optional(),
+      code: z.string().optional(),
+      error: z.string().optional(),
+    }),
+    status: 302,
+  },
+  {
+    method: 'get',
+    path: '/auth/google/link-status',
+    tag: 'Auth',
+    summary:
+      'The caller’s Google link state for Settings → Security (enabled / linked / canUnlink).',
+    status: 200,
+    response: R.GoogleLinkStatusResponse,
+  },
+  {
+    method: 'post',
+    path: '/auth/google/unlink',
+    tag: 'Auth',
+    summary:
+      'Unlink Google after a password re-auth. Refused (409 GOOGLE_ONLY_SIGN_IN) while Google is the account’s only usable sign-in method.',
+    body: R.GoogleUnlinkRequest,
+    status: 200,
+    response: R.OkResponse,
   },
 
   // Admin (§6.12)

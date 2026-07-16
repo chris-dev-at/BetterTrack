@@ -6,8 +6,13 @@ import { registrationRequests, type RegistrationRequestRow } from '../schema';
 export interface CreateRegistrationRequestInput {
   email: string;
   username: string;
-  passwordHash: string;
+  /** NULL for a federated (Google) application — it has no password (§13.4 V4-P4b). */
+  passwordHash: string | null;
   locale: string;
+  /** Federated application (§13.4 V4-P4b): the verified provider identity. */
+  provider?: string | null;
+  providerSubject?: string | null;
+  providerEmailVerified?: boolean;
 }
 
 /**
@@ -24,6 +29,9 @@ export function createRegistrationRequestRepository(db: Database) {
           username: input.username.trim(),
           passwordHash: input.passwordHash,
           locale: input.locale,
+          provider: input.provider ?? null,
+          providerSubject: input.providerSubject ?? null,
+          providerEmailVerified: input.providerEmailVerified ?? false,
         })
         .returning();
       if (!row) throw new Error('Failed to insert registration request');

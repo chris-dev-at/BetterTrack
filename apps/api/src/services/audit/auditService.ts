@@ -50,6 +50,9 @@ export const AuditAction = {
   RegistrationRequested: 'registration.requested',
   RegistrationRequestApproved: 'registration.approved',
   RegistrationRequestRejected: 'registration.rejected',
+  // Federated (Google) sign-in identity link/unlink (§13.4 V4-P4b).
+  ExternalIdentityLinked: 'external_identity.linked',
+  ExternalIdentityUnlinked: 'external_identity.unlinked',
   EmailSendFailed: 'email.send_failed',
   EmailTestSent: 'email.test_sent',
   SettingsUpdated: 'settings.updated',

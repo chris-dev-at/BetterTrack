@@ -79,7 +79,7 @@ beforeEach(() => {
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   // The login screen reads the active registration mode to decide whether to
   // offer a "create an account" link (§13.4 V4-P4a) — default to closed.
-  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed' });
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed', googleEnabled: false });
 });
 
 // ── OAuth account memory + PIN quick re-auth: the chooser state ladder (§399 §B) ─
@@ -548,7 +548,7 @@ test('a bad password does NOT overwrite the remembered identifier', async () => 
 // ── Prominent Sign-up treatment (V4-P0 (f)) ──────────────────────────────────
 
 test('the login screen exposes a designed Sign-up entry alongside the sign-in form', async () => {
-  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open' });
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: false });
   renderApp();
   await screen.findByText('Sign in to your account');
 
@@ -559,7 +559,7 @@ test('the login screen exposes a designed Sign-up entry alongside the sign-in fo
 });
 
 test('the Sign-up entry is hidden when the instance keeps registration closed', async () => {
-  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed' });
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed', googleEnabled: false });
   renderApp();
   await screen.findByText('Sign in to your account');
 

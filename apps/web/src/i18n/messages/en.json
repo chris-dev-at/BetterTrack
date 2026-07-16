@@ -172,6 +172,18 @@
       "authorizing": "Authorizing…",
       "approve": "Approve",
       "approveError": "Could not complete authorization. Please try again."
+    },
+    "google": {
+      "button": "Continue with Google",
+      "pending": "Thanks! Your Google sign-up is pending administrator approval. You'll get an email once it's reviewed.",
+      "errorGeneric": "Google sign-in failed. Please try again.",
+      "errorState": "Your Google sign-in session expired. Please try again.",
+      "errorVerify": "We couldn't verify your Google account. Please try again.",
+      "errorRegistrationClosed": "Registration is currently closed. Ask an administrator for an invite.",
+      "errorEmailTaken": "An account already exists for this email. Sign in with your password, then link Google in Settings.",
+      "errorInviteRequired": "Google sign-up needs a valid invite. Open your invite link and choose “Continue with Google”.",
+      "errorAccountDisabled": "This account has been suspended. Please contact the administrator.",
+      "errorAlreadyLinked": "That Google account is already linked to another user."
     }
   },
   "common": {
@@ -210,7 +222,8 @@
       "noPriceData": "No price data for this range yet.",
       "priceChartAria": "Price chart",
       "allocationFallbackTitle": "Allocation breakdown"
-    }
+    },
+    "or": "or"
   },
   "nav": {
     "portfolio": "Portfolio",
@@ -524,6 +537,26 @@
           "regenerating": "Regenerating…",
           "regenerate": "Regenerate recovery codes"
         }
+      },
+      "google": {
+        "title": "Google account",
+        "description": "Sign in with Google, or manage the linked account.",
+        "linkedAs": "Linked as {{email}}",
+        "linkedOn": "Linked {{date}}",
+        "notLinked": "No Google account is linked.",
+        "connectButton": "Connect Google",
+        "unlinkButton": "Unlink",
+        "unlinkTitle": "Unlink Google",
+        "unlinkPrompt": "Enter your password to confirm you want to unlink Google.",
+        "passwordLabel": "Password",
+        "confirmUnlink": "Unlink Google",
+        "cancel": "Cancel",
+        "onlyMethod": "Set a password before unlinking — Google is currently your only way to sign in.",
+        "unlinkedNotice": "Google account unlinked.",
+        "linkedNotice": "Google account linked.",
+        "wrongPassword": "Your password is incorrect.",
+        "genericError": "Something went wrong. Please try again.",
+        "loadError": "Couldn't load your Google link status."
       }
     },
     "api": {

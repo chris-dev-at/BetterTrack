@@ -122,15 +122,19 @@ function resolveAuthPolicy(path: string): PathPolicy | null {
     return { kind: 'session-only' };
   }
   // Account-security surface, both safe + unsafe methods gated by one scope:
-  // the session manager, password change, PIN status/verify/manage, and 2FA
-  // management (enroll/confirm/disable/status/recovery-codes/email/*).
+  // the session manager, password change, PIN status/verify/manage, 2FA
+  // management (enroll/confirm/disable/status/recovery-codes/email/*), and the
+  // Google link status + unlink (§13.4 V4-P4b). The Google start/callback
+  // redirects stay session/public (they fall through to the default below).
   const accountSecurity =
     path === '/auth/sessions' ||
     path.startsWith('/auth/sessions/') ||
     path === '/auth/change-password' ||
     path === '/auth/pin' ||
     path.startsWith('/auth/pin/') ||
-    path.startsWith('/auth/2fa/');
+    path.startsWith('/auth/2fa/') ||
+    path === '/auth/google/link-status' ||
+    path === '/auth/google/unlink';
   if (accountSecurity) {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
