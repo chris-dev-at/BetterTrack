@@ -1,0 +1,4 @@
+Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
+2024-01-02;Einzahlung;;;;;;2000,00;EUR
+2024-01-15;Kauf;SAP SE;DE0007164600;10;100,00;1,00;-1001,00;EUR
+2024-03-15;Dividende;SAP SE;DE0007164600;;;;25,00;EUR
