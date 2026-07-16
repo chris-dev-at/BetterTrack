@@ -37,7 +37,8 @@ export const GOOGLE_PROVIDER = 'google';
 // tight enough to bound a leaked state value.
 const STATE_TTL_SECONDS = 10 * 60;
 const stateKey = (state: string) => `google_oauth_state:${state}`;
-const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+/** Google's real production authorize endpoint — the default when no override is set. */
+export const GOOGLE_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 // A brand-new Google identity no longer instant-registers at the callback (owner
 // order 2026-07-16). The verified claims are parked in this single-use ticket for
@@ -207,6 +208,11 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
   /** The server-side callback the code is redirected to — identical on both legs. */
   const redirectUri = () => `${config.topology.apiOrigin}/api/v1/auth/google/callback`;
 
+  // The authorize endpoint the browser is bounced to. The real Google URL unless
+  // a test-only override is configured (env `BT_GOOGLE_AUTHORIZE_ENDPOINT`, threaded
+  // via config.google.authorizeEndpoint) — the e2e fake IdP points this at itself.
+  const authorizeEndpoint = config.google.authorizeEndpoint ?? GOOGLE_AUTHORIZE_ENDPOINT;
+
   /**
    * Mint a session on the SAME path a password login takes (§13.4 V4-P4b
    * acceptance): create the session, stamp last-login, and audit a `login.success`
@@ -290,7 +296,7 @@ export function createGoogleAuthService(deps: GoogleAuthServiceDeps): GoogleAuth
       scope: 'openid email profile',
       state,
     });
-    return { url: `${GOOGLE_AUTHORIZE_ENDPOINT}?${params.toString()}`, state };
+    return { url: `${authorizeEndpoint}?${params.toString()}`, state };
   }
 
   /**

@@ -556,6 +556,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       ? createGoogleVerifier({
           clientId: config.google.clientId,
           clientSecret: config.google.clientSecret,
+          // Test-only endpoint overrides (#520): unset in production, so the real
+          // Google constants apply. The authorize endpoint is read from config by
+          // the service itself; here we thread the token + JWKS endpoints.
+          ...(config.google.tokenEndpoint ? { tokenEndpoint: config.google.tokenEndpoint } : {}),
+          ...(config.google.jwksUri ? { jwksUri: config.google.jwksUri } : {}),
         })
       : {
           exchangeAndVerify: () => {
