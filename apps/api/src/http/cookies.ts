@@ -112,3 +112,44 @@ export function clearGoogleOAuthStateCookie(res: Response, config: AppConfig): v
     path: '/',
   });
 }
+
+/**
+ * Google-assisted registration ticket cookie (§13.4 V4-P4b; owner order
+ * 2026-07-16). When a Google sign-in resolves to a brand-new account, the
+ * callback parks the verified claims in a server-side one-time ticket and drops
+ * this signed httpOnly cookie carrying the ticket reference. It IS the ticket's
+ * browser-session binding: `GET /auth/google/register-ticket` reads the display
+ * values through it and `POST /auth/google/register` takes the email + subject
+ * to link from the ticket it points at — so a ticket lifted from one browser is
+ * useless in another (no cookie, no reference). SameSite=Lax (like the state
+ * cookie) so it survives the top-level GET redirect back from Google; cleared
+ * the instant the ticket is spent, and it expires with the ticket anyway.
+ */
+export const GOOGLE_REGISTER_TICKET_COOKIE = 'bt_goog_reg';
+/** Matches the Redis ticket TTL (~10 min) — long enough to fill the form, tight otherwise. */
+export const GOOGLE_REGISTER_TICKET_MAX_AGE_MS = 10 * 60 * 1000;
+
+export function setGoogleRegisterTicketCookie(
+  res: Response,
+  config: AppConfig,
+  ticket: string,
+): void {
+  res.cookie(GOOGLE_REGISTER_TICKET_COOKIE, ticket, {
+    httpOnly: true,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    signed: true,
+    maxAge: GOOGLE_REGISTER_TICKET_MAX_AGE_MS,
+    path: '/',
+  });
+}
+
+export function clearGoogleRegisterTicketCookie(res: Response, config: AppConfig): void {
+  res.clearCookie(GOOGLE_REGISTER_TICKET_COOKIE, {
+    httpOnly: true,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    signed: true,
+    path: '/',
+  });
+}

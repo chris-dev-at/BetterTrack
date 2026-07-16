@@ -149,7 +149,13 @@
       "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "pendingSubtitle": "Fast geschafft",
       "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
-      "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu."
+      "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu.",
+      "google": {
+        "connecting": "Verbindung mit Google…",
+        "connectedAs": "Mit Google verbunden als {{email}}. Richte dein Konto unten fertig ein.",
+        "emailLockedHint": "Von Google festgelegt und nicht änderbar.",
+        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte fahre erneut mit Google fort."
+      }
     },
     "oauthConsent": {
       "logoBadge": "BT",
@@ -597,7 +603,10 @@
         "linkedNotice": "Google-Konto verknüpft.",
         "wrongPassword": "Dein Passwort ist falsch.",
         "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
-        "loadError": "Der Google-Verknüpfungsstatus konnte nicht geladen werden."
+        "loadError": "Der Google-Verknüpfungsstatus konnte nicht geladen werden.",
+        "errorMismatch": "Die E-Mail dieses Google-Kontos stimmt nicht mit der E-Mail deines Kontos überein. Du kannst nur das Google-Konto mit derselben E-Mail wie dieses Konto verbinden.",
+        "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft.",
+        "errorAdmin": "Google ist für Administratorkonten nicht verfügbar."
       }
     },
     "api": {

@@ -47,6 +47,8 @@ const componentSchemas = {
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
   GoogleLinkStatusResponse: contracts.googleLinkStatusResponseSchema,
   GoogleUnlinkRequest: contracts.googleUnlinkRequestSchema,
+  GoogleRegisterTicketResponse: contracts.googleRegisterTicketResponseSchema,
+  GoogleRegisterRequest: contracts.googleRegisterRequestSchema,
   ChangePasswordRequest: contracts.changePasswordRequestSchema,
   DeleteAccountRequest: contracts.deleteAccountRequestSchema,
   PasswordResetRequest: contracts.passwordResetRequestSchema,
@@ -737,9 +739,8 @@ const endpoints: EndpointDef[] = [
     path: '/auth/google/start',
     tag: 'Auth',
     summary:
-      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; an inviteToken rides through for invite-token registration. 404 when Google is not configured.',
+      'Begin the Google OAuth flow: bind a single-use state and redirect to Google. A live session makes it a link flow; anonymous is a sign-in/registration. 404 when Google is not configured.',
     public: true,
-    query: z.object({ inviteToken: z.string().optional() }),
     status: 302,
   },
   {
@@ -747,7 +748,7 @@ const endpoints: EndpointDef[] = [
     path: '/auth/google/callback',
     tag: 'Auth',
     summary:
-      'Google’s redirect back: validate state, verify the ID token, then sign in / link / register per the active mode. Sets the session cookie on success and always redirects to the SPA. 404 when Google is not configured.',
+      'Google’s redirect back: validate state, verify the ID token, then sign in / link, or land a brand-new identity on the connected register form via a one-time ticket. Sets the session cookie on a sign-in and always redirects to the SPA. 404 when Google is not configured.',
     public: true,
     query: z.object({
       state: z.string().optional(),
@@ -755,6 +756,27 @@ const endpoints: EndpointDef[] = [
       error: z.string().optional(),
     }),
     status: 302,
+  },
+  {
+    method: 'get',
+    path: '/auth/google/register-ticket',
+    tag: 'Auth',
+    summary:
+      'Display values (email to lock, name to seed the username) for a pending Google sign-up, referenced by the signed httpOnly ticket cookie. 404 when Google is not configured or no ticket is pending.',
+    public: true,
+    status: 200,
+    response: R.GoogleRegisterTicketResponse,
+  },
+  {
+    method: 'post',
+    path: '/auth/google/register',
+    tag: 'Auth',
+    summary:
+      'Create the account from a pending Google ticket (email + linked subject taken from the ticket, never the body) per the active mode: open/invite-token → account 201, approval → 202 pending. 404 when Google is not configured.',
+    public: true,
+    body: R.GoogleRegisterRequest,
+    status: 201,
+    response: R.MeResponse,
   },
   {
     method: 'get',

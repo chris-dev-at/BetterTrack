@@ -3,6 +3,7 @@ import { Router, type Request } from 'express';
 import {
   acceptInviteRequestSchema,
   changePasswordRequestSchema,
+  googleRegisterRequestSchema,
   googleUnlinkRequestSchema,
   loginRequestSchema,
   passwordResetCompleteSchema,
@@ -21,6 +22,7 @@ import {
   twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
+  type GoogleRegisterRequest,
   type GoogleUnlinkRequest,
   type LoginRequest,
   type PasswordResetComplete,
@@ -37,14 +39,17 @@ import {
   type TwoFactorVerifyRequest,
 } from '@bettertrack/contracts';
 
-import { notFound, unauthorized } from '../../errors';
+import { ApiError, badRequest, notFound, unauthorized } from '../../errors';
 import {
   clearGoogleOAuthStateCookie,
+  clearGoogleRegisterTicketCookie,
   clearRememberedDeviceCookie,
   clearSessionCookie,
   GOOGLE_OAUTH_STATE_COOKIE,
+  GOOGLE_REGISTER_TICKET_COOKIE,
   REMEMBERED_DEVICE_COOKIE,
   setGoogleOAuthStateCookie,
+  setGoogleRegisterTicketCookie,
   setRememberedDeviceCookie,
   setSessionCookie,
 } from '../cookies';
@@ -495,13 +500,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
 
   // Kick off the flow: bind a single-use `state` and redirect to Google. A live
   // cookie session turns this into a "link Google to my account" flow (from
-  // Settings); anonymous is a sign-in/registration. An optional `inviteToken`
-  // rides through for the invite-token registration mode.
+  // Settings); anonymous is a sign-in/registration. A brand-new identity lands
+  // back on the connected register form, where any invite token is entered — so
+  // nothing rides through `start` beyond the flow's CSRF state.
   router.get('/google/start', async (req, res) => {
     if (!ctx.google.isEnabled()) throw notFound();
     const linkUserId = req.authUser && !req.apiKey ? req.authUser.id : null;
-    const inviteToken = typeof req.query.inviteToken === 'string' ? req.query.inviteToken : null;
-    const { url, state } = await ctx.google.buildAuthorizeUrl({ linkUserId, inviteToken });
+    const { url, state } = await ctx.google.buildAuthorizeUrl({ linkUserId });
     // Bind the state to this browser: the callback requires the same value back
     // from this signed cookie (login-CSRF defence, §13.4 V4-P4b).
     setGoogleOAuthStateCookie(res, ctx.config, state);
@@ -534,8 +539,12 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       case 'linked':
         res.redirect(`${web}/settings/security?google=linked`);
         return;
-      case 'pending':
-        res.redirect(`${web}/login?google=pending`);
+      case 'register':
+        // A brand-new identity: bind the pending ticket to this browser and land
+        // on the connected register form — no account exists yet (owner order
+        // 2026-07-16). The account is created only on explicit submit.
+        setGoogleRegisterTicketCookie(res, ctx.config, result.ticket);
+        res.redirect(`${web}/register?google=connected`);
         return;
       case 'error': {
         const base = result.intent === 'link' ? '/settings/security' : '/login';
@@ -544,6 +553,80 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       }
     }
   });
+
+  // ── Google-assisted registration: connect → prefill → submit (owner 2026-07-16) ──
+  // The pending ticket rides a signed httpOnly `bt_goog_reg` cookie set at the
+  // callback; read it from the signed-cookie jar (cookie-parser drops a tampered
+  // value), never the body — the client never handles the reference itself.
+  const readRegisterTicket = (req: Request): string | null => {
+    const value = req.signedCookies?.[GOOGLE_REGISTER_TICKET_COOKIE] as unknown;
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  };
+
+  // Display values for the connected register form (email to lock, name to seed
+  // the username). PUBLIC — there is no session yet; the ticket cookie is the
+  // only credential. 404 when Google is off or no ticket is pending. Read-only:
+  // it never consumes the ticket, so a page refresh keeps the connected state.
+  router.get('/google/register-ticket', async (req, res) => {
+    if (!ctx.google.isEnabled()) throw notFound();
+    const ticket = readRegisterTicket(req);
+    const info = ticket ? await ctx.google.peekRegisterTicket(ticket) : null;
+    if (!info) {
+      throw notFound('No pending Google sign-up.', 'GOOGLE_REGISTER_TICKET_INVALID');
+    }
+    res.json(info);
+  });
+
+  // Create the account from the pending ticket on explicit submit. The email +
+  // the subject to link are taken from the TICKET (never the body — a tampered
+  // form email is ignored). Per the active mode: open / invite-token → account +
+  // session (201); approval → pending (202). The ticket is single-use, spent only
+  // on success, so a validation failure (taken username, bad token) leaves it live
+  // for a retry; a spent/expired ticket 400s and its cookie is dropped.
+  router.post(
+    '/google/register',
+    limiters.login,
+    validateBody(googleRegisterRequestSchema),
+    async (req, res) => {
+      if (!ctx.google.isEnabled()) throw notFound();
+      const ticket = readRegisterTicket(req);
+      if (!ticket) {
+        clearGoogleRegisterTicketCookie(res, ctx.config);
+        throw badRequest(
+          'Your Google sign-up session expired. Please connect Google again.',
+          'GOOGLE_REGISTER_TICKET_INVALID',
+        );
+      }
+      const body = req.valid?.body as GoogleRegisterRequest;
+      let result;
+      try {
+        result = await ctx.google.completeRegistration({
+          ticket,
+          username: body.username,
+          password: body.password,
+          inviteToken: body.inviteToken ?? null,
+          locale: body.locale ?? null,
+          ip: req.ip,
+        });
+      } catch (err) {
+        // A spent/expired ticket is unrecoverable — drop its stale cookie. Any
+        // other failure (taken username, weak password, bad token) leaves the
+        // ticket + cookie in place so the user can fix the form and resubmit.
+        if (err instanceof ApiError && err.code === 'GOOGLE_REGISTER_TICKET_INVALID') {
+          clearGoogleRegisterTicketCookie(res, ctx.config);
+        }
+        throw err;
+      }
+      // Success: the ticket has been consumed server-side — clear its cookie.
+      clearGoogleRegisterTicketCookie(res, ctx.config);
+      if (result.status === 'pending') {
+        res.status(202).json({ pending: true });
+        return;
+      }
+      setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+      res.status(201).json(toMeResponseFromRow(result.user));
+    },
+  );
 
   // The caller's Google link state for the Settings surface. Cookie session or a
   // bearer holding `account:security` (both read only the caller's own account).
@@ -593,6 +676,8 @@ function googleErrorParam(code: string): string {
       return 'google_admin';
     case 'GOOGLE_ALREADY_LINKED':
       return 'google_already_linked';
+    case 'GOOGLE_EMAIL_MISMATCH':
+      return 'google_email_mismatch';
     default:
       return 'google_failed';
   }

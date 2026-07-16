@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type {
   AcceptInviteRequest,
   ChangePasswordRequest,
+  GoogleRegisterRequest,
   LoginRequest,
   MeResponse,
   PasswordResetComplete,
@@ -217,6 +218,12 @@ interface AuthContextValue {
    * confirmation. Closed mode / bad token / taken email reject with an ApiError.
    */
   register: (body: RegisterRequest) => Promise<RegisterOutcome>;
+  /**
+   * Submit the connected Google register form (owner order 2026-07-16). The email
+   * + the subject to link come from the server-side ticket, never `body`. Mirrors
+   * {@link register}: open / invite-token lands authenticated, approval pending.
+   */
+  googleRegister: (body: GoogleRegisterRequest) => Promise<RegisterOutcome>;
   /**
    * Complete a self-service password reset. A no-2FA account is signed straight
    * in (lands `authenticated`); a 2FA account lands `two_factor_required` with a
@@ -525,6 +532,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [applyUser],
   );
 
+  const googleRegister = useCallback(
+    async (body: GoogleRegisterRequest): Promise<RegisterOutcome> => {
+      const res = await api.googleRegister(body);
+      // Approval mode: no session was minted — the applicant waits for an admin.
+      if ('pending' in res) return { status: 'pending' };
+      // Open / invite-token: a session cookie was set and a usable user returned.
+      recordActivity(res.id);
+      applyUser(res);
+      return { status: 'authenticated', me: res };
+    },
+    [applyUser],
+  );
+
   const completePasswordReset = useCallback(
     async (body: PasswordResetComplete): Promise<LoginOutcome> => {
       const result = await api.completePasswordReset(body);
@@ -634,6 +654,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       requestTwoFactorEmailCode,
       acceptInvite,
       register,
+      googleRegister,
       completePasswordReset,
       changePassword,
       verifyPin,
@@ -654,6 +675,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       requestTwoFactorEmailCode,
       acceptInvite,
       register,
+      googleRegister,
       completePasswordReset,
       changePassword,
       verifyPin,

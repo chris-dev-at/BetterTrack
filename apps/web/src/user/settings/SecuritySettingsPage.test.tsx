@@ -531,4 +531,22 @@ describe('SecuritySettingsPage — Google account (§13.4 V4-P4b)', () => {
 
     expect(await screen.findByText('Google account linked.')).toBeInTheDocument();
   });
+
+  test('surfaces an email-mismatch connect failure from the ?error=google_email_mismatch marker', async () => {
+    // Connect is email-match-only (owner order 2026-07-16): the callback bounces
+    // a mismatched Google email back as ?error=google_email_mismatch.
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(getGoogleLinkStatus).mockResolvedValue({
+      enabled: true,
+      linked: false,
+      email: null,
+      linkedAt: null,
+      canUnlink: false,
+    });
+    renderPage('/settings/security?error=google_email_mismatch');
+
+    expect(await screen.findByText(/doesn't match your account email/i)).toBeInTheDocument();
+    // The connect affordance is still offered — nothing was linked.
+    expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
+  });
 });
