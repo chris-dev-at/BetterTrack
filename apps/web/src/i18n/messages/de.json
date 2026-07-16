@@ -2040,7 +2040,8 @@
   },
   "admin": {
     "nav": {
-      "security": "Sicherheit"
+      "security": "Sicherheit",
+      "health": "Zustand"
     },
     "security": {
       "title": "Sicherheit",
@@ -2132,6 +2133,47 @@
         "regenerate": "Wiederherstellungscodes neu erzeugen",
         "regenerating": "Wird neu erzeugt…",
         "regenerateError": "Wiederherstellungscodes konnten nicht neu erzeugt werden. Bitte versuche es erneut."
+      }
+    },
+    "health": {
+      "title": "Systemzustand",
+      "subtitle": "Live-Status der Kernabhängigkeiten der API.",
+      "refresh": "Aktualisieren",
+      "overall": "Gesamtstatus",
+      "version": "Version",
+      "uptime": "Betriebszeit",
+      "checkedAt": "Geprüft um",
+      "loadError": "Der Zustand konnte nicht geladen werden.",
+      "status": {
+        "ok": "Gesund",
+        "degraded": "Beeinträchtigt",
+        "down": "Ausgefallen"
+      },
+      "circuit": {
+        "closed": "Geschlossen",
+        "open": "Offen",
+        "half-open": "Halb offen"
+      },
+      "components": {
+        "database": "Datenbank",
+        "redis": "Redis",
+        "providers": "Marktdaten",
+        "queues": "Job-Warteschlangen",
+        "gateway": "Echtzeit-Gateway"
+      },
+      "providers": {
+        "none": "Keine externen Anbieter"
+      },
+      "queues": {
+        "unavailable": "Keine Warteschlangen-Registrierung in diesem Prozess",
+        "empty": "Keine Jobs",
+        "summary": "{{queues}} Warteschlangen · {{waiting}} wartend · {{failed}} fehlgeschlagen",
+        "heartbeatUnknown": "Heartbeat: nie gesehen",
+        "heartbeatAge": "Heartbeat: vor {{seconds}}s"
+      },
+      "gateway": {
+        "disabled": "Deaktiviert",
+        "connections": "{{count}} verbunden"
       }
     }
   }

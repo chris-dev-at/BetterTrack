@@ -11,7 +11,7 @@ import type {
 import type { Redis } from 'ioredis';
 
 import { cacheKey, createMarketCache, type MarketCache } from './cache';
-import { CircuitBreaker, type CircuitBreakerOptions } from './circuitBreaker';
+import { CircuitBreaker, type CircuitBreakerOptions, type CircuitState } from './circuitBreaker';
 import { isNotFoundError, isRateLimitError } from './errors';
 import type { ProviderRegistry } from './registry';
 import { DEFAULT_TIMEOUT_MS, retryOnce, withTimeout } from './resilience';
@@ -57,6 +57,13 @@ export interface MarketDataService {
    * (graceful shutdown, deterministic tests).
    */
   settled(): Promise<void>;
+  /**
+   * Per-provider circuit-breaker state for the admin health page (§13.4 V4-P5a).
+   * Reports every non-local (upstream) provider; a provider that has not yet been
+   * called has no breaker and reads `closed`. Read-only introspection — never
+   * creates or trips a breaker.
+   */
+  breakerStates(): Array<{ providerId: string; state: CircuitState }>;
 }
 
 export interface MarketDataServiceOptions {
@@ -264,5 +271,14 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
     },
 
     settled: () => cache.settled(),
+
+    breakerStates: () =>
+      registry
+        .all()
+        .filter((provider) => provider.local !== true)
+        .map((provider) => ({
+          providerId: provider.id,
+          state: breakers.get(provider.id)?.getState() ?? ('closed' as CircuitState),
+        })),
   };
 }

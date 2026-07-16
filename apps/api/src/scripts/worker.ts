@@ -31,6 +31,7 @@ import {
 } from '../jobs';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
+import { initObservability } from '../services/observability/sentry';
 import { createAuditService } from '../services/audit/auditService';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport } from '../services/email/transport';
@@ -42,6 +43,9 @@ import { createWebPushChannel } from '../services/notifications/webPush';
 
 const config = loadConfig();
 const logger = createLogger(config);
+// Error tracking (§13.4 V4-P5a): init in the worker too, so BullMQ job failures
+// AND any uncaught worker error are captured. A no-op when BT_SENTRY_DSN is unset.
+const observability = initObservability(config, logger, { serverName: 'worker' });
 const createConnection = jobConnectionFactory(config.redisUrl);
 
 // Dedicated connections per role: pub/sub subscriber must be its own; the
@@ -140,6 +144,8 @@ const running = createJobWorkers({
   definitions,
   ctx,
   logger,
+  // Permanently-failed (dead-lettered) jobs are reported to error tracking.
+  onPermanentFailure: (err, meta) => observability.captureException(err, meta),
 });
 
 const scheduled = await registerSchedules(registry, definitions);
@@ -160,6 +166,8 @@ async function shutdown(signal: string): Promise<void> {
     await deadLetterConnection.quit();
     await marketDataConnection.quit();
     await client.end();
+    // Flush any buffered Sentry events before the process exits.
+    await observability.close();
   } catch (err) {
     logger.error({ err }, 'error during worker shutdown');
   } finally {

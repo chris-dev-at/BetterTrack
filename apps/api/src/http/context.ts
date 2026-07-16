@@ -42,9 +42,12 @@ import {
   createQueueRegistry,
   noopBackfillScheduler,
   type BackfillScheduler,
+  type QueueRegistry,
 } from '../jobs';
 import type { Logger } from '../logger';
 import { createRealtimeGateway, type RealtimeGateway } from '../realtime';
+import { createHealthService, type HealthService } from '../services/health/healthService';
+import { initObservability, type Observability } from '../services/observability/sentry';
 import { createMarketData } from '../providers';
 import type { MarketDataService } from '../providers';
 import {
@@ -221,6 +224,20 @@ export interface AppContext {
    * the context so the middleware can be built from it in the router layer.
    */
   idempotency: IdempotencyKeyRepository;
+  /**
+   * Producer-side BullMQ queue registry (§9). Null in processes that hold none —
+   * tests run on ioredis-mock, which BullMQ cannot drive, so `config.isTest`
+   * builds no registry. Held on the context so the admin queue inspector
+   * (bull-board) and the health page can introspect queue state (§13.4 V4-P5a).
+   */
+  queues: QueueRegistry | null;
+  /**
+   * Error tracking handle (§13.4 V4-P5a). Real Sentry client when BT_SENTRY_DSN
+   * is set, a no-op otherwise — so the error handler always has something to call.
+   */
+  observability: Observability;
+  /** Admin health snapshot behind `GET /admin/health` (§13.4 V4-P5a). */
+  health: HealthService;
 }
 
 export interface BuildContextDeps {
@@ -255,6 +272,11 @@ export interface BuildContextDeps {
 /** Composition root: repositories → services → context. */
 export function buildContext(deps: BuildContextDeps): AppContext {
   const { config, db, redis, logger } = deps;
+
+  // Error tracking (§13.4 V4-P5a): a real Sentry client only when BT_SENTRY_DSN
+  // is set (never in tests), else a no-op — so the error handler wiring below is
+  // unconditional and boot is byte-identical when the DSN is absent.
+  const observability = initObservability(config, logger, { serverName: 'api' });
 
   const userRepo = createUserRepository(db);
   const inviteRepo = createInviteRepository(db);
@@ -727,6 +749,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     presence,
   });
 
+  // Admin health snapshot (§13.4 V4-P5a): live DB/Redis/provider/queue/gateway
+  // probe. Uses the same queue registry the durable dispatch path enqueues onto.
+  const health = createHealthService({
+    config,
+    db,
+    redis,
+    marketData,
+    queues,
+    gateway: realtime,
+  });
+
   return {
     config,
     redis,
@@ -761,5 +794,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     liveMode,
     events,
     idempotency,
+    queues,
+    observability,
+    health,
   };
 }

@@ -77,6 +77,8 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     },
     // The stub has no cache, so there is never a background refresh to await.
     async settled() {},
+    // No upstream providers behind the stub, so no breakers to report.
+    breakerStates: () => [],
   };
 }
 

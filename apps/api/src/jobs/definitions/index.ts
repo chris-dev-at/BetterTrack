@@ -34,6 +34,7 @@ export {
   HEARTBEAT_SCHEDULER_ID,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_ASSET_ID,
+  HEARTBEAT_LAST_KEY,
 } from './heartbeat';
 
 export {

@@ -445,3 +445,114 @@ export const adminTwoFactorEmailStartRequestSchema = z
   })
   .strict();
 export type AdminTwoFactorEmailStartRequest = z.infer<typeof adminTwoFactorEmailStartRequestSchema>;
+
+// ── Admin health page (§13.4 V4-P5a) ────────────────────────────────────────
+// The richer, admin-only companion to the public `/health` liveness probe: a
+// per-component status snapshot the admin Health page renders. The public probe
+// (`apps/api/src/http/healthRouter.ts`) stays the deploy/liveness marker; this is
+// the operator diagnostics surface (DB/Redis/provider/queue/gateway + version +
+// uptime). Every component reports one of three states so a partial outage (a
+// stopped Redis, an open provider breaker) is visible without failing the whole
+// page.
+
+/** Per-component and overall health verdict. `down` is a hard outage; `degraded`
+ *  is a soft/partial fault (an open breaker, a stale heartbeat) that still serves. */
+export const HEALTH_STATUSES = ['ok', 'degraded', 'down'] as const;
+export const healthStatusSchema = z.enum(HEALTH_STATUSES);
+export type HealthStatus = z.infer<typeof healthStatusSchema>;
+
+/** A single dependency's status with an optional human detail + probe latency. */
+export const adminHealthComponentSchema = z
+  .object({
+    status: healthStatusSchema,
+    /** Short human note (e.g. an error class); never carries PII or secrets. */
+    detail: z.string().optional(),
+    /** Round-trip of the probe in ms, when measured (DB/Redis pings). */
+    latencyMs: z.number().nonnegative().optional(),
+  })
+  .strict();
+export type AdminHealthComponent = z.infer<typeof adminHealthComponentSchema>;
+
+/** Circuit-breaker state, mirroring the provider layer's own enum (§5.1). */
+export const HEALTH_CIRCUIT_STATES = ['closed', 'open', 'half-open'] as const;
+export const healthCircuitStateSchema = z.enum(HEALTH_CIRCUIT_STATES);
+export type HealthCircuitState = z.infer<typeof healthCircuitStateSchema>;
+
+/** Market-data providers: overall status + each provider's breaker state (§5.1). */
+export const adminHealthProvidersSchema = z
+  .object({
+    status: healthStatusSchema,
+    breakers: z.array(
+      z.object({ providerId: z.string(), state: healthCircuitStateSchema }).strict(),
+    ),
+  })
+  .strict();
+export type AdminHealthProviders = z.infer<typeof adminHealthProvidersSchema>;
+
+/** One BullMQ queue's depth counts (§9). */
+export const adminHealthQueueDepthSchema = z
+  .object({
+    name: z.string(),
+    waiting: z.number().int().nonnegative(),
+    active: z.number().int().nonnegative(),
+    delayed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    completed: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminHealthQueueDepth = z.infer<typeof adminHealthQueueDepthSchema>;
+
+/**
+ * Job system status: per-queue depths + the `system.heartbeat` freshness. When
+ * the process holds no live queue registry (tests / an API without the worker's
+ * Redis-backed queues) `available` is false and depths are empty.
+ */
+export const adminHealthQueuesSchema = z
+  .object({
+    status: healthStatusSchema,
+    available: z.boolean(),
+    depths: z.array(adminHealthQueueDepthSchema),
+    heartbeat: z
+      .object({
+        status: healthStatusSchema,
+        /** Seconds since the last heartbeat tick; null when none has been seen. */
+        ageSeconds: z.number().nonnegative().nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type AdminHealthQueues = z.infer<typeof adminHealthQueuesSchema>;
+
+/** Realtime gateway (§4.5): whether it is enabled/attached + live socket count. */
+export const adminHealthGatewaySchema = z
+  .object({
+    status: healthStatusSchema,
+    enabled: z.boolean(),
+    attached: z.boolean(),
+    connections: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdminHealthGateway = z.infer<typeof adminHealthGatewaySchema>;
+
+/** `GET /admin/health` — the operator diagnostics snapshot (§13.4 V4-P5a). */
+export const adminHealthResponseSchema = z
+  .object({
+    /** Overall verdict: `down` if the database (system of record) is down, else
+     *  `degraded` if any component is faulted (a stopped Redis, an open breaker,
+     *  a stale heartbeat), else `ok`. */
+    status: healthStatusSchema,
+    version: z.string(),
+    uptimeSeconds: z.number().nonnegative(),
+    checkedAt: z.string(),
+    components: z
+      .object({
+        database: adminHealthComponentSchema,
+        redis: adminHealthComponentSchema,
+        providers: adminHealthProvidersSchema,
+        queues: adminHealthQueuesSchema,
+        gateway: adminHealthGatewaySchema,
+      })
+      .strict(),
+  })
+  .strict();
+export type AdminHealthResponse = z.infer<typeof adminHealthResponseSchema>;

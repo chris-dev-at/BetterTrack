@@ -93,6 +93,7 @@ const componentSchemas = {
   AdminInviteListResponse: contracts.adminInviteListResponseSchema,
   CreateInviteResponse: contracts.createInviteResponseSchema,
   AdminStats: contracts.adminStatsSchema,
+  AdminHealthResponse: contracts.adminHealthResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -926,6 +927,14 @@ const endpoints: EndpointDef[] = [
     summary: 'Overview counters.',
     status: 200,
     response: R.AdminStats,
+  },
+  {
+    method: 'get',
+    path: '/admin/health',
+    tag: 'Admin',
+    summary: 'Operator health snapshot: DB/Redis/provider/queue/gateway, version, uptime.',
+    status: 200,
+    response: R.AdminHealthResponse,
   },
   {
     method: 'get',

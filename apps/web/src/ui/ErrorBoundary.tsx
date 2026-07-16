@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 
 import { useT } from '../i18n';
+import { reportError } from '../lib/sentry';
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -31,8 +32,10 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     return { hasError: true, error };
   }
 
-  override componentDidCatch(_error: Error, _info: ErrorInfo): void {
-    // Intentionally silent — a future monitoring integration can hook in here.
+  override componentDidCatch(error: Error, info: ErrorInfo): void {
+    // Report render-time errors to error tracking (§13.4 V4-P5a). A no-op when
+    // Sentry is disabled (no DSN), so behavior is unchanged without a DSN.
+    reportError(error, { componentStack: info.componentStack });
   }
 
   reset = (): void => {
