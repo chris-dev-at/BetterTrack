@@ -197,6 +197,12 @@ const componentSchemas = {
   // Ideas (§13.4 V4-P9)
   IdeaListResponse: contracts.ideaListResponseSchema,
   IdeaResponse: contracts.ideaResponseSchema,
+
+  // Broker CSV imports (§13.4 V4-P8)
+  ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
+  ImportPreviewResponse: contracts.importPreviewResponseSchema,
+  ApplyImportRequest: contracts.applyImportRequestSchema,
+  ApplyImportResponse: contracts.applyImportResponseSchema,
   CreateIdeaRequest: contracts.createIdeaRequestSchema,
   UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
 
@@ -355,6 +361,12 @@ interface EndpointDef {
   params?: z.AnyZodObject;
   query?: z.AnyZodObject;
   body?: z.ZodTypeAny;
+  /**
+   * Request body media type; defaults to JSON. The CSV upload (§13.4 V4-P8) is
+   * the one `multipart/form-data` endpoint — its file part is described in its
+   * body schema via `.openapi({ format: 'binary' })`.
+   */
+  bodyContentType?: string;
   status: number;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
@@ -1811,6 +1823,62 @@ const endpoints: EndpointDef[] = [
     response: R.IdeaResponse,
   },
 
+  // Broker CSV imports (§13.4 V4-P8)
+  {
+    method: 'get',
+    path: '/imports/brokers',
+    tag: 'Imports',
+    summary: 'The supported broker CSV mappers, for the manual picker.',
+    status: 200,
+    response: R.ImportBrokerListResponse,
+  },
+  {
+    method: 'post',
+    path: '/imports',
+    tag: 'Imports',
+    summary:
+      'Upload a broker CSV: autodetect (or pick) the broker, parse + normalize into a staged batch, and return the preview with per-row mapped/unmapped/duplicate/error flags. Nothing is applied yet.',
+    body: contracts.createImportBatchFieldsSchema.extend({
+      file: z.string().openapi({
+        type: 'string',
+        format: 'binary',
+        description: 'The broker CSV export (UTF-8, ≤ 5 MB).',
+      }),
+    }),
+    bodyContentType: 'multipart/form-data',
+    status: 201,
+    response: R.ImportPreviewResponse,
+  },
+  {
+    method: 'get',
+    path: '/imports/{batchId}',
+    tag: 'Imports',
+    summary: "Re-read a staged import batch's preview (owner-scoped).",
+    params: contracts.importBatchIdParamSchema,
+    status: 200,
+    response: R.ImportPreviewResponse,
+  },
+  {
+    method: 'post',
+    path: '/imports/{batchId}/apply',
+    tag: 'Imports',
+    summary:
+      'Confirm a staged batch: apply its valid rows into the portfolio (+ chosen cash source) through the portfolio/tax services, with per-row outcomes — never all-or-nothing.',
+    params: contracts.importBatchIdParamSchema,
+    body: R.ApplyImportRequest,
+    status: 200,
+    response: R.ApplyImportResponse,
+    idempotent: true,
+  },
+  {
+    method: 'delete',
+    path: '/imports/{batchId}',
+    tag: 'Imports',
+    summary: 'Discard a staged import batch (staging data only).',
+    params: contracts.importBatchIdParamSchema,
+    status: 204,
+  },
+
   // Analytics (§13.3 V3-P9)
   {
     method: 'get',
@@ -2590,7 +2658,14 @@ for (const ep of endpoints) {
       ...(ep.params ? { params: ep.params } : {}),
       ...(ep.query ? { query: ep.query } : {}),
       ...(ep.idempotent ? { headers: idempotencyKeyHeaders } : {}),
-      ...(ep.body ? { body: { required: true, content: jsonContent(ep.body) } } : {}),
+      ...(ep.body
+        ? {
+            body: {
+              required: true,
+              content: { [ep.bodyContentType ?? 'application/json']: { schema: ep.body } },
+            },
+          }
+        : {}),
     },
     responses,
   });

@@ -1822,6 +1822,112 @@ export const discordWebhooks = pgTable('discord_webhooks', {
 
 export type DiscordWebhookRow = typeof discordWebhooks.$inferSelect;
 export type NewDiscordWebhookRow = typeof discordWebhooks.$inferInsert;
+// --- Broker CSV imports (§13.4 V4-P8) ---------------------------------------
+
+/** Batch lifecycle: staged (`pending`) until confirmed (`applied`). */
+export const importBatchStatusEnum = pgEnum('import_batch_status', ['pending', 'applied']);
+
+/** Normalized row kinds a broker CSV maps to (mirrors contracts' IMPORT_ROW_KINDS). */
+export const importRowKindEnum = pgEnum('import_row_kind', [
+  'buy',
+  'sell',
+  'dividend',
+  'deposit',
+  'withdrawal',
+]);
+
+/** Preview flag per staged row (mirrors contracts' IMPORT_ROW_FLAGS). */
+export const importRowFlagEnum = pgEnum('import_row_flag', [
+  'mapped',
+  'unmapped',
+  'duplicate',
+  'error',
+]);
+
+/** Apply outcome per staged row (mirrors contracts' IMPORT_ROW_RESULTS). */
+export const importRowResultEnum = pgEnum('import_row_result', [
+  'applied',
+  'skipped_duplicate',
+  'skipped_unmapped',
+  'skipped_error',
+  'failed',
+]);
+
+/**
+ * One uploaded broker CSV, staged for preview (§13.4 V4-P8). Nothing in the
+ * portfolio is written while a batch is `pending` — apply happens only on the
+ * explicit confirm, through the portfolio/tax services. Owner- and portfolio-
+ * scoped; both FKs cascade so an account or portfolio deletion takes its staged
+ * imports with it. `broker_id` is a mapper id string (never an enum — adding a
+ * broker must not need a migration). `cash_source_id` is recorded at apply time.
+ */
+export const importBatches = pgTable(
+  'import_batches',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    brokerId: text('broker_id').notNull(),
+    filename: text('filename').notNull(),
+    status: importBatchStatusEnum('status').notNull().default('pending'),
+    cashSourceId: uuid('cash_source_id').references(() => portfolioCashSources.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    appliedAt: timestamp('applied_at', { withTimezone: true }),
+  },
+  (t) => [index('import_batches_owner_idx').on(t.ownerId)],
+);
+
+/**
+ * One normalized staging row of an import batch (§13.4 V4-P8). Carries the
+ * original CSV line (`raw`, 1-based `row_index`) beside the normalized fields:
+ * trades keep native-currency quantity/price/fee, dividend + cash rows keep the
+ * EUR magnitude in `amount_eur` (the cash ledger is EUR-only, §14). `flag` is
+ * the preview verdict; `message` explains error/unmapped rows. `content_hash`
+ * (date+instrument+qty+price, §13.4) drives dedupe within the file and against
+ * already-recorded data. `asset_id` is the resolved catalog instrument (SET NULL
+ * on catalog deletion — the row then re-reads as unresolved rather than
+ * vanishing). `result`/`result_message` record the per-row apply outcome.
+ */
+export const importRows = pgTable(
+  'import_rows',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    batchId: uuid('batch_id')
+      .notNull()
+      .references(() => importBatches.id, { onDelete: 'cascade' }),
+    rowIndex: integer('row_index').notNull(),
+    raw: text('raw').notNull(),
+    kind: importRowKindEnum('kind'),
+    flag: importRowFlagEnum('flag').notNull(),
+    message: text('message'),
+    executedAt: timestamp('executed_at', { withTimezone: true }),
+    isin: text('isin'),
+    symbol: text('symbol'),
+    name: text('name'),
+    quantity: numeric('quantity', { precision: 20, scale: 8 }),
+    price: numeric('price', { precision: 20, scale: 6 }),
+    fee: numeric('fee', { precision: 20, scale: 6 }),
+    amountEur: numeric('amount_eur', { precision: 20, scale: 6 }),
+    currency: char('currency', { length: 3 }),
+    note: text('note'),
+    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'set null' }),
+    contentHash: text('content_hash'),
+    result: importRowResultEnum('result'),
+    resultMessage: text('result_message'),
+  },
+  (t) => [index('import_rows_batch_idx').on(t.batchId)],
+);
+
+export type ImportBatchRow = typeof importBatches.$inferSelect;
+export type NewImportBatchRow = typeof importBatches.$inferInsert;
+export type ImportRowRow = typeof importRows.$inferSelect;
+export type NewImportRowRow = typeof importRows.$inferInsert;
 
 export const schema = {
   users,
@@ -1871,6 +1977,9 @@ export const schema = {
   discordWebhooks,
   announcementSeverityEnum,
   exportJobStatusEnum,
+
+  importBatches,
+  importRows,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -1888,4 +1997,8 @@ export const schema = {
   friendRequestStatusEnum,
   shareKindEnum,
   shareAudienceEnum,
+  importBatchStatusEnum,
+  importRowKindEnum,
+  importRowFlagEnum,
+  importRowResultEnum,
 };

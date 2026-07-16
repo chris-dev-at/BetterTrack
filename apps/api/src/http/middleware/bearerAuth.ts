@@ -78,6 +78,10 @@ const ACCOUNT_SECURITY_SCOPE = 'account:security';
 const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[] = [
   { prefix: '/portfolios', read: 'portfolio:read', write: 'portfolio:write' },
   { prefix: '/custom-assets', read: 'portfolio:read', write: 'portfolio:write' },
+  // Broker CSV imports (§13.4 V4-P8) stage + apply portfolio data — the same
+  // scope pair as /portfolios, declared here so the module never falls through
+  // to the session-only default (the #396/#405 gap class).
+  { prefix: '/imports', read: 'portfolio:read', write: 'portfolio:write' },
   // Analytics deep-dive (§13.3 V3-P9) reads portfolio-derived series/stats — a
   // read-only surface, but declared with the portfolio scope pair so it never
   // falls through to the session-only default (the #396/#405 gap class).

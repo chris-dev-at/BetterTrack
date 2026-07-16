@@ -1184,7 +1184,8 @@
         "transactions": "Transactions",
         "customAssets": "Custom Assets",
         "cash": "Cash",
-        "tax": "Tax"
+        "tax": "Tax",
+        "import": "Import"
       },
       "transactionsComingSoon": {
         "description": "The full transaction ledger — every buy and sell, editable, with realized P/L — lands with the Portfolio phase."
@@ -1410,6 +1411,67 @@
     "recategorize": {
       "message": "Some custom investments need a category. We moved them to “Other” — open one and pick a real category so it groups correctly.",
       "dismiss": "Dismiss"
+    },
+    "import": {
+      "title": "Broker CSV import",
+      "intro": "Upload your broker's CSV export to bring existing trades, dividends and cash movements into this portfolio. Rows are staged and previewed first — nothing is recorded until you confirm. Broker accounts are never connected directly.",
+      "uploadTitle": "1. Choose file & broker",
+      "fileLabel": "CSV export",
+      "brokerLabel": "Broker",
+      "brokerAuto": "Detect automatically",
+      "uploadCta": "Create preview",
+      "uploading": "Uploading…",
+      "uploadFailed": "Upload failed.",
+      "previewTitle": "Preview: {{filename}}",
+      "detectedBroker": "Broker: {{broker}}",
+      "counts": {
+        "total": "{{count}} rows",
+        "mapped": "{{count}} mapped",
+        "duplicate": "{{count}} duplicates",
+        "unmapped": "{{count}} unmapped",
+        "error": "{{count}} errors"
+      },
+      "table": {
+        "row": "Row",
+        "date": "Date",
+        "type": "Type",
+        "instrument": "Instrument",
+        "quantity": "Quantity",
+        "price": "Price",
+        "amount": "Amount (EUR)",
+        "status": "Status"
+      },
+      "kind": {
+        "buy": "Buy",
+        "sell": "Sell",
+        "dividend": "Dividend",
+        "deposit": "Deposit",
+        "withdrawal": "Withdrawal"
+      },
+      "flag": {
+        "mapped": "Mapped",
+        "unmapped": "Unmapped",
+        "duplicate": "Duplicate",
+        "error": "Error"
+      },
+      "cashSourceLabel": "Cash source (dividends & cash rows)",
+      "cashSourceMain": "Main",
+      "linkCashLabel": "Fund buys from / credit sell proceeds to this cash source",
+      "applyCta": "Import {{count}} rows",
+      "applying": "Importing…",
+      "applyFailed": "Import failed.",
+      "discardCta": "Discard",
+      "nothingToApply": "No importable rows — fix the flagged issues above or upload a different file.",
+      "resultTitle": "Result",
+      "resultSummary": "{{applied}} imported · {{skipped}} skipped · {{failed}} failed",
+      "result": {
+        "applied": "Imported",
+        "skipped_duplicate": "Skipped (duplicate)",
+        "skipped_unmapped": "Skipped (unmapped)",
+        "skipped_error": "Skipped (error)",
+        "failed": "Failed"
+      },
+      "startOver": "Import another file"
     }
   },
   "workboard": {

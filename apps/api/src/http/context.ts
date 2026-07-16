@@ -11,6 +11,7 @@ import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createIdeaRepository } from '../data/repositories/ideaRepository';
+import { createImportRepository } from '../data/repositories/importRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
@@ -99,6 +100,8 @@ import { createGoogleVerifier, type GoogleTokenVerifier } from '../services/auth
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createChatService, type ChatService } from '../services/chat';
 import { createIdeasService, type IdeasService } from '../services/ideas/ideasService';
+import { createImportService, type ImportService } from '../services/imports/importService';
+import { ALL_MAPPERS } from '../services/imports/mappers';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createAudienceService } from '../services/social/audienceService';
 import {
@@ -194,6 +197,8 @@ export interface AppContext {
   backtest: BacktestService;
   /** Saved & shareable Workboard analyses — CRUD + audience-gated clone (§13.4 V4-P9). */
   ideas: IdeasService;
+  /** Broker CSV imports — staged upload/preview/apply framework + mappers (§13.4 V4-P8). */
+  imports: ImportService;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -743,6 +748,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
   });
 
+  // Broker CSV imports (§13.4 V4-P8): staged upload → preview → apply. Staging
+  // has its own tables; every APPLY write routes through the portfolio/tax
+  // services above (trades, dividends, cash) — never SQL of its own. Instrument
+  // resolution rides the local-first search catalog (§6.2).
+  const imports = createImportService({
+    importRepo: createImportRepository(db),
+    portfolioRepo,
+    transactionRepo,
+    cashSourceRepo,
+    search,
+    portfolio,
+    tax,
+    mappers: ALL_MAPPERS,
+    logger,
+  });
+
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Emits friend.request / friend.accepted through the notification center.
@@ -981,6 +1002,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     conglomerate,
     backtest: backtestPreview,
     ideas,
+    imports,
     analytics,
     social,
     chat,

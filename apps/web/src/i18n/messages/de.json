@@ -1184,7 +1184,8 @@
         "transactions": "Transaktionen",
         "customAssets": "Individuelle Anlagen",
         "cash": "Bargeld",
-        "tax": "Steuer"
+        "tax": "Steuer",
+        "import": "Import"
       },
       "transactionsComingSoon": {
         "description": "Das vollständige Transaktionsjournal — jeder Kauf und Verkauf, bearbeitbar, mit realisiertem G/V — kommt mit der Portfolio-Phase."
@@ -1410,6 +1411,67 @@
     "recategorize": {
       "message": "Einige individuelle Anlagen brauchen eine Kategorie. Wir haben sie auf „Sonstiges“ verschoben — öffne eine und wähle eine passende Kategorie, damit sie korrekt gruppiert wird.",
       "dismiss": "Ausblenden"
+    },
+    "import": {
+      "title": "Broker-CSV-Import",
+      "intro": "Lade den CSV-Export deines Brokers hoch, um bestehende Trades, Dividenden und Cash-Bewegungen in dieses Portfolio zu übernehmen. Die Zeilen werden zuerst als Vorschau angezeigt — gebucht wird erst nach deiner Bestätigung. Broker-Konten werden nie direkt verbunden.",
+      "uploadTitle": "1. Datei & Broker wählen",
+      "fileLabel": "CSV-Export",
+      "brokerLabel": "Broker",
+      "brokerAuto": "Automatisch erkennen",
+      "uploadCta": "Vorschau erstellen",
+      "uploading": "Wird hochgeladen…",
+      "uploadFailed": "Upload fehlgeschlagen.",
+      "previewTitle": "Vorschau: {{filename}}",
+      "detectedBroker": "Broker: {{broker}}",
+      "counts": {
+        "total": "{{count}} Zeilen",
+        "mapped": "{{count}} zugeordnet",
+        "duplicate": "{{count}} Duplikate",
+        "unmapped": "{{count}} nicht zugeordnet",
+        "error": "{{count}} Fehler"
+      },
+      "table": {
+        "row": "Zeile",
+        "date": "Datum",
+        "type": "Typ",
+        "instrument": "Instrument",
+        "quantity": "Anzahl",
+        "price": "Kurs",
+        "amount": "Betrag (EUR)",
+        "status": "Status"
+      },
+      "kind": {
+        "buy": "Kauf",
+        "sell": "Verkauf",
+        "dividend": "Dividende",
+        "deposit": "Einzahlung",
+        "withdrawal": "Auszahlung"
+      },
+      "flag": {
+        "mapped": "Zugeordnet",
+        "unmapped": "Nicht zugeordnet",
+        "duplicate": "Duplikat",
+        "error": "Fehler"
+      },
+      "cashSourceLabel": "Cash-Quelle (Dividenden & Cash-Zeilen)",
+      "cashSourceMain": "Main",
+      "linkCashLabel": "Käufe aus dieser Cash-Quelle bezahlen / Verkaufserlöse gutschreiben",
+      "applyCta": "{{count}} Zeilen importieren",
+      "applying": "Wird importiert…",
+      "applyFailed": "Import fehlgeschlagen.",
+      "discardCta": "Verwerfen",
+      "nothingToApply": "Keine importierbaren Zeilen — behebe die markierten Probleme oder lade eine andere Datei hoch.",
+      "resultTitle": "Ergebnis",
+      "resultSummary": "{{applied}} importiert · {{skipped}} übersprungen · {{failed}} fehlgeschlagen",
+      "result": {
+        "applied": "Importiert",
+        "skipped_duplicate": "Übersprungen (Duplikat)",
+        "skipped_unmapped": "Übersprungen (nicht zugeordnet)",
+        "skipped_error": "Übersprungen (Fehler)",
+        "failed": "Fehlgeschlagen"
+      },
+      "startOver": "Weitere Datei importieren"
     }
   },
   "workboard": {

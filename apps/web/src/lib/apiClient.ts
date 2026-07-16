@@ -118,7 +118,10 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
   const headers: Record<string, string> = {};
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  // A FormData body (the CSV import upload, §13.4 V4-P8) travels as multipart —
+  // fetch sets the boundary-bearing Content-Type itself, so don't override it.
+  const isFormData = options.body instanceof FormData;
+  if (options.body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
   if (!SAFE_METHODS.has(method)) headers[CSRF_HEADER] = CSRF_VALUE;
 
   let response: Response;
@@ -127,7 +130,12 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
       method,
       headers,
       credentials: 'include',
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      body:
+        options.body === undefined
+          ? undefined
+          : isFormData
+            ? (options.body as FormData)
+            : JSON.stringify(options.body),
       signal: options.signal,
     });
   } catch (cause) {

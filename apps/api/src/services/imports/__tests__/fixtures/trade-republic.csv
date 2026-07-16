@@ -1,0 +1,8 @@
+Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
+2024-01-02;Einzahlung;;;;;;2.000,00;EUR
+2024-01-15;Kauf;Muster Tech AG;DE0001234567;10;50,00;1,00;-501,00;EUR
+2024-02-01;Sparplan;Beispiel World ETF;IE0009876543;2,5;40,00;0,00;-100,00;EUR
+2024-03-15;Dividende;Muster Tech AG;DE0001234567;;;;12,50;EUR
+2024-04-10;Verkauf;Muster Tech AG;DE0001234567;4;60,00;1,00;239,00;EUR
+2024-05-02;Zinsen;;;;;;3,75;EUR
+2024-06-01;Auszahlung;;;;;;250,00;EUR
