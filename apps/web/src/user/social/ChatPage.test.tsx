@@ -17,6 +17,7 @@ vi.mock('../../lib/socialApi', () => ({
 }));
 vi.mock('../../lib/portfolioApi', () => ({ listPortfolios: vi.fn() }));
 vi.mock('../../lib/conglomerateApi', () => ({ listConglomerates: vi.fn() }));
+vi.mock('../../lib/ideasApi', () => ({ listIdeas: vi.fn() }));
 vi.mock('../AuthContext', () => ({ useAuth: () => ({ user: { id: 'me', username: 'me' } }) }));
 
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -30,6 +31,9 @@ import {
 } from '../../lib/chatApi';
 import { ApiError } from '../../lib/apiClient';
 import { getAudience, setAudience } from '../../lib/socialApi';
+import { listConglomerates } from '../../lib/conglomerateApi';
+import { listPortfolios } from '../../lib/portfolioApi';
+import { listIdeas } from '../../lib/ideasApi';
 import { ChatPage } from './ChatPage';
 
 function makeQueryClient() {
@@ -65,6 +69,10 @@ beforeEach(() => {
   // jsdom has no scrollIntoView; the thread auto-scroll calls it.
   Element.prototype.scrollIntoView = vi.fn();
   vi.mocked(markConversationRead).mockResolvedValue(undefined);
+  // Attach-picker sources default to empty; individual tests override.
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [] });
+  vi.mocked(listIdeas).mockResolvedValue({ ideas: [] });
 });
 
 describe('ChatPage — conversation list', () => {
@@ -418,5 +426,93 @@ describe('ChatPage — composer focus', () => {
     expect(screen.queryByPlaceholderText('Message')).not.toBeInTheDocument();
     // The generic send-error alert is NOT shown for a ban.
     expect(screen.queryByText(/couldn't send your message/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatPage — idea chips (V4-P9)', () => {
+  beforeEach(() => {
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [], unreadTotal: 0 });
+    vi.mocked(openConversation).mockResolvedValue({
+      id: 'c1',
+      user: { id: 'u2', username: 'bob' },
+      unreadCount: 0,
+      lastMessage: null,
+      lastMessageAt: null,
+    });
+  });
+
+  test('a not-shared idea chip shows the locked state and never the idea name', async () => {
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: {
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      },
+      nextCursor: null,
+      messages: [
+        {
+          id: 'm1',
+          conversationId: 'c1',
+          senderId: 'u2',
+          body: null,
+          chip: { kind: 'idea', subjectId: 'idea1', viewable: false, title: null, subtitle: null },
+          createdAt: '2026-01-01T10:00:00.000Z',
+        },
+      ],
+    });
+
+    renderAt('/social/chat/u2');
+    await waitFor(() => expect(screen.getByText('Not shared with you')).toBeInTheDocument());
+    // The kind is named, but never a title/name (the server never resolves it).
+    expect(screen.getByText('Idea')).toBeInTheDocument();
+    expect(screen.queryByText('View')).not.toBeInTheDocument();
+  });
+
+  test('attaches an idea chip from the share picker (never widens access)', async () => {
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: {
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      },
+      nextCursor: null,
+      messages: [],
+    });
+    vi.mocked(listIdeas).mockResolvedValue({
+      ideas: [
+        {
+          id: 'idea1',
+          name: 'Momentum basket',
+          thesis: null,
+          state: {
+            source: { kind: 'adhoc', positions: [{ assetId: 'a1', weight: 1 }] },
+            range: '5Y',
+            benchmark: null,
+            mode: 'clip',
+            rebalance: 'none',
+          },
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    vi.mocked(sendChatMessage).mockResolvedValue(undefined as never);
+
+    const user = userEvent.setup();
+    renderAt('/social/chat/u2');
+    await screen.findByPlaceholderText('Message');
+
+    await user.click(screen.getByRole('button', { name: 'Share an item' }));
+    await user.click(await screen.findByRole('button', { name: /momentum basket/i }));
+
+    await waitFor(() =>
+      expect(sendChatMessage).toHaveBeenCalledWith('c1', {
+        chip: { kind: 'idea', subjectId: 'idea1' },
+      }),
+    );
   });
 });

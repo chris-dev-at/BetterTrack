@@ -28,7 +28,6 @@ import {
   BacktestsPage,
   CalculatorsPage,
   ComparisonsPage,
-  SavedIdeasPage,
   WatchlistPage,
   WorkboardLayout,
 } from './workboard/WorkboardSection';
@@ -36,6 +35,8 @@ import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
 import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
+import { IdeasListPage } from './workboard/IdeasListPage';
+import { IdeaWorkboardPage } from './workboard/IdeaWorkboardPage';
 import { ConsentPage } from './oauth/ConsentPage';
 import { DeleteAccountPage } from './settings/DeleteAccountPage';
 import { SearchPage } from './assets/SearchPage';
@@ -54,6 +55,7 @@ import { SharedPortfolioPage } from './social/SharedPortfolioPage';
 import { SharedConglomeratePage } from './social/SharedConglomeratePage';
 import { SharedWatchlistPage } from './social/SharedWatchlistPage';
 import { MySharedItemsPage } from './social/MySharedItemsPage';
+import { SharedIdeaPage } from './social/SharedIdeaPage';
 import { PublicSharePage } from './social/PublicSharePage';
 import { PublicProfileViewPage } from './social/PublicProfileViewPage';
 import { ProfileSettingsPage } from './social/ProfileSettingsPage';
@@ -151,7 +153,8 @@ function UserShell() {
             <Route path="backtests" element={<BacktestsPage />} />
             <Route path="calculators" element={<CalculatorsPage />} />
             <Route path="comparisons" element={<ComparisonsPage />} />
-            <Route path="ideas" element={<SavedIdeasPage />} />
+            <Route path="ideas" element={<IdeasListPage />} />
+            <Route path="ideas/:ideaId" element={<IdeaWorkboardPage />} />
           </Route>
 
           {/* ── Assets ── */}
@@ -180,6 +183,7 @@ function UserShell() {
               path="shared-with-me/watchlists/:watchlistId"
               element={<SharedWatchlistPage />}
             />
+            <Route path="shared-with-me/ideas/:ideaId" element={<SharedIdeaPage />} />
             <Route path="shared-with-me/:portfolioId" element={<SharedPortfolioPage />} />
             {/* The standalone Following page was retired (V4-P0b): following now
                 lives in the Friends tab (in-row follow + alert switches, and the

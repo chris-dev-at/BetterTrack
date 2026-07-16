@@ -23,6 +23,7 @@ import {
   sendChatMessage,
 } from '../../lib/chatApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
+import { listIdeas } from '../../lib/ideasApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { usePresence, useRealtimeEvent } from '../../lib/realtime';
 import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
@@ -101,9 +102,11 @@ function chipHref(chip: ChatChip): string {
     case 'watchlist':
       return owned ? '/workboard/watchlist' : `/social/shared-with-me/watchlists/${chip.subjectId}`;
     case 'idea':
-      // The Ideas web surface is a follow-up (V4-P9 backend-only here); route to
-      // the Workboard for an owned idea and the shared-item path otherwise.
-      return owned ? '/workboard' : `/social/shared-with-me/ideas/${chip.subjectId}`;
+      // Owned → the idea reopens in the Workboard; shared → the read-only
+      // shared-idea view where the recipient can clone it (V4-P9).
+      return owned
+        ? `/workboard/ideas/${chip.subjectId}`
+        : `/social/shared-with-me/ideas/${chip.subjectId}`;
   }
 }
 
@@ -481,10 +484,15 @@ function SharePickerDialog({
     queryKey: ['conglomerates'],
     queryFn: ({ signal }) => listConglomerates(signal),
   });
+  const ideasQuery = useQuery({
+    queryKey: ['ideas'],
+    queryFn: ({ signal }) => listIdeas(signal),
+  });
 
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
   const conglomerates = conglomeratesQuery.data?.conglomerates ?? [];
-  const empty = portfolios.length === 0 && conglomerates.length === 0;
+  const ideas = ideasQuery.data?.ideas ?? [];
+  const empty = portfolios.length === 0 && conglomerates.length === 0 && ideas.length === 0;
 
   function row(item: Attachable) {
     return (
@@ -508,7 +516,7 @@ function SharePickerDialog({
     <Dialog title={t('social.chat.share.title')} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="text-xs text-neutral-500">{t('social.chat.share.disclaimer')}</p>
-        {portfoliosQuery.isLoading || conglomeratesQuery.isLoading ? (
+        {portfoliosQuery.isLoading || conglomeratesQuery.isLoading || ideasQuery.isLoading ? (
           <Skeleton height="h-16" />
         ) : empty ? (
           <p className="text-sm text-neutral-500">{t('social.chat.share.empty')}</p>
@@ -516,6 +524,7 @@ function SharePickerDialog({
           <ul className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
             {portfolios.map((p) => row({ kind: 'portfolio', subjectId: p.id, name: p.name }))}
             {conglomerates.map((c) => row({ kind: 'conglomerate', subjectId: c.id, name: c.name }))}
+            {ideas.map((i) => row({ kind: 'idea', subjectId: i.id, name: i.name }))}
           </ul>
         )}
       </div>

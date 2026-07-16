@@ -378,6 +378,23 @@ function FriendShares({
           }
         />
       ))}
+      {person.ideas.map((i) => (
+        <SharedItemRow
+          key={i.ideaId}
+          kind="idea"
+          subjectId={i.ideaId}
+          name={i.name}
+          secondary={i.hasThesis ? t('social.item.ideaThesis') : undefined}
+          footer={
+            <ActivityAlertToggle
+              kind="idea"
+              subjectId={i.ideaId}
+              enabled={i.activityAlertsEnabled}
+              friendName={username}
+            />
+          }
+        />
+      ))}
     </div>
   );
 }

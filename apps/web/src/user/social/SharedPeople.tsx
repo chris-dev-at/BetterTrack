@@ -23,6 +23,7 @@ export interface SharedPerson {
   portfolios: SharedWithMeResponse['portfolios'];
   conglomerates: SharedWithMeResponse['conglomerates'];
   watchlists: SharedWithMeResponse['watchlists'];
+  ideas: SharedWithMeResponse['ideas'];
   total: number;
 }
 
@@ -32,7 +33,7 @@ export function groupSharedByPerson(shared: SharedWithMeResponse): SharedPerson[
   const ensure = (owner: FriendUser): SharedPerson => {
     let p = byId.get(owner.id);
     if (!p) {
-      p = { owner, portfolios: [], conglomerates: [], watchlists: [], total: 0 };
+      p = { owner, portfolios: [], conglomerates: [], watchlists: [], ideas: [], total: 0 };
       byId.set(owner.id, p);
     }
     return p;
@@ -40,10 +41,14 @@ export function groupSharedByPerson(shared: SharedWithMeResponse): SharedPerson[
   for (const p of shared.portfolios) ensure(p.owner).portfolios.push(p);
   for (const c of shared.conglomerates) ensure(c.owner).conglomerates.push(c);
   for (const w of shared.watchlists) ensure(w.owner).watchlists.push(w);
+  for (const i of shared.ideas) ensure(i.owner).ideas.push(i);
   const people = [...byId.values()];
   for (const person of people) {
     person.total =
-      person.portfolios.length + person.conglomerates.length + person.watchlists.length;
+      person.portfolios.length +
+      person.conglomerates.length +
+      person.watchlists.length +
+      person.ideas.length;
   }
   return people.sort((a, b) => a.owner.username.localeCompare(b.owner.username));
 }
@@ -60,13 +65,14 @@ export function personFor(
 /** A localized "2 portfolios · 1 watchlist" kind-count summary. */
 export function kindCountSummary(person: SharedPerson, t: TranslateFn): string {
   const parts: string[] = [];
-  const add = (count: number, kind: 'portfolio' | 'conglomerate' | 'watchlist') => {
+  const add = (count: number, kind: 'portfolio' | 'conglomerate' | 'watchlist' | 'idea') => {
     if (count === 0) return;
     parts.push(t(`social.count.${kind}.${count === 1 ? 'one' : 'other'}`, { count }));
   };
   add(person.portfolios.length, 'portfolio');
   add(person.conglomerates.length, 'conglomerate');
   add(person.watchlists.length, 'watchlist');
+  add(person.ideas.length, 'idea');
   return parts.join(' · ');
 }
 
@@ -101,6 +107,13 @@ export function KindIcon({ kind, className }: { kind: ShareKind; className?: str
       </svg>
     );
   }
+  if (kind === 'idea') {
+    return (
+      <svg {...common}>
+        <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.3 1 2.5h6c0-1.2.4-1.9 1-2.5A6 6 0 0 0 12 3z" />
+      </svg>
+    );
+  }
   return (
     <svg {...common}>
       <path d="M3.5 16.5l5-5 3.5 3.5 6-6.5" />
@@ -113,6 +126,7 @@ export function KindIcon({ kind, className }: { kind: ShareKind; className?: str
 export function sharedItemHref(kind: ShareKind, subjectId: string): string {
   if (kind === 'portfolio') return `/social/shared-with-me/${subjectId}`;
   if (kind === 'conglomerate') return `/social/shared-with-me/conglomerates/${subjectId}`;
+  if (kind === 'idea') return `/social/shared-with-me/ideas/${subjectId}`;
   return `/social/shared-with-me/watchlists/${subjectId}`;
 }
 

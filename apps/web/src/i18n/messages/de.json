@@ -1529,7 +1529,8 @@
         "pickConglomeratePlaceholder": "Konglomerat auswählen…",
         "loading": "Konglomerate werden geladen…",
         "noConglomerates": "Noch keine Konglomerate.",
-        "clear": "Benchmark entfernen"
+        "clear": "Benchmark entfernen",
+        "saved": "Eigene Benchmark"
       },
       "mode": {
         "clip": "Auf gemeinsame Historie kürzen",
@@ -1729,6 +1730,41 @@
       "statLargest": "Größte",
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
       "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel."
+    },
+    "ideas": {
+      "list": {
+        "title": "Ideen",
+        "subtitle": "Gespeicherte Workboard-Analysen — jede exakt wie gespeichert wieder öffnen oder mit Freunden teilen.",
+        "emptyTitle": "Noch keine gespeicherten Ideen",
+        "emptyBody": "Speichere einen Korb samt Backtest aus einem Konglomerat oder dem Builder, um später darauf zurückzukommen.",
+        "open": "Öffnen",
+        "share": "Teilen",
+        "thesisNone": "Keine These",
+        "loadError": "Deine Ideen konnten nicht geladen werden.",
+        "deleteTitle": "Idee löschen",
+        "deleteBody": "\"{{name}}\" löschen? Das kann nicht rückgängig gemacht werden.",
+        "deleteError": "Die Idee konnte nicht gelöscht werden."
+      },
+      "save": {
+        "action": "Als Idee speichern",
+        "title": "Als Idee speichern",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. Dividendenwachstum-Korb",
+        "thesisLabel": "These (optional)",
+        "thesisPlaceholder": "Warum dieser Korb — deine Begründung.",
+        "submit": "Idee speichern",
+        "saving": "Wird gespeichert…",
+        "error": "Die Idee konnte nicht gespeichert werden.",
+        "successBody": "\"{{name}}\" ist in deiner Ideen-Liste.",
+        "viewIdeas": "In Ideen ansehen"
+      },
+      "open": {
+        "backLink": "← Ideen",
+        "loadError": "Diese Idee konnte nicht geladen werden.",
+        "thesisHeading": "These",
+        "backtestHeading": "Backtest",
+        "conglomerateGone": "Das von dieser Idee referenzierte Konglomerat ist nicht mehr verfügbar."
+      }
     }
   },
   "assets": {
@@ -1915,11 +1951,16 @@
       "watchlist": {
         "one": "{{count}} Watchlist",
         "other": "{{count}} Watchlists"
+      },
+      "idea": {
+        "one": "{{count}} Idee",
+        "other": "{{count}} Ideen"
       }
     },
     "item": {
       "positions": "{{count}} Positionen",
-      "assets": "{{count}} Anlagen"
+      "assets": "{{count}} Anlagen",
+      "ideaThesis": "Enthält eine These"
     },
     "activity": {
       "notifyLabel": "Benachrichtigen, wenn {{username}} hier kauft, verkauft oder etwas ändert",
@@ -1930,7 +1971,8 @@
     "kind": {
       "portfolios": "Portfolios",
       "conglomerates": "Konglomerate",
-      "watchlists": "Watchlists"
+      "watchlists": "Watchlists",
+      "ideas": "Ideen"
     },
     "myShared": {
       "title": "Meine Elemente",
@@ -2004,7 +2046,8 @@
           "asset": "Anlage geteilt",
           "portfolio": "Portfolio geteilt",
           "conglomerate": "Konglomerat geteilt",
-          "watchlist": "Watchlist geteilt"
+          "watchlist": "Watchlist geteilt",
+          "idea": "Hat eine Idee geteilt"
         }
       },
       "selectTitle": "Deine Nachrichten",
@@ -2063,7 +2106,8 @@
       "kind": {
         "portfolio": "Portfolio",
         "conglomerate": "Konglomerat",
-        "watchlist": "Watchlist"
+        "watchlist": "Watchlist",
+        "idea": "Idee"
       }
     },
     "ideas": {
@@ -2115,6 +2159,18 @@
       "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen.",
       "sharedByReadOnly": "Geteilt von {{username}} · nur Lesezugriff",
       "sharedByStatus": "Geteilt von {{username}} · {{status}}"
+    },
+    "sharedIdea": {
+      "backLink": "← Freunde",
+      "loadError": "Diese Idee konnte nicht geladen werden.",
+      "notAvailableTitle": "Idee nicht verfügbar",
+      "notAvailableBody": "Diese Idee wird nicht mit dir geteilt oder existiert nicht mehr.",
+      "ownerLine": "Geteilt von {{username}}",
+      "hasThesis": "Enthält eine These.",
+      "readOnlyNote": "Diese Idee ist schreibgeschützt. Klone sie, um eine eigene Kopie zu öffnen und zu bearbeiten.",
+      "clone": "In meine Ideen klonen",
+      "cloning": "Wird geklont…",
+      "cloneError": "Diese Idee konnte nicht geklont werden."
     }
   },
   "profile": {
