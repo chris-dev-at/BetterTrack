@@ -32,7 +32,13 @@ portfolio + cash source.
      same file is a no-op.
    - `error` — the row itself is malformed (unknown type, unparseable
      date/number, non-EUR cash row …). Reported with its line number while the
-     rest of the file still lands — never all-or-nothing.
+     rest of the file still lands — never all-or-nothing. The framework
+     enforces this boundary itself, independently of the mapper, for every
+     value its staging columns constrain: a currency token that is not a
+     three-letter code, or a numeric beyond the staging magnitude (quantities
+     below 10^12, prices/fees/amounts below 10^14 — derived from the column
+     precision/scale), fails its **row** even when a mapper let it through, so
+     no mapper can ever take a whole upload down with one malformed value.
 3. **Apply** (`POST /imports/:batchId/apply`): rows apply **chronologically**,
    each through the existing services — buys/sells via the portfolio service
    (oversell semantics and, when enabled, cash linkage included), dividends via
@@ -121,8 +127,9 @@ Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
 - **EUR only.** TR settles everything in EUR; non-EUR cash/dividend rows are
   flagged `error` (the cash ledger is EUR-only, §14). A `Währung` token that
   is not a three-letter code (`EURO`, `EUR/USD`) fails its row too — both in
-  the mapper and again in the framework's staging path, so no mapper can ever
-  take the whole upload down with a malformed currency.
+  the mapper and again in the framework's staging boundary (which also bounds
+  numeric magnitudes — see the pipeline section above), so no mapper can ever
+  take the whole upload down with a malformed value.
 - **Dividends need the holding.** The tax engine only records a dividend on an
   asset the portfolio has transacted (V3-P4c). Import the buys in the same file
   (or before), otherwise the dividend row fails with

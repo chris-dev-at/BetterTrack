@@ -107,22 +107,56 @@ const needsInstrument = (kind: NormalizedImportRow['kind']): boolean =>
   kind === 'buy' || kind === 'sell' || kind === 'dividend';
 
 /**
- * The staging column is `char(3)` — a currency token a mapper let through in
- * any other shape ("EURO", "EUR/USD") would make Postgres reject the whole
- * batch INSERT, killing every valid row with it. Per-row tolerance (§13.4) is
- * the framework's promise, so it is enforced HERE too, not just per mapper:
- * a malformed currency costs its one line, never the upload.
+ * The COMPLETE staging boundary. Every normalized field a mapper emits is
+ * persisted verbatim into a constrained `import_rows` column — `char(3)`
+ * currency, `numeric(20,8)` quantity, `numeric(20,6)` price/fee/amount — and
+ * the batch INSERT is a single statement, so any one value a column rejects
+ * ("EURO", a 13-integer-digit quantity) would kill every valid row with it as
+ * an unhandled 500. Per-row tolerance (§13.4) is the framework's promise, so
+ * it is enforced HERE for every constrained field, not just per mapper: a
+ * value that cannot be staged costs its one line, never the upload — and no
+ * future mapper (George/Flatex/IBKR land against this frozen framework) can
+ * crash staging with a shape the columns refuse.
  */
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 
-function guardCurrency(line: MappedLine): MappedLine {
-  if (!line.ok || CURRENCY_PATTERN.test(line.row.currency)) return line;
-  return {
-    line: line.line,
-    raw: line.raw,
-    ok: false,
-    error: `Unrecognized currency "${line.row.currency}".`,
-  };
+/** Mirrors the `import_rows` numeric columns (data/schema.ts) — the magnitude
+ * ceilings derive from precision/scale so a schema change keeps them honest. */
+const NUMERIC_COLUMNS: ReadonlyArray<{
+  field: 'quantity' | 'price' | 'fee' | 'amountEur';
+  label: string;
+  precision: number;
+  scale: number;
+}> = [
+  { field: 'quantity', label: 'Quantity', precision: 20, scale: 8 },
+  { field: 'price', label: 'Price', precision: 20, scale: 6 },
+  { field: 'fee', label: 'Fee', precision: 20, scale: 6 },
+  { field: 'amountEur', label: 'Amount', precision: 20, scale: 6 },
+];
+
+function stagingViolation(row: NormalizedImportRow): string | null {
+  if (!CURRENCY_PATTERN.test(row.currency)) {
+    return `Unrecognized currency "${row.currency}".`;
+  }
+  for (const col of NUMERIC_COLUMNS) {
+    const value = row[col.field];
+    if (value === null) continue;
+    const integerDigits = col.precision - col.scale;
+    // Postgres rounds excess scale silently but rejects excess integer
+    // digits, so the ceiling applies to the value as the column rounds it.
+    const rounded = Math.round(Math.abs(value) * 10 ** col.scale) / 10 ** col.scale;
+    if (!Number.isFinite(value) || rounded >= 10 ** integerDigits) {
+      return `${col.label} ${value} is too large to import (must be below 10^${integerDigits}).`;
+    }
+  }
+  return null;
+}
+
+function guardStagedRow(line: MappedLine): MappedLine {
+  if (!line.ok) return line;
+  const violation = stagingViolation(line.row);
+  if (violation === null) return line;
+  return { line: line.line, raw: line.raw, ok: false, error: violation };
 }
 
 export function createImportService(deps: ImportServiceDeps): ImportService {
@@ -314,7 +348,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }
       }
 
-      const mapped = mapper.map(csv).map(guardCurrency);
+      const mapped = mapper.map(csv).map(guardStagedRow);
 
       // Resolve each distinct instrument identity once (files repeat them a lot).
       const resolutions = new Map<string, SearchResultItem | null>();

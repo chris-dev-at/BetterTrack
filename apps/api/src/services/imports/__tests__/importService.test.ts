@@ -269,10 +269,31 @@ describe('POST /imports — staged preview', () => {
     expect(preview.rows[1]?.flag).toBe('mapped');
   });
 
-  it('guards staging against a future mapper letting a malformed currency through', async () => {
+  it('flags an over-large numeric as one row error while the rest of the file stages', async () => {
+    // Same mechanism as the currency regression above, other column class:
+    // quantity stages into numeric(20,8) — 12 integer digits. A valid-notation
+    // but 13-integer-digit German value used to reach the batch INSERT and
+    // kill the whole upload with a `numeric field overflow` 500. It must cost
+    // exactly its own line.
+    const { agent, pid } = await setup();
+    const csv = [
+      HEADER,
+      '2024-01-15;Kauf;Muster Tech AG;DE0001234567;1.234.567.890.123,45;50,00;1,00;-501,00;EUR',
+      '2024-01-16;Einzahlung;;;;;;100,00;EUR',
+    ].join('\n');
+    const preview = await upload(agent, pid, csv);
+    expect(preview.batch.counts).toMatchObject({ total: 2, mapped: 1, error: 1 });
+    expect(preview.rows[0]?.flag).toBe('error');
+    expect(preview.rows[0]?.message).toContain('1234567890123.45');
+    expect(preview.rows[0]?.quantity).toBeNull();
+    expect(preview.rows[1]?.flag).toBe('mapped');
+  });
+
+  it('guards staging against a future mapper letting a malformed currency or oversized numeric through', async () => {
     // George/Flatex/IBKR land against this frozen framework — even if such a
-    // mapper forgets to validate its currency column, the framework itself
-    // must fail the ROW before the char(3) insert, never the upload.
+    // mapper forgets to validate a column, the framework itself must fail the
+    // ROW before any value a staging column refuses reaches the insert
+    // (char(3) currency, numeric(20,8)/(20,6) magnitudes), never the upload.
     const { user, pid } = await setup();
     const rogue: BrokerMapper = {
       id: 'rogue',
@@ -292,7 +313,11 @@ describe('POST /imports — staged preview', () => {
             quantity: null,
             price: null,
             fee: null,
-            amountEur: 100 + i,
+            // Row 0: malformed currency. Row 1: an amount numeric(20,6)
+            // cannot hold (≥ 10^14). Row 2: just under the ceiling — must
+            // pass the guard AND the real column insert (pins the derived
+            // bound to the actual schema).
+            amountEur: i === 1 ? 1e15 : i === 2 ? 99999999999999.5 : 100,
             currency: i === 0 ? 'EUR/USD' : 'EUR',
             note: null,
           },
@@ -312,14 +337,18 @@ describe('POST /imports — staged preview', () => {
     const preview = await imports.createBatch(user.id, {
       portfolioId: pid,
       filename: 'rogue.csv',
-      content: 'A;B\n1;2\n3;4',
+      content: 'A;B\n1;2\n3;4\n5;6',
       brokerId: 'rogue',
     });
-    expect(preview.batch.counts).toMatchObject({ total: 2, mapped: 1, error: 1 });
+    expect(preview.batch.counts).toMatchObject({ total: 3, mapped: 1, error: 2 });
     expect(preview.rows[0]?.flag).toBe('error');
     expect(preview.rows[0]?.message).toContain('EUR/USD');
     expect(preview.rows[0]?.currency).toBeNull();
-    expect(preview.rows[1]?.flag).toBe('mapped');
+    expect(preview.rows[1]?.flag).toBe('error');
+    expect(preview.rows[1]?.message).toContain('1000000000000000');
+    expect(preview.rows[1]?.amountEur).toBeNull();
+    expect(preview.rows[2]?.flag).toBe('mapped');
+    expect(preview.rows[2]?.amountEur).toBe(99999999999999.5);
   });
 });
 
