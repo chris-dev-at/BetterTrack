@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 
 import type {
   BacktestBenchmark,
+  BacktestBenchmarkInput,
+  BacktestBenchmarkKind,
+  BacktestBenchmarkResult,
   BacktestMode,
   BacktestPreviewPosition,
   BacktestPreviewRange,
@@ -14,6 +17,7 @@ import type {
 import type { Redis } from 'ioredis';
 
 import type { AssetRepository } from '../../data/repositories/assetRepository';
+import type { ConglomerateRepository } from '../../data/repositories/conglomerateRepository';
 import {
   backtest,
   BacktestError,
@@ -41,11 +45,17 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
  * the {@link CurrencyService} historical FX-at-date keystone (§5.4), injected
  * into the engine as its `CurrencyConverter`.
  *
+ * The optional benchmark (V4-P7) — a one-click preset, any catalog asset, or
+ * one of the caller's own conglomerates — is a SECOND run of the same engine
+ * over the primary's effective window with the same base currency,
+ * late-listing mode and rebalance schedule, so its full stat set is
+ * apples-to-apples with the primary basket by construction.
+ *
  * Results are memoised in Redis for 1 h keyed by hash(positions+range+benchmark)
  * so slider-wiggling in the Builder stays cheap (§6.6). The key is additionally
- * namespaced by user id: the basket may reference the caller's *custom* assets,
- * whose ids resolve only for their owner (§10), so a shared cache must never let
- * one user read another's memoised preview.
+ * namespaced by user id: the basket may reference the caller's *custom* assets
+ * and conglomerates, whose ids resolve only for their owner (§10), so a shared
+ * cache must never let one user read another's memoised preview.
  */
 
 const PREVIEW_TTL_SECONDS = 3600; // 1 h (§6.6).
@@ -69,7 +79,12 @@ const PROVIDER_RANGE: Record<BacktestPreviewRange, HistoryRange> = {
   MAX: 'MAX',
 };
 
-/** Where each benchmark's prices come from + its native currency (§6.6). */
+/**
+ * Where each one-click preset's prices come from + its native currency (§6.6).
+ * Since V4-P7 a preset is sugar over the catalog: it resolves to its catalog
+ * asset when seeded, and this spec is only the fallback identity for an
+ * unseeded catalog.
+ */
 interface BenchmarkSpec {
   providerId: string;
   providerRef: string;
@@ -84,7 +99,8 @@ const BENCHMARKS: Record<BacktestBenchmark, BenchmarkSpec> = {
 export interface BacktestPreviewInput {
   positions: BacktestPreviewPosition[];
   range: BacktestPreviewRange;
-  benchmark?: BacktestBenchmark | null;
+  /** Benchmark choice (V4-P7): exactly one of preset / catalog asset / own conglomerate. */
+  benchmark?: BacktestBenchmarkInput | null;
   /** Late-listing mode (§14); defaults to `clip` (the pre-§14 behavior). */
   mode?: BacktestMode;
   /** Rebalance schedule (V4-P7); defaults to `none` (buy-and-hold, today's behavior). */
@@ -93,11 +109,21 @@ export interface BacktestPreviewInput {
 
 export interface BacktestServiceDeps {
   assetRepo: AssetRepository;
+  conglomerateRepo: ConglomerateRepository;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   redis: Redis;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
+}
+
+/** A benchmark resolved to a runnable basket plus its wire identity (V4-P7). */
+interface ResolvedBenchmark {
+  kind: BacktestBenchmarkKind;
+  refId: string;
+  label: string;
+  positions: Array<{ assetId: string; weight: number }>;
+  assets: BacktestAsset[];
 }
 
 export interface BacktestService {
@@ -142,7 +168,7 @@ export function backtestPreviewCacheKey(
 }
 
 export function createBacktestService(deps: BacktestServiceDeps): BacktestService {
-  const { assetRepo, marketData, currencyService, redis } = deps;
+  const { assetRepo, conglomerateRepo, marketData, currencyService, redis } = deps;
   const now = deps.now ?? Date.now;
 
   /** Today's UTC calendar day — the last day of every preview window. */
@@ -169,6 +195,106 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     return toDailyCloses(points);
   }
 
+  /**
+   * Resolve one basket member: ownership-scoped asset lookup (another user's
+   * custom asset — or a missing id — is a 404, no existence leak §10) plus its
+   * daily closes through the market-data keystone (§5.2/§5.3). Shared by the
+   * primary basket and every benchmark constituent so both go through the
+   * exact same path.
+   */
+  async function loadBasketAsset(
+    userId: string,
+    assetId: string,
+    providerRange: HistoryRange,
+  ): Promise<BacktestAsset> {
+    const row = await assetRepo.findByIdForUser(assetId, userId);
+    if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    const prices = await loadDailyCloses(
+      { providerId: row.providerId, providerRef: row.providerRef },
+      providerRange,
+    );
+    if (prices.length === 0) {
+      throw unprocessable(
+        `No price history available for ${row.symbol} to backtest.`,
+        'NO_PRICE_HISTORY',
+      );
+    }
+    return { assetId: row.id, symbol: row.symbol, currency: row.currency, prices };
+  }
+
+  /**
+   * Resolve the benchmark choice (V4-P7) into a runnable basket:
+   *
+   *  - `conglomerateId` — one of the CALLER's own conglomerates (ownership
+   *    enforced at query time → 404, §10), as a whole second basket;
+   *  - `assetId` — any catalog asset from local search (§6.2), as a
+   *    single-constituent basket;
+   *  - `preset` — a one-click ticker, resolved to its catalog asset when
+   *    seeded; an unseeded catalog falls back to the static provider spec so
+   *    the presets keep working on a fresh instance.
+   */
+  async function resolveBenchmark(
+    userId: string,
+    choice: BacktestBenchmarkInput,
+    providerRange: HistoryRange,
+  ): Promise<ResolvedBenchmark> {
+    if ('conglomerateId' in choice) {
+      const detail = await conglomerateRepo.findByIdForOwner(userId, choice.conglomerateId);
+      if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+      if (detail.positions.length === 0) {
+        throw unprocessable(
+          `Conglomerate ${detail.name} has no positions to backtest as a benchmark.`,
+          'BACKTEST_UNAVAILABLE',
+        );
+      }
+      const assets: BacktestAsset[] = [];
+      for (const pos of detail.positions) {
+        assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
+      }
+      return {
+        kind: 'conglomerate',
+        refId: detail.id,
+        label: detail.name,
+        positions: detail.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+        assets,
+      };
+    }
+
+    if ('assetId' in choice) {
+      const asset = await loadBasketAsset(userId, choice.assetId, providerRange);
+      return {
+        kind: 'asset',
+        refId: asset.assetId,
+        label: asset.symbol,
+        positions: [{ assetId: asset.assetId, weight: 1 }],
+        assets: [asset],
+      };
+    }
+
+    const spec = BENCHMARKS[choice.preset];
+    const row = await assetRepo.findGlobal(spec.providerId, spec.providerRef);
+    const identity = row
+      ? { assetId: row.id, symbol: row.symbol, currency: row.currency }
+      : { assetId: choice.preset, symbol: choice.preset, currency: spec.currency };
+    const prices = await loadDailyCloses(
+      { providerId: spec.providerId, providerRef: spec.providerRef },
+      providerRange,
+    );
+    if (prices.length === 0) {
+      throw unprocessable(
+        `No price history available for benchmark ${choice.preset}.`,
+        'NO_PRICE_HISTORY',
+      );
+    }
+    return {
+      kind: 'asset',
+      refId: identity.assetId,
+      label: identity.symbol,
+      positions: [{ assetId: identity.assetId, weight: 1 }],
+      assets: [{ ...identity, prices }],
+    };
+  }
+
   return {
     async runPreview(userId, input, opts) {
       const fx =
@@ -187,47 +313,19 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
 
       const providerRange = PROVIDER_RANGE[input.range];
 
-      // 1. Resolve every position asset (ownership-scoped: another user's custom
-      //    asset — or a missing id — is a 404, no existence leak §10) and load
-      //    its daily closes through the market-data keystone (§5.2/§5.3).
+      // 1. Resolve every position asset and load its daily closes (shared
+      //    ownership-scoped path, see loadBasketAsset).
       const assets: BacktestAsset[] = [];
       for (const pos of input.positions) {
-        const row = await assetRepo.findByIdForUser(pos.assetId, userId);
-        if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
-        const prices = await loadDailyCloses(
-          { providerId: row.providerId, providerRef: row.providerRef },
-          providerRange,
-        );
-        if (prices.length === 0) {
-          throw unprocessable(
-            `No price history available for ${row.symbol} to backtest.`,
-            'NO_PRICE_HISTORY',
-          );
-        }
-        assets.push({ assetId: row.id, symbol: row.symbol, currency: row.currency, prices });
+        assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
       }
 
-      // 2. Optional benchmark overlay: the same pipeline at weight 100 (§6.6).
-      let benchmarkAsset: BacktestAsset | null = null;
-      if (input.benchmark) {
-        const spec = BENCHMARKS[input.benchmark];
-        const prices = await loadDailyCloses(
-          { providerId: spec.providerId, providerRef: spec.providerRef },
-          providerRange,
-        );
-        if (prices.length === 0) {
-          throw unprocessable(
-            `No price history available for benchmark ${input.benchmark}.`,
-            'NO_PRICE_HISTORY',
-          );
-        }
-        benchmarkAsset = {
-          assetId: input.benchmark,
-          symbol: input.benchmark,
-          currency: spec.currency,
-          prices,
-        };
-      }
+      // 2. Optional benchmark (V4-P7): resolve the choice — preset, catalog
+      //    asset, or one of the caller's own conglomerates — into a second
+      //    basket that will run through the same engine below.
+      const resolvedBenchmark = input.benchmark
+        ? await resolveBenchmark(userId, input.benchmark, providerRange)
+        : null;
 
       // 3. Requested window. The end is today; a finite range starts N years back
       //    and the engine clips it up to the common start (emitting the §6.6
@@ -247,9 +345,9 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           : yearsBefore(end, RANGE_YEARS[input.range]);
 
       // 4. Run the pure engine, injecting the CurrencyService as the historical
-      //    FX-at-date converter (§5.4). Data-state failures (no overlapping
-      //    window, a benchmark whose history starts after t₀) surface as a 422
-      //    with the engine's message rather than a 500.
+      //    FX-at-date converter (§5.4). Data-state failures (e.g. no
+      //    overlapping window) surface as a 422 with the engine's message
+      //    rather than a 500.
       //
       //    FX unavailability is a data state too, but unlike the portfolio
       //    series' probe-and-drop degrade (portfolioService), silently dropping
@@ -263,28 +361,70 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           range: { start, end },
           converter: fx,
           baseCurrency: fx.baseCurrency,
-          benchmark: benchmarkAsset,
           mode,
           rebalance: input.rebalance,
         });
       } catch (err) {
-        if (err instanceof BacktestError) {
-          throw unprocessable(err.message, 'BACKTEST_UNAVAILABLE');
-        }
-        if (err instanceof FxRateUnavailableError) {
-          throw unprocessable(
-            `Currency conversion required by this backtest is unavailable: ${err.message}`,
-            'FX_UNAVAILABLE',
-          );
-        }
-        throw err;
+        throw mapEngineError(err);
       }
 
-      const response = toResponse(result);
+      // 5. Benchmark run (V4-P7): the SAME engine over the primary's effective
+      //    window with the SAME base currency, late-listing mode and rebalance
+      //    schedule — apples-to-apples by construction. A benchmark whose data
+      //    starts after the primary t₀ would silently compare a shorter window
+      //    (the engine reports that via its clip notice), so it is rejected as
+      //    a 422 instead — the same outcome the pre-V4-P7 overlay produced for
+      //    a benchmark short of t₀.
+      let benchmark: BacktestBenchmarkResult | null = null;
+      if (resolvedBenchmark) {
+        let benchResult: BacktestResult;
+        try {
+          benchResult = await backtest({
+            positions: resolvedBenchmark.positions,
+            assets: resolvedBenchmark.assets,
+            range: { start: result.startDate, end: result.endDate },
+            converter: fx,
+            baseCurrency: fx.baseCurrency,
+            mode,
+            rebalance: input.rebalance,
+          });
+        } catch (err) {
+          throw mapEngineError(err);
+        }
+        if (benchResult.notice !== null) {
+          throw unprocessable(
+            `Benchmark ${resolvedBenchmark.label} does not cover the backtest window — ${benchResult.notice}.`,
+            'BACKTEST_UNAVAILABLE',
+          );
+        }
+        benchmark = {
+          kind: resolvedBenchmark.kind,
+          refId: resolvedBenchmark.refId,
+          label: resolvedBenchmark.label,
+          series: benchResult.series.map((p) => ({ date: p.date, value: p.value })),
+          stats: toStats(benchResult.stats),
+        };
+      }
+
+      const response = toResponse(result, benchmark);
       await redis.set(key, JSON.stringify(response), 'EX', PREVIEW_TTL_SECONDS);
       return response;
     },
   };
+}
+
+/** Map engine data-state failures to 422s (never 500s); rethrow everything else. */
+function mapEngineError(err: unknown): unknown {
+  if (err instanceof BacktestError) {
+    return unprocessable(err.message, 'BACKTEST_UNAVAILABLE');
+  }
+  if (err instanceof FxRateUnavailableError) {
+    return unprocessable(
+      `Currency conversion required by this backtest is unavailable: ${err.message}`,
+      'FX_UNAVAILABLE',
+    );
+  }
+  return err;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,8 +499,11 @@ function toStats(s: BacktestStats): BacktestStatsDto {
   };
 }
 
-/** Shape the engine's `BacktestResult` into the `backtestResponseSchema` DTO. */
-function toResponse(r: BacktestResult): BacktestResponse {
+/** Shape the engine's `BacktestResult` (+ the separately-run benchmark) into the wire DTO. */
+function toResponse(
+  r: BacktestResult,
+  benchmark: BacktestBenchmarkResult | null,
+): BacktestResponse {
   return {
     startDate: r.startDate,
     endDate: r.endDate,
@@ -374,14 +517,7 @@ function toResponse(r: BacktestResult): BacktestResponse {
       contributionPct: c.contributionPct,
     })),
     notice: r.notice,
-    benchmark: r.benchmark
-      ? {
-          assetId: r.benchmark.assetId,
-          symbol: r.benchmark.symbol,
-          series: r.benchmark.series.map((p) => ({ date: p.date, value: p.value })),
-          stats: toStats(r.benchmark.stats),
-        }
-      : null,
+    benchmark,
     mode: r.mode,
     rebalance: r.rebalance,
     entryEvents: r.entryEvents.map((e) => ({

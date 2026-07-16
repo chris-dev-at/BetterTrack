@@ -12,7 +12,9 @@ import { z } from 'zod';
  * The response mirrors the pure engine's `BacktestResult`
  * (`apps/api/src/domain/backtest.ts`): a base-100 index `series`, performance
  * `stats`, per-position `contributions`, an optional clipping `notice`, and an
- * optional `benchmark` overlay run through the same pipeline at weight 100.
+ * optional `benchmark` block — a second engine run over the same window and
+ * settings (§13.4 V4-P7), carrying its own full stat set for the side-by-side
+ * table.
  */
 
 // --- Request ---------------------------------------------------------------
@@ -26,12 +28,30 @@ export const backtestPreviewRangeSchema = z.enum(BACKTEST_PREVIEW_RANGES);
 export type BacktestPreviewRange = z.infer<typeof backtestPreviewRangeSchema>;
 
 /**
- * Benchmark overlay tickers (§6.6): S&P 500, DAX, MSCI World. Each is run
- * through the same pipeline as a single position at weight 100.
+ * One-click benchmark preset tickers (§6.6): S&P 500, DAX, MSCI World. Since
+ * V4-P7 they are sugar over the catalog — the server resolves a preset to its
+ * catalog asset and runs it like any other asset benchmark.
  */
 export const BACKTEST_BENCHMARKS = ['^GSPC', '^GDAXI', 'URTH'] as const;
 export const backtestBenchmarkSchema = z.enum(BACKTEST_BENCHMARKS);
 export type BacktestBenchmark = z.infer<typeof backtestBenchmarkSchema>;
+
+/**
+ * Benchmark choice (§13.4 V4-P7): exactly one of —
+ *  - `preset` — a one-click ticker, resolved server-side to its catalog asset;
+ *  - `assetId` — any catalog asset found via local search (§6.2);
+ *  - `conglomerateId` — one of the caller's own conglomerates, run through the
+ *    same engine as a second basket.
+ * A union of single-key `strict` objects: a body naming two sources at once
+ * matches no branch and fails validation, so "one benchmark at a time" is a
+ * wire invariant rather than a service-side check.
+ */
+export const backtestBenchmarkInputSchema = z.union([
+  z.object({ preset: backtestBenchmarkSchema }).strict(),
+  z.object({ assetId: z.string().uuid() }).strict(),
+  z.object({ conglomerateId: z.string().uuid() }).strict(),
+]);
+export type BacktestBenchmarkInput = z.infer<typeof backtestBenchmarkInputSchema>;
 
 /**
  * Late-listed-constituent modes (§14): what happens to a constituent younger
@@ -75,7 +95,8 @@ export const backtestPreviewRequestSchema = z
   .object({
     positions: z.array(backtestPreviewPositionSchema).min(1).max(50),
     range: backtestPreviewRangeSchema,
-    benchmark: backtestBenchmarkSchema.nullish(),
+    /** Exactly one benchmark at a time (V4-P7), or none. */
+    benchmark: backtestBenchmarkInputSchema.nullish(),
     /** Late-listing mode (§14); omitting it keeps the pre-§14 clip behavior. */
     mode: backtestModeSchema.default('clip'),
     /** Rebalance schedule (V4-P7); omitting it keeps today's buy-and-hold. */
@@ -136,11 +157,24 @@ export const backtestContributionSchema = z
   .strict();
 export type BacktestContribution = z.infer<typeof backtestContributionSchema>;
 
-/** The benchmark overlay: its own base-100 series + stats, on the main axis. */
+/** What a benchmark resolved to (V4-P7): a single asset or a whole conglomerate. */
+export const BACKTEST_BENCHMARK_KINDS = ['asset', 'conglomerate'] as const;
+export const backtestBenchmarkKindSchema = z.enum(BACKTEST_BENCHMARK_KINDS);
+export type BacktestBenchmarkKind = z.infer<typeof backtestBenchmarkKindSchema>;
+
+/**
+ * The benchmark result (V4-P7): its own base-100 series + the same full stat
+ * set as the primary basket, computed by a second engine run over the same
+ * window, late-listing mode and rebalance schedule (apples-to-apples), so the
+ * UI can render every bottom-panel stat side-by-side with a delta.
+ */
 export const backtestBenchmarkResultSchema = z
   .object({
-    assetId: z.string(),
-    symbol: z.string(),
+    kind: backtestBenchmarkKindSchema,
+    /** The resolved catalog-asset id (preset ticker if unseeded) or conglomerate id. */
+    refId: z.string(),
+    /** Display label: the asset's symbol, or the conglomerate's name. */
+    label: z.string(),
     series: z.array(backtestSeriesPointSchema),
     stats: backtestStatsSchema,
   })

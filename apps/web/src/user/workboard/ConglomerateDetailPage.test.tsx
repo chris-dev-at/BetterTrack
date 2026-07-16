@@ -180,13 +180,16 @@ describe('ConglomerateDetailPage', () => {
     expect(screen.getByRole('heading', { name: 'Backtest' })).toBeInTheDocument();
     await waitFor(() =>
       expect(previewBacktest).toHaveBeenCalledWith(
-        [
-          { assetId: 'a1', weight: 60 },
-          { assetId: 'a2', weight: 40 },
-        ],
-        '5Y',
-        null,
-        'clip',
+        {
+          positions: [
+            { assetId: 'a1', weight: 60 },
+            { assetId: 'a2', weight: 40 },
+          ],
+          range: '5Y',
+          benchmark: null,
+          mode: 'clip',
+          rebalance: 'none',
+        },
         expect.anything(),
       ),
     );

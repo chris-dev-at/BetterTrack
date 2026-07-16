@@ -1428,16 +1428,31 @@
       "benchmark": {
         "sp500": "S&P 500",
         "dax": "DAX",
-        "msciWorld": "MSCI World"
+        "msciWorld": "MSCI World",
+        "search": "Asset suchen…",
+        "myConglomerates": "Meine Konglomerate…",
+        "searchPlaceholder": "Beliebiges Asset als Benchmark suchen…",
+        "pickConglomerate": "Benchmark-Konglomerat",
+        "pickConglomeratePlaceholder": "Konglomerat auswählen…",
+        "loading": "Konglomerate werden geladen…",
+        "noConglomerates": "Noch keine Konglomerate.",
+        "clear": "Benchmark entfernen"
       },
       "mode": {
         "clip": "Auf gemeinsame Historie kürzen",
         "cash": "Cash bis zur Notierung",
         "redistribute": "Umverteilen bis zur Notierung"
       },
+      "rebalance": {
+        "none": "Kaufen & Halten",
+        "monthly": "Monatlich",
+        "quarterly": "Quartalsweise",
+        "yearly": "Jährlich"
+      },
       "rangeAriaLabel": "Backtest-Zeitraum auswählen",
-      "benchmarkAriaLabel": "Benchmark-Overlay umschalten",
+      "benchmarkAriaLabel": "Benchmark wählen",
       "modeAriaLabel": "Modus für spät notierte Werte wählen",
+      "rebalanceAriaLabel": "Rebalancing-Frequenz wählen",
       "noPositions": "Füge Positionen hinzu, um einen Backtest in der Vorschau zu sehen",
       "error": "Der Backtest konnte nicht ausgeführt werden. Bitte versuche es erneut.",
       "chartAriaLabel": "Konglomerat-Backtest-Diagramm",
@@ -1450,11 +1465,26 @@
         "worstDay": "Schlechtester Tag",
         "idleCash": "Ø nicht investiert"
       },
+      "statsTable": {
+        "ariaLabel": "Backtest-Statistiken: Korb vs. Benchmark",
+        "metric": "Kennzahl",
+        "basket": "Korb",
+        "delta": "Δ",
+        "showDelta": "Delta-Spalte"
+      },
       "modeNotice": {
         "cash": "Voller angefragter Zeitraum — {{entries}}: Der Anteil eines spät notierten Werts liegt bis zu seinem ersten Handelstag als nicht investiertes Cash (0 % Rendite) bereit.",
         "redistribute": "Voller angefragter Zeitraum — {{entries}}: Der Anteil eines spät notierten Werts wird bis zu seinem ersten Handelstag gleichmäßig auf die bereits notierten Werte verteilt und dann auf die Zielgewichte rebalanciert."
       },
-      "entryMarker": "{{symbol}} steigt ein"
+      "rebalanceNotice": "{{frequency}} auf die Zielgewichte rebalanciert — {{count}} Rebalancierungen in diesem Zeitraum.",
+      "rebalanceNoticeFrequency": {
+        "monthly": "Monatlich",
+        "quarterly": "Quartalsweise",
+        "yearly": "Jährlich"
+      },
+      "entryMarker": "{{symbol}} steigt ein",
+      "rebalanceMarker": "Rebalancing",
+      "showRebalanceMarkers": "Rebalancing-Markierungen"
     },
     "alerts": {
       "title": "Preisalarme",
