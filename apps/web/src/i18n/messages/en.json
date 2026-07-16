@@ -2242,7 +2242,10 @@
   "admin": {
     "nav": {
       "security": "Security",
-      "health": "Health"
+      "health": "Health",
+      "menu": "Admin menu",
+      "openMenu": "Open admin menu",
+      "closeMenu": "Close admin menu"
     },
     "security": {
       "title": "Security",
