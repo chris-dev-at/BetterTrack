@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -97,7 +97,7 @@ function pkce(): { verifier: string; challenge: string } {
 /** Seed a fresh user, register a public PKCE client they own, and mint a delegated token. */
 async function mintOAuthToken(
   scopes: string[],
-): Promise<{ token: string; userId: string; grantId: string; email: string }> {
+): Promise<{ token: string; userId: string; grantId: string; clientRowId: string; email: string }> {
   const user = await seedFreshUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
   const reg = await agent
@@ -105,7 +105,11 @@ async function mintOAuthToken(
     .set(...XRW)
     .send({ name: 'MobileTest', redirectUris: [REDIRECT], scopes, public: true });
   expect(reg.status, JSON.stringify(reg.body)).toBe(201);
-  const clientId = createOAuthClientResponseSchema.parse(reg.body).client.clientId;
+  const clientRow = createOAuthClientResponseSchema.parse(reg.body).client;
+  const clientId = clientRow.clientId;
+  // The internal client UUID lets the grant lookup below scope by (user, client)
+  // instead of by user alone — see the block that fetches `grantRows`.
+  const clientRowId = clientRow.id;
 
   const { verifier, challenge } = pkce();
   const approve = await agent
@@ -132,11 +136,26 @@ async function mintOAuthToken(
   expect(tokenRes.status, JSON.stringify(tokenRes.body)).toBe(200);
   const token = oauthTokenResponseSchema.parse(tokenRes.body).access_token;
 
-  const [grant] = await harness.db
+  // #514 root cause: the pre-fix lookup filtered on `userId` alone with no
+  // ordering, so on a cold full-suite run — where the PGlite singleton is
+  // shared across test files within a worker — any latent grant leak or
+  // reordered row scan (Postgres never guarantees SELECT order without ORDER
+  // BY) could return a DIFFERENT grant than the one the token in hand points
+  // at. The self-revocation test then revoked grant A (via the token) but
+  // asserted revocation on grant B → order/timing-dependent failure.
+  // The fix is defensive on both axes: narrow the WHERE to (user × client),
+  // add deterministic ordering, and fail loudly if the result set isn't
+  // exactly the one row a fresh (user, client) pair MUST yield.
+  const grantRows = await harness.db
     .select()
     .from(schema.oauthGrants)
-    .where(eq(schema.oauthGrants.userId, user.id));
-  return { token, userId: user.id, grantId: grant!.id, email: user.email };
+    .where(
+      and(eq(schema.oauthGrants.userId, user.id), eq(schema.oauthGrants.clientId, clientRowId)),
+    )
+    .orderBy(desc(schema.oauthGrants.createdAt));
+  expect(grantRows).toHaveLength(1);
+  const grant = grantRows[0]!;
+  return { token, userId: user.id, grantId: grant.id, clientRowId, email: user.email };
 }
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
@@ -400,7 +419,14 @@ describe('#361 self-revocation on logout', () => {
   });
 
   it('a delegated OAuth token revokes its OWN grant via POST /auth/logout', async () => {
-    const { token, grantId } = await mintOAuthToken(['portfolio:read']);
+    // `grantId` is scoped to (this test's user × this test's client) inside
+    // {@link mintOAuthToken} — it can never resolve to a different test's grant,
+    // which was the #514 order/timing failure mode. The assertions below are on
+    // that specific grant row (primary-key lookup, no global counts) and on the
+    // exact bearer token in hand; none of them depend on wall-clock behavior
+    // (the OAuth access-token TTL is 3600 s and the auth-code TTL is only in
+    // play inside mintOAuthToken, both well outside any test window).
+    const { token, grantId, clientRowId, userId } = await mintOAuthToken(['portfolio:read']);
     await request(harness.app).get('/api/v1/portfolios').set(bearer(token)).expect(200);
 
     const out = await request(harness.app).post('/api/v1/auth/logout').set(bearer(token));
@@ -409,11 +435,16 @@ describe('#361 self-revocation on logout', () => {
     // Revoking the grant instantly kills the access token it minted.
     const after = await request(harness.app).get('/api/v1/portfolios').set(bearer(token));
     expect(after.status).toBe(401);
-    const [grant] = await harness.db
+    expect(after.body.error.code).toBe('API_KEY_INVALID');
+    const grantRows = await harness.db
       .select()
       .from(schema.oauthGrants)
       .where(eq(schema.oauthGrants.id, grantId));
-    expect(grant!.revokedAt).not.toBeNull();
+    expect(grantRows).toHaveLength(1);
+    const grant = grantRows[0]!;
+    expect(grant.userId).toBe(userId);
+    expect(grant.clientId).toBe(clientRowId);
+    expect(grant.revokedAt).not.toBeNull();
   });
 });
 
