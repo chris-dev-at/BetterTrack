@@ -40,7 +40,8 @@ test('cash sources: create, deposit and transfer between two sources', async ({ 
   await depositDialog.getByLabel('Amount', { exact: true }).fill('1000');
   await depositDialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(depositDialog).toBeHidden();
-  await expect(rows.nth(0)).toContainText('1.000,00');
+  // Locale-agnostic: EN renders "1,000.00 €" (en-GB), DE renders "1.000,00 €" (de-AT).
+  await expect(rows.nth(0)).toContainText(/1[.,]000[.,]00/);
 
   // Transfer €400 Main → Savings.
   await page.getByRole('button', { name: 'Transfer' }).click();
@@ -50,9 +51,9 @@ test('cash sources: create, deposit and transfer between two sources', async ({ 
   await transferDialog.getByRole('button', { name: 'Transfer' }).click();
   await expect(transferDialog).toBeHidden();
 
-  // Both balances reflect the atomic pair: Main 600, Savings 400.
-  await expect(rows.nth(0)).toContainText('600,00', { timeout: 15_000 });
-  await expect(rows.nth(1)).toContainText('400,00');
+  // Both balances reflect the atomic pair: Main 600, Savings 400. Locale-agnostic.
+  await expect(rows.nth(0)).toContainText(/600[.,]00/, { timeout: 15_000 });
+  await expect(rows.nth(1)).toContainText(/400[.,]00/);
 
   // The movement history carries both legs of the one transfer.
   const history = page.getByRole('region', { name: 'Movement history' });
