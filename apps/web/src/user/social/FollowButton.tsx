@@ -198,24 +198,26 @@ export function AutoFollowToggle({ userId, username }: { userId: string; usernam
 }
 
 /**
- * Per-followed-person alert-follow switches (#455): two INDEPENDENT triggers —
- * notify me when they create a new alert / when one of their alerts fires
- * (created-only, fired-only, both, or neither; both default OFF). Notify-only:
- * nothing is copied into the caller's own alert list, and nothing arrives
- * unless the followed person shares their alerts with followers. Rendered ONLY
- * while the caller follows the person AND that person currently shares their
- * alert activity (`sharesAlertActivity`, V4-P0b) — so the switches never appear
- * when they'd deliver nothing — off the same deduped following query as the
- * FollowButton.
+ * Per-followed-person "Follow their alerts" switch (#455, simplified V4): ONE
+ * toggle over the person's alert activity. The server keeps its created/fired
+ * granularity, but the UI exposes a single decision — ON subscribes to both
+ * (new alerts AND fires), OFF unsubscribes from both; it reads ON whenever
+ * either trigger is set (so a legacy one-sided state still shows as following).
+ * Notify-only: nothing is copied into the caller's own alert list, and nothing
+ * arrives unless the followed person shares their alerts. Rendered ONLY while
+ * the caller follows the person AND that person currently shares their alert
+ * activity (`sharesAlertActivity`, V4-P0b) — mirroring the former switches, so
+ * it never appears when it would deliver nothing — off the same deduped
+ * following query as the FollowButton.
  */
-export function AlertFollowToggles({ userId, username }: { userId: string; username: string }) {
+export function AlertFollowToggle({ userId, username }: { userId: string; username: string }) {
   const t = useT();
   const queryClient = useQueryClient();
   const entry = useFollowingEntry(userId);
 
   const toggleMutation = useMutation({
-    mutationFn: (patch: { notifyOnAlertCreate?: boolean; notifyOnAlertFire?: boolean }) =>
-      updateFollow(userId, patch),
+    mutationFn: (next: boolean) =>
+      updateFollow(userId, { notifyOnAlertCreate: next, notifyOnAlertFire: next }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: FOLLOWING_QUERY_KEY });
     },
@@ -223,24 +225,16 @@ export function AlertFollowToggles({ userId, username }: { userId: string; usern
 
   if (!entry || !entry.sharesAlertActivity) return null;
 
+  const on = entry.notifyOnAlertCreate || entry.notifyOnAlertFire;
+
   return (
-    <>
-      <FollowPrefSwitch
-        on={entry.notifyOnAlertCreate}
-        disabled={toggleMutation.isPending}
-        ariaLabel={t('social.follow.alertCreateAria', { username })}
-        hint={t('social.follow.alertCreateHint')}
-        label={t('social.follow.alertCreate')}
-        onToggle={() => toggleMutation.mutate({ notifyOnAlertCreate: !entry.notifyOnAlertCreate })}
-      />
-      <FollowPrefSwitch
-        on={entry.notifyOnAlertFire}
-        disabled={toggleMutation.isPending}
-        ariaLabel={t('social.follow.alertFireAria', { username })}
-        hint={t('social.follow.alertFireHint')}
-        label={t('social.follow.alertFire')}
-        onToggle={() => toggleMutation.mutate({ notifyOnAlertFire: !entry.notifyOnAlertFire })}
-      />
-    </>
+    <FollowPrefSwitch
+      on={on}
+      disabled={toggleMutation.isPending}
+      ariaLabel={t('social.follow.alertFollowAria', { username })}
+      hint={t('social.follow.alertFollowHint')}
+      label={t('social.follow.alertFollow')}
+      onToggle={() => toggleMutation.mutate(!on)}
+    />
   );
 }
