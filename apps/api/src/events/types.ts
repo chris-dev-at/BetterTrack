@@ -228,6 +228,20 @@ export interface AccountTempPasswordEvent {
 }
 
 /**
+ * `account.data_export` → the recipient's requested data export finished
+ * building and is ready to download (§13.4 V4-P6a, #494). Purely the
+ * informational inbox/push notice — it carries NO download token (the requester
+ * already holds it from the request response), so no secret rides the durable
+ * queue or lands in the inbox row. Deep-links to Settings → Account.
+ */
+export interface AccountDataExportEvent {
+  type: 'account.data_export';
+  /** Recipient — the user whose export is ready. */
+  userId: string;
+  occurredAt: string;
+}
+
+/**
  * `chat.message` → a friend sent the recipient a chat message (§13.3 V3-P8).
  * `userId` is the **recipient**; `senderId`/`senderUsername` identify the sender.
  * Two independent subscribers consume it: the realtime gateway pushes it to the
@@ -271,6 +285,7 @@ export type DomainEvent =
   | FollowAlertCreatedEvent
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
+  | AccountDataExportEvent
   | ChatMessageEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
@@ -296,5 +311,6 @@ export const DOMAIN_EVENT_TYPES = [
   'follow.alert.created',
   'follow.alert.fired',
   'account.temp_password',
+  'account.data_export',
   'chat.message',
 ] as const satisfies readonly DomainEventType[];

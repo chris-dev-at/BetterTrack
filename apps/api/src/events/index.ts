@@ -21,6 +21,7 @@ export type {
   FollowAlertCreatedEvent,
   FollowAlertFiredEvent,
   AccountTempPasswordEvent,
+  AccountDataExportEvent,
   ChatMessageEvent,
 } from './types';
 export { DOMAIN_EVENT_TYPES } from './types';

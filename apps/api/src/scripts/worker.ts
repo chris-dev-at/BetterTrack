@@ -21,6 +21,8 @@ import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
   createDeadLetter,
+  createExportBuildJob,
+  createExportCleanupJob,
   createJobDefinitions,
   createJobWorkers,
   createNotificationsDispatchJob,
@@ -35,6 +37,11 @@ import { initObservability } from '../services/observability/sentry';
 import { createAuditService } from '../services/audit/auditService';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport } from '../services/email/transport';
+import { createExportRepository } from '../data/repositories/exportRepository';
+import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
+import { createExportService } from '../services/export';
+import { createPasswordHasher } from '../services/password/passwordHasher';
+import { createTwoFactorService } from '../services/auth/twoFactorService';
 import { createFcmChannel } from '../services/notifications/fcm';
 import { createNotificationCenter } from '../services/notifications/notificationCenter';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
@@ -124,6 +131,34 @@ const notify = createNotificationCenter({
   logger,
 });
 
+// Account data export (§13.4 V4-P6a, #494): the build + daily cleanup jobs close
+// over the export service. Only buildExport/cleanupExpired run here (the re-auth
+// deps below back the HTTP request path and are inert on the worker); enqueue is
+// wired to the durable queue for completeness though the worker never requests.
+const exportUserRepo = createUserRepository(db);
+const dataExportService = createExportService({
+  config,
+  db,
+  redis: deadLetterConnection,
+  exportRepo: createExportRepository(db),
+  userRepo: exportUserRepo,
+  passwordHasher: createPasswordHasher(),
+  twoFactor: createTwoFactorService({
+    config,
+    userRepo: exportUserRepo,
+    twoFactorRepo: createTwoFactorRepository(db),
+    audit,
+    redis: deadLetterConnection,
+    email,
+  }),
+  audit,
+  notify,
+  enqueueBuild: async (jobId) => {
+    await registry.enqueue('data.export', { jobId });
+  },
+  logger,
+});
+
 const definitions = [
   ...createJobDefinitions({
     db,
@@ -135,6 +170,8 @@ const definitions = [
       providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
   }),
   createNotificationsDispatchJob({ dispatcher }),
+  createExportBuildJob({ exportService: dataExportService }),
+  createExportCleanupJob({ exportService: dataExportService }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

@@ -4,11 +4,20 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { MeResponse } from '@bettertrack/contracts';
+import type {
+  ExportRequestResponse,
+  ExportStatusResponse,
+  MeResponse,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/userApi', () => ({
   getMe: vi.fn(),
   changePassword: vi.fn(),
+  requestDataExport: vi.fn(),
+  getDataExportStatus: vi.fn(),
+  dataExportDownloadUrl: vi.fn(
+    (token: string) => `/api/v1/account/export/download?token=${encodeURIComponent(token)}`,
+  ),
 }));
 vi.mock('../../lib/settingsApi', () => ({
   getAccountSettings: vi.fn(),
@@ -18,7 +27,7 @@ vi.mock('../../lib/settingsApi', () => ({
 import { I18nProvider } from '../../i18n';
 import { getMoneyCurrency, setMoneyCurrency } from '../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
-import { changePassword, getMe } from '../../lib/userApi';
+import { changePassword, getDataExportStatus, getMe, requestDataExport } from '../../lib/userApi';
 import { AccountSettingsPage } from './AccountSettingsPage';
 
 const ME: MeResponse = {
@@ -34,6 +43,28 @@ const ME: MeResponse = {
   locale: 'en',
   lastLoginAt: '2026-07-01T10:00:00.000Z',
   createdAt: '2026-01-15T09:00:00.000Z',
+};
+
+const NO_EXPORT: ExportStatusResponse = {
+  status: null,
+  jobId: null,
+  requestedAt: null,
+  expiresAt: null,
+  sizeBytes: null,
+};
+
+const READY_EXPORT: ExportStatusResponse = {
+  status: 'ready',
+  jobId: '00000000-0000-0000-0000-0000000000aa',
+  requestedAt: '2026-07-16T09:00:00.000Z',
+  expiresAt: '2026-07-23T09:00:00.000Z',
+  sizeBytes: 4096,
+};
+
+const REQUEST_RESPONSE: ExportRequestResponse = {
+  jobId: '00000000-0000-0000-0000-0000000000aa',
+  status: 'pending',
+  downloadToken: 'raw-download-token-1',
 };
 
 function renderPage() {
@@ -54,6 +85,8 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(getMe).mockResolvedValue(ME);
   vi.mocked(changePassword).mockResolvedValue(ME);
+  vi.mocked(getDataExportStatus).mockResolvedValue(NO_EXPORT);
+  vi.mocked(requestDataExport).mockResolvedValue(REQUEST_RESPONSE);
   vi.mocked(getAccountSettings).mockResolvedValue({
     defaultPortfolioVisibility: 'private',
     locale: 'en',
@@ -176,5 +209,54 @@ describe('AccountSettingsPage', () => {
     // … and immediately drives the display layer's default money currency, so
     // every omitted-currency MoneyText re-renders in the new base.
     await waitFor(() => expect(getMoneyCurrency()).toBe('USD'));
+  });
+
+  // Data export (§13.4 V4-P6a, #494): request → the raw token is stored (keyed by
+  // job id) → once the poll reports the SAME job ready, the download link renders
+  // with that token in the URL.
+  test('requesting an export stores the token and renders a download link for the ready job', async () => {
+    const user = userEvent.setup();
+    // Never-requested until the export is asked for; the same job then reports ready.
+    vi.mocked(getDataExportStatus).mockResolvedValueOnce(NO_EXPORT).mockResolvedValue(READY_EXPORT);
+    renderPage();
+
+    await user.type(await screen.findByLabelText('Confirm your password'), 'oldpassword1');
+    await user.click(screen.getByRole('button', { name: 'Export my data' }));
+
+    await waitFor(() =>
+      expect(requestDataExport).toHaveBeenCalledWith({ password: 'oldpassword1' }),
+    );
+
+    // The raw token was persisted (only its hash lives server-side), keyed by job id.
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem('bt.export.token') ?? '{}')).toEqual({
+        jobId: REQUEST_RESPONSE.jobId,
+        token: REQUEST_RESPONSE.downloadToken,
+      }),
+    );
+
+    // Once the same job is ready, the held token unlocks the download URL.
+    const link = await screen.findByRole('link', { name: 'Download export' });
+    expect(link).toHaveAttribute(
+      'href',
+      `/api/v1/account/export/download?token=${encodeURIComponent(REQUEST_RESPONSE.downloadToken)}`,
+    );
+  });
+
+  // The stored token only unlocks the CURRENT ready job: a leftover token for a
+  // different job id must NOT produce a download link — the readyNoToken branch
+  // tells the user to request a fresh export on this device.
+  test('a ready job with a mismatched stored token shows readyNoToken, not a download link', async () => {
+    localStorage.setItem(
+      'bt.export.token',
+      JSON.stringify({ jobId: 'a-different-job', token: 'stale-token' }),
+    );
+    vi.mocked(getDataExportStatus).mockResolvedValue(READY_EXPORT);
+    renderPage();
+
+    expect(
+      await screen.findByText(/its download link isn't available on this device/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Download export' })).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { MAX_PASSWORD_LENGTH } from './auth';
 import { localeSchema } from './i18n';
 import { NOTIFICATION_TYPES, type NotificationType } from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
@@ -146,3 +147,85 @@ export const updateAccountSettingsRequestSchema = z
     },
   );
 export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;
+
+// --- Account data export (§13.4 V4-P6a, #494) ------------------------------
+
+/**
+ * Settings → "Export my data": an async job assembles a zip of every
+ * user-owned entity (JSON per entity + CSVs for transactions / cash movements /
+ * holdings), delivered behind an expiring, re-auth-gated download.
+ *
+ * Flow (all on `/account/export`):
+ *  1. `POST` — re-authenticate (password OR a fresh 2FA code / recovery code),
+ *     rate-limited to 1/day. Returns the job id, its status, and the RAW
+ *     download token ONCE. Only the token's SHA-256 hash is stored server-side,
+ *     so this response is the sole delivery of the usable token (mirrors the
+ *     invite / password-reset model). The token is minted behind the re-auth
+ *     and short-lived, so it doubles as the download's "fresh re-auth" proof.
+ *  2. `GET` — poll the latest job's status (no secret in the response).
+ *  3. `GET /download?token=` — the session owner streams the zip while the
+ *     token matches and the job is `ready` and unexpired; a foreign or expired
+ *     token fails closed.
+ */
+
+/** Lifecycle of one export job. `expired` is a ready job past its download window. */
+export const EXPORT_STATUSES = ['pending', 'ready', 'failed', 'expired'] as const;
+export type ExportStatus = (typeof EXPORT_STATUSES)[number];
+export const exportStatusSchema = z.enum(EXPORT_STATUSES);
+
+/**
+ * `POST /account/export` body — the re-auth gate. Send the current password, or
+ * (for a 2FA-enrolled account) a fresh TOTP `code` or an unused `recoveryCode`.
+ * Exactly the credential shape the account-deletion flow uses, minus the typed
+ * username confirmation (an export is non-destructive).
+ */
+export const exportRequestSchema = z
+  .object({
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
+    code: z.string().trim().min(4).max(16).optional(),
+    /** An unused recovery code — consumed on success AND on a failed match. */
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .refine((b) => b.password !== undefined || b.code !== undefined || b.recoveryCode !== undefined, {
+    message: 'Re-authentication is required: send your password or a two-factor code.',
+  });
+export type ExportRequest = z.infer<typeof exportRequestSchema>;
+
+/**
+ * `GET /account/export` response — the caller's latest export job, or
+ * `status: null` when they have never requested one. Carries no secret; the
+ * download token lives only in the {@link exportRequestResponseSchema}.
+ */
+export const exportStatusResponseSchema = z
+  .object({
+    status: exportStatusSchema.nullable(),
+    jobId: z.string().uuid().nullable(),
+    requestedAt: z.string().datetime().nullable(),
+    /** When the ready file stops being downloadable (null until ready). */
+    expiresAt: z.string().datetime().nullable(),
+    /** Zip size in bytes once ready (null otherwise). */
+    sizeBytes: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+export type ExportStatusResponse = z.infer<typeof exportStatusResponseSchema>;
+
+/**
+ * `POST /account/export` response — the freshly-created job plus the RAW,
+ * single-delivery download token. The client keeps it to build the download
+ * URL once the job is `ready`; the server retains only its hash.
+ */
+export const exportRequestResponseSchema = z
+  .object({
+    jobId: z.string().uuid(),
+    status: exportStatusSchema,
+    /** The raw download token — shown once; only its hash is persisted. */
+    downloadToken: z.string().min(1),
+  })
+  .strict();
+export type ExportRequestResponse = z.infer<typeof exportRequestResponseSchema>;
+
+/** `GET /account/export/download?token=` query — the raw download token. */
+export const exportDownloadQuerySchema = z.object({ token: z.string().min(1).max(200) }).strict();
+export type ExportDownloadQuery = z.infer<typeof exportDownloadQuerySchema>;

@@ -76,6 +76,9 @@ function notificationLink(notification: Notification): string | null {
       return '/settings/security';
     case 'account.invite':
       return '/settings/account';
+    // Data export ready (V4-P6a) → the export block in Settings → Account.
+    case 'account.data_export':
+      return '/settings/account';
     // The one-off lean-email-defaults notice (V4-P0c) → the matrix it explains.
     case 'account.notice':
       return '/settings/notifications';

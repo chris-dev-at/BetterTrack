@@ -114,6 +114,7 @@ function buildInertContext(): AppContext {
     notificationSettings: inertService('notificationSettings'),
     accountSettings: inertService('accountSettings'),
     accountDeletion: inertService('accountDeletion'),
+    dataExport: inertService('dataExport'),
     alerts: inertService('alerts'),
     announcements: inertService('announcements'),
     notificationDispatcher: inertService('notificationDispatcher'),

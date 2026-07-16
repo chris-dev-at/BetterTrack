@@ -35,6 +35,7 @@ describe('notification taxonomy (#368)', () => {
       'follow.alert.fired',
       'account.invite',
       'account.temp_password',
+      'account.data_export',
       'alert.triggered',
       'chat.message',
     ]);

@@ -40,6 +40,9 @@ export const AuditAction = {
   UserEmailChanged: 'user.email_changed',
   UserDeleted: 'user.deleted',
   AccountDeleteFail: 'account.delete_fail',
+  // Self-service data export (§13.4 V4-P6a, #494).
+  AccountExportRequested: 'account.export_requested',
+  AccountExportFail: 'account.export_fail',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',

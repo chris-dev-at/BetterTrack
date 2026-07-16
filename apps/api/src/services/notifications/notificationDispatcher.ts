@@ -1,5 +1,6 @@
 import type { EventBus } from '../../events';
 import type {
+  AccountDataExportEvent,
   AccountTempPasswordEvent,
   AlertTriggeredEvent,
   ChatMessageEvent,
@@ -71,6 +72,7 @@ export type DispatchableEvent =
   | FollowAlertCreatedEvent
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
+  | AccountDataExportEvent
   | AlertTriggeredEvent
   | ChatMessageEvent;
 
@@ -86,6 +88,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'follow.alert.created',
   'follow.alert.fired',
   'account.temp_password',
+  'account.data_export',
   'alert.triggered',
   'chat.message',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
@@ -153,6 +156,9 @@ function eventKeyFor(event: DispatchableEvent): string {
     case 'account.temp_password':
       // Every reset is a fresh notice — the timestamp keys the occurrence.
       return `account.temp_password:${event.occurredAt}`;
+    case 'account.data_export':
+      // Every completed export is a fresh notice — the timestamp keys it.
+      return `account.data_export:${event.occurredAt}`;
     case 'alert.triggered':
       // Deduped per (alert, trigger window): the occurredAt minute folds in, so
       // a redelivered fire no-ops while a repeat alert's next window is fresh.
@@ -391,6 +397,14 @@ export function createNotificationDispatcher(
           payload: { eventKey },
           data: {},
         };
+      case 'account.data_export':
+        return {
+          eventKey,
+          title: 'Your data export is ready',
+          body: 'Your account data export has finished. Open Settings → Account to download it.',
+          payload: { eventKey },
+          data: {},
+        };
       case 'alert.triggered': {
         if (!resolveAlert) return null;
         const context = await resolveAlert(event.alertId);
@@ -506,6 +520,11 @@ export function createNotificationDispatcher(
         await email.sendChatMessage({ to, userId, actorUsername: event.senderUsername, locale });
         return;
       case 'account.temp_password':
+        return;
+      case 'account.data_export':
+        // No dispatcher email: the export-ready notice is in-app / push only
+        // (the download is gated by a token the requester already holds, so an
+        // email would carry no actionable link). Mirrors account.temp_password.
         return;
     }
   }
