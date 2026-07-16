@@ -309,6 +309,45 @@ export const registerResponseSchema = z.union([
 export type RegisterResponse = z.infer<typeof registerResponseSchema>;
 
 /**
+ * Google sign-in (PROJECTPLAN.md §13.4 V4-P4b). The OAuth authorization-code flow
+ * itself is two browser redirects — `GET /auth/google/start` (→ Google) and
+ * `GET /auth/google/callback` (→ back to the SPA) — so neither carries a JSON
+ * body; the SPA only ever reads the redirect's query string. The two shapes below
+ * back the Settings → Security link surface. The whole feature is env-gated: with
+ * no Google client configured the routes 404 and {@link googleLinkStatusResponseSchema}
+ * reports `enabled: false`, so no button renders on any surface.
+ */
+export const googleLinkStatusResponseSchema = z
+  .object({
+    /** Whether the deployment has Google OAuth configured at all (env-gated). */
+    enabled: z.boolean(),
+    /** Whether the caller's account has a linked Google identity. */
+    linked: z.boolean(),
+    /** The linked Google email, or `null` when not linked. */
+    email: z.string().nullable(),
+    /** When the identity was linked (ISO), or `null` when not linked. */
+    linkedAt: z.string().datetime().nullable(),
+    /**
+     * Whether the caller may unlink Google: `false` while Google is their ONLY
+     * usable sign-in method (the account has no usable password), so the UI can
+     * pre-empt the server refusal.
+     */
+    canUnlink: z.boolean(),
+  })
+  .strict();
+export type GoogleLinkStatusResponse = z.infer<typeof googleLinkStatusResponseSchema>;
+
+/**
+ * `POST /auth/google/unlink` — re-authenticate with the account password, then
+ * remove the Google link. Refused (409) while Google is the only usable sign-in
+ * method, so a re-auth password is always available when an unlink is allowed.
+ */
+export const googleUnlinkRequestSchema = z
+  .object({ password: z.string().min(1).max(MAX_PASSWORD_LENGTH) })
+  .strict();
+export type GoogleUnlinkRequest = z.infer<typeof googleUnlinkRequestSchema>;
+
+/**
  * OAuth account memory + PIN quick re-auth (PROJECTPLAN.md §16; owner spec #399
  * §B, V4-P2b). On the OAuth authorize page a device can remember the last
  * PIN-user's identity so the next flow is: tap your name → enter your PIN only →

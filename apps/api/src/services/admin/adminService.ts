@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type { Redis } from 'ioredis';
 
 import type {
@@ -14,6 +16,7 @@ import type {
 
 import type { AppConfig } from '../../config/env';
 import type { EmailLogPage, EmailLogRepository } from '../../data/repositories/emailLogRepository';
+import type { IdentityRepository } from '../../data/repositories/identityRepository';
 import type { InviteRepository } from '../../data/repositories/inviteRepository';
 import type { NotificationRepository } from '../../data/repositories/notificationRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
@@ -42,6 +45,8 @@ export interface AdminServiceDeps {
   registrationTokenRepo: RegistrationTokenRepository;
   /** Approval-queue applications for the `approval` mode (§13.4 V4-P4a). */
   registrationRequestRepo: RegistrationRequestRepository;
+  /** Federated identities — links a Google application on approval (§13.4 V4-P4b). */
+  identityRepo: IdentityRepository;
   portfolioRepo: PortfolioRepository;
   /** Per-(channel, type) override seeding for the V4-P0d account-defaults matrix. */
   notificationRepo: Pick<NotificationRepository, 'upsertChannelConfig'>;
@@ -70,6 +75,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     inviteRepo,
     registrationTokenRepo,
     registrationRequestRepo,
+    identityRepo,
     portfolioRepo,
     notificationRepo,
     sessions,
@@ -500,11 +506,18 @@ export function createAdminService(deps: AdminServiceDeps) {
         throw conflict('That username is already taken.', 'USERNAME_TAKEN');
       }
 
+      // A Google application (§13.4 V4-P4b) has no password: mint a random
+      // unusable hash + flag the account password-less, then link the identity
+      // below so the approved user signs in via Google. A normal application
+      // carries the argon2id hash the applicant chose at request time.
+      const isFederated = request.provider !== null && request.providerSubject !== null;
+      const passwordHash =
+        request.passwordHash ?? (await passwordHasher.hash(randomBytes(24).toString('hex')));
       const user = await userRepo.create({
         email: request.email,
         username: request.username,
-        // The applicant already chose (and hashed) their password at request time.
-        passwordHash: request.passwordHash,
+        passwordHash,
+        hasUsablePassword: !isFederated,
         role: 'user',
         status: 'active',
         mustChangePassword: false,
@@ -512,6 +525,23 @@ export function createAdminService(deps: AdminServiceDeps) {
         // decision-mail locale below).
         locale: request.locale,
       });
+      if (isFederated) {
+        await identityRepo.create({
+          userId: user.id,
+          provider: request.provider!,
+          subject: request.providerSubject!,
+          email: user.email,
+          emailVerified: request.providerEmailVerified,
+        });
+        await audit.record({
+          actorId: actor.id,
+          action: AuditAction.ExternalIdentityLinked,
+          targetType: 'user',
+          targetId: user.id,
+          ip: actor.ip,
+          meta: { provider: request.provider!, via: 'approval' },
+        });
+      }
       await portfolioRepo.createDefault(user.id);
       // Approval completes a self-serve registration — apply the same account
       // defaults (§13.4 V4-P0d) a direct signup gets, to this new account only.

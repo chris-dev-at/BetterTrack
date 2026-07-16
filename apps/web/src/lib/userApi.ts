@@ -1,4 +1,5 @@
 import {
+  googleLinkStatusResponseSchema,
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
@@ -12,6 +13,7 @@ import {
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type DeleteAccountRequest,
+  type GoogleLinkStatusResponse,
   type InviteValidationResponse,
   type LoginRequest,
   type LoginResponse,
@@ -35,6 +37,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
+import { apiBaseUrl } from './runtimeConfig';
 
 /**
  * Typed wrappers over the public/user auth endpoints (PROJECTPLAN.md §6.1, §8).
@@ -288,6 +291,37 @@ export async function getRegistrationInfo(
     suppressAuthRedirect: true,
   });
   return publicRegistrationInfoResponseSchema.parse(data);
+}
+
+/**
+ * Google sign-in (§13.4 V4-P4b). The OAuth flow is TWO browser redirects, so the
+ * SPA never fetches these — it navigates the whole window to `/auth/google/start`
+ * (a live session turns it into a "link" flow; an invite token rides along for
+ * invite-token registration). Returns the absolute URL to assign to
+ * `window.location`, so cookies + the top-level redirect back from Google behave.
+ */
+export function googleStartUrl(opts: { inviteToken?: string } = {}): string {
+  const base = `${apiBaseUrl()}/auth/google/start`;
+  return opts.inviteToken ? `${base}?inviteToken=${encodeURIComponent(opts.inviteToken)}` : base;
+}
+
+/** The caller's Google link state for Settings → Security (§13.4 V4-P4b). */
+export async function getGoogleLinkStatus(signal?: AbortSignal): Promise<GoogleLinkStatusResponse> {
+  const data = await apiRequest<unknown>('/auth/google/link-status', { signal });
+  return googleLinkStatusResponseSchema.parse(data);
+}
+
+/**
+ * Unlink the Google account after a password re-auth (§13.4 V4-P4b). Refused
+ * (409 GOOGLE_ONLY_SIGN_IN) while Google is the only usable sign-in method;
+ * `suppressAuthRedirect` so a wrong-password 401 stays an in-form error.
+ */
+export async function unlinkGoogle(password: string): Promise<void> {
+  await apiRequest<unknown>('/auth/google/unlink', {
+    method: 'POST',
+    body: { password },
+    suppressAuthRedirect: true,
+  });
 }
 
 /**

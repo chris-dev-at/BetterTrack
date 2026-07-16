@@ -11,6 +11,7 @@ import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
 import { legalUrl } from '../legal';
 import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
+import { GoogleButton } from './GoogleButton';
 
 /**
  * Splice React nodes into an i18n string that carries `{{name}}` placeholders,
@@ -87,6 +88,8 @@ export function RegisterPage() {
   // Set once an approval-mode request has been accepted — swaps the form for the
   // "awaiting approval" confirmation.
   const [pending, setPending] = useState(false);
+  // Whether "Continue with Google" is offered (§13.4 V4-P4b) — env-gated server-side.
+  const [googleEnabled, setGoogleEnabled] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -94,6 +97,7 @@ export function RegisterPage() {
       try {
         const info = await api.getRegistrationInfo(controller.signal);
         setState({ phase: 'ready', mode: info.mode });
+        setGoogleEnabled(info.googleEnabled);
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         setState({ phase: 'error' });
@@ -302,6 +306,21 @@ export function RegisterPage() {
           {t('auth.register.haveAccount')}
         </Link>
       </form>
+      {/* "Continue with Google" (§13.4 V4-P4b). Registers subject to the active
+          mode; in invite-token mode the token rides along so the Google path
+          honours the same gate as the form. */}
+      {googleEnabled ? (
+        <div className="mt-4 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <span className="h-px flex-1 bg-neutral-800" />
+            <span className="text-xs uppercase tracking-wide text-neutral-600">
+              {t('common.or')}
+            </span>
+            <span className="h-px flex-1 bg-neutral-800" />
+          </div>
+          <GoogleButton inviteToken={mode === 'invite_token' ? inviteToken.trim() : undefined} />
+        </div>
+      ) : null}
     </AuthCard>
   );
 }

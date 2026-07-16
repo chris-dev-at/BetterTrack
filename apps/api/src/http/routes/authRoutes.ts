@@ -3,6 +3,7 @@ import { Router, type Request } from 'express';
 import {
   acceptInviteRequestSchema,
   changePasswordRequestSchema,
+  googleUnlinkRequestSchema,
   loginRequestSchema,
   passwordResetCompleteSchema,
   passwordResetRequestSchema,
@@ -20,6 +21,7 @@ import {
   twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
+  type GoogleUnlinkRequest,
   type LoginRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
@@ -37,9 +39,12 @@ import {
 
 import { notFound, unauthorized } from '../../errors';
 import {
+  clearGoogleOAuthStateCookie,
   clearRememberedDeviceCookie,
   clearSessionCookie,
+  GOOGLE_OAUTH_STATE_COOKIE,
   REMEMBERED_DEVICE_COOKIE,
+  setGoogleOAuthStateCookie,
   setRememberedDeviceCookie,
   setSessionCookie,
 } from '../cookies';
@@ -482,5 +487,113 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     res.status(201).json(toMeResponseFromRow(user));
   });
 
+  // ── Google sign-in (§13.4 V4-P4b) ───────────────────────────────────────────
+  // Server-side OAuth authorization-code flow. Both `start` and `callback` are
+  // browser redirects (no JSON), and the whole surface 404s when Google is not
+  // configured (env-gated). `link-status`/`unlink` back Settings → Security and,
+  // per #361 convention, accept a bearer holding `account:security`.
+
+  // Kick off the flow: bind a single-use `state` and redirect to Google. A live
+  // cookie session turns this into a "link Google to my account" flow (from
+  // Settings); anonymous is a sign-in/registration. An optional `inviteToken`
+  // rides through for the invite-token registration mode.
+  router.get('/google/start', async (req, res) => {
+    if (!ctx.google.isEnabled()) throw notFound();
+    const linkUserId = req.authUser && !req.apiKey ? req.authUser.id : null;
+    const inviteToken = typeof req.query.inviteToken === 'string' ? req.query.inviteToken : null;
+    const { url, state } = await ctx.google.buildAuthorizeUrl({ linkUserId, inviteToken });
+    // Bind the state to this browser: the callback requires the same value back
+    // from this signed cookie (login-CSRF defence, §13.4 V4-P4b).
+    setGoogleOAuthStateCookie(res, ctx.config, state);
+    res.redirect(url);
+  });
+
+  // Google's redirect back. Validates `state`, verifies the ID token, then signs
+  // in / links / registers. Always ends in a redirect to the SPA — a success sets
+  // the session cookie exactly like password login; every failure carries a
+  // friendly `?error=` the SPA renders (no JSON error page for a browser flow).
+  router.get('/google/callback', async (req, res) => {
+    if (!ctx.google.isEnabled()) throw notFound();
+    const web = ctx.config.appOrigin;
+    // The state cookie is single-use — always clear it, whatever the outcome.
+    const cookieState = req.signedCookies?.[GOOGLE_OAUTH_STATE_COOKIE] as string | undefined;
+    clearGoogleOAuthStateCookie(res, ctx.config);
+    // The user denied consent (or Google errored) before we ever got a code.
+    if (typeof req.query.error === 'string' && req.query.error.length > 0) {
+      res.redirect(`${web}/login?error=google_failed`);
+      return;
+    }
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+    const code = typeof req.query.code === 'string' ? req.query.code : undefined;
+    const result = await ctx.google.handleCallback({ state, cookieState, code, ip: req.ip });
+    switch (result.status) {
+      case 'authenticated':
+        setSessionCookie(res, ctx.config, result.sessionId, result.persistent);
+        res.redirect(`${web}/?google=signed_in`);
+        return;
+      case 'linked':
+        res.redirect(`${web}/settings/security?google=linked`);
+        return;
+      case 'pending':
+        res.redirect(`${web}/login?google=pending`);
+        return;
+      case 'error': {
+        const base = result.intent === 'link' ? '/settings/security' : '/login';
+        res.redirect(`${web}${base}?error=${googleErrorParam(result.code)}`);
+        return;
+      }
+    }
+  });
+
+  // The caller's Google link state for the Settings surface. Cookie session or a
+  // bearer holding `account:security` (both read only the caller's own account).
+  router.get('/google/link-status', requireAuth, async (req, res) => {
+    if (!ctx.google.isEnabled()) throw notFound();
+    res.json(await ctx.google.getLinkStatus(req.authUser!.id));
+  });
+
+  // Unlink Google after a password re-auth. Refused (409 GOOGLE_ONLY_SIGN_IN)
+  // while Google is the account's only usable sign-in method.
+  router.post(
+    '/google/unlink',
+    requireAuth,
+    validateBody(googleUnlinkRequestSchema),
+    async (req, res) => {
+      if (!ctx.google.isEnabled()) throw notFound();
+      const body = req.valid?.body as GoogleUnlinkRequest;
+      await ctx.google.unlink(req.authUser!.id, body.password, req.ip);
+      res.json({ ok: true });
+    },
+  );
+
   return router;
+}
+
+/**
+ * Map a Google-callback failure code to the stable `?error=` param the SPA reads
+ * (login / Settings → Security surfaces localize it). Anything unmapped falls
+ * back to a generic `google_failed`.
+ */
+function googleErrorParam(code: string): string {
+  switch (code) {
+    case 'GOOGLE_STATE_INVALID':
+      return 'google_state';
+    case 'GOOGLE_VERIFY_FAILED':
+      return 'google_verify';
+    case 'REGISTRATION_CLOSED':
+      return 'google_registration_closed';
+    case 'EMAIL_TAKEN':
+      return 'google_email_taken';
+    case 'REGISTRATION_TOKEN_REQUIRED':
+    case 'INVALID_REGISTRATION_TOKEN':
+      return 'google_invite_required';
+    case 'ACCOUNT_DISABLED':
+      return 'google_account_disabled';
+    case 'GOOGLE_ADMIN_UNSUPPORTED':
+      return 'google_admin';
+    case 'GOOGLE_ALREADY_LINKED':
+      return 'google_already_linked';
+    default:
+      return 'google_failed';
+  }
 }

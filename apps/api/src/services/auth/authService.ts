@@ -220,7 +220,7 @@ export interface AuthService {
    * V4-P4a). Leaks only the mode so the login / register surfaces + landing page
    * can reflect it; carries nothing else.
    */
-  getRegistrationInfo(): Promise<{ mode: RegistrationMode }>;
+  getRegistrationInfo(): Promise<{ mode: RegistrationMode; googleEnabled: boolean }>;
   /**
    * Verify the PIN for the current session, renewing its 30-day window on
    * success (§6.1). {@link PIN_FALLBACK_THRESHOLD} wrong PINs in a row destroy
@@ -1019,7 +1019,12 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async getRegistrationInfo() {
-      return { mode: await appSettings.getRegistrationMode() };
+      // Leaks only the mode + whether Google sign-in is configured (§13.4 V4-P4b) —
+      // both drive which auth surfaces render, nothing account-identifying.
+      return {
+        mode: await appSettings.getRegistrationMode(),
+        googleEnabled: config.google.enabled,
+      };
     },
 
     async register(input, ip) {

@@ -8,11 +8,12 @@ import type {
   TwoFactorChallengeResponse,
 } from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
+import { useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as userApi from '../../lib/userApi';
 import { AdminAccountError, useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField, cx } from '../components/ui';
+import { GoogleButton } from './GoogleButton';
 import { OAuthAccountChooser } from './OAuthAccountChooser';
 import {
   hasBeenAskedToRemember,
@@ -30,6 +31,37 @@ function intendedPath(state: unknown): string {
     if (typeof from === 'string' && from.startsWith('/') && !from.startsWith('//')) return from;
   }
   return '/';
+}
+
+const GOOGLE_ERROR_KEYS: Record<string, string> = {
+  google_state: 'auth.google.errorState',
+  google_verify: 'auth.google.errorVerify',
+  google_registration_closed: 'auth.google.errorRegistrationClosed',
+  google_email_taken: 'auth.google.errorEmailTaken',
+  google_invite_required: 'auth.google.errorInviteRequired',
+  google_account_disabled: 'auth.google.errorAccountDisabled',
+  google_admin: 'auth.google.errorAdmin',
+  google_already_linked: 'auth.google.errorAlreadyLinked',
+};
+
+/**
+ * The notice the Google callback bounces back through the URL (§13.4 V4-P4b): an
+ * error code (`?error=google_*`) → an error Alert, or `?google=pending` (an
+ * approval-mode application) → an info Alert. Anything else → no notice.
+ */
+function googleNoticeFromSearch(
+  search: string,
+  t: TranslateFn,
+): { tone: 'error' | 'info'; text: string } | null {
+  const params = new URLSearchParams(search);
+  const error = params.get('error');
+  if (error && error.startsWith('google_')) {
+    return { tone: 'error', text: t(GOOGLE_ERROR_KEYS[error] ?? 'auth.google.errorGeneric') };
+  }
+  if (params.get('google') === 'pending') {
+    return { tone: 'info', text: t('auth.google.pending') };
+  }
+  return null;
 }
 
 /**
@@ -80,18 +112,26 @@ export function LoginPage() {
   // The active registration mode (§13.4 V4-P4a): drives whether a "create an
   // account" link is offered. Best-effort — a fetch failure just hides the link.
   const [registrationMode, setRegistrationMode] = useState<RegistrationMode | null>(null);
+  // Whether "Continue with Google" is offered (§13.4 V4-P4b) — env-gated on the
+  // server. Best-effort like the mode: a fetch failure just hides the button.
+  const [googleEnabled, setGoogleEnabled] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       try {
         const info = await userApi.getRegistrationInfo(controller.signal);
         setRegistrationMode(info.mode);
+        setGoogleEnabled(info.googleEnabled);
       } catch {
         // Best-effort: a fetch failure just hides the "create an account" link.
       }
     })();
     return () => controller.abort();
   }, []);
+
+  // A message bounced back from the Google callback (§13.4 V4-P4b): `?error=…`
+  // for a failed sign-in, `?google=pending` for an approval-mode application.
+  const googleNotice = googleNoticeFromSearch(location.search, t);
 
   if (status === 'loading') {
     return (
@@ -249,6 +289,11 @@ export function LoginPage() {
 
   return (
     <AuthCard subtitle={t('auth.login.subtitle')}>
+      {googleNotice ? (
+        <div className="mb-4">
+          <Alert tone={googleNotice.tone}>{googleNotice.text}</Alert>
+        </div>
+      ) : null}
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
@@ -296,11 +341,25 @@ export function LoginPage() {
           {t('auth.login.forgotPassword')}
         </Link>
       </form>
+      {/* Google sign-in (§13.4 V4-P4b) — the slot #467 reserved below the form.
+          Shown whenever the deployment has Google configured (so existing
+          Google-linked users can sign in even in `closed` mode), but never inside
+          the OAuth-authorize flow (its post-sign-in redirect would drop context). */}
+      {googleEnabled && !oauthContext ? (
+        <div className="mt-4 flex flex-col gap-3">
+          <div className="flex items-center gap-3">
+            <span className="h-px flex-1 bg-neutral-800" />
+            <span className="text-xs uppercase tracking-wide text-neutral-600">
+              {t('common.or')}
+            </span>
+            <span className="h-px flex-1 bg-neutral-800" />
+          </div>
+          <GoogleButton />
+        </div>
+      ) : null}
       {/* Self-serve registration treatment (V4-P0 (f), §13.4). Sits below the
-          sign-in form as a designed, stand-out card, not a bottom-anchor link,
-          and reserves the vertical stack the P4 Google sign-in button will slot
-          into (below Sign up) — no re-design when V4-P4 lands. Shown only when
-          the instance allows registration and never inside an OAuth flow. */}
+          sign-in form as a designed, stand-out card, not a bottom-anchor link.
+          Shown only when the instance allows registration and never in OAuth. */}
       {!oauthContext && registrationMode && registrationMode !== 'closed' ? (
         <div className="mt-4 flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
           <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
@@ -317,7 +376,6 @@ export function LoginPage() {
           >
             {t('auth.login.signUp')}
           </Link>
-          {/* V4-P4 will slot the Google sign-in button in below Sign up. */}
         </div>
       ) : null}
     </AuthCard>

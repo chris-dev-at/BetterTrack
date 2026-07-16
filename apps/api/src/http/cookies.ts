@@ -77,3 +77,38 @@ export function clearRememberedDeviceCookie(res: Response, config: AppConfig): v
     path: '/',
   });
 }
+
+/**
+ * Google OAuth `state` binding cookie (§13.4 V4-P4b). The authorization-code flow
+ * already stores each single-use `state` server-side (Redis); this signed httpOnly
+ * cookie double-submits the same value so the callback can require the returning
+ * browser to be the one that started the flow — closing the OAuth login-CSRF hole
+ * (a planted `state` from an attacker-initiated flow is rejected because the
+ * victim's browser never holds its cookie). SameSite=Lax (like the session cookie)
+ * so it survives the top-level GET redirect back from Google. Short-lived — it is
+ * cleared the instant the callback consumes it, and expires with the state anyway.
+ */
+export const GOOGLE_OAUTH_STATE_COOKIE = 'bt_goog_state';
+/** Matches the Redis `state` TTL (10 min) — long enough to sign in, tight otherwise. */
+export const GOOGLE_OAUTH_STATE_MAX_AGE_MS = 10 * 60 * 1000;
+
+export function setGoogleOAuthStateCookie(res: Response, config: AppConfig, state: string): void {
+  res.cookie(GOOGLE_OAUTH_STATE_COOKIE, state, {
+    httpOnly: true,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    signed: true,
+    maxAge: GOOGLE_OAUTH_STATE_MAX_AGE_MS,
+    path: '/',
+  });
+}
+
+export function clearGoogleOAuthStateCookie(res: Response, config: AppConfig): void {
+  res.clearCookie(GOOGLE_OAUTH_STATE_COOKIE, {
+    httpOnly: true,
+    sameSite: config.cookie.sameSite,
+    secure: config.cookie.secure,
+    signed: true,
+    path: '/',
+  });
+}

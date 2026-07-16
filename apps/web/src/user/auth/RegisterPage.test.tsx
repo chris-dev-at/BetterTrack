@@ -46,7 +46,7 @@ function renderAt(entry: string) {
 }
 
 function setMode(mode: RegistrationMode) {
-  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode });
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode, googleEnabled: false });
 }
 
 beforeEach(() => {

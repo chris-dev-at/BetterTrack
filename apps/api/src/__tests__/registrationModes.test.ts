@@ -392,9 +392,13 @@ describe('public registration-info discovery (§13.4 V4-P4a)', () => {
       await setMode(adminAgent, mode);
       const res = await request(harness.app).get('/api/v1/auth/registration-info');
       expect(res.status).toBe(200);
-      // Strict parse: exactly { mode }, nothing else.
-      expect(publicRegistrationInfoResponseSchema.parse(res.body)).toEqual({ mode });
-      expect(Object.keys(res.body)).toEqual(['mode']);
+      // Strict parse: exactly { mode, googleEnabled }, nothing else. Google is
+      // unset in this harness, so the flag is always false here (§13.4 V4-P4b).
+      expect(publicRegistrationInfoResponseSchema.parse(res.body)).toEqual({
+        mode,
+        googleEnabled: false,
+      });
+      expect(Object.keys(res.body).sort()).toEqual(['googleEnabled', 'mode']);
     }
   });
 

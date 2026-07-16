@@ -26,6 +26,7 @@ import { createLogger } from '../logger';
 import type { MarketDataService } from '../providers';
 import type { MailTransport } from '../services/email/transport';
 import type { LiveModeServiceOptions } from '../services/liveMode';
+import type { GoogleTokenVerifier } from '../services/auth/googleVerifier';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
@@ -181,6 +182,12 @@ export interface CreateTestAppOptions {
   marketData?: MarketDataService;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
+  /**
+   * Stubbed Google token/ID-token verifier (§13.4 V4-P4b) in place of the real
+   * jose-based one, so the whole sign-in flow runs on canned claims with no
+   * network. Requires the Google env (BT_GOOGLE_CLIENT_ID/SECRET) to be set too.
+   */
+  googleVerifier?: GoogleTokenVerifier;
   /** Fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
   /**
@@ -225,6 +232,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     emailTransport: options.emailTransport,
     marketData: options.marketData,
     backfill: options.backfill,
+    googleVerifier: options.googleVerifier,
     passwordHasher: testPasswordHasher,
     liveModeOptions: options.liveModeOptions,
     notificationEnqueue: options.notificationEnqueue,

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 
 import {
@@ -28,22 +29,26 @@ import {
 } from '../../lib/twoFactorApi';
 import {
   disablePin,
+  getGoogleLinkStatus,
   getMe,
   getSession,
+  googleStartUrl,
   listSessions,
   revokeOtherSessions,
   revokeSession,
   setPin,
   setPinLockIdleMinutes,
+  unlinkGoogle,
 } from '../../lib/userApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { PinInput } from '../components/PinInput';
-import { Alert, Button } from '../components/ui';
+import { Alert, Button, TextField } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
 const SESSIONS_KEY = ['auth', 'sessions'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
+const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
 
 function pinErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
@@ -1031,6 +1036,180 @@ function TwoFactorSection() {
 }
 
 /**
+ * Google account link/unlink (PROJECTPLAN.md §13.4 V4-P4b). Shows the linked
+ * Google identity and offers an unlink (password re-auth), or a "Connect Google"
+ * affordance when unlinked. Env-gated: a 404 (or `enabled: false`) hides the
+ * whole section. Unlink is refused while Google is the only usable sign-in method
+ * (`canUnlink: false`) — surfaced as a hint, and the button is withheld.
+ */
+function GoogleSection() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [unlinking, setUnlinking] = useState(false);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(
+    searchParams.get('google') === 'linked' ? t('settings.security.google.linkedNotice') : null,
+  );
+
+  // Consume the `?google=linked` marker the callback bounced back, so a refresh
+  // doesn't keep re-announcing it.
+  // Run once on mount — the marker is a one-shot handoff from the redirect.
+  useEffect(() => {
+    if (searchParams.get('google')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('google');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
+
+  const query = useQuery({
+    queryKey: GOOGLE_KEY,
+    queryFn: ({ signal }) => getGoogleLinkStatus(signal),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const unlink = useMutation({
+    mutationFn: () => unlinkGoogle(password),
+    onSuccess: async () => {
+      setUnlinking(false);
+      setPassword('');
+      setError(null);
+      setNotice(t('settings.security.google.unlinkedNotice'));
+      await queryClient.invalidateQueries({ queryKey: GOOGLE_KEY });
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.status === 401) {
+        setError(t('settings.security.google.wrongPassword'));
+      } else if (err instanceof ApiError && err.code === 'GOOGLE_ONLY_SIGN_IN') {
+        setError(t('settings.security.google.onlyMethod'));
+      } else {
+        setError(t('settings.security.google.genericError'));
+      }
+    },
+  });
+
+  // Feature off on this deployment (the routes 404) → render nothing at all.
+  if (query.isError) {
+    if (query.error instanceof ApiError && query.error.status === 404) return null;
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.security.google.title')}
+        </h3>
+        <EmptyState
+          title={t('settings.security.google.loadError')}
+          description={t('settings.retryHint')}
+        />
+      </section>
+    );
+  }
+  if (query.isPending) {
+    return (
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.security.google.title')}
+        </h3>
+        <Skeleton height="h-6" />
+      </section>
+    );
+  }
+  if (!query.data.enabled) return null;
+  const status = query.data;
+
+  return (
+    <section className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <h3 className="text-sm font-semibold text-neutral-100">
+        {t('settings.security.google.title')}
+      </h3>
+      <p className="text-xs text-neutral-500">{t('settings.security.google.description')}</p>
+      {notice ? <Alert tone="success">{notice}</Alert> : null}
+      {status.linked ? (
+        <div className="flex flex-col gap-3">
+          <div>
+            <p className="text-sm text-neutral-300">
+              {t('settings.security.google.linkedAs', { email: status.email ?? '' })}
+            </p>
+            {status.linkedAt ? (
+              <p className="text-xs text-neutral-500">
+                {t('settings.security.google.linkedOn', {
+                  date: formatDateTime(status.linkedAt),
+                })}
+              </p>
+            ) : null}
+          </div>
+          {status.canUnlink ? (
+            unlinking ? (
+              <form
+                className="flex flex-col gap-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setError(null);
+                  unlink.mutate();
+                }}
+              >
+                {error ? <Alert tone="error">{error}</Alert> : null}
+                <p className="text-xs text-neutral-400">
+                  {t('settings.security.google.unlinkPrompt')}
+                </p>
+                <TextField
+                  label={t('settings.security.google.passwordLabel')}
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <div className="flex gap-2">
+                  <Button
+                    type="submit"
+                    variant="secondary"
+                    disabled={unlink.isPending || password.length === 0}
+                  >
+                    {t('settings.security.google.confirmUnlink')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => {
+                      setUnlinking(false);
+                      setError(null);
+                      setPassword('');
+                    }}
+                  >
+                    {t('settings.security.google.cancel')}
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <div>
+                <Button variant="secondary" onClick={() => setUnlinking(true)}>
+                  {t('settings.security.google.unlinkButton')}
+                </Button>
+              </div>
+            )
+          ) : (
+            <Alert tone="info">{t('settings.security.google.onlyMethod')}</Alert>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-neutral-400">{t('settings.security.google.notLinked')}</p>
+          <a
+            href={googleStartUrl()}
+            className="inline-flex w-fit items-center justify-center rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm font-semibold text-neutral-200 transition-colors hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          >
+            {t('settings.security.google.connectButton')}
+          </a>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
  * Settings → Security (PROJECTPLAN.md §6.11). Session info, PIN
  * enable/change/disable (§6.1), and two-factor auth (§13.2 V2-P5). All shapes
  * derive from `@bettertrack/contracts` via the web api-client.
@@ -1066,6 +1245,8 @@ export function SecuritySettingsPage() {
       )}
 
       <TwoFactorSection />
+
+      <GoogleSection />
     </div>
   );
 }

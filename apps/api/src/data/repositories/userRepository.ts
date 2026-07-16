@@ -12,6 +12,12 @@ export interface CreateUserInput {
   mustChangePassword?: boolean;
   /** Register-form / applicant language; omit to accept the column default (en). */
   locale?: string;
+  /**
+   * Whether `passwordHash` is a real user-chosen credential (§13.4 V4-P4b). Omit
+   * to accept the column default (`true`) — a Google-registered account passes
+   * `false` so password login can never succeed and Google-unlink is refused.
+   */
+  hasUsablePassword?: boolean;
 }
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -67,6 +73,10 @@ export function createUserRepository(db: Database) {
           mustChangePassword: input.mustChangePassword ?? false,
           // Undefined lets Drizzle omit the column so its `en` default applies.
           ...(input.locale ? { locale: input.locale } : {}),
+          // Omit to accept the `true` column default; Google accounts pass false.
+          ...(input.hasUsablePassword === undefined
+            ? {}
+            : { hasUsablePassword: input.hasUsablePassword }),
         })
         .returning();
       if (!row) throw new Error('Failed to insert user');
@@ -80,7 +90,9 @@ export function createUserRepository(db: Database) {
     ): Promise<void> {
       await db
         .update(users)
-        .set({ passwordHash, mustChangePassword, updatedAt: new Date() })
+        // Setting any password makes it usable (§13.4 V4-P4b): a Google-only
+        // account that later completes a password reset can then unlink Google.
+        .set({ passwordHash, mustChangePassword, hasUsablePassword: true, updatedAt: new Date() })
         .where(eq(users.id, id));
     },
 

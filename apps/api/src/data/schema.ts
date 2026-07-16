@@ -47,6 +47,13 @@ export const users = pgTable(
     email: varchar('email', { length: 320 }).notNull(),
     username: varchar('username', { length: 40 }).notNull(),
     passwordHash: text('password_hash').notNull(),
+    // Whether `password_hash` is a real, user-chosen credential (§13.4 V4-P4b).
+    // A Google-registered account is created password-less: it still carries a
+    // random (unusable) hash to satisfy the NOT NULL, but this flag is false, so
+    // password login never succeeds and Google-unlink is refused (Google is the
+    // only sign-in method). Setting a password — via reset — flips it true. Every
+    // existing / password account is true (the column default), unchanged.
+    hasUsablePassword: boolean('has_usable_password').notNull().default(true),
     role: userRoleEnum('role').notNull().default('user'),
     status: userStatusEnum('status').notNull().default('active'),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
@@ -269,13 +276,55 @@ export const registrationRequests = pgTable(
     id: uuid('id').primaryKey().$defaultFn(newId),
     email: varchar('email', { length: 320 }).notNull(),
     username: varchar('username', { length: 40 }).notNull(),
-    passwordHash: text('password_hash').notNull(),
+    // Nullable as of the Google-login approval path (§13.4 V4-P4b): a federated
+    // applicant has no password, so this is NULL for a `provider` request and
+    // approval mints a random (unusable) hash on the created account. A normal
+    // (password) application still carries the argon2id hash chosen at request
+    // time, exactly as before.
+    passwordHash: text('password_hash'),
     locale: varchar('locale', { length: 5 }).notNull().default('en'),
+    // Federated-registration application (§13.4 V4-P4b). NULL provider = a normal
+    // password application (the pre-existing path). `provider`='google' carries
+    // the verified Google identity so admin approval both creates the account AND
+    // links it (the applicant then signs in via Google).
+    provider: text('provider'),
+    providerSubject: text('provider_subject'),
+    providerEmailVerified: boolean('provider_email_verified').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('registration_requests_email_unique').on(t.email),
     uniqueIndex('registration_requests_username_lower_unique').on(sql`lower(${t.username})`),
+  ],
+);
+
+/**
+ * External (federated) sign-in identities (PROJECTPLAN.md §13.4 V4-P4b). One row
+ * per linked provider account — today only Google. `subject` is the provider's
+ * stable user id (the OIDC `sub` claim); (`provider`, `subject`) is globally
+ * unique so a given Google account maps to exactly one BetterTrack user, and
+ * (`provider`, `user_id`) is unique so a user links at most one account per
+ * provider. `email` / `email_verified` snapshot what the provider asserted at
+ * link time. Cascades away with the owning user.
+ */
+export const externalIdentities = pgTable(
+  'external_identities',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    subject: text('subject').notNull(),
+    email: varchar('email', { length: 320 }).notNull(),
+    emailVerified: boolean('email_verified').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('external_identities_provider_subject_unique').on(t.provider, t.subject),
+    uniqueIndex('external_identities_provider_user_unique').on(t.provider, t.userId),
+    index('external_identities_user_idx').on(t.userId),
   ],
 );
 
@@ -1468,6 +1517,7 @@ export type InviteRow = typeof invites.$inferSelect;
 export type PasswordResetTokenRow = typeof passwordResetTokens.$inferSelect;
 export type RegistrationTokenRow = typeof registrationTokens.$inferSelect;
 export type RegistrationRequestRow = typeof registrationRequests.$inferSelect;
+export type ExternalIdentityRow = typeof externalIdentities.$inferSelect;
 export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type AssetRow = typeof assets.$inferSelect;

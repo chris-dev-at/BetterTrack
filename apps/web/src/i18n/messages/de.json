@@ -172,6 +172,19 @@
       "authorizing": "Wird autorisiert…",
       "approve": "Zustimmen",
       "approveError": "Die Autorisierung konnte nicht abgeschlossen werden. Bitte versuche es erneut."
+    },
+    "google": {
+      "button": "Weiter mit Google",
+      "pending": "Danke! Deine Google-Registrierung wartet auf die Freigabe durch die Administration. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
+      "errorGeneric": "Die Anmeldung mit Google ist fehlgeschlagen. Bitte versuche es erneut.",
+      "errorState": "Deine Google-Anmeldesitzung ist abgelaufen. Bitte versuche es erneut.",
+      "errorVerify": "Dein Google-Konto konnte nicht verifiziert werden. Bitte versuche es erneut.",
+      "errorRegistrationClosed": "Die Registrierung ist derzeit geschlossen. Bitte frage die Administration nach einer Einladung.",
+      "errorEmailTaken": "Für diese E-Mail-Adresse besteht bereits ein Konto. Melde dich mit deinem Passwort an und verknüpfe Google anschließend in den Einstellungen.",
+      "errorInviteRequired": "Für die Google-Registrierung ist eine gültige Einladung nötig. Öffne deinen Einladungslink und wähle „Weiter mit Google“.",
+      "errorAccountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an die Administration.",
+      "errorAdmin": "Die Google-Anmeldung ist für Administrationskonten nicht verfügbar. Bitte melde dich mit deinem Passwort an.",
+      "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft."
     }
   },
   "common": {
@@ -210,7 +223,8 @@
       "noPriceData": "Noch keine Kursdaten für diesen Zeitraum.",
       "priceChartAria": "Kurschart",
       "allocationFallbackTitle": "Aufteilung im Überblick"
-    }
+    },
+    "or": "oder"
   },
   "nav": {
     "portfolio": "Portfolio",
@@ -524,6 +538,26 @@
           "regenerating": "Wird neu erzeugt…",
           "regenerate": "Wiederherstellungscodes neu erzeugen"
         }
+      },
+      "google": {
+        "title": "Google-Konto",
+        "description": "Melde dich mit Google an oder verwalte das verknüpfte Konto.",
+        "linkedAs": "Verknüpft als {{email}}",
+        "linkedOn": "Verknüpft {{date}}",
+        "notLinked": "Es ist kein Google-Konto verknüpft.",
+        "connectButton": "Google verbinden",
+        "unlinkButton": "Trennen",
+        "unlinkTitle": "Google trennen",
+        "unlinkPrompt": "Gib zur Bestätigung dein Passwort ein, um die Google-Verknüpfung zu trennen.",
+        "passwordLabel": "Passwort",
+        "confirmUnlink": "Google trennen",
+        "cancel": "Abbrechen",
+        "onlyMethod": "Lege ein Passwort fest, bevor du die Verknüpfung trennst – Google ist derzeit deine einzige Anmeldemöglichkeit.",
+        "unlinkedNotice": "Google-Konto getrennt.",
+        "linkedNotice": "Google-Konto verknüpft.",
+        "wrongPassword": "Dein Passwort ist falsch.",
+        "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+        "loadError": "Der Google-Verknüpfungsstatus konnte nicht geladen werden."
       }
     },
     "api": {

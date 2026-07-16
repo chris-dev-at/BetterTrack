@@ -33,6 +33,7 @@
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
     "ioredis": "^5.4.2",
+    "jose": "^5.10.0",
     "nodemailer": "^9.0.0",
     "pino": "^9.6.0",
     "postgres": "^3.4.5",
