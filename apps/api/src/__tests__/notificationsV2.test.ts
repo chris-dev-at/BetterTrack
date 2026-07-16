@@ -197,14 +197,25 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     expect(res.status).toBe(200);
     const settings = notificationSettingsResponseSchema.parse(res.body);
     expect(settings.muted).toBe(false);
-    // Test env: SMTP unset, no FCM key, no VAPID — only in-app is live.
-    expect(settings.channels).toEqual({ inapp: true, email: false, push: false, webpush: false });
+    // Test env: SMTP unset, no FCM key, no VAPID, no Telegram bot token,
+    // no Discord webhook — only in-app is live.
+    expect(settings.channels).toEqual({
+      inapp: true,
+      email: false,
+      telegram: false,
+      discord: false,
+      push: false,
+      webpush: false,
+    });
     expect(settings.webPushPublicKey).toBeNull();
     // Lean email defaults (V4-P0c): a non-account type defaults email OFF; the
-    // bell / phone-push / web-push channels are unchanged (all ON).
+    // bell / phone-push / web-push channels are unchanged (all ON). Telegram +
+    // Discord default ON per-type once the user configures them (V4-P10).
     expect(settings.matrix['friend.activity']).toEqual({
       inapp: true,
       email: false,
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
@@ -220,8 +231,15 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     const emailOn = ACCOUNT_SECURITY_NOTIFICATION_TYPES as readonly string[];
     for (const type of NOTIFICATION_TYPES) {
       const cell = settings.matrix[type];
-      // Bell + both push channels default ON for EVERY type — unchanged.
-      expect(cell).toMatchObject({ inapp: true, push: true, webpush: true });
+      // Bell + both push channels + telegram + discord default ON for EVERY
+      // type — unchanged/added by V4-P10.
+      expect(cell).toMatchObject({
+        inapp: true,
+        push: true,
+        webpush: true,
+        telegram: true,
+        discord: true,
+      });
       // Email defaults ON only for account/security types.
       expect(cell.email).toBe(emailOn.includes(type));
     }

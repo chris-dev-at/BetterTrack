@@ -30,6 +30,8 @@ import { createPasswordResetTokenRepository } from '../data/repositories/passwor
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
+import { createDiscordWebhookRepository } from '../data/repositories/discordWebhookRepository';
+import { createTelegramLinkRepository } from '../data/repositories/telegramLinkRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createChatRepository } from '../data/repositories/chatRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
@@ -124,6 +126,16 @@ import {
   type NotificationSettingsService,
 } from '../services/notifications/notificationSettingsService';
 import { createPresenceStore, type PresenceStore } from '../services/notifications/presence';
+import { createTelegramChannel } from '../services/notifications/telegramChannel';
+import { createDiscordChannel } from '../services/notifications/discordChannel';
+import {
+  createTelegramSetupService,
+  type TelegramSetupService,
+} from '../services/notifications/telegramSetupService';
+import {
+  createDiscordSetupService,
+  type DiscordSetupService,
+} from '../services/notifications/discordSetupService';
 import { createWebPushChannel } from '../services/notifications/webPush';
 import { createSmtpTransport, type MailTransport } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
@@ -192,6 +204,10 @@ export interface AppContext {
   notifications: NotificationService;
   /** Per-user notification type × channel matrix — Settings → Notifications (§6.10, §6.11). */
   notificationSettings: NotificationSettingsService;
+  /** Telegram link/unlink handshake + status for Settings → Notifications (§13.4 V4-P10). */
+  telegramSetup: TelegramSetupService;
+  /** Discord webhook save/remove/test for Settings → Notifications (§13.4 V4-P10). */
+  discordSetup: DiscordSetupService;
   /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
   accountSettings: AccountSettingsService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
@@ -402,6 +418,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const notificationRepo = createNotificationRepository(db);
   const deviceTokenRepo = createDeviceTokenRepository(db);
   const pushSubscriptionRepo = createPushSubscriptionRepository(db);
+  // V4-P10 additive channels: Telegram (per-user chat link, bot token in env)
+  // and Discord (per-user webhook URL, encrypted at rest via secretBox).
+  const telegramLinkRepo = createTelegramLinkRepository(db);
+  const discordWebhookRepo = createDiscordWebhookRepository(db);
   const alertRepo = createAlertRepository(db);
   // Written by the realtime gateway, read at dispatch time (cross-process via
   // Redis) to suppress notifying about the surface the user is viewing (#368).
@@ -420,6 +440,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     subscriptions: pushSubscriptionRepo,
     logger,
   });
+  // Telegram channel (V4-P10): null when BT_TELEGRAM_BOT_TOKEN is unset — the
+  // matrix column stays hidden and the setup routes report `available: false`.
+  const telegramChannel = createTelegramChannel({
+    botToken: config.telegram.botToken,
+    links: telegramLinkRepo,
+    logger,
+  });
+  // Discord channel (V4-P10): always built — availability is per-user (webhook
+  // saved or not). Reuses the 2FA encryption key for the at-rest URL envelope.
+  const discordChannel = createDiscordChannel({
+    webhooks: discordWebhookRepo,
+    encryptionKey: config.twoFactor.encryptionKey,
+    logger,
+  });
 
   // The delivery core. The WORKER runs the authoritative instance inside the
   // `notifications.dispatch` job; this API-side twin serves synchronous test
@@ -434,6 +468,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
     fcm: fcmChannel,
     webPush: webPushChannel,
+    telegram: telegramChannel,
+    discord: discordChannel,
     presence,
     logger,
   });
@@ -745,6 +781,24 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     webPushSubs: pushSubscriptionRepo,
     now: deps.notificationNow,
   });
+  // Telegram + Discord setup services (V4-P10) — bundled here so the
+  // notification settings service can query per-user availability. Telegram is
+  // env-gated at the channel level; Discord is always available (per-user
+  // webhook, no server env). Both are strictly user-scoped by construction.
+  const telegramSetup = createTelegramSetupService({
+    enabled: config.telegram.enabled,
+    botToken: config.telegram.botToken,
+    links: telegramLinkRepo,
+    channel: telegramChannel,
+    logger,
+  });
+  const discordSetup = createDiscordSetupService({
+    webhooks: discordWebhookRepo,
+    channel: discordChannel,
+    encryptionKey: config.twoFactor.encryptionKey,
+    logger,
+  });
+
   // The per-type × channel matrix + global mute (§6.10, §6.11, #368): the
   // settings rows the dispatcher reads, plus deployment channel availability.
   const notificationSettings = createNotificationSettingsService({
@@ -754,6 +808,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       email: email.enabled,
       push: fcmChannel !== null,
       webpush: webPushChannel !== null,
+      telegramFor: (userId) => telegramSetup.linkedFor(userId),
+      discordFor: (userId) => discordSetup.linkedFor(userId),
     },
     webPushPublicKey: config.webPush.publicKey ?? null,
   });
@@ -925,6 +981,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     chat,
     notifications,
     notificationSettings,
+    telegramSetup,
+    discordSetup,
     accountSettings,
     accountDeletion,
     dataExport,

@@ -87,6 +87,12 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   oauth_access_tokens: skipped('Short-lived OAuth access-token hashes (transient secrets).'),
   oauth_refresh_tokens: skipped('Rotating OAuth refresh-token hashes (transient secrets).'),
   idempotency_keys: skipped('Transient request-idempotency replay cache (~48 h retention).'),
+  telegram_links: skipped(
+    'Ephemeral Telegram bot chat-link relationship (opaque chat id + short-lived code).',
+  ),
+  discord_webhooks: skipped(
+    'Per-user Discord webhook URL stored encrypted at rest (opaque outbound-only secret).',
+  ),
 
   // ── This feature's own bookkeeping ────────────────────────────────────────
   export_jobs: skipped("Account-export job bookkeeping — this feature's own metadata."),

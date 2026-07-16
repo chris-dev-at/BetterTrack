@@ -461,7 +461,16 @@ describe('chat — chat.message notification matrix', () => {
       .patch('/api/v1/settings/notifications')
       .set(...XRW)
       .send({
-        matrix: { 'chat.message': { inapp: false, email: false, push: false, webpush: false } },
+        matrix: {
+          'chat.message': {
+            inapp: false,
+            email: false,
+            telegram: false,
+            discord: false,
+            push: false,
+            webpush: false,
+          },
+        },
       });
     expect(muted.status).toBe(200);
 

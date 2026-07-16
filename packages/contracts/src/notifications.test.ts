@@ -39,7 +39,14 @@ describe('notification taxonomy (#368)', () => {
       'alert.triggered',
       'chat.message',
     ]);
-    expect(NOTIFICATION_SETTING_CHANNELS).toEqual(['inapp', 'email', 'push', 'webpush']);
+    expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
+      'inapp',
+      'email',
+      'telegram',
+      'discord',
+      'push',
+      'webpush',
+    ]);
     expect(DEVICE_PLATFORMS).toEqual(['android', 'ios', 'web']);
   });
 });
@@ -62,6 +69,9 @@ describe('lean email defaults (V4-P0c)', () => {
       expect(notificationChannelDefaultEnabled('inapp', type)).toBe(true);
       expect(notificationChannelDefaultEnabled('push', type)).toBe(true);
       expect(notificationChannelDefaultEnabled('webpush', type)).toBe(true);
+      // V4-P10: telegram + discord follow the same "on once configured" rule.
+      expect(notificationChannelDefaultEnabled('telegram', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('discord', type)).toBe(true);
     }
   });
 });
@@ -92,12 +102,30 @@ describe('push registration schemas (#368)', () => {
 describe('settings response shape (#368)', () => {
   it('carries the full matrix + mute + channel availability + VAPID key', () => {
     const matrix = Object.fromEntries(
-      NOTIFICATION_TYPES.map((t) => [t, { inapp: true, email: true, push: true, webpush: true }]),
+      NOTIFICATION_TYPES.map((t) => [
+        t,
+        {
+          inapp: true,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      ]),
     );
+    const channels = {
+      inapp: true,
+      email: true,
+      telegram: false,
+      discord: false,
+      push: false,
+      webpush: false,
+    };
     const parsed = notificationSettingsResponseSchema.safeParse({
       matrix,
       muted: false,
-      channels: { inapp: true, email: true, push: false, webpush: false },
+      channels,
       webPushPublicKey: null,
     });
     expect(parsed.success).toBe(true);
@@ -107,7 +135,7 @@ describe('settings response shape (#368)', () => {
       notificationSettingsResponseSchema.safeParse({
         matrix: incomplete,
         muted: false,
-        channels: { inapp: true, email: true, push: false, webpush: false },
+        channels,
         webPushPublicKey: null,
       }).success,
     ).toBe(false);

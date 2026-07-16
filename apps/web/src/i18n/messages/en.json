@@ -398,6 +398,8 @@
       "channels": {
         "inapp": "In-app",
         "email": "Email",
+        "telegram": "Telegram",
+        "discord": "Discord",
         "push": "Phone push",
         "webpush": "Browser push"
       },
@@ -428,6 +430,40 @@
         "unsupported": "This browser does not support push notifications.",
         "denied": "Notifications are blocked for this site in your browser settings.",
         "error": "Couldn't update browser push. Please try again."
+      },
+      "telegram": {
+        "title": "Telegram",
+        "description": "Receive notifications through the BetterTrack Telegram bot. Link your chat once, unlink any time.",
+        "startLink": "Start Telegram link",
+        "openBot": "Open Telegram bot",
+        "codeHint": "Send /start {{code}} to the bot to finish linking.",
+        "confirm": "I've started the bot",
+        "confirming": "Checking…",
+        "pending": "Waiting for the /start message…",
+        "linked": "Linked to chat {{id}}",
+        "unlink": "Unlink Telegram",
+        "unavailable": "The Telegram channel is not available on this deployment.",
+        "confirmError": "Couldn't confirm the Telegram link yet. Try again once you've hit Start in the chat.",
+        "startError": "Couldn't start the Telegram link. Please try again.",
+        "unlinkError": "Couldn't unlink Telegram. Please try again."
+      },
+      "discord": {
+        "title": "Discord",
+        "description": "Receive notifications through a per-user Discord webhook. The URL is encrypted at rest and never shown back.",
+        "urlLabel": "Webhook URL",
+        "urlPlaceholder": "https://discord.com/api/webhooks/…",
+        "save": "Save webhook",
+        "saving": "Saving…",
+        "test": "Send test message",
+        "testing": "Sending…",
+        "testSuccess": "Test message delivered.",
+        "testFailed": "Discord rejected the test message. Check the webhook URL and try again.",
+        "linked": "Webhook saved ({{id}})",
+        "remove": "Remove webhook",
+        "invalidUrl": "This does not look like a Discord webhook URL.",
+        "invalidWebhook": "Discord rejected this webhook — is it still valid?",
+        "sendFailed": "Discord could not accept the test message. Please try again.",
+        "removeError": "Couldn't remove the webhook. Please try again."
       },
       "loadErrorTitle": "Couldn't load notifications",
       "loadErrorDescription": "Please try again in a moment."

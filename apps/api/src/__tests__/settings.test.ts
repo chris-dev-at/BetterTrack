@@ -79,6 +79,11 @@ describe('GET /api/v1/settings/notifications', () => {
       expect(settings!.matrix[type]).toEqual({
         inapp: true,
         email: isAccountSecurityNotificationType(type),
+        // V4-P10: telegram + discord follow the "default ON per type once
+        // configured" rule; matrix cells reflect that default regardless of
+        // whether the caller has actually configured either channel.
+        telegram: true,
+        discord: true,
         push: true,
         webpush: true,
       });
@@ -93,12 +98,23 @@ describe('PATCH /api/v1/settings/notifications', () => {
 
     // Route friend requests to email-only, leaving every other type at default.
     const patched = await patchSettings(agent, {
-      matrix: { 'friend.request': { inapp: false, email: true, push: true, webpush: true } },
+      matrix: {
+        'friend.request': {
+          inapp: false,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      },
     });
     expect(patched.status).toBe(200);
     expect(patched.body.matrix['friend.request']).toEqual({
       inapp: false,
       email: true,
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
@@ -106,6 +122,8 @@ describe('PATCH /api/v1/settings/notifications', () => {
     expect(patched.body.matrix['friend.accepted']).toEqual({
       inapp: true,
       email: false,
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
@@ -114,6 +132,8 @@ describe('PATCH /api/v1/settings/notifications', () => {
     expect(settings!.matrix['friend.request']).toEqual({
       inapp: false,
       email: true,
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
@@ -128,10 +148,28 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
     await patchSettings(agent, {
-      matrix: { 'friend.request': { inapp: true, email: false, push: true, webpush: true } },
+      matrix: {
+        'friend.request': {
+          inapp: true,
+          email: false,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      },
     });
     await patchSettings(agent, {
-      matrix: { 'portfolio.shared': { inapp: false, email: false, push: false, webpush: false } },
+      matrix: {
+        'portfolio.shared': {
+          inapp: false,
+          email: false,
+          telegram: false,
+          discord: false,
+          push: false,
+          webpush: false,
+        },
+      },
     });
 
     const settings = await getSettings(agent);
@@ -139,18 +177,24 @@ describe('PATCH /api/v1/settings/notifications', () => {
     expect(settings!.matrix['friend.request']).toEqual({
       inapp: true,
       email: false,
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
     expect(settings!.matrix['portfolio.shared']).toEqual({
       inapp: false,
       email: false,
+      telegram: false,
+      discord: false,
       push: false,
       webpush: false,
     });
     expect(settings!.matrix['friend.accepted']).toEqual({
       inapp: true,
       email: false, // non-account default (V4-P0c)
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
@@ -169,7 +213,16 @@ describe('PATCH /api/v1/settings/notifications', () => {
     const agent = await loginAgent(harness.app, alice.email, alice.password);
 
     const res = await patchSettings(agent, {
-      matrix: { 'not.a.type': { inapp: true, email: true, push: true, webpush: true } },
+      matrix: {
+        'not.a.type': {
+          inapp: true,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      },
     });
     expect(res.status).toBe(400);
   });
@@ -180,7 +233,16 @@ describe('PATCH /api/v1/settings/notifications', () => {
 
     const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
     await patchSettings(bobAgent, {
-      matrix: { 'friend.request': { inapp: false, email: false, push: false, webpush: false } },
+      matrix: {
+        'friend.request': {
+          inapp: false,
+          email: false,
+          telegram: false,
+          discord: false,
+          push: false,
+          webpush: false,
+        },
+      },
     });
 
     // Alice's matrix is untouched by Bob's write.
@@ -189,6 +251,8 @@ describe('PATCH /api/v1/settings/notifications', () => {
     expect(aliceSettings!.matrix['friend.request']).toEqual({
       inapp: true,
       email: false, // non-account default (V4-P0c); untouched by Bob's write
+      telegram: true,
+      discord: true,
       push: true,
       webpush: true,
     });
@@ -199,6 +263,8 @@ describe('PATCH /api/v1/settings/notifications', () => {
     expect(bobSettings!.matrix['friend.request']).toEqual({
       inapp: false,
       email: false,
+      telegram: false,
+      discord: false,
       push: false,
       webpush: false,
     });

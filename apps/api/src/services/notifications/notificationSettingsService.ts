@@ -1,7 +1,6 @@
 import {
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
-  type NotificationChannelAvailability,
   type NotificationMatrix,
   type NotificationSettingsResponse,
   type NotificationType,
@@ -41,8 +40,20 @@ export interface NotificationSettingsServiceDeps {
   repo: NotificationRepository;
   /** Global-mute storage (users.notifications_muted, #368). */
   users: Pick<UserRepository, 'findById' | 'setNotificationsMuted'>;
-  /** Which channels this deployment has configured (email/push/webpush). */
-  channelAvailability: Omit<NotificationChannelAvailability, 'inapp'>;
+  /**
+   * Which channels this deployment has configured. `email`/`push`/`webpush`
+   * are deployment-scoped booleans (SMTP / FCM key / VAPID); `telegram` +
+   * `discord` are **per-user** — a linked chat or a saved webhook — so those
+   * two resolve to a lookup, keeping the settings surface honest about what
+   * the caller can actually route on.
+   */
+  channelAvailability: {
+    email: boolean;
+    push: boolean;
+    webpush: boolean;
+    telegramFor: (userId: string) => Promise<boolean>;
+    discordFor: (userId: string) => Promise<boolean>;
+  };
   /** The VAPID public key the SPA needs to subscribe, when webpush is live. */
   webPushPublicKey: string | null;
 }
@@ -55,7 +66,7 @@ export interface NotificationSettingsService {
   ): Promise<NotificationSettingsResponse>;
 }
 
-const MATRIX_CHANNELS = ['inapp', 'email', 'push', 'webpush'] as const;
+const MATRIX_CHANNELS = ['inapp', 'email', 'telegram', 'discord', 'push', 'webpush'] as const;
 
 export function createNotificationSettingsService(
   deps: NotificationSettingsServiceDeps,
@@ -70,7 +81,7 @@ export function createNotificationSettingsService(
    * email on only for account/security, every other channel on).
    */
   function effective(
-    channel: 'inapp' | 'email' | 'push' | 'webpush',
+    channel: 'inapp' | 'email' | 'telegram' | 'discord' | 'push' | 'webpush',
     state: { enabled: boolean; overrides: Record<string, boolean> } | undefined,
     type: NotificationType,
   ): boolean {
@@ -86,12 +97,21 @@ export function createNotificationSettingsService(
       repo.channelStatesForUser(userId),
       users.findById(userId),
     ]);
+    // The Telegram + Discord availability flags are per-user (linked chat /
+    // saved webhook) — resolved from deps so the settings response reflects
+    // both deployment env AND the caller's own setup.
+    const [telegramAvailable, discordAvailable] = await Promise.all([
+      channelAvailability.telegramFor(userId),
+      channelAvailability.discordFor(userId),
+    ]);
     const matrix = Object.fromEntries(
       NOTIFICATION_TYPES.map((type) => [
         type,
         {
           inapp: effective('inapp', states.inapp, type),
           email: effective('email', states.email, type),
+          telegram: effective('telegram', states.telegram, type),
+          discord: effective('discord', states.discord, type),
           push: effective('push', states.push, type),
           webpush: effective('webpush', states.webpush, type),
         },
@@ -100,7 +120,14 @@ export function createNotificationSettingsService(
     return {
       matrix,
       muted: user?.notificationsMuted ?? false,
-      channels: { inapp: true, ...channelAvailability },
+      channels: {
+        inapp: true,
+        email: channelAvailability.email,
+        telegram: telegramAvailable,
+        discord: discordAvailable,
+        push: channelAvailability.push,
+        webpush: channelAvailability.webpush,
+      },
       webPushPublicKey: channelAvailability.webpush ? webPushPublicKey : null,
     };
   }

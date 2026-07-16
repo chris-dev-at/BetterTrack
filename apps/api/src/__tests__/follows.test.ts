@@ -473,7 +473,14 @@ describe('follow.published — emission matrix + anti-noise', () => {
           .set(...XRW)
           .send({
             matrix: {
-              'follow.published': { inapp: false, email: true, push: true, webpush: true },
+              'follow.published': {
+                inapp: false,
+                email: true,
+                telegram: true,
+                discord: true,
+                push: true,
+                webpush: true,
+              },
             },
           })
       ).status,
