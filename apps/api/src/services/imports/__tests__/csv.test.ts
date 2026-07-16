@@ -83,6 +83,24 @@ describe('parseDecimal', () => {
     expect(parseDecimal('-')).toBeNull();
     expect(parseDecimal('1.2.3,4,5')).toBeNull();
   });
+
+  it('refuses forms whose cleanup would silently change the number (#529)', () => {
+    // Trailing/embedded sign: dropping it would flip a booking's direction.
+    expect(parseDecimal('751,00-')).toBeNull();
+    expect(parseDecimal('751,00- EUR')).toBeNull();
+    expect(parseDecimal('1-2')).toBeNull();
+    // Letters between digits: stripping them collapses to a different number.
+    expect(parseDecimal('1e5')).toBeNull();
+    expect(parseDecimal('1E5')).toBeNull();
+    // Accounting parentheses are a negative; the magnitude must not book positive.
+    expect(parseDecimal('(500)')).toBeNull();
+    expect(parseDecimal('(1.234,56)')).toBeNull();
+    // The documented forms keep parsing.
+    expect(parseDecimal('-751,00')).toBe(-751);
+    expect(parseDecimal('+1,5')).toBe(1.5);
+    expect(parseDecimal("1'234.56")).toBe(1234.56);
+    expect(parseDecimal('1 000,50')).toBe(1000.5);
+  });
 });
 
 describe('parseDay', () => {
