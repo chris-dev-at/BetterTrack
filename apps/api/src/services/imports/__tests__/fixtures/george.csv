@@ -1,0 +1,5 @@
+Buchungsdatum;Auftragsart;Titel;ISIN;Stück;Kurs;Betrag;Spesen;Währung
+02.01.2024;Kauf;Beispiel Bau AG;AT0000123456;12;25,50;-311,95;5,95;EUR
+15.01.2024;Kauf;Muster Welt ETF;IE0001234560;3,5;92,00;-325,95;3,95;EUR
+10.04.2024;Ertrag;Beispiel Bau AG;AT0000123456;12;;13,20;;EUR
+03.06.2024;Verkauf;Beispiel Bau AG;AT0000123456;5;28,10;134,55;5,95;EUR

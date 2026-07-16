@@ -1,0 +1,19 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,BrokerName,Interactive Brokers
+Statement,Data,Title,Activity Statement
+Statement,Data,Period,"January 1, 2024 - June 30, 2024"
+Account Information,Header,Field Name,Field Value
+Account Information,Data,Account Type,Individual
+Deposits & Withdrawals,Header,Currency,Settle Date,Description,Amount
+Deposits & Withdrawals,Data,EUR,2024-01-02,Cash Transfer SEPA,2500
+Deposits & Withdrawals,Data,EUR,2024-06-03,Disbursement,-400
+Deposits & Withdrawals,Data,Total,,,2100
+Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
+Trades,Data,Order,Stocks,USD,ACME,"2024-01-16, 09:32:11",10,185.50,186.00,-1855,-1,1856,0,5,O
+Trades,Data,Order,Stocks,EUR,MTA,"2024-02-20, 11:05:02",4,51.25,51.30,-205,-1.25,206.25,0,0.2,O
+Trades,Data,Order,Stocks,USD,ACME,"2024-05-10, 15:45:59",-5,200.00,199.80,1000,-1.02,-928,70.98,-1,C
+Trades,SubTotal,,Stocks,USD,,,5,,,-855,-2.02,928,70.98,4,
+Trades,Total,,,,,,,,,-855,-2.02,928,70.98,4,
+Dividends,Header,Currency,Date,Description,Amount
+Dividends,Data,EUR,2024-03-15,MTA(DE0001234567) Cash Dividend EUR 0.50 per Share (Ordinary Dividend),2
+Dividends,Data,Total,,,2

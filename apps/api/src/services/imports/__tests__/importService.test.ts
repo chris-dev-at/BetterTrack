@@ -181,7 +181,12 @@ describe('POST /imports — staged preview', () => {
     const brokers = importBrokerListResponseSchema.parse(
       (await agent.get('/api/v1/imports/brokers')).body,
     );
-    expect(brokers.brokers).toEqual([{ id: 'trade_republic', label: 'Trade Republic' }]);
+    expect(brokers.brokers).toEqual([
+      { id: 'trade_republic', label: 'Trade Republic' },
+      { id: 'george', label: 'George (Erste Bank)' },
+      { id: 'flatex', label: 'Flatex' },
+      { id: 'ibkr', label: 'Interactive Brokers' },
+    ]);
 
     const manual = await upload(agent, pid, FIXTURE, { brokerId: 'trade_republic' });
     expect(manual.batch.brokerId).toBe('trade_republic');
