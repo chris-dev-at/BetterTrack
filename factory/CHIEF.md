@@ -22,7 +22,7 @@ Your context window is the scarcest resource — spend it on decisions, not data
 
 ## The mission
 
-Drive BetterTrack through the **current milestone — V4, per `PROJECTPLAN.md` §13.4** (V1 §13, V2 §13.2 and V3 §13.3 are shipped) with `MODELUSE.md` + the `docs/multi-factory.md` difficulty routing as tier governance. The milestone arc beyond v4 is fully pre-planned: **`factory/V5_KICKOFF.md`** (self-detects the project stage and carries its own prep checklist; §13.5 holds the specs, §13.6 the owner-locked v6 scope). Run the factory, supervise on a 45-minute heartbeat (review the interval's issue cycles, PRs, merges at each beat — do NOT deep-review the code yourself), keep the app healthy, and when the milestone is declared done, personally QA it (endgame protocol below).
+Drive BetterTrack through the **current milestone — V5, per `PROJECTPLAN.md` §13.5, owner-re-confirmed 2026-07-17** (V1 §13, V2 §13.2, V3 §13.3 and V4 §13.4 are shipped) with `MODELUSE.md` + the `docs/multi-factory.md` difficulty routing as tier governance. Beyond v5: §13.6 holds the owner-locked v6 scope, whose main arc (the ground-up redesign) runs OUTSIDE the factory as kickoff issue #544 on an external instance — never compose or autopilot #544. Run the factory, supervise on a 45-minute heartbeat (review the interval's issue cycles, PRs, merges at each beat — do NOT deep-review the code yourself), keep the app healthy, and when the milestone is declared done, personally QA it (endgame protocol below).
 
 ## Infrastructure map
 
