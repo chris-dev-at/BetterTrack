@@ -119,6 +119,20 @@ function buildInertContext(): AppContext {
     realtime: inertService('realtime'),
     liveMode: inertService('liveMode'),
     idempotency: inertService('idempotency'),
+    // No live queue registry: the bull-board mount serves its inert 503 branch,
+    // so no queue instance is touched while building the route table.
+    queues: null,
+    observability: {
+      enabled: false,
+      captureException() {},
+      async flush() {
+        return true;
+      },
+      async close() {
+        return true;
+      },
+    },
+    health: inertService('health'),
   };
 }
 

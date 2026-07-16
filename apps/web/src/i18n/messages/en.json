@@ -2040,7 +2040,8 @@
   },
   "admin": {
     "nav": {
-      "security": "Security"
+      "security": "Security",
+      "health": "Health"
     },
     "security": {
       "title": "Security",
@@ -2132,6 +2133,47 @@
         "regenerate": "Regenerate recovery codes",
         "regenerating": "Regenerating…",
         "regenerateError": "Couldn't regenerate recovery codes. Please try again."
+      }
+    },
+    "health": {
+      "title": "System health",
+      "subtitle": "Live status of the API's core dependencies.",
+      "refresh": "Refresh",
+      "overall": "Overall status",
+      "version": "Version",
+      "uptime": "Uptime",
+      "checkedAt": "Checked at",
+      "loadError": "Couldn't load the health status.",
+      "status": {
+        "ok": "Healthy",
+        "degraded": "Degraded",
+        "down": "Down"
+      },
+      "circuit": {
+        "closed": "Closed",
+        "open": "Open",
+        "half-open": "Half-open"
+      },
+      "components": {
+        "database": "Database",
+        "redis": "Redis",
+        "providers": "Market data",
+        "queues": "Job queues",
+        "gateway": "Realtime gateway"
+      },
+      "providers": {
+        "none": "No upstream providers"
+      },
+      "queues": {
+        "unavailable": "No queue registry in this process",
+        "empty": "No jobs",
+        "summary": "{{queues}} queues · {{waiting}} waiting · {{failed}} failed",
+        "heartbeatUnknown": "Heartbeat: never seen",
+        "heartbeatAge": "Heartbeat: {{seconds}}s ago"
+      },
+      "gateway": {
+        "disabled": "Disabled",
+        "connections": "{{count}} connected"
       }
     }
   }

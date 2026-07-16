@@ -135,6 +135,11 @@ export interface RealtimeGateway {
   attach(server: HttpServer): Promise<void>;
   /** True once attach() actually created the socket server (flag on). */
   isAttached(): boolean;
+  /**
+   * Live client count for the admin health page (§13.4 V4-P5a): the number of
+   * connected Engine.IO clients, or 0 when the gateway is disabled/unattached.
+   */
+  connectionCount(): number;
   /** Disconnect all clients, drop bus subscriptions, close the socket server. */
   close(): Promise<void>;
 }
@@ -564,6 +569,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
     isAttached(): boolean {
       return io !== null;
+    },
+
+    connectionCount(): number {
+      return io?.engine?.clientsCount ?? 0;
     },
 
     async close(): Promise<void> {

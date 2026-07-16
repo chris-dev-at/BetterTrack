@@ -27,10 +27,59 @@ export interface CreateJobWorkersDeps {
   definitions: readonly JobDefinition[];
   ctx: JobContext;
   logger: Logger;
+  /**
+   * Error-tracking hook (§13.4 V4-P5a): called with the error when a job
+   * PERMANENTLY fails (all attempts exhausted → dead-lettered), so BullMQ job
+   * failures reach Sentry alongside API errors. A no-op when Sentry is disabled;
+   * still-retryable attempt failures never fire it (that is normal backoff).
+   */
+  onPermanentFailure?: (err: unknown, meta: { queue: string; jobId?: string }) => void;
+}
+
+/**
+ * The `failed` listener body, extracted so the permanent-failure branch — where
+ * BullMQ job failures are dead-lettered AND reported to error tracking (§13.4
+ * V4-P5a) — is unit-testable without a live BullMQ worker (which cannot run on
+ * the test suite's ioredis-mock).
+ */
+export function handleWorkerFailure(params: {
+  queue: string;
+  job: Job | undefined;
+  err: Error | undefined;
+  ctx: JobContext;
+  logger: Logger;
+  onPermanentFailure?: (err: unknown, meta: { queue: string; jobId?: string }) => void;
+}): void {
+  const { queue, job, err, ctx, logger, onPermanentFailure } = params;
+  if (job && isPermanentFailure(job)) {
+    logger.error(
+      { queue, jobId: job.id, attemptsMade: job.attemptsMade, err: err?.message },
+      'job permanently failed — dead-lettering',
+    );
+    onPermanentFailure?.(err, { queue, jobId: job.id });
+    void ctx.deadLetter
+      .record({
+        queue,
+        jobId: job.id,
+        name: job.name,
+        data: job.data,
+        failedReason: err?.message ?? job.failedReason ?? 'unknown',
+        attemptsMade: job.attemptsMade,
+        timestamp: Date.now(),
+      })
+      .catch((recordErr) => {
+        logger.error({ queue, err: recordErr }, 'failed to write dead-letter entry');
+      });
+  } else {
+    logger.warn(
+      { queue, jobId: job?.id, attemptsMade: job?.attemptsMade, err: err?.message },
+      'job attempt failed — will retry',
+    );
+  }
 }
 
 export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
-  const { createConnection, definitions, ctx, logger } = deps;
+  const { createConnection, definitions, ctx, logger, onPermanentFailure } = deps;
 
   const workers = definitions.map((def) => {
     const worker = new Worker(
@@ -42,30 +91,7 @@ export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
     );
 
     worker.on('failed', (job, err) => {
-      if (job && isPermanentFailure(job)) {
-        logger.error(
-          { queue: def.name, jobId: job.id, attemptsMade: job.attemptsMade, err: err?.message },
-          'job permanently failed — dead-lettering',
-        );
-        void ctx.deadLetter
-          .record({
-            queue: def.name,
-            jobId: job.id,
-            name: job.name,
-            data: job.data,
-            failedReason: err?.message ?? job.failedReason ?? 'unknown',
-            attemptsMade: job.attemptsMade,
-            timestamp: Date.now(),
-          })
-          .catch((recordErr) => {
-            logger.error({ queue: def.name, err: recordErr }, 'failed to write dead-letter entry');
-          });
-      } else {
-        logger.warn(
-          { queue: def.name, jobId: job?.id, attemptsMade: job?.attemptsMade, err: err?.message },
-          'job attempt failed — will retry',
-        );
-      }
+      handleWorkerFailure({ queue: def.name, job, err, ctx, logger, onPermanentFailure });
     });
 
     worker.on('error', (err) => {

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
+import { API_SERVICE_NAME, API_VERSION } from '../version';
 
 /**
  * Environment schema (PROJECTPLAN.md §11). Validated once at boot so a
@@ -92,6 +93,16 @@ const envSchema = z.object({
   BT_VAPID_PUBLIC_KEY: z.string().optional(),
   BT_VAPID_PRIVATE_KEY: z.string().optional(),
   BT_VAPID_SUBJECT: z.string().optional(),
+  // ── Error tracking (Sentry, §13.4 V4-P5a) ──────────────────────────────────
+  // Env-gated: with BT_SENTRY_DSN unset the SDK never initializes and boot is
+  // byte-identical. The two sample rates are 0..1 fractions (errors default to
+  // full capture, tracing off) so an operator can dial cost without a redeploy.
+  BT_SENTRY_DSN: z.string().optional(),
+  BT_SENTRY_ERROR_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
+  BT_SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+  // Optional environment tag on every event (e.g. `production`, `staging`).
+  // Falls back to NODE_ENV when unset.
+  BT_SENTRY_ENVIRONMENT: z.string().optional(),
 
   // ── Two-factor auth (§6.1, §13.2 V2-P5) ────────────────────────────────────
   // Issuer label baked into the `otpauth://` URI so the code shows up as
@@ -304,6 +315,19 @@ export interface AppConfig {
     /** When false the Socket.IO server is never attached — zero behavior change. */
     enabled: boolean;
   };
+  /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
+  sentry: {
+    enabled: boolean;
+    dsn?: string;
+    /** 0..1 fraction of errors captured. */
+    errorSampleRate: number;
+    /** 0..1 fraction of transactions traced. */
+    tracesSampleRate: number;
+    /** Environment tag on every event; defaults to NODE_ENV. */
+    environment: string;
+    /** Release tag stamped on every event (the deployed API version). */
+    release: string;
+  };
   /** Phone push via FCM HTTP v1 (#368). Channel exists iff the file is set AND loads. */
   push: {
     /** Path to the mounted Firebase service-account JSON; unset ⇒ channel off. */
@@ -429,6 +453,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     realtime: {
       enabled: boolFrom(e.REALTIME_ENABLED, true),
+    },
+    sentry: {
+      enabled: Boolean(e.BT_SENTRY_DSN),
+      dsn: e.BT_SENTRY_DSN,
+      errorSampleRate: e.BT_SENTRY_ERROR_SAMPLE_RATE,
+      tracesSampleRate: e.BT_SENTRY_TRACES_SAMPLE_RATE,
+      environment: e.BT_SENTRY_ENVIRONMENT ?? e.NODE_ENV,
+      release: `${API_SERVICE_NAME}@${API_VERSION}`,
     },
     push: {
       fcmServiceAccountFile: e.BT_FCM_SERVICE_ACCOUNT_FILE,

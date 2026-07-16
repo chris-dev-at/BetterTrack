@@ -22,7 +22,10 @@
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.0",
     "@bettertrack/contracts": "workspace:*",
+    "@bull-board/api": "^6.21.3",
+    "@bull-board/express": "^6.21.3",
     "@node-rs/argon2": "^2.0.2",
+    "@sentry/node": "^10.65.0",
     "bullmq": "^5.78.1",
     "cookie-parser": "^1.4.7",
     "drizzle-orm": "^0.38.3",

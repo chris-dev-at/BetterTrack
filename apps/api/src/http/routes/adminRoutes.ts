@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 
 import {
+  adminHealthResponseSchema,
   adminUserListQuerySchema,
   auditQuerySchema,
   bulkUserActionRequestSchema,
@@ -204,6 +205,16 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   router.get('/stats', async (_req, res) => {
     res.json(await ctx.admin.stats());
+  });
+
+  // Operator health snapshot (§13.4 V4-P5a): DB/Redis/provider/queue/gateway
+  // status + version + uptime. Admin-only (this router is behind requireAdmin);
+  // the public `/health` liveness probe stays separate and unauthenticated. The
+  // bull-board queue inspector is mounted at the app root (before this router) so
+  // it stays a single-level app mount for the OpenAPI coverage walker.
+  router.get('/health', async (_req, res) => {
+    const body = adminHealthResponseSchema.parse(await ctx.health.check());
+    res.json(body);
   });
 
   // Global app settings (§6.12, §8): registration mode + beta toggle. Reads

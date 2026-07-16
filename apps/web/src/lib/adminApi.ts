@@ -1,4 +1,5 @@
 import {
+  adminHealthResponseSchema,
   adminInviteListResponseSchema,
   adminStatsSchema,
   adminTwoFactorStatusResponseSchema,
@@ -27,6 +28,7 @@ import {
   twoFactorMethodEnabledResponseSchema,
   twoFactorRecoveryCodesResponseSchema,
   versionResponseSchema,
+  type AdminHealthResponse,
   type AdminInviteListResponse,
   type AdminStats,
   type AdminTwoFactorEmailStartRequest,
@@ -315,6 +317,16 @@ export async function updateSettings(body: UpdateAppSettingsRequest): Promise<Ap
 export async function getAccountDefaults(signal?: AbortSignal): Promise<AccountDefaults> {
   const data = await apiRequest<unknown>('/admin/account-defaults', { signal });
   return accountDefaultsResponseSchema.parse(data);
+}
+
+/**
+ * Operator health snapshot (§13.4 V4-P5a): DB/Redis/provider/queue/gateway
+ * status plus app version and uptime. Live-probed server-side on every call, so
+ * a stopped dependency reflects on the next fetch.
+ */
+export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthResponse> {
+  const data = await apiRequest<unknown>('/admin/health', { signal });
+  return adminHealthResponseSchema.parse(data);
 }
 
 export async function updateAccountDefaults(

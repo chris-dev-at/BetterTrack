@@ -48,6 +48,8 @@ async function shutdown(signal: string): Promise<void> {
     await ctx.events.close();
     await redis.quit();
     await client.end();
+    // Flush any buffered Sentry events before the process exits (§13.4 V4-P5a).
+    await ctx.observability.close();
   } catch (err) {
     logger.error({ err }, 'error during API shutdown');
   } finally {

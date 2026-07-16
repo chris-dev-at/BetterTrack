@@ -2,6 +2,7 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 
+import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { healthRouter } from './http/healthRouter';
 import { versionRouter } from './http/versionRouter';
@@ -9,7 +10,7 @@ import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth
 import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
 import { createRateLimiters } from './http/middleware/rateLimit';
-import { enforcePasswordChange, loadSession } from './http/middleware/session';
+import { enforcePasswordChange, loadSession, requireAdmin } from './http/middleware/session';
 import { createOpenApiRouter } from './http/openapi';
 import { createAccountRouter } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
@@ -88,6 +89,12 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', healthRouter);
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
   app.use('/api/v1/account', createAccountRouter(ctx, limiters));
+  // bull-board queue inspector (§13.4 V4-P5a), mounted admin-only and BEFORE the
+  // admin router so `/api/v1/admin/queues` resolves here (a non-admin/anonymous
+  // request 404s at requireAdmin — §6.12 no-leak). Mounted at the app root rather
+  // than inside the admin router because it is itself a sub-router; the OpenAPI
+  // coverage gate's route walker only recurses one level of app-level mounts.
+  app.use('/api/v1/admin/queues', requireAdmin, createBullBoardRouter(ctx.queues));
   app.use('/api/v1/admin', createAdminRouter(ctx, limiters));
   app.use('/api/v1/workboard', createWorkboardRouter(ctx));
   app.use('/api/v1/search', createSearchRouter(ctx, limiters));
@@ -106,6 +113,8 @@ export function createApp(ctx: AppContext) {
   // details). The public /oauth/token router above already handled its path.
   app.use('/api/v1/oauth', createOAuthRouter(ctx));
 
-  app.use(createErrorHandler(ctx.logger));
+  // Unexpected 500s are reported to error tracking (§13.4 V4-P5a); a no-op when
+  // Sentry is disabled. Expected ApiError/ZodError outcomes are never reported.
+  app.use(createErrorHandler(ctx.logger, (err) => ctx.observability.captureException(err)));
   return app;
 }
