@@ -58,6 +58,11 @@ export function SharedIdeaPage() {
       <div className="flex flex-col gap-4">
         {backLink}
         <Alert tone="error">{t('social.sharedIdea.loadError')}</Alert>
+        <div>
+          <Button variant="secondary" onClick={() => void sharedQuery.refetch()}>
+            {t('common.retry')}
+          </Button>
+        </div>
       </div>
     );
   }

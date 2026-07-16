@@ -107,4 +107,39 @@ describe('SharedIdeaPage', () => {
     expect(await screen.findByText('Idea not available')).toBeInTheDocument();
     expect(cloneIdea).not.toHaveBeenCalled();
   });
+
+  test('shows a designed error state with a retry button when the query fails', async () => {
+    vi.mocked(listSharedWithMe).mockRejectedValueOnce(new Error('boom'));
+    renderPage();
+    expect(await screen.findByText("Couldn't load this idea.")).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: 'Try again' });
+
+    // Retry refetches — this time succeed.
+    vi.mocked(listSharedWithMe).mockResolvedValueOnce({
+      ...EMPTY,
+      ideas: [
+        {
+          ideaId: IDEA_ID,
+          name: 'Momentum basket',
+          owner: OWNER,
+          hasThesis: true,
+          activityAlertsEnabled: false,
+        },
+      ],
+    });
+    await userEvent.click(retry);
+    expect(await screen.findByText('Momentum basket')).toBeInTheDocument();
+  });
+
+  test('shows a skeleton placeholder while the shared-with-me query is loading', () => {
+    let resolve!: (value: SharedWithMeResponse) => void;
+    vi.mocked(listSharedWithMe).mockReturnValue(
+      new Promise<SharedWithMeResponse>((r) => {
+        resolve = r;
+      }),
+    );
+    renderPage();
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
+    resolve(EMPTY);
+  });
 });

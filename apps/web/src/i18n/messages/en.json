@@ -1423,6 +1423,8 @@
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
       "previewTitle": "Preview: {{filename}}",
+      "previewEmptyTitle": "No rows to import",
+      "previewEmptyBody": "This file didn't contain any recognizable rows — the header may not match a supported broker export.",
       "detectedBroker": "Broker: {{broker}}",
       "counts": {
         "total": "{{count}} rows",

@@ -76,6 +76,32 @@ describe('IdeasListPage', () => {
     expect(await screen.findByText('No saved ideas yet')).toBeInTheDocument();
   });
 
+  test('shows a skeleton placeholder while the ideas query is loading', () => {
+    let resolve!: (value: IdeaListResponse) => void;
+    vi.mocked(listIdeas).mockReturnValue(
+      new Promise<IdeaListResponse>((r) => {
+        resolve = r;
+      }),
+    );
+    renderPage();
+    // The Skeleton primitive carries role="status" with a "Loading" aria-label.
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
+    // Cleanup so the pending query settles before the test file ends.
+    resolve({ ideas: [] });
+  });
+
+  test('shows a designed error state with a retry button when the query fails', async () => {
+    vi.mocked(listIdeas).mockRejectedValueOnce(new Error('boom'));
+    renderPage();
+    expect(await screen.findByText("Couldn't load your ideas.")).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: 'Try again' });
+
+    // Retry refetches the ideas query — this time succeed.
+    vi.mocked(listIdeas).mockResolvedValueOnce({ ideas: [idea()] });
+    await userEvent.click(retry);
+    expect(await screen.findByText('Momentum basket')).toBeInTheDocument();
+  });
+
   test('lists an idea with its thesis, audience badge, and an Open link', async () => {
     vi.mocked(listIdeas).mockResolvedValue({ ideas: [idea()] } satisfies IdeaListResponse);
     vi.mocked(listMyShared).mockResolvedValue({
