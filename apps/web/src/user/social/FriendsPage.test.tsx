@@ -11,10 +11,8 @@ vi.mock('../../lib/socialApi', () => ({
   cancelFriendRequest: vi.fn(),
   listFriends: vi.fn(),
   listSharedWithMe: vi.fn(),
-  listItemFollows: vi.fn(),
   removeFriend: vi.fn(),
   setActivityAlert: vi.fn(),
-  unfollowItem: vi.fn(),
 }));
 
 import { MemoryRouter } from 'react-router-dom';
@@ -25,7 +23,6 @@ import {
   declineFriendRequest,
   listFriendRequests,
   listFriends,
-  listItemFollows,
   listSharedWithMe,
   removeFriend,
   sendFriendRequest,
@@ -56,7 +53,6 @@ beforeEach(() => {
   vi.mocked(listFriendRequests).mockResolvedValue(EMPTY_REQUESTS);
   vi.mocked(listFriends).mockResolvedValue(EMPTY_FRIENDS);
   vi.mocked(listSharedWithMe).mockResolvedValue(EMPTY_SHARED);
-  vi.mocked(listItemFollows).mockResolvedValue({ items: [] });
 });
 
 describe('FriendsPage', () => {
@@ -313,25 +309,12 @@ describe('FriendsPage', () => {
     expect(link).toHaveAttribute('href', `/social/shared-with-me/ideas/${SHARED_IDEA_ID}`);
   });
 
-  // The followed-items (bookmarks) collection moved off the retired Following
-  // page onto the Friends tab (V4-P0b) — it must still list a bookmark.
-  test('lists the followed-items collection on the Friends tab', async () => {
-    vi.mocked(listItemFollows).mockResolvedValue({
-      items: [
-        {
-          kind: 'portfolio',
-          subjectId: '00000000-0000-0000-0000-0000000000f0',
-          followedAt: '2026-07-01T10:00:00.000Z',
-          viewable: true,
-          name: 'Growth',
-          owner: { id: 'u-owner', username: 'zoe' },
-          via: 'friend',
-        },
-      ],
-    });
+  // The aggregated "Followed items" collection was removed from Social (#532):
+  // item-follows survive only as notification subscriptions, with no list here.
+  test('renders no Followed-items section', async () => {
     renderPage();
 
-    await waitFor(() => expect(screen.getByText('Growth')).toBeInTheDocument());
-    expect(screen.getByText('by @zoe')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('No friends yet')).toBeInTheDocument());
+    expect(screen.queryByText('Followed items')).not.toBeInTheDocument();
   });
 });

@@ -16,7 +16,6 @@ import {
   type NotificationTypeRouting,
   type NotificationView,
   type TelegramSettingsResponse,
-  type UpdateAlertSharingRequest,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -30,7 +29,6 @@ import {
   markNotificationsRead,
   unarchiveNotification,
 } from '../../lib/notificationsApi';
-import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import {
   confirmTelegramLink,
   getDiscordSettings,
@@ -1083,94 +1081,6 @@ function NotificationList() {
  * VAPID), the compact per-type × per-channel grid, and the full, paged
  * notification list — all wired to `GET/PATCH /settings/notifications`.
  */
-/**
- * The owner's alert-visibility control (#455), rehomed here from the Alerts
- * panel (V4-P0b): a switch exposing every current and future alert to the
- * caller's FOLLOWERS. Alerts reveal watched assets + price targets and anyone
- * may follow, so enabling walks the §16 friction ladder — a strong warning
- * dialog whose confirm sends the explicit acknowledgment the server requires.
- * Disabling is immediate and stops follower delivery at once.
- */
-function AlertSharingControl() {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const [confirming, setConfirming] = useState(false);
-
-  const { data } = useQuery({
-    queryKey: ALERT_SHARING_QUERY_KEY,
-    queryFn: ({ signal }) => getAlertSharing(signal),
-    staleTime: 30_000,
-  });
-  const mutation = useMutation({
-    mutationFn: (body: UpdateAlertSharingRequest) => updateAlertSharing(body),
-    onSuccess: (result) => {
-      queryClient.setQueryData(ALERT_SHARING_QUERY_KEY, result);
-      setConfirming(false);
-    },
-  });
-
-  if (!data) return null;
-  const on = data.visibleToFollowers;
-
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-900 px-4 py-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-neutral-100">{t('settings.alertSharing.title')}</p>
-          <p className="text-xs text-neutral-500">
-            {t(on ? 'settings.alertSharing.onHint' : 'settings.alertSharing.offHint')}
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={on}
-          aria-label={t('settings.alertSharing.toggleAria')}
-          disabled={mutation.isPending}
-          onClick={() =>
-            on ? mutation.mutate({ visibleToFollowers: false }) : setConfirming(true)
-          }
-          className={cx(
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60',
-            on ? 'bg-sky-600' : 'bg-neutral-700',
-          )}
-        >
-          <span
-            className={cx(
-              'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform',
-              on ? 'translate-x-[18px]' : 'translate-x-1',
-            )}
-          />
-        </button>
-      </div>
-      {mutation.isError ? <Alert tone="error">{t('settings.alertSharing.error')}</Alert> : null}
-      {confirming ? (
-        <Dialog
-          title={t('settings.alertSharing.confirmTitle')}
-          onClose={() => setConfirming(false)}
-        >
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-amber-400">{t('settings.alertSharing.confirmWarning')}</p>
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setConfirming(false)}>
-                {t('settings.alertSharing.confirmCancel')}
-              </Button>
-              <Button
-                disabled={mutation.isPending}
-                onClick={() =>
-                  mutation.mutate({ visibleToFollowers: true, acknowledgeFollowers: true })
-                }
-              >
-                {t('settings.alertSharing.confirmEnable')}
-              </Button>
-            </div>
-          </div>
-        </Dialog>
-      ) : null}
-    </div>
-  );
-}
-
 export function NotificationSettingsPage() {
   const t = useT();
   const queryClient = useQueryClient();
@@ -1237,8 +1147,6 @@ export function NotificationSettingsPage() {
 
           <TelegramSetupCard />
           <DiscordSetupCard />
-
-          <AlertSharingControl />
 
           <NotificationMatrixGrid
             settings={query.data}

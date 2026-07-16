@@ -1,13 +1,15 @@
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import type { ShareAudience, ShareKind } from '@bettertrack/contracts';
+import type { ShareAudience, ShareKind, UpdateAlertSharingRequest } from '@bettertrack/contracts';
 
 import { listMyShared } from '../../lib/socialApi';
+import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { AudiencePicker } from '../components/AudiencePicker';
+import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 
 const MY_SHARED_STALE_MS = 30_000;
@@ -75,6 +77,95 @@ function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }:
 }
 
 /**
+ * The owner's alert-visibility control (#455), rehomed into the Social "My items"
+ * area (V4 rework): sharing your alerts is a social decision, so it lives beside
+ * the rest of your shared stuff rather than in Settings. A switch exposing every
+ * current and future alert to your FOLLOWERS. Alerts reveal watched assets +
+ * price targets and anyone may follow, so enabling walks the §16 friction ladder
+ * — a strong warning dialog whose confirm sends the explicit acknowledgment the
+ * server requires. Disabling is immediate and stops follower delivery at once.
+ */
+function AlertSharingControl() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+
+  const { data } = useQuery({
+    queryKey: ALERT_SHARING_QUERY_KEY,
+    queryFn: ({ signal }) => getAlertSharing(signal),
+    staleTime: 30_000,
+  });
+  const mutation = useMutation({
+    mutationFn: (body: UpdateAlertSharingRequest) => updateAlertSharing(body),
+    onSuccess: (result) => {
+      queryClient.setQueryData(ALERT_SHARING_QUERY_KEY, result);
+      setConfirming(false);
+    },
+  });
+
+  if (!data) return null;
+  const on = data.visibleToFollowers;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <SectionHeading>{t('social.alertSharing.heading')}</SectionHeading>
+      <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-neutral-100">{t('social.alertSharing.title')}</p>
+            <p className="text-xs text-neutral-500">
+              {t(on ? 'social.alertSharing.onHint' : 'social.alertSharing.offHint')}
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={on}
+            aria-label={t('social.alertSharing.toggleAria')}
+            disabled={mutation.isPending}
+            onClick={() =>
+              on ? mutation.mutate({ visibleToFollowers: false }) : setConfirming(true)
+            }
+            className={cx(
+              'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60',
+              on ? 'bg-sky-600' : 'bg-neutral-700',
+            )}
+          >
+            <span
+              className={cx(
+                'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform',
+                on ? 'translate-x-[18px]' : 'translate-x-1',
+              )}
+            />
+          </button>
+        </div>
+        {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
+      </div>
+      {confirming ? (
+        <Dialog title={t('social.alertSharing.confirmTitle')} onClose={() => setConfirming(false)}>
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-amber-400">{t('social.alertSharing.confirmWarning')}</p>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setConfirming(false)}>
+                {t('social.alertSharing.confirmCancel')}
+              </Button>
+              <Button
+                disabled={mutation.isPending}
+                onClick={() =>
+                  mutation.mutate({ visibleToFollowers: true, acknowledgeFollowers: true })
+                }
+              >
+                {t('social.alertSharing.confirmEnable')}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      ) : null}
+    </section>
+  );
+}
+
+/**
  * My items (§6.9, §13.3 V3-P5/P6; #384) — the caller's ONE unified
  * sharing-management surface. EVERY shareable item the caller owns is listed here:
  * all portfolios, conglomerates and watchlists, shared OR not, each with its own
@@ -117,15 +208,6 @@ export function MySharedItemsPage() {
     data.watchlists.length === 0 &&
     data.ideas.length === 0;
 
-  if (nothing) {
-    return (
-      <EmptyState
-        title={t('social.myShared.emptyTitle')}
-        description={t('social.myShared.emptyBody')}
-      />
-    );
-  }
-
   const shareLabel = t('sharing.shareButton');
 
   return (
@@ -134,6 +216,12 @@ export function MySharedItemsPage() {
         <h2 className="text-lg font-semibold text-neutral-100">{t('social.myShared.title')}</h2>
         <p className="text-sm text-neutral-500">{t('social.myShared.subtitle')}</p>
       </div>
+      {nothing ? (
+        <EmptyState
+          title={t('social.myShared.emptyTitle')}
+          description={t('social.myShared.emptyBody')}
+        />
+      ) : null}
       {data.portfolios.length > 0 ? (
         <section className="flex flex-col gap-2">
           <SectionHeading>{t('social.kind.portfolios')}</SectionHeading>
@@ -214,6 +302,8 @@ export function MySharedItemsPage() {
           </ul>
         </section>
       ) : null}
+
+      <AlertSharingControl />
 
       <div className="border-t border-neutral-800 pt-5">
         <Link

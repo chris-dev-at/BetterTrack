@@ -281,17 +281,6 @@
     "backups": {
       "description": "Automatische Backups zu Google Drive und anderswo."
     },
-    "alertSharing": {
-      "title": "Meine Alarme mit Followern teilen",
-      "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
-      "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
-      "toggleAria": "Meine Alarme mit Followern teilen",
-      "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
-      "confirmTitle": "Deine Alarme mit allen Followern teilen?",
-      "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
-      "confirmCancel": "Abbrechen",
-      "confirmEnable": "Ich verstehe — Alarme teilen"
-    },
     "notifications": {
       "title": "Benachrichtigungen",
       "subtitle": "Lege für jede Art von Aktivität fest, über welche Kanäle du benachrichtigt wirst — Glocke in der App, E-Mail, Handy-Push, Browser-Push — oder schalte alles auf einmal stumm.",
@@ -1991,6 +1980,18 @@
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
       "publicProfileLink": "Öffentliches Profil verwalten"
     },
+    "alertSharing": {
+      "heading": "Meine Alarme",
+      "title": "Meine Alarme mit Followern teilen",
+      "offHint": "Deine Alarme sind privat. Follower können sie weder sehen noch darüber benachrichtigt werden.",
+      "onHint": "Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst.",
+      "toggleAria": "Meine Alarme mit Followern teilen",
+      "error": "Das Teilen der Alarme konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "confirmTitle": "Deine Alarme mit allen Followern teilen?",
+      "confirmWarning": "Damit sieht jeder Follower, welche Anlagen du beobachtest und welche Kursziele du hast — jeder kann dir folgen. Follower, die es aktiviert haben, werden benachrichtigt, wenn du einen Alarm erstellst oder einer deiner Alarme auslöst. Du kannst das jederzeit wieder ausschalten.",
+      "confirmCancel": "Abbrechen",
+      "confirmEnable": "Ich verstehe — Alarme teilen"
+    },
     "nav": {
       "friends": "Freunde",
       "following": "Folge ich",
@@ -2018,14 +2019,11 @@
         "other": "{{count}} gefolgt"
       },
       "autoFollow": "Neuen Elementen automatisch folgen",
-      "autoFollowHint": "Fügt jedes Element, das diese Person für dich sichtbar macht, automatisch zu deinen gefolgten Elementen hinzu.",
+      "autoFollowHint": "Folgt automatisch jedem Element, das diese Person neu für dich sichtbar macht, damit dich seine Neuigkeiten erreichen.",
       "autoFollowAria": "Neuen Elementen von {{username}} automatisch folgen",
-      "alertCreate": "Über neue Alarme benachrichtigen",
-      "alertCreateHint": "Erhalte eine Benachrichtigung, wenn diese Person einen neuen Preisalarm erstellt. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
-      "alertCreateAria": "Über neue Alarme von {{username}} benachrichtigen",
-      "alertFire": "Benachrichtigen, wenn Alarme auslösen",
-      "alertFireHint": "Erhalte eine Benachrichtigung, wenn einer ihrer Preisalarme auslöst. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
-      "alertFireAria": "Benachrichtigen, wenn Alarme von {{username}} auslösen"
+      "alertFollow": "Ihren Alarmen folgen",
+      "alertFollowHint": "Werde benachrichtigt, wenn diese Person einen neuen Preisalarm erstellt oder einer ihrer Alarme auslöst. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
+      "alertFollowAria": "Alarmen von {{username}} folgen"
     },
     "friend": {
       "since": "Befreundet seit {{date}}",
@@ -2102,22 +2100,7 @@
       "follow": "Element folgen",
       "following": "Gefolgt",
       "followAria": "Diesem Element folgen",
-      "unfollowAria": "Diesem Element entfolgen",
-      "unfollow": "Entfolgen",
-      "sectionTitle": "Gefolgte Elemente",
-      "sectionSubtitle": "Portfolios, Watchlists und Konglomerate, denen du folgst. Neue Elemente von Personen mit Auto-Folgen erscheinen hier automatisch.",
-      "empty": "Du folgst noch keinen Elementen.",
-      "emptyHint": "Folge einem geteilten oder öffentlichen Portfolio, einer Watchlist oder einem Konglomerat, um es hier zu behalten.",
-      "gone": "Nicht mehr verfügbar",
-      "goneHint": "Die Freigabe wurde beendet oder das Element vom Besitzer gelöscht.",
-      "by": "von @{{username}}",
-      "error": "Deine gefolgten Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
-      "kind": {
-        "portfolio": "Portfolio",
-        "conglomerate": "Konglomerat",
-        "watchlist": "Watchlist",
-        "idea": "Idee"
-      }
+      "unfollowAria": "Diesem Element entfolgen"
     },
     "ideas": {
       "title": "Ideen",

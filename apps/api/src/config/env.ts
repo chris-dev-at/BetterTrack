@@ -123,6 +123,14 @@ const envSchema = z.object({
   // env-gated — it never blocks launch (§13.4 preamble).
   BT_GOOGLE_CLIENT_ID: z.string().optional(),
   BT_GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Test-only endpoint overrides (§13.4 V4-P11, #520): point the three Google
+  // OAuth URLs at the e2e fake IdP so the redirect chain + jose verification run
+  // network-free against a per-run signing key. Unset in every real deployment —
+  // when absent the flow uses the exact production Google constants. Never set
+  // these in production. Validated as URLs so a typo fails fast at boot.
+  BT_GOOGLE_AUTHORIZE_ENDPOINT: z.string().url().optional(),
+  BT_GOOGLE_TOKEN_ENDPOINT: z.string().url().optional(),
+  BT_GOOGLE_JWKS_URI: z.string().url().optional(),
 
   // ── Account data export (§13.4 V4-P6a, #494) ───────────────────────────────
   // Directory the export job writes the assembled zips into (and the cleanup job
@@ -389,6 +397,10 @@ export interface AppConfig {
     enabled: boolean;
     clientId?: string;
     clientSecret?: string;
+    /** Test-only OAuth endpoint overrides (§13.4 V4-P11, #520); unset in production. */
+    authorizeEndpoint?: string;
+    tokenEndpoint?: string;
+    jwksUri?: string;
   };
   /**
    * Account data export (§13.4 V4-P6a, #494). `dir` is the directory the export
@@ -541,6 +553,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: Boolean(e.BT_GOOGLE_CLIENT_ID && e.BT_GOOGLE_CLIENT_SECRET),
       clientId: e.BT_GOOGLE_CLIENT_ID,
       clientSecret: e.BT_GOOGLE_CLIENT_SECRET,
+      authorizeEndpoint: e.BT_GOOGLE_AUTHORIZE_ENDPOINT,
+      tokenEndpoint: e.BT_GOOGLE_TOKEN_ENDPOINT,
+      jwksUri: e.BT_GOOGLE_JWKS_URI,
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
