@@ -225,8 +225,12 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
       // Email defaults ON only for account/security types.
       expect(cell.email).toBe(emailOn.includes(type));
     }
-    // The account/security set is exactly {account.invite, account.temp_password}.
-    expect([...emailOn].sort()).toEqual(['account.invite', 'account.temp_password']);
+    // The account/security set is exactly the `account` category.
+    expect([...emailOn].sort()).toEqual([
+      'account.data_export',
+      'account.invite',
+      'account.temp_password',
+    ]);
   });
 
   it('migration = pure default flip: explicit email overrides survive byte-identical (V4-P0c)', async () => {

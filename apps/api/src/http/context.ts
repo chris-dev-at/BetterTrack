@@ -61,6 +61,8 @@ import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
+import { createExportService, type ExportService } from '../services/export';
+import { createExportRepository } from '../data/repositories/exportRepository';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
 import {
@@ -194,6 +196,12 @@ export interface AppContext {
   accountSettings: AccountSettingsService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
   accountDeletion: AccountDeletionService;
+  /**
+   * Account data export (§13.4 V4-P6a, #494): re-auth-gated 1/day request →
+   * async zip build (BullMQ `data.export` in production, synchronous under test)
+   * → expiring, token-gated download. Also owns the daily expired-file cleanup.
+   */
+  dataExport: ExportService;
   /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
   alerts: AlertService;
   /**
@@ -292,6 +300,12 @@ export interface BuildContextDeps {
    * dispatcher delivery under test (BullMQ cannot run on ioredis-mock).
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
+  /**
+   * Test seam (§13.4 V4-P6a, #494): the data-export build transport. Defaults to
+   * the durable `data.export` BullMQ enqueue in production and to a direct
+   * synchronous build under test (BullMQ can't run on ioredis-mock).
+   */
+  exportEnqueue?: (jobId: string) => Promise<void>;
   /**
    * Test seam (#437): the notification service's clock, so the auto-archive
    * sweep threshold is provable under a controlled clock. Defaults to the
@@ -762,6 +776,34 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     twoFactor,
   });
 
+  // Account data export (§13.4 V4-P6a, #494): the request handler enqueues the
+  // async build; production drops `{ jobId }` on the durable `data.export` queue
+  // and the worker's build job runs it, while tests build synchronously through
+  // the same service (BullMQ can't run on ioredis-mock). A holder late-binds the
+  // synchronous path's enqueue to the service without a reassigned `let`.
+  const exportHolder: { service?: ExportService } = {};
+  const exportEnqueue =
+    deps.exportEnqueue ??
+    (queues
+      ? async (jobId: string) => {
+          await queues.enqueue('data.export', { jobId });
+        }
+      : (jobId: string) => exportHolder.service!.buildExport(jobId));
+  const dataExport = createExportService({
+    config,
+    db,
+    redis,
+    exportRepo: createExportRepository(db),
+    userRepo,
+    passwordHasher,
+    twoFactor,
+    audit,
+    notify,
+    enqueueBuild: exportEnqueue,
+    logger,
+  });
+  exportHolder.service = dataExport;
+
   // Admin-composed announcements (§13.4 V4-P5b): CRUD + publish fan-out into every
   // user's inbox via the shared `fanOutAnnouncement` primitive, plus the user
   // surface (currently-active banners + per-user dismissal). Delivery is banner +
@@ -885,6 +927,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notificationSettings,
     accountSettings,
     accountDeletion,
+    dataExport,
     alerts,
     announcements,
     notificationDispatcher,

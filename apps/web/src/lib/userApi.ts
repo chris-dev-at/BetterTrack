@@ -10,9 +10,14 @@ import {
   revokeSessionsResponseSchema,
   sessionInfoResponseSchema,
   sessionListResponseSchema,
+  exportRequestResponseSchema,
+  exportStatusResponseSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type DeleteAccountRequest,
+  type ExportRequest,
+  type ExportRequestResponse,
+  type ExportStatusResponse,
   type GoogleLinkStatusResponse,
   type InviteValidationResponse,
   type LoginRequest,
@@ -351,4 +356,36 @@ export async function deleteAccount(body: DeleteAccountRequest): Promise<void> {
     body,
     suppressAuthRedirect: true,
   });
+}
+
+/**
+ * Request an account data export (§13.4 V4-P6a, #494): re-auth (password or a
+ * fresh 2FA code / recovery code) + a 1/day server gate → an async zip build.
+ * The response carries the RAW download token ONCE (only its hash is stored),
+ * which the caller keeps to build the download URL once the job is `ready`.
+ * `suppressAuthRedirect`: a 401 (wrong credential) is an in-form error.
+ */
+export async function requestDataExport(body: ExportRequest): Promise<ExportRequestResponse> {
+  const data = await apiRequest<unknown>('/account/export', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return exportRequestResponseSchema.parse(data);
+}
+
+/** The caller's latest export job status (no secret) — polled while a build runs. */
+export async function getDataExportStatus(signal?: AbortSignal): Promise<ExportStatusResponse> {
+  const data = await apiRequest<unknown>('/account/export', { signal });
+  return exportStatusResponseSchema.parse(data);
+}
+
+/**
+ * The absolute URL that streams the ready export zip for the held raw token. A
+ * top-level navigation to it sends the session cookie (SameSite=Lax) and the
+ * server streams the file with `Content-Disposition: attachment`; the token is
+ * validated + owner-scoped server-side.
+ */
+export function dataExportDownloadUrl(token: string): string {
+  return `${apiBaseUrl()}/account/export/download?token=${encodeURIComponent(token)}`;
 }

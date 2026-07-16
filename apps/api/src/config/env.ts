@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 
 import { z } from 'zod';
 
@@ -121,6 +123,14 @@ const envSchema = z.object({
   // env-gated — it never blocks launch (§13.4 preamble).
   BT_GOOGLE_CLIENT_ID: z.string().optional(),
   BT_GOOGLE_CLIENT_SECRET: z.string().optional(),
+
+  // ── Account data export (§13.4 V4-P6a, #494) ───────────────────────────────
+  // Directory the export job writes the assembled zips into (and the cleanup job
+  // prunes). Must be writable by BOTH the api and worker processes and survive a
+  // restart (a mounted volume in production). Unset ⇒ a per-OS temp subdirectory,
+  // so a stock deploy works without configuration; set an explicit durable path
+  // in production so a mid-download restart never loses a ready file.
+  BT_EXPORT_DIR: z.string().optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -130,6 +140,11 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 // capped at 6 hours from creation. See PROJECTPLAN.md §16.
 const FORTY_FIVE_MINUTES_MS = 45 * 60 * 1000;
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
+// Default account-export directory (§13.4 V4-P6a): a per-OS temp subdirectory so
+// a stock deploy exports without configuration. Production sets BT_EXPORT_DIR to
+// a durable, shared (api+worker) volume.
+const DEFAULT_EXPORT_DIR = joinPath(tmpdir(), 'bettertrack-exports');
 
 export type DeploymentMode = 'subdomains' | 'ports';
 
@@ -367,6 +382,14 @@ export interface AppConfig {
     clientSecret?: string;
   };
   /**
+   * Account data export (§13.4 V4-P6a, #494). `dir` is the directory the export
+   * job assembles zips into and the cleanup job prunes; defaults to a per-OS
+   * temp subdirectory when BT_EXPORT_DIR is unset.
+   */
+  dataExport: {
+    dir: string;
+  };
+  /**
    * Progressive rate limiting (PROJECTPLAN.md §10). Each schedule pairs a
    * generous steady-state allowance with an escalating cooldown ladder; the
    * middleware and the auth service read them from here and never inline the
@@ -500,6 +523,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: Boolean(e.BT_GOOGLE_CLIENT_ID && e.BT_GOOGLE_CLIENT_SECRET),
       clientId: e.BT_GOOGLE_CLIENT_ID,
       clientSecret: e.BT_GOOGLE_CLIENT_SECRET,
+    },
+    dataExport: {
+      dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far
     // under the steady-state `limit`; the first over-limit is a short cooldown

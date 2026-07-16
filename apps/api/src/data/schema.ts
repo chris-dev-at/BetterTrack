@@ -1709,6 +1709,51 @@ export const idempotencyKeys = pgTable(
 export type IdempotencyKeyRow = typeof idempotencyKeys.$inferSelect;
 export type NewIdempotencyKeyRow = typeof idempotencyKeys.$inferInsert;
 
+/**
+ * Account data-export jobs (PROJECTPLAN.md §13.4 V4-P6a, #494). One row per
+ * "Export my data" request: a background job assembles a zip of every
+ * user-owned entity and lands it under the env-configured export directory.
+ * `status` walks `pending → ready` (or `failed`); `ready` carries the on-disk
+ * `file_path`/`file_size` plus the download gate — only the SHA-256
+ * `download_token_hash` is stored (never the raw token, which is handed to the
+ * requester once), and `expires_at` bounds the download window. The cleanup job
+ * deletes the file and the row once past expiry. Rate-limited to 1/day per user
+ * off `created_at`. Cascades away with the owning user.
+ */
+export const exportJobStatusEnum = pgEnum('export_job_status', ['pending', 'ready', 'failed']);
+
+export const exportJobs = pgTable(
+  'export_jobs',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: exportJobStatusEnum('status').notNull().default('pending'),
+    // Absolute path of the assembled zip under the export dir; NULL until ready.
+    filePath: text('file_path'),
+    fileSize: integer('file_size'),
+    // SHA-256 of the ≥256-bit download token; the raw token is returned to the
+    // requester once and never persisted. The download join matches this hash.
+    downloadTokenHash: text('download_token_hash'),
+    // When the ready file stops being downloadable — the cleanup job deletes
+    // past this. NULL until the job is ready.
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    // Coarse failure reason for the status surface (never a stack/secret).
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    readyAt: timestamp('ready_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('export_jobs_user_created_idx').on(t.userId, t.createdAt),
+    uniqueIndex('export_jobs_download_token_hash_unique').on(t.downloadTokenHash),
+    index('export_jobs_expires_at_idx').on(t.expiresAt),
+  ],
+);
+
+export type ExportJobRow = typeof exportJobs.$inferSelect;
+export type NewExportJobRow = typeof exportJobs.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -1750,9 +1795,11 @@ export const schema = {
   sharedItemActivityPrefs,
   appSettings,
   idempotencyKeys,
+  exportJobs,
   announcements,
   announcementDismissals,
   announcementSeverityEnum,
+  exportJobStatusEnum,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
