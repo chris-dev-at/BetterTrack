@@ -92,6 +92,25 @@ issue_cost(){
 # event stream, which carries benign "rate_limit_event" objects on every run).
 LIMIT_RE='usage limit|limit reached|limit will reset|quota|insufficient (credit|balance|funds)|overloaded|(^|[^0-9])(429|529)([^0-9]|$)'
 
+# Transport/stream drops: recoverable blips (a connection reset, a socket hang up,
+# a mid-response close) that must NOT burn a caller's attempt budget — they are
+# retried in place by cc(). Unlike LIMIT_RE these surface as plain CLI error text
+# on the raw run output, not inside the structured result line, so cc() classifies
+# $out (benign JSON events never carry these exact phrases).
+TRANSIENT_RE='Connection closed mid-response|ECONNRESET|ETIMEDOUT|stream disconnected|socket hang up|fetch failed|Premature close|EAI_AGAIN'
+
+# Pure classifier (unit-tested in multi-factory/test.sh): map a run's error/output
+# text to one of transient | limit | genuine. Transport drops win over limit
+# wording so a real blip is never mistaken for an exhausted-token wait; a genuine
+# usage-limit message (no transport phrase) still classifies as limit; everything
+# else is a genuine task failure.
+cc_classify(){
+  local text=$1
+  printf '%s' "$text" | grep -qiE "$TRANSIENT_RE" && { echo transient; return; }
+  printf '%s' "$text" | grep -qiE "$LIMIT_RE"     && { echo limit;     return; }
+  echo genuine
+}
+
 # Is a specific model usable right now? Fable is intermittently unavailable; when
 # it is, its tier:fable issues are skipped (not failed) until it returns.
 model_ok(){
@@ -121,7 +140,7 @@ wait_for_capacity(){
 cc(){ local model=$1; shift; local prompt="$*"
   # Role/issue for the usage ledger — set by callers (CC_ROLE / CC_ISSUE); default
   # to a generic bucket so an un-tagged call still records without failing.
-  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--}
+  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} transient_tries=0
   while true; do
     local out rc res err start dur
     start=$(date +%s)
@@ -146,6 +165,16 @@ cc(){ local model=$1; shift; local prompt="$*"
       ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
       notify "usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
       sleep "$LIMIT_SLEEP"; continue
+    fi
+    # Transient transport/stream drop: retry IN PLACE (bounded), so a recoverable
+    # blip never consumes one of the caller's writer attempts. The drop shows up as
+    # plain CLI error text on $out, not in $sig, so classify the raw output. Limit
+    # wording keeps its own wait path above; only a 'transient' verdict acts here.
+    if [ "$(cc_classify "$out")" = transient ] && [ "$transient_tries" -lt "${CC_TRANSIENT_MAX:-3}" ]; then
+      transient_tries=$((transient_tries+1))
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
+      log "  ↳ transient transport error — retry $transient_tries/${CC_TRANSIENT_MAX:-3}"
+      sleep "${CC_TRANSIENT_SLEEP:-45}"; continue
     fi
     # Ambiguous failure (rc=$rc, no result line, or is_error without a clear
     # limit message). Probe the API: if it's also down, treat as capacity and

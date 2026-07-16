@@ -42,7 +42,16 @@ wstatus(){ # $1=phase $2=issue-or-null $3=pr-or-null
 # for an hour when it sleeps out a token limit — the master only calls a worker
 # stalled when this heartbeat stops, i.e. the process actually died).
 HB_PID=""
-hb_start(){ ( while :; do date -Is >"$HB" 2>/dev/null || true; sleep 300; done ) & HB_PID=$!; }
+# The toucher ignores HUP/PIPE so a closing parent stream can't silently take it
+# down (issue #497: a dead toucher beside a live writer let the master call a FALSE
+# stall on a healthy worker at 00:32, 2026-07-16).
+hb_start(){ ( trap '' HUP PIPE; while :; do date -Is >"$HB" 2>/dev/null || true; sleep 300; done ) & HB_PID=$!; }
+# Is the toucher process actually running right now?
+hb_alive(){ [ -n "$HB_PID" ] && kill -0 "$HB_PID" 2>/dev/null; }
+# (Re)spawn the toucher whenever it is not alive. Called at the top of run_cycle and
+# before every role attempt so a dead toucher can never coexist with a live role run
+# beyond a single attempt window ("verified alive each attempt loop iteration").
+hb_ensure(){ hb_alive || hb_start; }
 hb_stop(){ [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; return 0; }
 [ "${MF_SOURCE_ONLY:-0}" = 1 ] || trap 'hb_stop' EXIT
 
@@ -84,6 +93,7 @@ triage(){ # $1=issue $2=pr $3=relocated("true"/"false") — returns 0 if PR was 
     mark_human "$n" "relocated issue rejected again — triage chain cap (depth 1)"
     return 1
   fi
+  hb_ensure
   wstatus triage "$n" "$pr"
   local materials
   materials=$(
@@ -109,6 +119,7 @@ $materials")" || true
       local esc
       esc=$(diff_next "$CYCLE_DIFF")
       log "triage: escalated retry at diff:$esc (was diff:$CYCLE_DIFF)"
+      hb_ensure
       wstatus fixing "$n" "$pr"
       mf_cc fixer "$esc" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $tcomment
@@ -197,7 +208,7 @@ run_cycle(){ # $1=issue $2=relocated
   local n=$1 reloc=$2 pr
   CC_ISSUE=$n
   CYCLE_DIFF=$(issue_difficulty "$n")
-  hb_start
+  hb_ensure
   wstatus writing "$n"
   log "=== issue #$n [diff:$CYCLE_DIFF] ==="
 
@@ -218,6 +229,7 @@ run_cycle(){ # $1=issue $2=relocated
   # WRITER — cc() already waits out token limits, so a failure here is genuine.
   local writer_ok=0 w_try
   for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
+    hb_ensure
     if mf_cc writer "$CYCLE_DIFF" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
       writer_ok=1; break
     fi
@@ -266,6 +278,7 @@ run_cycle(){ # $1=issue $2=relocated
   # REVIEW → FIX rounds (same rules as run.sh)
   local approved=0 round verdict
   for round in $(seq 1 "${MAX_FIX_ROUNDS:-2}"); do
+    hb_ensure
     wstatus reviewing "$n" "$pr"
     mf_cc reviewer "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")" \
       "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
@@ -313,6 +326,7 @@ while true; do
   n=$(jq -r '.issue' "$AF" 2>/dev/null)
   reloc=$(jq -r '.relocated // false' "$AF" 2>/dev/null)
   if [ -z "$n" ] || [ "$n" = null ]; then log "unreadable assignment — removing"; rm -f "$AF"; continue; fi
+  hb_ensure   # belt: re-spawn the toucher if its PID is gone before a cycle starts
   run_cycle "$n" "$reloc"
   # Wait for the master's ack (it removes the assignment file), then go idle.
   while [ -f "$AF" ]; do
