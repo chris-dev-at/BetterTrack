@@ -1529,7 +1529,8 @@
         "pickConglomeratePlaceholder": "Choose a conglomerate…",
         "loading": "Loading conglomerates…",
         "noConglomerates": "No conglomerates yet.",
-        "clear": "Clear benchmark"
+        "clear": "Clear benchmark",
+        "saved": "Custom benchmark"
       },
       "mode": {
         "clip": "Clip to common history",
@@ -1729,6 +1730,41 @@
       "statLargest": "Largest",
       "backtestPreviewAriaLabel": "Backtest preview (coming soon)",
       "backtestPreviewText": "Backtest preview — coming with the backtest panel."
+    },
+    "ideas": {
+      "list": {
+        "title": "Ideas",
+        "subtitle": "Saved Workboard analyses — reopen any one exactly as saved, or share it with friends.",
+        "emptyTitle": "No saved ideas yet",
+        "emptyBody": "Save a basket and its backtest from a conglomerate or the Builder to revisit it later.",
+        "open": "Open",
+        "share": "Share",
+        "thesisNone": "No thesis note",
+        "loadError": "Couldn't load your ideas.",
+        "deleteTitle": "Delete idea",
+        "deleteBody": "Delete \"{{name}}\"? This can't be undone.",
+        "deleteError": "Couldn't delete the idea."
+      },
+      "save": {
+        "action": "Save as idea",
+        "title": "Save as idea",
+        "nameLabel": "Name",
+        "namePlaceholder": "e.g. Dividend growth basket",
+        "thesisLabel": "Thesis (optional)",
+        "thesisPlaceholder": "Why this basket — your rationale.",
+        "submit": "Save idea",
+        "saving": "Saving…",
+        "error": "Couldn't save the idea.",
+        "successBody": "\"{{name}}\" is in your Ideas list.",
+        "viewIdeas": "View in Ideas"
+      },
+      "open": {
+        "backLink": "← Ideas",
+        "loadError": "Couldn't load this idea.",
+        "thesisHeading": "Thesis",
+        "backtestHeading": "Backtest",
+        "conglomerateGone": "The conglomerate this idea references is no longer available."
+      }
     }
   },
   "assets": {
@@ -1915,11 +1951,16 @@
       "watchlist": {
         "one": "{{count}} watchlist",
         "other": "{{count}} watchlists"
+      },
+      "idea": {
+        "one": "{{count}} idea",
+        "other": "{{count}} ideas"
       }
     },
     "item": {
       "positions": "{{count}} positions",
-      "assets": "{{count}} assets"
+      "assets": "{{count}} assets",
+      "ideaThesis": "Has a thesis note"
     },
     "activity": {
       "notifyLabel": "Get notified when {{username}} buys, sells, or updates this",
@@ -1930,7 +1971,8 @@
     "kind": {
       "portfolios": "Portfolios",
       "conglomerates": "Conglomerates",
-      "watchlists": "Watchlists"
+      "watchlists": "Watchlists",
+      "ideas": "Ideas"
     },
     "myShared": {
       "title": "My items",
@@ -2004,7 +2046,8 @@
           "asset": "Shared an asset",
           "portfolio": "Shared a portfolio",
           "conglomerate": "Shared a conglomerate",
-          "watchlist": "Shared a watchlist"
+          "watchlist": "Shared a watchlist",
+          "idea": "Shared an idea"
         }
       },
       "selectTitle": "Your messages",
@@ -2063,7 +2106,8 @@
       "kind": {
         "portfolio": "Portfolio",
         "conglomerate": "Conglomerate",
-        "watchlist": "Watchlist"
+        "watchlist": "Watchlist",
+        "idea": "Idea"
       }
     },
     "ideas": {
@@ -2115,6 +2159,18 @@
       "watchlistEmptyDescription": "This friend isn't watching any assets.",
       "sharedByReadOnly": "Shared by {{username}} · read-only",
       "sharedByStatus": "Shared by {{username}} · {{status}}"
+    },
+    "sharedIdea": {
+      "backLink": "← Friends",
+      "loadError": "Couldn't load this idea.",
+      "notAvailableTitle": "Idea not available",
+      "notAvailableBody": "This idea isn't shared with you, or it no longer exists.",
+      "ownerLine": "Shared by {{username}}",
+      "hasThesis": "Includes a thesis note.",
+      "readOnlyNote": "This is a read-only idea. Clone it to open and edit your own copy.",
+      "clone": "Clone to my ideas",
+      "cloning": "Cloning…",
+      "cloneError": "Couldn't clone this idea."
     }
   },
   "profile": {

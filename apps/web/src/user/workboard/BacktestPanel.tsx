@@ -15,6 +15,7 @@ import {
   type BacktestPreviewRange,
   type BacktestResponse,
   type BacktestStats,
+  type IdeaSource,
   type RebalanceFrequency,
 } from '@bettertrack/contracts';
 
@@ -32,12 +33,29 @@ import {
   type ChartPoint,
 } from '../../ui/charts';
 import { AssetSearchBox } from '../components/AssetSearchBox';
-import { Alert } from '../components/ui';
+import { Alert, Button } from '../components/ui';
+import { SaveIdeaDialog } from './SaveIdeaDialog';
+
+/** The backtest knobs a saved idea reproduces (V4-P9), minus the basket source. */
+export interface BacktestParams {
+  range: BacktestPreviewRange;
+  benchmark: BacktestBenchmarkInput | null;
+  mode: BacktestMode;
+  rebalance: RebalanceFrequency;
+}
 
 export interface BacktestPanelProps {
   /** The (possibly unsaved) basket to backtest — assetId + relative weight (§6.5). */
   positions: BacktestPreviewPosition[];
   className?: string;
+  /**
+   * When set, a "Save as idea" action persists this basket (the given source) plus
+   * the panel's current backtest params as a saved idea (V4-P9). Omitted where no
+   * savable analysis exists.
+   */
+  source?: IdeaSource;
+  /** Seed the range/mode/rebalance/benchmark controls — reopening a saved idea. */
+  initialParams?: BacktestParams;
 }
 
 /** The committed benchmark choice: the wire input plus a display label (V4-P7). */
@@ -61,6 +79,16 @@ function benchmarkLabels(t: TranslateFn): Record<BacktestBenchmark, string> {
     '^GDAXI': t('workboard.backtest.benchmark.dax'),
     URTH: t('workboard.backtest.benchmark.msciWorld'),
   };
+}
+
+/**
+ * Rebuild the committed benchmark choice from a saved idea's wire input (V4-P9):
+ * a preset keeps its localized label; an asset/conglomerate benchmark shows a
+ * generic "custom" label (its real name is re-resolved by the preview response).
+ */
+function benchmarkChoiceFromInput(input: BacktestBenchmarkInput, t: TranslateFn): BenchmarkChoice {
+  if ('preset' in input) return { input, label: benchmarkLabels(t)[input.preset] };
+  return { input, label: t('workboard.backtest.benchmark.saved') };
 }
 
 function modeLabels(t: TranslateFn): Record<BacktestMode, string> {
@@ -522,14 +550,19 @@ function StatsTable({
  * detail page (saved positions) and the Builder's live preview (debounced
  * draft weights) without change.
  */
-export function BacktestPanel({ positions, className }: BacktestPanelProps) {
+export function BacktestPanel({ positions, className, source, initialParams }: BacktestPanelProps) {
   const t = useT();
-  const [range, setRange] = useState<BacktestPreviewRange>('5Y');
-  const [mode, setMode] = useState<BacktestMode>('clip');
-  const [rebalance, setRebalance] = useState<RebalanceFrequency>('none');
-  const [benchmark, setBenchmark] = useState<BenchmarkChoice | null>(null);
+  const [range, setRange] = useState<BacktestPreviewRange>(initialParams?.range ?? '5Y');
+  const [mode, setMode] = useState<BacktestMode>(initialParams?.mode ?? 'clip');
+  const [rebalance, setRebalance] = useState<RebalanceFrequency>(
+    initialParams?.rebalance ?? 'none',
+  );
+  const [benchmark, setBenchmark] = useState<BenchmarkChoice | null>(
+    initialParams?.benchmark ? benchmarkChoiceFromInput(initialParams.benchmark, t) : null,
+  );
   const [showRebalanceMarkers, setShowRebalanceMarkers] = useState(true);
   const [showDelta, setShowDelta] = useState(true);
+  const [saveOpen, setSaveOpen] = useState(false);
 
   const hasPositions = positions.length > 0;
 
@@ -573,6 +606,11 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
         <RangeSelector active={range} onSelect={setRange} />
         <ModeSelector active={mode} onSelect={setMode} />
         <RebalanceSelector active={rebalance} onSelect={setRebalance} />
+        {source ? (
+          <Button variant="secondary" className="ml-auto" onClick={() => setSaveOpen(true)}>
+            {t('workboard.ideas.save.action')}
+          </Button>
+        ) : null}
       </div>
       <BenchmarkPicker value={benchmark} onChange={setBenchmark} />
 
@@ -674,6 +712,13 @@ export function BacktestPanel({ positions, className }: BacktestPanelProps) {
           )}
         </>
       )}
+
+      {saveOpen && source ? (
+        <SaveIdeaDialog
+          state={{ source, range, benchmark: benchmark?.input ?? null, mode, rebalance }}
+          onClose={() => setSaveOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

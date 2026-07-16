@@ -112,7 +112,10 @@ export function MySharedItemsPage() {
   }
 
   const nothing =
-    data.portfolios.length === 0 && data.conglomerates.length === 0 && data.watchlists.length === 0;
+    data.portfolios.length === 0 &&
+    data.conglomerates.length === 0 &&
+    data.watchlists.length === 0 &&
+    data.ideas.length === 0;
 
   if (nothing) {
     return (
@@ -186,6 +189,25 @@ export function MySharedItemsPage() {
                 onShare={() =>
                   setPicker({ kind: 'watchlist', subjectId: w.watchlistId, label: w.name })
                 }
+                shareLabel={shareLabel}
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {data.ideas.length > 0 ? (
+        <section className="flex flex-col gap-2">
+          <SectionHeading>{t('social.kind.ideas')}</SectionHeading>
+          <ul className="flex flex-col gap-2">
+            {data.ideas.map((i) => (
+              <SharedRow
+                key={i.ideaId}
+                name={i.name}
+                audience={i.audience}
+                friendCount={i.friendCount}
+                detail={i.hasThesis ? t('social.item.ideaThesis') : undefined}
+                onShare={() => setPicker({ kind: 'idea', subjectId: i.ideaId, label: i.name })}
                 shareLabel={shareLabel}
               />
             ))}

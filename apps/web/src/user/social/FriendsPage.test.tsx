@@ -281,6 +281,38 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
   });
 
+  test('shows a friend-shared idea in the expanded friend overview (V4-P9)', async () => {
+    const GRACE_ID = 'u7';
+    const SHARED_IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        { user: { id: GRACE_ID, username: 'grace' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+    vi.mocked(listSharedWithMe).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [
+        {
+          ideaId: SHARED_IDEA_ID,
+          name: 'Momentum basket',
+          owner: { id: GRACE_ID, username: 'grace' },
+          hasThesis: true,
+          activityAlertsEnabled: false,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('grace')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'grace' }));
+    // The idea appears as a read-only deep link into the shared-idea view.
+    const link = screen.getByRole('link', { name: /momentum basket/i });
+    expect(link).toHaveAttribute('href', `/social/shared-with-me/ideas/${SHARED_IDEA_ID}`);
+  });
+
   // The followed-items (bookmarks) collection moved off the retired Following
   // page onto the Friends tab (V4-P0b) — it must still list a bookmark.
   test('lists the followed-items collection on the Friends tab', async () => {

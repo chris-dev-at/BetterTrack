@@ -248,7 +248,10 @@ export function ConglomerateDetailPage() {
         <h2 id="backtest-heading" className="text-base font-semibold text-neutral-200">
           {t('workboard.detail.backtestHeading')}
         </h2>
-        <BacktestPanel positions={backtestPositions} />
+        <BacktestPanel
+          positions={backtestPositions}
+          source={{ kind: 'conglomerate', conglomerateId: id }}
+        />
       </section>
 
       {/* Invest Calculator (§6.7, #138) */}

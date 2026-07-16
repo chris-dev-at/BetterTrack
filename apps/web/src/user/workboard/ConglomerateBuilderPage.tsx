@@ -20,6 +20,7 @@ import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Alert, Button, Spinner } from '../components/ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { StatusBadge } from './ConglomeratesListPage';
+import { SaveIdeaDialog } from './SaveIdeaDialog';
 import {
   ACTIVE_SUM,
   autoBalance,
@@ -702,6 +703,7 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
 
 function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
   const t = useT();
+  const [saveIdeaOpen, setSaveIdeaOpen] = useState(false);
   const live = persistablePositions(positions);
   const donutData = live.map((p) => ({ label: p.symbol, value: p.weightPct }));
   const total = sumWeights(positions);
@@ -742,6 +744,33 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
       >
         {t('workboard.builder.backtestPreviewText')}
       </div>
+
+      {/* Save the (unsaved) ad-hoc basket as an idea (V4-P9): an idea keeps the
+          weighted set verbatim, so a basket can be parked without persisting a
+          conglomerate. Default backtest params; tune them after reopening. */}
+      <Button
+        variant="secondary"
+        onClick={() => setSaveIdeaOpen(true)}
+        disabled={live.length === 0}
+      >
+        {t('workboard.ideas.save.action')}
+      </Button>
+
+      {saveIdeaOpen ? (
+        <SaveIdeaDialog
+          state={{
+            source: {
+              kind: 'adhoc',
+              positions: live.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+            },
+            range: '5Y',
+            benchmark: null,
+            mode: 'clip',
+            rebalance: 'none',
+          }}
+          onClose={() => setSaveIdeaOpen(false)}
+        />
+      ) : null}
     </section>
   );
 }

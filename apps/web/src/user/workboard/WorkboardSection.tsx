@@ -32,7 +32,7 @@ function workboardSubnav(t: TranslateFn): readonly SubNavItem[] {
       label: t('workboard.section.subnav.comparisons'),
       comingSoon: true,
     },
-    { to: '/workboard/ideas', label: t('workboard.section.subnav.savedIdeas'), comingSoon: true },
+    { to: '/workboard/ideas', label: t('workboard.section.subnav.savedIdeas') },
   ];
 }
 
@@ -79,16 +79,6 @@ export function ComparisonsPage() {
     <ComingSoon
       title={t('workboard.section.comparisons.title')}
       description={t('workboard.section.comparisons.description')}
-    />
-  );
-}
-
-export function SavedIdeasPage() {
-  const t = useT();
-  return (
-    <ComingSoon
-      title={t('workboard.section.savedIdeas.title')}
-      description={t('workboard.section.savedIdeas.description')}
     />
   );
 }

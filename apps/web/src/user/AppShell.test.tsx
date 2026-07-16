@@ -154,7 +154,6 @@ test('the Assets section renders its subnav', async () => {
 
 test.each([
   ['/workboard/comparisons', 'Comparisons'],
-  ['/workboard/ideas', 'Saved Ideas'],
   ['/assets/stocks', 'Stocks'],
   ['/assets/etfs', 'ETFs'],
   ['/assets/crypto', 'Crypto'],

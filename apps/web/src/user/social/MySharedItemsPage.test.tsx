@@ -176,4 +176,38 @@ describe('MySharedItemsPage', () => {
     expect(screen.getByRole('radio', { name: /only me/i })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
   });
+
+  test('shows an ideas group with a per-item audience entry point (V4-P9)', async () => {
+    const IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [],
+      watchlists: [],
+      ideas: [
+        {
+          ideaId: IDEA_ID,
+          name: 'Momentum basket',
+          hasThesis: true,
+          audience: 'private',
+          friendCount: 0,
+        },
+      ],
+    });
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'idea',
+      subjectId: IDEA_ID,
+      audience: 'private',
+      friendIds: [],
+      link: { active: false, createdAt: null },
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Momentum basket')).toBeInTheDocument());
+    expect(screen.getByText('Ideas')).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /share/i }));
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+    expect(getAudience).toHaveBeenCalledWith('idea', IDEA_ID, expect.anything());
+  });
 });
