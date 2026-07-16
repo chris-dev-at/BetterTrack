@@ -22,7 +22,7 @@ import {
   uploadImportBatch,
 } from '../../lib/importsApi';
 import { listCashSources, listPortfolios } from '../../lib/portfolioApi';
-import { MoneyText } from '../../ui';
+import { EmptyState, MoneyText } from '../../ui';
 import { Alert, Button, cx } from '../components/ui';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 
@@ -285,43 +285,51 @@ export function ImportPage() {
             </span>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[44rem]">
-              <thead>
-                <tr className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
-                  <th scope="col" className="px-3 py-1 text-left font-medium">
-                    {t('portfolio.import.table.row')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-left font-medium">
-                    {t('portfolio.import.table.date')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-left font-medium">
-                    {t('portfolio.import.table.type')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-left font-medium">
-                    {t('portfolio.import.table.instrument')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-right font-medium">
-                    {t('portfolio.import.table.quantity')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-right font-medium">
-                    {t('portfolio.import.table.price')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-right font-medium">
-                    {t('portfolio.import.table.amount')}
-                  </th>
-                  <th scope="col" className="px-3 py-1 text-left font-medium">
-                    {t('portfolio.import.table.status')}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {preview.rows.map((row) => (
-                  <PreviewRow key={row.id} row={row} t={t} />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {preview.rows.length === 0 ? (
+            <EmptyState
+              icon="📄"
+              title={t('portfolio.import.previewEmptyTitle')}
+              description={t('portfolio.import.previewEmptyBody')}
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[44rem]">
+                <thead>
+                  <tr className="text-[0.65rem] uppercase tracking-wide text-neutral-600">
+                    <th scope="col" className="px-3 py-1 text-left font-medium">
+                      {t('portfolio.import.table.row')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-left font-medium">
+                      {t('portfolio.import.table.date')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-left font-medium">
+                      {t('portfolio.import.table.type')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-left font-medium">
+                      {t('portfolio.import.table.instrument')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-right font-medium">
+                      {t('portfolio.import.table.quantity')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-right font-medium">
+                      {t('portfolio.import.table.price')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-right font-medium">
+                      {t('portfolio.import.table.amount')}
+                    </th>
+                    <th scope="col" className="px-3 py-1 text-left font-medium">
+                      {t('portfolio.import.table.status')}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.rows.map((row) => (
+                    <PreviewRow key={row.id} row={row} t={t} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {result === null ? (
             <div className="flex flex-col gap-3 border-t border-neutral-800/60 pt-3 sm:flex-row sm:items-end sm:justify-between">

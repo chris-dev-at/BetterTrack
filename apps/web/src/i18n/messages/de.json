@@ -1423,6 +1423,8 @@
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",
       "previewTitle": "Vorschau: {{filename}}",
+      "previewEmptyTitle": "Keine importierbaren Zeilen",
+      "previewEmptyBody": "Diese Datei enthielt keine erkennbaren Zeilen — der Header passt möglicherweise nicht zu einem unterstützten Broker-Export.",
       "detectedBroker": "Broker: {{broker}}",
       "counts": {
         "total": "{{count}} Zeilen",

@@ -7,7 +7,7 @@ import { getConglomerate } from '../../lib/conglomerateApi';
 import { getIdea } from '../../lib/ideasApi';
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
-import { Alert } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 import { BacktestPanel, type BacktestParams } from './BacktestPanel';
 
 /**
@@ -62,6 +62,11 @@ export function IdeaWorkboardPage() {
       <div className="flex flex-col gap-4">
         {backLink}
         <Alert tone="error">{t('workboard.ideas.open.loadError')}</Alert>
+        <div>
+          <Button variant="secondary" onClick={() => void ideaQuery.refetch()}>
+            {t('common.retry')}
+          </Button>
+        </div>
       </div>
     );
   }

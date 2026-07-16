@@ -263,4 +263,21 @@ describe('ImportPage', () => {
     );
     expect(screen.queryByText('Preview: export.csv')).not.toBeInTheDocument();
   });
+
+  test('renders a designed empty state when the preview has no importable rows', async () => {
+    vi.mocked(importsApi.uploadImportBatch).mockResolvedValue({
+      batch: {
+        ...PREVIEW.batch,
+        counts: { total: 0, mapped: 0, unmapped: 0, duplicate: 0, error: 0 },
+      },
+      rows: [],
+    });
+    renderPage();
+    await screen.findByRole('option', { name: 'Trade Republic' });
+    await uploadFixtureFile();
+    await screen.findByText('Preview: export.csv');
+    expect(await screen.findByText('No rows to import')).toBeInTheDocument();
+    // The row table itself is not rendered when there is nothing to preview.
+    expect(screen.queryByRole('columnheader', { name: 'Row' })).not.toBeInTheDocument();
+  });
 });

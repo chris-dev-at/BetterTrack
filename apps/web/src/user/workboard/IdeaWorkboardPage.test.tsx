@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { ConglomerateDetail, Idea } from '@bettertrack/contracts';
+import type { ConglomerateDetail, Idea, IdeaResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/ideasApi', () => ({ getIdea: vi.fn() }));
 vi.mock('../../lib/conglomerateApi', () => ({ getConglomerate: vi.fn() }));
@@ -117,9 +118,27 @@ describe('IdeaWorkboardPage', () => {
     });
   });
 
-  test('shows an error when the idea cannot be loaded', async () => {
-    vi.mocked(getIdea).mockRejectedValue(new Error('nope'));
+  test('shows an error with a retry button when the idea cannot be loaded', async () => {
+    vi.mocked(getIdea).mockRejectedValueOnce(new Error('nope'));
     renderPage();
     expect(await screen.findByText("Couldn't load this idea.")).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: 'Try again' });
+
+    // Retry refetches the idea query — this time succeed.
+    vi.mocked(getIdea).mockResolvedValueOnce({ idea: adhocIdea() } satisfies IdeaResponse);
+    await userEvent.click(retry);
+    expect(await screen.findByText('Momentum basket')).toBeInTheDocument();
+  });
+
+  test('shows a skeleton placeholder while the idea query is loading', () => {
+    let resolve!: (value: IdeaResponse) => void;
+    vi.mocked(getIdea).mockReturnValue(
+      new Promise<IdeaResponse>((r) => {
+        resolve = r;
+      }),
+    );
+    renderPage();
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
+    resolve({ idea: adhocIdea() });
   });
 });

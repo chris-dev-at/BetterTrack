@@ -158,7 +158,16 @@ export function IdeasListPage() {
   }
 
   if (ideasQuery.isError || !ideasQuery.data) {
-    return <Alert tone="error">{t('workboard.ideas.list.loadError')}</Alert>;
+    return (
+      <div className="flex flex-col gap-3">
+        <Alert tone="error">{t('workboard.ideas.list.loadError')}</Alert>
+        <div>
+          <Button variant="secondary" onClick={() => void ideasQuery.refetch()}>
+            {t('common.retry')}
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   const ideas = ideasQuery.data.ideas;
