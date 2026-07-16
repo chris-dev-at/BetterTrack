@@ -9,6 +9,7 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
+import { createIdeaRepository } from '../data/repositories/ideaRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
@@ -82,6 +83,7 @@ import {
 import { createAuthService, type AuthService } from '../services/auth/authService';
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createChatService, type ChatService } from '../services/chat';
+import { createIdeasService, type IdeasService } from '../services/ideas/ideasService';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createAudienceService } from '../services/social/audienceService';
 import {
@@ -163,6 +165,8 @@ export interface AppContext {
   conglomerate: ConglomerateService;
   /** Backtest preview over inline draft baskets for the Builder (§6.5, §6.6). */
   backtest: BacktestService;
+  /** Saved & shareable Workboard analyses — CRUD + audience-gated clone (§13.4 V4-P9). */
+  ideas: IdeasService;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -607,6 +611,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
   });
 
+  // Ideas (§13.4 V4-P9): saved & shareable Workboard analyses. CRUD is
+  // owner-scoped; a referenced conglomerate is ownership-validated on write; the
+  // clone routes through the SAME audience-enforcement layer as every other
+  // social read. Sharing itself is the fourth `share_kind` through the audience
+  // model — no parallel path.
+  const ideas = createIdeasService({
+    repo: createIdeaRepository(db),
+    conglomerates: conglomerateRepo,
+    audience,
+  });
+
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Emits friend.request / friend.accepted through the notification center.
@@ -619,6 +634,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio,
     conglomerate,
     workboard,
+    ideas,
     notify,
     logger,
   });
@@ -782,6 +798,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     customAssets,
     conglomerate,
     backtest: backtestPreview,
+    ideas,
     analytics,
     social,
     chat,

@@ -23,14 +23,16 @@ import { friendUserSchema } from './social';
  */
 
 /**
- * What a chat share-chip can point at: one of the three §13.3 shareable kinds —
- * a `portfolio` / `conglomerate` / `watchlist` the sender owns — or a global
- * `asset` reference (public market data, or the sender's own custom asset). The
- * shareable kinds resolve through the audience-enforcement layer; an `asset`
- * resolves through the §10 asset-visibility rule (global, or the viewer's own
- * custom asset — never a foreign custom asset).
+ * What a chat share-chip can point at: one of the §13.3/§13.4 shareable kinds —
+ * a `portfolio` / `conglomerate` / `watchlist` / `idea` the sender owns — or a
+ * global `asset` reference (public market data, or the sender's own custom
+ * asset). The shareable kinds resolve through the audience-enforcement layer; an
+ * `asset` resolves through the §10 asset-visibility rule (global, or the viewer's
+ * own custom asset — never a foreign custom asset). The `idea` chip carries the
+ * identical bare `(kind, subjectId)` semantics (V4-P9): sending it writes nothing
+ * to the audience model, so it never widens access.
  */
-export const CHAT_CHIP_KINDS = ['asset', 'portfolio', 'conglomerate', 'watchlist'] as const;
+export const CHAT_CHIP_KINDS = ['asset', 'portfolio', 'conglomerate', 'watchlist', 'idea'] as const;
 export const chatChipKindSchema = z.enum(CHAT_CHIP_KINDS);
 export type ChatChipKind = z.infer<typeof chatChipKindSchema>;
 
