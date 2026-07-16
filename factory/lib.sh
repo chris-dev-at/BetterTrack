@@ -31,10 +31,17 @@ notify(){ log "NOTIFY: $*"; [ -n "${FACTORY_WEBHOOK_URL:-}" ] && \
 # Fallback pricing (USD per 1,000,000 tokens) — ONLY consulted when a claude run
 # omits total_cost_usd (rare; the CLI reports it on almost every run). Edit these as
 # pricing changes. Columns: input, output, cache-read, cache-write (5-minute TTL).
-declare -A PRICE_IN=(  [claude-sonnet-5]=3    [claude-opus-4-8]=5     [claude-fable-5]=10    )
-declare -A PRICE_OUT=( [claude-sonnet-5]=15   [claude-opus-4-8]=25    [claude-fable-5]=50    )
-declare -A PRICE_CR=(  [claude-sonnet-5]=0.30 [claude-opus-4-8]=0.50  [claude-fable-5]=2.50  )
-declare -A PRICE_CW=(  [claude-sonnet-5]=3.75 [claude-opus-4-8]=6.25  [claude-fable-5]=12.50 )
+# Guarded behind eval: macOS ships bash 3.2 (no associative arrays), and the
+# multi-factory test harness sources this file on the host — under `set -u` a
+# bare assoc literal would arithmetic-evaluate the keys ("claude: unbound
+# variable"). Containers run bash ≥4; on bash 3 the tables simply stay unset and
+# ledger_record's ${PRICE_IN[...]:-0} fallback yields 0 (host never records).
+if [ "${BASH_VERSINFO[0]:-3}" -ge 4 ]; then
+  eval 'declare -A PRICE_IN=(  [claude-sonnet-5]=3    [claude-opus-4-8]=5     [claude-fable-5]=10    )
+        declare -A PRICE_OUT=( [claude-sonnet-5]=15   [claude-opus-4-8]=25    [claude-fable-5]=50    )
+        declare -A PRICE_CR=(  [claude-sonnet-5]=0.30 [claude-opus-4-8]=0.50  [claude-fable-5]=2.50  )
+        declare -A PRICE_CW=(  [claude-sonnet-5]=3.75 [claude-opus-4-8]=6.25  [claude-fable-5]=12.50 )'
+fi
 
 # Append one JSONL record for a single role run. A missing/garbled usage line must
 # never break the pipeline, so every failure path degrades to a no-op (|| true).
