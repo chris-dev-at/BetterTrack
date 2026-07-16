@@ -1428,16 +1428,31 @@
       "benchmark": {
         "sp500": "S&P 500",
         "dax": "DAX",
-        "msciWorld": "MSCI World"
+        "msciWorld": "MSCI World",
+        "search": "Search asset…",
+        "myConglomerates": "My conglomerates…",
+        "searchPlaceholder": "Search any asset as benchmark…",
+        "pickConglomerate": "Benchmark conglomerate",
+        "pickConglomeratePlaceholder": "Choose a conglomerate…",
+        "loading": "Loading conglomerates…",
+        "noConglomerates": "No conglomerates yet.",
+        "clear": "Clear benchmark"
       },
       "mode": {
         "clip": "Clip to common history",
         "cash": "Cash until listing",
         "redistribute": "Redistribute until listing"
       },
+      "rebalance": {
+        "none": "Buy & hold",
+        "monthly": "Monthly",
+        "quarterly": "Quarterly",
+        "yearly": "Yearly"
+      },
       "rangeAriaLabel": "Select backtest range",
-      "benchmarkAriaLabel": "Toggle benchmark overlay",
+      "benchmarkAriaLabel": "Choose a benchmark",
       "modeAriaLabel": "Select late-listing mode",
+      "rebalanceAriaLabel": "Select rebalance frequency",
       "noPositions": "Add positions to preview a backtest",
       "error": "Could not run the backtest. Please try again.",
       "chartAriaLabel": "Conglomerate backtest chart",
@@ -1450,11 +1465,26 @@
         "worstDay": "Worst day",
         "idleCash": "Avg. uninvested"
       },
+      "statsTable": {
+        "ariaLabel": "Backtest statistics: basket vs benchmark",
+        "metric": "Metric",
+        "basket": "Basket",
+        "delta": "Δ",
+        "showDelta": "Delta column"
+      },
       "modeNotice": {
         "cash": "Full requested window — {{entries}}: a late constituent’s share sits as uninvested cash (0 % return) until its listing day.",
         "redistribute": "Full requested window — {{entries}}: a late constituent’s share is split equally among the already-listed constituents, then rebalanced to the target weights on its listing day."
       },
-      "entryMarker": "{{symbol}} enters"
+      "rebalanceNotice": "Rebalanced {{frequency}} to the target weights — {{count}} rebalances in this window.",
+      "rebalanceNoticeFrequency": {
+        "monthly": "monthly",
+        "quarterly": "quarterly",
+        "yearly": "yearly"
+      },
+      "entryMarker": "{{symbol}} enters",
+      "rebalanceMarker": "Rebalance",
+      "showRebalanceMarkers": "Rebalance markers"
     },
     "alerts": {
       "title": "Price alerts",

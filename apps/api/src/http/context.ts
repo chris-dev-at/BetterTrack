@@ -584,9 +584,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency
-  // keystones to feed the pure engine over inline draft positions.
+  // keystones to feed the pure engine over inline draft positions. V4-P7:
+  // resolves benchmark choices (preset / catalog asset / own conglomerate)
+  // and runs them through a second pass of the same engine.
   const backtestPreview = createBacktestService({
     assetRepo,
+    conglomerateRepo,
     marketData,
     currencyService: currency,
     redis,

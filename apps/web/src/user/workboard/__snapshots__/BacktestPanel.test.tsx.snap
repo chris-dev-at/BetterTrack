@@ -1,0 +1,211 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`BacktestPanel > a conglomerate benchmark renders two full stat columns + delta (V4-P7 snapshot) 1`] = `
+<table
+  aria-label="Backtest statistics: basket vs benchmark"
+  class="w-full min-w-96 text-sm"
+>
+  <thead>
+    <tr
+      class="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium"
+        scope="col"
+      >
+        Metric
+      </th>
+      <th
+        class="px-3 py-2 text-right font-medium"
+        scope="col"
+      >
+        Basket
+      </th>
+      <th
+        class="px-3 py-2 text-right font-medium"
+        scope="col"
+      >
+        My Mix
+      </th>
+      <th
+        class="px-3 py-2 text-right font-medium"
+        scope="col"
+      >
+        Δ
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Total return
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +42,50 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +30,00 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-300"
+      >
+        +12,50 %
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        CAGR
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +7,30 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +5,40 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-300"
+      >
+        +1,90 %
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Max drawdown
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -9,10 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -12,40 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-300"
+      >
+        +3,30 %
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Volatility (ann.)
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        14,60 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        11,20 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-300"
+      >
+        +3,40 %
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Best day
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +3,20 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          24.03.2020
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +2,90 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          06.04.2020
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-300"
+      >
+        +0,30 %
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Worst day
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -2,80 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          16.03.2020
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -3,40 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          12.03.2020
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-300"
+      >
+        +0,60 %
+      </td>
+    </tr>
+  </tbody>
+</table>
+`;

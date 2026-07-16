@@ -149,13 +149,20 @@ describe('POST /api/v1/backtest/preview', () => {
     const res = await agent
       .post('/api/v1/backtest/preview')
       .set(...XRW)
-      .send({ positions: [{ assetId: a.id, weight: 100 }], range: 'MAX', benchmark: '^GDAXI' });
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { preset: '^GDAXI' },
+      });
 
     expect(res.status).toBe(200);
     expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.benchmark).not.toBeNull();
-    expect(res.body.benchmark.symbol).toBe('^GDAXI');
-    // Overlay shares the basket's date axis, so both series line up point-for-point.
+    // Unseeded catalog: the preset resolves to its static provider identity.
+    expect(res.body.benchmark.kind).toBe('asset');
+    expect(res.body.benchmark.refId).toBe('^GDAXI');
+    expect(res.body.benchmark.label).toBe('^GDAXI');
+    // Same trading days in the fixture, so both series line up point-for-point.
     expect(res.body.benchmark.series).toHaveLength(res.body.series.length);
     expect(res.body.benchmark.series[0].value).toBeCloseTo(100, 6);
     // DAX rose 5 % over the window (15000 → 15750).
@@ -232,12 +239,16 @@ describe('POST /api/v1/backtest/preview', () => {
     const res = await agent
       .post('/api/v1/backtest/preview')
       .set(...XRW)
-      .send({ positions: [{ assetId: a.id, weight: 100 }], range: 'MAX', benchmark: '^GSPC' });
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { preset: '^GSPC' },
+      });
 
     expect(res.status).toBe(200);
     expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.stats.totalReturnPct).toBeCloseTo(10, 6);
-    expect(res.body.benchmark.symbol).toBe('^GSPC');
+    expect(res.body.benchmark.label).toBe('^GSPC');
     expect(res.body.benchmark.series[0].value).toBeCloseTo(100, 6);
     expect(res.body.benchmark.stats.totalReturnPct).toBeCloseTo(37.5, 6);
   });
@@ -350,9 +361,9 @@ describe('POST /api/v1/backtest/preview', () => {
     expect(res.body.error.code).toBe('NO_PRICE_HISTORY');
   });
 
-  it('maps an engine data-state failure (benchmark short of t₀) to a 422', async () => {
+  it('422s a benchmark short of the basket t₀ instead of comparing a shorter window', async () => {
     // The basket starts 300 days ago but the benchmark only has recent data, so
-    // it has no price on or before t₀ — a BacktestError, surfaced as a 422.
+    // its run cannot cover the primary window — rejected rather than clipped.
     const { h, agent } = await harnessWith((ref) =>
       ref.providerRef === '^GDAXI'
         ? cachedHistory([
@@ -368,9 +379,33 @@ describe('POST /api/v1/backtest/preview', () => {
     const res = await agent
       .post('/api/v1/backtest/preview')
       .set(...XRW)
-      .send({ positions: [{ assetId: a.id, weight: 100 }], range: 'MAX', benchmark: '^GDAXI' });
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { preset: '^GDAXI' },
+      });
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('BACKTEST_UNAVAILABLE');
+  });
+
+  it('rejects a benchmark naming two sources at once with a 400 (wire invariant)', async () => {
+    const { h, agent } = await harnessWith(() =>
+      cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: 110 },
+      ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { preset: '^GSPC', assetId: a.id },
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
   });
 
   it('rejects a malformed body (empty positions) with a 400', async () => {
@@ -510,6 +545,121 @@ describe('POST /api/v1/backtest/preview — late-listing modes (§14)', () => {
     // A fresh compute (2 more history fetches), not a memo hit from the other mode.
     expect(marketData.calls.history).toBe(4);
     expect(redistribute.body.series).not.toEqual(cash.body.series);
+  });
+});
+
+describe('POST /api/v1/backtest/preview — custom benchmarks (V4-P7)', () => {
+  it('accepts any catalog asset as benchmark via its id (local-search path)', async () => {
+    const { h, agent } = await harnessWith((ref) =>
+      ref.providerRef === 'AAA'
+        ? cachedHistory([
+            { time: tsOffset(-300), close: 100 },
+            { time: tsOffset(-1), close: 110 },
+          ])
+        : cachedHistory([
+            { time: tsOffset(-300), close: 200 },
+            { time: tsOffset(-1), close: 250 },
+          ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const b = await seedAsset(h, { providerRef: 'BBB', symbol: 'BBB', name: 'Asset B' });
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { assetId: b.id },
+      });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.benchmark.kind).toBe('asset');
+    expect(res.body.benchmark.refId).toBe(b.id);
+    expect(res.body.benchmark.label).toBe('BBB');
+    // BBB rose 25 % (200 → 250) vs the basket's 10 % — a real delta to render.
+    expect(res.body.benchmark.stats.totalReturnPct).toBeCloseTo(25, 6);
+  });
+
+  it("runs one of the caller's own conglomerates as benchmark end-to-end", async () => {
+    const { h, agent } = await harnessWith((ref) =>
+      ref.providerRef === 'AAA'
+        ? cachedHistory([
+            { time: tsOffset(-300), close: 100 },
+            { time: tsOffset(-1), close: 110 },
+          ])
+        : cachedHistory([
+            { time: tsOffset(-300), close: 200 },
+            { time: tsOffset(-1), close: 250 },
+          ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+    const b = await seedAsset(h, { providerRef: 'BBB', symbol: 'BBB', name: 'Asset B' });
+
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Bench Mix' });
+    expect(created.status).toBe(201);
+    const put = await agent
+      .put(`/api/v1/conglomerates/${created.body.id}/positions`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: a.id, weightPct: 50 },
+          { assetId: b.id, weightPct: 50 },
+        ],
+      });
+    expect(put.status).toBe(200);
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { conglomerateId: created.body.id },
+      });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.benchmark.kind).toBe('conglomerate');
+    expect(res.body.benchmark.refId).toBe(created.body.id);
+    expect(res.body.benchmark.label).toBe('Bench Mix');
+    // 50/50 of +10 % and +25 % = +17.5 % — the full stat set, benchmark-side.
+    expect(res.body.benchmark.stats.totalReturnPct).toBeCloseTo(17.5, 6);
+    expect(res.body.benchmark.stats.maxDrawdownPct).toBeDefined();
+  });
+
+  it("404s another user's conglomerate as benchmark — no existence leak", async () => {
+    const { h, agent } = await harnessWith(() =>
+      cachedHistory([
+        { time: tsOffset(-300), close: 100 },
+        { time: tsOffset(-1), close: 110 },
+      ]),
+    );
+    const a = await seedAsset(h, { providerRef: 'AAA', symbol: 'AAA' });
+
+    // The conglomerate belongs to a second user.
+    const other = await h.seedUser({ email: 'other@bt.test', username: 'otheruser' });
+    const otherAgent = await loginAgent(h.app, other.email, other.password);
+    const created = await otherAgent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Not Yours' });
+    expect(created.status).toBe(201);
+
+    const res = await agent
+      .post('/api/v1/backtest/preview')
+      .set(...XRW)
+      .send({
+        positions: [{ assetId: a.id, weight: 100 }],
+        range: 'MAX',
+        benchmark: { conglomerateId: created.body.id },
+      });
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('CONGLOMERATE_NOT_FOUND');
   });
 });
 
