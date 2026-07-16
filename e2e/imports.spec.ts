@@ -48,7 +48,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
   // via the exact-name match; the deposit needs no instrument).
   await expect(page.getByText('3 rows')).toBeVisible();
   await expect(page.getByText('3 mapped')).toBeVisible();
-  await expect(page.getAllByText('Mapped')).toHaveLength(3);
+  await expect(page.getByText('Mapped', { exact: true })).toHaveCount(3);
   // The framework resolves 'SAP SE' → SAP.DE by exact whole-name match against
   // the seeded catalog, and the buy + dividend rows both surface that symbol.
   await expect(page.getByText('SAP.DE', { exact: true })).toHaveCount(2);
@@ -66,7 +66,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
   await expect(page.getByText('3 imported · 0 skipped · 0 failed')).toBeVisible({
     timeout: 60_000,
   });
-  await expect(page.getAllByText('Imported')).toHaveLength(3);
+  await expect(page.getByText('Imported', { exact: true })).toHaveCount(3);
 
   // Portfolio now carries the SAP.DE buy through the real HoldingsTable.
   await page.goto('/portfolio');
@@ -89,7 +89,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
 
   await expect(page.getByText('Broker: Trade Republic')).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText('3 duplicates')).toBeVisible();
-  await expect(page.getAllByText('Duplicate')).toHaveLength(3);
+  await expect(page.getByText('Duplicate', { exact: true })).toHaveCount(3);
   await expect(page.getByText('0 mapped')).toBeVisible();
   // With zero mapped rows the framework refuses to book anything: the "no
   // importable rows" note appears and the apply button (rendered as "Import 0
