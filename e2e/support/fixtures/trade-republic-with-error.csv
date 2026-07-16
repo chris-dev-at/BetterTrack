@@ -1,0 +1,4 @@
+Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
+2024-01-02;Einzahlung;;;;;;500,00;EUR
+2024-01-15;Kauf;Allianz SE;DE0008404005;5;100,00;1,00;-501,00;EUR
+2024-02-10;Kauf;Allianz SE;DE0008404005;kaputt;100,00;0,50;-100,50;EUR
