@@ -9,6 +9,7 @@ import { RealtimeProvider } from '../lib/realtime';
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
 import { AppLayout } from './components/AppLayout';
+import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { Splash, Toast } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
 import { ForgotPasswordPage } from './auth/ForgotPasswordPage';
@@ -238,6 +239,18 @@ function RateLimitToastPortal() {
 }
 
 /**
+ * Admin-composed announcements banner (§13.4 V4-P5b) — a stacked, dismissible
+ * banner mounted just above the app shell. Rendered only while a session is
+ * fully authenticated; silent when nothing's active for the caller. Sitting
+ * outside AppLayout keeps it visible on the auth screens' peer routes too —
+ * but the query is gated on the auth status so anonymous pages fire no fetch.
+ */
+function AnnouncementBannerRoot() {
+  const { status } = useAuth();
+  return <AnnouncementBanner enabled={status === 'authenticated'} />;
+}
+
+/**
  * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
  * signed-in `me` carries a locale, switch the runtime to it. The language picker
  * also flips the runtime instantly and persists server-side, so a `me` refetch
@@ -261,6 +274,7 @@ export function UserApp() {
           <LocaleSync />
           <RateLimitToastPortal />
           <RealtimeRoot>
+            <AnnouncementBannerRoot />
             <UserShell />
           </RealtimeRoot>
         </AuthProvider>

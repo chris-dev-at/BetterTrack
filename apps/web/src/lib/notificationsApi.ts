@@ -1,6 +1,8 @@
 import {
+  activeAnnouncementListResponseSchema,
   notificationListResponseSchema,
   okResponseSchema,
+  type ActiveAnnouncementListResponse,
   type MarkReadRequest,
   type NotificationListResponse,
   type NotificationView,
@@ -68,4 +70,30 @@ export async function deleteNotification(id: string): Promise<void> {
  */
 export async function deleteNotifications(scope: 'archived' | 'all'): Promise<void> {
   await apiRequest<unknown>('/notifications', { method: 'DELETE', query: { scope } });
+}
+
+// ── Announcements banner (§13.4 V4-P5b) ─────────────────────────────────────
+
+/**
+ * `GET /notifications/announcements` — the currently-active, not-dismissed set
+ * for the caller, rendered server-side in the viewer's locale (EN fallback).
+ */
+export async function listActiveAnnouncements(
+  signal?: AbortSignal,
+): Promise<ActiveAnnouncementListResponse> {
+  const data = await apiRequest<unknown>('/notifications/announcements', { signal });
+  return activeAnnouncementListResponseSchema.parse(data);
+}
+
+/**
+ * `POST /notifications/announcements/:id/dismiss` — per-user dismissal.
+ * Idempotent; a repeat is a no-op. A newly-published announcement re-appears
+ * for the caller regardless of an earlier dismissal (per user AND per row).
+ */
+export async function dismissAnnouncement(id: string): Promise<void> {
+  const data = await apiRequest<unknown>(
+    `/notifications/announcements/${encodeURIComponent(id)}/dismiss`,
+    { method: 'POST' },
+  );
+  okResponseSchema.parse(data);
 }

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import {
+  announcementIdParamSchema,
   deleteDeviceRequestSchema,
   markReadRequestSchema,
   notificationBulkDeleteQuerySchema,
@@ -100,6 +101,34 @@ export function createNotificationsRouter(ctx: AppContext): Router {
     await ctx.notifications.unsubscribeWebPush(req.authUser!.id, body.endpoint);
     res.json({ ok: true });
   });
+
+  // ── Announcements banner (§13.4 V4-P5b) ─────────────────────────────────────
+  // Registered BEFORE the `:id` param routes below so `/announcements/…`
+  // never resolves as `/:id/…`. Delivery of the fan-out inbox row itself
+  // stays the admin service's job — this router only serves the banner list
+  // and the per-user dismissal.
+
+  // GET /notifications/announcements — active-for-me set, rendered in the
+  // viewer's stored locale (EN fallback via resolveEmailLocale).
+  router.get('/announcements', async (req, res) => {
+    const announcements = await ctx.announcements.listActiveForUser(
+      req.authUser!.id,
+      req.authUser!.locale,
+    );
+    res.json({ announcements });
+  });
+
+  // POST /notifications/announcements/:id/dismiss — per-user dismissal.
+  // Idempotent; a foreign/unknown id 404s (indistinguishable, no IDOR).
+  router.post(
+    '/announcements/:id/dismiss',
+    validateParams(announcementIdParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      await ctx.announcements.dismiss(req.authUser!.id, id);
+      res.json({ ok: true });
+    },
+  );
 
   // ── Per-row archive state + deletion (#437) — param routes come LAST ────────
 

@@ -6,6 +6,8 @@ import {
   adminUserListResponseSchema,
   adminUserSchema,
   accountDefaultsResponseSchema,
+  announcementListResponseSchema,
+  announcementSchema,
   appSettingsResponseSchema,
   auditLogListResponseSchema,
   bulkUserActionResponseSchema,
@@ -36,11 +38,14 @@ import {
   type AdminUser,
   type AdminUserListResponse,
   type AccountDefaults,
+  type Announcement,
+  type AnnouncementListResponse,
   type AppSettingsResponse,
   type AuditLogListResponse,
   type BulkUserActionRequest,
   type BulkUserActionResponse,
   type ChangePasswordRequest,
+  type CreateAnnouncementRequest,
   type CreateInviteRequest,
   type CreateInviteResponse,
   type CreateOAuthClientRequest,
@@ -70,6 +75,7 @@ import {
   type TwoFactorRecoveryCodesResponse,
   type TwoFactorVerifyRequest,
   type UpdateAccountDefaultsRequest,
+  type UpdateAnnouncementRequest,
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
   type UpdateUserRequest,
@@ -440,4 +446,40 @@ export async function disableEmailTwoFactor(): Promise<void> {
 export async function regenerateRecoveryCodes(): Promise<TwoFactorRecoveryCodesResponse> {
   const data = await apiRequest<unknown>('/admin/security/2fa/recovery-codes', { method: 'POST' });
   return twoFactorRecoveryCodesResponseSchema.parse(data);
+}
+
+// --- Admin: announcements (§13.4 V4-P5b) ----------------------------------
+
+/** Every composed announcement, newest first — the admin composer's list. */
+export async function listAnnouncements(signal?: AbortSignal): Promise<AnnouncementListResponse> {
+  const data = await apiRequest<unknown>('/admin/announcements', { signal });
+  return announcementListResponseSchema.parse(data);
+}
+
+/**
+ * Create an announcement. EN + DE title/body are required (§13.4 binding).
+ * Creating with `active: true` publishes immediately (fans one inbox row out
+ * per user, idempotent per user via the shared eventKey).
+ */
+export async function createAnnouncement(body: CreateAnnouncementRequest): Promise<Announcement> {
+  const data = await apiRequest<unknown>('/admin/announcements', { method: 'POST', body });
+  return announcementSchema.parse(data);
+}
+
+/**
+ * Update an announcement. Flipping `active` off → on publishes; a re-publish
+ * (already-published row toggled off → on again) is a per-user no-op via the
+ * shared eventKey.
+ */
+export async function updateAnnouncement(
+  id: string,
+  body: UpdateAnnouncementRequest,
+): Promise<Announcement> {
+  const data = await apiRequest<unknown>(`/admin/announcements/${id}`, { method: 'PATCH', body });
+  return announcementSchema.parse(data);
+}
+
+/** Delete an announcement (cascades per-user dismissals away). */
+export async function deleteAnnouncement(id: string): Promise<void> {
+  await apiRequest<unknown>(`/admin/announcements/${id}`, { method: 'DELETE' });
 }

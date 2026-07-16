@@ -2103,6 +2103,18 @@
       "tooMany": "Too many attempts. Please wait a moment and try again."
     }
   },
+  "announcements": {
+    "dismiss": "Dismiss",
+    "dismissing": "Dismissing…",
+    "severity": {
+      "info": "Info",
+      "warning": "Warning",
+      "critical": "Critical"
+    },
+    "aria": {
+      "list": "Announcements"
+    }
+  },
   "admin": {
     "nav": {
       "security": "Security",
