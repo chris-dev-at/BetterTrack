@@ -20,6 +20,7 @@ import { PinGate } from './auth/PinGate';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
+import { ImportPage } from './portfolio/ImportPage';
 import { TaxReportPage } from './portfolio/TaxReportPage';
 import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
 import { WorkboardPage } from './workboard/WorkboardPage';
@@ -138,6 +139,8 @@ function UserShell() {
             <Route path="custom-assets" element={<CustomAssetsPage />} />
             <Route path="cash" element={<CashSourcesPage />} />
             <Route path="tax" element={<TaxReportPage />} />
+            {/* Broker CSV import (§13.4 V4-P8): upload → preview → apply. */}
+            <Route path="import" element={<ImportPage />} />
           </Route>
 
           {/* ── Workboard ── */}
