@@ -29,7 +29,11 @@ test('admin chat ban: a banned user sees the neutral notice and cannot send', as
   const first = `pre-ban ${Date.now().toString(36)}`;
   await sender.page.getByPlaceholder('Message').fill(first);
   await sender.page.getByRole('button', { name: 'Send' }).click();
-  await expect(sender.page.getByText(first)).toBeVisible({ timeout: 15_000 });
+  // Scope with `exact` — the conversation-list preview also renders the body
+  // prefixed with the localized `social.chat.youPrefix` ("You: <body>"), so a
+  // substring `getByText(first)` matches both the bubble and the list row and
+  // fails strict-mode. Only the bubble's `<p>` text equals the raw body.
+  await expect(sender.page.getByText(first, { exact: true })).toBeVisible({ timeout: 15_000 });
 
   // Admin bans the sender from chat.
   await setChatBanByUsername(apiRequest, sender.username, true);
@@ -47,7 +51,7 @@ test('admin chat ban: a banned user sees the neutral notice and cannot send', as
     timeout: 15_000,
   });
   await expect(sender.page.getByPlaceholder('Message')).toHaveCount(0);
-  await expect(sender.page.getByText(first)).toBeVisible();
+  await expect(sender.page.getByText(first, { exact: true })).toBeVisible();
 
   await sender.context.close();
   await recipient.context.close();
