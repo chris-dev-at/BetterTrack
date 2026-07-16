@@ -151,10 +151,10 @@
       "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
       "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu.",
       "google": {
-        "connecting": "Verbindung mit Google…",
-        "connectedAs": "Mit Google verbunden als {{email}}. Richte dein Konto unten fertig ein.",
+        "connecting": "Verbinde mit Google…",
+        "connectedAs": "Mit Google verbunden als {{email}}. Vervollständige unten dein Konto.",
         "emailLockedHint": "Von Google festgelegt und nicht änderbar.",
-        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte fahre erneut mit Google fort."
+        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte melde dich erneut mit Google an."
       }
     },
     "oauthConsent": {
@@ -181,15 +181,15 @@
     },
     "google": {
       "button": "Weiter mit Google",
-      "pending": "Danke! Deine Google-Registrierung wartet auf die Freigabe durch die Administration. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
+      "pending": "Danke! Deine Google-Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
       "errorGeneric": "Die Anmeldung mit Google ist fehlgeschlagen. Bitte versuche es erneut.",
       "errorState": "Deine Google-Anmeldesitzung ist abgelaufen. Bitte versuche es erneut.",
       "errorVerify": "Dein Google-Konto konnte nicht verifiziert werden. Bitte versuche es erneut.",
-      "errorRegistrationClosed": "Die Registrierung ist derzeit geschlossen. Bitte frage die Administration nach einer Einladung.",
+      "errorRegistrationClosed": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "errorEmailTaken": "Für diese E-Mail-Adresse besteht bereits ein Konto. Melde dich mit deinem Passwort an und verknüpfe Google anschließend in den Einstellungen.",
       "errorInviteRequired": "Für die Google-Registrierung ist eine gültige Einladung nötig. Öffne deinen Einladungslink und wähle „Weiter mit Google“.",
-      "errorAccountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an die Administration.",
-      "errorAdmin": "Die Google-Anmeldung ist für Administrationskonten nicht verfügbar. Bitte melde dich mit deinem Passwort an.",
+      "errorAccountDisabled": "Dieses Konto wurde gesperrt. Bitte wende dich an den Administrator.",
+      "errorAdmin": "Die Google-Anmeldung ist für Administratorkonten nicht verfügbar. Bitte melde dich mit deinem Passwort an.",
       "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft."
     }
   },
@@ -428,13 +428,13 @@
       },
       "telegram": {
         "title": "Telegram",
-        "description": "Empfange Benachrichtigungen über den BetterTrack-Telegram-Bot. Einmal Chat verknüpfen — jederzeit trennen.",
+        "description": "Empfange Benachrichtigungen über den BetterTrack-Telegram-Bot. Einmal verknüpfen — jederzeit wieder trennen.",
         "startLink": "Telegram-Verknüpfung starten",
         "openBot": "Telegram-Bot öffnen",
-        "codeHint": "Sende /start {{code}} im Bot, um die Verknüpfung abzuschließen.",
+        "codeHint": "Sende /start {{code}} an den Bot, um die Verknüpfung abzuschließen.",
         "confirm": "Ich habe den Bot gestartet",
-        "confirming": "Prüfe …",
-        "pending": "Warte auf die /start-Nachricht …",
+        "confirming": "Wird geprüft…",
+        "pending": "Warte auf die /start-Nachricht…",
         "linked": "Verknüpft mit Chat {{id}}",
         "unlink": "Telegram trennen",
         "unavailable": "Der Telegram-Kanal ist auf dieser Installation nicht verfügbar.",
@@ -448,9 +448,9 @@
         "urlLabel": "Webhook-URL",
         "urlPlaceholder": "https://discord.com/api/webhooks/…",
         "save": "Webhook speichern",
-        "saving": "Speichere …",
+        "saving": "Wird gespeichert…",
         "test": "Testnachricht senden",
-        "testing": "Sende …",
+        "testing": "Wird gesendet…",
         "testSuccess": "Testnachricht zugestellt.",
         "testFailed": "Discord hat die Testnachricht abgelehnt. Prüfe die Webhook-URL und versuche es erneut.",
         "linked": "Webhook gespeichert ({{id}})",
@@ -1456,9 +1456,9 @@
         "duplicate": "Duplikat",
         "error": "Fehler"
       },
-      "cashSourceLabel": "Cash-Quelle (Dividenden & Cash-Zeilen)",
-      "cashSourceMain": "Main",
-      "linkCashLabel": "Käufe aus dieser Cash-Quelle bezahlen / Verkaufserlöse gutschreiben",
+      "cashSourceLabel": "Geldquelle (Dividenden & Cash-Zeilen)",
+      "cashSourceMain": "Hauptquelle",
+      "linkCashLabel": "Käufe aus dieser Geldquelle bezahlen / Verkaufserlöse gutschreiben",
       "applyCta": "{{count}} Zeilen importieren",
       "applying": "Wird importiert…",
       "applyFailed": "Import fehlgeschlagen.",
@@ -1584,9 +1584,9 @@
         "sp500": "S&P 500",
         "dax": "DAX",
         "msciWorld": "MSCI World",
-        "search": "Asset suchen…",
+        "search": "Anlage suchen…",
         "myConglomerates": "Meine Konglomerate…",
-        "searchPlaceholder": "Beliebiges Asset als Benchmark suchen…",
+        "searchPlaceholder": "Beliebige Anlage als Benchmark suchen…",
         "pickConglomerate": "Benchmark-Konglomerat",
         "pickConglomeratePlaceholder": "Konglomerat auswählen…",
         "loading": "Konglomerate werden geladen…",
@@ -1804,7 +1804,7 @@
         "thesisNone": "Keine These",
         "loadError": "Deine Ideen konnten nicht geladen werden.",
         "deleteTitle": "Idee löschen",
-        "deleteBody": "\"{{name}}\" löschen? Das kann nicht rückgängig gemacht werden.",
+        "deleteBody": "„{{name}}“ löschen? Das kann nicht rückgängig gemacht werden.",
         "deleteError": "Die Idee konnte nicht gelöscht werden."
       },
       "save": {
@@ -1817,7 +1817,7 @@
         "submit": "Idee speichern",
         "saving": "Wird gespeichert…",
         "error": "Die Idee konnte nicht gespeichert werden.",
-        "successBody": "\"{{name}}\" ist in deiner Ideen-Liste.",
+        "successBody": "„{{name}}“ wurde zu deinen Ideen hinzugefügt.",
         "viewIdeas": "In Ideen ansehen"
       },
       "open": {
@@ -1825,7 +1825,7 @@
         "loadError": "Diese Idee konnte nicht geladen werden.",
         "thesisHeading": "These",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "Das von dieser Idee referenzierte Konglomerat ist nicht mehr verfügbar."
+        "conglomerateGone": "Das Konglomerat, auf das diese Idee verweist, ist nicht mehr verfügbar."
       }
     }
   },
@@ -2085,7 +2085,7 @@
       "autoFollow": "Neuen Elementen automatisch folgen",
       "autoFollowHint": "Folgt automatisch jedem Element, das diese Person neu für dich sichtbar macht, damit dich seine Neuigkeiten erreichen.",
       "autoFollowAria": "Neuen Elementen von {{username}} automatisch folgen",
-      "alertFollow": "Ihren Alarmen folgen",
+      "alertFollow": "Alarmen dieser Person folgen",
       "alertFollowHint": "Werde benachrichtigt, wenn diese Person einen neuen Preisalarm erstellt oder einer ihrer Alarme auslöst. Funktioniert nur, solange sie ihre Alarme mit Followern teilt.",
       "alertFollowAria": "Alarmen von {{username}} folgen"
     },
@@ -2394,7 +2394,7 @@
       "version": "Version",
       "uptime": "Betriebszeit",
       "checkedAt": "Geprüft um",
-      "loadError": "Der Zustand konnte nicht geladen werden.",
+      "loadError": "Der Systemzustand konnte nicht geladen werden.",
       "status": {
         "ok": "Gesund",
         "degraded": "Beeinträchtigt",
@@ -2416,10 +2416,10 @@
         "none": "Keine externen Anbieter"
       },
       "queues": {
-        "unavailable": "Keine Warteschlangen-Registrierung in diesem Prozess",
+        "unavailable": "Keine Job-Warteschlangen in diesem Prozess",
         "empty": "Keine Jobs",
         "summary": "{{queues}} Warteschlangen · {{waiting}} wartend · {{failed}} fehlgeschlagen",
-        "heartbeatUnknown": "Heartbeat: nie gesehen",
+        "heartbeatUnknown": "Heartbeat: noch nie eingetroffen",
         "heartbeatAge": "Heartbeat: vor {{seconds}}s"
       },
       "gateway": {
