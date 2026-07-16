@@ -12,7 +12,10 @@ import type { BrokerMapper, MappedLine } from '../types';
  * Each section's `Header` row defines that section's columns; the mapper
  * consumes the `Data` rows of the sections that carry transactions — `Trades`
  * (DataDiscriminator `Order`, asset category `Stocks`; signed Quantity gives
- * the side, `Comm/Fee` the commission, multi-currency per row), `Dividends`
+ * the side, `Comm/Fee` the commission, multi-currency per row; `ClosedLot`
+ * legs are skipped as derived views of the same orders, any OTHER
+ * discriminator fails its row so a variant statement can't stage an
+ * empty-looking preview), `Dividends`
  * (EUR only — the cash ledger is EUR-only; symbol + ISIN extracted from the
  * description) and `Deposits & Withdrawals` (EUR only, signed Amount). All
  * other lines — statement metadata, `SubTotal`/`Total` summary rows,
@@ -68,7 +71,7 @@ function cellOf(record: CsvRecord, cols: Columns, name: string): string {
   return index === undefined ? '' : (record.cells[index] ?? '');
 }
 
-/** A `Trades` Data row → trade, error, or null for non-Order/summary lines. */
+/** A `Trades` Data row → trade, error, or null for derived `ClosedLot` legs. */
 function mapTradeRecord(record: CsvRecord, cols: Columns): MappedLine | null {
   const fail = (error: string): MappedLine => ({
     line: record.line,
@@ -78,8 +81,16 @@ function mapTradeRecord(record: CsvRecord, cols: Columns): MappedLine | null {
   });
 
   // ClosedLot rows re-state the Order rows they close — importing both would
-  // double every covered trade; summary discriminators carry no transaction.
-  if (cellOf(record, cols, 'datadiscriminator') !== 'Order') return null;
+  // double every covered trade. Anything else that isn't an Order row (e.g. a
+  // variant statement's `Trade` executions) fails per row: silently skipping
+  // it would stage an empty-looking preview with zero reported rows.
+  const discriminator = cellOf(record, cols, 'datadiscriminator');
+  if (discriminator === 'ClosedLot') return null;
+  if (discriminator !== 'Order') {
+    return fail(
+      `Unsupported trade row type "${discriminator || '(empty)'}" — only order-level (DataDiscriminator "Order") rows import.`,
+    );
+  }
 
   const category = cellOf(record, cols, 'asset category');
   if (category !== 'Stocks') {

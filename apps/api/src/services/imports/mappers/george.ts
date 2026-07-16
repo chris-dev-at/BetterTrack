@@ -15,9 +15,10 @@ import type { BrokerMapper, MappedLine, NormalizedImportRow } from '../types';
  * `Betrag`. Instruments are ISIN + Titel — George exports no ticker symbol;
  * resolution against the local catalog is the framework's job. `Betrag` is the
  * signed EUR cash effect (buys negative) — trades re-derive their economics
- * from Stück×Kurs+Spesen, so `Betrag` is only trusted for dividend rows (its
- * magnitude). Cash movements live on the giro account, not in this export —
- * there are no deposit/withdrawal row types.
+ * from Stück×Kurs+Spesen, so `Betrag` is only trusted for dividend rows, and
+ * there it must be positive (income is cash-in; a negative amount fails its
+ * row). Cash movements live on the giro account, not in this export — there
+ * are no deposit/withdrawal row types.
  */
 
 const HEADER = {
@@ -127,10 +128,12 @@ export const georgeMapper: BrokerMapper = {
         };
       }
 
-      // Dividend (Ertrag): the signed Betrag's magnitude in EUR.
+      // Dividend (Ertrag): the EUR gross in Betrag — income is cash-in, so the
+      // amount must be positive; a negative one (a reversal booked under a
+      // dividend type) fails its row instead of booking as positive income.
       const amount = parseDecimal(cell(record, 'amount'));
-      if (amount === null || amount === 0) {
-        return fail(`Invalid amount "${cell(record, 'amount')}".`);
+      if (amount === null || amount <= 0) {
+        return fail(`Invalid dividend amount "${cell(record, 'amount')}".`);
       }
       if (currency !== 'EUR') {
         return fail(`Dividend rows must be EUR — got "${currency}" (the cash ledger is EUR-only).`);
@@ -145,7 +148,7 @@ export const georgeMapper: BrokerMapper = {
           quantity: null,
           price: null,
           fee: null,
-          amountEur: Math.abs(amount),
+          amountEur: amount,
         },
       };
     });

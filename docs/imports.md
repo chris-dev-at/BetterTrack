@@ -161,11 +161,12 @@ Buchungsdatum;Auftragsart;Titel;ISIN;Stück;Kurs;Betrag;Spesen;Währung
 - **German notation throughout** — `1.234,56` numbers (the ambiguous
   grouping-dot integer `1.000` is refused per row, same as every German-CSV
   mapper), `15.01.2024` or ISO dates, day precision anchored at 12:00 UTC.
-- **`Betrag` is only trusted for dividends** (its magnitude, EUR). Trade
-  economics re-derive from `Stück × Kurs + Spesen`. Negative `Spesen` fails its
-  row. Non-EUR dividend rows are flagged `error` (the cash ledger is EUR-only,
-  §14); trades may carry any ISO currency — the framework's listing-currency
-  check applies.
+- **`Betrag` is only trusted for dividends** (the positive EUR gross — a
+  negative amount on a dividend row fails per row instead of booking as
+  income). Trade economics re-derive from `Stück × Kurs + Spesen`. Negative
+  `Spesen` fails its row. Non-EUR dividend rows are flagged `error` (the cash
+  ledger is EUR-only, §14); trades may carry any ISO currency — the
+  framework's listing-currency check applies.
 
 Fixture: `apps/api/src/services/imports/__tests__/fixtures/george.csv`
 (anonymized — invented ISINs/names, no real account data).
@@ -190,9 +191,14 @@ Kontoumsätze:      Buchtag;Valuta;Buchungsinformationen;TA-Nr.;Betrag
 - **Cash rows classify by their booking text:** `Ertragsgutschrift`/`Dividende`
   → dividend, with the instrument's ISIN and name extracted from the text
   (resolution then works like any ISIN + name identity); `Einzahlung` /
-  `Auszahlung` → deposit/withdrawal; `Überweisung` and `Zinsen` → by the
-  amount's sign (`Zinsen` gets an "Interest (Flatex)" note). Unknown texts are
-  reported per row. The Konto is EUR-denominated — cash rows are always EUR.
+  `Auszahlung` → deposit/withdrawal; `Überweisung` (or the transliterated
+  `Ueberweisung`) and `Zinsen` → by the amount's sign (`Zinsen` gets an
+  "Interest (Flatex)" note). Unknown texts are reported per row. **The amount
+  sign must agree with the text:** a `Storno …` reversal keeps the original
+  booking's text but flips the sign — a negative dividend or a
+  sign-contradicting deposit/withdrawal fails per row instead of booking its
+  magnitude (which would double-count the original plus its reversal). The
+  Konto is EUR-denominated — cash rows are always EUR.
 - **Import Wertpapierumsätze before Kontoumsätze**: a dividend books only
   against a held instrument (V3-P4c), so the buys from the securities file
   must land first.
@@ -214,8 +220,9 @@ format and are **not** supported — export an Activity Statement instead.
   the same orders), unsupported sections like Open Positions — is deliberately
   **skipped, not errored**: on a real statement those lines outnumber the
   transactions severalfold and would bury the preview. Non-stock trade rows
-  (Forex, options) ARE reported per row so nothing that looks like a
-  transaction disappears silently.
+  (Forex, options) and trade rows with an **unknown DataDiscriminator** (e.g. a
+  variant statement's `Trade` executions) ARE reported per row so nothing that
+  looks like a transaction disappears silently.
 - **English number notation** (`1,234.56`) — parsed by an IBKR-local parser,
   never the German-notation helper (which would read `1,200` shares as 1.2).
   Mis-grouped values (`1,20`) are refused per row. `Date/Time` is

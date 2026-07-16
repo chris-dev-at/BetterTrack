@@ -189,11 +189,29 @@ describe('flatexMapper.map — per-row errors and cash-text classification', () 
     expect(mapOneCash('gestern;;Einzahlung;1;100,00').ok).toBe(false);
   });
 
+  it('fails sign-contradicting reversal (Storno) rows instead of booking their magnitude', () => {
+    // A Storno keeps the original booking's text but flips the amount sign —
+    // booking Math.abs would double-count (original + its reversal).
+    const dividendReversal = mapOneCash(
+      '15.03.2024;15.03.2024;Storno Ertragsgutschrift DE0001234567 Muster Tech AG;100004;-12,50',
+    );
+    expect(dividendReversal.ok).toBe(false);
+    expect(!dividendReversal.ok && dividendReversal.error).toContain('Storno');
+    const depositReversal = mapOneCash('15.03.2024;;Storno Einzahlung SEPA;100005;-100,00');
+    expect(depositReversal.ok).toBe(false);
+    expect(!depositReversal.ok && depositReversal.error).toContain('Storno');
+    const withdrawalReversal = mapOneCash('15.03.2024;;Storno Auszahlung SEPA;100006;250,00');
+    expect(withdrawalReversal.ok).toBe(false);
+  });
+
   it('classifies Überweisung and Zinsen by the amount sign', () => {
     const transferIn = mapOneCash('02.01.2024;;SEPA Überweisung;1;100,00');
     expect(transferIn.ok && transferIn.row.kind).toBe('deposit');
     const transferOut = mapOneCash('02.01.2024;;SEPA Überweisung;1;-100,00');
     expect(transferOut.ok && transferOut.row.kind).toBe('withdrawal');
+    // Some exports transliterate the umlaut — `SEPA Ueberweisung` counts too.
+    const transliterated = mapOneCash('02.01.2024;;SEPA Ueberweisung;1;-75,00');
+    expect(transliterated.ok && transliterated.row.kind).toBe('withdrawal');
     const interest = mapOneCash('02.01.2024;;Zinsen Q1;1;1,25');
     expect(interest.ok && interest.row).toMatchObject({
       kind: 'deposit',

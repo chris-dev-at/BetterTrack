@@ -172,6 +172,16 @@ describe('ibkrMapper.map — per-row errors and skips', () => {
     expect(lines).toHaveLength(0);
   });
 
+  it('fails unknown DataDiscriminators per row instead of silently skipping them', () => {
+    // Only ClosedLot is known-derived; a variant statement whose trade rows
+    // carry e.g. `Trade` must surface in the preview, not stage as empty.
+    const [result] = mapTrades(
+      'Trades,Data,Trade,Stocks,USD,ACME,"2024-01-16, 09:32:11",10,185.50,,,-1,,,,',
+    );
+    expect(result!.ok).toBe(false);
+    expect(!result!.ok && result!.error).toContain('"Trade"');
+  });
+
   it('fails malformed trade values individually', () => {
     const rows = [
       'Trades,Data,Order,Stocks,USD,ACME,gestern,10,185.50,,,-1,,,,', // date

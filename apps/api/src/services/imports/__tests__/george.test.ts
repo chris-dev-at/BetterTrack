@@ -146,6 +146,14 @@ describe('georgeMapper.map — per-row errors', () => {
     expect(mapOne('02.01.2024;Kauf;;;1;10,00;-10,00;0,00;EUR').ok).toBe(false);
   });
 
+  it('fails a negative dividend amount instead of booking it as positive income', () => {
+    // Reversals export as a `Storno` Auftragsart (already unsupported), but a
+    // negative Betrag on an Ertrag row must not book its magnitude either.
+    const result = mapOne('10.04.2024;Ertrag;X AG;AT0000123456;;;-13,20;;EUR');
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('-13,20');
+  });
+
   it('fails non-EUR dividends (the cash ledger is EUR-only)', () => {
     const result = mapOne('10.04.2024;Ertrag;X AG;AT0000123456;;;13,20;;USD');
     expect(result.ok).toBe(false);

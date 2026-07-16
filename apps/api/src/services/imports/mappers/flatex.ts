@@ -21,9 +21,13 @@ import type { BrokerMapper, MappedLine, NormalizedImportRow } from '../types';
  * is not trusted for trades (economics re-derive from Nominale×Kurs+Provision).
  * Cash rows classify by their `Buchungsinformationen` text: dividends
  * (`Ertragsgutschrift`/`Dividende …`, the instrument's ISIN + name extracted
- * from the text), deposits/withdrawals (`Einzahlung`/`Auszahlung`,
- * `Überweisung` by amount sign) and interest (`Zinsen`, booked as a plain cash
- * movement). The Konto is EUR-denominated, so cash rows are always EUR.
+ * from the text), deposits/withdrawals (`Einzahlung`/`Auszahlung`),
+ * `Überweisung`/`Ueberweisung` and `Zinsen` by amount sign (interest gets a
+ * note). The amount sign must AGREE with the text: a negative dividend or a
+ * sign-contradicting deposit/withdrawal — a `Storno …` reversal keeps the
+ * original booking's text but flips the sign — fails its row instead of
+ * booking its magnitude (refusing costs one reported row; guessing costs
+ * money). The Konto is EUR-denominated, so cash rows are always EUR.
  */
 
 const SECURITIES_HEADER = {
@@ -169,8 +173,16 @@ function mapCashRecord(
     currency: 'EUR', // the Flatex Konto is EUR-denominated (no currency column)
   };
 
-  // Dividend booking: "Ertragsgutschrift <ISIN> <security name>".
+  // Dividend booking: "Ertragsgutschrift <ISIN> <security name>". A reversal
+  // ("Storno Ertragsgutschrift …") keeps the text but flips the sign — booking
+  // its magnitude would double-count the income (and, under the AT tax mode,
+  // withhold KESt on it), so a negative amount fails its row.
   if (/(ertragsgutschrift|dividende)/.test(lowered)) {
+    if (amount < 0) {
+      return fail(
+        `Negative dividend amount "${cell(record, 'amount')}" — likely a reversal (Storno); adjust the original transaction manually.`,
+      );
+    }
     const isin = ISIN_IN_TEXT.exec(info)?.[1] ?? null;
     const name =
       info
@@ -190,12 +202,21 @@ function mapCashRecord(
   let note: string | null = info || null;
   if (lowered.includes('einzahlung')) kind = 'deposit';
   else if (lowered.includes('auszahlung')) kind = 'withdrawal';
-  else if (lowered.includes('überweisung')) kind = amount > 0 ? 'deposit' : 'withdrawal';
-  else if (lowered.includes('zinsen')) {
+  else if (/(überweisung|ueberweisung)/.test(lowered)) {
+    kind = amount > 0 ? 'deposit' : 'withdrawal';
+  } else if (lowered.includes('zinsen')) {
     kind = amount > 0 ? 'deposit' : 'withdrawal';
     note = 'Interest (Flatex)';
   }
   if (!kind) return fail(`Unsupported booking "${info || '(empty)'}".`);
+  // The text names a direction; an amount whose sign contradicts it (a Storno
+  // reversal, or an export variant this mapper doesn't know) must not book as
+  // the text's direction with the sign discarded.
+  if ((kind === 'deposit' && amount < 0) || (kind === 'withdrawal' && amount > 0)) {
+    return fail(
+      `Amount "${cell(record, 'amount')}" contradicts the booking text "${info}" — likely a reversal (Storno); adjust the original transaction manually.`,
+    );
+  }
 
   return {
     line: record.line,
