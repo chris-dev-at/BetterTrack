@@ -15,8 +15,14 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
+import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createImportRepository } from '../../../data/repositories/importRepository';
+import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
+import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
+import { createImportService } from '../importService';
+import type { BrokerMapper } from '../types';
 
 /**
  * V4-P8 broker-import framework end-to-end over the HTTP surface (issue #492):
@@ -244,6 +250,76 @@ describe('POST /imports — staged preview', () => {
     const result = await apply(agent, preview.batch.id);
     expect(result.applied).toBe(2);
     expect((await transactions(agent, pid)).map((t) => t.side).sort()).toEqual(['buy', 'sell']);
+  });
+
+  it('flags a malformed Währung cell as one row error while the rest of the file stages', async () => {
+    // Regression: `EURO` on a trade row used to reach the char(3) staging
+    // column and kill the whole batch INSERT with a 500 (per-row tolerance,
+    // §13.4). It must cost exactly its own line.
+    const { agent, pid } = await setup();
+    const csv = [
+      HEADER,
+      '2024-01-15;Kauf;Muster Tech AG;DE0001234567;10;50,00;1,00;-501,00;EURO',
+      '2024-01-16;Einzahlung;;;;;;100,00;EUR',
+    ].join('\n');
+    const preview = await upload(agent, pid, csv);
+    expect(preview.batch.counts).toMatchObject({ total: 2, mapped: 1, error: 1 });
+    expect(preview.rows[0]?.flag).toBe('error');
+    expect(preview.rows[0]?.message).toContain('EURO');
+    expect(preview.rows[1]?.flag).toBe('mapped');
+  });
+
+  it('guards staging against a future mapper letting a malformed currency through', async () => {
+    // George/Flatex/IBKR land against this frozen framework — even if such a
+    // mapper forgets to validate its currency column, the framework itself
+    // must fail the ROW before the char(3) insert, never the upload.
+    const { user, pid } = await setup();
+    const rogue: BrokerMapper = {
+      id: 'rogue',
+      label: 'Rogue Broker',
+      detect: () => 1,
+      map: (csv) =>
+        csv.records.map((record, i) => ({
+          line: record.line,
+          raw: record.raw,
+          ok: true,
+          row: {
+            kind: 'deposit',
+            executedAt: new Date('2024-01-02T12:00:00.000Z'),
+            isin: null,
+            symbol: null,
+            name: null,
+            quantity: null,
+            price: null,
+            fee: null,
+            amountEur: 100 + i,
+            currency: i === 0 ? 'EUR/USD' : 'EUR',
+            note: null,
+          },
+        })),
+    };
+    const imports = createImportService({
+      importRepo: createImportRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      search: harness.ctx.search,
+      portfolio: harness.ctx.portfolio,
+      tax: harness.ctx.tax,
+      mappers: [rogue],
+    });
+
+    const preview = await imports.createBatch(user.id, {
+      portfolioId: pid,
+      filename: 'rogue.csv',
+      content: 'A;B\n1;2\n3;4',
+      brokerId: 'rogue',
+    });
+    expect(preview.batch.counts).toMatchObject({ total: 2, mapped: 1, error: 1 });
+    expect(preview.rows[0]?.flag).toBe('error');
+    expect(preview.rows[0]?.message).toContain('EUR/USD');
+    expect(preview.rows[0]?.currency).toBeNull();
+    expect(preview.rows[1]?.flag).toBe('mapped');
   });
 });
 

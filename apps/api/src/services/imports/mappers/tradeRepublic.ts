@@ -53,6 +53,9 @@ function columnIndexes(header: CsvRecord | null): Record<ColumnKey, number> {
 
 const ISIN_PATTERN = /^[A-Z]{2}[A-Z0-9]{9}\d$/;
 
+/** ISO-4217 shape. Anything else ("EURO", "EUR/USD") must fail its ROW, not the batch. */
+const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+
 export const tradeRepublicMapper: BrokerMapper = {
   id: 'trade_republic',
   label: 'Trade Republic',
@@ -88,6 +91,9 @@ export const tradeRepublicMapper: BrokerMapper = {
       if (!executedAt) return fail(`Unparseable date "${cell(record, 'date')}".`);
 
       const currency = (cell(record, 'currency') || 'EUR').toUpperCase();
+      if (!CURRENCY_PATTERN.test(currency)) {
+        return fail(`Unrecognized currency "${cell(record, 'currency')}".`);
+      }
       const isinRaw = cell(record, 'isin').toUpperCase();
       const isin = ISIN_PATTERN.test(isinRaw) ? isinRaw : null;
       const name = cell(record, 'name') || null;

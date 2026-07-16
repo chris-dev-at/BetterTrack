@@ -146,6 +146,18 @@ describe('tradeRepublicMapper.map — per-row errors', () => {
     expect(!result.ok && result.error).toContain('EUR');
   });
 
+  it('fails a malformed Währung token on a TRADE row instead of letting it through', () => {
+    // Anything but a three-letter code would blow up the char(3) staging column
+    // — and with it the whole batch INSERT — if the mapper passed it on.
+    for (const currency of ['EURO', 'Euro', 'EUR/USD']) {
+      const result = mapOne(`2024-01-02;Kauf;X AG;DE0001234567;1;10,00;0;-10,00;${currency}`);
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error).toContain(currency);
+    }
+    // An empty cell still defaults to EUR.
+    expect(mapOne('2024-01-02;Kauf;X AG;DE0001234567;1;10,00;0;-10,00;').ok).toBe(true);
+  });
+
   it('accepts an unlisted ISIN column value as a name-only instrument', () => {
     const result = mapOne('2024-01-02;Kauf;Muster AG;nicht-eine-isin;1;10,00;0;-10,00;EUR');
     expect(result.ok).toBe(true);

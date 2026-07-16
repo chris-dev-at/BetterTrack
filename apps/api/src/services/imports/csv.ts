@@ -118,7 +118,9 @@ export function parseCsv(text: string): ParsedCsv {
  * is present it is the decimal separator and dots/spaces are grouping; without
  * one, a dot is the decimal separator. Currency letters/symbols and sign
  * prefixes survive (`-751,00 EUR` → -751). Returns null when nothing numeric
- * remains.
+ * remains — or when the notation is AMBIGUOUS: `1.000` with no decimal comma is
+ * German grouping (1000) or a plain decimal (1.0), and guessing wrong books a
+ * quantity ~1000× off. Refusing costs one reported row; guessing costs money.
  */
 export function parseDecimal(input: string): number | null {
   const trimmed = input.trim();
@@ -131,6 +133,9 @@ export function parseDecimal(input: string): number | null {
   if (cleaned.includes(',')) {
     // German notation: dots are thousands grouping, the comma is the decimal.
     cleaned = cleaned.replace(/\./g, '').replace(',', '.');
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(cleaned)) {
+    // Grouping-dot integer without a decimal comma — ambiguous, see above.
+    return null;
   }
   if (!/^\d+(\.\d+)?$/.test(cleaned)) return null;
   const value = Number(cleaned);

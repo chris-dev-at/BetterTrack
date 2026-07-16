@@ -64,6 +64,17 @@ describe('parseDecimal', () => {
     expect(parseDecimal('-3')).toBe(-3);
   });
 
+  it('refuses grouping-dot integers without a decimal comma (ambiguous notation)', () => {
+    // `1.000` is German 1000 or plain 1.0 — guessing wrong books ~1000× off.
+    expect(parseDecimal('1.000')).toBeNull();
+    expect(parseDecimal('12.345')).toBeNull();
+    expect(parseDecimal('1.234.567')).toBeNull();
+    // With a decimal comma or a non-3-digit fraction there is no ambiguity.
+    expect(parseDecimal('1.000,00')).toBe(1000);
+    expect(parseDecimal('1234.5')).toBe(1234.5);
+    expect(parseDecimal('1.2345')).toBe(1.2345);
+  });
+
   it('survives currency suffixes and returns null for junk', () => {
     expect(parseDecimal('-751,00 EUR')).toBe(-751);
     expect(parseDecimal('€ 12,50')).toBe(12.5);

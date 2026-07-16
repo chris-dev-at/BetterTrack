@@ -30,7 +30,7 @@ import { contentHash } from './contentHash';
 import { parseCsv } from './csv';
 import { createMapperRegistry } from './registry';
 import type { ImportBatchRow } from '../../data/schema';
-import type { BrokerMapper, NormalizedImportRow } from './types';
+import type { BrokerMapper, MappedLine, NormalizedImportRow } from './types';
 
 /**
  * Broker CSV import framework (PROJECTPLAN.md §13.4 V4-P8): upload → autodetect
@@ -105,6 +105,25 @@ function rawInstrumentKey(row: NormalizedImportRow): string | null {
 
 const needsInstrument = (kind: NormalizedImportRow['kind']): boolean =>
   kind === 'buy' || kind === 'sell' || kind === 'dividend';
+
+/**
+ * The staging column is `char(3)` — a currency token a mapper let through in
+ * any other shape ("EURO", "EUR/USD") would make Postgres reject the whole
+ * batch INSERT, killing every valid row with it. Per-row tolerance (§13.4) is
+ * the framework's promise, so it is enforced HERE too, not just per mapper:
+ * a malformed currency costs its one line, never the upload.
+ */
+const CURRENCY_PATTERN = /^[A-Z]{3}$/;
+
+function guardCurrency(line: MappedLine): MappedLine {
+  if (!line.ok || CURRENCY_PATTERN.test(line.row.currency)) return line;
+  return {
+    line: line.line,
+    raw: line.raw,
+    ok: false,
+    error: `Unrecognized currency "${line.row.currency}".`,
+  };
+}
 
 export function createImportService(deps: ImportServiceDeps): ImportService {
   const { importRepo, portfolioRepo, transactionRepo, cashSourceRepo, search, portfolio, tax } =
@@ -295,7 +314,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }
       }
 
-      const mapped = mapper.map(csv);
+      const mapped = mapper.map(csv).map(guardCurrency);
 
       // Resolve each distinct instrument identity once (files repeat them a lot).
       const resolutions = new Map<string, SearchResultItem | null>();

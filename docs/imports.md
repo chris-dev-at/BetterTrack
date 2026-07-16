@@ -108,14 +108,21 @@ Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
   it is not modeled as a dividend. Anything else (tax corrections, saveback,
   …) is reported per row as unsupported.
 - **Numbers are German notation** (`1.234,56`); plain `1234.56` also parses.
-  Dates are ISO (`2024-01-15`) or German (`15.01.2024`), day precision — rows
-  are anchored at 12:00 UTC so the calendar day survives every European
-  timezone and the Vienna tax year.
+  A grouping-dot integer with **no** decimal comma (`1.000`) is ambiguous —
+  German grouping reads 1000, plain notation reads 1.0 — so it is refused as a
+  per-row error rather than guessed (a wrong guess would book the quantity
+  ~1000× off). TR amounts virtually always carry a `,xx` decimal, so real
+  exports are unaffected. Dates are ISO (`2024-01-15`) or German
+  (`15.01.2024`), day precision — rows are anchored at 12:00 UTC so the
+  calendar day survives every European timezone and the Vienna tax year.
 - **`Betrag` is not trusted for trades.** Trade economics are re-derived from
   `Anzahl × Kurs + Gebühr`; the signed `Betrag` is only used for cash rows
   (its magnitude) — TR occasionally nets FX effects into it.
 - **EUR only.** TR settles everything in EUR; non-EUR cash/dividend rows are
-  flagged `error` (the cash ledger is EUR-only, §14).
+  flagged `error` (the cash ledger is EUR-only, §14). A `Währung` token that
+  is not a three-letter code (`EURO`, `EUR/USD`) fails its row too — both in
+  the mapper and again in the framework's staging path, so no mapper can ever
+  take the whole upload down with a malformed currency.
 - **Dividends need the holding.** The tax engine only records a dividend on an
   asset the portfolio has transacted (V3-P4c). Import the buys in the same file
   (or before), otherwise the dividend row fails with
