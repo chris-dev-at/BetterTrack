@@ -23,8 +23,10 @@ export interface GoogleTokenVerifier {
   exchangeAndVerify(input: { code: string; redirectUri: string }): Promise<GoogleClaims>;
 }
 
-const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
-const GOOGLE_JWKS_URI = 'https://www.googleapis.com/oauth2/v3/certs';
+/** Google's real production token endpoint — the default when no override is set. */
+export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+/** Google's real production JWKS URI — the default when no override is set. */
+export const GOOGLE_JWKS_URI = 'https://www.googleapis.com/oauth2/v3/certs';
 // Google issues tokens under either form; accept both (documented on both sides).
 const GOOGLE_ISSUERS = ['https://accounts.google.com', 'accounts.google.com'];
 
@@ -39,6 +41,20 @@ export interface CreateGoogleVerifierDeps {
    * run against a signed token with no network.
    */
   keyResolver?: JWTVerifyGetKey;
+  /**
+   * Test-only endpoint override: the OAuth token endpoint the code is exchanged
+   * at. Defaults to {@link GOOGLE_TOKEN_ENDPOINT}. Set only by the e2e fake IdP
+   * (env `BT_GOOGLE_TOKEN_ENDPOINT`) — the verification logic is unchanged; only
+   * the URL moves, so the same `iss`/`aud`/`exp`/signature checks run against it.
+   */
+  tokenEndpoint?: string;
+  /**
+   * Test-only endpoint override: the JWKS URI the ID-token signature is verified
+   * against (ignored when {@link keyResolver} is supplied). Defaults to
+   * {@link GOOGLE_JWKS_URI}. Set only by the e2e fake IdP (env
+   * `BT_GOOGLE_JWKS_URI`) so the verifier resolves the fake IdP's per-run key.
+   */
+  jwksUri?: string;
 }
 
 /**
@@ -48,12 +64,13 @@ export interface CreateGoogleVerifierDeps {
  * — the caller maps that to a friendly redirect, never leaking token details.
  */
 export function createGoogleVerifier(deps: CreateGoogleVerifierDeps): GoogleTokenVerifier {
-  const jwks = deps.keyResolver ?? createRemoteJWKSet(new URL(GOOGLE_JWKS_URI));
+  const jwks = deps.keyResolver ?? createRemoteJWKSet(new URL(deps.jwksUri ?? GOOGLE_JWKS_URI));
   const doFetch = deps.fetchImpl ?? fetch;
+  const tokenEndpoint = deps.tokenEndpoint ?? GOOGLE_TOKEN_ENDPOINT;
 
   return {
     async exchangeAndVerify({ code, redirectUri }) {
-      const res = await doFetch(GOOGLE_TOKEN_ENDPOINT, {
+      const res = await doFetch(tokenEndpoint, {
         method: 'POST',
         headers: {
           'content-type': 'application/x-www-form-urlencoded',

@@ -170,6 +170,37 @@ async function createInviteToken(adminAgent: ReturnType<typeof request.agent>): 
   return new URL(created.body.registerUrl).searchParams.get('token') as string;
 }
 
+// ── Endpoint overrides are additive (§13.4 V4-P11, #520) ─────────────────────
+describe('Google sign-in — authorize-endpoint override is additive (§13.4 V4-P11, #520)', () => {
+  it('bounces `start` to the production Google authorize endpoint by default', async () => {
+    const harness = await createTestApp({
+      env: GOOGLE_ENV,
+      googleVerifier: { exchangeAndVerify: async () => claims() },
+    });
+    const agent = request.agent(harness.app);
+    const start = await agent.get('/api/v1/auth/google/start');
+    expect(start.status).toBe(302);
+    expect(String(start.headers.location)).toMatch(
+      /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/,
+    );
+  });
+
+  it('bounces `start` to the overridden authorize endpoint when configured', async () => {
+    const override = 'https://fake-idp.test/authorize';
+    const harness = await createTestApp({
+      env: { ...GOOGLE_ENV, BT_GOOGLE_AUTHORIZE_ENDPOINT: override },
+      googleVerifier: { exchangeAndVerify: async () => claims() },
+    });
+    const agent = request.agent(harness.app);
+    const start = await agent.get('/api/v1/auth/google/start');
+    expect(start.status).toBe(302);
+    const location = String(start.headers.location);
+    expect(location.startsWith(`${override}?`)).toBe(true);
+    // The state param + the rest of the query are unchanged — only the base moved.
+    expect(new URL(location).searchParams.get('state')).toBeTruthy();
+  });
+});
+
 // ── Env-gated OFF (no Google client configured) ──────────────────────────────
 describe('Google sign-in — env-gated off (§13.4 V4-P4b)', () => {
   let harness: TestHarness;

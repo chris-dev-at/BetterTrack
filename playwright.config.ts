@@ -5,6 +5,10 @@ import {
   ADMIN_PASSWORD,
   API_BASE_URL,
   DATABASE_URL,
+  FAKE_GOOGLE_PORT,
+  FAKE_GOOGLE_URL,
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
   REDIS_URL,
   SESSION_SECRET,
   WEB_BASE_URL,
@@ -30,6 +34,15 @@ const apiEnv = {
   BT_ADMIN_ORIGIN: WEB_BASE_URL,
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
+  // Google sign-in against the fake IdP (issue #520). The client id/secret turn
+  // the feature ON; the three endpoint overrides point the API's Google flow at
+  // the local fake IdP (test-only — unset in every real deploy, where the
+  // production Google constants apply). See e2e/support/fakeGoogleIdp.mjs.
+  BT_GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID,
+  BT_GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET,
+  BT_GOOGLE_AUTHORIZE_ENDPOINT: `${FAKE_GOOGLE_URL}/authorize`,
+  BT_GOOGLE_TOKEN_ENDPOINT: `${FAKE_GOOGLE_URL}/token`,
+  BT_GOOGLE_JWKS_URI: `${FAKE_GOOGLE_URL}/jwks`,
 };
 
 export default defineConfig({
@@ -72,6 +85,22 @@ export default defineConfig({
       env: { ...apiEnv, E2E_WORKER_HEALTH_PORT: WORKER_HEALTH_PORT },
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
+    },
+    // Fake Google IdP (issue #520): a local OAuth/OIDC stand-in so the real
+    // Google sign-in redirect chain runs network-free. It bounces the browser
+    // back to the callback on the WEB origin (proxied) so the host-only
+    // `bt_goog_state` cookie survives the round-trip. Test infra only.
+    {
+      command: 'node e2e/support/fakeGoogleIdp.mjs',
+      url: `${FAKE_GOOGLE_URL}/health`,
+      env: {
+        ...process.env,
+        E2E_FAKE_GOOGLE_PORT: FAKE_GOOGLE_PORT,
+        BT_GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID,
+        E2E_GOOGLE_CALLBACK_ORIGIN: WEB_BASE_URL,
+      },
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
     },
   ],
 });
