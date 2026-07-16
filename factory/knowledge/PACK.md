@@ -13,7 +13,7 @@ unlisted stock) — browse assets via a local search index, build & backtest
 **Conglomerates** (user-defined ETF-style weighted baskets), turn a budget into a
 buy list, and share portfolios with friends. Five-tab product:
 **Portfolio | Workboard | Assets | Social | Profile Menu**. Future surfaces ship
-as visible "Coming soon" pages. **V1 (core + tiny friend sharing), V2
+as visible "Coming soon" pages. \*\*V1 (core + tiny friend sharing), V2
 (multi-portfolio UI, cash balance, PIN lock, 2FA, admin rework, sharing
 expansion, notification matrix, personal API keys + OAuth apps) and V3 (i18n
 EN/DE, Net Worth & cash sources, AT tax engine + dividends, sharing audiences +
@@ -22,19 +22,20 @@ analytics deep-dive, price alerts + follows, PWA/web-push/FCM prep,
 bettertrack.at go-live) and V4 (registration modes + Google login, mobile
 platform enablement, notification UX + deep links, admin controls + 2FA,
 announcements + health page, account export + offsite backup, custom benchmarks
-+ scheduled rebalancing, broker CSV imports, Ideas, Telegram/Discord channels)
-are SHIPPED. Current milestone: V5 (§13.5, owner-re-confirmed 2026-07-17)** —
-the v4-feedback P0 family (login layout, channel deactivation, profile icons,
-permission declutter, Connections hub), perf & scale (snapshots/ETag/failover),
-zero-setup observability + admin Problems page, digest + quiet hours, tax DE +
-custom tax builder, market intelligence (dividends/earnings/news — deep),
-workboard endgame, Forecast + standing orders + calculators, MIRRORCHAIN group
-portfolios, social comments/reactions/groups ("simple but powerful"), expense
-tracking, webhooks + key governance, local-Ollama AI + pluggable providers,
-privacy modes (discreet + client-encrypted paranoid incl. user Drive), the
-mobile-usable webapp (iOS-first + PWA polish), admin session policy.
-**Global anti-bloat rule (owner): main things immediately visible; niche
-sub-features fold away compact — no surface may make the app FEEL more bloated.**
+
+- scheduled rebalancing, broker CSV imports, Ideas, Telegram/Discord channels)
+  are SHIPPED. Current milestone: V5 (§13.5, owner-re-confirmed 2026-07-17)** —
+  the v4-feedback P0 family (login layout, channel deactivation, profile icons,
+  permission declutter, Connections hub), perf & scale (snapshots/ETag/failover),
+  zero-setup observability + admin Problems page, digest + quiet hours, tax DE +
+  custom tax builder, market intelligence (dividends/earnings/news — deep),
+  workboard endgame, Forecast + standing orders + calculators, MIRRORCHAIN group
+  portfolios, social comments/reactions/groups ("simple but powerful"), expense
+  tracking, webhooks + key governance, local-Ollama AI + pluggable providers,
+  privacy modes (discreet + client-encrypted paranoid incl. user Drive), the
+  mobile-usable webapp (iOS-first + PWA polish), admin session policy.
+  **Global anti-bloat rule (owner): main things immediately visible; niche
+  sub-features fold away compact — no surface may make the app FEEL more bloated.\*\*
 
 ## Architecture
 

@@ -21,7 +21,7 @@ Direct bank APIs (George/Erste, Raiffeisen, Trade Republic) are all PSD2/XS2A pr
 
 - Official API = **PSD2 TPP interface only** (TPP Integration Guide v2.1; contact `open-banking@traderepublic.com`). Same license wall; AIS scope = cash account balances + transactions. No general developer program.
 - Unofficial private APIs (pytr-class libraries) exist but require storing the user's TR phone number + PIN and driving their app-pairing/2FA — **rejected**: credential custody on our server + ToS-gray. Not negotiable per the §16 ground rules.
-- Depot positions: no lawful API path. TR sync = **CSV import (shipped, V4-P8)** for trades/dividends; TR *cash* can arrive via the aggregator like any bank account.
+- Depot positions: no lawful API path. TR sync = **CSV import (shipped, V4-P8)** for trades/dividends; TR _cash_ can arrive via the aggregator like any bank account.
 
 ### Raiffeisen (Austria)
 
@@ -44,12 +44,12 @@ Direct bank APIs (George/Erste, Raiffeisen, Trade Republic) are all PSD2/XS2A pr
 
 ## What BetterTrack gets, by data type
 
-| Data | Live path | Fallback |
-|---|---|---|
-| Bank/broker **cash** balances + transactions | Aggregator (V6-10), read-only AIS consent | CSV import |
-| **Depot positions / trades** (George, TR, Raiffeisen) | — none exists (PSD2 excludes depots; TR has no retail API) | **CSV import (V4-P8, shipped)** |
-| **Parqet** portfolios (positions + full activity incl. tax/fees) | Parqet Connect OAuth, read | — |
-| BetterTrack → **Parqet** export/sync | Parqet Connect OAuth, write scope | manual CSV |
+| Data                                                             | Live path                                                  | Fallback                        |
+| ---------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------- |
+| Bank/broker **cash** balances + transactions                     | Aggregator (V6-10), read-only AIS consent                  | CSV import                      |
+| **Depot positions / trades** (George, TR, Raiffeisen)            | — none exists (PSD2 excludes depots; TR has no retail API) | **CSV import (V4-P8, shipped)** |
+| **Parqet** portfolios (positions + full activity incl. tax/fees) | Parqet Connect OAuth, read                                 | —                               |
+| BetterTrack → **Parqet** export/sync                             | Parqet Connect OAuth, write scope                          | manual CSV                      |
 
 ## Owner to-dos (only when the arcs build — §15 items 5–6)
 
