@@ -426,6 +426,18 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       }
       const linkCash = input.linkCashOnTrades === true;
 
+      // Claim the batch atomically (pending → applied) BEFORE any row books:
+      // two concurrent applies would both pass the read-check above and each
+      // run the full row loop — double-booking every trade/dividend/cash row.
+      // The compare-and-set picks exactly one winner; the loser is a 409, same
+      // as a sequential second apply. (Claim-first means a crash mid-loop
+      // leaves the batch `applied` with partial row results — the conservative
+      // side: a retry can re-upload, but can never book money twice.)
+      const claimed = await importRepo.claimPendingBatch(batch.id, cashSourceId);
+      if (!claimed) {
+        throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
+      }
+
       const rows = await importRepo.listRows(batch.id);
       // Duplicate truth is re-derived NOW (preview flags could be stale against
       // writes that happened since the upload).
@@ -567,7 +579,6 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       }
 
       await importRepo.setRowResults(updates);
-      await importRepo.markApplied(batch.id, cashSourceId);
 
       const finalBatch = await importRepo.findBatchForOwner(userId, batchId);
       const finalRows = await importRepo.listRows(batch.id);
@@ -583,7 +594,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         else skipped += 1;
       }
       return {
-        batch: toBatchDto(finalBatch ?? batch, finalRows),
+        batch: toBatchDto(finalBatch ?? claimed, finalRows),
         applied,
         skipped,
         failed,

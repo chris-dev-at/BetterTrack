@@ -1760,6 +1760,7 @@ const endpoints: EndpointDef[] = [
     body: R.ApplyImportRequest,
     status: 200,
     response: R.ApplyImportResponse,
+    idempotent: true,
   },
   {
     method: 'delete',

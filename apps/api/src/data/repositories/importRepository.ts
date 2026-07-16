@@ -200,12 +200,22 @@ export function createImportRepository(db: Database) {
       });
     },
 
-    /** Flip a pending batch to `applied`, recording when + which cash source. */
-    async markApplied(batchId: string, cashSourceId: string | null): Promise<void> {
-      await db
+    /**
+     * Atomically claim a pending batch for apply: flip `pending` → `applied`
+     * (recording when + which cash source) in one compare-and-set, so exactly
+     * one of any concurrent applies wins. Null when the batch was already
+     * claimed — the caller answers 409, and no row is ever booked twice.
+     */
+    async claimPendingBatch(
+      batchId: string,
+      cashSourceId: string | null,
+    ): Promise<ImportBatchRow | null> {
+      const [row] = await db
         .update(importBatches)
         .set({ status: 'applied', appliedAt: new Date(), cashSourceId })
-        .where(eq(importBatches.id, batchId));
+        .where(and(eq(importBatches.id, batchId), eq(importBatches.status, 'pending')))
+        .returning();
+      return row ?? null;
     },
 
     /** Hard-delete an owned batch (rows cascade). False when not owned. */

@@ -23,10 +23,13 @@ portfolio + cash source.
      matched to a similar-looking asset. Search for the instrument under
      _Assets_ first (search enriches the catalog from the provider), then
      re-upload.
-   - `duplicate` — the row's content hash (`date + instrument + qty + price`)
-     matches something already recorded (an existing transaction, dividend or
-     external cash movement) or an earlier row of the same file. Skipped on
-     apply, so re-importing the same file is a no-op.
+   - `duplicate` — the row's content hash (`date + instrument + qty + price`,
+     where the trade side and cash direction are part of the instrument
+     identity, so a same-day flat round-trip — a buy and a sell at equal
+     quantity and price — never self-dedupes) matches something already
+     recorded (an existing transaction, dividend or external cash movement) or
+     an earlier row of the same file. Skipped on apply, so re-importing the
+     same file is a no-op.
    - `error` — the row itself is malformed (unknown type, unparseable
      date/number, non-EUR cash row …). Reported with its line number while the
      rest of the file still lands — never all-or-nothing.
@@ -38,7 +41,14 @@ portfolio + cash source.
    row lands atomically together with its linked cash/tax legs; a row the
    owning service rejects (e.g. `INSUFFICIENT_CASH`, `OVERSELL`,
    `DIVIDEND_ASSET_NOT_HELD`) is reported as `failed` and the remaining rows
-   continue. Duplicates are re-checked against live data at apply time.
+   continue. The batch is claimed atomically (`pending` → `applied`) before the
+   first row books, so a concurrent or repeated apply is a
+   `409 IMPORT_ALREADY_APPLIED`; retrying clients (the mobile offline queue)
+   should send an `Idempotency-Key` header — like every portfolio mutation, the
+   route then replays the recorded response instead. `mapped` rows are
+   re-checked against live data at apply time; rows the preview already flagged
+   `duplicate` keep that verdict — deleting a mis-imported entity makes the row
+   importable again via a **fresh upload**, not by re-applying an old preview.
    - `cashSourceId` picks the cash source for dividends and cash rows (the
      portfolio's Main when omitted).
    - `linkCashOnTrades` additionally funds buys from / credits sell proceeds to

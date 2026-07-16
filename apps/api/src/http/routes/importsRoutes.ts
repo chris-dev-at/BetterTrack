@@ -11,6 +11,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { badRequest } from '../../errors';
+import { createIdempotency } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -29,6 +30,11 @@ export function createImportsRouter(ctx: AppContext): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  // Idempotency (§13.4 V4-P2a): apply is a portfolio mutation like any other —
+  // a retrying bearer client (the mobile offline queue) replays the memoized
+  // response instead of racing the batch's atomic claim into a 409.
+  const idempotency = createIdempotency(ctx);
 
   // In-memory multipart parsing for the one CSV part — files are capped well
   // below anything worth streaming to disk, and staging wants the text anyway.
@@ -89,6 +95,7 @@ export function createImportsRouter(ctx: AppContext): Router {
   router.post(
     '/:batchId/apply',
     validateParams(importBatchIdParamSchema),
+    idempotency,
     validateBody(applyImportRequestSchema),
     async (req, res) => {
       const { batchId } = req.valid?.params as { batchId: string };

@@ -230,6 +230,21 @@ describe('POST /imports — staged preview', () => {
     const preview = await upload(agent, pid, `${HEADER}\n${line}\n${line}`);
     expect(preview.rows.map((r) => r.flag)).toEqual(['mapped', 'duplicate']);
   });
+
+  it('keeps a same-day buy and sell at equal quantity and price distinct (flat round-trip)', async () => {
+    const { agent, pid } = await setup();
+    const csv = [
+      HEADER,
+      '2024-01-15;Kauf;Muster Tech AG;DE0001234567;10;50,00;1,00;-501,00;EUR',
+      '2024-01-15;Verkauf;Muster Tech AG;DE0001234567;10;50,00;1,00;499,00;EUR',
+    ].join('\n');
+    const preview = await upload(agent, pid, csv);
+    expect(preview.rows.map((r) => r.flag)).toEqual(['mapped', 'mapped']);
+
+    const result = await apply(agent, preview.batch.id);
+    expect(result.applied).toBe(2);
+    expect((await transactions(agent, pid)).map((t) => t.side).sort()).toEqual(['buy', 'sell']);
+  });
 });
 
 describe('POST /imports/:batchId/apply — golden fixture', () => {
@@ -429,6 +444,64 @@ describe('POST /imports/:batchId/apply — golden fixture', () => {
       ]),
     );
     expect(ledger.balanceEur).toBeCloseTo(99, 2);
+  });
+
+  it('does not flag an imported sell as a duplicate of an already-recorded buy', async () => {
+    const { agent, pid } = await setup();
+    const buy = '2024-01-15;Kauf;Muster Tech AG;DE0001234567;10;50,00;1,00;-501,00;EUR';
+    const first = await upload(agent, pid, `${HEADER}\n${buy}`);
+    await apply(agent, first.batch.id);
+
+    // The exit at the entry price: same day/instrument/qty/price, opposite side.
+    // Dropping it as a "duplicate" would leave a holding that was actually sold.
+    const sell = '2024-01-15;Verkauf;Muster Tech AG;DE0001234567;10;50,00;1,00;499,00;EUR';
+    const second = await upload(agent, pid, `${HEADER}\n${sell}`);
+    expect(second.rows[0]?.flag).toBe('mapped');
+
+    const result = await apply(agent, second.batch.id);
+    expect(result.applied).toBe(1);
+    expect((await transactions(agent, pid)).map((t) => t.side).sort()).toEqual(['buy', 'sell']);
+  });
+
+  it('books a batch exactly once under concurrent applies (atomic pending→applied claim)', async () => {
+    const { agent, pid } = await setup();
+    const preview = await upload(agent, pid, FIXTURE);
+
+    const fire = () =>
+      agent
+        .post(`/api/v1/imports/${preview.batch.id}/apply`)
+        .set(...XRW)
+        .send({});
+    const [a, b] = await Promise.all([fire(), fire()]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    const loser = a.status === 409 ? a : b;
+    expect(loser.body.error.code).toBe('IMPORT_ALREADY_APPLIED');
+
+    // The golden entity set exists exactly once — nothing double-booked.
+    expect(await transactions(agent, pid)).toHaveLength(3);
+    expect(await dividends(agent, pid)).toHaveLength(1);
+    expect((await cash(agent, pid)).movements).toHaveLength(4);
+  });
+
+  it('replays the memoized response on an Idempotency-Key retry (V4-P2a)', async () => {
+    const { agent, pid } = await setup();
+    const preview = await upload(agent, pid, FIXTURE);
+
+    const send = () =>
+      agent
+        .post(`/api/v1/imports/${preview.batch.id}/apply`)
+        .set(...XRW)
+        .set('Idempotency-Key', '018f5c1a-2222-7000-8000-0123456789ab')
+        .send({});
+    const first = await send();
+    expect(first.status).toBe(200);
+
+    // The retry (the mobile offline queue re-sending after a dropped response)
+    // gets the recorded body back instead of the atomic claim's 409.
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(retry.body).toEqual(first.body);
+    expect(await transactions(agent, pid)).toHaveLength(3);
   });
 
   it('rejects a second apply and a foreign cash source', async () => {
