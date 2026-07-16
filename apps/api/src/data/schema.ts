@@ -665,6 +665,33 @@ export const shareLinks = pgTable(
   (t) => [uniqueIndex('share_links_token_unique').on(t.token)],
 );
 
+/**
+ * Ideas — saved & shareable Workboard analyses (§13.4 V4-P9). One row per saved
+ * idea: a name, an optional free-text thesis note, and the exact Workboard
+ * `state` (basket source — a conglomerate ref or an ad-hoc weighted asset set —
+ * plus the backtest parameters) carried as jsonb so a save→reopen roundtrip is
+ * byte-exact and the shape stays additive. Owner-scoped (cascade on account
+ * delete); sharing is governed by the polymorphic {@link shareAudiences} model
+ * as the fourth `share_kind`, never a column here.
+ */
+export const ideas = pgTable(
+  'ideas',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    thesis: text('thesis'),
+    // The verbatim Workboard state (contracts' IdeaWorkboardState). Untyped jsonb
+    // here (mirrors other jsonb columns); the repository casts on read.
+    state: jsonb('state').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('ideas_owner_idx').on(t.ownerId)],
+);
+
 // --- Portfolio -------------------------------------------------------------
 
 export const portfolios = pgTable(
@@ -1087,7 +1114,12 @@ export const userFollows = pgTable(
  * is nowhere authorization can be cached. Everything cascades away with the
  * owning audience row (and thus the owner).
  */
-export const shareKindEnum = pgEnum('share_kind', ['portfolio', 'conglomerate', 'watchlist']);
+export const shareKindEnum = pgEnum('share_kind', [
+  'portfolio',
+  'conglomerate',
+  'watchlist',
+  'idea',
+]);
 export const shareAudienceEnum = pgEnum('share_audience', [
   'private',
   'specific_friends',
@@ -1218,6 +1250,7 @@ export const chatChipKindEnum = pgEnum('chat_chip_kind', [
   'portfolio',
   'conglomerate',
   'watchlist',
+  'idea',
 ]);
 
 /**
@@ -1452,6 +1485,8 @@ export type NewEmailLogRow = typeof emailLog.$inferInsert;
 export type ConglomerateRow = typeof conglomerates.$inferSelect;
 export type ConglomeratePositionRow = typeof conglomeratePositions.$inferSelect;
 export type ShareLinkRow = typeof shareLinks.$inferSelect;
+export type IdeaRow = typeof ideas.$inferSelect;
+export type NewIdeaRow = typeof ideas.$inferInsert;
 export type PortfolioRow = typeof portfolios.$inferSelect;
 export type TransactionRow = typeof transactions.$inferSelect;
 export type CashMovementRow = typeof portfolioCashMovements.$inferSelect;

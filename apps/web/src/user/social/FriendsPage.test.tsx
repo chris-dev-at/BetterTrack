@@ -49,7 +49,7 @@ function renderPage() {
 
 const EMPTY_REQUESTS = { incoming: [], outgoing: [] };
 const EMPTY_FRIENDS = { friends: [] };
-const EMPTY_SHARED = { portfolios: [], conglomerates: [], watchlists: [] };
+const EMPTY_SHARED = { portfolios: [], conglomerates: [], watchlists: [], ideas: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -253,6 +253,7 @@ describe('FriendsPage', () => {
       ],
       conglomerates: [],
       watchlists: [],
+      ideas: [],
     });
     vi.mocked(setActivityAlert).mockResolvedValue({
       kind: 'portfolio',

@@ -21,6 +21,7 @@ import { createAuthRouter } from './http/routes/authRoutes';
 import { createBacktestRouter } from './http/routes/backtestRoutes';
 import { createChatRouter } from './http/routes/chatRoutes';
 import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
+import { createIdeasRouter } from './http/routes/ideasRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
 import { createNotificationsRouter } from './http/routes/notificationsRoutes';
 import { createOAuthPublicRouter, createOAuthRouter } from './http/routes/oauthRoutes';
@@ -103,6 +104,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
+  app.use('/api/v1/ideas', createIdeasRouter(ctx));
   app.use('/api/v1/analytics', createAnalyticsRouter(ctx));
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
   app.use('/api/v1/chat', createChatRouter(ctx));

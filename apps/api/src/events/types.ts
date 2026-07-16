@@ -166,7 +166,7 @@ export interface FollowPublishedEvent {
   /** Actor — the followed user who published/exposed the item. */
   actorId: string;
   actorUsername: string;
-  itemKind: 'portfolio' | 'watchlist' | 'conglomerate';
+  itemKind: 'portfolio' | 'watchlist' | 'conglomerate' | 'idea';
   itemId: string;
   itemName: string;
   occurredAt: string;

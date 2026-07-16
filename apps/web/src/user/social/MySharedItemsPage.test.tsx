@@ -20,7 +20,7 @@ const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
 const CONGLOMERATE_ID = '00000000-0000-0000-0000-0000000000e1';
 const WATCHLIST_ID = '00000000-0000-0000-0000-0000000000c1';
 
-const EMPTY: MySharedResponse = { portfolios: [], conglomerates: [], watchlists: [] };
+const EMPTY: MySharedResponse = { portfolios: [], conglomerates: [], watchlists: [], ideas: [] };
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -67,6 +67,7 @@ describe('MySharedItemsPage', () => {
           friendCount: 0,
         },
       ],
+      ideas: [],
     });
     renderPage();
 
@@ -108,6 +109,7 @@ describe('MySharedItemsPage', () => {
           friendCount: 0,
         },
       ],
+      ideas: [],
     });
     // The picker seeds from the conglomerate's current (private) audience.
     vi.mocked(getAudience).mockResolvedValue({
@@ -149,6 +151,7 @@ describe('MySharedItemsPage', () => {
       ],
       conglomerates: [],
       watchlists: [],
+      ideas: [],
     });
     // The AudiencePicker seeds from the subject's current (private) audience.
     vi.mocked(getAudience).mockResolvedValue({
