@@ -131,6 +131,16 @@ export const tradeRepublicMapper: BrokerMapper = {
       if (amount === null || amount === 0) {
         return fail(`Invalid amount "${cell(record, 'amount')}".`);
       }
+      // Dividend income is cash-IN: a negative Betrag under a dividend Typ is a
+      // reversal — booking its magnitude would double-count the income (and,
+      // under the AT tax mode, withhold KESt on it). George/Flatex refuse the
+      // same shape; deposits/withdrawals keep the magnitude (Typ names their
+      // direction, and TR prints Auszahlungen negative by design).
+      if (kind === 'dividend' && amount < 0) {
+        return fail(
+          `Negative dividend amount "${cell(record, 'amount')}" — likely a reversal; adjust the original transaction manually.`,
+        );
+      }
       if (currency !== 'EUR') {
         return fail(`Cash rows must be EUR — got "${currency}" (the cash ledger is EUR-only).`);
       }

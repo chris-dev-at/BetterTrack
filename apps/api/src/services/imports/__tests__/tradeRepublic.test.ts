@@ -140,6 +140,18 @@ describe('tradeRepublicMapper.map — per-row errors', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('fails a negative dividend Betrag instead of booking its magnitude as income (#529)', () => {
+    // A reversal keeps the Dividende Typ but flips the sign — |Betrag| would
+    // double-count the income (George/Flatex refuse the same shape).
+    const result = mapOne('2024-03-15;Dividende;Muster Tech AG;DE0001234567;;;;-12,50;EUR');
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.error).toContain('reversal');
+    // Deposits/withdrawals keep the signed magnitude (Typ names the direction).
+    const withdrawal = mapOne('2024-06-01;Auszahlung;;;;;;-250,00;EUR');
+    expect(withdrawal.ok).toBe(true);
+    expect(withdrawal.ok && withdrawal.row.amountEur).toBe(250);
+  });
+
   it('fails non-EUR cash rows (the cash ledger is EUR-only)', () => {
     const result = mapOne('2024-01-02;Einzahlung;;;;;;100,00;USD');
     expect(result.ok).toBe(false);

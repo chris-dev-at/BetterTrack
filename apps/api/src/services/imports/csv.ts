@@ -125,11 +125,23 @@ export function parseCsv(text: string): ParsedCsv {
 export function parseDecimal(input: string): number | null {
   const trimmed = input.trim();
   if (trimmed === '') return null;
+  // A parenthesized number is an accounting NEGATIVE — stripping the parens
+  // below would book its magnitude as positive, so the form is refused.
+  if (trimmed.includes('(') || trimmed.includes(')')) return null;
+  // Anything besides digits/grouping between the first and the last digit
+  // ("1e5", "12/34") would collapse to a DIFFERENT number once the cleanup
+  // below strips it — refuse rather than misparse. (`'` allowed: Swiss
+  // grouping strips to the same number.)
+  const core = /\d[\s\S]*\d/.exec(trimmed)?.[0] ?? '';
+  if (/[^0-9.,\s']/.test(core)) return null;
   // Keep digits, separators and the leading sign; drop currency symbols/letters.
   let cleaned = trimmed.replace(/[^0-9.,\-+]/g, '');
   if (cleaned === '' || cleaned === '-' || cleaned === '+') return null;
+  // The sign is only meaningful leading; a trailing one ("751,00-", an
+  // SAP-style export form) silently dropped would flip a booking's direction.
   const sign = cleaned.startsWith('-') ? -1 : 1;
-  cleaned = cleaned.replace(/[+-]/g, '');
+  cleaned = cleaned.replace(/^[+-]/, '');
+  if (/[+-]/.test(cleaned)) return null;
   if (cleaned.includes(',')) {
     // German notation: dots are thousands grouping, the comma is the decimal.
     cleaned = cleaned.replace(/\./g, '').replace(',', '.');
