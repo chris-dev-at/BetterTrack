@@ -61,4 +61,53 @@ describe('contentHash', () => {
     expect(canonicalAmount(-0.0000001, 6)).toBe('0');
     expect(canonicalAmount(null, 6)).toBe('');
   });
+
+  describe('cent-floored dividend/cash amounts (live entities persist floorCents at 2 dp)', () => {
+    it('a >2-decimal file amount hashes identically to its cent-floored persisted form', () => {
+      const dividend = {
+        kind: 'dividend' as const,
+        executedAt: at,
+        instrument: 'asset-1',
+        quantity: null,
+        price: null,
+      };
+      expect(contentHash({ ...dividend, amountEur: 3.755 })).toBe(
+        contentHash({ ...dividend, amountEur: 3.75 }),
+      );
+      const deposit = {
+        kind: 'deposit' as const,
+        executedAt: at,
+        instrument: null,
+        quantity: null,
+        price: null,
+      };
+      expect(contentHash({ ...deposit, amountEur: 100.006 })).toBe(
+        contentHash({ ...deposit, amountEur: 100 }),
+      );
+      // Floor, not round: 3.759 keys on 3.75, never 3.76.
+      expect(contentHash({ ...dividend, amountEur: 3.759 })).toBe(
+        contentHash({ ...dividend, amountEur: 3.75 }),
+      );
+      expect(contentHash({ ...dividend, amountEur: 3.759 })).not.toBe(
+        contentHash({ ...dividend, amountEur: 3.76 }),
+      );
+      // Exact cents survive FP representation (floorCents epsilon nudge).
+      expect(contentHash({ ...deposit, amountEur: 8.61 })).toBe(
+        contentHash({ ...deposit, amountEur: 8.61 }),
+      );
+    });
+
+    it('trade price slots keep the 6-dp column scale (unchanged by the cent floor)', () => {
+      const trade = {
+        kind: 'buy' as const,
+        executedAt: at,
+        instrument: 'asset-1',
+        quantity: 2,
+        amountEur: null,
+      };
+      expect(contentHash({ ...trade, price: 3.755 })).not.toBe(
+        contentHash({ ...trade, price: 3.75 }),
+      );
+    });
+  });
 });

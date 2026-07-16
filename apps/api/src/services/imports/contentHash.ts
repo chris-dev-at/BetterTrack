@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import type { ImportRowKind } from '@bettertrack/contracts';
 
+import { floorCents } from '../../domain/cashLedger';
+
 /**
  * Content-hash dedupe for broker imports (PROJECTPLAN.md §13.4 V4-P8): the spec
  * key is `date + instrument + qty + price` — it names the dedupe *intent*, and
@@ -57,6 +59,19 @@ export interface ContentHashInput {
   amountEur: number | null;
 }
 
+/**
+ * Dividend/cash EUR amounts persist cent-FLOORED (`taxService.recordDividend`
+ * and `depositCash`/`withdrawCash` all quantize through {@link floorCents}), so
+ * the hash must key on the exact value the persisted entity will carry —
+ * otherwise a >2-decimal file amount (e.g. `3.755`) hashes differently on
+ * re-import than the `3.75` entity it created and the row double-books.
+ * Trade quantity/price slots keep the full column scales (8/6 dp) — those
+ * columns really store `numeric(20,8)`/`numeric(20,6)`.
+ */
+function centFloored(amountEur: number | null): number | null {
+  return amountEur === null ? null : floorCents(amountEur);
+}
+
 /** The §13.4 content hash (`date+instrument+qty+price`), sha-256 hex. */
 export function contentHash(input: ContentHashInput): string {
   const isTrade = input.kind === 'buy' || input.kind === 'sell';
@@ -65,7 +80,7 @@ export function contentHash(input: ContentHashInput): string {
     : input.kind === 'dividend'
       ? input.instrument
       : `cash:${input.kind}`;
-  const priceSlot = isTrade ? input.price : input.amountEur;
+  const priceSlot = isTrade ? input.price : centFloored(input.amountEur);
   const key = [
     hashDay(input.executedAt),
     instrument ?? '',

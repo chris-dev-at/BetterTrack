@@ -133,7 +133,10 @@ Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
 - **Dividends need the holding.** The tax engine only records a dividend on an
   asset the portfolio has transacted (V3-P4c). Import the buys in the same file
   (or before), otherwise the dividend row fails with
-  `DIVIDEND_ASSET_NOT_HELD`.
+  `DIVIDEND_ASSET_NOT_HELD`. One edge: within a single day the apply order is
+  dividends before trades — so a dividend dated the SAME day as the asset's
+  very first buy still fails and must be re-imported once the buy exists (the
+  row error is reported, nothing is lost).
 
 Fixture: `apps/api/src/services/imports/__tests__/fixtures/trade-republic.csv`
 (anonymized — invented ISINs/names, no real account data).
