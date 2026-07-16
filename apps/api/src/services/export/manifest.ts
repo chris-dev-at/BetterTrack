@@ -90,6 +90,15 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
 
   // ── This feature's own bookkeeping ────────────────────────────────────────
   export_jobs: skipped("Account-export job bookkeeping — this feature's own metadata."),
+  // Broker-import staging (V4-P8): applied rows land in transactions/dividends/
+  // cash movements — all exported above; what stays here is transient pipeline
+  // state (previews, per-row errors, dedupe hashes), not user data to carry out.
+  import_batches: skipped(
+    'Broker-import staging bookkeeping — applied rows are exported as transactions/dividends/cash movements.',
+  ),
+  import_rows: skipped(
+    'Broker-import staging bookkeeping — applied rows are exported as transactions/dividends/cash movements.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
