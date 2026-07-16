@@ -9,6 +9,7 @@ import type {
   BacktestStats as BacktestStatsDto,
   HistoryRange,
   PricePoint as ProviderPricePoint,
+  RebalanceFrequency,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
@@ -86,6 +87,8 @@ export interface BacktestPreviewInput {
   benchmark?: BacktestBenchmark | null;
   /** Late-listing mode (§14); defaults to `clip` (the pre-§14 behavior). */
   mode?: BacktestMode;
+  /** Rebalance schedule (V4-P7); defaults to `none` (buy-and-hold, today's behavior). */
+  rebalance?: RebalanceFrequency;
 }
 
 export interface BacktestServiceDeps {
@@ -112,12 +115,14 @@ export interface BacktestService {
 }
 
 /**
- * Redis memo key for a preview — hash(positions+range+benchmark+mode+base),
- * namespaced by user id so a custom-asset basket's result never leaks across
- * users (§10). The mode is normalised to `clip` so an omitted mode and an
- * explicit `clip` share one memo entry — and two different modes never collide.
- * The base currency is part of the identity (V3-P10d): the same basket
- * backtested in USD is a different result, not a different rendering.
+ * Redis memo key for a preview —
+ * hash(positions+range+benchmark+mode+rebalance+base), namespaced by user id so
+ * a custom-asset basket's result never leaks across users (§10). The mode is
+ * normalised to `clip` and the rebalance frequency to `none` so an omitted
+ * field and its explicit default share one memo entry — and two different
+ * modes or frequencies never collide. The base currency is part of the
+ * identity (V3-P10d): the same basket backtested in USD is a different result,
+ * not a different rendering.
  */
 export function backtestPreviewCacheKey(
   userId: string,
@@ -129,6 +134,7 @@ export function backtestPreviewCacheKey(
     range: input.range,
     benchmark: input.benchmark ?? null,
     mode: input.mode ?? 'clip',
+    rebalance: input.rebalance ?? 'none',
     baseCurrency,
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
@@ -259,6 +265,7 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           baseCurrency: fx.baseCurrency,
           benchmark: benchmarkAsset,
           mode,
+          rebalance: input.rebalance,
         });
       } catch (err) {
         if (err instanceof BacktestError) {
@@ -376,11 +383,13 @@ function toResponse(r: BacktestResult): BacktestResponse {
         }
       : null,
     mode: r.mode,
+    rebalance: r.rebalance,
     entryEvents: r.entryEvents.map((e) => ({
       assetId: e.assetId,
       symbol: e.symbol,
       date: e.date,
     })),
+    rebalanceEvents: r.rebalanceEvents.map((e) => ({ date: e.date })),
     idleCashAvgPct: r.idleCashAvgPct,
   };
 }

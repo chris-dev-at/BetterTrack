@@ -61,7 +61,9 @@ const RESPONSE: BacktestResponse = {
   notice: null,
   benchmark: null,
   mode: 'clip',
+  rebalance: 'none',
   entryEvents: [],
+  rebalanceEvents: [],
   idleCashAvgPct: null,
 };
 

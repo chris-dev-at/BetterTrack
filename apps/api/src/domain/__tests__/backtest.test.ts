@@ -1348,3 +1348,408 @@ describe('backtest — late-listing modes (§14)', () => {
     }).toMatchSnapshot();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Scheduled rebalancing (V4-P7)
+// ---------------------------------------------------------------------------
+
+describe('backtest — scheduled rebalancing (V4-P7)', () => {
+  it('defaults to none: an omitted frequency and an explicit `none` are identical, with the new fields in their empty shape', async () => {
+    // Covers all three modes: `clip` keeps the untouched pre-§14 pipeline,
+    // the event-driven modes run with no boundary triggers.
+    for (const mode of ['clip', 'cash', 'redistribute'] as const) {
+      const omitted = await backtest({ ...singleAssetInput([100, 110, 99]), mode });
+      const explicit = await backtest({
+        ...singleAssetInput([100, 110, 99]),
+        mode,
+        rebalance: 'none',
+      });
+      expect(omitted.rebalance).toBe('none');
+      expect(omitted.rebalanceEvents).toEqual([]);
+      expect(explicit).toEqual(omitted);
+    }
+  });
+
+  it('rejects an unknown rebalance frequency (caller bug, not a data state)', async () => {
+    await expect(
+      backtest({ ...singleAssetInput([100, 110]), rebalance: 'weekly' as never }),
+    ).rejects.toThrow(/unknown rebalance frequency/);
+  });
+
+  it('yearly: a 60/40 two-asset backtest rebalances to target weights on the first trading day of the new year (hand-computed)', async () => {
+    // A (60 %) and B (40 %), EUR. Hand-computed, portfolio in index units:
+    //   day          A close  B close  a value          b value        index
+    //   2025-12-30   100      100      0.6              0.4            100
+    //   2025-12-31   120       90      0.72             0.36           108
+    //   2026-01-02   120       90      0.72             0.36           108
+    //     ↳ new year → rebalance 1.08 to 60/40:  a 0.648, b 0.432 (index unmoved)
+    //   2026-01-05   132       90      0.648·1.1=0.7128 0.432          114.48
+    // Buy-and-hold would end at 100·(0.6·1.32 + 0.4·0.9) = 115.2 — the schedule
+    // visibly changes the result.
+    const input: BacktestInput = {
+      positions: [
+        { assetId: 'A', weight: 60 },
+        { assetId: 'B', weight: 40 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2025-12-30', close: 100 },
+            { date: '2025-12-31', close: 120 },
+            { date: '2026-01-02', close: 120 },
+            { date: '2026-01-05', close: 132 },
+          ],
+        },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: [
+            { date: '2025-12-30', close: 100 },
+            { date: '2025-12-31', close: 90 },
+            { date: '2026-01-02', close: 90 },
+            { date: '2026-01-05', close: 90 },
+          ],
+        },
+      ],
+      range: { start: '2025-12-30', end: '2026-01-05' },
+      converter: stubConverter(),
+    };
+
+    const res = await backtest({ ...input, rebalance: 'yearly' });
+    expect(res.rebalance).toBe('yearly');
+    expect(res.mode).toBe('clip'); // schedule works in the default mode
+    expect(res.entryEvents).toEqual([]); // nothing listed late
+    // Exactly one rebalance, on the first trading day of 2026 (Jan 1 is not on
+    // the axis) — and never on t₀, which already sits at target weights.
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-01-02' }]);
+    [100, 108, 108, 114.48].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+    expect(res.stats.totalReturnPct).toBeCloseTo(14.48, 10);
+
+    // Money-weighted attribution across the rebalance still sums to the total:
+    // A gains 0.12 in 2025 + 0.0648 after the reset = 0.1848; B loses 0.04.
+    const a = res.contributions.find((c) => c.assetId === 'A');
+    const b = res.contributions.find((c) => c.assetId === 'B');
+    expect(a?.returnPct).toBeCloseTo(32, 9); // own price return, unaffected
+    expect(a?.contributionPct).toBeCloseTo(18.48, 9);
+    expect(b?.contributionPct).toBeCloseTo(-4, 9);
+    const summed = res.contributions.reduce((s, c) => s + c.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+
+    // The buy-and-hold end level differs — the schedule actually did something.
+    const hold = await backtest(input);
+    expect(hold.series.at(-1)?.value).toBeCloseTo(115.2, 10);
+    expect(hold.rebalanceEvents).toEqual([]);
+  });
+
+  it('monthly: rebalances on the first trading day of the new month (a weekend boundary slides to Monday), hand-computed', async () => {
+    // 50/50. 2026-01-31/02-01 fall on a weekend: the Feb rebalance executes on
+    // Monday 2026-02-02, the month's first trading day.
+    //   day          A close  B close  a value          b value          index
+    //   2026-01-30   100      100      0.5              0.5              100
+    //   2026-02-02   110      100      0.55             0.5              105
+    //     ↳ new month → rebalance 1.05 to 50/50: 0.525 each
+    //   2026-02-03   110      110      0.525            0.525·1.1=0.5775 110.25
+    // (Buy-and-hold ends at 110 — the reset shifted capital into B pre-rise.)
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'B', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-30', close: 100 },
+            { date: '2026-02-02', close: 110 },
+            { date: '2026-02-03', close: 110 },
+          ],
+        },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-30', close: 100 },
+            { date: '2026-02-02', close: 100 },
+            { date: '2026-02-03', close: 110 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-30', end: '2026-02-03' },
+      converter: stubConverter(),
+      rebalance: 'monthly',
+    });
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-02-02' }]);
+    [100, 105, 110.25].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+  });
+
+  it('quarterly: skips plain month boundaries and rebalances on the first trading day of the new quarter, hand-computed', async () => {
+    // 50/50. The Feb 2 month boundary must NOT trigger (same quarter); the
+    // Apr 1 quarter boundary must.
+    //   day          A close  B close  a value          b value  index
+    //   2026-01-02   100      100      0.5              0.5      100
+    //   2026-02-02   120      100      0.6              0.5      110   (no event)
+    //   2026-04-01   120      100      0.6              0.5      110
+    //     ↳ new quarter → rebalance 1.1 to 50/50: 0.55 each
+    //   2026-04-02   132      100      0.55·1.1=0.605   0.55     115.5
+    const closes = (c: [number, number, number, number]) =>
+      ['2026-01-02', '2026-02-02', '2026-04-01', '2026-04-02'].map((date, i) => ({
+        date,
+        close: c[i]!,
+      }));
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'B', weight: 50 },
+      ],
+      assets: [
+        { assetId: 'A', symbol: 'A', currency: 'EUR', prices: closes([100, 120, 120, 132]) },
+        { assetId: 'B', symbol: 'B', currency: 'EUR', prices: closes([100, 100, 100, 100]) },
+      ],
+      range: { start: '2026-01-02', end: '2026-04-02' },
+      converter: stubConverter(),
+      rebalance: 'quarterly',
+    });
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-04-01' }]);
+    [100, 110, 110, 115.5].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+  });
+
+  it('a trading gap spanning several period boundaries collapses into ONE rebalance on the next trading day', async () => {
+    // Monthly schedule, but no trading day in all of February: 2026-01-16 jumps
+    // to 2026-03-02 — one rebalance there, not two. A single-asset basket keeps
+    // the index a pure price ratio (the reset is a value-conserving no-op) while
+    // still reporting the executed schedule.
+    const res = await backtest({
+      positions: [{ assetId: 'A', weight: 100 }],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-15', close: 100 },
+            { date: '2026-01-16', close: 110 },
+            { date: '2026-03-02', close: 120 },
+            { date: '2026-03-03', close: 130 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-15', end: '2026-03-03' },
+      converter: stubConverter(),
+      rebalance: 'monthly',
+    });
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-03-02' }]);
+    [100, 110, 120, 130].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+  });
+
+  it('clip mode + schedule: clips the window as usual, no entry events, and rebalances the full basket (hand-computed)', async () => {
+    // L lists 2026-01-30 → clip start there (with the notice). Every asset is
+    // listed from t₀, so the event-driven path emits no entry events; the Feb
+    // boundary rebalances the whole basket.
+    //   day          A close  L close  a value  l value          index
+    //   2026-01-30   100      200      0.5      0.5              100
+    //   2026-02-02   110      200      0.55     0.5              105
+    //     ↳ rebalance 1.05 to 50/50: 0.525 each
+    //   2026-02-03   110      220      0.525    0.525·1.1=0.5775 110.25
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'L', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-01', close: 90 },
+            { date: '2026-01-30', close: 100 },
+            { date: '2026-02-02', close: 110 },
+            { date: '2026-02-03', close: 110 },
+          ],
+        },
+        {
+          assetId: 'L',
+          symbol: 'L',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-30', close: 200 },
+            { date: '2026-02-02', close: 200 },
+            { date: '2026-02-03', close: 220 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-01', end: '2026-02-03' },
+      converter: stubConverter(),
+      mode: 'clip',
+      rebalance: 'monthly',
+    });
+    expect(res.notice).toBe('Limited by L (data since 2026-01-30)');
+    expect(res.startDate).toBe('2026-01-30');
+    expect(res.entryEvents).toEqual([]);
+    expect(res.idleCashAvgPct).toBeNull();
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-02-02' }]);
+    [100, 105, 110.25].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+    const summed = res.contributions.reduce((s, c) => s + c.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+  });
+
+  it('cash mode + schedule: only the invested sleeve rebalances — the not-yet-listed share stays untouched cash and still buys in at full target weight (hand-computed)', async () => {
+    // A 40 / B 40 / L 20; L lists 2026-02-03. Monthly schedule.
+    //   day          closes            a         b     l     cash  index
+    //   2026-01-30   A 100 B 100       0.4       0.4   —     0.2   100
+    //   2026-02-02   A 120 B 100       0.48      0.4   —     0.2   108
+    //     ↳ boundary: rebalance ONLY the sleeve (0.88) to A:B = 40:40 →
+    //       a 0.44, b 0.44; the 0.2 pool is L's and stays exactly put
+    //   2026-02-03   A 120 B 100 L 50  0.44      0.44  0.2   0     108
+    //     ↳ L enters at its full 20 % target share (no boundary today)
+    //   2026-02-04   A 132 B 100 L 55  0.44·1.1  0.44  0.22  0     114.4
+    // Without the sleeve rebalance the last day would be 114.8 (a stays 0.48).
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 40 },
+        { assetId: 'B', weight: 40 },
+        { assetId: 'L', weight: 20 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-30', close: 100 },
+            { date: '2026-02-02', close: 120 },
+            { date: '2026-02-03', close: 120 },
+            { date: '2026-02-04', close: 132 },
+          ],
+        },
+        {
+          assetId: 'B',
+          symbol: 'B',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-30', close: 100 },
+            { date: '2026-02-02', close: 100 },
+            { date: '2026-02-03', close: 100 },
+            { date: '2026-02-04', close: 100 },
+          ],
+        },
+        {
+          assetId: 'L',
+          symbol: 'L',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-02-03', close: 50 },
+            { date: '2026-02-04', close: 55 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-30', end: '2026-02-04' },
+      converter: stubConverter(),
+      mode: 'cash',
+      rebalance: 'monthly',
+    });
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-02-02' }]);
+    expect(res.entryEvents).toEqual([{ assetId: 'L', symbol: 'L', date: '2026-02-03' }]);
+    [100, 108, 108, 114.4].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+    // The pool was exactly L's 20 % on the first two days, 0 after entry.
+    expect(res.idleCashAvgPct).toBeCloseTo(((0.2 + 0.2 / 1.08) / 4) * 100, 10);
+    const summed = res.contributions.reduce((s, c) => s + c.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+  });
+
+  it('redistribute mode + schedule: an entry day on a period boundary is idempotent (both rebalance to the same effective targets)', async () => {
+    // A 50 / L 50; L lists exactly on the Feb boundary. The entry-day rebalance
+    // and the scheduled rebalance coincide — same targets, one combined effect,
+    // one marker of each kind.
+    //   day          closes         a               l     index
+    //   2026-01-30   A 100          1.0 (absorbs L) —     100
+    //   2026-02-02   A 110 L 40     1.1 → entry+boundary rebalance to 50/50:
+    //                               a 0.55, l 0.55        110
+    //   2026-02-03   A 110 L 48     0.55            0.66  121
+    const res = await backtest({
+      positions: [
+        { assetId: 'A', weight: 50 },
+        { assetId: 'L', weight: 50 },
+      ],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-01-30', close: 100 },
+            { date: '2026-02-02', close: 110 },
+            { date: '2026-02-03', close: 110 },
+          ],
+        },
+        {
+          assetId: 'L',
+          symbol: 'L',
+          currency: 'EUR',
+          prices: [
+            { date: '2026-02-02', close: 40 },
+            { date: '2026-02-03', close: 48 },
+          ],
+        },
+      ],
+      range: { start: '2026-01-30', end: '2026-02-03' },
+      converter: stubConverter(),
+      mode: 'redistribute',
+      rebalance: 'monthly',
+    });
+    expect(res.entryEvents).toEqual([{ assetId: 'L', symbol: 'L', date: '2026-02-02' }]);
+    expect(res.rebalanceEvents).toEqual([{ date: '2026-02-02' }]);
+    [100, 110, 121].forEach((v, i) => expect(res.series[i]?.value).toBeCloseTo(v, 10));
+    // Attribution across the coinciding events: A carried everything to the
+    // boundary (+10 %), then each half moves on its own; L adds 20 % on 0.55.
+    const a = res.contributions.find((c) => c.assetId === 'A');
+    const l = res.contributions.find((c) => c.assetId === 'L');
+    expect(a?.contributionPct).toBeCloseTo(10, 9);
+    expect(l?.contributionPct).toBeCloseTo(11, 9);
+    const summed = res.contributions.reduce((s, c) => s + c.contributionPct, 0);
+    expect(summed).toBeCloseTo(res.stats.totalReturnPct, 9);
+  });
+
+  it('the benchmark overlay is untouched by the schedule (single asset — rebalancing is the identity)', async () => {
+    const benchmark: BacktestAsset = {
+      assetId: 'GSPC',
+      symbol: '^GSPC',
+      currency: 'EUR',
+      prices: [
+        { date: '2025-12-30', close: 1000 },
+        { date: '2025-12-31', close: 1010 },
+        { date: '2026-01-02', close: 1020 },
+      ],
+    };
+    const base: BacktestInput = {
+      positions: [{ assetId: 'A', weight: 100 }],
+      assets: [
+        {
+          assetId: 'A',
+          symbol: 'A',
+          currency: 'EUR',
+          prices: [
+            { date: '2025-12-30', close: 100 },
+            { date: '2025-12-31', close: 110 },
+            { date: '2026-01-02', close: 120 },
+          ],
+        },
+      ],
+      range: { start: '2025-12-30', end: '2026-01-02' },
+      converter: stubConverter(),
+      benchmark,
+    };
+
+    const scheduled = await backtest({ ...base, rebalance: 'yearly' });
+    const hold = await backtest(base);
+    expect(scheduled.rebalanceEvents).toEqual([{ date: '2026-01-02' }]);
+    expect(scheduled.benchmark).toEqual(hold.benchmark);
+  });
+});

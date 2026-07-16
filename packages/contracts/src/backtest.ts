@@ -47,6 +47,17 @@ export const backtestModeSchema = z.enum(BACKTEST_MODES);
 export type BacktestMode = z.infer<typeof backtestModeSchema>;
 
 /**
+ * Scheduled-rebalance frequencies (§13.4 V4-P7): `none` (default) is pure
+ * buy-and-hold — the pre-V4-P7 behavior; the others rebalance the basket back
+ * to its target weights on the first trading day of each new calendar month /
+ * quarter / year, executed at that day's closes through the same §14 rebalance
+ * primitive the entry-day events use (§16, 2026-07-15).
+ */
+export const REBALANCE_FREQUENCIES = ['none', 'monthly', 'quarterly', 'yearly'] as const;
+export const rebalanceFrequencySchema = z.enum(REBALANCE_FREQUENCIES);
+export type RebalanceFrequency = z.infer<typeof rebalanceFrequencySchema>;
+
+/**
  * One inline basket member: which asset, and its relative weight. Weights are
  * relative (normalised across the basket by the engine so the index opens at
  * 100), so any positive number is valid — the Builder sends raw percentages.
@@ -67,6 +78,8 @@ export const backtestPreviewRequestSchema = z
     benchmark: backtestBenchmarkSchema.nullish(),
     /** Late-listing mode (§14); omitting it keeps the pre-§14 clip behavior. */
     mode: backtestModeSchema.default('clip'),
+    /** Rebalance schedule (V4-P7); omitting it keeps today's buy-and-hold. */
+    rebalance: rebalanceFrequencySchema.default('none'),
   })
   .strict();
 export type BacktestPreviewRequest = z.infer<typeof backtestPreviewRequestSchema>;
@@ -109,7 +122,8 @@ export type BacktestStats = z.infer<typeof backtestStatsSchema>;
  * `totalReturnPct` in every mode. In `clip`/`cash` mode a contribution is the
  * weighted own return (`weight · returnPct`); in `redistribute` mode it is the
  * money-weighted gain including temporarily redistributed capital, so it can
- * differ from `weight · returnPct`.
+ * differ from `weight · returnPct`. With a rebalance schedule active (V4-P7)
+ * every mode reports the money-weighted segment gain.
  */
 export const backtestContributionSchema = z
   .object({
@@ -148,6 +162,20 @@ export const backtestEntryEventSchema = z
   .strict();
 export type BacktestEntryEvent = z.infer<typeof backtestEntryEventSchema>;
 
+/**
+ * One executed scheduled rebalance (V4-P7): the first trading day of a new
+ * calendar period, where the portfolio was reset to its target weights at that
+ * day's closes. Drawn as a chart marker by the Workboard UI. Empty when the
+ * frequency is `none`.
+ */
+export const backtestRebalanceEventSchema = z
+  .object({
+    /** ISO `YYYY-MM-DD` — the rebalance trading day (always on the series axis). */
+    date: z.string(),
+  })
+  .strict();
+export type BacktestRebalanceEvent = z.infer<typeof backtestRebalanceEventSchema>;
+
 /** `POST /backtest/preview` response — mirrors the engine's `BacktestResult`. */
 export const backtestResponseSchema = z
   .object({
@@ -160,8 +188,12 @@ export const backtestResponseSchema = z
     benchmark: backtestBenchmarkResultSchema.nullable(),
     /** The late-listing mode the backtest ran under (§14). */
     mode: backtestModeSchema,
+    /** The rebalance schedule the backtest ran under (V4-P7). */
+    rebalance: rebalanceFrequencySchema,
     /** One entry per late constituent, ascending by date; empty in `clip` mode. */
     entryEvents: z.array(backtestEntryEventSchema),
+    /** One event per executed scheduled rebalance, ascending; empty for `none`. */
+    rebalanceEvents: z.array(backtestRebalanceEventSchema),
     /**
      * Cash mode only: mean share of the portfolio value sitting uninvested
      * across the window, in percent ("avg. uninvested"); `null` in other modes.
