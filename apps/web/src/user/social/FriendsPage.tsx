@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { FollowedItem, FriendRequest, Friendship } from '@bettertrack/contracts';
+import type { FriendRequest, Friendship } from '@bettertrack/contracts';
 
 import {
   acceptFriendRequest,
@@ -10,19 +10,16 @@ import {
   declineFriendRequest,
   listFriendRequests,
   listFriends,
-  listItemFollows,
   listSharedWithMe,
   removeFriend,
   sendFriendRequest,
-  unfollowItem,
 } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Alert, Button, TextField, cx } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
-import { AlertFollowToggles, AutoFollowToggle, FollowButton } from './FollowButton';
-import { ITEM_FOLLOWS_QUERY_KEY } from './ItemFollowButton';
+import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
 import {
   ActivityAlertToggle,
   SharedItemRow,
@@ -493,8 +490,8 @@ function FriendCard({
 
           {/* Following-in-place (V4-P0b): a friend is followable straight from
               their row — no public profile needed. The auto-follow switch and
-              the alert-follow switches (the latter only when this friend shares
-              their alert activity) appear once you follow them. */}
+              the single "Follow their alerts" toggle (the latter only when this
+              friend shares their alert activity) appear once you follow them. */}
           <div className="flex flex-col gap-3 border-t border-neutral-800 pt-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -507,7 +504,7 @@ function FriendCard({
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 empty:hidden">
               <AutoFollowToggle userId={user.id} username={user.username} />
-              <AlertFollowToggles userId={user.id} username={user.username} />
+              <AlertFollowToggle userId={user.id} username={user.username} />
             </div>
           </div>
 
@@ -604,127 +601,6 @@ function FriendsListSection() {
   );
 }
 
-// ─── Followed items (bookmarks) ───────────────────────────────────────────────
-
-const ITEM_FOLLOWS_STALE_MS = 30_000;
-
-/**
- * Where a followed item opens (#439): a friend-visible item on the read-only
- * friend-shared pages, a public one on the owner's public profile. `viewable:
- * false` rows have no destination.
- */
-function followedItemHref(item: FollowedItem): string | null {
-  if (!item.viewable || !item.owner || !item.via) return null;
-  if (item.via === 'public') return `/u/${encodeURIComponent(item.owner.username)}`;
-  if (item.kind === 'portfolio') return `/social/shared-with-me/${item.subjectId}`;
-  if (item.kind === 'conglomerate') return `/social/shared-with-me/conglomerates/${item.subjectId}`;
-  return `/social/shared-with-me/watchlists/${item.subjectId}`;
-}
-
-/**
- * One row of the followed-items collection: kind badge + name + owner, linking
- * into the item's shared view. An item that lost visibility (unshared, narrowed
- * away, deleted) renders as a "gone" shell that can only be unfollowed.
- */
-function FollowedItemRow({ item }: { item: FollowedItem }) {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const unfollowMutation = useMutation({
-    mutationFn: () => unfollowItem(item.kind, item.subjectId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ITEM_FOLLOWS_QUERY_KEY }),
-  });
-  const href = followedItemHref(item);
-
-  const body = (
-    <>
-      <span className="shrink-0 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">
-        {t(`social.itemFollow.kind.${item.kind}`)}
-      </span>
-      {item.viewable ? (
-        <span className="min-w-0 truncate text-sm font-medium text-neutral-100">
-          {item.name}
-          {item.owner ? (
-            <span className="ml-2 font-normal text-neutral-500">
-              {t('social.itemFollow.by', { username: item.owner.username })}
-            </span>
-          ) : null}
-        </span>
-      ) : (
-        <span
-          className="min-w-0 truncate text-sm italic text-neutral-500"
-          title={t('social.itemFollow.goneHint')}
-        >
-          {t('social.itemFollow.gone')}
-        </span>
-      )}
-    </>
-  );
-
-  return (
-    <li className="flex items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 px-4 py-3">
-      {href ? (
-        <Link to={href} className="flex min-w-0 items-center gap-3 hover:opacity-90">
-          {body}
-        </Link>
-      ) : (
-        <div className="flex min-w-0 items-center gap-3">{body}</div>
-      )}
-      <button
-        type="button"
-        disabled={unfollowMutation.isPending}
-        onClick={() => unfollowMutation.mutate()}
-        aria-label={t('social.itemFollow.unfollowAria')}
-        className="shrink-0 rounded-md px-3 py-2 text-sm font-medium text-neutral-300 ring-1 ring-inset ring-neutral-700 transition-colors hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 disabled:opacity-60"
-      >
-        {t('social.itemFollow.unfollow')}
-      </button>
-    </li>
-  );
-}
-
-/**
- * The caller's followed-items collection (#439) — the portfolios, watchlists and
- * conglomerates they've bookmarked (including auto-followed items). It lived on
- * the retired Following page (V4-P0b); the Friends tab now hosts it below the
- * friends list, sharing the `['social','item-follows']` query key with every
- * item-follow button so actions anywhere reflect here.
- */
-function FollowedItemsSection() {
-  const t = useT();
-  const items = useQuery({
-    queryKey: ITEM_FOLLOWS_QUERY_KEY,
-    queryFn: ({ signal }) => listItemFollows(signal),
-    staleTime: ITEM_FOLLOWS_STALE_MS,
-  });
-
-  return (
-    <section className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          {t('social.itemFollow.sectionTitle')}
-        </h2>
-        <p className="text-sm text-neutral-500">{t('social.itemFollow.sectionSubtitle')}</p>
-      </div>
-      {items.isLoading ? (
-        <Skeleton height="h-16" />
-      ) : items.isError || !items.data ? (
-        <Alert tone="error">{t('social.itemFollow.error')}</Alert>
-      ) : items.data.items.length === 0 ? (
-        <EmptyState
-          title={t('social.itemFollow.empty')}
-          description={t('social.itemFollow.emptyHint')}
-        />
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {items.data.items.map((item) => (
-            <FollowedItemRow key={`${item.kind}:${item.subjectId}`} item={item} />
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 // ─── Page ───────────────────────────────────────────────────────────────────
 
 /**
@@ -743,7 +619,6 @@ export function FriendsPage() {
       </div>
       <AddFriendForm />
       <FriendsListSection />
-      <FollowedItemsSection />
       <RequestsSection />
     </div>
   );

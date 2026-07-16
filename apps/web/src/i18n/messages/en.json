@@ -281,17 +281,6 @@
     "backups": {
       "description": "Automatic backups to Google Drive and elsewhere."
     },
-    "alertSharing": {
-      "title": "Share my alerts with followers",
-      "offHint": "Your alerts are private. Followers cannot see them or be notified about them.",
-      "onHint": "Followers who opted in are notified when you create an alert or one of your alerts fires.",
-      "toggleAria": "Share my alerts with followers",
-      "error": "Could not update alert sharing. Please try again.",
-      "confirmTitle": "Share your alerts with all followers?",
-      "confirmWarning": "This shows every follower which assets you watch and your price targets — anyone can follow you. Followers who opted in will be notified when you create an alert or one of your alerts fires. You can turn this off at any time.",
-      "confirmCancel": "Cancel",
-      "confirmEnable": "I understand — share my alerts"
-    },
     "notifications": {
       "title": "Notifications",
       "subtitle": "Route each kind of activity to the channels you want — in-app bell, email, phone push, browser push — or mute everything at once.",
@@ -1991,6 +1980,18 @@
       "error": "Could not load your items. Please refresh the page.",
       "publicProfileLink": "Manage your public profile"
     },
+    "alertSharing": {
+      "heading": "My alerts",
+      "title": "Share my alerts with followers",
+      "offHint": "Your alerts are private. Followers cannot see them or be notified about them.",
+      "onHint": "Followers who opted in are notified when you create an alert or one of your alerts fires.",
+      "toggleAria": "Share my alerts with followers",
+      "error": "Could not update alert sharing. Please try again.",
+      "confirmTitle": "Share your alerts with all followers?",
+      "confirmWarning": "This shows every follower which assets you watch and your price targets — anyone can follow you. Followers who opted in will be notified when you create an alert or one of your alerts fires. You can turn this off at any time.",
+      "confirmCancel": "Cancel",
+      "confirmEnable": "I understand — share my alerts"
+    },
     "nav": {
       "friends": "Friends",
       "following": "Following",
@@ -2018,14 +2019,11 @@
         "other": "{{count}} following"
       },
       "autoFollow": "Auto-follow their new items",
-      "autoFollowHint": "Automatically adds every item they make visible to you to your followed items.",
+      "autoFollowHint": "Automatically follow every item they make newly visible to you, so its news reaches you.",
       "autoFollowAria": "Auto-follow new items from {{username}}",
-      "alertCreate": "Notify me about their new alerts",
-      "alertCreateHint": "Get a notification when they create a new price alert. Only works while they share their alerts with followers.",
-      "alertCreateAria": "Notify me about new alerts from {{username}}",
-      "alertFire": "Notify me when their alerts fire",
-      "alertFireHint": "Get a notification when one of their price alerts triggers. Only works while they share their alerts with followers.",
-      "alertFireAria": "Notify me when alerts from {{username}} fire"
+      "alertFollow": "Follow their alerts",
+      "alertFollowHint": "Get notified when they create a new price alert or one of their alerts triggers. Only works while they share their alerts with followers.",
+      "alertFollowAria": "Follow alerts from {{username}}"
     },
     "friend": {
       "since": "Friends since {{date}}",
@@ -2102,22 +2100,7 @@
       "follow": "Follow item",
       "following": "Following",
       "followAria": "Follow this item",
-      "unfollowAria": "Unfollow this item",
-      "unfollow": "Unfollow",
-      "sectionTitle": "Followed items",
-      "sectionSubtitle": "Portfolios, watchlists and conglomerates you follow. New items from people you auto-follow appear here automatically.",
-      "empty": "You're not following any items yet.",
-      "emptyHint": "Follow a shared or public portfolio, watchlist or conglomerate to keep it here.",
-      "gone": "No longer available",
-      "goneHint": "This item was unshared or deleted by its owner.",
-      "by": "by @{{username}}",
-      "error": "Couldn't load your followed items. Please refresh the page.",
-      "kind": {
-        "portfolio": "Portfolio",
-        "conglomerate": "Conglomerate",
-        "watchlist": "Watchlist",
-        "idea": "Idea"
-      }
+      "unfollowAria": "Unfollow this item"
     },
     "ideas": {
       "title": "Ideas",
