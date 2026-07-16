@@ -167,6 +167,21 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
         ? { kind, subjectId, viewable: true, title: ref.name, subtitle: ref.ownerUsername }
         : notViewable;
     }
+    if (shareKind === 'idea') {
+      // idea (V4-P9) — like a conglomerate, the authorization returns the owner
+      // only; fetch the name ONLY after it passes, so a denied read discloses
+      // nothing (leak-free `viewable:false` otherwise).
+      const ref = await audience.authorizeIdeaRead(viewerId, subjectId).catch(() => undefined);
+      if (!ref) return notViewable;
+      const identity = await audience.subjectIdentity('idea', subjectId).catch(() => undefined);
+      return {
+        kind,
+        subjectId,
+        viewable: true,
+        title: identity?.name ?? null,
+        subtitle: ref.ownerUsername,
+      };
+    }
     // conglomerate — the authorization returns the owner only; fetch the name
     // ONLY after it passes, so a denied read discloses nothing.
     const ref = await audience

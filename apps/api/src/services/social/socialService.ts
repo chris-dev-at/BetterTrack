@@ -46,6 +46,7 @@ import type {
 import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import type { ConglomerateService } from '../conglomerate/conglomerateService';
+import type { IdeasService } from '../ideas/ideasService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { WorkboardService } from '../workboard/workboardService';
@@ -78,6 +79,8 @@ export interface SocialServiceDeps {
   conglomerate: ConglomerateService;
   /** Owner-scoped source of watchlist items + named-list metadata. */
   workboard: WorkboardService;
+  /** Owner-scoped source of the caller's saved ideas for the My-items group (V4-P9). */
+  ideas: Pick<IdeasService, 'list'>;
   /** The central notification pipeline (#368) — friend.request/accepted enter here. */
   notify: NotificationCenter;
   logger?: Logger;
@@ -242,6 +245,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     portfolio,
     conglomerate,
     workboard,
+    ideas,
     notify,
   } = deps;
 
@@ -331,6 +335,12 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     subjectId: string,
     name: string,
   ): Promise<SharedLinkResponse> {
+    // A public idea link has no logged-out read-only view yet (V4-P9 ships ideas
+    // as a friend-shareable + clone kind; the public idea page is a follow-up web
+    // surface), so an idea token resolves to 404 (never data). The public_link
+    // audience itself is fully live — friends can clone it and followers get the
+    // follow.published news.
+    if (kind === 'idea') throw LINK_NOT_FOUND();
     if (kind === 'portfolio') {
       return {
         kind: 'portfolio',
@@ -538,12 +548,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // AND audience, in the SQL join), so unfriending or narrowing instantly
       // drops the row — nothing to invalidate. The viewer's activity-alert prefs
       // are stamped on top (a pure preference; delivery is #368).
-      const [portfolioRows, conglomerateRows, watchlistRows, activityPrefs] = await Promise.all([
-        audience.listFriendPortfolios(userId),
-        audience.listFriendConglomerates(userId),
-        audience.listFriendWatchlists(userId),
-        profile.listActivityPrefs(userId),
-      ]);
+      const [portfolioRows, conglomerateRows, watchlistRows, ideaRows, activityPrefs] =
+        await Promise.all([
+          audience.listFriendPortfolios(userId),
+          audience.listFriendConglomerates(userId),
+          audience.listFriendWatchlists(userId),
+          audience.listFriendIdeas(userId),
+          profile.listActivityPrefs(userId),
+        ]);
       const alertsOn = (kind: ShareKind, subjectId: string): boolean =>
         activityPrefs.has(`${kind}:${subjectId}`);
       const portfolios = await Promise.all(
@@ -575,7 +587,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         itemCount: row.itemCount,
         activityAlertsEnabled: alertsOn('watchlist', row.watchlistId),
       }));
-      return { portfolios, conglomerates, watchlists };
+      const ideas = ideaRows.map((row) => ({
+        ideaId: row.ideaId,
+        name: row.name,
+        owner: { id: row.ownerId, username: row.ownerUsername },
+        hasThesis: row.hasThesis,
+        activityAlertsEnabled: alertsOn('idea', row.ideaId),
+      }));
+      return { portfolios, conglomerates, watchlists, ideas };
     },
 
     async getSharedPortfolio(viewerId, portfolioId, opts) {
@@ -603,10 +622,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     },
 
     async listMyShared(userId) {
-      const [portfolioList, conglomerateList, watchlists] = await Promise.all([
+      const [portfolioList, conglomerateList, watchlists, ideaList] = await Promise.all([
         portfolio.listPortfolios(userId),
         conglomerate.list(userId),
         workboard.listWatchlists(userId),
+        ideas.list(userId),
       ]);
       // EVERY shareable item the caller owns is listed here — all portfolios
       // (#377) AND all conglomerates + watchlists, shared or not (#384). A
@@ -618,10 +638,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const allPortfolios = portfolioList.portfolios;
       const allConglomerates = conglomerateList.conglomerates;
       const allWatchlists = watchlists;
+      const allIdeas = ideaList.ideas;
       // Batch the real audience + named-friend count off the single audience
       // model, so each row's "who can see this" summary is exactly what the
       // enforcement layer authorizes against (never the coarse legacy flag).
-      const [pAud, cAud, wAud] = await Promise.all([
+      const [pAud, cAud, wAud, iAud] = await Promise.all([
         audience.audienceSummariesForSubjects(
           'portfolio',
           allPortfolios.map((p) => p.id),
@@ -633,6 +654,10 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         audience.audienceSummariesForSubjects(
           'watchlist',
           allWatchlists.map((w) => w.id),
+        ),
+        audience.audienceSummariesForSubjects(
+          'idea',
+          allIdeas.map((i) => i.id),
         ),
       ]);
       const summary = (
@@ -673,6 +698,18 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             watchlistId: w.id,
             name: w.name,
             itemCount: w.itemCount,
+            audience: s.audience,
+            friendCount: s.friendCount,
+          };
+        }),
+        ideas: allIdeas.map((i) => {
+          // Ideas have no legacy visibility column — they postdate the audience
+          // model — so a never-shared idea simply reads `private`.
+          const s = summary(iAud, i.id, 'private');
+          return {
+            ideaId: i.id,
+            name: i.name,
+            hasThesis: i.thesis !== null,
             audience: s.audience,
             friendCount: s.friendCount,
           };
@@ -718,7 +755,9 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           ? await audience.authorizePortfolioRead(viewerId, subjectId)
           : kind === 'conglomerate'
             ? await audience.authorizeConglomerateRead(viewerId, subjectId)
-            : await audience.authorizeWatchlistRead(viewerId, subjectId);
+            : kind === 'idea'
+              ? await audience.authorizeIdeaRead(viewerId, subjectId)
+              : await audience.authorizeWatchlistRead(viewerId, subjectId);
       if (!authorized) throw SUBJECT_NOT_FOUND();
       await profile.setActivityPref(viewerId, kind, subjectId, enabled);
       return { kind, subjectId, enabled };

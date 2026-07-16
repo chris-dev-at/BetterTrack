@@ -1969,7 +1969,8 @@
           "asset": "Asset",
           "portfolio": "Portfolio",
           "conglomerate": "Conglomerate",
-          "watchlist": "Watchlist"
+          "watchlist": "Watchlist",
+          "idea": "Idea"
         },
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",

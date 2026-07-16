@@ -292,17 +292,37 @@ export const sharedWatchlistSummarySchema = z
 export type SharedWatchlistSummary = z.infer<typeof sharedWatchlistSummarySchema>;
 
 /**
+ * One friend-shared **idea** (a saved Workboard analysis, §13.4 V4-P9) as it
+ * appears in **Shared With Me** and the friend-row profile-in-place group. A
+ * read-only pointer: the owner (public-safe), the idea's name, and whether it has
+ * a thesis note — the state itself is opened (and cloned) via the ideas surface.
+ */
+export const sharedIdeaSummarySchema = z
+  .object({
+    ideaId: z.string().uuid(),
+    name: z.string(),
+    owner: friendUserSchema,
+    /** Whether a free-text thesis note is attached (its text is not inlined here). */
+    hasThesis: z.boolean(),
+    /** Per-viewer activity-alert opt-in (V3-P6, §14); delivery deferred to #368. */
+    activityAlertsEnabled: z.boolean(),
+  })
+  .strict();
+export type SharedIdeaSummary = z.infer<typeof sharedIdeaSummarySchema>;
+
+/**
  * `GET /social/shared` response (**Shared With Me**, §6.9 point 4, V2-P9) — every
  * item a friend currently shares with the caller, aggregated across portfolios,
- * conglomerates and watchlists. Each list is authorization-derived: a row is
- * present only while both an active friendship and the owner's friends-visibility
- * hold at query time, so revoking either instantly drops it.
+ * conglomerates, watchlists and ideas (V4-P9). Each list is authorization-derived:
+ * a row is present only while both an active friendship and the owner's
+ * friends-visibility hold at query time, so revoking either instantly drops it.
  */
 export const sharedWithMeResponseSchema = z
   .object({
     portfolios: z.array(sharedPortfolioSummarySchema),
     conglomerates: z.array(sharedConglomerateSummarySchema),
     watchlists: z.array(sharedWatchlistSummarySchema),
+    ideas: z.array(sharedIdeaSummarySchema),
   })
   .strict();
 export type SharedWithMeResponse = z.infer<typeof sharedWithMeResponseSchema>;
@@ -416,6 +436,18 @@ export const mySharedWatchlistSchema = z
   .strict();
 export type MySharedWatchlist = z.infer<typeof mySharedWatchlistSchema>;
 
+/** One of the caller's saved ideas in **My items** (V4-P9), with its audience. */
+export const mySharedIdeaSchema = z
+  .object({
+    ideaId: z.string().uuid(),
+    name: z.string(),
+    /** Whether a free-text thesis note is attached. */
+    hasThesis: z.boolean(),
+    ...mySharedAudienceFields,
+  })
+  .strict();
+export type MySharedIdea = z.infer<typeof mySharedIdeaSchema>;
+
 /**
  * `GET /social/my-shared` response — the caller's unified sharing-management list
  * (the **My items** list, §6.9 point 5, V2-P9/P6; #384). ALL three kinds list in
@@ -432,6 +464,7 @@ export const mySharedResponseSchema = z
     portfolios: z.array(mySharedPortfolioSchema),
     conglomerates: z.array(mySharedConglomerateSchema),
     watchlists: z.array(mySharedWatchlistSchema),
+    ideas: z.array(mySharedIdeaSchema),
   })
   .strict();
 export type MySharedResponse = z.infer<typeof mySharedResponseSchema>;

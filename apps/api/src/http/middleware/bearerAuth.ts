@@ -85,6 +85,9 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   { prefix: '/workboard', read: 'workboard:read', write: 'workboard:write' },
   { prefix: '/conglomerates', read: 'workboard:read', write: 'workboard:write' },
   { prefix: '/backtest', read: 'workboard:read', write: 'workboard:write' },
+  // Ideas (§13.4 V4-P9) are a Workboard surface — a saved Workboard analysis —
+  // so they gate on the same workboard scope pair as conglomerates/backtest.
+  { prefix: '/ideas', read: 'workboard:read', write: 'workboard:write' },
   { prefix: '/assets', read: 'market:read', write: 'market:write' },
   { prefix: '/search', read: 'market:read', write: 'market:write' },
   // #361: `social:write` and `notifications:*` are now real, granularly-enforced

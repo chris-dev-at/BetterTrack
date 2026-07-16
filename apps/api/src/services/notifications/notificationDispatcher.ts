@@ -171,6 +171,8 @@ function followItemNoun(itemKind: FollowPublishedEvent['itemKind']): string {
       return 'watchlist';
     case 'conglomerate':
       return 'conglomerate';
+    case 'idea':
+      return 'idea';
   }
 }
 

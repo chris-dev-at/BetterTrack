@@ -8,6 +8,7 @@ import type {
 
 import type {
   FriendConglomerateRow,
+  FriendIdeaRow,
   FriendPortfolioRow,
   FriendWatchlistRow,
   NamedOwnerRef,
@@ -80,9 +81,12 @@ export interface AudienceService {
     conglomerateId: string,
   ): Promise<OwnerRef | undefined>;
   authorizeWatchlistRead(viewerId: string, watchlistId: string): Promise<NamedOwnerRef | undefined>;
+  /** Authorize a viewer to read one friend-shared idea, or `undefined` (→ 404, V4-P9). */
+  authorizeIdeaRead(viewerId: string, ideaId: string): Promise<OwnerRef | undefined>;
   listFriendPortfolios(viewerId: string): Promise<FriendPortfolioRow[]>;
   listFriendConglomerates(viewerId: string): Promise<FriendConglomerateRow[]>;
   listFriendWatchlists(viewerId: string): Promise<FriendWatchlistRow[]>;
+  listFriendIdeas(viewerId: string): Promise<FriendIdeaRow[]>;
   /** Resolve a raw public-link token to its live subject, or `undefined` (→ 404). */
   resolvePublicLink(token: string): Promise<ResolvedPublicLink | undefined>;
   /** The owner's audience state for a subject, or `undefined` when not owned (→ 404). */
@@ -210,9 +214,12 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
           await notify.emit({ type: 'portfolio.shared', portfolioId: subjectId, ...base });
         } else if (kind === 'watchlist') {
           await notify.emit({ type: 'watchlist.shared', watchlistId: subjectId, ...base });
-        } else {
+        } else if (kind === 'conglomerate') {
           await notify.emit({ type: 'conglomerate.shared', conglomerateId: subjectId, ...base });
         }
+        // `idea` (V4-P9) has no direct `*.shared` notice — a shared idea appears in
+        // the recipient's Shared-With-Me / friend-row group and, when made public,
+        // in the follow.published fan-out; there is no dedicated idea-shared type.
       }
     } catch (err) {
       logger?.error({ err, kind, subjectId }, 'share event emit failed');
@@ -328,9 +335,11 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       repo.authorizeConglomerateRead(viewerId, conglomerateId),
     authorizeWatchlistRead: (viewerId, watchlistId) =>
       repo.authorizeWatchlistRead(viewerId, watchlistId),
+    authorizeIdeaRead: (viewerId, ideaId) => repo.authorizeIdeaRead(viewerId, ideaId),
     listFriendPortfolios: (viewerId) => repo.listFriendPortfolios(viewerId),
     listFriendConglomerates: (viewerId) => repo.listFriendConglomerates(viewerId),
     listFriendWatchlists: (viewerId) => repo.listFriendWatchlists(viewerId),
+    listFriendIdeas: (viewerId) => repo.listFriendIdeas(viewerId),
 
     async resolvePublicLink(token) {
       const target: PublicLinkTarget | undefined = await repo.resolvePublicLink(hashToken(token));
@@ -446,10 +455,13 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
           const identity = await repo.getSubjectIdentity(kind, subjectId);
           if (identity) return { ...shared, name: identity.name, via: 'friend' };
         }
-      } else {
+      } else if (kind === 'watchlist') {
         const shared = await repo.authorizeWatchlistRead(viewerId, subjectId);
         if (shared) return { ...shared, via: 'friend' };
       }
+      // `idea` (V4-P9) is not item-followable — it has no friend read-only follow
+      // surface — so it falls through to the public rung, which also returns
+      // `undefined` for ideas (publicFollowTarget), i.e. a clean 404.
       // Public rung: `public_link` audience + a live public profile (#438's
       // reachability gate) — viewer-independent, so any logged-in user qualifies.
       const pub = await repo.publicFollowTarget(kind, subjectId);
