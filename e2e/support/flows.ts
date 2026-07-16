@@ -44,6 +44,36 @@ export async function openAssetAndWatchFromDetail(
   await expect(page.getByRole('button', { name: `${symbol} is on your watchlist` })).toBeVisible();
 }
 
+/**
+ * Build and activate a Conglomerate through the real Builder (§13.4 V4-P7/P9
+ * e2e helper). Picks each asset by exact symbol via the local search box, then
+ * Auto-balances to the ACTIVE_SUM (§6.5) and clicks Activate. Returns the
+ * post-activation detail URL (`/workboard/conglomerates/:id`) so callers can
+ * come back to it after side trips (creating another conglomerate, listing).
+ */
+export async function activateConglomerate(
+  page: Page,
+  name: string,
+  picks: ReadonlyArray<{ query: string; symbol: string }>,
+): Promise<string> {
+  await page.goto('/workboard/conglomerates/new');
+  await page.getByLabel('Conglomerate name').fill(name);
+  const search = page.getByRole('searchbox', { name: 'Search assets' });
+  for (const p of picks) {
+    // exact: role-name matching is substring-based, and background enrichment
+    // can pull sibling listings into the results (mirrors happy-path.spec.ts).
+    await search.fill(p.query);
+    await page.getByRole('button', { name: `Select ${p.symbol}`, exact: true }).click();
+  }
+  await page.getByRole('button', { name: 'Auto-balance' }).click();
+  const positions = page.getByRole('region', { name: 'Positions' });
+  // Locale-agnostic 2-dp: EN "100.00%" vs DE "100,00 %" with narrow space.
+  await expect(positions.getByRole('status')).toHaveText(/^100[.,]00\s*%$/);
+  await page.getByRole('button', { name: 'Activate' }).click();
+  await expect(page).toHaveURL(/\/workboard\/conglomerates\/[^/]+$/, { timeout: 20_000 });
+  return page.url();
+}
+
 export interface SapTrade {
   side: 'buy' | 'sell';
   quantity: string;
