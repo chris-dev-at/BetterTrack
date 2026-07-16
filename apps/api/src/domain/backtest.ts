@@ -36,9 +36,38 @@
  *  3. *Index.* `index(t) = 100 · Σᵢ wᵢ · Pᵢ(t)/Pᵢ(t₀)` where the weights `wᵢ` are
  *     **normalised to sum to 1** (input weights are relative — percentages for a
  *     conglomerate, 100 for a single benchmark — so the index opens at exactly
- *     100). This is buy-and-hold of the *initial* weights: there is **no
- *     rebalancing** (a documented limitation; rebalanced mode is a Future
- *     Feature). Adjusted closes ⇒ dividends are already included.
+ *     100). By default this is buy-and-hold of the *initial* weights — no
+ *     rebalancing; a {@link RebalanceFrequency} schedule (V4-P7, below) opts
+ *     into periodic rebalancing. Adjusted closes ⇒ dividends are included.
+ *
+ * **Scheduled rebalancing (V4-P7, §16 2026-07-15).** An optional
+ * `monthly`/`quarterly`/`yearly` schedule rebalances the portfolio back to its
+ * target weights on the **first trading day of each new calendar period** on
+ * the series axis — detected as an axis day whose period differs from the
+ * previous axis day's, so t₀ never rebalances (the initial allocation already
+ * sits at target weights) and a trading gap spanning several boundaries
+ * collapses into a single rebalance on the next trading day. The rebalance
+ * executes at that day's closes, after any §14 entry events, through the same
+ * {@link rebalanceToTargets} primitive the entry days use; it conserves value,
+ * so the boundary day's index point is unaffected and the restored weights
+ * apply from the next day. Composition with the late-listing modes: in `clip`
+ * mode there are no late assets by construction, so the whole basket
+ * rebalances to the full target weights; in `cash` mode a not-yet-listed
+ * constituent enters the target set only once listed — the schedule rebalances
+ * ONLY the invested sleeve to the listed constituents' relative weights while
+ * the uninvested pool stays exactly the not-yet-listed weight (0 % return,
+ * untouched), and a late constituent still buys in with its full target share
+ * at listing; in `redistribute` mode the schedule rebalances to the same
+ * *effective* targets as the entry-day rebalance (listed positive-weight
+ * constituents absorbing an equal share of unlisted weight), so an entry day
+ * coinciding with a boundary is idempotent. Each executed scheduled rebalance
+ * is reported in `rebalanceEvents` for chart markers; the schedule never
+ * touches the benchmark overlay (a single asset — rebalancing is the
+ * identity). With any schedule active the engine runs the event-driven
+ * pipeline even in `clip` mode and `contributionPct` becomes the
+ * money-weighted segment gain (still summing to the total return);
+ * `rebalance: 'none'` (or omitting it) keeps every mode's previous pipeline —
+ * `clip` results stay bit-identical to the pre-V4-P7 engine.
  *
  * **Benchmark overlay.** An optional benchmark (`^GSPC`/`^GDAXI`/`URTH`) runs
  * through the *same pipeline* as a single position at weight 100, over the *same
@@ -105,6 +134,10 @@ const DEFAULT_BASE_CURRENCY = 'EUR';
 /** Late-listed-constituent modes (§14); see the module header. */
 export const BACKTEST_MODES = ['clip', 'cash', 'redistribute'] as const;
 export type BacktestMode = (typeof BACKTEST_MODES)[number];
+
+/** Scheduled-rebalance frequencies (V4-P7); see the module header. */
+export const REBALANCE_FREQUENCIES = ['none', 'monthly', 'quarterly', 'yearly'] as const;
+export type RebalanceFrequency = (typeof REBALANCE_FREQUENCIES)[number];
 
 /**
  * Reserved holding key for the uninvested pool when an entry-day rebalance
@@ -183,6 +216,8 @@ export interface BacktestInput {
   benchmark?: BacktestAsset | null;
   /** Late-listed-constituent mode (§14, module header). Defaults to `clip`. */
   mode?: BacktestMode;
+  /** Rebalance schedule (V4-P7, module header). Defaults to `none` (buy-and-hold). */
+  rebalance?: RebalanceFrequency;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +291,19 @@ export interface BacktestEntryEvent {
   date: string;
 }
 
+/**
+ * One executed scheduled rebalance (V4-P7): the first trading day of a new
+ * calendar period, on which the portfolio was reset to its target weights at
+ * that day's closes. Emitted even when the reset is mathematically a no-op
+ * (e.g. a single-asset basket) — the schedule ran; NOT emitted when there was
+ * nothing to allocate to (no listed positive-weight constituent). Always empty
+ * when the frequency is `none`.
+ */
+export interface BacktestRebalanceEvent {
+  /** ISO `YYYY-MM-DD` — the rebalance trading day (always on the series axis). */
+  date: string;
+}
+
 export interface BacktestResult {
   /** t₀ — the effective (possibly clipped) first day of the series. */
   startDate: string;
@@ -273,8 +321,12 @@ export interface BacktestResult {
   benchmark: BenchmarkResult | null;
   /** The late-listing mode this result was computed under (§14). */
   mode: BacktestMode;
+  /** The rebalance schedule this result was computed under (V4-P7). */
+  rebalance: RebalanceFrequency;
   /** One event per late constituent, ascending by date; `[]` in `clip` mode. */
   entryEvents: BacktestEntryEvent[];
+  /** One event per executed scheduled rebalance, ascending; `[]` for `none`. */
+  rebalanceEvents: BacktestRebalanceEvent[];
   /**
    * `cash` mode only: mean share of the portfolio value sitting uninvested
    * across the axis days, in percent; `null` in the other modes.
@@ -295,6 +347,23 @@ function assertIsoDate(date: string, label: string): void {
 /** UTC midnight epoch-ms of an ISO date (no clock read; deterministic). */
 function dateToMs(date: string): number {
   return Date.parse(`${date}T00:00:00Z`);
+}
+
+/**
+ * The calendar period an ISO date falls into for a rebalance schedule (V4-P7):
+ * `YYYY-MM` for monthly, `YYYY-Qn` for quarterly (calendar quarters), `YYYY`
+ * for yearly. Two consecutive axis days with different keys mark the later one
+ * as a rebalance day — the first trading day of the new period.
+ */
+function periodKey(date: string, frequency: Exclude<RebalanceFrequency, 'none'>): string {
+  switch (frequency) {
+    case 'monthly':
+      return date.slice(0, 7);
+    case 'quarterly':
+      return `${date.slice(0, 4)}-Q${Math.ceil(Number(date.slice(5, 7)) / 3)}`;
+    case 'yearly':
+      return date.slice(0, 4);
+  }
 }
 
 /**
@@ -345,8 +414,8 @@ export interface RebalanceTarget {
  *
  * This is the §14 rebalance primitive: an entry-day rebalance is
  * `rebalanceToTargets(currentValues, effectiveTargetWeights)` at the entry
- * day's closes, and future *scheduled* rebalancing (explicitly not built here)
- * is the same call on a schedule.
+ * day's closes, and *scheduled* rebalancing (V4-P7) is the same call on each
+ * period boundary — one primitive, no duplicated rebalance math.
  *
  * Semantics:
  *  - The result has exactly one holding per **target** key, in target order,
@@ -516,7 +585,7 @@ async function runPipeline(
 }
 
 // ---------------------------------------------------------------------------
-// Late-listing pipeline (§14 — cash / redistribute modes)
+// Event-driven pipeline (§14 late-listing modes + V4-P7 scheduled rebalancing)
 // ---------------------------------------------------------------------------
 
 /** A prepared asset plus its absolute first price date — its listing day. */
@@ -524,8 +593,8 @@ interface LateModeAsset extends PreparedAsset {
   firstAvailable: string;
 }
 
-/** What the late-listing pipeline returns (a superset of {@link PipelineResult}). */
-interface LatePipelineResult {
+/** What the event pipeline returns (a superset of {@link PipelineResult}). */
+interface EventPipelineResult {
   series: SeriesPoint[];
   perAsset: Array<{
     assetId: string;
@@ -537,30 +606,36 @@ interface LatePipelineResult {
     gain: number;
   }>;
   entryEvents: BacktestEntryEvent[];
+  rebalanceEvents: BacktestRebalanceEvent[];
   /** Mean uninvested share across axis days, percent (`cash` mode), else `null`. */
   idleCashAvgPct: number | null;
 }
 
 /**
- * Walk the date `axis` once for the §14 `cash` / `redistribute` modes. Like
+ * Walk the date `axis` once for the §14 `cash` / `redistribute` modes and for
+ * any V4-P7 rebalance schedule (which routes `clip` through here too — with the
+ * clipped window every asset is listed at t₀, so no entry events arise). Like
  * {@link runPipeline} it values every asset in the base currency (FX at the
  * day, last close carried forward), but the portfolio is event-driven: an asset
  * whose history starts after t₀ waits (as cash, or redistributed into the
  * listed constituents) and **enters** on its first trading day — an investment
  * event in `cash` mode, a full rebalance to the effective target weights (via
- * {@link rebalanceToTargets}) in `redistribute` mode. Values are tracked in
- * index units (the t₀ portfolio ≡ 1), segment-wise between events, so
- * per-asset money-weighted gains sum exactly to the index return.
+ * {@link rebalanceToTargets}) in `redistribute` mode — and each schedule
+ * boundary rebalances back to the target weights via the same primitive.
+ * Values are tracked in index units (the t₀ portfolio ≡ 1), segment-wise
+ * between events, so per-asset money-weighted gains sum exactly to the index
+ * return.
  *
  * Throws {@link BacktestError} when an asset's entry close is non-positive (its
  * ratio would be undefined) — the same guard {@link runPipeline} applies at t₀.
  */
-async function runLatePipeline(
+async function runEventPipeline(
   assets: LateModeAsset[],
   axis: string[],
   getRate: RateResolver,
-  mode: Exclude<BacktestMode, 'clip'>,
-): Promise<LatePipelineResult> {
+  mode: BacktestMode,
+  rebalance: RebalanceFrequency,
+): Promise<EventPipelineResult> {
   interface Cursor {
     asset: LateModeAsset;
     idx: number;
@@ -596,11 +671,14 @@ async function runLatePipeline(
 
   const series: SeriesPoint[] = [];
   const entryEvents: BacktestEntryEvent[] = [];
+  const rebalanceEvents: BacktestRebalanceEvent[] = [];
   // The uninvested pool, in index units. `cash` mode recomputes it each day
   // from the not-yet-entered weights (exact — no FP drift from += / −=);
   // `redistribute` mode starts all-cash and empties the pool into the basket at
   // the first rebalance that has a positive-weight constituent to allocate to
-  // (normally day one; later only in the degenerate all-late case).
+  // (normally day one; later only in the degenerate all-late case). `clip`
+  // (only routed here with a schedule) has every asset listed at t₀ — the pool
+  // stays 0 throughout.
   let cash = mode === 'redistribute' ? 1 : 0;
   let cashFractionSum = 0;
 
@@ -620,6 +698,49 @@ async function runLatePipeline(
     }
     const share = missing / listedPositive.length;
     return listedPositive.map((c) => ({ key: c.asset.assetId, weight: c.asset.weight + share }));
+  }
+
+  /**
+   * Scheduled-rebalance targets in `clip`/`cash` mode: every LISTED constituent
+   * at its own target weight — a not-yet-listed constituent enters the target
+   * set only once listed (§16, V4-P7), its share keeps waiting as the untouched
+   * uninvested pool. `null` while no listed constituent has positive weight
+   * (degenerate, unreachable through the API which rejects zero weights) —
+   * nothing to allocate to, so no rebalance and no event.
+   */
+  function scheduledTargets(): RebalanceTarget[] | null {
+    if (mode === 'redistribute') return redistributeTargets();
+    const listed = cursors.filter((c) => c.entered);
+    if (!listed.some((c) => c.asset.weight > 0)) return null;
+    return listed.map((c) => ({ key: c.asset.assetId, weight: c.asset.weight }));
+  }
+
+  /**
+   * Rebalance every invested holding to `targets` at today's closes via the
+   * shared §14 primitive: close the running segments (accumulating each
+   * asset's money-weighted gain), reallocate, and open new segments at today's
+   * prices. The one call both entry days and schedule boundaries go through.
+   * In `redistribute` mode a still-uninvested pool joins the reallocation
+   * (the degenerate all-late start); in `cash` mode the pool never does — it
+   * belongs to the not-yet-listed constituents.
+   */
+  function rebalanceHoldings(targets: RebalanceTarget[]): void {
+    for (const c of cursors) {
+      if (c.entered) c.gain += c.value - c.segBaseValue;
+    }
+    const pool: RebalanceHolding[] = cursors
+      .filter((c) => c.entered)
+      .map((c) => ({ key: c.asset.assetId, value: c.value }));
+    if (mode === 'redistribute' && cash > 0) pool.push({ key: CASH_KEY, value: cash });
+    const rebalanced = new Map(rebalanceToTargets(pool, targets).map((h) => [h.key, h.value]));
+    for (const c of cursors) {
+      if (!c.entered) continue;
+      const value = rebalanced.get(c.asset.assetId) ?? 0;
+      c.value = value;
+      c.segBaseValue = value;
+      c.segBaseEur = c.eur;
+    }
+    if (mode === 'redistribute') cash = 0;
   }
 
   for (let i = 0; i < axis.length; i += 1) {
@@ -664,37 +785,36 @@ async function runLatePipeline(
         }
       }
 
-      if (mode === 'cash') {
-        // Each share converts its waiting cash into the position at today's
-        // close — the entry itself does not move the index.
+      if (mode !== 'redistribute') {
+        // `cash` (and `clip` day 0): each share converts its waiting cash into
+        // the position at today's close — the entry itself does not move the
+        // index. (A just-entered cursor's segment is zero-length, so the
+        // helper's segment-close below is a no-op for it.)
         for (const c of entering) {
           c.value = c.asset.weight;
           c.segBaseValue = c.asset.weight;
         }
       } else {
-        // Redistribute: close every running segment at today's prices, then
-        // rebalance the whole portfolio (running positions + any cash pool) to
-        // the effective target weights via the shared §14 primitive.
-        for (const c of cursors) {
-          if (c.entered && !entering.includes(c)) c.gain += c.value - c.segBaseValue;
-        }
+        // Redistribute: rebalance the whole portfolio (running positions + any
+        // cash pool) to the effective target weights via the shared primitive.
         const targets = redistributeTargets();
+        if (targets !== null) rebalanceHoldings(targets);
+      }
+    }
+
+    // 2b. Scheduled rebalance (V4-P7): the first trading day of a new calendar
+    //     period resets the portfolio to its target weights at today's closes,
+    //     after any entries (an asset listing on the boundary day joins the
+    //     reset). Value is conserved, so today's index point is unaffected —
+    //     the restored weights apply from the next day. See the module header
+    //     for the per-mode target semantics (§16, 2026-07-15).
+    if (rebalance !== 'none' && i > 0) {
+      const prevDay = axis[i - 1];
+      if (prevDay !== undefined && periodKey(day, rebalance) !== periodKey(prevDay, rebalance)) {
+        const targets = scheduledTargets();
         if (targets !== null) {
-          const pool: RebalanceHolding[] = cursors
-            .filter((c) => c.entered)
-            .map((c) => ({ key: c.asset.assetId, value: c.value }));
-          if (cash > 0) pool.push({ key: CASH_KEY, value: cash });
-          const rebalanced = new Map(
-            rebalanceToTargets(pool, targets).map((h) => [h.key, h.value]),
-          );
-          for (const c of cursors) {
-            if (!c.entered) continue;
-            const value = rebalanced.get(c.asset.assetId) ?? 0;
-            c.value = value;
-            c.segBaseValue = value;
-            c.segBaseEur = c.eur;
-          }
-          cash = 0;
+          rebalanceHoldings(targets);
+          rebalanceEvents.push({ date: day });
         }
       }
     }
@@ -736,6 +856,7 @@ async function runLatePipeline(
     series,
     perAsset,
     entryEvents,
+    rebalanceEvents,
     idleCashAvgPct: mode === 'cash' ? (cashFractionSum / axis.length) * 100 : null,
   };
 }
@@ -828,6 +949,10 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
   const mode: BacktestMode = input.mode ?? 'clip';
   if (!BACKTEST_MODES.includes(mode)) {
     throw new Error(`backtest: unknown mode ${JSON.stringify(mode)}.`);
+  }
+  const rebalance: RebalanceFrequency = input.rebalance ?? 'none';
+  if (!REBALANCE_FREQUENCIES.includes(rebalance)) {
+    throw new Error(`backtest: unknown rebalance frequency ${JSON.stringify(rebalance)}.`);
   }
 
   if (positions.length === 0) {
@@ -983,11 +1108,12 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
   let series: SeriesPoint[];
   let contributions: PositionContribution[];
   let entryEvents: BacktestEntryEvent[];
+  let rebalanceEvents: BacktestRebalanceEvent[];
   let idleCashAvgPct: number | null;
 
-  if (mode === 'clip') {
-    // The pre-§14 buy-and-hold pipeline, untouched: `clip` results stay
-    // bit-identical to the previous engine.
+  if (mode === 'clip' && rebalance === 'none') {
+    // The pre-§14 buy-and-hold pipeline, untouched: schedule-less `clip`
+    // results stay bit-identical to the previous engine.
     const pipeline = await runPipeline(basket, axis, getRate);
     series = pipeline.series;
 
@@ -1004,16 +1130,18 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
       };
     });
     entryEvents = [];
+    rebalanceEvents = [];
     idleCashAvgPct = null;
   } else {
-    const pipeline = await runLatePipeline(basket, axis, getRate, mode);
+    const pipeline = await runEventPipeline(basket, axis, getRate, mode, rebalance);
     series = pipeline.series;
 
-    // Per-position attribution in the event-driven modes: `returnPct` stays the
+    // Per-position attribution on the event-driven path: `returnPct` stays the
     // asset's own price return over its invested period, while `contributionPct`
-    // is the money-weighted segment gain — in `cash` mode that equals
-    // weight · returnPct, in `redistribute` mode it additionally carries the
-    // temporarily redistributed capital. Both still sum to stats.totalReturnPct.
+    // is the money-weighted segment gain — in schedule-less `cash` mode that
+    // equals weight · returnPct; in `redistribute` mode, and in every mode with
+    // a rebalance schedule active, it additionally carries the temporarily
+    // re-allocated capital. All variants still sum to stats.totalReturnPct.
     contributions = pipeline.perAsset.map((a) => ({
       assetId: a.assetId,
       symbol: a.symbol,
@@ -1022,6 +1150,7 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
       contributionPct: a.gain * 100,
     }));
     entryEvents = pipeline.entryEvents;
+    rebalanceEvents = pipeline.rebalanceEvents;
     idleCashAvgPct = pipeline.idleCashAvgPct;
   }
 
@@ -1068,7 +1197,9 @@ export async function backtest(input: BacktestInput): Promise<BacktestResult> {
     notice,
     benchmark,
     mode,
+    rebalance,
     entryEvents,
+    rebalanceEvents,
     idleCashAvgPct,
   };
 }
