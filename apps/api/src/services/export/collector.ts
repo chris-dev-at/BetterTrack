@@ -87,10 +87,18 @@ function sanitize(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   return rows.map(stripSensitive);
 }
 
-/** One CSV cell: JSON-safe stringify, quoting anything with a comma/quote/newline. */
+/**
+ * One CSV cell: JSON-safe stringify, quoting anything with a comma/quote/newline.
+ * Also neutralizes spreadsheet formula injection — a leading `=`, `+`, `-`, `@`
+ * (or tab/CR) in user-controlled text (e.g. `transactions.note`) is prefixed with
+ * a single quote so Excel/Sheets render the cell as literal text instead of
+ * evaluating it. Genuine numbers (incl. negatives like `-100.5`) are left intact.
+ */
 function csvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
-  const s = value instanceof Date ? value.toISOString() : String(value);
+  const raw = value instanceof Date ? value.toISOString() : String(value);
+  const risky = /^[=+\-@\t\r]/.test(raw) && !/^-?\d+(\.\d+)?$/.test(raw);
+  const s = risky ? `'${raw}` : raw;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
