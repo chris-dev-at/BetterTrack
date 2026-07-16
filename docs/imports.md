@@ -78,8 +78,8 @@ prices are never converted silently.
 ## Adding a broker
 
 Adding a broker is **one mapper module + one anonymized fixture** — zero
-framework changes (the V4-P8 pluggability criterion; George/Flatex/IBKR are the
-follow-up issue):
+framework changes (the V4-P8 pluggability criterion, held by all four shipped
+mappers):
 
 1. `apps/api/src/services/imports/mappers/<broker>.ts` implementing
    `BrokerMapper` (`id`, `label`, `detect` — a header fingerprint returning a
@@ -141,7 +141,102 @@ Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung
 Fixture: `apps/api/src/services/imports/__tests__/fixtures/trade-republic.csv`
 (anonymized — invented ISINs/names, no real account data).
 
-### George (Erste), Flatex, IBKR
+### George (Erste Bank) (`george`)
 
-Follow-up issue (§13.4) — mappers land against this frozen framework; this
-section grows one subsection per broker as they ship.
+Expected export: the securities-account (Wertpapier) CSV — German headers,
+semicolon- **or** comma-separated (the delimiter is sniffed per file; the
+comma variant quotes its decimal-comma numbers):
+
+```
+Buchungsdatum;Auftragsart;Titel;ISIN;Stück;Kurs;Betrag;Spesen;Währung
+```
+
+- **Trades and dividends share the one export.** `Auftragsart` values: `Kauf` →
+  buy; `Verkauf` → sell; `Ertrag` (Ertragsgutschrift), `Dividende` and
+  `Ausschüttung` → dividend. Anything else is reported per row as unsupported —
+  in particular there are **no cash deposit/withdrawal rows**: cash lives on
+  the giro account, and bank-account imports are a later release (V5-P9).
+- **No ticker symbols.** Instruments are ISIN + `Titel`, so resolution falls to
+  the exact-name match (or an ISIN-keyed custom asset), like Trade Republic.
+- **German notation throughout** — `1.234,56` numbers (the ambiguous
+  grouping-dot integer `1.000` is refused per row, same as every German-CSV
+  mapper), `15.01.2024` or ISO dates, day precision anchored at 12:00 UTC.
+- **`Betrag` is only trusted for dividends** (the positive EUR gross — a
+  negative amount on a dividend row fails per row instead of booking as
+  income). Trade economics re-derive from `Stück × Kurs + Spesen`. Negative
+  `Spesen` fails its row. Non-EUR dividend rows are flagged `error` (the cash
+  ledger is EUR-only, §14); trades may carry any ISO currency — the
+  framework's listing-currency check applies.
+
+Fixture: `apps/api/src/services/imports/__tests__/fixtures/george.csv`
+(anonymized — invented ISINs/names, no real account data).
+
+### Flatex (`flatex`)
+
+Flatex exports **two separate CSV kinds** — one mapper accepts both,
+dispatching on the header; autodetect recognizes either as Flatex:
+
+```
+Wertpapierumsätze: Buchtag;Valuta;ISIN;Bezeichnung;Nominale;Kurs;Währung;Provision;Endbetrag;Buchungsinformationen
+Kontoumsätze:      Buchtag;Valuta;Buchungsinformationen;TA-Nr.;Betrag
+```
+
+- **Securities rows carry their side in the `Buchungsinformationen` text**
+  (`Kauf …` / `Verkauf …`); other booking texts (e.g. `Depotübertrag`) are
+  reported per row. `Nominale` may be signed (sells negative) — its magnitude
+  is the quantity, the side always comes from the text. `Provision` is read as
+  a magnitude too (fee columns are printed signed in some exports).
+  `Endbetrag` is not trusted for trades; `Buchtag` (not `Valuta`) is the row
+  date. German number/date notation as above.
+- **Cash rows classify by their booking text:** `Ertragsgutschrift`/`Dividende`
+  → dividend, with the instrument's ISIN and name extracted from the text
+  (resolution then works like any ISIN + name identity); `Einzahlung` /
+  `Auszahlung` → deposit/withdrawal; `Überweisung` (or the transliterated
+  `Ueberweisung`) and `Zinsen` → by the amount's sign (`Zinsen` gets an
+  "Interest (Flatex)" note). Unknown texts are reported per row. **The amount
+  sign must agree with the text:** a `Storno …` reversal keeps the original
+  booking's text but flips the sign — a negative dividend or a
+  sign-contradicting deposit/withdrawal fails per row instead of booking its
+  magnitude (which would double-count the original plus its reversal). The
+  Konto is EUR-denominated — cash rows are always EUR.
+- **Import Wertpapierumsätze before Kontoumsätze**: a dividend books only
+  against a held instrument (V3-P4c), so the buys from the securities file
+  must land first.
+
+Fixtures: `apps/api/src/services/imports/__tests__/fixtures/flatex-securities.csv`
+and `…/flatex-cash.csv` (anonymized).
+
+### Interactive Brokers (`ibkr`)
+
+Expected export: the **Activity Statement CSV** — English, comma-separated,
+**multi-section**: every line starts with the section name and a row type
+(`Trades,Header,…` / `Trades,Data,…`), and each section's `Header` row defines
+that section's columns. Flex Query exports are a different, column-configurable
+format and are **not** supported — export an Activity Statement instead.
+
+- **Imported sections:** `Trades` (DataDiscriminator `Order`, asset category
+  `Stocks`), `Dividends`, `Deposits & Withdrawals`. Everything else — statement
+  metadata, `SubTotal`/`Total` summaries, `ClosedLot` legs (derived views of
+  the same orders), unsupported sections like Open Positions — is deliberately
+  **skipped, not errored**: on a real statement those lines outnumber the
+  transactions severalfold and would bury the preview. Non-stock trade rows
+  (Forex, options) and trade rows with an **unknown DataDiscriminator** (e.g. a
+  variant statement's `Trade` executions) ARE reported per row so nothing that
+  looks like a transaction disappears silently.
+- **English number notation** (`1,234.56`) — parsed by an IBKR-local parser,
+  never the German-notation helper (which would read `1,200` shares as 1.2).
+  Mis-grouped values (`1,20`) are refused per row. `Date/Time` is
+  `"2024-01-16, 09:32:11"`; the calendar day before the comma is used.
+- **Multi-currency:** each trade row carries its own currency; a trade books
+  against the catalog listing quoted in that currency (the framework's
+  listing-currency check applies — fixture includes a USD trade). Quantity is
+  signed (negative = sell); `Comm/Fee` is the negative commission cash effect —
+  its magnitude becomes the fee, in the trade's currency.
+- **Dividend/cash rows must be EUR** (the cash ledger is EUR-only, §14) —
+  non-EUR ones are flagged `error`; record them manually. The dividend
+  instrument (`SYMBOL(ISIN) Cash Dividend …`) is extracted from the
+  description; descriptions without that shape fall back to a name-only
+  identity (→ usually `unmapped`, never guessed).
+
+Fixture: `apps/api/src/services/imports/__tests__/fixtures/ibkr.csv`
+(anonymized — invented symbols/ISINs, no real account data).
