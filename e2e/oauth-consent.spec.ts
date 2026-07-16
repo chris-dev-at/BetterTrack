@@ -128,6 +128,12 @@ test('oauth consent: first-party chooser renders and Use another account round-t
     );
     await expect(page.getByText('Official BetterTrack app')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(`Signed in as ${secondUsername}`)).toBeVisible();
+    // The interpose still holds for the newly-signed-in identity — Continue and
+    // Use another account both reappear, and auto-approve keeps skipping the
+    // scope-approval prompt (V4-P2b invariant, not just a first-user quirk).
+    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Use another account' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(0);
     // Still zero approves — the whole round-trip never authorizes.
     expect(approveHits).toHaveLength(0);
   } finally {
