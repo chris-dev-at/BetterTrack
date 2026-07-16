@@ -82,11 +82,14 @@ export function isAccountSecurityNotificationType(type: string): boolean {
 
 /**
  * The default enabled state for a (channel, type) cell with **no stored
- * override** (V4-P0c lean email defaults, §6.10). Email defaults ON only for
- * the account/security category and OFF for everything else; the in-app bell,
- * phone push and browser push channels are unchanged — every type defaults ON.
- * The single source of truth both the settings surface and the dispatcher's
- * fan-out gate resolve through, so web and the delivery core cannot drift.
+ * override** (V4-P0c lean email defaults, §6.10; V4-P10 telegram/discord).
+ * Email defaults ON only for the account/security category and OFF for
+ * everything else; the in-app bell, phone push, browser push, Telegram and
+ * Discord channels are unchanged — every type defaults ON so a freshly-linked
+ * Telegram chat or a newly-saved Discord webhook lights up its whole matrix
+ * column without a manual toggle sweep. The single source of truth both the
+ * settings surface and the dispatcher's fan-out gate resolve through, so web
+ * and the delivery core cannot drift.
  */
 export function notificationChannelDefaultEnabled(channel: string, type: string): boolean {
   if (channel === 'email') return isAccountSecurityNotificationType(type);

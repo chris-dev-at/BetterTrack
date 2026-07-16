@@ -1,10 +1,19 @@
 import {
   accountSettingsResponseSchema,
+  discordSettingsResponseSchema,
+  discordTestResponseSchema,
   notificationSettingsResponseSchema,
   taxSettingsResponseSchema,
+  telegramConfirmResponseSchema,
+  telegramSettingsResponseSchema,
   type AccountSettingsResponse,
+  type DiscordSettingsResponse,
+  type DiscordTestResponse,
+  type DiscordWebhookRequest,
   type NotificationSettingsResponse,
   type TaxSettingsResponse,
+  type TelegramConfirmResponse,
+  type TelegramSettingsResponse,
   type UpdateAccountSettingsRequest,
   type UpdateNotificationSettingsRequest,
   type UpdateTaxSettingsRequest,
@@ -76,4 +85,62 @@ export async function updateTaxSettings(
 ): Promise<TaxSettingsResponse> {
   const data = await apiRequest<unknown>('/settings/taxes', { method: 'PATCH', body });
   return taxSettingsResponseSchema.parse(data);
+}
+
+// ── Telegram + Discord channels (§13.4 V4-P10) ──────────────────────────────
+
+/** `GET /settings/telegram` — the caller's Telegram link state. */
+export async function getTelegramSettings(signal?: AbortSignal): Promise<TelegramSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/telegram', { signal });
+  return telegramSettingsResponseSchema.parse(data);
+}
+
+/** `POST /settings/telegram/link` — mint a fresh link code + deep link. */
+export async function startTelegramLink(): Promise<TelegramSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/telegram/link', { method: 'POST' });
+  return telegramSettingsResponseSchema.parse(data);
+}
+
+/**
+ * `POST /settings/telegram/confirm` — poll for the bot's `/start` update. The
+ * SPA polls this while `pending` is true; success flips to `linked`.
+ */
+export async function confirmTelegramLink(): Promise<TelegramConfirmResponse> {
+  const data = await apiRequest<unknown>('/settings/telegram/confirm', { method: 'POST' });
+  return telegramConfirmResponseSchema.parse(data);
+}
+
+/** `DELETE /settings/telegram` — unlink; idempotent. */
+export async function unlinkTelegram(): Promise<TelegramSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/telegram', { method: 'DELETE' });
+  return telegramSettingsResponseSchema.parse(data);
+}
+
+/** `GET /settings/discord` — the caller's Discord webhook state (masked). */
+export async function getDiscordSettings(signal?: AbortSignal): Promise<DiscordSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/discord', { signal });
+  return discordSettingsResponseSchema.parse(data);
+}
+
+/**
+ * `POST /settings/discord/webhook` — save or replace the caller's webhook.
+ * The API validates the URL shape AND live-tests it before persisting.
+ */
+export async function saveDiscordWebhook(
+  body: DiscordWebhookRequest,
+): Promise<DiscordSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/discord/webhook', { method: 'POST', body });
+  return discordSettingsResponseSchema.parse(data);
+}
+
+/** `POST /settings/discord/test` — send a diagnostic message to the saved webhook. */
+export async function testDiscordWebhook(): Promise<DiscordTestResponse> {
+  const data = await apiRequest<unknown>('/settings/discord/test', { method: 'POST' });
+  return discordTestResponseSchema.parse(data);
+}
+
+/** `DELETE /settings/discord` — remove the caller's webhook. */
+export async function removeDiscordWebhook(): Promise<DiscordSettingsResponse> {
+  const data = await apiRequest<unknown>('/settings/discord', { method: 'DELETE' });
+  return discordSettingsResponseSchema.parse(data);
 }

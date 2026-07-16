@@ -544,7 +544,16 @@ describe('alert.triggered delivery through the notification matrix (§6.10, §14
 
     // Email defaults OFF for alert.triggered now (V4-P0c) — opt in explicitly.
     await harnessWithEmail.ctx.notificationSettings.update(user.id, {
-      matrix: { 'alert.triggered': { inapp: true, email: true, push: true, webpush: true } },
+      matrix: {
+        'alert.triggered': {
+          inapp: true,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      },
     });
     // Email enabled → an email is sent.
     await dispatch('2026-07-07T10:00:00.000Z');
@@ -553,7 +562,16 @@ describe('alert.triggered delivery through the notification matrix (§6.10, §14
 
     // Mute the email channel for alert.triggered, keep in-app.
     await harnessWithEmail.ctx.notificationSettings.update(user.id, {
-      matrix: { 'alert.triggered': { inapp: true, email: false, push: true, webpush: true } },
+      matrix: {
+        'alert.triggered': {
+          inapp: true,
+          email: false,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      },
     });
     await dispatch('2026-07-07T11:00:00.000Z');
     expect(sent).toHaveLength(1); // no new email

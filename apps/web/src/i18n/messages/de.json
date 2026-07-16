@@ -398,6 +398,8 @@
       "channels": {
         "inapp": "In der App",
         "email": "E-Mail",
+        "telegram": "Telegram",
+        "discord": "Discord",
         "push": "Handy-Push",
         "webpush": "Browser-Push"
       },
@@ -428,6 +430,40 @@
         "unsupported": "Dieser Browser unterstützt keine Push-Benachrichtigungen.",
         "denied": "Benachrichtigungen sind für diese Seite in deinen Browser-Einstellungen blockiert.",
         "error": "Browser-Push konnte nicht geändert werden. Bitte versuche es erneut."
+      },
+      "telegram": {
+        "title": "Telegram",
+        "description": "Empfange Benachrichtigungen über den BetterTrack-Telegram-Bot. Einmal Chat verknüpfen — jederzeit trennen.",
+        "startLink": "Telegram-Verknüpfung starten",
+        "openBot": "Telegram-Bot öffnen",
+        "codeHint": "Sende /start {{code}} im Bot, um die Verknüpfung abzuschließen.",
+        "confirm": "Ich habe den Bot gestartet",
+        "confirming": "Prüfe …",
+        "pending": "Warte auf die /start-Nachricht …",
+        "linked": "Verknüpft mit Chat {{id}}",
+        "unlink": "Telegram trennen",
+        "unavailable": "Der Telegram-Kanal ist auf dieser Installation nicht verfügbar.",
+        "confirmError": "Verknüpfung konnte noch nicht bestätigt werden. Versuche es erneut, sobald du im Chat auf Start gedrückt hast.",
+        "startError": "Telegram-Verknüpfung konnte nicht gestartet werden. Bitte versuche es erneut.",
+        "unlinkError": "Telegram konnte nicht getrennt werden. Bitte versuche es erneut."
+      },
+      "discord": {
+        "title": "Discord",
+        "description": "Empfange Benachrichtigungen über einen benutzerspezifischen Discord-Webhook. Die URL wird verschlüsselt gespeichert und nie zurückgezeigt.",
+        "urlLabel": "Webhook-URL",
+        "urlPlaceholder": "https://discord.com/api/webhooks/…",
+        "save": "Webhook speichern",
+        "saving": "Speichere …",
+        "test": "Testnachricht senden",
+        "testing": "Sende …",
+        "testSuccess": "Testnachricht zugestellt.",
+        "testFailed": "Discord hat die Testnachricht abgelehnt. Prüfe die Webhook-URL und versuche es erneut.",
+        "linked": "Webhook gespeichert ({{id}})",
+        "remove": "Webhook entfernen",
+        "invalidUrl": "Das sieht nicht wie eine Discord-Webhook-URL aus.",
+        "invalidWebhook": "Discord hat diesen Webhook abgelehnt — ist er noch gültig?",
+        "sendFailed": "Discord konnte die Testnachricht nicht annehmen. Bitte versuche es erneut.",
+        "removeError": "Der Webhook konnte nicht entfernt werden. Bitte versuche es erneut."
       },
       "loadErrorTitle": "Benachrichtigungen konnten nicht geladen werden",
       "loadErrorDescription": "Bitte versuche es gleich noch einmal."

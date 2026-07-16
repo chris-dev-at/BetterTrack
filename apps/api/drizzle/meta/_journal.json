@@ -330,6 +330,13 @@
       "when": 1784010000000,
       "tag": "0046_data_export",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1784020000000,
+      "tag": "0047_telegram_discord_channels",
+      "breakpoints": true
     }
   ]
 }

@@ -255,6 +255,13 @@ const componentSchemas = {
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
 
+  // Telegram + Discord channels (§13.4 V4-P10)
+  TelegramSettingsResponse: contracts.telegramSettingsResponseSchema,
+  TelegramConfirmResponse: contracts.telegramConfirmResponseSchema,
+  DiscordSettingsResponse: contracts.discordSettingsResponseSchema,
+  DiscordWebhookRequest: contracts.discordWebhookRequestSchema,
+  DiscordTestResponse: contracts.discordTestResponseSchema,
+
   // Account data export (§13.4 V4-P6a, #494)
   ExportRequest: contracts.exportRequestSchema,
   ExportRequestResponse: contracts.exportRequestResponseSchema,
@@ -2318,6 +2325,77 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAccountSettingsRequest,
     status: 200,
     response: R.AccountSettingsResponse,
+  },
+
+  // Telegram + Discord channels (§13.4 V4-P10)
+  {
+    method: 'get',
+    path: '/settings/telegram',
+    tag: 'Settings',
+    summary:
+      'The caller’s Telegram link state (available / linked / pending). Bot token is env-gated.',
+    status: 200,
+    response: R.TelegramSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/telegram/link',
+    tag: 'Settings',
+    summary:
+      'Issue a fresh single-use Telegram link code — the SPA uses it in the `https://t.me/<bot>?start=<code>` deep link.',
+    status: 200,
+    response: R.TelegramSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/telegram/confirm',
+    tag: 'Settings',
+    summary:
+      'Poll for the bot’s `/start <code>` update and attach the chat id when it arrives; idempotent.',
+    status: 200,
+    response: R.TelegramConfirmResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/telegram',
+    tag: 'Settings',
+    summary: 'Unlink the caller’s Telegram chat (idempotent).',
+    status: 200,
+    response: R.TelegramSettingsResponse,
+  },
+  {
+    method: 'get',
+    path: '/settings/discord',
+    tag: 'Settings',
+    summary: 'The caller’s Discord webhook state (never returns the raw URL).',
+    status: 200,
+    response: R.DiscordSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/discord/webhook',
+    tag: 'Settings',
+    summary:
+      'Save (or replace) the caller’s Discord webhook — shape-validated and live-tested before persisting; URL encrypted at rest.',
+    body: R.DiscordWebhookRequest,
+    status: 200,
+    response: R.DiscordSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/discord/test',
+    tag: 'Settings',
+    summary: 'Send a diagnostic message to the caller’s saved Discord webhook.',
+    status: 200,
+    response: R.DiscordTestResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/discord',
+    tag: 'Settings',
+    summary: 'Remove the caller’s Discord webhook (idempotent).',
+    status: 200,
+    response: R.DiscordSettingsResponse,
   },
   {
     method: 'get',

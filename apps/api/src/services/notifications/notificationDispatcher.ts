@@ -24,8 +24,10 @@ import { alertBody, alertRuleSummary, alertTitle } from '../alerts/alertMessages
 import type { EmailService } from '../email/emailService';
 import type { Logger } from '../../logger';
 
+import type { DiscordChannel } from './discordChannel';
 import type { FcmChannel, PushMessage } from './fcm';
 import type { PresenceStore } from './presence';
+import type { TelegramChannel } from './telegramChannel';
 import type { WebPushChannel } from './webPush';
 
 /**
@@ -217,6 +219,10 @@ export interface NotificationDispatcherDeps {
   fcm?: FcmChannel | null;
   /** Browser-push channel; null/omitted = not configured (#368/#350). */
   webPush?: WebPushChannel | null;
+  /** Telegram channel; null/omitted = bot token unset (V4-P10). */
+  telegram?: TelegramChannel | null;
+  /** Discord channel; always built when webhooks storage is wired. Deliveries no-op for a user with no saved webhook (V4-P10). */
+  discord?: DiscordChannel | null;
   /** Active-view presence (#368). Omit to disable suppression (never suppresses). */
   presence?: PresenceStore;
   logger?: Logger;
@@ -235,7 +241,19 @@ export interface NotificationDispatcher {
 export function createNotificationDispatcher(
   deps: NotificationDispatcherDeps,
 ): NotificationDispatcher {
-  const { bus, repo, users, email, resolveAlert, fcm, webPush, presence, logger } = deps;
+  const {
+    bus,
+    repo,
+    users,
+    email,
+    resolveAlert,
+    fcm,
+    webPush,
+    telegram,
+    discord,
+    presence,
+    logger,
+  } = deps;
 
   /**
    * Render an event to its channel-shared strings. Async because the alert
@@ -626,6 +644,22 @@ export function createNotificationDispatcher(
         await webPush.deliver(event.userId, pushMessage);
       } catch (err) {
         logger?.warn({ err, type: event.type }, 'web-push fan-out failed');
+      }
+    }
+    if (routing.telegram && telegram) {
+      try {
+        await telegram.deliver(event.userId, pushMessage);
+      } catch (err) {
+        // Secret-safe: the channel already sanitizes its own errors, but re-log
+        // through the redactor here too (Pino serializes the `err` object).
+        logger?.warn({ err, type: event.type }, 'telegram fan-out failed');
+      }
+    }
+    if (routing.discord && discord) {
+      try {
+        await discord.deliver(event.userId, pushMessage);
+      } catch (err) {
+        logger?.warn({ err, type: event.type }, 'discord fan-out failed');
       }
     }
   }

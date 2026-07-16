@@ -23,6 +23,8 @@ function errorMessage(err: unknown): string {
 const CHANNEL_LABEL: Record<NotificationSettingChannel, string> = {
   inapp: 'In-app',
   email: 'Email',
+  telegram: 'Telegram',
+  discord: 'Discord',
   push: 'Phone',
   webpush: 'Browser',
 };
