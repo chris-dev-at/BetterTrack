@@ -313,6 +313,10 @@
           "label": "Temporary passwords",
           "description": "When an admin issues you a temporary password."
         },
+        "dataExport": {
+          "label": "Data exports",
+          "description": "When a data export you requested is ready to download."
+        },
         "alertTriggered": {
           "label": "Price alerts",
           "description": "When one of your price alerts fires."
@@ -789,6 +793,25 @@
       "title": "Portfolio sharing",
       "description": "Sharing lives in the Social tab now. Choose who can see each of your portfolios there — every portfolio stays private until you share it.",
       "link": "Manage sharing in Social →"
+    },
+    "export": {
+      "title": "Export my data",
+      "description": "Download a copy of your account data as a zip (JSON for every kind of data you own, plus CSVs for transactions, cash movements and holdings). You can request one export per day.",
+      "password": "Confirm your password",
+      "passwordHint": "Re-enter your password to start an export.",
+      "request": "Export my data",
+      "requestAgain": "Request a new export",
+      "submitting": "Requesting…",
+      "pending": "Your export is being prepared. This can take a moment — the button will turn into a download when it's ready.",
+      "ready": "Your export is ready to download.",
+      "readyUntil": "Your export is ready to download until {{date}}.",
+      "readyNoToken": "Your export is ready, but its download link isn't available on this device. Request a new export to download it here.",
+      "download": "Download export",
+      "expired": "Your last export has expired. Request a new one to download your data.",
+      "currentWrong": "Your password is incorrect.",
+      "codeWrong": "That two-factor code is incorrect or has expired.",
+      "rateLimited": "You can request a data export once per day. Please try again later.",
+      "requestFailed": "Could not start your export. Please try again."
     },
     "dangerZone": {
       "title": "Danger zone",

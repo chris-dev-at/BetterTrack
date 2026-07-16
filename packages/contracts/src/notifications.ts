@@ -30,6 +30,7 @@ export const NOTIFICATION_TYPES = [
   'follow.alert.fired',
   'account.invite',
   'account.temp_password',
+  'account.data_export',
   'alert.triggered',
   'chat.message',
 ] as const;
@@ -58,7 +59,7 @@ export const NOTIFICATION_CATEGORIES = [
   },
   { key: 'chat', types: ['chat.message'] },
   { key: 'alerts', types: ['alert.triggered'] },
-  { key: 'account', types: ['account.invite', 'account.temp_password'] },
+  { key: 'account', types: ['account.invite', 'account.temp_password', 'account.data_export'] },
 ] as const satisfies readonly { key: string; types: readonly NotificationType[] }[];
 export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['key'];
 
@@ -71,6 +72,7 @@ export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['
 export const ACCOUNT_SECURITY_NOTIFICATION_TYPES = [
   'account.invite',
   'account.temp_password',
+  'account.data_export',
 ] as const satisfies readonly NotificationType[];
 
 /** Whether a type belongs to the account/security category (email-default-on set). */

@@ -255,6 +255,11 @@ const componentSchemas = {
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
 
+  // Account data export (§13.4 V4-P6a, #494)
+  ExportRequest: contracts.exportRequestSchema,
+  ExportRequestResponse: contracts.exportRequestResponseSchema,
+  ExportStatusResponse: contracts.exportStatusResponseSchema,
+
   // Price alerts (§14, V3-P10)
   Alert: contracts.alertSchema,
   AlertListResponse: contracts.alertListResponseSchema,
@@ -481,6 +486,33 @@ const endpoints: EndpointDef[] = [
     body: R.DeleteAccountRequest,
     status: 200,
     response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/export',
+    tag: 'Account',
+    summary:
+      'Request a data export (re-auth + 1/day). Returns the job id and the raw download token once; only its hash is stored.',
+    body: R.ExportRequest,
+    status: 200,
+    response: R.ExportRequestResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/export',
+    tag: 'Account',
+    summary: 'The caller’s latest export job status (no secret).',
+    status: 200,
+    response: R.ExportStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/export/download',
+    tag: 'Account',
+    summary:
+      'Download the ready export zip; session-authenticated and token-gated (foreign/expired tokens 404).',
+    query: contracts.exportDownloadQuerySchema,
+    status: 200,
   },
   {
     method: 'get',

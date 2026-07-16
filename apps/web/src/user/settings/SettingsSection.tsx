@@ -133,6 +133,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.tempPassword.label'),
       description: t('settings.notifications.types.tempPassword.description'),
     },
+    'account.data_export': {
+      label: t('settings.notifications.types.dataExport.label'),
+      description: t('settings.notifications.types.dataExport.description'),
+    },
     'alert.triggered': {
       label: t('settings.notifications.types.alertTriggered.label'),
       description: t('settings.notifications.types.alertTriggered.description'),
@@ -172,6 +176,10 @@ function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string>
  */
 function cellLocked(type: NotificationType, channel: NotificationSettingChannel): boolean {
   if (type === 'account.invite') return true;
+  // `account.data_export`'s notice is in-app / push only — no email is sent for
+  // it (the download is gated by a token the requester already holds), so its
+  // email cell is informational, like `account.temp_password`'s.
+  if (type === 'account.data_export' && channel === 'email') return true;
   return type === 'account.temp_password' && channel === 'email';
 }
 
