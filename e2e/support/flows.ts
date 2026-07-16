@@ -70,7 +70,15 @@ export async function activateConglomerate(
   // Locale-agnostic 2-dp: EN "100.00%" vs DE "100,00 %" with narrow space.
   await expect(positions.getByRole('status')).toHaveText(/^100[.,]00\s*%$/);
   await page.getByRole('button', { name: 'Activate' }).click();
-  await expect(page).toHaveURL(/\/workboard\/conglomerates\/[^/]+$/, { timeout: 20_000 });
+  // `Activate` navigates to `/workboard/conglomerates/:id` at the *end* of
+  // handleActivate, after two awaited network calls — the click resolves before
+  // that, when the URL is still `/workboard/conglomerates/new`. Exclude `new`
+  // from the URL match AND wait for the detail-only <h1>{name}</h1> so we
+  // capture the real detail URL rather than the builder's `/new` route.
+  await expect(page).toHaveURL(/\/workboard\/conglomerates\/(?!new(?:\/|$))[^/]+$/, {
+    timeout: 20_000,
+  });
+  await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible();
   return page.url();
 }
 
