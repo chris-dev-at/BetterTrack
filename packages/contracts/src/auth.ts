@@ -348,6 +348,51 @@ export const googleUnlinkRequestSchema = z
 export type GoogleUnlinkRequest = z.infer<typeof googleUnlinkRequestSchema>;
 
 /**
+ * Google-assisted registration (§13.4 V4-P4b; owner order 2026-07-16). Choosing
+ * "Continue with Google" on the register surface no longer creates an account:
+ * the OAuth round-trip parks the VERIFIED claims in a server-side one-time
+ * ticket (short TTL, single-use, bound to this browser) and lands the browser
+ * back on the register form in a "Connected to Google" state. The account is
+ * created only on explicit submit, per the active registration mode.
+ *
+ * The ticket is referenced by a signed httpOnly cookie set at the callback — the
+ * client never handles the reference itself. {@link googleRegisterTicketResponseSchema}
+ * is the display view the connected form reads (`GET /auth/google/register-ticket`):
+ * the verified email (prefilled AND locked) and the Google display name to seed
+ * the username. `name` is `null` when Google returned no profile name.
+ */
+export const googleRegisterTicketResponseSchema = z
+  .object({
+    email: z.string(),
+    name: z.string().nullable(),
+  })
+  .strict();
+export type GoogleRegisterTicketResponse = z.infer<typeof googleRegisterTicketResponseSchema>;
+
+/**
+ * `POST /auth/google/register` — create the account from a pending Google ticket
+ * (referenced by the signed httpOnly cookie, never the body). The email and the
+ * Google subject to link are taken from the TICKET, never from this payload — a
+ * tampered `email` here is IGNORED (it is accepted only so the locked prefill may
+ * round-trip without a strict-schema rejection). Password rules are unchanged
+ * (Google prefills, it does not replace credentials), so `password` stays
+ * required. `inviteToken` is consulted only in invite-token mode; `locale`
+ * localizes a later approval decision email. The response reuses
+ * {@link registerResponseSchema}: the signed-in user (open / invite-token) or
+ * the approval-pending answer.
+ */
+export const googleRegisterRequestSchema = z
+  .object({
+    email: emailSchema.optional(),
+    username: usernameSchema,
+    password: passwordSchema,
+    inviteToken: z.string().min(1).max(256).optional(),
+    locale: localeSchema.optional(),
+  })
+  .strict();
+export type GoogleRegisterRequest = z.infer<typeof googleRegisterRequestSchema>;
+
+/**
  * OAuth account memory + PIN quick re-auth (PROJECTPLAN.md §16; owner spec #399
  * §B, V4-P2b). On the OAuth authorize page a device can remember the last
  * PIN-user's identity so the next flow is: tap your name → enter your PIN only →

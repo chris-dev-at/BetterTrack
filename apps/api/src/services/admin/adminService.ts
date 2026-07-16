@@ -506,18 +506,22 @@ export function createAdminService(deps: AdminServiceDeps) {
         throw conflict('That username is already taken.', 'USERNAME_TAKEN');
       }
 
-      // A Google application (§13.4 V4-P4b) has no password: mint a random
-      // unusable hash + flag the account password-less, then link the identity
-      // below so the approved user signs in via Google. A normal application
-      // carries the argon2id hash the applicant chose at request time.
+      // Link a Google identity when the application carried one (§13.4 V4-P4b).
+      // Whether the account gets a USABLE password is independent of that: it
+      // derives from whether a real hash was stored. A Google-assisted
+      // application (owner order 2026-07-16) sets a password on the connected
+      // form, so its approved account keeps that password AND the linked
+      // identity; an older password-less Google application (null hash) still
+      // mints a random unusable hash and flags the account password-less.
       const isFederated = request.provider !== null && request.providerSubject !== null;
+      const hasUsablePassword = request.passwordHash !== null;
       const passwordHash =
         request.passwordHash ?? (await passwordHasher.hash(randomBytes(24).toString('hex')));
       const user = await userRepo.create({
         email: request.email,
         username: request.username,
         passwordHash,
-        hasUsablePassword: !isFederated,
+        hasUsablePassword,
         role: 'user',
         status: 'active',
         mustChangePassword: false,

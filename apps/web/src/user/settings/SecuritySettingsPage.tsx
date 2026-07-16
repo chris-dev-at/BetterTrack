@@ -50,6 +50,27 @@ const SESSIONS_KEY = ['auth', 'sessions'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
 
+/**
+ * Map a Settings-connect failure the callback bounced back as `?error=google_*`
+ * to a friendly message (owner order 2026-07-16). The headline case is
+ * `google_email_mismatch`: a connect is email-match-only, so only the Google
+ * account whose verified email equals this account's email may be linked.
+ * Anything not a `google_*` code (or absent) is not a connect error → `null`.
+ */
+function connectErrorMessage(t: TranslateFn, code: string | null): string | null {
+  if (!code || !code.startsWith('google_')) return null;
+  switch (code) {
+    case 'google_email_mismatch':
+      return t('settings.security.google.errorMismatch');
+    case 'google_already_linked':
+      return t('settings.security.google.errorAlreadyLinked');
+    case 'google_admin':
+      return t('settings.security.google.errorAdmin');
+    default:
+      return t('settings.security.google.genericError');
+  }
+}
+
 function pinErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
     if (err.code === 'WEAK_PASSWORD' || err.code === 'VALIDATION_ERROR') return err.message;
@@ -1049,17 +1070,24 @@ function GoogleSection() {
   const [unlinking, setUnlinking] = useState(false);
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // A connect failure the callback bounced back (e.g. email mismatch) — kept
+  // separate from the unlink-form `error` so the two never collide.
+  const [connectError] = useState<string | null>(() =>
+    connectErrorMessage(t, searchParams.get('error')),
+  );
   const [notice, setNotice] = useState<string | null>(
     searchParams.get('google') === 'linked' ? t('settings.security.google.linkedNotice') : null,
   );
 
-  // Consume the `?google=linked` marker the callback bounced back, so a refresh
-  // doesn't keep re-announcing it.
-  // Run once on mount — the marker is a one-shot handoff from the redirect.
+  // Consume the `?google=linked` / `?error=google_*` markers the connect callback
+  // bounced back, so a refresh doesn't keep re-announcing them. Run once on mount —
+  // the markers are one-shot handoffs from the redirect.
   useEffect(() => {
-    if (searchParams.get('google')) {
+    const err = searchParams.get('error');
+    if (searchParams.get('google') || (err && err.startsWith('google_'))) {
       const next = new URLSearchParams(searchParams);
       next.delete('google');
+      if (err && err.startsWith('google_')) next.delete('error');
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, setSearchParams]);
@@ -1125,6 +1153,7 @@ function GoogleSection() {
         {t('settings.security.google.title')}
       </h3>
       <p className="text-xs text-neutral-500">{t('settings.security.google.description')}</p>
+      {connectError ? <Alert tone="error">{connectError}</Alert> : null}
       {notice ? <Alert tone="success">{notice}</Alert> : null}
       {status.linked ? (
         <div className="flex flex-col gap-3">

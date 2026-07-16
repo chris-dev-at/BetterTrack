@@ -149,7 +149,13 @@
       "closedMessage": "Registration is currently closed. Ask an administrator for an invite.",
       "pendingSubtitle": "Almost there",
       "pendingMessage": "Thanks! Your registration is pending administrator approval. You'll receive an email once it's reviewed.",
-      "legalConsent": "By signing up you agree to our {{terms}}, {{privacy}}, {{impressum}} and {{cookies}}."
+      "legalConsent": "By signing up you agree to our {{terms}}, {{privacy}}, {{impressum}} and {{cookies}}.",
+      "google": {
+        "connecting": "Connecting to Google…",
+        "connectedAs": "Connected to Google as {{email}}. Finish setting up your account below.",
+        "emailLockedHint": "Set by Google and can't be changed.",
+        "ticketExpired": "Your Google connection expired. Please continue with Google again."
+      }
     },
     "oauthConsent": {
       "logoBadge": "BT",
@@ -597,7 +603,10 @@
         "linkedNotice": "Google account linked.",
         "wrongPassword": "Your password is incorrect.",
         "genericError": "Something went wrong. Please try again.",
-        "loadError": "Couldn't load your Google link status."
+        "loadError": "Couldn't load your Google link status.",
+        "errorMismatch": "That Google account's email doesn't match your account email. You can only connect the Google account that shares this account's email.",
+        "errorAlreadyLinked": "That Google account is already linked to another user.",
+        "errorAdmin": "Google isn't available for administrator accounts."
       }
     },
     "api": {

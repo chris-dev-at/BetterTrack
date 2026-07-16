@@ -194,3 +194,93 @@ test('the legal-consent links resolve to the DE variants when the locale is Germ
     'https://bettertrack.at/cookies/de/',
   );
 });
+
+// ── Google-assisted registration: connect → prefill → submit (owner 2026-07-16) ──
+
+test('the connected state locks the prefilled email, seeds the username, and submits via googleRegister', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
+  vi.mocked(api.getGoogleRegisterTicket).mockResolvedValue({
+    email: 'ada@gmail.com',
+    name: 'Ada Lovelace',
+  });
+  vi.mocked(api.googleRegister).mockResolvedValue(user);
+  const u = userEvent.setup();
+  renderAt('/register?google=connected');
+
+  // The "Connected to Google" state announces the linked email.
+  expect(await screen.findByText(/Connected to Google as ada@gmail.com/i)).toBeInTheDocument();
+  // Email is prefilled AND locked (disabled input).
+  const email = screen.getByLabelText('Email') as HTMLInputElement;
+  expect(email.value).toBe('ada@gmail.com');
+  expect(email).toBeDisabled();
+  // Username is seeded from the Google name (sanitized), still editable.
+  expect((screen.getByLabelText('Username') as HTMLInputElement).value).toBe('AdaLovelace');
+
+  await u.type(screen.getByLabelText('Password'), 'ada-strong-pass-1');
+  await u.click(screen.getByRole('button', { name: 'Create account' }));
+
+  // Submitted via the Google path — and the email is NEVER sent (the server takes
+  // it from the ticket). The ordinary register path is not used.
+  await waitFor(() =>
+    expect(api.googleRegister).toHaveBeenCalledWith({
+      username: 'AdaLovelace',
+      password: 'ada-strong-pass-1',
+      locale: 'en',
+    }),
+  );
+  expect(api.register).not.toHaveBeenCalled();
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+});
+
+test('an expired Google ticket falls back to the plain form with a notice', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
+  vi.mocked(api.getGoogleRegisterTicket).mockRejectedValue(
+    new ApiError(404, 'GOOGLE_REGISTER_TICKET_INVALID', 'gone'),
+  );
+  renderAt('/register?google=connected');
+
+  expect(await screen.findByText(/Google connection expired/i)).toBeInTheDocument();
+  // The email field is editable again — a plain registration.
+  const email = (await screen.findByLabelText('Email')) as HTMLInputElement;
+  expect(email).not.toBeDisabled();
+});
+
+test('the connected invite-token form keeps the token field fillable and sends it', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({
+    mode: 'invite_token',
+    googleEnabled: true,
+  });
+  vi.mocked(api.getGoogleRegisterTicket).mockResolvedValue({ email: 'ada@gmail.com', name: null });
+  vi.mocked(api.googleRegister).mockResolvedValue(user);
+  const u = userEvent.setup();
+  renderAt('/register?google=connected');
+
+  await screen.findByText(/Connected to Google/i);
+  // The invite/access-token field is still fillable AFTER connecting.
+  await u.type(screen.getByLabelText(/Access token/i), 'INVITE-XYZ');
+  await u.type(screen.getByLabelText('Username'), 'ada_user');
+  await u.type(screen.getByLabelText('Password'), 'ada-strong-pass-1');
+  await u.click(screen.getByRole('button', { name: 'Create account' }));
+
+  await waitFor(() =>
+    expect(api.googleRegister).toHaveBeenCalledWith(
+      expect.objectContaining({ inviteToken: 'INVITE-XYZ', username: 'ada_user' }),
+    ),
+  );
+});
+
+test('the connected approval form parks a pending request and mints no session', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'approval', googleEnabled: true });
+  vi.mocked(api.getGoogleRegisterTicket).mockResolvedValue({ email: 'ada@gmail.com', name: null });
+  vi.mocked(api.googleRegister).mockResolvedValue({ pending: true });
+  const u = userEvent.setup();
+  renderAt('/register?google=connected');
+
+  await screen.findByText(/Connected to Google/i);
+  await u.type(screen.getByLabelText('Username'), 'ada_user');
+  await u.type(screen.getByLabelText('Password'), 'ada-strong-pass-1');
+  await u.click(screen.getByRole('button', { name: 'Request account' }));
+
+  expect(await screen.findByText(/pending administrator approval/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
+});
