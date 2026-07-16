@@ -564,3 +564,123 @@ export const adminHealthResponseSchema = z
   })
   .strict();
 export type AdminHealthResponse = z.infer<typeof adminHealthResponseSchema>;
+
+// ── Announcements (§13.4 V4-P5b) ────────────────────────────────────────────
+// Admin-composed in-app notices with a dismissible banner + one inbox entry per
+// user. Content is stored per-locale (EN + DE fields) server-side and rendered
+// in the viewer's locale; only UI chrome flows through the SPA message catalog.
+// Delivery is banner + inbox only — no email, push or channel routing (out of
+// scope, and out of the V4-P5b acceptance).
+
+/** Banner severity — drives distinct styling (info + warning at minimum). */
+export const ANNOUNCEMENT_SEVERITIES = ['info', 'warning', 'critical'] as const;
+export const announcementSeveritySchema = z.enum(ANNOUNCEMENT_SEVERITIES);
+export type AnnouncementSeverity = z.infer<typeof announcementSeveritySchema>;
+
+/** Max title/body lengths — bounded so the banner render stays predictable. */
+export const ANNOUNCEMENT_TITLE_MAX = 120;
+export const ANNOUNCEMENT_BODY_MAX = 2000;
+
+/**
+ * The notification `type` reused by V4-P0c for the one-off lean-email-defaults
+ * notice — announcement inbox entries share it so the deep-link route key
+ * (V4-P0c's `NotificationBell.notificationLink`) resolves identically. Deep-link
+ * is `/announcements/:id` (a Settings landing page is out of scope); the banner
+ * carries the same route in its data. Kept in lockstep with the API constant.
+ */
+export const ANNOUNCEMENT_NOTIFICATION_TYPE = 'account.notice';
+
+/** One admin-composed announcement — reads and writes share this shape. */
+export const announcementSchema = z
+  .object({
+    id: z.string().uuid(),
+    severity: announcementSeveritySchema,
+    /** English title/body — always required (§13.4 EN + DE binding rule). */
+    titleEn: z.string(),
+    bodyEn: z.string(),
+    /** German title/body — always required (§13.4 EN + DE binding rule). */
+    titleDe: z.string(),
+    bodyDe: z.string(),
+    /**
+     * Active window (both inclusive): the banner and the fan-out gate honor
+     * this window and hide the announcement before start / after end. NULL
+     * start = start immediately; NULL end = no auto-off. Nothing about time
+     * is inferred from `createdAt` — the window is explicit.
+     */
+    startsAt: z.string().datetime().nullable(),
+    endsAt: z.string().datetime().nullable(),
+    /**
+     * The active flag the admin toggles: `false` hides it entirely, even inside
+     * the window (a dry-run save). Publishing (flip from off → on) fans an
+     * inbox row out to every user (idempotent by the shared eventKey below).
+     */
+    active: z.boolean(),
+    /** When the row was last published (flipped on). NULL until first publish. */
+    publishedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type Announcement = z.infer<typeof announcementSchema>;
+
+/** `GET /admin/announcements` — every announcement, newest first. */
+export const announcementListResponseSchema = z
+  .object({ announcements: z.array(announcementSchema) })
+  .strict();
+export type AnnouncementListResponse = z.infer<typeof announcementListResponseSchema>;
+
+/**
+ * `POST /admin/announcements` — create a new (possibly inactive) announcement.
+ * EN and DE title/body are ALL required (§13.4 binding — every user-facing
+ * string ships with both keys).
+ */
+export const createAnnouncementRequestSchema = z
+  .object({
+    severity: announcementSeveritySchema,
+    titleEn: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX),
+    bodyEn: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX),
+    titleDe: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX),
+    bodyDe: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX),
+    startsAt: z.string().datetime().nullable().optional(),
+    endsAt: z.string().datetime().nullable().optional(),
+    /** Defaults to `false`; the admin flips it on separately to publish. */
+    active: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (d) =>
+      !d.startsAt || !d.endsAt || new Date(d.startsAt).getTime() <= new Date(d.endsAt).getTime(),
+    { message: 'endsAt must be at or after startsAt.', path: ['endsAt'] },
+  );
+export type CreateAnnouncementRequest = z.infer<typeof createAnnouncementRequestSchema>;
+
+/**
+ * `PATCH /admin/announcements/:id` — partial update. At least one field
+ * required; unknown fields rejected. Flipping `active` from off to on triggers
+ * the fan-out; a re-publish is a no-op via the shared eventKey.
+ */
+export const updateAnnouncementRequestSchema = z
+  .object({
+    severity: announcementSeveritySchema.optional(),
+    titleEn: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX).optional(),
+    bodyEn: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX).optional(),
+    titleDe: z.string().trim().min(1).max(ANNOUNCEMENT_TITLE_MAX).optional(),
+    bodyDe: z.string().trim().min(1).max(ANNOUNCEMENT_BODY_MAX).optional(),
+    startsAt: z.string().datetime().nullable().optional(),
+    endsAt: z.string().datetime().nullable().optional(),
+    active: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (d) =>
+      d.severity !== undefined ||
+      d.titleEn !== undefined ||
+      d.bodyEn !== undefined ||
+      d.titleDe !== undefined ||
+      d.bodyDe !== undefined ||
+      d.startsAt !== undefined ||
+      d.endsAt !== undefined ||
+      d.active !== undefined,
+    { message: 'Provide at least one field to update.' },
+  );
+export type UpdateAnnouncementRequest = z.infer<typeof updateAnnouncementRequestSchema>;

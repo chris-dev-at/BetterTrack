@@ -19,7 +19,9 @@ import { befriend, provisionUser } from './support/users';
 test('follows: follow + bookmark from the Friends tab, alert switches, /following redirect', async ({
   browser,
 }) => {
-  test.setTimeout(180_000);
+  // The spec walks through two provisioned accounts and six /social navigations —
+  // 180 s ran out in the nightly on slow steps (#521), so match happy-path's budget.
+  test.setTimeout(240_000);
 
   const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
   await loginAsAdmin(apiRequest);

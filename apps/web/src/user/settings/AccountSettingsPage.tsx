@@ -15,13 +15,48 @@ import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDate, setMoneyCurrency } from '../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../lib/settingsApi';
-import { changePassword, getMe } from '../../lib/userApi';
+import {
+  changePassword,
+  dataExportDownloadUrl,
+  getDataExportStatus,
+  getMe,
+  requestDataExport,
+} from '../../lib/userApi';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
+const EXPORT_STATUS_KEY = ['settings', 'export'] as const;
+
+// The raw download token is delivered once (in the request response) and only
+// its hash is stored server-side, so the SPA keeps it in localStorage — keyed by
+// job id — to survive a reload until the export is downloaded or expires.
+const EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
+
+function readStoredExportToken(): { jobId: string; token: string } | null {
+  try {
+    const raw = localStorage.getItem(EXPORT_TOKEN_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { jobId?: unknown; token?: unknown };
+    if (typeof parsed.jobId === 'string' && typeof parsed.token === 'string') {
+      return { jobId: parsed.jobId, token: parsed.token };
+    }
+  } catch {
+    // Corrupt/blocked storage — treat as no stored token.
+  }
+  return null;
+}
+
+function writeStoredExportToken(value: { jobId: string; token: string } | null): void {
+  try {
+    if (value) localStorage.setItem(EXPORT_TOKEN_STORAGE_KEY, JSON.stringify(value));
+    else localStorage.removeItem(EXPORT_TOKEN_STORAGE_KEY);
+  } catch {
+    // Storage unavailable — the token simply won't persist across reloads.
+  }
+}
 
 /** Friendly message for the codes `POST /auth/change-password` can return. */
 function changeErrorMessage(t: TranslateFn, err: unknown): string {
@@ -262,6 +297,121 @@ function SharingMovedNote() {
   );
 }
 
+/** Friendly message for the codes `POST /account/export` can return. */
+function exportErrorMessage(t: TranslateFn, err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'INVALID_CREDENTIALS') return t('settings.export.currentWrong');
+    if (err.code === 'TWO_FACTOR_INVALID_CODE') return t('settings.export.codeWrong');
+    if (err.code === 'EXPORT_RATE_LIMITED' || err.status === 429)
+      return t('settings.export.rateLimited');
+    if (err.status >= 500) return t('common.genericError');
+  }
+  return t('settings.export.requestFailed');
+}
+
+/**
+ * Account data export (§13.4 V4-P6a, #494): "Export my data" → re-auth →
+ * async zip build → expiring, token-gated download. The raw download token is
+ * kept in localStorage (see helpers above) since the server stores only its
+ * hash; the status poll drives the pending/ready/expired states.
+ */
+function ExportDataSection() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [stored, setStored] = useState(() => readStoredExportToken());
+
+  const status = useQuery({
+    queryKey: EXPORT_STATUS_KEY,
+    queryFn: ({ signal }) => getDataExportStatus(signal),
+    // Poll while a build is in flight; idle otherwise.
+    refetchInterval: (query) => (query.state.data?.status === 'pending' ? 3000 : false),
+  });
+
+  const mutation = useMutation({
+    mutationFn: () => requestDataExport({ password }),
+    onSuccess: (res) => {
+      const next = { jobId: res.jobId, token: res.downloadToken };
+      writeStoredExportToken(next);
+      setStored(next);
+      setPassword('');
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: EXPORT_STATUS_KEY });
+    },
+    onError: (err) => setError(exportErrorMessage(t, err)),
+  });
+
+  const current = status.data;
+  // The stored token only unlocks the CURRENT ready job (job ids must match).
+  const tokenForJob = current?.jobId && stored?.jobId === current.jobId ? stored.token : null;
+  const isReady = current?.status === 'ready';
+  const isPending = current?.status === 'pending';
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    mutation.mutate();
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">{t('settings.export.title')}</h3>
+        <p className="text-xs text-neutral-500">{t('settings.export.description')}</p>
+      </div>
+
+      {error ? <Alert tone="error">{error}</Alert> : null}
+
+      {isReady && tokenForJob ? (
+        <div className="flex flex-col gap-2">
+          <Alert tone="success">
+            {current?.expiresAt
+              ? t('settings.export.readyUntil', { date: formatDate(current.expiresAt) })
+              : t('settings.export.ready')}
+          </Alert>
+          <a
+            href={dataExportDownloadUrl(tokenForJob)}
+            className="w-fit rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          >
+            {t('settings.export.download')}
+          </a>
+        </div>
+      ) : isReady && !tokenForJob ? (
+        <Alert tone="info">{t('settings.export.readyNoToken')}</Alert>
+      ) : isPending ? (
+        <Alert tone="info">{t('settings.export.pending')}</Alert>
+      ) : current?.status === 'expired' ? (
+        <Alert tone="info">{t('settings.export.expired')}</Alert>
+      ) : null}
+
+      {!isPending ? (
+        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          <TextField
+            label={t('settings.export.password')}
+            name="exportPassword"
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            hint={t('settings.export.passwordHint')}
+          />
+          <div>
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending
+                ? t('settings.export.submitting')
+                : isReady || current?.status === 'expired' || current?.status === 'failed'
+                  ? t('settings.export.requestAgain')
+                  : t('settings.export.request')}
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
 /**
  * Settings → Account (PROJECTPLAN.md §6.11, §13.3 V3-P1). Shows the identity read
  * from `GET /auth/me` (username, email, member-since), a change-password form, the
@@ -321,6 +471,10 @@ export function AccountSettingsPage() {
 
       <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
         <SharingMovedNote />
+      </section>
+
+      <section className="rounded-md border border-neutral-800 bg-neutral-900 p-5">
+        <ExportDataSection />
       </section>
 
       <section className="rounded-md border border-red-900/60 bg-neutral-900 p-5">

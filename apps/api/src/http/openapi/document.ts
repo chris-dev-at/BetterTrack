@@ -204,6 +204,14 @@ const componentSchemas = {
   CreateIdeaRequest: contracts.createIdeaRequestSchema,
   UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
 
+  // Announcements (§13.4 V4-P5b)
+  Announcement: contracts.announcementSchema,
+  AnnouncementListResponse: contracts.announcementListResponseSchema,
+  CreateAnnouncementRequest: contracts.createAnnouncementRequestSchema,
+  UpdateAnnouncementRequest: contracts.updateAnnouncementRequestSchema,
+  ActiveAnnouncement: contracts.activeAnnouncementSchema,
+  ActiveAnnouncementListResponse: contracts.activeAnnouncementListResponseSchema,
+
   // Analytics (§13.3 V3-P9)
   AnalyticsSeriesResponse: contracts.analyticsSeriesResponseSchema,
 
@@ -252,6 +260,11 @@ const componentSchemas = {
   NotificationSettingsResponse: contracts.notificationSettingsResponseSchema,
   AccountSettingsResponse: contracts.accountSettingsResponseSchema,
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
+
+  // Account data export (§13.4 V4-P6a, #494)
+  ExportRequest: contracts.exportRequestSchema,
+  ExportRequestResponse: contracts.exportRequestResponseSchema,
+  ExportStatusResponse: contracts.exportStatusResponseSchema,
 
   // Price alerts (§14, V3-P10)
   Alert: contracts.alertSchema,
@@ -485,6 +498,33 @@ const endpoints: EndpointDef[] = [
     body: R.DeleteAccountRequest,
     status: 200,
     response: R.OkResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/export',
+    tag: 'Account',
+    summary:
+      'Request a data export (re-auth + 1/day). Returns the job id and the raw download token once; only its hash is stored.',
+    body: R.ExportRequest,
+    status: 200,
+    response: R.ExportRequestResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/export',
+    tag: 'Account',
+    summary: 'The caller’s latest export job status (no secret).',
+    status: 200,
+    response: R.ExportStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/export/download',
+    tag: 'Account',
+    summary:
+      'Download the ready export zip; session-authenticated and token-gated (foreign/expired tokens 404).',
+    query: contracts.exportDownloadQuerySchema,
+    status: 200,
   },
   {
     method: 'get',
@@ -984,6 +1024,45 @@ const endpoints: EndpointDef[] = [
     params: contracts.idParamSchema,
     status: 200,
     response: R.OkResponse,
+  },
+  // Announcements (§13.4 V4-P5b) — admin CRUD; publish fan-out runs in the
+  // service on `active` flip on. Delivery is banner + inbox only.
+  {
+    method: 'get',
+    path: '/admin/announcements',
+    tag: 'Admin',
+    summary: 'List every composed announcement (newest first).',
+    status: 200,
+    response: R.AnnouncementListResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/announcements',
+    tag: 'Admin',
+    summary:
+      'Create an announcement. Requires EN + DE title/body; creating with active=true publishes immediately (fans one inbox row out per user).',
+    body: R.CreateAnnouncementRequest,
+    status: 201,
+    response: R.Announcement,
+  },
+  {
+    method: 'patch',
+    path: '/admin/announcements/{id}',
+    tag: 'Admin',
+    summary:
+      'Update an announcement. Flipping active off→on publishes (fan-out is idempotent per user via the shared eventKey).',
+    params: contracts.idParamSchema,
+    body: R.UpdateAnnouncementRequest,
+    status: 200,
+    response: R.Announcement,
+  },
+  {
+    method: 'delete',
+    path: '/admin/announcements/{id}',
+    tag: 'Admin',
+    summary: 'Delete an announcement (cascades its per-user dismissals away).',
+    params: contracts.idParamSchema,
+    status: 204,
   },
   {
     method: 'get',
@@ -2186,6 +2265,25 @@ const endpoints: EndpointDef[] = [
     tag: 'Notifications',
     summary: 'Remove one of the caller’s web-push subscriptions (idempotent).',
     body: R.WebPushUnsubscribeRequest,
+    status: 200,
+    response: R.OkResponse,
+  },
+  // Announcements banner (§13.4 V4-P5b)
+  {
+    method: 'get',
+    path: '/notifications/announcements',
+    tag: 'Notifications',
+    summary:
+      'Currently active announcements the caller has not dismissed, rendered in their locale (banner list).',
+    status: 200,
+    response: R.ActiveAnnouncementListResponse,
+  },
+  {
+    method: 'post',
+    path: '/notifications/announcements/{id}/dismiss',
+    tag: 'Notifications',
+    summary: 'Dismiss one announcement for the caller (idempotent; per user AND per announcement).',
+    params: contracts.announcementIdParamSchema,
     status: 200,
     response: R.OkResponse,
   },

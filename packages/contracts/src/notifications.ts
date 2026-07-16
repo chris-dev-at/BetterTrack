@@ -30,6 +30,7 @@ export const NOTIFICATION_TYPES = [
   'follow.alert.fired',
   'account.invite',
   'account.temp_password',
+  'account.data_export',
   'alert.triggered',
   'chat.message',
 ] as const;
@@ -58,7 +59,7 @@ export const NOTIFICATION_CATEGORIES = [
   },
   { key: 'chat', types: ['chat.message'] },
   { key: 'alerts', types: ['alert.triggered'] },
-  { key: 'account', types: ['account.invite', 'account.temp_password'] },
+  { key: 'account', types: ['account.invite', 'account.temp_password', 'account.data_export'] },
 ] as const satisfies readonly { key: string; types: readonly NotificationType[] }[];
 export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['key'];
 
@@ -71,6 +72,7 @@ export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['
 export const ACCOUNT_SECURITY_NOTIFICATION_TYPES = [
   'account.invite',
   'account.temp_password',
+  'account.data_export',
 ] as const satisfies readonly NotificationType[];
 
 /** Whether a type belongs to the account/security category (email-default-on set). */
@@ -211,3 +213,46 @@ export const markReadRequestSchema = z.union([
   z.object({ all: z.literal(true) }).strict(),
 ]);
 export type MarkReadRequest = z.infer<typeof markReadRequestSchema>;
+
+// ── Announcements banner (§13.4 V4-P5b) ─────────────────────────────────────
+// The user surface for admin-composed announcements: the currently active list
+// that the SPA renders as dismissible banners, plus the per-user dismiss action.
+// Content is stored per-locale server-side and delivered in the viewer's locale;
+// only UI chrome ("Dismiss") flows through the SPA i18n catalog.
+
+/** Banner severity — mirrors `admin.announcementSeveritySchema`. */
+export const ACTIVE_ANNOUNCEMENT_SEVERITIES = ['info', 'warning', 'critical'] as const;
+export const activeAnnouncementSeveritySchema = z.enum(ACTIVE_ANNOUNCEMENT_SEVERITIES);
+export type ActiveAnnouncementSeverity = z.infer<typeof activeAnnouncementSeveritySchema>;
+
+/** One active-for-me announcement rendered in the viewer's locale. */
+export const activeAnnouncementSchema = z
+  .object({
+    id: z.string().uuid(),
+    severity: activeAnnouncementSeveritySchema,
+    /** The viewer-locale rendered title (EN default when locale falls back). */
+    title: z.string(),
+    /** The viewer-locale rendered body (EN default when locale falls back). */
+    body: z.string(),
+    publishedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+export type ActiveAnnouncement = z.infer<typeof activeAnnouncementSchema>;
+
+/**
+ * `GET /notifications/announcements` — the active-for-me set. Server-computed:
+ * currently in the window (start ≤ now ≤ end), flagged `active`, and NOT
+ * dismissed by the caller. Rendered in the viewer's locale via `emailI18n`.
+ */
+export const activeAnnouncementListResponseSchema = z
+  .object({ announcements: z.array(activeAnnouncementSchema) })
+  .strict();
+export type ActiveAnnouncementListResponse = z.infer<typeof activeAnnouncementListResponseSchema>;
+
+/**
+ * `POST /notifications/announcements/:id/dismiss` — per-user dismissal.
+ * Idempotent (a repeat is a no-op); dismissal is per user AND per announcement,
+ * so a newly published one still appears for a caller that dismissed a prior.
+ */
+export const announcementIdParamSchema = z.object({ id: z.string().uuid() }).strict();
+export type AnnouncementIdParam = z.infer<typeof announcementIdParamSchema>;

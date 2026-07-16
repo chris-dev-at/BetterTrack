@@ -313,6 +313,10 @@
           "label": "Temporäre Passwörter",
           "description": "Wenn ein Administrator dir ein temporäres Passwort ausstellt."
         },
+        "dataExport": {
+          "label": "Datenexporte",
+          "description": "Wenn ein von dir angeforderter Datenexport zum Download bereit ist."
+        },
         "alertTriggered": {
           "label": "Preisalarme",
           "description": "Wenn einer deiner Preisalarme auslöst."
@@ -789,6 +793,25 @@
       "title": "Portfolio-Freigabe",
       "description": "Die Freigabe befindet sich jetzt im Tab „Sozial“. Lege dort fest, wer welches deiner Portfolios sehen kann — jedes Portfolio bleibt privat, bis du es teilst.",
       "link": "Freigabe im Tab „Sozial“ verwalten →"
+    },
+    "export": {
+      "title": "Meine Daten exportieren",
+      "description": "Lade eine Kopie deiner Kontodaten als ZIP herunter (JSON für jede Art von Daten, die dir gehören, plus CSVs für Transaktionen, Geldbewegungen und Bestände). Du kannst einen Export pro Tag anfordern.",
+      "password": "Passwort bestätigen",
+      "passwordHint": "Gib dein Passwort erneut ein, um einen Export zu starten.",
+      "request": "Meine Daten exportieren",
+      "requestAgain": "Neuen Export anfordern",
+      "submitting": "Wird angefordert…",
+      "pending": "Dein Export wird vorbereitet. Das kann einen Moment dauern — die Schaltfläche wird zum Download, sobald er fertig ist.",
+      "ready": "Dein Export steht zum Download bereit.",
+      "readyUntil": "Dein Export steht bis zum {{date}} zum Download bereit.",
+      "readyNoToken": "Dein Export ist fertig, aber der Download-Link ist auf diesem Gerät nicht verfügbar. Fordere einen neuen Export an, um ihn hier herunterzuladen.",
+      "download": "Export herunterladen",
+      "expired": "Dein letzter Export ist abgelaufen. Fordere einen neuen an, um deine Daten herunterzuladen.",
+      "currentWrong": "Dein Passwort ist falsch.",
+      "codeWrong": "Dieser Zwei-Faktor-Code ist falsch oder abgelaufen.",
+      "rateLimited": "Du kannst einen Datenexport einmal pro Tag anfordern. Bitte versuche es später erneut.",
+      "requestFailed": "Der Export konnte nicht gestartet werden. Bitte versuche es erneut."
     },
     "dangerZone": {
       "title": "Gefahrenzone",
@@ -2163,6 +2186,18 @@
       "wrongPassword": "Dieses Passwort ist falsch.",
       "wrongCode": "Dieser Code ist falsch oder abgelaufen.",
       "tooMany": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
+    }
+  },
+  "announcements": {
+    "dismiss": "Ausblenden",
+    "dismissing": "Wird ausgeblendet…",
+    "severity": {
+      "info": "Info",
+      "warning": "Warnung",
+      "critical": "Kritisch"
+    },
+    "aria": {
+      "list": "Ankündigungen"
     }
   },
   "admin": {

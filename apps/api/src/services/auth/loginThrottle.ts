@@ -41,6 +41,15 @@ export const PIN_TOKEN_ACCOUNT_NAMESPACE = 'pin_token_account';
 export const ACCOUNT_DELETE_NAMESPACE = 'account_delete_account';
 
 /**
+ * Per-account brute-force throttle for the data-export re-auth (§13.4 V4-P6a,
+ * #494). The export request re-verifies a credential (password / TOTP / recovery
+ * code); wrong attempts accrue here, independent of the login/2FA counters and
+ * the per-IP limiter, so the export endpoint is never a lighter brute-force
+ * oracle than login itself. Reuses the `loginAccount` schedule like deletion.
+ */
+export const ACCOUNT_EXPORT_NAMESPACE = 'account_export_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

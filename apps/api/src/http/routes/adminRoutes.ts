@@ -5,6 +5,7 @@ import {
   adminUserListQuerySchema,
   auditQuerySchema,
   bulkUserActionRequestSchema,
+  createAnnouncementRequestSchema,
   createInviteRequestSchema,
   createOAuthClientRequestSchema,
   createRegistrationTokenRequestSchema,
@@ -14,11 +15,13 @@ import {
   idParamSchema,
   testEmailRequestSchema,
   updateAccountDefaultsRequestSchema,
+  updateAnnouncementRequestSchema,
   updateAppSettingsRequestSchema,
   updateOAuthClientRequestSchema,
   updateUserRequestSchema,
   type AuditQuery,
   type BulkUserActionRequest,
+  type CreateAnnouncementRequest,
   type UpdateAccountDefaultsRequest,
   type CreateInviteRequest,
   type CreateOAuthClientRequest,
@@ -27,6 +30,7 @@ import {
   type DeleteUserRequest,
   type EmailLogQuery,
   type TestEmailRequest,
+  type UpdateAnnouncementRequest,
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
   type UpdateUserRequest,
@@ -365,6 +369,45 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     const { id } = req.valid?.params as { id: string };
     await ctx.oauth.deleteFirstPartyClient({ adminId: req.authUser!.id, id, ip: req.ip ?? null });
     res.json({ ok: true });
+  });
+
+  // ── Announcements (§13.4 V4-P5b) ────────────────────────────────────────
+  // Admin CRUD over composed announcements. Every mutation is audit-logged in
+  // the service; flipping `active` from off → on fans exactly one inbox row
+  // out to every user (deduped per-user via the shared eventKey). Delivery is
+  // banner + inbox only — no email/push/matrix routing runs.
+  router.get('/announcements', async (_req, res) => {
+    const announcements = await ctx.announcements.list();
+    res.json({ announcements });
+  });
+
+  router.post('/announcements', validateBody(createAnnouncementRequestSchema), async (req, res) => {
+    const announcement = await ctx.announcements.create(
+      req.valid?.body as CreateAnnouncementRequest,
+      actorOf(req),
+    );
+    res.status(201).json(announcement);
+  });
+
+  router.patch(
+    '/announcements/:id',
+    validateParams(idParamSchema),
+    validateBody(updateAnnouncementRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const announcement = await ctx.announcements.update(
+        id,
+        req.valid?.body as UpdateAnnouncementRequest,
+        actorOf(req),
+      );
+      res.json(announcement);
+    },
+  );
+
+  router.delete('/announcements/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    await ctx.announcements.remove(id, actorOf(req));
+    res.status(204).send();
   });
 
   return router;

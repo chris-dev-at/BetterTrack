@@ -5,6 +5,7 @@ import { I18nProvider } from '../i18n';
 import { AuthProvider, useAuth } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
 import { AccountDefaultsPage } from './pages/AccountDefaultsPage';
+import { AnnouncementsPage } from './pages/AnnouncementsPage';
 import { AuditPage } from './pages/AuditPage';
 import { EmailPage } from './pages/EmailPage';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
@@ -46,6 +47,7 @@ function AdminShell() {
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="account-defaults" element={<AccountDefaultsPage />} />
+        <Route path="announcements" element={<AnnouncementsPage />} />
         <Route path="security" element={<SecuritySettingsPage />} />
       </Route>
       {/* Unknown admin paths fall back to the users page (or login if anonymous).

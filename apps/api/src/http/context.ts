@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import type { AppConfig } from '../config/env';
 import type { Database } from '../data/db';
 import { createAlertRepository } from '../data/repositories/alertRepository';
+import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
@@ -61,8 +62,14 @@ import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
+import { createExportService, type ExportService } from '../services/export';
+import { createExportRepository } from '../data/repositories/exportRepository';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
 import { createAdminService, type AdminService } from '../services/admin/adminService';
+import {
+  createAnnouncementService,
+  type AnnouncementService,
+} from '../services/announcements/announcementService';
 import {
   createAdminTwoFactorService,
   type AdminTwoFactorService,
@@ -194,8 +201,21 @@ export interface AppContext {
   accountSettings: AccountSettingsService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
   accountDeletion: AccountDeletionService;
+  /**
+   * Account data export (§13.4 V4-P6a, #494): re-auth-gated 1/day request →
+   * async zip build (BullMQ `data.export` in production, synchronous under test)
+   * → expiring, token-gated download. Also owns the daily expired-file cleanup.
+   */
+  dataExport: ExportService;
   /** Price-alert CRUD — the §14 alerts surface (V3-P10 arc b). Firing lives in the worker. */
   alerts: AlertService;
+  /**
+   * Admin-composed announcements (§13.4 V4-P5b): admin CRUD + publish fan-out
+   * into every user's inbox and the user surface — currently-active banners
+   * (rendered in the viewer's locale) and per-user dismissal. Delivery is
+   * banner + inbox only; the notification matrix is not consulted.
+   */
+  announcements: AnnouncementService;
   /**
    * The notification delivery core (#368): matrix resolve → inbox row / email /
    * FCM / web-push, idempotent under redelivery. In production it runs inside
@@ -285,6 +305,12 @@ export interface BuildContextDeps {
    * dispatcher delivery under test (BullMQ cannot run on ioredis-mock).
    */
   notificationEnqueue?: (event: DispatchableEvent) => Promise<void>;
+  /**
+   * Test seam (§13.4 V4-P6a, #494): the data-export build transport. Defaults to
+   * the durable `data.export` BullMQ enqueue in production and to a direct
+   * synchronous build under test (BullMQ can't run on ioredis-mock).
+   */
+  exportEnqueue?: (jobId: string) => Promise<void>;
   /**
    * Test seam (#437): the notification service's clock, so the auto-archive
    * sweep threshold is provable under a controlled clock. Defaults to the
@@ -771,6 +797,46 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     twoFactor,
   });
 
+  // Account data export (§13.4 V4-P6a, #494): the request handler enqueues the
+  // async build; production drops `{ jobId }` on the durable `data.export` queue
+  // and the worker's build job runs it, while tests build synchronously through
+  // the same service (BullMQ can't run on ioredis-mock). A holder late-binds the
+  // synchronous path's enqueue to the service without a reassigned `let`.
+  const exportHolder: { service?: ExportService } = {};
+  const exportEnqueue =
+    deps.exportEnqueue ??
+    (queues
+      ? async (jobId: string) => {
+          await queues.enqueue('data.export', { jobId });
+        }
+      : (jobId: string) => exportHolder.service!.buildExport(jobId));
+  const dataExport = createExportService({
+    config,
+    db,
+    redis,
+    exportRepo: createExportRepository(db),
+    userRepo,
+    passwordHasher,
+    twoFactor,
+    audit,
+    notify,
+    enqueueBuild: exportEnqueue,
+    logger,
+  });
+  exportHolder.service = dataExport;
+
+  // Admin-composed announcements (§13.4 V4-P5b): CRUD + publish fan-out into every
+  // user's inbox via the shared `fanOutAnnouncement` primitive, plus the user
+  // surface (currently-active banners + per-user dismissal). Delivery is banner +
+  // inbox only — the notification matrix is not consulted.
+  const announcements = createAnnouncementService({
+    repo: createAnnouncementRepository(db),
+    users: userRepo,
+    notifications: notificationRepo,
+    audit,
+    logger,
+  });
+
   // Price alerts (§14, V3-P10 arc b): user-scoped CRUD; the minute evaluator in
   // the worker fires them and emits `alert.triggered` onto the durable
   // notification queue (#368), which the worker's dispatch job fans out.
@@ -883,7 +949,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notificationSettings,
     accountSettings,
     accountDeletion,
+    dataExport,
     alerts,
+    announcements,
     notificationDispatcher,
     notify,
     presence,
