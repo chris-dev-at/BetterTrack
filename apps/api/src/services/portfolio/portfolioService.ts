@@ -1832,17 +1832,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Ownership enforced against the scoped id (§6.8): a foreign/missing id 404s.
       const summary = await requireOwnedPortfolio(userId, portfolioId);
       const today = todayIso();
-      const txns = await transactionRepo.listForPortfolio(portfolioId);
-      if (txns.length === 0) {
-        return { baseCurrency, name: summary.name, today, assets: [] };
-      }
 
       // The per-asset breakdown of the SAME series the overview sums (V3-P9):
       // served by the snapshot layer — per-asset values ride each daily row,
       // and the "today" point per asset is quote-fresh. Summing any visible
       // subset reproduces the overview total, because valueOverTime is linear
-      // in its assets (§13.3 V3-P9).
+      // in its assets (§13.3 V3-P9). A portfolio without transactions simply
+      // yields an empty asset list — no separate pre-check query needed.
       const series = await snapshots.getSeries(portfolioId);
+      if (series.assets.length === 0) {
+        return { baseCurrency, name: summary.name, today, assets: [] };
+      }
       const assetsById = new Map(
         (await portfolioRepo.assetsByIds(series.assets.map((a) => a.assetId))).map((r) => [
           r.id,

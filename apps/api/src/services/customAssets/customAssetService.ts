@@ -28,7 +28,9 @@ import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
  * changes here reshape the reconstructed series of EVERY portfolio holding the
  * asset, so they invalidate the V5-P1 daily snapshots asset-scoped (issue
  * #553, §16 2026-07-17 rule 7): each holding portfolio, from the earliest
- * changed day (floored at that portfolio's first transaction on the asset).
+ * changed day — or, with smoothing ON, from the day after the surviving mark
+ * preceding it, because interpolation reshapes backward to that mark — floored
+ * at that portfolio's first transaction on the asset.
  */
 
 export interface CustomAssetServiceDeps {
@@ -59,6 +61,13 @@ interface CustomAssetMeta {
 
 function metaOf(row: AssetRow): CustomAssetMeta {
   return (row.meta ?? {}) as CustomAssetMeta;
+}
+
+/** ISO day immediately after `day` (UTC) — the smoothing invalidation anchor. */
+function dayAfter(day: string): string {
+  const d = new Date(`${day}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
 }
 
 function categoryOf(row: AssetRow): CustomAssetCategory {
@@ -198,7 +207,7 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
     },
 
     async putValuePoints(userId, id, points) {
-      await requireOwned(userId, id);
+      const existing = await requireOwned(userId, id);
 
       // One value point per day (§6.9). Reject duplicate dates loudly rather
       // than silently collapsing them.
@@ -224,12 +233,29 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
         if (changedFrom === undefined || date < changedFrom) changedFrom = date;
       }
 
+      // With smoothing ON the changed mark also linearly reshapes every
+      // interpolated day back to the PRECEDING surviving mark (V3-P2), so the
+      // anchor moves to that mark's day + 1 — the mark's own day stays exact,
+      // interpolation endpoints are exact by construction (§16 rule 7). Marks
+      // before the earliest change are identical in both sets: any difference
+      // would have moved `changedFrom` earlier.
+      let invalidateFrom = changedFrom;
+      if (changedFrom !== undefined && metaOf(existing).smoothing === true) {
+        let precedingMark: string | undefined;
+        for (const date of afterByDate.keys()) {
+          if (date < changedFrom && (precedingMark === undefined || date > precedingMark)) {
+            precedingMark = date;
+          }
+        }
+        if (precedingMark !== undefined) invalidateFrom = dayAfter(precedingMark);
+      }
+
       await repo.replaceValuePoints(
         id,
         points.map((p) => ({ date: p.date, value: p.value })),
       );
-      if (changedFrom !== undefined) {
-        await snapshots.invalidateForAsset(id, changedFrom);
+      if (invalidateFrom !== undefined) {
+        await snapshots.invalidateForAsset(id, invalidateFrom);
       }
 
       const stored = await repo.getValuePoints(id);

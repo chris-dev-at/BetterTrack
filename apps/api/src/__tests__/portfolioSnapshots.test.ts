@@ -354,6 +354,52 @@ describe('daily snapshots — read-path probe + fresh today (#553)', () => {
       rowsBefore.map((r) => r.computedAt.getTime()),
     );
   });
+
+  it('values an asset first transacted TODAY on the snapshot path (universe from transactions, not from the last row)', async () => {
+    const marketData = createStubMarketData({
+      // The engine (first read after the buy) needs a candle for the new
+      // asset; the snapshot path's today leg must manage on the quote alone.
+      history: cannedHistory({ 'NEU.DE': [{ date: dayOffset(0), close: 50 }] }),
+      quote: cannedQuotes({ 'BAYN.DE': 104, 'NEU.DE': 50 }),
+    });
+    const { h, agent, pid } = await primedEurHarness(marketData);
+    expect((await h.ctx.snapshots.getSeries(pid)).fromSnapshots).toBe(true);
+
+    // A brand-new asset whose FIRST transaction is today: it appears in no
+    // persisted snapshot row, so yesterday's row keys cannot know it exists.
+    const newAsset = await seedAsset(h, {
+      providerRef: 'NEU.DE',
+      symbol: 'NEU.DE',
+      name: 'Neu AG',
+    });
+    await buy(agent, pid, newAsset.id, 4, 50, tsOffset(0));
+
+    // First read: the buy invalidated, so this runs the engine and refills.
+    const first = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(first.status).toBe(200);
+    const firstToday = first.body.points[first.body.points.length - 1];
+    expect(firstToday.valueEur).toBeCloseTo(2 * 104 + 4 * 50, 9);
+
+    // Second read serves from snapshots — the new position must survive.
+    const historyCallsBefore = marketData.calls.history;
+    const second = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(second.status).toBe(200);
+    const secondToday = second.body.points[second.body.points.length - 1];
+    expect(secondToday.date).toBe(dayOffset(0));
+    expect(secondToday.valueEur).toBeCloseTo(firstToday.valueEur, 9);
+    // Still the snapshot path: the today leg prices via quotes, never history.
+    expect(marketData.calls.history).toBe(historyCallsBefore);
+
+    const series = await h.ctx.snapshots.getSeries(pid);
+    expect(series.fromSnapshots).toBe(true);
+    // The new asset rides the per-asset series (analytics feed) from today…
+    const newSeries = series.assets.find((a) => a.assetId === newAsset.id);
+    expect(newSeries?.points).toEqual([{ date: dayOffset(0), valueEur: 200 }]);
+    // …and its buy is flow-counted, so the TWR sees money in, not a return.
+    const todayFlows = series.flows.filter((f) => f.date === dayOffset(0));
+    expect(todayFlows).toHaveLength(1);
+    expect(todayFlows[0]!.flowEur).toBeCloseTo(200, 9);
+  });
 });
 
 describe('daily snapshots — §16 invalidation rules (#553)', () => {
@@ -523,6 +569,84 @@ describe('daily snapshots — §16 invalidation rules (#553)', () => {
     const rows = await snapshotRows(h, pid);
     expect(Number(rows.find((r) => r.date === dayOffset(-4))!.valueEur)).toBe(500);
     expect(Number(rows.find((r) => r.date === dayOffset(-3))!.valueEur)).toBe(650);
+  });
+
+  it('smoothed value-point edits invalidate back to the preceding mark (§16 rule 7, smoothing anchor)', async () => {
+    // Mutable canned history standing in for the manual provider's V3-P2
+    // interpolation: entries land once the asset exists and change with the
+    // marks, exactly as the real provider's smoothed output would.
+    const histories: Record<string, ReadonlyArray<{ date: string; close: number }>> = {};
+    const h = await createTestApp({
+      marketData: createStubMarketData({ history: cannedHistory(histories) }),
+    });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+
+    const created = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({
+        name: 'Atelier',
+        category: 'other',
+        currency: 'EUR',
+        smoothing: true,
+        initialPurchase: { quantity: 1, price: 500, fee: 0, executedAt: tsOffset(-9) },
+      });
+    expect(created.status).toBe(201);
+    const assetId = created.body.asset.id as string;
+    const firstPut = await agent
+      .put(`/api/v1/custom-assets/${assetId}/value-points`)
+      .set(...XRW)
+      .send({
+        points: [
+          { date: dayOffset(-9), value: 500 },
+          { date: dayOffset(-3), value: 620 },
+        ],
+      });
+    expect(firstPut.status).toBe(200);
+    // Smoothing ON: one point per day, linear between the two marks.
+    histories[assetId] = [500, 520, 540, 560, 580, 600, 620].map((close, i) => ({
+      date: dayOffset(-9 + i),
+      close,
+    }));
+    await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    const rowsBefore = await snapshotRows(h, pid);
+    expect(rowsBefore.map((r) => r.date)).toEqual(
+      [-9, -8, -7, -6, -5, -4, -3, -2, -1].map(dayOffset),
+    );
+    expect(Number(rowsBefore.find((r) => r.date === dayOffset(-6))!.valueEur)).toBeCloseTo(560, 9);
+
+    // Edit only the -3 mark: interpolation reshapes every day back to the
+    // surviving -9 mark, so the invalidation must anchor at -8 (= -9 + 1) —
+    // NOT at the changed mark's own day.
+    histories[assetId] = [500, 550, 600, 650, 700, 750, 800].map((close, i) => ({
+      date: dayOffset(-9 + i),
+      close,
+    }));
+    const res = await agent
+      .put(`/api/v1/custom-assets/${assetId}/value-points`)
+      .set(...XRW)
+      .send({
+        points: [
+          { date: dayOffset(-9), value: 500 },
+          { date: dayOffset(-3), value: 800 },
+        ],
+      });
+    expect(res.status).toBe(200);
+    await expectInvalidatedFrom(h, pid, rowsBefore, dayOffset(-8));
+
+    // Refill: the -9 mark day keeps its exact bytes (interpolation endpoints
+    // are exact), while every interpolated day re-slopes to the new mark.
+    await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    const rows = await snapshotRows(h, pid);
+    const mark = rowsBefore.find((r) => r.date === dayOffset(-9))!;
+    const markAfter = rows.find((r) => r.date === dayOffset(-9))!;
+    expect(markAfter.valueEur).toBe(mark.valueEur);
+    expect(markAfter.computedAt.getTime()).toBe(mark.computedAt.getTime());
+    expect(Number(rows.find((r) => r.date === dayOffset(-6))!.valueEur)).toBeCloseTo(650, 9);
+    expect(Number(rows.find((r) => r.date === dayOffset(-3))!.valueEur)).toBeCloseTo(800, 9);
+    expect(Number(rows.find((r) => r.date === dayOffset(-1))!.valueEur)).toBeCloseTo(800, 9);
   });
 
   it('portfolio deletion cleans its snapshot rows and state (§16 rule 8)', async () => {

@@ -224,6 +224,9 @@ function toDomainMovement(r: CashMovementRecord): SourcedCashMovement {
   };
 }
 
+/** One asset row as the portfolio repository returns it. */
+type AssetRecord = Awaited<ReturnType<PortfolioRepository['assetsByIds']>>[number];
+
 /** Everything one engine run produces — the writer persists, the fallback serves. */
 interface EngineArtifacts {
   today: string;
@@ -257,23 +260,21 @@ export function createPortfolioSnapshotService(
   }
 
   /**
-   * Assemble each transacted, EUR-convertible asset's merged, smoothing-aware
-   * daily price series (§5.2/§5.3): stored `price_history` rows as the durable
-   * fallback layer, overlaid with each asset's real daily market history
-   * (custom assets route through the manual provider via the exact same call,
-   * so V3-P2 value-smoothing is applied transparently). Unconvertible non-base
-   * currencies are probed once and their assets dropped from the series — the
-   * same degrade the overview applies (§5.4). Assumes `txns` is non-empty.
+   * The transacted asset universe behind the engine's §5.4 convertibility
+   * gate: every distinct transacted asset's row, plus the subset whose
+   * currency converts to base as of `today` (probed once per currency;
+   * unconvertible assets degrade out exactly like the overview). Shared by
+   * the full engine and the fresh "today" leg so both agree on the universe —
+   * persisted rows can never define it, because an asset first transacted
+   * today appears in no row yet.
    */
-  async function buildValueAssets(
-    txns: TransactionRecord[],
+  async function resolveUsableAssets(
+    txns: readonly TransactionRecord[],
     today: string,
   ): Promise<{
-    assetsById: Map<string, Awaited<ReturnType<PortfolioRepository['assetsByIds']>>[number]>;
-    valueAssets: ValueOverTimeAsset[];
+    assetsById: Map<string, AssetRecord>;
     usableAssetIds: string[];
     usableIdSet: Set<string>;
-    firstTxnDay: string;
   }> {
     const assetIds = [...new Set(txns.map((t) => t.assetId))];
     const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
@@ -296,8 +297,29 @@ export function createPortfolioSnapshotService(
       const asset = assetsById.get(id);
       return asset !== undefined && isConvertible(asset.currency);
     });
+    return { assetsById, usableAssetIds, usableIdSet: new Set(usableAssetIds) };
+  }
 
-    const usableIdSet = new Set(usableAssetIds);
+  /**
+   * Assemble each transacted, EUR-convertible asset's merged, smoothing-aware
+   * daily price series (§5.2/§5.3): stored `price_history` rows as the durable
+   * fallback layer, overlaid with each asset's real daily market history
+   * (custom assets route through the manual provider via the exact same call,
+   * so V3-P2 value-smoothing is applied transparently). Unconvertible non-base
+   * currencies are probed once and their assets dropped from the series — the
+   * same degrade the overview applies (§5.4). Assumes `txns` is non-empty.
+   */
+  async function buildValueAssets(
+    txns: TransactionRecord[],
+    today: string,
+  ): Promise<{
+    assetsById: Map<string, AssetRecord>;
+    valueAssets: ValueOverTimeAsset[];
+    usableAssetIds: string[];
+    usableIdSet: Set<string>;
+    firstTxnDay: string;
+  }> {
+    const { assetsById, usableAssetIds, usableIdSet } = await resolveUsableAssets(txns, today);
     const firstTxnDay = txns
       .map((t) => t.executedAt.toISOString().slice(0, 10))
       .reduce((a, b) => (a < b ? a : b));
@@ -546,19 +568,23 @@ export function createPortfolioSnapshotService(
     assetValuesToday: Map<string, number>;
   }> {
     const lastRow = rows[rows.length - 1];
-    // Every usable asset appears in the latest row from its first day on (the
-    // per-asset series is dense through yesterday), so its keys ARE the set.
-    const usableAssetIds = Object.keys(lastRow?.assetValues ?? {});
-    const usableIdSet = new Set(usableAssetIds);
-    const assetsById = new Map(
-      (await portfolioRepo.assetsByIds(usableAssetIds)).map((r) => [r.id, r]),
+    // The universe comes from the TRANSACTIONS behind the engine's own
+    // convertibility gate — never from yesterday's row keys: an asset first
+    // transacted today appears in no persisted row, yet must be valued and
+    // flow-counted, or a cash-funded first buy reads as a phantom drop of the
+    // whole position until the nightly roll. Assets that carry row values but
+    // fail today's FX probe stay valued via the carry-forward below.
+    const { assetsById, usableAssetIds, usableIdSet } = await resolveUsableAssets(txns, today);
+    const carriedOnlyIds = Object.keys(lastRow?.assetValues ?? {}).filter(
+      (id) => !usableIdSet.has(id),
     );
+    const valuedAssetIds = [...usableAssetIds, ...carriedOnlyIds];
 
     // Live quotes first (coalesced, cheap); stored last closes only for the
     // assets whose quote degraded.
     const quoteByAsset = new Map<string, number>();
     await Promise.all(
-      usableAssetIds.map(async (assetId) => {
+      valuedAssetIds.map(async (assetId) => {
         const asset = assetsById.get(assetId);
         if (!asset) return;
         try {
@@ -572,11 +598,11 @@ export function createPortfolioSnapshotService(
         }
       }),
     );
-    const missingQuote = usableAssetIds.filter((id) => !quoteByAsset.has(id));
+    const missingQuote = valuedAssetIds.filter((id) => !quoteByAsset.has(id));
     const storedCloses = await portfolioRepo.latestClosesForAssets(missingQuote);
 
     const assetValuesToday = new Map<string, number>();
-    for (const assetId of usableAssetIds) {
+    for (const assetId of valuedAssetIds) {
       const asset = assetsById.get(assetId);
       const price = quoteByAsset.get(assetId) ?? storedCloses.get(assetId);
       const carried = lastRow?.assetValues[assetId] ?? 0;
@@ -753,7 +779,19 @@ export function createPortfolioSnapshotService(
         // Zero rows with live events means the whole history started today —
         // serve that via the engine below instead of guessing usable assets.
         if (rows.length > 0) {
-          return reconstruct(txns, cashRecords, rows, today);
+          // The rows were read AFTER the state: an invalidation landing between
+          // the two reads has already deleted its tail, so the rows would be
+          // served gappy. Re-read the state and trust the rows only when
+          // nothing moved; otherwise fall through to the engine (whose persist
+          // CAS fails against the bumped state — correct either way).
+          const recheck = await snapshotRepo.getState(portfolioId);
+          if (
+            recheck !== null &&
+            recheck.dirtyFrom === null &&
+            recheck.updatedAt.getTime() === state.updatedAt.getTime()
+          ) {
+            return reconstruct(txns, cashRecords, rows, today);
+          }
         }
       }
 
