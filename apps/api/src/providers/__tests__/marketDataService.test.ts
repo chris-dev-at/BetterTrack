@@ -394,3 +394,127 @@ describe('MarketDataService.pollQuote (Live Mode, §6.3 V3-P7b)', () => {
     expect(await redis.get(freshCacheKey(cacheKey('fake', 'ACME', 'quote', 'spot')))).toBeNull();
   });
 });
+
+describe('MarketDataService — provider failover (§13.5 V5-P1c)', () => {
+  const QUOTE_KEY = cacheKey('fake', 'ACME', 'quote', 'spot');
+  const FAILOVER = { byClass: {}, default: ['backup'] } as const;
+
+  function failoverServiceWith(
+    fakeControls: Parameters<typeof createFakeProvider>[1] = {},
+    backupControls: Parameters<typeof createFakeProvider>[1] = {},
+  ) {
+    const primary = createFakeProvider('fake', fakeControls);
+    const backup = createFakeProvider('backup', backupControls);
+    const registry = createProviderRegistry([primary, backup]);
+    const service = createMarketDataService({ registry, redis, options: { failover: FAILOVER } });
+    return { primary, backup, service };
+  }
+
+  it('primary mocked dead ⇒ quotes keep flowing from the secondary', async () => {
+    const { backup, service } = failoverServiceWith(
+      { quote: () => Promise.reject(new Error('yahoo down')) },
+      { quote: () => Promise.resolve(sampleQuote({ price: 222 })) },
+    );
+
+    const result = await service.getQuote(REF);
+    expect(result.stale).toBe(false);
+    expect(result.value.price).toBe(222); // served by the backup
+    expect(backup.calls.quote).toBe(1);
+  });
+
+  it('cache key stays the ASSET provider, so a switch reuses the same entry (provider-agnostic)', async () => {
+    const { service } = failoverServiceWith(
+      { quote: () => Promise.reject(new Error('yahoo down')) },
+      { quote: () => Promise.resolve(sampleQuote({ price: 222 })) },
+    );
+
+    await service.getQuote(REF);
+    // Stored under the asset's own provider key — NOT the serving provider's —
+    // so coalescing and serve-stale behave identically whichever source answers.
+    expect(await redis.get(freshCacheKey(QUOTE_KEY))).not.toBeNull();
+    expect(await redis.get(freshCacheKey(cacheKey('backup', 'ACME', 'quote', 'spot')))).toBeNull();
+  });
+
+  it('no double-fetch storm during a switch: concurrent misses coalesce to ONE secondary call', async () => {
+    const deferred = createDeferred<ReturnType<typeof sampleQuote>>();
+    const { backup, service } = failoverServiceWith(
+      { quote: () => Promise.reject(new Error('yahoo down')) },
+      { quote: () => deferred.promise },
+    );
+
+    const inflight = [service.getQuote(REF), service.getQuote(REF), service.getQuote(REF)];
+    deferred.resolve(sampleQuote({ price: 222 }));
+    const results = await Promise.all(inflight);
+
+    expect(results.every((r) => r.value.price === 222)).toBe(true);
+    expect(backup.calls.quote).toBe(1); // the serving provider fetched exactly once
+  });
+
+  it('serve-stale precedence: stale primary served instantly, refreshed in the background by the secondary; then the primary recovers', async () => {
+    let primaryUp = true;
+    const { service } = failoverServiceWith(
+      {
+        quote: () =>
+          primaryUp
+            ? Promise.resolve(sampleQuote({ price: 100 }))
+            : Promise.reject(new Error('yahoo down')),
+      },
+      { quote: () => Promise.resolve(sampleQuote({ price: 222 })) },
+    );
+
+    // Warm the cache from the primary, then expire the fresh copy with it down.
+    await service.getQuote(REF);
+    await redis.del(freshCacheKey(QUOTE_KEY));
+    primaryUp = false;
+
+    // Stale-primary is served instantly (fast, no user-facing failover)...
+    const stale = await service.getQuote(REF);
+    expect(stale).toMatchObject({ stale: true, value: { price: 100 } });
+    // ...while the background revalidation fails over to the secondary.
+    await service.settled();
+    const refreshed = await service.getQuote(REF);
+    expect(refreshed).toMatchObject({ stale: false, value: { price: 222 } });
+
+    // Primary recovers: expire again, and the next revalidation returns to it.
+    await redis.del(freshCacheKey(QUOTE_KEY));
+    primaryUp = true;
+    await service.getQuote(REF); // serves stale (222) + background refresh
+    await service.settled();
+    const recovered = await service.getQuote(REF);
+    expect(recovered.value.price).toBe(100); // traffic returned to the primary
+  });
+
+  it('surfaces failover attribution + switch events for the admin health surface', async () => {
+    const { service } = failoverServiceWith(
+      { quote: () => Promise.reject(new Error('yahoo down')) },
+      { quote: () => Promise.resolve(sampleQuote({ price: 222 })) },
+    );
+
+    await service.getQuote(REF);
+    const status = service.failoverStatus();
+    expect(status.chains).toEqual([
+      expect.objectContaining({ primaryId: 'fake', serving: 'backup' }),
+    ]);
+    expect(status.switches).toEqual([
+      expect.objectContaining({ primaryId: 'fake', from: null, to: 'backup' }),
+    ]);
+    expect(status.attribution).toEqual([
+      expect.objectContaining({ providerId: 'backup', serves: 1 }),
+    ]);
+  });
+
+  it('regression: with no secondary configured, behaviour is byte-identical (no failover, empty status)', async () => {
+    // No `failover` option ⇒ NO_FAILOVER: a primary not-found is negative-cached
+    // exactly as today, and there is no attribution/switch to report.
+    const provider = createFakeProvider('fake', {
+      quote: () => Promise.reject(new AssetNotFoundError('unknown symbol')),
+    });
+    const { service } = serviceWith(provider);
+
+    await expect(service.getQuote(REF)).rejects.toBeInstanceOf(AssetNotFoundError);
+    expect(
+      await redis.get(negativeCacheKey(cacheKey('fake', 'ACME', 'quote', 'spot'))),
+    ).not.toBeNull();
+    expect(service.failoverStatus()).toEqual({ chains: [], switches: [], attribution: [] });
+  });
+});

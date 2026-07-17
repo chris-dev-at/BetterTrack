@@ -638,6 +638,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     createMarketData({
       db,
       redis,
+      failover: { enabled: config.providers.failover.enabled },
       queueOptions: {
         concurrency: config.providers.maxConcurrency,
         minSpacingMs: config.providers.minSpacingMs,

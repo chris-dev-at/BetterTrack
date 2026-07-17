@@ -83,6 +83,7 @@ const marketDataConnection = createConnection();
 const { registry: providerRegistry, service: marketData } = createMarketData({
   db,
   redis: marketDataConnection,
+  failover: { enabled: config.providers.failover.enabled },
   queueOptions: {
     concurrency: config.providers.maxConcurrency,
     minSpacingMs: config.providers.minSpacingMs,

@@ -186,6 +186,84 @@ function HealthBody({ data }: { data: AdminHealthResponse }) {
             : t('admin.health.gateway.disabled')}
         </ComponentRow>
       </div>
+
+      <FailoverPanel providers={components.providers} />
+    </div>
+  );
+}
+
+/**
+ * Provider failover attribution (§13.5 V5-P1c): which source is serving each
+ * chain, per-provider serve counts and the recent switch events. A niche panel
+ * that stays folded away — it renders nothing until a secondary is configured and
+ * has served traffic, so a single-provider deploy sees no extra chrome.
+ */
+function FailoverPanel({
+  providers,
+}: {
+  providers: AdminHealthResponse['components']['providers'];
+}) {
+  const t = useT();
+  const { chains, switches, attribution } = providers;
+  if (chains.length === 0 && switches.length === 0 && attribution.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+      <span className="text-sm font-medium text-neutral-300">
+        {t('admin.health.failover.title')}
+      </span>
+
+      {chains.length > 0 ? (
+        <ul className="flex flex-col gap-1 text-xs text-neutral-400">
+          {chains.map((c) => {
+            const failedOver = c.serving !== null && c.serving !== c.primaryId;
+            return (
+              <li key={c.primaryId} className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-neutral-200">{c.providerIds.join(' → ')}</span>
+                {c.serving ? (
+                  <Badge tone={failedOver ? 'amber' : 'green'}>{c.serving}</Badge>
+                ) : null}
+                {failedOver ? <span>{t('admin.health.failover.viaFailover')}</span> : null}
+                {c.since ? (
+                  <span>
+                    {t('admin.health.failover.since', {
+                      time: new Date(c.since).toLocaleTimeString(),
+                    })}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+
+      {attribution.length > 0 ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-neutral-400">
+          {attribution.map((a) => (
+            <span key={a.providerId}>
+              <span className="text-neutral-200">{a.providerId}</span>:{' '}
+              <span>{t('admin.health.failover.served', { count: a.serves })}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="flex flex-col gap-1 text-xs text-neutral-400">
+        <span className="uppercase tracking-wide text-neutral-500">
+          {t('admin.health.failover.switchesTitle')}
+        </span>
+        {switches.length === 0 ? (
+          <span>{t('admin.health.failover.noSwitches')}</span>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {switches.slice(0, 5).map((s, i) => (
+              <li key={`${s.at}-${i}`} className="font-mono text-neutral-300">
+                {s.from ?? '—'} → {s.to} · {new Date(s.at).toLocaleTimeString()}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

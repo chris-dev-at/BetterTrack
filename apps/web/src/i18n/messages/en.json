@@ -2523,6 +2523,14 @@
       "providers": {
         "none": "No upstream providers"
       },
+      "failover": {
+        "title": "Provider failover",
+        "viaFailover": "Failover active",
+        "since": "since {{time}}",
+        "served": "{{count}} served",
+        "switchesTitle": "Recent switches",
+        "noSwitches": "No switches recorded"
+      },
       "queues": {
         "unavailable": "No queue registry in this process",
         "empty": "No jobs",
