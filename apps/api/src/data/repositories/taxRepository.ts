@@ -41,6 +41,8 @@ export interface DividendRecord {
   taxMode: TaxMode;
   taxCountry: string | null;
   taxAmountEur: number | null;
+  /** Source tag (V5-P0c): how this dividend entered the ledger; `manual` for hand entry. */
+  source: string;
   createdAt: Date;
 }
 
@@ -54,6 +56,8 @@ export interface NewDividend {
   taxMode: TaxMode;
   taxCountry: string | null;
   taxAmountEur: number | null;
+  /** Source tag (V5-P0c); defaults to `manual`. Its cash movements inherit it. */
+  source?: string;
 }
 
 function toRecord(row: DividendRow): DividendRecord {
@@ -68,6 +72,7 @@ function toRecord(row: DividendRow): DividendRecord {
     taxMode: row.taxMode,
     taxCountry: row.taxCountry ?? null,
     taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+    source: row.source,
     createdAt: row.createdAt,
   };
 }
@@ -136,6 +141,7 @@ export function createTaxRepository(db: Database) {
             taxMode: dividend.taxMode,
             taxCountry: dividend.taxCountry,
             taxAmountEur: dividend.taxAmountEur === null ? null : String(dividend.taxAmountEur),
+            source: dividend.source ?? 'manual',
           })
           .returning();
         if (!row) throw new Error('Dividend insert returned no row');
@@ -154,6 +160,8 @@ export function createTaxRepository(db: Database) {
                 taxYear: m.taxYear ?? null,
                 executedAt: m.executedAt,
                 note: m.note,
+                // A dividend's movements carry the dividend's source (V5-P0c).
+                source: m.source ?? dividend.source ?? 'manual',
               })),
             )
             .returning();

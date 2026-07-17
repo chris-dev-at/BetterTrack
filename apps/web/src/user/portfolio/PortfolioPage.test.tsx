@@ -199,6 +199,7 @@ const TXNS = {
       note: null,
       allowUncovered: false,
       uncoveredEntryPrice: null,
+      source: 'manual',
       asset: STOCK.asset,
     },
     {
@@ -212,6 +213,7 @@ const TXNS = {
       note: 'Down payment',
       allowUncovered: false,
       uncoveredEntryPrice: null,
+      source: 'manual',
       asset: HOUSE.asset,
     },
   ],
@@ -451,6 +453,7 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
         taxYear: null,
         executedAt: '2024-06-01T00:00:00.000Z',
         note: null,
+        source: 'manual',
         createdAt: '2024-06-01T00:00:00.000Z',
       },
       sourceBalanceEur: 6000,

@@ -11,6 +11,7 @@ import type {
   TransactionSide,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
+import { SOURCE_TAG_MANUAL } from '@bettertrack/contracts';
 
 import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
@@ -27,6 +28,7 @@ import { formatMoney, formatQuantity } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
+import { SourceBadge } from '../portfolio/SourceBadge';
 import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
 import { dateForPrice, priceForDate, toDailyPoints, type DailyPoint } from './priceDateLink';
@@ -975,6 +977,15 @@ export function TransactionDialog(props: TransactionDialogProps) {
         </div>
       ) : (
         <form onSubmit={handleSubmit} id={headingId} className="flex flex-col gap-5">
+          {isEdit && transaction && transaction.source !== SOURCE_TAG_MANUAL ? (
+            // Editing an imported/synced row (V5-P0c): surface where it came from
+            // so a hand edit is a deliberate choice, never a silent overwrite of
+            // synced data. The badge stays quiet for `manual` (the common case).
+            <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-400">
+              <span>{t('portfolio.sourceTag.filterLabel')}:</span>
+              <SourceBadge source={transaction.source} />
+            </div>
+          ) : null}
           {rows.map((row, index) => {
             // The link assist lives on the single-asset create row (see above).
             const link: RowLink | undefined =

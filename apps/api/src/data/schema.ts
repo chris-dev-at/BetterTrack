@@ -823,6 +823,12 @@ export const transactions = pgTable(
     // realized on that portion, so no phantom gain reaches the tax ledger).
     allowUncovered: boolean('allow_uncovered').notNull().default(false),
     uncoveredEntryPrice: numeric('uncovered_entry_price', { precision: 20, scale: 6 }),
+    // Source tag (V5-P0c, §13.5): how this row entered the ledger — `manual`
+    // (hand entry), `import:<broker>` (CSV apply), later `sync:<provider>` /
+    // `standing-order`. Server-assigned only; a client never supplies it. The
+    // allowed format is validated in contracts (sourceTagSchema); no CHECK here
+    // so a new provider slug is a code-only change.
+    source: text('source').notNull().default('manual'),
   },
   (t) => [
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
@@ -939,6 +945,9 @@ export const dividends = pgTable(
     taxMode: taxModeEnum('tax_mode').notNull(),
     taxCountry: char('tax_country', { length: 2 }),
     taxAmountEur: numeric('tax_amount_eur', { precision: 20, scale: 6 }),
+    // Source tag (V5-P0c): `manual` / `import:<broker>` / `sync:<provider>`.
+    // Server-assigned only; validated in contracts (sourceTagSchema).
+    source: text('source').notNull().default('manual'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -989,6 +998,11 @@ export const portfolioCashMovements = pgTable(
     taxYear: integer('tax_year'),
     executedAt: timestamp('executed_at', { withTimezone: true }).notNull(),
     note: text('note'),
+    // Source tag (V5-P0c): `manual` / `import:<broker>` / `sync:<provider>`. A
+    // linked movement (buy/sell_proceeds/dividend/tax) inherits its parent
+    // transaction's or dividend's tag; an external deposit/withdrawal takes the
+    // tag of the write path. Server-assigned only; validated in contracts.
+    source: text('source').notNull().default('manual'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

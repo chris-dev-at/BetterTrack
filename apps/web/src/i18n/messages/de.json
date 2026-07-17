@@ -927,6 +927,14 @@
     }
   },
   "portfolio": {
+    "sourceTag": {
+      "importFrom": "Importiert · {{source}}",
+      "syncFrom": "Synchronisiert · {{source}}",
+      "standingOrder": "Dauerauftrag",
+      "filterLabel": "Quelle",
+      "filterAll": "Alle Quellen",
+      "manual": "Manuelle Eingabe"
+    },
     "transaction": {
       "titleCreate": "Neue Transaktion",
       "titleEdit": "Transaktion bearbeiten",

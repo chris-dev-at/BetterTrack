@@ -158,14 +158,24 @@ export interface TaxService {
     portfolioId: string,
     transaction: TransactionRecord,
   ): Promise<NewCashMovement[]>;
-  /** Record a dividend (V3-P4c): gross EUR into a source, tax-mode aware. */
+  /**
+   * Record a dividend (V3-P4c): gross EUR into a source, tax-mode aware.
+   * `opts.source` is the V5-P0c source tag stamped on the dividend and its cash
+   * movements — `manual` by default, `import:<broker>` from the CSV apply path.
+   * Server-assigned only (the HTTP body carries no source field).
+   */
   recordDividend(
     userId: string,
     portfolioId: string,
     input: CreateDividendRequest,
+    opts?: { source?: string },
   ): Promise<CreateDividendResponse>;
-  /** The portfolio's dividends, newest pay date first. */
-  listDividends(userId: string, portfolioId: string): Promise<DividendListResponse>;
+  /** The portfolio's dividends, newest pay date first; optional source-tag filter (V5-P0c). */
+  listDividends(
+    userId: string,
+    portfolioId: string,
+    opts?: { source?: string },
+  ): Promise<DividendListResponse>;
   /** Delete a dividend; movements cascade, AT years settle append-only. */
   deleteDividend(userId: string, portfolioId: string, dividendId: string): Promise<void>;
   /** Per-year summaries (realized P/L, dividends, taxes), newest first. */
@@ -434,6 +444,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       taxCountry: record.taxCountry === TAX_COUNTRY_AT ? TAX_COUNTRY_AT : null,
       taxAmountEur: record.taxAmountEur,
       cashSourceId: record.cashSourceId,
+      source: record.source,
       createdAt: record.createdAt.toISOString(),
       asset: assetToDto(asset),
     };
@@ -452,6 +463,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       taxYear: r.taxYear,
       executedAt: r.executedAt.toISOString(),
       note: r.note,
+      source: r.source,
       createdAt: r.createdAt.toISOString(),
     };
   }
@@ -843,8 +855,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     userId: string,
     portfolioId: string,
     input: CreateDividendRequest,
+    opts?: { source?: string },
   ): Promise<CreateDividendResponse> {
     await requireOwnedPortfolio(userId, portfolioId);
+    // Source tag (V5-P0c): `manual` unless the CSV apply path passes a broker.
+    // (`source` below is the cash SOURCE — a different concept, V3-P3.)
+    const sourceTag = opts?.source ?? 'manual';
 
     const assetRows = await portfolioRepo.assetsByIds([input.assetId]);
     const asset = assetRows[0];
@@ -979,6 +995,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         taxMode: settings.mode,
         taxCountry,
         taxAmountEur,
+        source: sourceTag,
       },
       movements,
     );
@@ -1006,6 +1023,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           taxYear: row.taxYear ?? null,
           executedAt: row.executedAt,
           note: row.note ?? null,
+          source: row.source,
           createdAt: row.createdAt,
         }),
       ),
@@ -1014,9 +1032,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     };
   }
 
-  async function listDividends(userId: string, portfolioId: string): Promise<DividendListResponse> {
+  async function listDividends(
+    userId: string,
+    portfolioId: string,
+    opts?: { source?: string },
+  ): Promise<DividendListResponse> {
     await requireOwnedPortfolio(userId, portfolioId);
-    const rows = await taxRepo.listForPortfolio(portfolioId);
+    const all = await taxRepo.listForPortfolio(portfolioId);
+    // Source-tag filter (V5-P0c): return only dividends carrying this exact tag.
+    const rows = opts?.source ? all.filter((r) => r.source === opts.source) : all;
     const assetsById = await loadAssets(rows.map((r) => r.assetId));
     const dividends = [...rows]
       .sort((a, b) => b.executedAt.getTime() - a.executedAt.getTime() || (a.id < b.id ? 1 : -1))
