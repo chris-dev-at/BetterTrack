@@ -120,6 +120,14 @@ services:
       BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
       BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
       BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
+      # Prometheus metrics listener (#564, §13.5 V5-P2). Bound to 0.0.0.0
+      # INSIDE the container so the `prometheus` sidecar can scrape it over the
+      # internal docker network — this port is NEVER published to a host port,
+      # so it stays unreachable from any public origin (the localhost/LAN-only
+      # mandate, §16 2026-07-17). Set BT_METRICS_ENABLED=false to bind no port.
+      BT_METRICS_ENABLED: '${BT_METRICS_ENABLED:-true}'
+      BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'
+      BT_METRICS_PORT: '${BT_METRICS_PORT:-9464}'
     depends_on:
       db:
         condition: service_healthy
@@ -222,7 +230,58 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Observability (§13.5 V5-P2 arc (a), §16 2026-07-17) ─────────────────────
+  # Self-provisioned monitoring: Prometheus scrapes the API metrics listener
+  # over the internal network; Grafana auto-wires the datasource + starter
+  # dashboard on first boot (zero owner setup). Their host ports bind to
+  # ${BT_OBS_BIND_HOST} (default 127.0.0.1 = localhost only; set a LAN IP for
+  # LAN access) and are DELIBERATELY not routed through the public web/nginx
+  # front proxy — these surfaces are never reachable from a public origin. The
+  # admin panel is the only public management surface.
+  prometheus:
+    image: prom/prometheus:v2.53.3
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      # localhost/LAN only — never the public origin.
+      - '${BT_OBS_BIND_HOST:-127.0.0.1}:${BT_PROMETHEUS_PORT:-9090}:9090'
+    depends_on:
+      api:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana-oss:11.3.1
+    restart: unless-stopped
+    environment:
+      # Local-admin bootstrap. Change the default before first boot; the owner
+      # only ever reaches this over localhost/LAN, and sign-up is disabled.
+      GF_SECURITY_ADMIN_USER: '${BT_GRAFANA_ADMIN_USER:-admin}'
+      GF_SECURITY_ADMIN_PASSWORD: '${BT_GRAFANA_ADMIN_PASSWORD:-admin}'
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'false'
+      # Served under the localhost/LAN bind only; not proxied by nginx.
+      GF_SERVER_HTTP_PORT: '3000'
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      # localhost/LAN only — never the public origin.
+      - '${BT_OBS_BIND_HOST:-127.0.0.1}:${BT_GRAFANA_PORT:-3001}:3000'
+    depends_on:
+      prometheus:
+        condition: service_started
+
 volumes:
   pgdata:
   redisdata:
   pgbackups:
+  promdata:
+  grafanadata:

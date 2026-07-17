@@ -1,6 +1,7 @@
 import { type Job, Worker } from 'bullmq';
 
 import type { Logger } from '../logger';
+import { jobOutcomesTotal } from '../metrics';
 
 import { type JobConnectionFactory } from './connection';
 import { isPermanentFailure } from './deadLetter';
@@ -52,6 +53,9 @@ export function handleWorkerFailure(params: {
 }): void {
   const { queue, job, err, ctx, logger, onPermanentFailure } = params;
   if (job && isPermanentFailure(job)) {
+    // A dead-lettered job is the definitive failure outcome (§13.5 V5-P2);
+    // still-retryable attempt failures are normal backoff and not counted.
+    jobOutcomesTotal.inc({ queue, outcome: 'failed' });
     logger.error(
       { queue, jobId: job.id, attemptsMade: job.attemptsMade, err: err?.message },
       'job permanently failed — dead-lettering',
@@ -89,6 +93,10 @@ export function createJobWorkers(deps: CreateJobWorkersDeps): RunningWorkers {
       },
       { connection: createConnection(), ...def.workerOptions },
     );
+
+    worker.on('completed', () => {
+      jobOutcomesTotal.inc({ queue: def.name, outcome: 'completed' });
+    });
 
     worker.on('failed', (job, err) => {
       handleWorkerFailure({ queue: def.name, job, err, ctx, logger, onPermanentFailure });

@@ -9,6 +9,7 @@ import { versionRouter } from './http/versionRouter';
 import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth';
 import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
+import { createMetricsMiddleware } from './http/middleware/metrics';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { enforcePasswordChange, loadSession, requireAdmin } from './http/middleware/session';
 import { createOpenApiRouter } from './http/openapi';
@@ -45,6 +46,12 @@ export function createApp(ctx: AppContext) {
   const app = express();
   app.set('trust proxy', ctx.config.isProduction ? 1 : false);
   app.disable('x-powered-by');
+
+  // HTTP instrumentation (§13.5 V5-P2): first in the chain so every request —
+  // including CORS preflight and 404s — is counted and timed. It adds no route;
+  // the metrics registry is scraped only through the separate localhost/LAN
+  // listener started in server.ts, never from this public app.
+  app.use(createMetricsMiddleware());
 
   app.use(helmet());
   // Credentialed CORS first, so preflight (OPTIONS) short-circuits before any

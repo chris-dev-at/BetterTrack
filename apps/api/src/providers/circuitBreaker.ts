@@ -9,6 +9,8 @@
  * value as `stale` (stale-while-revalidate), so an open breaker degrades to
  * stale data rather than an error wherever a cached value exists.
  */
+import { providerCallsTotal } from '../metrics';
+
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerOptions {
@@ -74,8 +76,14 @@ export class CircuitBreaker {
    * without calling `fn`.
    */
   async execute<T>(fn: () => Promise<T>): Promise<T> {
+    // Provider-call metric label (§13.5 V5-P2): the provider id, or `unknown`
+    // for an unlabelled breaker. A short-circuited call is its own outcome, so
+    // dashboards can tell "upstream errored" from "we never called upstream".
+    const provider = this.providerId ?? 'unknown';
+
     if (this.state === 'open') {
       if (this.now() - this.openedAt < this.openMs) {
+        providerCallsTotal.inc({ provider, outcome: 'circuit_open' });
         throw new CircuitOpenError(this.providerId);
       }
       // Cooldown elapsed → transition to half-open and let this call probe.
@@ -84,16 +92,21 @@ export class CircuitBreaker {
     }
 
     if (this.state === 'half-open') {
-      if (this.probing) throw new CircuitOpenError(this.providerId);
+      if (this.probing) {
+        providerCallsTotal.inc({ provider, outcome: 'circuit_open' });
+        throw new CircuitOpenError(this.providerId);
+      }
       this.probing = true;
     }
 
     try {
       const result = await fn();
       this.onSuccess();
+      providerCallsTotal.inc({ provider, outcome: 'success' });
       return result;
     } catch (err) {
       this.onFailure(err);
+      providerCallsTotal.inc({ provider, outcome: 'error' });
       throw err;
     }
   }
