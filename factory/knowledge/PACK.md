@@ -13,18 +13,29 @@ unlisted stock) — browse assets via a local search index, build & backtest
 **Conglomerates** (user-defined ETF-style weighted baskets), turn a budget into a
 buy list, and share portfolios with friends. Five-tab product:
 **Portfolio | Workboard | Assets | Social | Profile Menu**. Future surfaces ship
-as visible "Coming soon" pages. **V1 (core + tiny friend sharing), V2
+as visible "Coming soon" pages. \*\*V1 (core + tiny friend sharing), V2
 (multi-portfolio UI, cash balance, PIN lock, 2FA, admin rework, sharing
 expansion, notification matrix, personal API keys + OAuth apps) and V3 (i18n
 EN/DE, Net Worth & cash sources, AT tax engine + dividends, sharing audiences +
 multi-watchlists, friend rows/public profiles/chat, realtime + Live Mode,
 analytics deep-dive, price alerts + follows, PWA/web-push/FCM prep,
-bettertrack.at go-live) are SHIPPED. Current milestone: V4 (§13.4)** — the
-v3-feedback P0 family, mobile platform enablement (bearer scopes + parity,
-idempotency keys, OAuth account chooser, account deletion, FCM go-live),
-registration modes + Google login + passkeys, product ops (Sentry, health,
-announcements), data export + offsite backup, custom-benchmark + rebalanced
-backtests, broker CSV imports, Ideas, Telegram/Discord channels.
+bettertrack.at go-live) and V4 (registration modes + Google login, mobile
+platform enablement, notification UX + deep links, admin controls + 2FA,
+announcements + health page, account export + offsite backup, custom benchmarks
+
+- scheduled rebalancing, broker CSV imports, Ideas, Telegram/Discord channels)
+  are SHIPPED. Current milestone: V5 (§13.5, owner-re-confirmed 2026-07-17)** —
+  the v4-feedback P0 family (login layout, channel deactivation, profile icons,
+  permission declutter, Connections hub), perf & scale (snapshots/ETag/failover),
+  zero-setup observability + admin Problems page, digest + quiet hours, tax DE +
+  custom tax builder, market intelligence (dividends/earnings/news — deep),
+  workboard endgame, Forecast + standing orders + calculators, MIRRORCHAIN group
+  portfolios, social comments/reactions/groups ("simple but powerful"), expense
+  tracking, webhooks + key governance, local-Ollama AI + pluggable providers,
+  privacy modes (discreet + client-encrypted paranoid incl. user Drive), the
+  mobile-usable webapp (iOS-first + PWA polish), admin session policy.
+  **Global anti-bloat rule (owner): main things immediately visible; niche
+  sub-features fold away compact — no surface may make the app FEEL more bloated.\*\*
 
 ## Architecture
 
@@ -110,100 +121,139 @@ instead of looping: a bug surviving two fix attempts moves up one difficulty.
   Coming-Soon placeholders, config/CI/compose, templates, e2e, docs, i18n string
   sweeps.
 
-## V4 phases (PROJECTPLAN §13.4) — one line each, "done when" essence
+## V5 phases (PROJECTPLAN §13.5) — one line each, "done when" essence
 
-V1 (§13), V2 (§13.2) and V3 (§13.3) are fully shipped. The earliest §13.4 phase
-whose acceptance criteria the code doesn't meet is the current phase; disjoint
-arcs run in parallel via `mf-meta` claims. Binding rules: S-items only in surface
-bundles (3–6 items, one surface, one difficulty); every PR ships its user-facing
-strings through i18n with EN + DE keys (hardcoded string = blocking review
-finding); audience controls carry the privacy friction ladder (strong warning on
-public / light confirm on all-friends / none on specific friends). Ordering:
-**V4-P1…P3 compose and merge before everything except the V4-P0 bundle** (they
-block the parallel Android-app track); the P0b/c/d feedback arcs queue after P3.
-Owner-provided items are all env-gated and never block: Firebase key (P3), Google
-OAuth credentials (P4), Drive/rclone credentials (P6), Telegram bot token (P10).
+V1–V4 are fully shipped. The earliest §13.5 phase whose acceptance criteria the
+code doesn't meet is the current phase; disjoint arcs run in parallel via
+`mf-meta` claims. Binding rules unchanged (S-items only in surface bundles; every
+user-facing string ships EN + DE i18n keys — hardcoded string = blocking review
+finding; privacy friction ladder on audience controls) **plus the anti-bloat
+rule above, binding on every new surface.** Design-note-first phases (P7
+mirrorchain, P13 paranoid) get their §16 design note merged BEFORE feature code.
+Owner-provided items (env-gated, never block): Ollama endpoint/model (P12);
+per-user Drive consents are end-user OAuth, not owner setup.
 
-- **V4-P0 — v3-feedback quick wins (S/M bundle, diff:normal):** PIN entry never
-  renders digits (masked dots + lock-screen page-wide key capture); portfolio
-  chart ranges add 1D/1W/5Y; FIX inflation presets not deflating (custom % works,
-  HICP/CPI presets don't) + show each preset's %/yr; cash-source action icons
-  (deposit/withdraw/transfer/set-balance); registration legal-consent notice
-  linking the four legal docs; prominent "Sign up" treatment (layout reserves the
-  P4 Google button spot); remember-me always on (toggle gone, "stay signed in"
-  stays); Social tab: friends top, requests bottom.
-- **V4-P0b — Follows rework (M/L, diff:intermediate):** the standalone Following
-  page dies; the Friends tab absorbs it — friend-row expansion becomes a
-  profile-in-place with shared items, a "News about this person" follow toggle
-  and the alert-follow switches; following a FRIEND needs NO public profile
-  (server rule change if needed); the alerts/sharing setting gets a Settings
-  home; items turning public always notify followers; /following redirects.
-- **V4-P0c — Notification UX (M, diff:intermediate):** email defaults OFF for
-  every type except the account/security category (new accounts + one-time
-  migration, §16-logged); read = archive (+ Archive view); every notification
-  type deep-links on click (alert → asset, friend request → requests, chat →
-  thread, …); route keys shared with FCM payloads via docs/mobile-push.md.
-- **V4-P0d — Admin controls (M, diff:intermediate):** per-user chat ban
-  (server-enforced, threads stay readable, instant unban); account-defaults
-  panel for NEW accounts (notification matrix, chat on/off, portfolio starter
-  defaults, inert developer-status default for V6-9); light admin IA regroup
-  (deep redesign stays V6-1).
-- **V4-P1 — Mobile API enablement I (M/L, diff:hard, security):** API-key/OAuth
-  scope expansion (social:write, notifications:r/w, account:security, chat:r/w —
-  naming planner-refined, §16-logged), enforced per route group in the bearer
-  middleware, scope pickers with plain-language descriptions, strictly additive;
-  bearer parity for settings/security/sessions/notifications/chat/social writes
-  (inventory the cookie-only routes first; CSRF stays a cookie-only concern).
-- **V4-P2 — Mobile API enablement II (M/L; three arcs):** Idempotency-Key UUID
-  on ALL portfolio mutations with key→response persisted ≥48 h and replay on
-  duplicates (offline-queue backbone, diff:hard); OAuth account chooser — the
-  authorize page ALWAYS interposes "signed in as X — Continue / Use another
-  account", incl. first-party auto-approve clients (diff:normal); account
-  deletion — re-auth + typed confirm, hard-delete everything, chat anonymized,
-  sessions revoked; Play-required (diff:hard).
-- **V4-P3 — FCM push go-live (M, diff:intermediate; needs V3-P11c):** real FCM
-  sends with owner Firebase credentials (env-gated), unregistered-token cleanup,
-  docs/mobile-push.md payload + deep-link contract for the app track; physical
-  Android device test at the gate.
-- **V4-P4 — Registration modes + Google login + passkeys (L, diff:hard, auth):**
-  admin-switchable closed/invite-token/approval-queue/open (§6.12) with invite
-  management + decision emails + mode-aware surfaces; Google OAuth sign-in
-  (links by verified email or registers per active mode); WebAuthn passkeys
-  (multiple named, Settings → Security, alongside 2FA).
-- **V4-P5 — Product ops (M; two arcs):** Sentry api+web (env-gated DSN,
-  unit-tested PII scrubber, release tags) + bull-board admin-only + admin health
-  page (DB/Redis/provider/queue/gateway, version, uptime); announcements —
-  admin EN+DE composer, dismissible banner + inbox entry, per-user dismissal.
-- **V4-P6 — Data lifecycle (M; two arcs):** account data export (async zip —
-  JSON of every user-owned entity + CSVs; expiring re-auth-gated link; 1/day)
-  and offsite backup (daily pg_dump → age/GPG encrypt → Google Drive via
-  rclone, 30-day retention, documented restore drill).
-- **V4-P7 — Backtest: custom benchmark + rebalanced mode (L, diff:max,
-  engine):** benchmark = any catalog asset OR one of the user's conglomerates
-  through the same engine, full stats side-by-side + delta column; scheduled
-  monthly/quarterly/yearly rebalancing generalizing the V3 entry-day primitive
-  (shared code, not duplicated); late-listing composition §16-logged.
-- **V4-P8 — Broker CSV imports (L, diff:max, money-math):** framework + Trade
-  Republic/George/Flatex/IBKR mappers; autodetect → normalized staging →
-  preview with mapped/unmapped/duplicate flags → transactional apply into a
-  chosen portfolio + cash source; content-hash dedupe; per-row error tolerance;
-  anonymized fixtures per broker; explicit non-goal: broker-API sync.
-- **V4-P9 — Ideas (M/L, diff:intermediate; needs v3 chat + audiences):** "Save
-  as idea" persists a named Workboard state (conglomerate ref or ad-hoc set +
-  backtest params + thesis note); an Ideas list reopens it exactly; audience
-  picker + friction ladder apply; new group in friend rows/Shared-With-Me; chat
-  chips carry ideas or bare asset suggestions — sending never widens access.
-- **V4-P10 — Telegram & Discord channels (S/M bundle, diff:normal):** two
-  NotificationChannel impls — Telegram bot (env-gated token, code-handshake
-  link/unlink) and Discord per-user webhook (validated + test button); matrix
-  columns appear only when configured; secrets never logged.
-- **V4-P11 — DE sweep, e2e, v4 gate:** human-eye DE pass; empty/error/loading
-  sweep; Playwright extended (bearer scopes, deletion, invite registration,
-  mocked Google login, virtual-authenticator passkey, import preview→apply,
-  benchmark compare, idea share→clone, announcements); pre-release top-tier
-  review (Opus 4.8 max); file **check v4**.
+- **V5-P0 — v4-feedback quick wins (S/M bundle, diff:normal):** login layout
+  final (Google top; sign-up box back at the BOTTOM with the OR divider;
+  register page gets the mirrored "Have an account? → Sign in" box);
+  **Telegram + Discord deactivated** via a global default-OFF switch (code/
+  schema/rows stay; columns+settings hidden, endpoints refuse; env flip
+  restores); curated profile-icon set (finite avatars, picker, rendered on all
+  social surfaces; no uploads).
+- **V5-P0b — Permission surfaces declutter (M, diff:normal):** scope pickers
+  (Settings → API Access, admin OAuth editor, consent screen) become ONE row
+  per module with read/write where write⇒read; info-points replace description
+  walls; sections collapsed by default.
+- **V5-P0c — Connections hub foundation (M/L, diff:intermediate):** new
+  Settings → Connections area; the Google identity block MOVES there from
+  Security (rules unchanged); source tags on transactions/dividends/cash
+  (`manual`/`import:<broker>`/`sync:<provider>`, badge + filter; V4-P8 imports
+  adopt theirs); per-asset capability tags ("syncs with Parqet").
+- **V5-P1 — Performance & scale (L, diff:hard/max):** daily snapshot table
+  (precomputed per-portfolio series; backfill; invalidation rules §16-logged —
+  the correctness core; "today" stays fresh); ETag/Last-Modified + 304s on hot
+  reads; second quote provider with health-based failover, visible in admin;
+  INTRADAY portfolio series so the 1D/1W ranges render a real dense curve
+  (≥20 points via intraday quotes + history-stitching), never two closes.
+- **V5-P2 — Observability & admin ops (M/L, diff:intermediate):** ZERO owner
+  setup, all self-provisioned in the deploy stack; Prometheus + Grafana bound
+  to localhost/LAN only; admin = the only public management surface; usage
+  analytics in admin (DAU/WAU/MAU, feature counters, funnel — first-party
+  only); feature-flag kill-switches read per request; **admin Problems page**
+  (errors/failed jobs captured into the DB, PII-scrubbed, status/resolve — the
+  Sentry replacement; Sentry itself is rejected, never activate a DSN).
+- **V5-P3 — Digest + quiet hours (M, diff:normal/intermediate):** per-user
+  per-type instant/daily/weekly digests (one summary per period, matrix-
+  honoring); quiet-hours window + timezone with queue-and-deliver-at-end;
+  urgent-bypass class planner-defined + §16-logged; settings stay one compact
+  block.
+- **V5-P4 — Tax: Germany + export + tax v2 (L, diff:max, money):** DE
+  (Abgeltungsteuer 25 % + Soli, FIFO — cost-basis strategy becomes pluggable,
+  Sparer-Pauschbetrag, separate Aktien/Sonstige loss pots) encoded as fixtures
+  BEFORE implementation; per-year CSV + printable PDF export (AT + DE); tax v2:
+  the manual mode gains a configurable default prefilled per trade/dividend and
+  editable, plus a CUSTOM rule-built mode (rate %, in-year loss offset, refund,
+  year reset, carry, cost-basis choice) — AT/DE expressible as parameter sets.
+- **V5-P5 — Market intelligence, deep (L, diff:intermediate/hard):** dividend
+  calendar (ex/pay dates) + payout history + forward yield + PROJECTED
+  portfolio dividend income (feeds P6b); earnings calendar (asset page +
+  Workboard + opt-in notification); per-asset news + portfolio news digest;
+  splits awareness; all provider-abstracted, env-gated, invisible when
+  unconfigured; compact per the anti-bloat rule.
+- **V5-P6 — Workboard endgame (L, diff:hard/max engine):** N-way conglomerate
+  comparison (generalize the V4-P7 2-series math); nested conglomerates (cycle
+  reject, planner-set depth cap, recursive weight resolution); what-if
+  sandboxes on shared views (local-only tweaks + "reset to shared").
+- **V5-P6b — Forecast + standing orders + calculators (L, diff:hard):**
+  standing orders auto-record on schedule (monthly/daily buys, cash add
+  "salary", cash deduct "Netflix"; pause/resume; rows source-tagged
+  `standing-order`); Forecast tab projects net worth from chooseable factors
+  (orders continued, historical avg return, what-if plans, projected
+  dividends); calculator suite (compound interest, savings plan, dividend,
+  withdrawal plan — parqet.com/de/rechner is the inspiration bar), standalone
+  AND prefillable from the real portfolio; tab naming owner-eyed.
+- **V5-P7 — MIRRORCHAIN group portfolios (XL, diff:max, privacy + money +
+  sync):** one logical portfolio replicated as a synced copy in EVERY member's
+  account — appears as one, any member's write propagates to all; exactly one
+  transferable OWNER (final say: add/remove members, grant manage rights),
+  managers may add/remove too; kicked/leaving members KEEP their copy as an
+  un-synced fork; any member's account deletion leaves the chain intact
+  (owner-deletion succession per design note); TWR/tax per account; invites =
+  friends + friction ladder; replication/conflict/succession design note
+  §16-merged BEFORE code; UX mandate: seamless, zero member-side config.
+- **V5-P8 — Social: comments, reactions, groups (M/L, diff:intermediate):**
+  per-item comment threads (visibility = item audience; delete-own; item-owner
+  moderates), emoji reactions, named friend groups as audiences (between
+  specific- and all-friends in picker + ladder); NO public comments; "simple
+  but powerful" — ground-up redesign of the social surfaces is allowed if that
+  is what clarity takes.
+- **V5-P9 — Expense tracking (L × ≥3 issues, diff:hard):** NEW top-level area,
+  zero portfolio/TWR/tax interaction; bank CSV import on the V4-P8 framework
+  (Erste/George, Raiffeisen ELBA, N26, Revolut mappers); rule-based auto-
+  categorization with editable rules; category/month dashboards; per-category
+  budgets with matrix-routed alerts; portfolio surfaces byte-identical when
+  unused.
+- **V5-P10 — API platform (M/L, diff:intermediate/hard):** outbound webhooks
+  (per-event subscriptions, HMAC-signed, retries + backoff, delivery log,
+  auto-disable on persistent failure); admin-configurable per-key rate tiers;
+  per-key audit trail (last-used, bounded request log).
+- **V5-P11 — CUT** (owner 2026-07-17): light theme, widget builder, kiosk move
+  to the redesign (#544) and build in v6. Do not compose.
+- **V5-P12 — AI: local Ollama + pluggable providers (L, diff:hard):** default
+  provider = owner's LAN Ollama (mid-size ~7–14B quantized instruct model;
+  don't max the 16 GB card; 8 GB-VRAM future host must stay viable); admin
+  LLM-provider settings switchable without redeploy (Ollama endpoint/model OR
+  encrypted API tokens for Claude/OpenAI/Gemini — never logged, never sent to
+  the web client); features: AI insights (informational, hard "not financial
+  advice" framing) + NL conglomerate builder (always a reviewed draft);
+  per-user daily caps; unconfigured ⇒ invisible.
+- **V5-P13 — Privacy modes (XL; two arcs):** discreet mode — per-user toggle
+  hides EVERY absolute amount app-wide (percentages remain); paranoid mode —
+  FULL BUILD: client-side encryption, server/Drive/both/**Drive-only** as
+  user-chosen blob media (Drive-only ⇒ zero portfolio bytes server-side), the
+  per-user Drive connection ships HERE, valuations/stats compute client-side
+  after local decryption, social/sharing absent by design, server alerts stay;
+  autonomy-prep seams (client data-home + market-data adapters) so clients can
+  one day run server-less; high-usability mandate; design note (blob format/
+  versioning/conflicts, key custody, feature-kill list, recovery = lost key ⇒
+  lost data) §16-merged BEFORE code.
+- **V5-P13b — Mobile-usable webapp, iOS-first (L, diff:intermediate):** full
+  responsive pass over EVERY user + admin surface (burger nav, tap targets,
+  no clipped controls at 390/360 widths); installable-PWA polish for iOS on
+  the #350 foundation (install flow, icons/splash, standalone quirks) — this
+  IS the iOS app until the native one exists; phone-viewport checks join the
+  gate permanently.
+- **V5-P13c — Admin session policy (S/M, diff:normal):** admin = login-2FA
+  once, NO step-up re-prompts (#430 rejected+closed); admin sessions expire
+  early (6–24 h, configurable) independent of user session rules.
+- **V5-P14 — DE sweep, e2e & the v5 gate:** human-eye DE pass; empty/error/
+  loading sweep; Playwright: digest delivery, DE tax fixture, mirrorchain
+  join/write/kick-fork/transfer, comments/groups, expense import → budget
+  alert, webhook delivery, standing-order + forecast, paranoid Drive-only
+  round trip, NL builder draft; pre-release top-tier review of the whole v5
+  branch; file **check v5**.
 
-After all V4-P0…P11: the composer files one `awaiting-owner` **"check v4"** issue
+After all V5 phases: the composer files one `awaiting-owner` **"check v5"** issue
 and pauses feature planning (only bug-fix/hardening allowed) until the owner
 responds.
 
