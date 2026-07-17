@@ -44,12 +44,11 @@ const INDEX_MAP: Record<string, { stooq: string; currency: CurrencyCode }> = {
   '^GDAXI': { stooq: '^dax', currency: 'EUR' }, // DAX
 };
 
-const METAL_CURRENCY_PREFIXES = ['XAU', 'XAG', 'XPT', 'XPD'];
-
 /** True for a yahoo ref shape Stooq must not try (crypto/fx/commodity). */
 function isNonEquityShape(upper: string): boolean {
+  // `=X` covers FX *and* metal pairs (`XAUUSD=X`); `=F` covers futures — all
+  // non-equity, so no separate metal-prefix check is needed.
   if (upper.endsWith('=X') || upper.endsWith('=F')) return true;
-  if (METAL_CURRENCY_PREFIXES.some((p) => upper.startsWith(p) && upper.endsWith('=X'))) return true;
   const dash = upper.lastIndexOf('-');
   // Crypto pair `BTC-USD` (3–5 letter quote); a class share `BRK-B` is not.
   if (dash > 0 && /^[A-Z]{3,5}$/.test(upper.slice(dash + 1))) return true;

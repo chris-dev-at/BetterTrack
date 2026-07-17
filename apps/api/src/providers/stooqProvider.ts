@@ -73,7 +73,11 @@ export function createStooqProvider(deps: CreateStooqProviderDeps): AssetProvide
       // No price ⇒ Stooq does not know this symbol — a definitive not-found.
       throw new AssetNotFoundError(`Stooq returned no price for "${mapped.symbol}"`);
     }
-    // Stooq gives a UTC-ish `date`/`time`; fall back to now for the asOf stamp.
+    // Stooq's light-quote `date`/`time` has no firmly-documented timezone (UTC
+    // vs. exchange/CET-local), so we parse it as UTC and tolerate a possible
+    // few-hour skew: `asOf` is DISPLAY-ONLY — the quote cache TTL is write-time
+    // based (§5.3), never `asOf`-based, so the tz assumption can't affect
+    // freshness or any money figure. A malformed/absent stamp falls back to now.
     const asOfMs =
       row.date && row.time
         ? Date.parse(`${row.date}T${row.time}Z`)

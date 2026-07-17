@@ -170,6 +170,33 @@ describe('FailoverResolver.run — failover, recovery, attribution', () => {
   });
 });
 
+describe('FailoverResolver.status — empty without a configured secondary', () => {
+  const yahoo = provider('yahoo', () => Q(1));
+
+  it('reports empty status under NO_FAILOVER even after a successful serve', async () => {
+    const registry = createProviderRegistry([yahoo]);
+    const resolver = createFailoverResolver({
+      registry,
+      chains: NO_FAILOVER,
+      breakerState: () => 'closed',
+    });
+
+    // A real serve by the primary — the boot serve populates the internal maps —
+    // yet the admin projection stays empty (byte-identical single-provider default).
+    expect((await resolver.run(REF, passthrough, op, isNotFoundError)).price).toBe(1);
+    expect(resolver.status()).toEqual({ chains: [], switches: [], attribution: [] });
+  });
+
+  it('treats a config whose only entries are empty as no-secondary', async () => {
+    const registry = createProviderRegistry([yahoo]);
+    const chains: FailoverChains = { byClass: { crypto: [] }, default: [] };
+    const resolver = createFailoverResolver({ registry, chains, breakerState: () => 'closed' });
+
+    await resolver.run(REF, passthrough, op, isNotFoundError);
+    expect(resolver.status()).toEqual({ chains: [], switches: [], attribution: [] });
+  });
+});
+
 describe('FailoverResolver.run — not-found semantics', () => {
   it('re-throws a PRIMARY not-found without failing over (authoritative for the ref)', async () => {
     const yahoo = provider('yahoo', () => Promise.reject(new AssetNotFoundError('gone')));

@@ -141,10 +141,25 @@ export function classifyRefClass(providerRef: string): AssetType {
   return 'stock';
 }
 
+/**
+ * True when any secondary is configured (an explicit per-class entry or the
+ * default). With none, the chain is the single-provider default: not only is the
+ * market-data *fetch* byte-identical, the admin surface is too — {@link
+ * FailoverResolver.status} reports empty arrays so the health panel renders no
+ * chrome on a default install (contract invariant: "the failover arrays are empty
+ * when no secondary source is configured"; §13.5 V5-P1c AC#4 + anti-bloat).
+ */
+function hasConfiguredSecondary(chains: FailoverChains): boolean {
+  return (
+    chains.default.length > 0 || Object.values(chains.byClass).some((ids) => (ids?.length ?? 0) > 0)
+  );
+}
+
 export function createFailoverResolver(deps: FailoverResolverDeps): FailoverResolver {
   const { registry, chains, breakerState } = deps;
   const now = deps.now ?? Date.now;
   const maxSwitchEvents = deps.maxSwitchEvents ?? DEFAULT_MAX_SWITCH_EVENTS;
+  const secondaryConfigured = hasConfiguredSecondary(chains);
 
   // primaryId → currently-serving provider (+ when it took over).
   const serving = new Map<string, { providerId: string; since: number }>();
@@ -230,6 +245,10 @@ export function createFailoverResolver(deps: FailoverResolverDeps): FailoverReso
   }
 
   function status(): FailoverStatus {
+    // No secondary configured ⇒ the failover surface is the byte-identical
+    // default: report nothing, even after the primary has served traffic, so the
+    // admin health panel renders no chrome on a single-provider deploy.
+    if (!secondaryConfigured) return { chains: [], switches: [], attribution: [] };
     const chainSummaries: FailoverChainSummary[] = [...serving.entries()].map(
       ([primaryId, current]) => {
         // A representative equity chain: the primary plus the default secondaries.

@@ -517,4 +517,17 @@ describe('MarketDataService — provider failover (§13.5 V5-P1c)', () => {
     ).not.toBeNull();
     expect(service.failoverStatus()).toEqual({ chains: [], switches: [], attribution: [] });
   });
+
+  it('regression: a SUCCESSFUL serve under NO_FAILOVER still reports empty status (no admin chrome)', async () => {
+    // The primary actually serves here (unlike the not-found case above, where
+    // nothing is attributed): with no secondary configured the failover surface
+    // must STILL be empty, so the admin health panel renders no chrome on a
+    // single-provider (shipped default) deploy — the anti-bloat invariant.
+    const { provider, service } = serviceWith();
+
+    const result = await service.getQuote(REF);
+    expect(result.stale).toBe(false);
+    expect(provider.calls.quote).toBe(1); // a real serve happened
+    expect(service.failoverStatus()).toEqual({ chains: [], switches: [], attribution: [] });
+  });
 });
