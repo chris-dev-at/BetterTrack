@@ -12,6 +12,7 @@ import {
   getAuthorizationDetails,
   type OAuthAuthorizeParams,
 } from '../../lib/oauthApi';
+import { ScopeSummary } from '../../ui';
 import { useAuth } from '../AuthContext';
 import { Alert, Button, Spinner } from '../components/ui';
 
@@ -290,19 +291,9 @@ export function ConsentPage() {
           {t('auth.oauthConsent.wantsAccess')}
         </p>
 
-        <ul className="flex flex-col gap-2">
-          {details.scopes.map(({ scope, label }) => (
-            <li
-              key={scope}
-              className="flex items-start gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-200"
-            >
-              <span aria-hidden="true" className="mt-0.5 text-sky-400">
-                ✓
-              </span>
-              <span>{label}</span>
-            </li>
-          ))}
-        </ul>
+        {/* V5-P0b: grouped by module so a user reads permissions as coherent
+            groups (Portfolio, Social, …) instead of a flat run of lines. */}
+        <ScopeSummary items={details.scopes} />
 
         <p className="break-all text-xs text-neutral-500">
           {t('auth.oauthConsent.returnedTo')}{' '}
