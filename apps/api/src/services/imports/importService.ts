@@ -11,7 +11,7 @@ import type {
   SearchResultItem,
   TransactionInput,
 } from '@bettertrack/contracts';
-import { IMPORT_MAX_ROWS } from '@bettertrack/contracts';
+import { IMPORT_MAX_ROWS, importSourceTag } from '@bettertrack/contracts';
 
 import { ApiError, badRequest, conflict, notFound } from '../../errors';
 import type {
@@ -478,6 +478,10 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }
       }
       const linkCash = input.linkCashOnTrades === true;
+      // Source tag (V5-P0c): every row this apply writes is stamped
+      // `import:<broker>` so imported data can never be confused with
+      // hand-entered `manual` rows. Server-assigned, per the batch's mapper.
+      const source = importSourceTag(batch.brokerId);
 
       // Claim the batch atomically (pending → applied) BEFORE any row books:
       // two concurrent applies would both pass the read-check above and each
@@ -560,20 +564,25 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
             ...(linkCash && row.kind === 'sell' ? { addProceedsToCash: true } : {}),
             ...(linkCash && cashSourceId ? { cashSourceId } : {}),
           };
-          await portfolio.createTransactions(userId, batch.portfolioId, [tx]);
+          await portfolio.createTransactions(userId, batch.portfolioId, [tx], { source });
           return;
         }
         if (row.kind === 'dividend') {
           if (!row.assetId || row.amountEur === null) {
             throw badRequest('Row is missing dividend fields.', 'IMPORT_ROW_INVALID');
           }
-          await tax.recordDividend(userId, batch.portfolioId, {
-            assetId: row.assetId,
-            grossAmountEur: row.amountEur,
-            executedAt,
-            ...(cashSourceId ? { cashSourceId } : {}),
-            note: row.note,
-          });
+          await tax.recordDividend(
+            userId,
+            batch.portfolioId,
+            {
+              assetId: row.assetId,
+              grossAmountEur: row.amountEur,
+              executedAt,
+              ...(cashSourceId ? { cashSourceId } : {}),
+              note: row.note,
+            },
+            { source },
+          );
           return;
         }
         if (row.amountEur === null) {
@@ -586,9 +595,9 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
           note: row.note,
         };
         if (row.kind === 'deposit') {
-          await portfolio.depositCash(userId, batch.portfolioId, entry);
+          await portfolio.depositCash(userId, batch.portfolioId, entry, { source });
         } else {
-          await portfolio.withdrawCash(userId, batch.portfolioId, entry);
+          await portfolio.withdrawCash(userId, batch.portfolioId, entry, { source });
         }
       };
 

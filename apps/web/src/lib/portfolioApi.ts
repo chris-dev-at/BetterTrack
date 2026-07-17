@@ -164,13 +164,14 @@ export async function getPortfolioHistory(
 /** `GET /portfolios/:id/transactions?cursor=` — newest-first ledger, keyset paginated. */
 export async function listTransactions(
   portfolioId: string,
-  params: { cursor?: string; limit?: number } = {},
+  params: { cursor?: string; limit?: number; source?: string } = {},
   signal?: AbortSignal,
 ): Promise<TransactionListResponse> {
   const data = await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/transactions`,
     {
-      query: { cursor: params.cursor, limit: params.limit },
+      // `source` is the V5-P0c source-tag filter (omitted → all rows).
+      query: { cursor: params.cursor, limit: params.limit, source: params.source },
       signal,
     },
   );

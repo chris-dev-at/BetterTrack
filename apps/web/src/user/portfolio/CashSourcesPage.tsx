@@ -21,6 +21,7 @@ import { activeSources, sortSourcesMainFirst } from './cashSourceUtils';
 import { CashDialog } from './CashDialog';
 import { CashSourceDialog } from './CashSourceDialog';
 import { SetBalanceDialog } from './SetBalanceDialog';
+import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { TransferDialog } from './TransferDialog';
 
 /** Human label for a source's descriptive type (V3-P3). */
@@ -248,22 +249,51 @@ function HistorySection({
   sourceNames: Map<string, string>;
 }) {
   const t = useT();
+  // Source-tag filter (V5-P0c): folded into the history header, and only shown
+  // when the ledger actually mixes sources (anti-bloat — a pure `manual` ledger
+  // never sees it). Filtering is client-side over the already-loaded movements.
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const sourceTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const m of movements) tags.add(m.source);
+    return [...tags].sort();
+  }, [movements]);
   const ordered = useMemo(
     () =>
-      [...movements].sort(
-        (a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime(),
-      ),
-    [movements],
+      [...movements]
+        .filter((m) => sourceFilter === 'all' || m.source === sourceFilter)
+        .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime()),
+    [movements, sourceFilter],
   );
+  const showFilter = sourceTags.length > 1;
 
   return (
     <section
       aria-label={t('portfolio.cashSources.history.heading')}
       className="flex flex-col gap-3"
     >
-      <h2 className="text-lg font-semibold text-neutral-200">
-        {t('portfolio.cashSources.history.heading')}
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-neutral-200">
+          {t('portfolio.cashSources.history.heading')}
+        </h2>
+        {showFilter ? (
+          <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+            {t('portfolio.sourceTag.filterLabel')}
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              <option value="all">{t('portfolio.sourceTag.filterAll')}</option>
+              {sourceTags.map((tag) => (
+                <option key={tag} value={tag}>
+                  {sourceTagLabel(t, tag) ?? t('portfolio.sourceTag.manual')}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
       {ordered.length === 0 ? (
         <p className="text-sm text-neutral-500">{t('portfolio.cashSources.history.empty')}</p>
       ) : (
@@ -295,7 +325,10 @@ function HistorySection({
                     {sourceNames.get(m.sourceId) ?? EM_DASH}
                   </td>
                   <td className="px-3 py-2 text-neutral-400">
-                    {kindLabel(t, m.kind)}
+                    <span className="inline-flex flex-wrap items-center gap-1.5">
+                      <span>{kindLabel(t, m.kind)}</span>
+                      <SourceBadge source={m.source} />
+                    </span>
                     {m.counterpartSourceId ? (
                       <span className="ml-1 text-neutral-500">
                         {t('portfolio.cashSources.history.counterpart', {

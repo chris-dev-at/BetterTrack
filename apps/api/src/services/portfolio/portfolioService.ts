@@ -205,12 +205,19 @@ export interface PortfolioService {
   listTransactions(
     userId: string,
     portfolioId: string,
-    params: { cursor?: string; limit?: number },
+    params: { cursor?: string; limit?: number; source?: string },
   ): Promise<TransactionListResponse>;
+  /**
+   * Record one or more transactions. `opts.source` is the V5-P0c source tag the
+   * rows (and their linked cash legs) are stamped with — `manual` by default;
+   * the CSV apply path passes `import:<broker>`. Server-assigned only: the HTTP
+   * body carries no source field, so a client can never forge a sync/import tag.
+   */
   createTransactions(
     userId: string,
     portfolioId: string,
     inputs: TransactionInput[],
+    opts?: { source?: string },
   ): Promise<TransactionDto[]>;
   updateTransaction(
     userId: string,
@@ -233,7 +240,11 @@ export interface PortfolioService {
    * The portfolio's cash movements (all sources) + rolled-up balance + the
    * sources with per-source balances — the liquidity split (§14, #220, V3-P3).
    */
-  getCashMovements(userId: string, portfolioId: string): Promise<CashMovementsResponse>;
+  getCashMovements(
+    userId: string,
+    portfolioId: string,
+    opts?: { source?: string },
+  ): Promise<CashMovementsResponse>;
   /** The portfolio's cash sources with balances, Main first (V3-P3). */
   listCashSources(
     userId: string,
@@ -287,6 +298,7 @@ export interface PortfolioService {
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
+    opts?: { source?: string },
   ): Promise<CashMovementResponse>;
   /**
    * Record an external cash withdrawal from a source (Main by default);
@@ -296,6 +308,7 @@ export interface PortfolioService {
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
+    opts?: { source?: string },
   ): Promise<CashMovementResponse>;
   /** Live "available → after" preview against one source's balance (§14, V3-P3). */
   previewCash(
@@ -486,6 +499,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       note: r.note,
       allowUncovered: r.allowUncovered,
       uncoveredEntryPrice: r.uncoveredEntryPrice,
+      source: r.source,
       asset: assetToDto(asset),
     };
   }
@@ -654,6 +668,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       taxYear: r.taxYear,
       executedAt: r.executedAt.toISOString(),
       note: r.note,
+      source: r.source,
       createdAt: r.createdAt.toISOString(),
     };
   }
@@ -1179,6 +1194,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const { items, nextCursor } = await transactionRepo.listByPortfolio(portfolioId, {
         limit,
         cursor: params.cursor,
+        source: params.source,
       });
       return {
         items: items.map((row) => ({
@@ -1192,6 +1208,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           note: row.note,
           allowUncovered: row.allowUncovered,
           uncoveredEntryPrice: row.uncoveredEntryPrice,
+          source: row.source,
           asset: {
             id: row.asset.id,
             symbol: row.asset.symbol,
@@ -1206,9 +1223,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     },
 
-    async createTransactions(userId, portfolioId, inputs) {
+    async createTransactions(userId, portfolioId, inputs, opts) {
       if (inputs.length === 0) throw badRequest('No transactions to create.', 'EMPTY_BATCH');
       await requireOwnedPortfolio(userId, portfolioId);
+      // Source tag (V5-P0c): `manual` unless the caller (the CSV apply path)
+      // passes `import:<broker>`. The HTTP body carries no source, so a client
+      // can never forge a non-manual tag on a hand-entered row.
+      const source = opts?.source ?? 'manual';
 
       const assetIds = [...new Set(inputs.map((i) => i.assetId))];
       const assetsById = await loadVisibleAssets(userId, assetIds);
@@ -1346,10 +1367,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             allowUncovered: i.side === 'sell' ? (i.allowUncovered ?? false) : false,
             uncoveredEntryPrice:
               i.side === 'sell' && i.allowUncovered ? (i.uncoveredEntryPrice ?? null) : null,
+            source,
             cashMovements,
           };
         }),
-        taxPlan.extras,
+        // Batch year-correction legs carry the same source as the batch (V5-P0c).
+        taxPlan.extras.map((extra) => ({ ...extra, source })),
       );
 
       // Earliest affected day (§16 rule 1): the batch's earliest transaction
@@ -1628,7 +1651,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     },
 
-    async getCashMovements(userId, portfolioId) {
+    async getCashMovements(userId, portfolioId, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       // Materialise Main so even an untouched portfolio answers with its
       // default source (V3-P3) — mirrors listPortfolios' behavior.
@@ -1639,9 +1662,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         // resolve its source's name; active listings use listCashSources.
         cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
       ]);
+      // Source-tag filter (V5-P0c): the returned movements are narrowed to the
+      // requested tag, but balances still roll up the FULL ledger — a filter is
+      // a view, never a re-computation of net worth.
+      const visible = opts?.source ? records.filter((r) => r.source === opts.source) : records;
       return {
         balanceEur: totalEur,
-        movements: records.map(movementToDto),
+        movements: visible.map(movementToDto),
         sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
       };
     },
@@ -1859,7 +1886,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     },
 
-    async depositCash(userId, portfolioId, input) {
+    async depositCash(userId, portfolioId, input, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const source = await resolveFlowSource(portfolioId, input.sourceId);
       // A deposit only ever raises the balance, so it needs no solvency gate.
@@ -1871,6 +1898,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         amountEur: floorCents(input.amountEur),
         executedAt,
         note: input.note ?? null,
+        // Source tag (V5-P0c): `manual` unless the CSV apply path stamps a broker.
+        source: opts?.source ?? 'manual',
       });
       // Cash is part of the net-worth curve (#311): a (possibly back-dated)
       // deposit reshapes it from its own day on (§16 rule 4).
@@ -1883,7 +1912,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       };
     },
 
-    async withdrawCash(userId, portfolioId, input) {
+    async withdrawCash(userId, portfolioId, input, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const source = await resolveFlowSource(portfolioId, input.sourceId);
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
@@ -1908,6 +1937,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         amountEur: -amountEur,
         executedAt,
         note: input.note ?? null,
+        // Source tag (V5-P0c): `manual` unless the CSV apply path stamps a broker.
+        source: opts?.source ?? 'manual',
       });
       // Cash is part of the net-worth curve (#311): a (possibly back-dated)
       // withdrawal reshapes it from its own day on (§16 rule 4).

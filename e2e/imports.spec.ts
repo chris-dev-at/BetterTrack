@@ -81,6 +81,9 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
   const history = page.getByRole('region', { name: 'Movement history' });
   await expect(history.getByText('Deposit', { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(history.getByText('Dividend', { exact: true })).toBeVisible();
+  // Source tag (V5-P0c): every imported movement wears its broker badge, so
+  // synced/imported data is never mistaken for a hand-entered `manual` row.
+  await expect(history.getByText('Imported · Trade Republic').first()).toBeVisible();
 
   // ── Step 3: re-upload the same file → every row flags as duplicate ────────
   await page.goto('/portfolio/import');

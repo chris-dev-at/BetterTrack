@@ -927,6 +927,14 @@
     }
   },
   "portfolio": {
+    "sourceTag": {
+      "importFrom": "Imported · {{source}}",
+      "syncFrom": "Synced · {{source}}",
+      "standingOrder": "Standing order",
+      "filterLabel": "Source",
+      "filterAll": "All sources",
+      "manual": "Manual entry"
+    },
     "transaction": {
       "titleCreate": "New transaction",
       "titleEdit": "Edit transaction",

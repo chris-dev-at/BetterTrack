@@ -36,10 +36,13 @@ import type { BrokerMapper } from '../types';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
-const FIXTURE = readFileSync(
-  path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/trade-republic.csv'),
-  'utf8',
-);
+const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
+const readFixture = (name: string) => readFileSync(path.join(fixtureDir, name), 'utf8');
+
+const FIXTURE = readFixture('trade-republic.csv');
+const GEORGE_FIXTURE = readFixture('george.csv');
+const FLATEX_CASH_FIXTURE = readFixture('flatex-cash.csv');
+const IBKR_FIXTURE = readFixture('ibkr.csv');
 
 const HEADER = 'Datum;Typ;Wertpapier;ISIN;Anzahl;Kurs;Gebühr;Betrag;Währung';
 
@@ -131,6 +134,7 @@ const transactions = async (agent: Agent, pid: string) =>
     price: number;
     fee: number;
     executedAt: string;
+    source: string;
     asset: { symbol: string };
   }>;
 
@@ -141,12 +145,13 @@ const dividends = async (agent: Agent, pid: string) =>
     taxAmountEur: number | null;
     cashSourceId: string;
     executedAt: string;
+    source: string;
   }>;
 
 const cash = async (agent: Agent, pid: string) =>
   (await agent.get(`/api/v1/portfolios/${pid}/cash`)).body as {
     balanceEur: number;
-    movements: Array<{ kind: string; amountEur: number; sourceId: string }>;
+    movements: Array<{ kind: string; amountEur: number; sourceId: string; source: string }>;
     sources: Array<{ id: string; isMain: boolean; balanceEur: number }>;
   };
 
@@ -424,6 +429,46 @@ describe('POST /imports/:batchId/apply — golden fixture', () => {
       ]),
     );
     expect(ledger.movements).toHaveLength(4);
+  });
+
+  it('stamps every applied Trade Republic row (txn, dividend, cash) with import:trade_republic', async () => {
+    // The apply path is the source-tag write path (V5-P0c, #552): imported data
+    // can never be confused with hand-entered `manual` rows.
+    const { agent, pid } = await setup();
+    const preview = await upload(agent, pid, FIXTURE);
+    await apply(agent, preview.batch.id);
+
+    const txs = await transactions(agent, pid);
+    const divs = await dividends(agent, pid);
+    const ledger = await cash(agent, pid);
+    expect(txs.length).toBeGreaterThan(0);
+    expect(divs.length).toBeGreaterThan(0);
+    expect(ledger.movements.length).toBeGreaterThan(0);
+    for (const t of txs) expect(t.source).toBe('import:trade_republic');
+    for (const d of divs) expect(d.source).toBe('import:trade_republic');
+    for (const m of ledger.movements) expect(m.source).toBe('import:trade_republic');
+  });
+
+  it.each([
+    // Trades resolve by name (like Trade Republic above), so george's instruments
+    // are seeded first; flatex-cash & IBKR carry deposit/withdrawal rows that
+    // apply with no asset seeding at all.
+    { broker: 'george', fixture: GEORGE_FIXTURE, seed: ['Beispiel Bau AG', 'Muster Welt ETF'] },
+    { broker: 'flatex', fixture: FLATEX_CASH_FIXTURE, seed: [] as string[] },
+    { broker: 'ibkr', fixture: IBKR_FIXTURE, seed: [] as string[] },
+  ])('stamps every applied row with import:$broker on apply', async ({ broker, fixture, seed }) => {
+    const { agent, pid } = await setup();
+    for (const [i, name] of seed.entries()) await seedAsset(`SEED${i}`, name);
+    const preview = await upload(agent, pid, fixture, { brokerId: broker });
+    await apply(agent, preview.batch.id);
+
+    const tags = [
+      ...(await transactions(agent, pid)).map((r) => r.source),
+      ...(await dividends(agent, pid)).map((r) => r.source),
+      ...(await cash(agent, pid)).movements.map((r) => r.source),
+    ];
+    expect(tags.length).toBeGreaterThan(0);
+    for (const tag of tags) expect(tag).toBe(`import:${broker}`);
   });
 
   it('re-importing the same file creates zero duplicates', async () => {

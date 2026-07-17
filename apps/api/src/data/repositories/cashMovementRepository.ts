@@ -44,6 +44,8 @@ export interface CashMovementRecord {
   taxYear: number | null;
   executedAt: Date;
   note: string | null;
+  /** Source tag (V5-P0c): how this movement entered the ledger; `manual` for hand entry. */
+  source: string;
   createdAt: Date;
 }
 
@@ -59,6 +61,8 @@ export interface NewCashMovement {
   counterpartSourceId?: string | null;
   dividendId?: string | null;
   taxYear?: number | null;
+  /** Source tag (V5-P0c); defaults to `manual`. Server-assigned only. */
+  source?: string;
 }
 
 function toRecord(row: CashMovementRow): CashMovementRecord {
@@ -75,6 +79,7 @@ function toRecord(row: CashMovementRow): CashMovementRecord {
     taxYear: row.taxYear ?? null,
     executedAt: row.executedAt,
     note: row.note ?? null,
+    source: row.source,
     createdAt: row.createdAt,
   };
 }
@@ -92,6 +97,7 @@ function toInsertValues(portfolioId: string, movement: NewCashMovement) {
     taxYear: movement.taxYear ?? null,
     executedAt: movement.executedAt,
     note: movement.note,
+    source: movement.source ?? 'manual',
   };
 }
 
