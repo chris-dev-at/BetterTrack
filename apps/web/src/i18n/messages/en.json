@@ -277,7 +277,29 @@
       "description": "Broker CSV imports (Trade Republic, George, …) and full account-data export."
     },
     "connections": {
-      "description": "Google login and other third-party connections."
+      "title": "Connections",
+      "subtitle": "Everything linking BetterTrack to the outside — your Google sign-in, and the connectors coming soon.",
+      "comingSoon": "Coming soon",
+      "slotsTitle": "Connectors",
+      "slotsSubtitle": "Sync your data with outside services. These are on the way — nothing to set up yet.",
+      "sync": {
+        "oneTime": "One-time import — runs once when you connect.",
+        "stayConnected": "Stays connected — syncs automatically."
+      },
+      "slots": {
+        "drive": {
+          "name": "Google Drive backup",
+          "purpose": "Keep an encrypted, off-site backup of your account on your own Drive."
+        },
+        "bankCash": {
+          "name": "Bank & broker cash sync",
+          "purpose": "Keep your cash balances in step with your bank and broker accounts."
+        },
+        "parqet": {
+          "name": "Parqet",
+          "purpose": "Bring your holdings across from a Parqet portfolio."
+        }
+      }
     },
     "backups": {
       "description": "Automatic backups to Google Drive and elsewhere."
@@ -1831,6 +1853,9 @@
     }
   },
   "assets": {
+    "capability": {
+      "parqet": "Syncs with Parqet"
+    },
     "detail": {
       "chartAriaLabel": "Price chart for {{symbol}}",
       "stale": "Stale",

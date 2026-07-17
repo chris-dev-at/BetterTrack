@@ -20,9 +20,6 @@ vi.mock('../../lib/userApi', () => ({
   setPin: vi.fn(),
   disablePin: vi.fn(),
   setPinLockIdleMinutes: vi.fn(),
-  getGoogleLinkStatus: vi.fn(),
-  unlinkGoogle: vi.fn(),
-  googleStartUrl: vi.fn(() => 'http://api.test/api/v1/auth/google/start'),
 }));
 
 vi.mock('../../lib/twoFactorApi', () => ({
@@ -49,7 +46,6 @@ import {
 } from '../../lib/twoFactorApi';
 import {
   disablePin,
-  getGoogleLinkStatus,
   getMe,
   getSession,
   listSessions,
@@ -57,7 +53,6 @@ import {
   revokeSession,
   setPin,
   setPinLockIdleMinutes,
-  unlinkGoogle,
 } from '../../lib/userApi';
 import { SecuritySettingsPage } from './SecuritySettingsPage';
 
@@ -108,14 +103,6 @@ function renderPage(initialEntry = '/settings/security') {
   );
 }
 
-const GOOGLE_OFF = {
-  enabled: false,
-  linked: false,
-  email: null,
-  linkedAt: null,
-  canUnlink: false,
-} as const;
-
 const SESSIONS: SessionSummary[] = [
   {
     id: 'handle-current',
@@ -147,9 +134,6 @@ beforeEach(() => {
   vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
   vi.mocked(enrollEmailTwoFactor).mockResolvedValue(undefined);
   vi.mocked(disableEmailTwoFactor).mockResolvedValue(undefined);
-  // Google off by default so the section stays hidden unless a test opts in.
-  vi.mocked(getGoogleLinkStatus).mockResolvedValue(GOOGLE_OFF);
-  vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
 });
 
 describe('SecuritySettingsPage', () => {
@@ -448,105 +432,5 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
 
     await waitFor(() => expect(regenerateRecoveryCodes).toHaveBeenCalled());
     expect(await screen.findByText('zzzz-yyyy-xxxx-wwww')).toBeInTheDocument();
-  });
-});
-
-describe('SecuritySettingsPage — Google account (§13.4 V4-P4b)', () => {
-  const LINKED = {
-    enabled: true,
-    linked: true,
-    email: 'me@example.com',
-    linkedAt: '2026-07-01T08:00:00.000Z',
-    canUnlink: true,
-  } as const;
-
-  test('the section is hidden when Google is not configured (routes 404 / disabled)', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    // Default beforeEach mock is GOOGLE_OFF (enabled: false).
-    renderPage();
-    // The rest of the page renders; the Google section never appears.
-    expect(await screen.findByText(/signed in since/i)).toBeInTheDocument();
-    expect(screen.queryByText('Google account')).not.toBeInTheDocument();
-  });
-
-  test('shows the linked identity and unlinks after a password re-auth', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
-    const user = userEvent.setup();
-    renderPage();
-
-    expect(await screen.findByText('Linked as me@example.com')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Unlink' }));
-    await user.type(await screen.findByLabelText('Password'), 'my-password-1');
-    await user.click(screen.getByRole('button', { name: 'Unlink Google' }));
-
-    await waitFor(() => expect(unlinkGoogle).toHaveBeenCalledWith('my-password-1'));
-    expect(await screen.findByText('Google account unlinked.')).toBeInTheDocument();
-  });
-
-  test('a wrong password surfaces an in-form error and does not unlink further', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
-    vi.mocked(unlinkGoogle).mockRejectedValue(new ApiError(401, 'INVALID_CREDENTIALS', 'nope'));
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.click(await screen.findByRole('button', { name: 'Unlink' }));
-    await user.type(await screen.findByLabelText('Password'), 'wrong');
-    await user.click(screen.getByRole('button', { name: 'Unlink Google' }));
-
-    expect(await screen.findByText('Your password is incorrect.')).toBeInTheDocument();
-  });
-
-  test('Google as the only sign-in method: unlink is withheld with a hint', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getGoogleLinkStatus).mockResolvedValue({ ...LINKED, canUnlink: false });
-    renderPage();
-
-    expect(await screen.findByText('Linked as me@example.com')).toBeInTheDocument();
-    expect(screen.getByText(/only way to sign in/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Unlink' })).not.toBeInTheDocument();
-  });
-
-  test('when not linked, offers a Connect Google affordance', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getGoogleLinkStatus).mockResolvedValue({
-      enabled: true,
-      linked: false,
-      email: null,
-      linkedAt: null,
-      canUnlink: false,
-    });
-    renderPage();
-
-    expect(await screen.findByText('No Google account is linked.')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
-  });
-
-  test('announces a just-completed link from the ?google=linked callback marker', async () => {
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getGoogleLinkStatus).mockResolvedValue(LINKED);
-    renderPage('/settings/security?google=linked');
-
-    expect(await screen.findByText('Google account linked.')).toBeInTheDocument();
-  });
-
-  test('surfaces an email-mismatch connect failure from the ?error=google_email_mismatch marker', async () => {
-    // Connect is email-match-only (owner order 2026-07-16): the callback bounces
-    // a mismatched Google email back as ?error=google_email_mismatch.
-    vi.mocked(getMe).mockResolvedValue(makeMe(false));
-    vi.mocked(getGoogleLinkStatus).mockResolvedValue({
-      enabled: true,
-      linked: false,
-      email: null,
-      linkedAt: null,
-      canUnlink: false,
-    });
-    renderPage('/settings/security?error=google_email_mismatch');
-
-    expect(await screen.findByText(/doesn't match your account email/i)).toBeInTheDocument();
-    // The connect affordance is still offered — nothing was linked.
-    expect(screen.getByRole('link', { name: 'Connect Google' })).toBeInTheDocument();
   });
 });

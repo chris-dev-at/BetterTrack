@@ -55,13 +55,14 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
 
 export { AccountSettingsPage } from './AccountSettingsPage';
 export { ApiAccessPage } from './ApiAccessPage';
+export { ConnectionsPage } from './ConnectionsPage';
 export { SecuritySettingsPage } from './SecuritySettingsPage';
 export { TaxSettingsPage } from './TaxSettingsPage';
 
 /**
  * Settings section shell (PROJECTPLAN.md §6.11, §7.2), reached from the profile
- * menu. Subnav: Account · Notifications · Security · Taxes, plus the Coming-Soon
- * pages (Imports & Exports · Connections · Backups · API Access). `/settings`
+ * menu. Subnav: Account · Notifications · Security · Taxes · Connections · API
+ * Access, plus the Coming-Soon pages (Imports & Exports · Backups). `/settings`
  * redirects to `/settings/account`.
  */
 export function SettingsLayout() {
@@ -72,7 +73,7 @@ export function SettingsLayout() {
     { to: '/settings/security', label: t('settings.security.title') },
     { to: '/settings/taxes', label: t('settings.taxes.title') },
     { to: '/settings/imports', label: t('settings.section.importsExports'), comingSoon: true },
-    { to: '/settings/connections', label: t('settings.section.connections'), comingSoon: true },
+    { to: '/settings/connections', label: t('settings.section.connections') },
     { to: '/settings/backups', label: t('settings.section.backups'), comingSoon: true },
     { to: '/settings/api', label: t('settings.api.title') },
   ];
@@ -1177,16 +1178,6 @@ export function ImportsExportsPage() {
     <ComingSoon
       title={t('settings.section.importsExports')}
       description={t('settings.importsExports.description')}
-    />
-  );
-}
-
-export function ConnectionsPage() {
-  const t = useT();
-  return (
-    <ComingSoon
-      title={t('settings.section.connections')}
-      description={t('settings.connections.description')}
     />
   );
 }
