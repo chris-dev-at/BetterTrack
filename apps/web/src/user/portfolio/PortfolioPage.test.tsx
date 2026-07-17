@@ -790,3 +790,60 @@ describe('PortfolioPage — recent transactions', () => {
     expect(within(rows[1]!).getByRole('link', { name: 'AAPL' })).toBeInTheDocument();
   });
 });
+
+// ─── Intraday dense 1D/1W curve (#556) ────────────────────────────────────────
+
+describe('PortfolioPage — intraday 1D/1W dense curve (#556)', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const INTRADAY_HISTORY = {
+    range: '1D' as const,
+    baseCurrency: 'EUR' as const,
+    // The intraday points share a `date` and are disambiguated by `time` — the
+    // server-side dense curve (arc d). Three points stand in for the ≥20 the API
+    // emits; the unit here is the client's time mapping.
+    points: [
+      { date: '2024-06-16', time: '2024-06-16T09:00:00.000Z', valueEur: 326000 },
+      { date: '2024-06-16', time: '2024-06-16T09:15:00.000Z', valueEur: 326100 },
+      { date: '2024-06-16', time: '2024-06-16T09:30:00.000Z', valueEur: 326350 },
+    ],
+    performance: [
+      { date: '2024-06-16', time: '2024-06-16T09:00:00.000Z', pct: 0 },
+      { date: '2024-06-16', time: '2024-06-16T09:15:00.000Z', pct: 0.03 },
+      { date: '2024-06-16', time: '2024-06-16T09:30:00.000Z', pct: 0.11 },
+    ],
+  };
+
+  test('keys intraday points on their UNIX-second instant, not the shared day', async () => {
+    const user = userEvent.setup();
+    vi.mocked(getPortfolioHistory).mockResolvedValue(INTRADAY_HISTORY);
+    renderPage();
+
+    // Select the 1D span (the dense-curve range).
+    await user.click(await screen.findByRole('button', { name: '1D' }));
+
+    // Each point is plotted at its exact instant (a numeric UNIX-second `Time`),
+    // so the three same-day points render as a real curve rather than collapsing
+    // onto one business-day mark.
+    await waitFor(() =>
+      expect(chartMocks.setData).toHaveBeenCalledWith([
+        { time: sec('2024-06-16T09:00:00.000Z'), value: 326000 },
+        { time: sec('2024-06-16T09:15:00.000Z'), value: 326100 },
+        { time: sec('2024-06-16T09:30:00.000Z'), value: 326350 },
+      ]),
+    );
+  });
+
+  test('other (daily) ranges still key on the business-day string', async () => {
+    // The default 1M fetch returns the daily fixture (no `time`) — the mapping
+    // must leave those keyed on the ISO day, unchanged from before #556.
+    renderPage();
+    await waitFor(() =>
+      expect(chartMocks.setData).toHaveBeenCalledWith([
+        { time: '2024-05-01', value: 300000 },
+        { time: '2024-06-01', value: 321350 },
+      ]),
+    );
+  });
+});

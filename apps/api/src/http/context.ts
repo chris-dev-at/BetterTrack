@@ -153,6 +153,9 @@ import {
 import { createPortfolioSnapshotRepository } from '../data/repositories/portfolioSnapshotRepository';
 import {
   createLiveModeService,
+  createLiveRingBuffer,
+  LIVE_POLL_INTERVAL_MS,
+  LIVE_RING_RETENTION_MS,
   type LiveModeService,
   type LiveModeServiceOptions,
 } from '../services/liveMode';
@@ -725,6 +728,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     snapshots,
     logger,
   });
+  // A read-only view onto the Live-Mode per-asset ring buffer (§6.3): the same
+  // `live:ring:*` Redis keys the poll loop writes. The intraday 1D/1W series
+  // (issue #556) prefers these already-recorded ticks over new provider calls;
+  // capacity is a no-op here (reads never trim), so it mirrors the loop's own.
+  const liveRing = createLiveRingBuffer(redis, {
+    capacity: Math.ceil(LIVE_RING_RETENTION_MS / LIVE_POLL_INTERVAL_MS),
+    retentionMs: LIVE_RING_RETENTION_MS,
+  });
   const portfolio = createPortfolioService({
     portfolioRepo,
     transactionRepo,
@@ -739,6 +750,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
     profile: profileRepo,
     notify,
+    liveRing,
     logger,
   });
   const customAssetRepo = createCustomAssetRepository(db);
