@@ -10,7 +10,7 @@ import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { useAuth } from '../AuthContext';
 import { legalUrl } from '../legal';
-import { Alert, AuthCard, Button, Spinner, TextField } from '../components/ui';
+import { Alert, AuthCard, Button, Spinner, TextField, cx } from '../components/ui';
 import { GoogleButton } from './GoogleButton';
 
 /**
@@ -265,6 +265,16 @@ export function RegisterPage() {
 
   return (
     <AuthCard subtitle={t('auth.register.subtitle')}>
+      {/* Final layout (owner 2026-07-17, V5-P0 arc (a)): mirrors the login page —
+          "Continue with Google" on top, the register form in the middle, an OR
+          divider, and a prominent "Have an account? → Sign in" box at the very
+          bottom. Google is hidden once connected (the OAuth round-trip is done
+          and the account is a submit away). */}
+      {googleEnabled && !connected ? (
+        <div className="mb-4">
+          <GoogleButton />
+        </div>
+      ) : null}
       <form
         onSubmit={onSubmit}
         className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-6"
@@ -385,28 +395,32 @@ export function RegisterPage() {
               ? t('auth.register.submitApproval')
               : t('auth.register.submit')}
         </Button>
-        <Link
-          to="/login"
-          className="text-center text-sm font-medium text-sky-400 hover:text-sky-300"
-        >
-          {t('auth.register.haveAccount')}
-        </Link>
       </form>
-      {/* "Continue with Google" (§13.4 V4-P4b), in the #467 layout. Hidden once
-          connected — the OAuth round-trip is done and the account is a submit
-          away. Choosing it re-runs the connect → prefill → submit flow. */}
-      {googleEnabled && !connected ? (
-        <div className="mt-4 flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <span className="h-px flex-1 bg-neutral-800" />
-            <span className="text-xs uppercase tracking-wide text-neutral-600">
-              {t('common.or')}
-            </span>
-            <span className="h-px flex-1 bg-neutral-800" />
-          </div>
-          <GoogleButton />
+      {/* Mirrored "Have an account? → Sign in" bottom box — styled like the login
+          page's sign-up box so both surfaces read uniform (V5-P0 arc (a)). */}
+      <div className="mt-4 flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <span className="h-px flex-1 bg-neutral-800" />
+          <span className="text-xs uppercase tracking-wide text-neutral-600">{t('common.or')}</span>
+          <span className="h-px flex-1 bg-neutral-800" />
         </div>
-      ) : null}
+        <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/60 p-4">
+          <p className="text-center text-xs font-medium uppercase tracking-wide text-neutral-500">
+            {t('auth.register.haveAccountHeading')}
+          </p>
+          <Link
+            to="/login"
+            className={cx(
+              'inline-flex w-full items-center justify-center rounded-md px-3 py-2 text-sm font-semibold',
+              'border border-sky-700 bg-neutral-950 text-sky-300 transition-colors',
+              'hover:border-sky-500 hover:bg-neutral-900 hover:text-sky-200',
+              'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+            )}
+          >
+            {t('auth.register.signIn')}
+          </Link>
+        </div>
+      </div>
     </AuthCard>
   );
 }

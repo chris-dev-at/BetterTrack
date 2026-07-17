@@ -1,6 +1,7 @@
 import {
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
+  type NotificationChannelsConfigurable,
   type NotificationMatrix,
   type NotificationSettingsResponse,
   type NotificationType,
@@ -54,6 +55,13 @@ export interface NotificationSettingsServiceDeps {
     telegramFor: (userId: string) => Promise<boolean>;
     discordFor: (userId: string) => Promise<boolean>;
   };
+  /**
+   * Deployment-level "is this channel offered at all by this build?" for the
+   * V4-P10 additive channels (V5-P0 kill-switch). Flipped OFF hides the setup
+   * cards without probing the setup endpoints — the SPA reads this from the
+   * settings response and skips rendering them.
+   */
+  channelsConfigurable: NotificationChannelsConfigurable;
   /** The VAPID public key the SPA needs to subscribe, when webpush is live. */
   webPushPublicKey: string | null;
 }
@@ -71,7 +79,7 @@ const MATRIX_CHANNELS = ['inapp', 'email', 'telegram', 'discord', 'push', 'webpu
 export function createNotificationSettingsService(
   deps: NotificationSettingsServiceDeps,
 ): NotificationSettingsService {
-  const { repo, users, channelAvailability, webPushPublicKey } = deps;
+  const { repo, users, channelAvailability, channelsConfigurable, webPushPublicKey } = deps;
 
   /**
    * Resolve one channel's effective state for a type from the stored channel
@@ -128,6 +136,7 @@ export function createNotificationSettingsService(
         push: channelAvailability.push,
         webpush: channelAvailability.webpush,
       },
+      channelsConfigurable,
       webPushPublicKey: channelAvailability.webpush ? webPushPublicKey : null,
     };
   }

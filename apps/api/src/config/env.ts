@@ -148,6 +148,14 @@ const envSchema = z.object({
   // items never block launch). Never logged (secret). Discord is per-user by
   // webhook URL, so no server env is required.
   BT_TELEGRAM_BOT_TOKEN: z.string().optional(),
+  // ── Telegram + Discord kill-switch (§13.5 V5-P0b, owner directive) ─────────
+  // Global on/off for BOTH V4-P10 additive channels. Default OFF: the matrix
+  // columns hide everywhere, `/settings/telegram/*` + `/settings/discord/*`
+  // reply 404, the dispatcher skips deliveries even for a user with a linked
+  // row, and the schema + existing rows remain intact — flipping this env back
+  // ON restores every behavior unchanged. Neither channel is deleted; the
+  // owner explicitly asked for "deactivate, not delete".
+  BT_TELEGRAM_DISCORD_ENABLED: z.string().optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -411,13 +419,24 @@ export interface AppConfig {
     dir: string;
   };
   /**
-   * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the bot
-   * token is set; when false the channel is invisible everywhere (matrix column
-   * hidden, link routes 4xx). The token itself is a secret and never logged.
+   * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the
+   * global kill-switch is ON AND the bot token is set; when false the channel
+   * is invisible everywhere (matrix column hidden, link routes 404, dispatcher
+   * skips delivery). The token itself is a secret and never logged.
    */
   telegram: {
     enabled: boolean;
     botToken?: string;
+  };
+  /**
+   * Discord notification channel (§13.4 V4-P10). Deployment-scoped `enabled`
+   * mirrors the shared kill-switch — per-user webhook state is orthogonal.
+   * When false the channel is invisible everywhere (matrix column hidden,
+   * webhook routes 404, dispatcher skips delivery even for a user with a
+   * saved webhook row — the row is preserved).
+   */
+  discord: {
+    enabled: boolean;
   };
   /**
    * Progressive rate limiting (PROJECTPLAN.md §10). Each schedule pairs a
@@ -560,9 +579,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
     },
+    // V5-P0 kill-switch: the SAME flag controls Telegram AND Discord — either
+    // both channels are offered by this build or neither. Default OFF so an
+    // upgrade quietly deactivates them without any operator action.
     telegram: {
-      enabled: Boolean(e.BT_TELEGRAM_BOT_TOKEN && e.BT_TELEGRAM_BOT_TOKEN.trim() !== ''),
+      enabled:
+        boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false) &&
+        Boolean(e.BT_TELEGRAM_BOT_TOKEN && e.BT_TELEGRAM_BOT_TOKEN.trim() !== ''),
       botToken: e.BT_TELEGRAM_BOT_TOKEN,
+    },
+    discord: {
+      enabled: boolFrom(e.BT_TELEGRAM_DISCORD_ENABLED, false),
     },
     // Progressive schedules (§10, owner directive #79). Normal users stay far
     // under the steady-state `limit`; the first over-limit is a short cooldown

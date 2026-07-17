@@ -37,7 +37,7 @@ import {
   type AdminTwoFactorStatusResponse,
   type AdminUser,
   type AdminUserListResponse,
-  type AccountDefaults,
+  type AccountDefaultsResponse,
   type Announcement,
   type AnnouncementListResponse,
   type AppSettingsResponse,
@@ -320,7 +320,7 @@ export async function updateSettings(body: UpdateAppSettingsRequest): Promise<Ap
 
 // --- Admin: new-account defaults (§13.4 V4-P0d) ---------------------------
 
-export async function getAccountDefaults(signal?: AbortSignal): Promise<AccountDefaults> {
+export async function getAccountDefaults(signal?: AbortSignal): Promise<AccountDefaultsResponse> {
   const data = await apiRequest<unknown>('/admin/account-defaults', { signal });
   return accountDefaultsResponseSchema.parse(data);
 }
@@ -337,7 +337,7 @@ export async function getAdminHealth(signal?: AbortSignal): Promise<AdminHealthR
 
 export async function updateAccountDefaults(
   body: UpdateAccountDefaultsRequest,
-): Promise<AccountDefaults> {
+): Promise<AccountDefaultsResponse> {
   const data = await apiRequest<unknown>('/admin/account-defaults', { method: 'PATCH', body });
   return accountDefaultsResponseSchema.parse(data);
 }
