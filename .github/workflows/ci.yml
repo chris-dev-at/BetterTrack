@@ -1,9 +1,12 @@
 name: CI
 
+# No push:main trigger on purpose: the "require branches up to date" ruleset
+# re-runs this exact suite on the PR right before merge, so the merge commit's
+# tree is always the tree that was just tested — a post-merge run on main would
+# be a byte-identical third pass. Nightly e2e still exercises main directly.
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
