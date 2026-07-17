@@ -331,7 +331,7 @@ export function AudiencePicker({
                               checked={checked}
                               onChange={() => toggleFriend(f.user.id)}
                             />
-                            <Avatar name={f.user.username} size="sm" />
+                            <Avatar name={f.user.username} iconId={f.user.profileIcon} size="sm" />
                             <span className="flex-1 truncate text-sm text-neutral-200">
                               {f.user.username}
                             </span>

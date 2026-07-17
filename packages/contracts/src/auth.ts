@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { localeSchema } from './i18n';
+import { profileIconIdSchema } from './social';
 
 export const ROLES = ['user', 'admin'] as const;
 export const roleSchema = z.enum(ROLES);
@@ -291,6 +292,12 @@ export const meResponseSchema = z.object({
   baseCurrency: z.string(),
   /** UI language preference; drives the SPA i18n runtime at load (§13.3 V3-P1). */
   locale: localeSchema,
+  /**
+   * The caller's chosen curated profile icon id (V5-P0c) or `null` when unset.
+   * Optional in the schema so pre-V5-P0c test fixtures still parse; the server
+   * always emits it (see `toMeResponse`).
+   */
+  profileIcon: profileIconIdSchema.nullable().optional(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
 });

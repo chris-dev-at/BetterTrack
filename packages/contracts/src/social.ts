@@ -30,11 +30,56 @@ export type FriendRequestStatus = z.infer<typeof friendRequestStatusSchema>;
 export const friendRequestDirectionSchema = z.enum(['incoming', 'outgoing']);
 export type FriendRequestDirection = z.infer<typeof friendRequestDirectionSchema>;
 
+/**
+ * Curated set of bundled profile icons (§13.5 V5-P0c). A finite id list — no
+ * uploads, no external fetches — so the server can validate against a fixed
+ * allow-list and every client resolves the same id to the same SVG. Ids are
+ * lower-case identifiers stable across renames; new avatars go at the end of
+ * the array so the ordering the picker renders is set here once.
+ *
+ * A user without a stored choice reads back as `profileIcon: null` on every
+ * surface; the SPA renders a deterministic default derived from the user id or
+ * username, so no surface goes empty (see the {@link https://github.com/…}
+ * Avatar component).
+ */
+export const PROFILE_ICON_IDS = [
+  'astronaut',
+  'fox',
+  'panda',
+  'robot',
+  'star',
+  'wave',
+  'mountain',
+  'leaf',
+  'flame',
+  'bolt',
+  'moon',
+  'planet',
+  'ghost',
+  'crown',
+  'compass',
+  'anchor',
+] as const;
+export type ProfileIconId = (typeof PROFILE_ICON_IDS)[number];
+export const profileIconIdSchema = z.enum(PROFILE_ICON_IDS);
+
 /** Public-safe view of a user in the social graph — never includes email (§6.9). */
 export const friendUserSchema = z
   .object({
     id: z.string().uuid(),
     username: z.string(),
+    /**
+     * The user's chosen curated profile icon id (V5-P0c), or `null` when the
+     * user has not picked one. Every surface that already exposes the user
+     * carries the icon so the SPA can render the person consistently; the id
+     * is public-safe (like id + username), never any bytes. Existing users
+     * predating the picker read as `null` — the SPA falls back to a
+     * deterministic id-derived default so no surface renders empty.
+     *
+     * Optional in the schema so pre-V5-P0c test fixtures still parse (server
+     * always emits the field; clients are just tolerant when it is missing).
+     */
+    profileIcon: profileIconIdSchema.nullable().optional(),
   })
   .strict();
 export type FriendUser = z.infer<typeof friendUserSchema>;
@@ -588,6 +633,14 @@ export const profileSettingsResponseSchema = z
     isPublic: z.boolean(),
     bio: z.string().nullable(),
     publicItemCount: z.number().int(),
+    /**
+     * The caller's chosen curated profile icon id (V5-P0c) or `null` for a
+     * never-picked account. The picker in the profile-settings surface writes
+     * this via {@link updateProfileSettingsRequestSchema}. Optional for the same
+     * reason as {@link friendUserSchema} — server always emits, schema tolerates
+     * omission from older test fixtures.
+     */
+    profileIcon: profileIconIdSchema.nullable().optional(),
   })
   .strict();
 export type ProfileSettingsResponse = z.infer<typeof profileSettingsResponseSchema>;
@@ -607,6 +660,13 @@ export const updateProfileSettingsRequestSchema = z
     isPublic: z.boolean(),
     bio: z.string().max(PROFILE_BIO_MAX).nullable().optional(),
     acknowledgePublic: z.boolean().optional(),
+    /**
+     * The picked profile icon id (V5-P0c). A valid id from
+     * {@link PROFILE_ICON_IDS} sets it; `null` clears it back to the
+     * default; omitting the field leaves the current choice untouched. The
+     * server rejects any unknown id.
+     */
+    profileIcon: profileIconIdSchema.nullable().optional(),
   })
   .strict();
 export type UpdateProfileSettingsRequest = z.infer<typeof updateProfileSettingsRequestSchema>;
@@ -646,6 +706,13 @@ export const publicProfileResponseSchema = z
     userId: z.string().uuid(),
     username: z.string(),
     bio: z.string().nullable(),
+    /**
+     * The owner's chosen curated profile icon id (V5-P0c) or `null`. Public-safe
+     * (like id + username), never exposes bytes — the SVG lives in the client.
+     * Optional in the schema for the same reason as {@link friendUserSchema} —
+     * the server always emits it; the field stays parse-tolerant.
+     */
+    profileIcon: profileIconIdSchema.nullable().optional(),
     /** How many people follow this user (#438) — viewer-independent public info. */
     followerCount: z.number().int().nonnegative(),
     portfolios: z.array(publicProfilePortfolioSchema),

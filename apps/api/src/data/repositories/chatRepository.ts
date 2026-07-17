@@ -42,6 +42,7 @@ export interface ChatConversationRow {
   id: string;
   otherUserId: string | null;
   otherUsername: string | null;
+  otherProfileIcon: string | null;
   unreadCount: number;
   lastMessage: ChatMessagePreviewRow | null;
   lastMessageAt: Date | null;
@@ -133,6 +134,7 @@ export function createChatRepository(db: Database) {
           id: chatConversations.id,
           otherUserId: sql<string | null>`${otherId}`,
           otherUsername: users.username,
+          otherProfileIcon: users.profileIcon,
           unreadCount,
           lastMessageAt: chatConversations.lastMessageAt,
         })
@@ -186,6 +188,7 @@ export function createChatRepository(db: Database) {
         id: r.id,
         otherUserId: r.otherUserId,
         otherUsername: r.otherUsername,
+        otherProfileIcon: r.otherProfileIcon,
         unreadCount: r.unreadCount,
         lastMessage: previewByConversation.get(r.id) ?? null,
         lastMessageAt: r.lastMessageAt,

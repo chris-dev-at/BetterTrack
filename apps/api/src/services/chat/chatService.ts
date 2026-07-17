@@ -21,6 +21,7 @@ import type { FriendshipRepository } from '../../data/repositories/friendshipRep
 import type { UserRepository } from '../../data/repositories/userRepository';
 import type { EventBus } from '../../events';
 import { badRequest, forbidden, notFound } from '../../errors';
+import { coerceProfileIcon } from '../../http/serializers';
 import type { Logger } from '../../logger';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
@@ -107,7 +108,11 @@ export function createChatService(deps: ChatServiceDeps): ChatService {
       // localized "Deleted user" state (#362); no identity survives.
       user:
         row.otherUserId !== null && row.otherUsername !== null
-          ? { id: row.otherUserId, username: row.otherUsername }
+          ? {
+              id: row.otherUserId,
+              username: row.otherUsername,
+              profileIcon: coerceProfileIcon(row.otherProfileIcon),
+            }
           : null,
       unreadCount: row.unreadCount,
       lastMessage: row.lastMessage

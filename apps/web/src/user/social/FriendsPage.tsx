@@ -123,7 +123,12 @@ function IncomingRequestRow({
   const busy = pendingAction !== null;
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
-      <span className="text-sm font-medium text-neutral-100">{request.user.username}</span>
+      <span className="flex min-w-0 items-center gap-3">
+        <Avatar name={request.user.username} iconId={request.user.profileIcon} size="sm" />
+        <span className="truncate text-sm font-medium text-neutral-100">
+          {request.user.username}
+        </span>
+      </span>
       <span className="flex gap-2">
         <Button onClick={onAccept} disabled={busy}>
           {pendingAction === 'accept' ? t('social.friends.accepting') : t('social.friends.accept')}
@@ -150,7 +155,12 @@ function OutgoingRequestRow({
   const t = useT();
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
-      <span className="text-sm font-medium text-neutral-100">{request.user.username}</span>
+      <span className="flex min-w-0 items-center gap-3">
+        <Avatar name={request.user.username} iconId={request.user.profileIcon} size="sm" />
+        <span className="truncate text-sm font-medium text-neutral-100">
+          {request.user.username}
+        </span>
+      </span>
       <Button variant="secondary" onClick={onCancel} disabled={pending}>
         {pending ? t('social.friends.cancelling') : t('common.cancel')}
       </Button>
@@ -429,7 +439,7 @@ function FriendCard({
           aria-label={user.username}
           className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-neutral-800/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-500"
         >
-          <Avatar name={user.username} size="md" />
+          <Avatar name={user.username} iconId={user.profileIcon} size="md" />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate text-sm font-semibold text-neutral-100">{user.username}</span>
             {countLine ? (
@@ -465,7 +475,7 @@ function FriendCard({
       {open ? (
         <div id={panelId} className="flex flex-col gap-4 border-t border-neutral-800 p-4">
           <div className="flex items-center gap-3">
-            <Avatar name={user.username} size="lg" />
+            <Avatar name={user.username} iconId={user.profileIcon} size="lg" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-base font-semibold text-neutral-100">{user.username}</p>
               <p className="truncate text-xs text-neutral-500">

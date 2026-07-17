@@ -2249,7 +2249,31 @@
     "saved": "Profil gespeichert.",
     "publicBadge": "Öffentliches Profil",
     "notAvailable": "Dieses Profil ist nicht verfügbar.",
-    "emptyPublic": "Dieses Profil hat noch keine öffentlichen Elemente."
+    "emptyPublic": "Dieses Profil hat noch keine öffentlichen Elemente.",
+    "icon": {
+      "title": "Profilbild",
+      "defaultHint": "Wähle aus einer kuratierten Auswahl.",
+      "picked": "Gewählt: {{name}}",
+      "clear": "Standardbild verwenden",
+      "name": {
+        "astronaut": "Astronaut",
+        "fox": "Fuchs",
+        "panda": "Panda",
+        "robot": "Roboter",
+        "star": "Stern",
+        "wave": "Welle",
+        "mountain": "Berg",
+        "leaf": "Blatt",
+        "flame": "Flamme",
+        "bolt": "Blitz",
+        "moon": "Mond",
+        "planet": "Planet",
+        "ghost": "Geist",
+        "crown": "Krone",
+        "compass": "Kompass",
+        "anchor": "Anker"
+      }
+    }
   },
   "deleteAccount": {
     "title": "Konto löschen",
