@@ -71,6 +71,9 @@ export const AuditAction = {
   OAuthGrantRevoked: 'oauth.grant_revoked',
   OAuthTokenIssued: 'oauth.token_issued',
   OAuthTokenRefreshed: 'oauth.token_refreshed',
+  // Admin Problems page (§13.5 V5-P2, the Sentry replacement).
+  ProblemResolved: 'problem.resolved',
+  ProblemReopened: 'problem.reopened',
 } as const;
 
 export interface AuditService {

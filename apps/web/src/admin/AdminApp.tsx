@@ -13,6 +13,7 @@ import { HealthPage } from './pages/HealthPage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
+import { ProblemsPage } from './pages/ProblemsPage';
 import { SecuritySettingsPage } from './pages/SecuritySettingsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TwoFactorChallengePage } from './pages/TwoFactorChallengePage';
@@ -45,6 +46,7 @@ function AdminShell() {
         <Route path="email" element={<EmailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="health" element={<HealthPage />} />
+        <Route path="problems" element={<ProblemsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="account-defaults" element={<AccountDefaultsPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />

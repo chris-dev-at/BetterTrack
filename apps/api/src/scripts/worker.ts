@@ -43,6 +43,8 @@ import { createPortfolioSnapshotService } from '../services/portfolio/portfolioS
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
 import { initObservability } from '../services/observability/sentry';
+import { createProblemService } from '../services/observability/problemService';
+import { createProblemRepository } from '../data/repositories/problemRepository';
 import { createAuditService } from '../services/audit/auditService';
 import { createEmailService } from '../services/email/emailService';
 import { createSmtpTransport } from '../services/email/transport';
@@ -79,6 +81,10 @@ const registry = createQueueRegistry(createConnection());
 // The market-data jobs read/write Postgres and reach providers through the same
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
+// DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement): the
+// worker captures its own permanently-failed jobs and provider failures into
+// the shared `problems` table. No audit sink here — resolve/reopen is admin-only.
+const problems = createProblemService({ repo: createProblemRepository(db), logger });
 const marketDataConnection = createConnection();
 const { registry: providerRegistry, service: marketData } = createMarketData({
   db,
@@ -92,6 +98,10 @@ const { registry: providerRegistry, service: marketData } = createMarketData({
     // already got the stale copy), so the log line is their only trace.
     onBackgroundError: (key, err) =>
       logger.warn({ key, err }, 'market-data background refresh failed'),
+    // A tripped breaker is a definitive provider failure → admin Problems page.
+    breaker: {
+      onOpen: (err, meta) => problems.captureProviderFailure(err, meta),
+    },
   },
 });
 // The notification delivery core (#368): the worker is the ONE owner of
@@ -208,8 +218,12 @@ const running = createJobWorkers({
   definitions,
   ctx,
   logger,
-  // Permanently-failed (dead-lettered) jobs are reported to error tracking.
-  onPermanentFailure: (err, meta) => observability.captureException(err, meta),
+  // Permanently-failed (dead-lettered) jobs are reported to error tracking AND
+  // captured onto the admin Problems page (§13.5 V5-P2 arc (d)).
+  onPermanentFailure: (err, meta) => {
+    observability.captureException(err, meta);
+    problems.captureJobFailure(err, meta);
+  },
 });
 
 const scheduled = await registerSchedules(registry, definitions);
@@ -222,6 +236,8 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'worker shutting down');
   try {
     await running.close();
+    // Persist any in-flight problem captures before the DB connection closes.
+    await problems.flush();
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await marketData.settled();

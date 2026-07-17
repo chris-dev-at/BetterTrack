@@ -21,6 +21,8 @@ import {
   oauthClientListResponseSchema,
   oauthClientSummarySchema,
   okResponseSchema,
+  problemSchema,
+  problemListResponseSchema,
   createRegistrationTokenResponseSchema,
   registrationRequestListResponseSchema,
   registrationTokenListResponseSchema,
@@ -54,6 +56,10 @@ import {
   type CreateUserResponse,
   type EmailLogListResponse,
   type EmailStatusResponse,
+  type Problem,
+  type ProblemKind,
+  type ProblemListResponse,
+  type ProblemStatus,
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
@@ -304,6 +310,29 @@ export async function listAudit(
     signal,
   });
   return auditLogListResponseSchema.parse(data);
+}
+
+// --- Admin: Problems (§13.5 V5-P2 arc (d), the Sentry replacement) ---------
+
+export async function listProblems(
+  params: { kind?: ProblemKind; status?: ProblemStatus; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<ProblemListResponse> {
+  const data = await apiRequest<unknown>('/admin/problems', {
+    query: { kind: params.kind, status: params.status, limit: params.limit },
+    signal,
+  });
+  return problemListResponseSchema.parse(data);
+}
+
+export async function resolveProblem(id: string): Promise<Problem> {
+  const data = await apiRequest<unknown>(`/admin/problems/${id}/resolve`, { method: 'POST' });
+  return problemSchema.parse(data);
+}
+
+export async function reopenProblem(id: string): Promise<Problem> {
+  const data = await apiRequest<unknown>(`/admin/problems/${id}/reopen`, { method: 'POST' });
+  return problemSchema.parse(data);
 }
 
 // --- Admin: global settings -----------------------------------------------
