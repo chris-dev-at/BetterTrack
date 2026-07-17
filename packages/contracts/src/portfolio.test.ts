@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_CASH_AMOUNT_EUR, cashEntryRequestSchema, cashPreviewRequestSchema } from './portfolio';
+import {
+  MAX_CASH_AMOUNT_EUR,
+  cashEntryRequestSchema,
+  cashPreviewRequestSchema,
+  importSourceTag,
+  sourceTagSchema,
+} from './portfolio';
 
 describe('cash amount validation (§14 hardening)', () => {
   it('accepts a normal positive magnitude', () => {
@@ -38,5 +44,43 @@ describe('cash amount validation (§14 hardening)', () => {
     expect(cashPreviewRequestSchema.safeParse({ kind: 'deposit', amountEur: 1e300 }).success).toBe(
       false,
     );
+  });
+});
+
+describe('source tag validation (V5-P0c)', () => {
+  it('accepts manual, standing-order, and import/sync slugs', () => {
+    for (const tag of [
+      'manual',
+      'standing-order',
+      'import:trade_republic',
+      'import:george',
+      'import:flatex',
+      'import:ibkr',
+      'sync:parqet',
+      'sync:george',
+    ]) {
+      expect(sourceTagSchema.safeParse(tag).success, tag).toBe(true);
+    }
+  });
+
+  it('rejects malformed, uppercase, empty-slug, and unknown-kind tags', () => {
+    for (const tag of [
+      'IMPORT',
+      'import',
+      'import:',
+      'import:Trade_Republic',
+      'sync',
+      'export:foo',
+      'sync :parqet',
+      'manual:x',
+      '',
+    ]) {
+      expect(sourceTagSchema.safeParse(tag).success, tag).toBe(false);
+    }
+  });
+
+  it('builds a valid import tag from a broker id', () => {
+    expect(importSourceTag('trade_republic')).toBe('import:trade_republic');
+    expect(sourceTagSchema.safeParse(importSourceTag('george')).success).toBe(true);
   });
 });

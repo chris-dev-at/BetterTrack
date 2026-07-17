@@ -67,6 +67,7 @@ function movement(over: Partial<import('@bettertrack/contracts').CashMovement>) 
     taxYear: null,
     executedAt: '2024-04-01T00:00:00.000Z',
     note: null,
+    source: 'manual',
     createdAt: '2024-04-01T00:00:00.000Z',
     ...over,
   };

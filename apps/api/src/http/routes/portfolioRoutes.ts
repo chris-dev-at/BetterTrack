@@ -5,11 +5,13 @@ import {
   cashPreviewRequestSchema,
   cashSourceListQuerySchema,
   cashSourceParamsSchema,
+  cashMovementsQuerySchema,
   cashTransferRequestSchema,
   createCashSourceRequestSchema,
   createDividendRequestSchema,
   createPortfolioRequestSchema,
   createTransactionsRequestSchema,
+  dividendListQuerySchema,
   dividendParamsSchema,
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
@@ -22,6 +24,7 @@ import {
   updatePortfolioRequestSchema,
   updateTransactionRequestSchema,
   type CashEntryRequest,
+  type CashMovementsQuery,
   type CashPreviewRequest,
   type CashSourceListQuery,
   type CashSourceResponse,
@@ -30,6 +33,7 @@ import {
   type CreateDividendRequest,
   type CreatePortfolioRequest,
   type CreateTransactionsRequest,
+  type DividendListQuery,
   type PortfolioHistoryQuery,
   type PortfolioListQuery,
   type PortfolioMutationResponse,
@@ -176,12 +180,19 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     },
   );
 
-  // GET /portfolios/:portfolioId/cash — cash movements + current balance (§14, #220).
-  router.get('/:portfolioId/cash', validateParams(portfolioIdParamSchema), async (req, res) => {
-    const { portfolioId } = req.valid?.params as { portfolioId: string };
-    const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId);
-    res.json(cash);
-  });
+  // GET /portfolios/:portfolioId/cash?source= — cash movements + current balance
+  // (§14, #220), optionally narrowed to one source tag (V5-P0c).
+  router.get(
+    '/:portfolioId/cash',
+    validateParams(portfolioIdParamSchema),
+    validateQuery(cashMovementsQuerySchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const { source } = req.valid?.query as CashMovementsQuery;
+      const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, { source });
+      res.json(cash);
+    },
+  );
 
   // POST /portfolios/:portfolioId/cash/deposit — record an external deposit (§14).
   router.post(
@@ -359,13 +370,16 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     },
   );
 
-  // GET /portfolios/:portfolioId/dividends — the recorded dividends (V3-P4).
+  // GET /portfolios/:portfolioId/dividends?source= — the recorded dividends
+  // (V3-P4), optionally narrowed to one source tag (V5-P0c).
   router.get(
     '/:portfolioId/dividends',
     validateParams(portfolioIdParamSchema),
+    validateQuery(dividendListQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const list = await ctx.tax.listDividends(req.authUser!.id, portfolioId);
+      const { source } = req.valid?.query as DividendListQuery;
+      const list = await ctx.tax.listDividends(req.authUser!.id, portfolioId, { source });
       res.json(list);
     },
   );
@@ -416,10 +430,11 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     validateQuery(transactionListQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { cursor, limit } = req.valid?.query as TransactionListQuery;
+      const { cursor, limit, source } = req.valid?.query as TransactionListQuery;
       const page = await ctx.portfolio.listTransactions(req.authUser!.id, portfolioId, {
         cursor,
         limit,
+        source,
       });
       res.json(page);
     },

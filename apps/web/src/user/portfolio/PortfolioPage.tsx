@@ -37,6 +37,7 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
+import { SourceBadge } from './SourceBadge';
 import { CashDialog } from './CashDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
@@ -488,12 +489,15 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
             {recent.map((txn) => (
               <tr key={txn.id} className="border-b border-neutral-800 last:border-b-0">
                 <td className="min-w-0 px-3 py-2">
-                  <Link
-                    to={`/assets/${txn.assetId}`}
-                    className="font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
-                  >
-                    {txn.asset.symbol}
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <Link
+                      to={`/assets/${txn.assetId}`}
+                      className="font-mono text-sm font-medium text-neutral-100 hover:text-sky-400"
+                    >
+                      {txn.asset.symbol}
+                    </Link>
+                    <SourceBadge source={txn.source} />
+                  </div>
                 </td>
                 <td className="px-3 py-2">
                   <span
@@ -810,17 +814,20 @@ function TransactionRow({
     <tr className="border-t border-neutral-800/60">
       <td className="py-2 pr-3 text-neutral-300">{formatDate(txn.executedAt)}</td>
       <td className="py-2 pr-3">
-        <span
-          className={cx(
-            'rounded px-1.5 py-0.5 text-xs font-medium',
-            txn.side === 'buy'
-              ? 'bg-emerald-900/50 text-emerald-300'
-              : 'bg-amber-900/50 text-amber-300',
-          )}
-        >
-          {txn.side === 'buy'
-            ? t('portfolio.overview.side.buy')
-            : t('portfolio.overview.side.sell')}
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className={cx(
+              'rounded px-1.5 py-0.5 text-xs font-medium',
+              txn.side === 'buy'
+                ? 'bg-emerald-900/50 text-emerald-300'
+                : 'bg-amber-900/50 text-amber-300',
+            )}
+          >
+            {txn.side === 'buy'
+              ? t('portfolio.overview.side.buy')
+              : t('portfolio.overview.side.sell')}
+          </span>
+          <SourceBadge source={txn.source} />
         </span>
       </td>
       <td className="py-2 pr-3 text-right tabular-nums text-neutral-300">

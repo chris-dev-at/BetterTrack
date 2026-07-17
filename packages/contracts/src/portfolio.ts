@@ -13,6 +13,35 @@ import { assetTypeSchema, currencyCodeSchema } from './market';
  * (§5.4), never in the contract.
  */
 
+// --- Source tags (V5-P0c, §13.5) --------------------------------------------
+
+/**
+ * Source tag (V5-P0c): how a ledger row entered the system, so synced/imported
+ * data can never be confused with hand-entered data. **Server-assigned only** —
+ * manual CRUD writes `manual`, the broker-CSV apply path writes `import:<broker>`
+ * per mapper, and a future sync writes `sync:<provider>`. A client can never
+ * supply it (the mutation bodies are `.strict()` and carry no `source` field).
+ *
+ * Format: `manual` | `import:<slug>` | `sync:<slug>` | `standing-order` (the
+ * last reserved for the V5-P6b standing-order auto-recorder). Slugs are the
+ * lowercase mapper/provider id (`trade_republic`, `george`, `parqet`, …), so the
+ * regex admits `[a-z0-9_-]`.
+ */
+export const SOURCE_TAG_MANUAL = 'manual';
+export const SOURCE_TAG_STANDING_ORDER = 'standing-order';
+export const sourceTagSchema = z
+  .string()
+  .regex(
+    /^(?:manual|standing-order|(?:import|sync):[a-z0-9][a-z0-9_-]*)$/,
+    'source must be manual, standing-order, or import:<slug> / sync:<slug>',
+  );
+export type SourceTag = z.infer<typeof sourceTagSchema>;
+
+/** Build the `import:<broker>` tag the CSV apply path stamps on its rows (V5-P0c). */
+export function importSourceTag(brokerId: string): string {
+  return `import:${brokerId}`;
+}
+
 // --- Portfolios (the list + a single portfolio) ----------------------------
 
 /**
@@ -409,6 +438,8 @@ export const transactionSchema = z
      */
     allowUncovered: z.boolean(),
     uncoveredEntryPrice: z.number().nullable(),
+    /** How this row entered the ledger (V5-P0c); `manual` for hand entry. */
+    source: sourceTagSchema,
     asset: portfolioAssetSchema,
   })
   .strict();
@@ -423,11 +454,13 @@ export const transactionListResponseSchema = z
   .strict();
 export type TransactionListResponse = z.infer<typeof transactionListResponseSchema>;
 
-/** Cursor pagination query for the transaction ledger. */
+/** Cursor pagination query for the transaction ledger, with an optional source filter (V5-P0c). */
 export const transactionListQuerySchema = z
   .object({
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
+    /** Return only rows carrying this exact source tag (V5-P0c). */
+    source: sourceTagSchema.optional(),
   })
   .strict();
 export type TransactionListQuery = z.infer<typeof transactionListQuerySchema>;
@@ -726,6 +759,8 @@ export const cashMovementSchema = z
     taxYear: z.number().int().nullable(),
     executedAt: z.string().datetime(),
     note: z.string().nullable(),
+    /** How this movement entered the ledger (V5-P0c); `manual` for hand entry. */
+    source: sourceTagSchema,
     createdAt: z.string().datetime(),
   })
   .strict();
@@ -746,6 +781,14 @@ export const cashMovementsResponseSchema = z
   })
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
+
+/** `GET /portfolios/:id/cash?source=` query — optional source-tag filter (V5-P0c). */
+export const cashMovementsQuerySchema = z
+  .object({
+    source: sourceTagSchema.optional(),
+  })
+  .strict();
+export type CashMovementsQuery = z.infer<typeof cashMovementsQuerySchema>;
 
 /**
  * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
@@ -937,11 +980,21 @@ export const dividendSchema = z
     taxCountry: taxCountrySchema.nullable(),
     taxAmountEur: z.number().nullable(),
     cashSourceId: z.string().uuid(),
+    /** How this dividend entered the ledger (V5-P0c); `manual` for hand entry. */
+    source: sourceTagSchema,
     createdAt: z.string().datetime(),
     asset: portfolioAssetSchema,
   })
   .strict();
 export type Dividend = z.infer<typeof dividendSchema>;
+
+/** `GET /portfolios/:id/dividends?source=` query — optional source-tag filter (V5-P0c). */
+export const dividendListQuerySchema = z
+  .object({
+    source: sourceTagSchema.optional(),
+  })
+  .strict();
+export type DividendListQuery = z.infer<typeof dividendListQuerySchema>;
 
 /** `GET /portfolios/:id/dividends` response, newest pay date first. */
 export const dividendListResponseSchema = z.object({ dividends: z.array(dividendSchema) }).strict();

@@ -306,6 +306,7 @@ describe('TransactionDialog — quantity entry mode (regression)', () => {
       note: null,
       allowUncovered: false,
       uncoveredEntryPrice: null,
+      source: 'manual',
     };
     renderDialog({ transaction, asset: undefined });
 
@@ -342,6 +343,7 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
     note: null,
     allowUncovered: false,
     uncoveredEntryPrice: null,
+    source: 'manual',
   };
 
   test('a note-only edit sends just the note — the server allows it on cash-linked txns', async () => {
@@ -355,6 +357,19 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
     await waitFor(() => expect(portfolioApi.updateTransaction).toHaveBeenCalledOnce());
     expect(vi.mocked(portfolioApi.updateTransaction).mock.calls[0]![2]).toEqual({ note: 'DCA' });
     expect(onSubmitted).toHaveBeenCalled();
+  });
+
+  test('editing an imported row surfaces its source badge; a manual row stays quiet (V5-P0c)', () => {
+    const { unmount } = renderDialog({
+      transaction: { ...EDIT_TXN, source: 'import:trade_republic' },
+      asset: undefined,
+    });
+    expect(screen.getByText('Imported · Trade Republic')).toBeInTheDocument();
+    unmount();
+
+    // A manual edit shows no source marker at all — anti-bloat.
+    renderDialog({ transaction: EDIT_TXN, asset: undefined });
+    expect(screen.queryByText(/Imported ·/)).not.toBeInTheDocument();
   });
 
   test('saving with nothing changed skips the PATCH entirely and just closes', async () => {

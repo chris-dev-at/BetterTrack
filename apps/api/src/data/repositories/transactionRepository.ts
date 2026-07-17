@@ -47,6 +47,8 @@ export interface TransactionRecord {
    */
   allowUncovered: boolean;
   uncoveredEntryPrice: number | null;
+  /** Source tag (V5-P0c): how this row entered the ledger; `manual` for hand entry. */
+  source: string;
 }
 
 /** A transaction row enriched with its asset metadata for the ledger view. */
@@ -101,6 +103,8 @@ export interface BatchCashMovement {
   note: string | null;
   taxYear: number;
   executedAt: Date;
+  /** Source tag (V5-P0c); defaults to `manual` when the batch is hand-entered. */
+  source?: string;
 }
 
 /** Tax facts frozen onto a row at recording time (V3-P4); absent on buys/none. */
@@ -128,6 +132,12 @@ export interface NewTransaction {
    */
   allowUncovered?: boolean;
   uncoveredEntryPrice?: number | null;
+  /**
+   * Source tag (V5-P0c): how this row entered the ledger. Defaults to `manual`;
+   * the CSV apply path passes `import:<broker>`. The row's linked cash movements
+   * inherit it. Server-assigned only — never client-suppliable.
+   */
+  source?: string;
   /** Cash movements written in the same DB transaction as this row (§14, V3-P4). */
   cashMovements?: readonly LinkedCashMovement[];
 }
@@ -148,6 +158,7 @@ function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
     taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
     allowUncovered: row.allowUncovered,
     uncoveredEntryPrice: row.uncoveredEntryPrice === null ? null : Number(row.uncoveredEntryPrice),
+    source: row.source,
   };
 }
 
@@ -194,6 +205,7 @@ export function createTransactionRepository(db: Database) {
                 r.uncoveredEntryPrice === undefined || r.uncoveredEntryPrice === null
                   ? null
                   : String(r.uncoveredEntryPrice),
+              source: r.source ?? 'manual',
             })),
           )
           .returning();
@@ -218,6 +230,8 @@ export function createTransactionRepository(db: Database) {
             // carries its own date; every other leg inherits the row's.
             executedAt: link.occurredAt ?? row.executedAt,
             note: link.note,
+            // A linked cash leg carries its parent transaction's source (V5-P0c).
+            source: rows[i]?.source ?? 'manual',
           })),
         );
         const extraRows = extraMovements.map((extra) => ({
@@ -228,6 +242,7 @@ export function createTransactionRepository(db: Database) {
           taxYear: extra.taxYear,
           executedAt: extra.executedAt,
           note: extra.note,
+          source: extra.source ?? 'manual',
         }));
         if (cashRows.length > 0 || extraRows.length > 0) {
           await tx.insert(portfolioCashMovements).values([...cashRows, ...extraRows]);
@@ -261,7 +276,7 @@ export function createTransactionRepository(db: Database) {
      */
     async listByPortfolio(
       portfolioId: string,
-      params: { limit: number; cursor?: string },
+      params: { limit: number; cursor?: string; source?: string },
     ): Promise<{ items: TransactionWithAsset[]; nextCursor: string | null }> {
       const rows = await db
         .select({
@@ -279,6 +294,7 @@ export function createTransactionRepository(db: Database) {
           taxAmountEur: transactions.taxAmountEur,
           allowUncovered: transactions.allowUncovered,
           uncoveredEntryPrice: transactions.uncoveredEntryPrice,
+          source: transactions.source,
           assetSymbol: assets.symbol,
           assetName: assets.name,
           assetExchange: assets.exchange,
@@ -291,6 +307,8 @@ export function createTransactionRepository(db: Database) {
         .where(
           and(
             eq(transactions.portfolioId, portfolioId),
+            // Source-tag filter (V5-P0c): return only rows carrying this exact tag.
+            params.source ? eq(transactions.source, params.source) : undefined,
             params.cursor ? lt(transactions.id, params.cursor) : undefined,
           ),
         )
@@ -315,6 +333,7 @@ export function createTransactionRepository(db: Database) {
         allowUncovered: row.allowUncovered,
         uncoveredEntryPrice:
           row.uncoveredEntryPrice === null ? null : Number(row.uncoveredEntryPrice),
+        source: row.source,
         asset: {
           id: row.assetId,
           symbol: row.assetSymbol,
