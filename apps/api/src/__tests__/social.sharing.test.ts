@@ -203,7 +203,11 @@ describe('GET /api/v1/social/shared (Shared With Me)', () => {
     expect(sharedWithMeResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body.portfolios).toHaveLength(1);
     const [item] = res.body.portfolios;
-    expect(item.owner).toEqual({ id: expect.any(String), username: 'alice' });
+    expect(item.owner).toEqual({
+      id: expect.any(String),
+      username: 'alice',
+      profileIcon: null,
+    });
     expect(item.owner).not.toHaveProperty('email');
     expect(item.name).toBe('Main');
     expect(item.totalValueEur).toBe(120);
@@ -444,7 +448,11 @@ describe('conglomerate friend-sharing', () => {
     expect(bobRes.body.conglomerates).toHaveLength(1);
     const [item] = bobRes.body.conglomerates;
     expect(item.conglomerateId).toBe(cid);
-    expect(item.owner).toEqual({ id: expect.any(String), username: 'alice' });
+    expect(item.owner).toEqual({
+      id: expect.any(String),
+      username: 'alice',
+      profileIcon: null,
+    });
     expect(item.owner).not.toHaveProperty('email');
     expect(item.positionCount).toBe(1);
 
@@ -553,7 +561,11 @@ describe('watchlist friend-sharing', () => {
     const bobRes = await bobAgent.get('/api/v1/social/shared');
     expect(bobRes.status).toBe(200);
     expect(bobRes.body.watchlists).toHaveLength(1);
-    expect(bobRes.body.watchlists[0].owner).toEqual({ id: expect.any(String), username: 'alice' });
+    expect(bobRes.body.watchlists[0].owner).toEqual({
+      id: expect.any(String),
+      username: 'alice',
+      profileIcon: null,
+    });
     expect(bobRes.body.watchlists[0].name).toBe('General');
     expect(bobRes.body.watchlists[0].watchlistId).toEqual(expect.any(String));
     expect(bobRes.body.watchlists[0].itemCount).toBe(1);

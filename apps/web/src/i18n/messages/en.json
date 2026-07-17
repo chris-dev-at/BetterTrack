@@ -2249,7 +2249,31 @@
     "saved": "Profile saved.",
     "publicBadge": "Public profile",
     "notAvailable": "This profile isn't available.",
-    "emptyPublic": "This profile has no public items yet."
+    "emptyPublic": "This profile has no public items yet.",
+    "icon": {
+      "title": "Profile icon",
+      "defaultHint": "Pick from a curated set.",
+      "picked": "Chosen: {{name}}",
+      "clear": "Use the default avatar",
+      "name": {
+        "astronaut": "Astronaut",
+        "fox": "Fox",
+        "panda": "Panda",
+        "robot": "Robot",
+        "star": "Star",
+        "wave": "Wave",
+        "mountain": "Mountain",
+        "leaf": "Leaf",
+        "flame": "Flame",
+        "bolt": "Bolt",
+        "moon": "Moon",
+        "planet": "Planet",
+        "ghost": "Ghost",
+        "crown": "Crown",
+        "compass": "Compass",
+        "anchor": "Anchor"
+      }
+    }
   },
   "deleteAccount": {
     "title": "Delete your account",

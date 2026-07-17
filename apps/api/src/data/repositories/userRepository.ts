@@ -233,6 +233,16 @@ export function createUserRepository(db: Database) {
       await db.update(users).set({ baseCurrency, updatedAt: new Date() }).where(eq(users.id, id));
     },
 
+    /**
+     * Set (or clear) the caller's curated profile icon id (§13.5 V5-P0c). The
+     * service layer validates against the finite allow-list before calling; a
+     * `null` clears the picked icon and returns the user to the deterministic
+     * default the SPA renders.
+     */
+    async setProfileIcon(id: string, profileIcon: string | null): Promise<void> {
+      await db.update(users).set({ profileIcon, updatedAt: new Date() }).where(eq(users.id, id));
+    },
+
     /** Set the global notification mute (#368) — the dispatcher's kill switch. */
     async setNotificationsMuted(id: string, muted: boolean): Promise<void> {
       await db

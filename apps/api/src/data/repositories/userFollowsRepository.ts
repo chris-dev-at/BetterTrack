@@ -15,6 +15,7 @@ import { userFollows, users } from '../schema';
 export interface FollowUserRow {
   id: string;
   username: string;
+  profileIcon: string | null;
   createdAt: Date;
 }
 
@@ -121,6 +122,7 @@ export function createUserFollowsRepository(db: Database) {
         .select({
           id: users.id,
           username: users.username,
+          profileIcon: users.profileIcon,
           createdAt: userFollows.createdAt,
           autoFollowItems: userFollows.autoFollowItems,
           notifyOnAlertCreate: userFollows.notifyOnAlertCreate,
@@ -159,6 +161,7 @@ export function createUserFollowsRepository(db: Database) {
         .select({
           id: users.id,
           username: users.username,
+          profileIcon: users.profileIcon,
           createdAt: userFollows.createdAt,
           autoFollowItems: userFollows.autoFollowItems,
           notifyOnAlertCreate: userFollows.notifyOnAlertCreate,
@@ -174,7 +177,12 @@ export function createUserFollowsRepository(db: Database) {
     /** The users who follow `followedId` — the other party + when it formed, by username. */
     async listFollowers(followedId: string): Promise<FollowUserRow[]> {
       return db
-        .select({ id: users.id, username: users.username, createdAt: userFollows.createdAt })
+        .select({
+          id: users.id,
+          username: users.username,
+          profileIcon: users.profileIcon,
+          createdAt: userFollows.createdAt,
+        })
         .from(userFollows)
         .innerJoin(users, eq(users.id, userFollows.followerId))
         .where(eq(userFollows.followedId, followedId))

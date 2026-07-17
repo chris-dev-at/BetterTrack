@@ -1,4 +1,4 @@
-import type { Role, UserStatus } from '@bettertrack/contracts';
+import type { ProfileIconId, Role, UserStatus } from '@bettertrack/contracts';
 
 /** The session user attached to a request (never carries the password hash). */
 export interface AuthUser {
@@ -12,6 +12,8 @@ export interface AuthUser {
   pinLockIdleMinutes: number | null;
   baseCurrency: string;
   locale: string;
+  /** Curated profile icon id (§13.5 V5-P0c) or `null` when never picked. */
+  profileIcon: ProfileIconId | null;
   lastLoginAt: Date | string | null;
   createdAt: Date | string;
 }

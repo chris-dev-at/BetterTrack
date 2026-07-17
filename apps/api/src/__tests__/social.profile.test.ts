@@ -350,3 +350,83 @@ describe('public profile (V3-P6)', () => {
     ).toBe(404);
   });
 });
+
+describe('profile icons (§13.5 V5-P0c, #549)', () => {
+  it('rejects an unknown icon id (server-side allow-list, defense-in-depth)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const res = await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: false, profileIcon: 'not-a-real-avatar' });
+    // The zod contract rejects at the request boundary with a 400 — no unknown
+    // id ever reaches the storage layer.
+    expect(res.status).toBe(400);
+  });
+
+  it('persists a picked icon and echoes it back on /social/profile', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const put = await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: false, profileIcon: 'fox' });
+    expect(put.status).toBe(200);
+    expect(profileSettingsResponseSchema.parse(put.body).profileIcon).toBe('fox');
+
+    const me = await aliceAgent.get('/api/v1/social/profile');
+    expect(profileSettingsResponseSchema.parse(me.body).profileIcon).toBe('fox');
+
+    // A null in the update clears the choice back to the deterministic default.
+    const cleared = await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: false, profileIcon: null });
+    expect(profileSettingsResponseSchema.parse(cleared.body).profileIcon).toBeNull();
+  });
+
+  it('friend endpoints emit the picked icon on the other party (surfaces per §549)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await befriend(aliceAgent, bobAgent, 'bob');
+
+    // Alice picks the fox icon.
+    await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: false, profileIcon: 'fox' });
+
+    // Bob's friend list carries alice's icon on the friendship's `user`.
+    const friends = await bobAgent.get('/api/v1/social/friends');
+    const aliceFriend = friends.body.friends.find(
+      (f: { user: { username: string } }) => f.user.username === 'alice',
+    );
+    expect(aliceFriend?.user.profileIcon).toBe('fox');
+
+    // Bob's public profile also carries alice's icon once she opts in.
+    await aliceAgent
+      .put('/api/v1/social/profile')
+      .set(...XRW)
+      .send({ isPublic: true, acknowledgePublic: true });
+    const pub = await request(harness.app).get('/api/v1/social/profiles/alice');
+    expect(publicProfileResponseSchema.parse(pub.body).profileIcon).toBe('fox');
+  });
+
+  it('existing users (never picked) read as `null` on the friend row', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await befriend(aliceAgent, bobAgent, 'bob');
+
+    // Alice never picks — the friend endpoint returns `null` (the client falls
+    // through to the deterministic default; the SPA never renders empty).
+    const friends = await bobAgent.get('/api/v1/social/friends');
+    const aliceFriend = friends.body.friends.find(
+      (f: { user: { username: string } }) => f.user.username === 'alice',
+    );
+    expect(aliceFriend?.user.profileIcon).toBeNull();
+  });
+});

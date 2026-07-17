@@ -25,8 +25,9 @@ import type {
   SharedWithMeResponse,
   UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
-import { PROFILE_BIO_MAX } from '@bettertrack/contracts';
+import { PROFILE_BIO_MAX, profileIconIdSchema } from '@bettertrack/contracts';
 
+import { coerceProfileIcon } from '../../http/serializers';
 import type {
   FriendshipRepository,
   FriendRow,
@@ -37,6 +38,7 @@ import type {
   ItemFollowListRow,
 } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
+import type { UserRepository } from '../../data/repositories/userRepository';
 import type {
   FollowingUserRow,
   FollowPrefs,
@@ -71,6 +73,8 @@ export interface SocialServiceDeps {
   itemFollows: ItemFollowsRepository;
   /** Public-profile settings + per-viewer activity-alert preferences (V3-P6). */
   profile: ProfileRepository;
+  /** User row writes — only used here for the profile-icon picker (§13.5 V5-P0c). */
+  userRepo: UserRepository;
   /** The single sharing-enforcement layer — consulted by every read path here. */
   audience: AudienceService;
   /** Owner-scoped source of the read-only portfolio view (money-math is never duplicated). */
@@ -194,6 +198,8 @@ const SHARED_WATCHLIST_NOT_FOUND = () => notFound('Watchlist not found.', 'WATCH
 const SUBJECT_NOT_FOUND = () => notFound('Not found.', 'NOT_FOUND');
 const LINK_NOT_FOUND = () => notFound('This shared link is no longer available.', 'LINK_NOT_FOUND');
 const PROFILE_NOT_FOUND = () => notFound('This profile is not available.', 'PROFILE_NOT_FOUND');
+const INVALID_PROFILE_ICON = () =>
+  badRequest('That profile icon does not exist.', 'INVALID_PROFILE_ICON');
 const PROFILE_ACK_REQUIRED = () =>
   badRequest(
     'A public profile shows anyone the items you have made public; you must acknowledge this to enable it.',
@@ -205,7 +211,11 @@ function toFriendRequest(row: PendingRequestRow): FriendRequest {
     id: row.id,
     direction: row.direction,
     status: 'pending',
-    user: { id: row.otherUserId, username: row.otherUsername },
+    user: {
+      id: row.otherUserId,
+      username: row.otherUsername,
+      profileIcon: coerceProfileIcon(row.otherProfileIcon),
+    },
     createdAt: row.createdAt.toISOString(),
     respondedAt: row.respondedAt ? row.respondedAt.toISOString() : null,
   };
@@ -213,14 +223,22 @@ function toFriendRequest(row: PendingRequestRow): FriendRequest {
 
 function toFriendship(row: FriendRow): Friendship {
   return {
-    user: { id: row.id, username: row.username },
+    user: {
+      id: row.id,
+      username: row.username,
+      profileIcon: coerceProfileIcon(row.profileIcon),
+    },
     createdAt: row.createdAt.toISOString(),
   };
 }
 
 function toFollowUser(row: FollowUserRow): FollowUser {
   return {
-    user: { id: row.id, username: row.username },
+    user: {
+      id: row.id,
+      username: row.username,
+      profileIcon: coerceProfileIcon(row.profileIcon),
+    },
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -241,6 +259,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     follows,
     itemFollows,
     profile,
+    userRepo,
     audience,
     portfolio,
     conglomerate,
@@ -257,20 +276,29 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
   // public-link resolver so the two never diverge (authorization differs; the
   // rendered read-only view is identical).
 
+  interface SharedOwner {
+    id: string;
+    username: string;
+    profileIcon: string | null;
+  }
+
+  function toOwner(o: SharedOwner) {
+    return { id: o.id, username: o.username, profileIcon: coerceProfileIcon(o.profileIcon) };
+  }
+
   async function buildPortfolioView(
-    ownerId: string,
-    ownerUsername: string,
+    owner: SharedOwner,
     portfolioId: string,
     name: string,
     opts?: { baseCurrency?: string },
   ): Promise<SharedPortfolioDetailResponse> {
     const base = { baseCurrency: opts?.baseCurrency };
-    const overview = await portfolio.getPortfolio(ownerId, portfolioId, base);
-    const history = await portfolio.getHistory(ownerId, portfolioId, 'MAX', base);
+    const overview = await portfolio.getPortfolio(owner.id, portfolioId, base);
+    const history = await portfolio.getHistory(owner.id, portfolioId, 'MAX', base);
     return {
       portfolioId,
       name,
-      owner: { id: ownerId, username: ownerUsername },
+      owner: toOwner(owner),
       baseCurrency: overview.baseCurrency,
       totals: overview.totals,
       holdings: overview.holdings,
@@ -279,24 +307,22 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
   }
 
   async function buildConglomerateView(
-    ownerId: string,
-    ownerUsername: string,
+    owner: SharedOwner,
     conglomerateId: string,
   ): Promise<SharedConglomerateDetailResponse> {
-    const detail = await conglomerate.get(ownerId, conglomerateId);
+    const detail = await conglomerate.get(owner.id, conglomerateId);
     return {
       conglomerateId,
       name: detail.name,
       description: detail.description,
       status: detail.status,
-      owner: { id: ownerId, username: ownerUsername },
+      owner: toOwner(owner),
       positions: detail.positions,
     };
   }
 
   async function buildWatchlistView(
-    ownerId: string,
-    ownerUsername: string,
+    owner: SharedOwner,
     watchlistId: string,
     name: string,
   ): Promise<SharedWatchlistDetailResponse> {
@@ -304,7 +330,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     return {
       watchlistId,
       name,
-      owner: { id: ownerId, username: ownerUsername },
+      owner: toOwner(owner),
       items: items.map((item) => ({
         id: item.id,
         watchlistId: item.watchlistId,
@@ -329,8 +355,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
    * on an opted-in profile); this only builds the view.
    */
   async function buildLinkResponse(
-    ownerId: string,
-    ownerUsername: string,
+    owner: SharedOwner,
     kind: ShareKind,
     subjectId: string,
     name: string,
@@ -344,18 +369,18 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     if (kind === 'portfolio') {
       return {
         kind: 'portfolio',
-        portfolio: await buildPortfolioView(ownerId, ownerUsername, subjectId, name),
+        portfolio: await buildPortfolioView(owner, subjectId, name),
       };
     }
     if (kind === 'conglomerate') {
       return {
         kind: 'conglomerate',
-        conglomerate: await buildConglomerateView(ownerId, ownerUsername, subjectId),
+        conglomerate: await buildConglomerateView(owner, subjectId),
       };
     }
     return {
       kind: 'watchlist',
-      watchlist: await buildWatchlistView(ownerId, ownerUsername, subjectId, name),
+      watchlist: await buildWatchlistView(owner, subjectId, name),
     };
   }
 
@@ -369,6 +394,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       username: settings.username,
       isPublic: settings.isPublic,
       bio: settings.bio,
+      profileIcon: coerceProfileIcon(settings.profileIcon),
       publicItemCount,
     };
   }
@@ -535,7 +561,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
             ...base,
             viewable: true,
             name: visible.name,
-            owner: { id: visible.ownerId, username: visible.ownerUsername },
+            owner: {
+              id: visible.ownerId,
+              username: visible.ownerUsername,
+              profileIcon: coerceProfileIcon(visible.ownerProfileIcon),
+            },
             via: visible.via,
           };
         }),
@@ -558,6 +588,15 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         ]);
       const alertsOn = (kind: ShareKind, subjectId: string): boolean =>
         activityPrefs.has(`${kind}:${subjectId}`);
+      const ownerFrom = (row: {
+        ownerId: string;
+        ownerUsername: string;
+        ownerProfileIcon: string | null;
+      }) => ({
+        id: row.ownerId,
+        username: row.ownerUsername,
+        profileIcon: coerceProfileIcon(row.ownerProfileIcon),
+      });
       const portfolios = await Promise.all(
         portfolioRows.map(async (row) => {
           const overview = await portfolio.getPortfolio(row.ownerId, row.portfolioId, {
@@ -566,7 +605,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
           return {
             portfolioId: row.portfolioId,
             name: row.name,
-            owner: { id: row.ownerId, username: row.ownerUsername },
+            owner: ownerFrom(row),
             totalValueEur: overview.totals.totalValueEur,
             activityAlertsEnabled: alertsOn('portfolio', row.portfolioId),
           };
@@ -575,7 +614,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const conglomerates = conglomerateRows.map((row) => ({
         conglomerateId: row.conglomerateId,
         name: row.name,
-        owner: { id: row.ownerId, username: row.ownerUsername },
+        owner: ownerFrom(row),
         status: row.status,
         positionCount: row.positionCount,
         activityAlertsEnabled: alertsOn('conglomerate', row.conglomerateId),
@@ -583,14 +622,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const watchlists = watchlistRows.map((row) => ({
         watchlistId: row.watchlistId,
         name: row.name,
-        owner: { id: row.ownerId, username: row.ownerUsername },
+        owner: ownerFrom(row),
         itemCount: row.itemCount,
         activityAlertsEnabled: alertsOn('watchlist', row.watchlistId),
       }));
       const ideas = ideaRows.map((row) => ({
         ideaId: row.ideaId,
         name: row.name,
-        owner: { id: row.ownerId, username: row.ownerUsername },
+        owner: ownerFrom(row),
         hasThesis: row.hasThesis,
         activityAlertsEnabled: alertsOn('idea', row.ideaId),
       }));
@@ -601,8 +640,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const shared = await audience.authorizePortfolioRead(viewerId, portfolioId);
       if (!shared) throw SHARED_NOT_FOUND();
       return buildPortfolioView(
-        shared.ownerId,
-        shared.ownerUsername,
+        {
+          id: shared.ownerId,
+          username: shared.ownerUsername,
+          profileIcon: shared.ownerProfileIcon,
+        },
         portfolioId,
         shared.name,
         opts,
@@ -612,13 +654,28 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     async getSharedConglomerate(viewerId, conglomerateId) {
       const shared = await audience.authorizeConglomerateRead(viewerId, conglomerateId);
       if (!shared) throw SHARED_CONGLOMERATE_NOT_FOUND();
-      return buildConglomerateView(shared.ownerId, shared.ownerUsername, conglomerateId);
+      return buildConglomerateView(
+        {
+          id: shared.ownerId,
+          username: shared.ownerUsername,
+          profileIcon: shared.ownerProfileIcon,
+        },
+        conglomerateId,
+      );
     },
 
     async getSharedWatchlist(viewerId, watchlistId) {
       const shared = await audience.authorizeWatchlistRead(viewerId, watchlistId);
       if (!shared) throw SHARED_WATCHLIST_NOT_FOUND();
-      return buildWatchlistView(shared.ownerId, shared.ownerUsername, watchlistId, shared.name);
+      return buildWatchlistView(
+        {
+          id: shared.ownerId,
+          username: shared.ownerUsername,
+          profileIcon: shared.ownerProfileIcon,
+        },
+        watchlistId,
+        shared.name,
+      );
     },
 
     async listMyShared(userId) {
@@ -737,8 +794,11 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       const resolved = await audience.resolvePublicLink(token);
       if (!resolved) throw LINK_NOT_FOUND();
       return buildLinkResponse(
-        resolved.ownerId,
-        resolved.ownerUsername,
+        {
+          id: resolved.ownerId,
+          username: resolved.ownerUsername,
+          profileIcon: resolved.ownerProfileIcon,
+        },
         resolved.kind,
         resolved.subjectId,
         resolved.name,
@@ -782,6 +842,19 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         isPublic: input.isPublic,
         bio: bio === undefined ? current.bio : bio,
       });
+      // Profile-icon picker (§13.5 V5-P0c). `undefined` = untouched; `null` clears
+      // the choice; a valid id from the finite allow-list persists. The service
+      // re-validates the id against {@link profileIconIdSchema} — the request
+      // body already did, but defense-in-depth keeps a hand-crafted call honest.
+      if (input.profileIcon !== undefined) {
+        if (input.profileIcon === null) {
+          await userRepo.setProfileIcon(userId, null);
+        } else {
+          const parsed = profileIconIdSchema.safeParse(input.profileIcon);
+          if (!parsed.success) throw INVALID_PROFILE_ICON();
+          await userRepo.setProfileIcon(userId, parsed.data);
+        }
+      }
       return loadProfileSettings(userId);
     },
 
@@ -808,6 +881,7 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         userId: owner.ownerId,
         username: owner.username,
         bio: owner.bio,
+        profileIcon: coerceProfileIcon(owner.profileIcon),
         followerCount,
         portfolios,
         conglomerates: items.conglomerates,
@@ -822,7 +896,12 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       // or dead) item 404s, so the drill-in can never render a private item.
       const item = await audience.authorizePublicItemRead(owner.ownerId, kind, subjectId);
       if (!item) throw PROFILE_NOT_FOUND();
-      return buildLinkResponse(owner.ownerId, owner.username, kind, subjectId, item.name);
+      return buildLinkResponse(
+        { id: owner.ownerId, username: owner.username, profileIcon: owner.profileIcon },
+        kind,
+        subjectId,
+        item.name,
+      );
     },
   };
 }

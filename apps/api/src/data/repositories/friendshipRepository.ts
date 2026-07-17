@@ -34,6 +34,7 @@ export interface PendingRequestRow {
   direction: 'incoming' | 'outgoing';
   otherUserId: string;
   otherUsername: string;
+  otherProfileIcon: string | null;
   createdAt: Date;
   respondedAt: Date | null;
 }
@@ -42,6 +43,7 @@ export interface PendingRequestRow {
 export interface FriendRow {
   id: string;
   username: string;
+  profileIcon: string | null;
   createdAt: Date;
 }
 
@@ -51,6 +53,7 @@ export interface SharedPortfolioRow {
   name: string;
   ownerId: string;
   ownerUsername: string;
+  ownerProfileIcon: string | null;
 }
 
 /** A friend's conglomerate exposed via `visibility='friends'` (§13.2 V2-P9). */
@@ -60,6 +63,7 @@ export interface SharedConglomerateRow {
   status: 'draft' | 'active';
   ownerId: string;
   ownerUsername: string;
+  ownerProfileIcon: string | null;
   positionCount: number;
 }
 
@@ -67,6 +71,7 @@ export interface SharedConglomerateRow {
 export interface SharedWatchlistRow {
   ownerId: string;
   ownerUsername: string;
+  ownerProfileIcon: string | null;
   itemCount: number;
 }
 
@@ -162,6 +167,7 @@ export function createFriendshipRepository(db: Database) {
           name: portfolios.name,
           ownerId: portfolios.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
         })
         .from(friendships)
         .innerJoin(
@@ -200,6 +206,7 @@ export function createFriendshipRepository(db: Database) {
           name: portfolios.name,
           ownerId: portfolios.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
         })
         .from(portfolios)
         // Owner must still be active: a disabled owner's shared portfolio 404s.
@@ -240,6 +247,7 @@ export function createFriendshipRepository(db: Database) {
           status: conglomerates.status,
           ownerId: conglomerates.ownerId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           positionCount: sql<number>`count(${conglomeratePositions.id})`.mapWith(Number),
         })
         .from(friendships)
@@ -268,12 +276,21 @@ export function createFriendshipRepository(db: Database) {
     async findSharedConglomerateForViewer(
       viewerId: string,
       conglomerateId: string,
-    ): Promise<{ conglomerateId: string; ownerId: string; ownerUsername: string } | undefined> {
+    ): Promise<
+      | {
+          conglomerateId: string;
+          ownerId: string;
+          ownerUsername: string;
+          ownerProfileIcon: string | null;
+        }
+      | undefined
+    > {
       const [row] = await db
         .select({
           conglomerateId: conglomerates.id,
           ownerId: conglomerates.ownerId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
         })
         .from(conglomerates)
         .innerJoin(users, and(eq(users.id, conglomerates.ownerId), eq(users.status, 'active')))
@@ -301,6 +318,7 @@ export function createFriendshipRepository(db: Database) {
         .select({
           ownerId: users.id,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           itemCount: sql<number>`count(${workboardItems.id})`.mapWith(Number),
         })
         .from(friendships)
@@ -331,9 +349,15 @@ export function createFriendshipRepository(db: Database) {
     async findSharedWatchlistOwnerForViewer(
       viewerId: string,
       ownerId: string,
-    ): Promise<{ ownerId: string; ownerUsername: string } | undefined> {
+    ): Promise<
+      { ownerId: string; ownerUsername: string; ownerProfileIcon: string | null } | undefined
+    > {
       const [row] = await db
-        .select({ ownerId: users.id, ownerUsername: users.username })
+        .select({
+          ownerId: users.id,
+          ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
+        })
         .from(users)
         .innerJoin(
           friendships,
@@ -403,6 +427,8 @@ export function createFriendshipRepository(db: Database) {
           respondedAt: friendRequests.respondedAt,
           fromUsername: sender.username,
           toUsername: recipient.username,
+          fromProfileIcon: sender.profileIcon,
+          toProfileIcon: recipient.profileIcon,
         })
         .from(friendRequests)
         .innerJoin(sender, eq(sender.id, friendRequests.fromUser))
@@ -422,6 +448,7 @@ export function createFriendshipRepository(db: Database) {
           direction: incoming ? 'incoming' : 'outgoing',
           otherUserId: incoming ? r.fromUser : r.toUser,
           otherUsername: incoming ? r.fromUsername : r.toUsername,
+          otherProfileIcon: incoming ? r.fromProfileIcon : r.toProfileIcon,
           createdAt: r.createdAt,
           respondedAt: r.respondedAt,
         };
@@ -506,6 +533,8 @@ export function createFriendshipRepository(db: Database) {
           createdAt: friendships.createdAt,
           usernameA: ua.username,
           usernameB: ub.username,
+          profileIconA: ua.profileIcon,
+          profileIconB: ub.profileIcon,
         })
         .from(friendships)
         .innerJoin(ua, eq(ua.id, friendships.userA))
@@ -518,6 +547,7 @@ export function createFriendshipRepository(db: Database) {
         return {
           id: other ? r.userB : r.userA,
           username: other ? r.usernameB : r.usernameA,
+          profileIcon: other ? r.profileIconB : r.profileIconA,
           createdAt: r.createdAt,
         };
       });

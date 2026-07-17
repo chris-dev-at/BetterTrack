@@ -87,7 +87,7 @@ export function SharedIdeaPage() {
       {backLink}
 
       <div className="flex items-center gap-3">
-        <Avatar name={idea.owner.username} size="lg" />
+        <Avatar name={idea.owner.username} iconId={idea.owner.profileIcon} size="lg" />
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold tracking-tight text-neutral-100">
             {idea.name}

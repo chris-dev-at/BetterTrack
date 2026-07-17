@@ -22,6 +22,7 @@ export interface ProfileSettings {
   username: string;
   isPublic: boolean;
   bio: string | null;
+  profileIcon: string | null;
 }
 
 /** A resolved public-profile owner (only returned when active AND opted-in). */
@@ -29,6 +30,7 @@ export interface PublicProfileOwner {
   ownerId: string;
   username: string;
   bio: string | null;
+  profileIcon: string | null;
 }
 
 export function createProfileRepository(db: Database) {
@@ -40,12 +42,18 @@ export function createProfileRepository(db: Database) {
           username: users.username,
           isPublic: users.profilePublic,
           bio: users.profileBio,
+          profileIcon: users.profileIcon,
         })
         .from(users)
         .where(eq(users.id, ownerId))
         .limit(1);
       return row
-        ? { username: row.username, isPublic: row.isPublic, bio: row.bio ?? null }
+        ? {
+            username: row.username,
+            isPublic: row.isPublic,
+            bio: row.bio ?? null,
+            profileIcon: row.profileIcon ?? null,
+          }
         : undefined;
     },
 
@@ -70,7 +78,12 @@ export function createProfileRepository(db: Database) {
     async findPublicProfileOwner(username: string): Promise<PublicProfileOwner | undefined> {
       const needle = username.trim().toLowerCase();
       const [row] = await db
-        .select({ ownerId: users.id, username: users.username, bio: users.profileBio })
+        .select({
+          ownerId: users.id,
+          username: users.username,
+          bio: users.profileBio,
+          profileIcon: users.profileIcon,
+        })
         .from(users)
         .where(
           and(
@@ -81,7 +94,12 @@ export function createProfileRepository(db: Database) {
         )
         .limit(1);
       return row
-        ? { ownerId: row.ownerId, username: row.username, bio: row.bio ?? null }
+        ? {
+            ownerId: row.ownerId,
+            username: row.username,
+            bio: row.bio ?? null,
+            profileIcon: row.profileIcon ?? null,
+          }
         : undefined;
     },
 

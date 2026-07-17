@@ -39,6 +39,8 @@ import {
 export interface OwnerRef {
   ownerId: string;
   ownerUsername: string;
+  /** Owner's curated profile icon id (§13.5 V5-P0c) or `null` when unset. */
+  ownerProfileIcon: string | null;
 }
 
 /** An authorized portfolio/watchlist read carries the subject's display name too. */
@@ -132,6 +134,7 @@ export function createShareAudienceRepository(db: Database) {
         .select({
           ownerId: portfolios.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           name: portfolios.name,
         })
         .from(portfolios)
@@ -162,7 +165,11 @@ export function createShareAudienceRepository(db: Database) {
       conglomerateId: string,
     ): Promise<OwnerRef | undefined> {
       const [row] = await db
-        .select({ ownerId: conglomerates.ownerId, ownerUsername: users.username })
+        .select({
+          ownerId: conglomerates.ownerId,
+          ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
+        })
         .from(conglomerates)
         .innerJoin(users, and(eq(users.id, conglomerates.ownerId), eq(users.status, 'active')))
         .innerJoin(
@@ -190,6 +197,7 @@ export function createShareAudienceRepository(db: Database) {
         .select({
           ownerId: watchlists.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           name: watchlists.name,
         })
         .from(watchlists)
@@ -213,7 +221,11 @@ export function createShareAudienceRepository(db: Database) {
      */
     async authorizeIdeaRead(viewerId: string, ideaId: string): Promise<OwnerRef | undefined> {
       const [row] = await db
-        .select({ ownerId: ideas.ownerId, ownerUsername: users.username })
+        .select({
+          ownerId: ideas.ownerId,
+          ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
+        })
         .from(ideas)
         .innerJoin(users, and(eq(users.id, ideas.ownerId), eq(users.status, 'active')))
         .innerJoin(
@@ -235,6 +247,7 @@ export function createShareAudienceRepository(db: Database) {
           name: portfolios.name,
           ownerId: portfolios.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
         })
         .from(portfolios)
         .innerJoin(users, and(eq(users.id, portfolios.userId), eq(users.status, 'active')))
@@ -255,6 +268,7 @@ export function createShareAudienceRepository(db: Database) {
           status: conglomerates.status,
           ownerId: conglomerates.ownerId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           positionCount: sql<number>`(
             select count(*) from ${sql.identifier('conglomerate_positions')}
             where ${sql.identifier('conglomerate_positions')}.${sql.identifier('conglomerate_id')} = ${conglomerates.id}
@@ -281,6 +295,7 @@ export function createShareAudienceRepository(db: Database) {
           name: watchlists.name,
           ownerId: watchlists.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           itemCount: sql<number>`(
             select count(*) from ${workboardItems}
             where ${workboardItems.watchlistId} = ${watchlists.id}
@@ -305,6 +320,7 @@ export function createShareAudienceRepository(db: Database) {
           hasThesis: sql<boolean>`${ideas.thesis} is not null`.mapWith(Boolean),
           ownerId: ideas.ownerId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
         })
         .from(ideas)
         .innerJoin(users, and(eq(users.id, ideas.ownerId), eq(users.status, 'active')))
@@ -488,6 +504,7 @@ export function createShareAudienceRepository(db: Database) {
           .select({
             ownerId: portfolios.userId,
             ownerUsername: users.username,
+            ownerProfileIcon: users.profileIcon,
             name: portfolios.name,
           })
           .from(portfolios)
@@ -505,6 +522,7 @@ export function createShareAudienceRepository(db: Database) {
           .select({
             ownerId: conglomerates.ownerId,
             ownerUsername: users.username,
+            ownerProfileIcon: users.profileIcon,
             name: conglomerates.name,
           })
           .from(conglomerates)
@@ -521,6 +539,7 @@ export function createShareAudienceRepository(db: Database) {
         .select({
           ownerId: watchlists.userId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
           name: watchlists.name,
         })
         .from(watchlists)
@@ -547,6 +566,7 @@ export function createShareAudienceRepository(db: Database) {
           subjectId: shareAudiences.subjectId,
           ownerId: shareAudiences.ownerId,
           ownerUsername: users.username,
+          ownerProfileIcon: users.profileIcon,
         })
         .from(shareAudienceLinks)
         .innerJoin(
