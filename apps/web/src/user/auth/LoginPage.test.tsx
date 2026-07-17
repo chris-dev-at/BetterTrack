@@ -566,9 +566,9 @@ test('the Sign-up entry is hidden when the instance keeps registration closed', 
   expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
 });
 
-// ── Login surface layout reorder (addendum, owner 2026-07-16) ────────────────
+// ── Login surface layout, final (V5-P0 arc (a), owner 2026-07-17) ────────────
 
-test('the login surface orders Sign-up, then Google, then the password form — no OR divider', async () => {
+test('the login surface orders Google, then the password form, then OR, then the Sign-up box', async () => {
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
   // The GoogleButton links to the server OAuth start; give the auto-mock an href
   // so it renders as a real link (an <a> without href has no link role).
@@ -576,16 +576,28 @@ test('the login surface orders Sign-up, then Google, then the password form — 
   renderApp();
   await screen.findByText('Sign in to your account');
 
-  const signUp = await screen.findByRole('link', { name: 'Sign up' });
-  const google = screen.getByRole('link', { name: 'Continue with Google' });
+  const google = await screen.findByRole('link', { name: 'Continue with Google' });
   const passwordField = screen.getByLabelText('Password');
+  const divider = screen.getByText('or');
+  const signUp = screen.getByRole('link', { name: 'Sign up' });
 
-  // Top-to-bottom document order: Sign up → Google → the password form.
-  expect(signUp.compareDocumentPosition(google) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Top-to-bottom document order: Google → the password form → OR → Sign up.
   expect(
     google.compareDocumentPosition(passwordField) & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
+  expect(
+    passwordField.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(divider.compareDocumentPosition(signUp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
 
-  // The "OR" divider between the auth options is gone.
+test('the Sign-up box (and its OR divider) stay hidden when registration is closed', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed', googleEnabled: true });
+  vi.mocked(api.googleStartUrl).mockReturnValue('http://api.test/api/v1/auth/google/start');
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
+  // No OR without a sign-up box to divide against the form.
   expect(screen.queryByText('or')).not.toBeInTheDocument();
 });

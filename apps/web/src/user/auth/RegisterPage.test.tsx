@@ -284,3 +284,45 @@ test('the connected approval form parks a pending request and mints no session',
   expect(await screen.findByText(/pending administrator approval/i)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 });
+
+// ── Register surface layout, mirrored bottom box (V5-P0 arc (a), owner 2026-07-17) ──
+
+test('the register surface orders Google, then the form, then OR, then the mirrored Sign-in box', async () => {
+  vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
+  // Give the auto-mocked GoogleButton an href so it renders as a real <a>.
+  vi.mocked(api.googleStartUrl).mockReturnValue('http://api.test/api/v1/auth/google/start');
+  renderAt('/register');
+
+  const google = await screen.findByRole('link', { name: 'Continue with Google' });
+  const passwordField = screen.getByLabelText('Password');
+  const divider = screen.getByText('or');
+  // Mirrored bottom box: heading + a prominent link to the login page.
+  const haveAccount = screen.getByText('Already have an account?');
+  const signIn = screen.getByRole('link', { name: 'Sign in' });
+  expect(signIn).toHaveAttribute('href', '/login');
+
+  // Top-to-bottom document order: Google → form → OR → mirrored Sign-in box.
+  expect(
+    google.compareDocumentPosition(passwordField) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    passwordField.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    divider.compareDocumentPosition(haveAccount) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    haveAccount.compareDocumentPosition(signIn) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+});
+
+test('the mirrored Sign-in box still ships when Google is disabled', async () => {
+  setMode('open');
+  renderAt('/register');
+
+  await screen.findByLabelText('Email');
+  expect(screen.getByText('Already have an account?')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
+  // No Google → no Google button either.
+  expect(screen.queryByRole('link', { name: 'Continue with Google' })).not.toBeInTheDocument();
+});
