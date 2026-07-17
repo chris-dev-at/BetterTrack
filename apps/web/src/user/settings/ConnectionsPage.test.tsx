@@ -74,9 +74,7 @@ describe('ConnectionsPage — Google account (§13.4 V4-P4b, moved from Security
     // The connectors still render; the Google section resolves to nothing once
     // the disabled status arrives (a transient skeleton clears on settle).
     expect(await screen.findByText('Google Drive backup')).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.queryByText('Google account')).not.toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.queryByText('Google account')).not.toBeInTheDocument());
   });
 
   test('shows the linked identity and unlinks after a password re-auth', async () => {
