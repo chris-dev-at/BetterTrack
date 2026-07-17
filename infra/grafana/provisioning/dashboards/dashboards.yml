@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning (PROJECTPLAN.md §13.5 V5-P2 arc (a)).
+# Loads every dashboard JSON under /var/lib/grafana/dashboards on boot, so the
+# starter dashboard renders live data with zero manual import.
+apiVersion: 1
+
+providers:
+  - name: BetterTrack
+    orgId: 1
+    folder: BetterTrack
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

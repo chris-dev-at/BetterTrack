@@ -1,0 +1,18 @@
+# Grafana datasource provisioning (PROJECTPLAN.md §13.5 V5-P2 arc (a)).
+# Auto-wires the Prometheus datasource on first boot — no console step, no
+# manual import (the zero-owner-setup mandate). Prometheus is reached by service
+# name over the internal compose network.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    # Provisioned datasources are locked so the owner can't accidentally break
+    # the wiring from the UI; delete this file to unmanage it.
+    editable: false
+    jsonData:
+      timeInterval: 15s
