@@ -445,20 +445,27 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     subscriptions: pushSubscriptionRepo,
     logger,
   });
-  // Telegram channel (V4-P10): null when BT_TELEGRAM_BOT_TOKEN is unset — the
-  // matrix column stays hidden and the setup routes report `available: false`.
-  const telegramChannel = createTelegramChannel({
-    botToken: config.telegram.botToken,
-    links: telegramLinkRepo,
-    logger,
-  });
-  // Discord channel (V4-P10): always built — availability is per-user (webhook
-  // saved or not). Reuses the 2FA encryption key for the at-rest URL envelope.
-  const discordChannel = createDiscordChannel({
-    webhooks: discordWebhookRepo,
-    encryptionKey: config.twoFactor.encryptionKey,
-    logger,
-  });
+  // Telegram channel (V4-P10, V5-P0 kill-switch): null when the global env
+  // kill-switch is OFF or BT_TELEGRAM_BOT_TOKEN is unset — the matrix column
+  // stays hidden, the setup routes 404, and the dispatcher below skips the
+  // channel entirely. Existing rows are preserved for a later re-enable.
+  const telegramChannel = config.telegram.enabled
+    ? createTelegramChannel({
+        botToken: config.telegram.botToken,
+        links: telegramLinkRepo,
+        logger,
+      })
+    : null;
+  // Discord channel (V4-P10, V5-P0 kill-switch): null when the global env
+  // kill-switch is OFF — same treatment as Telegram, per-user webhook rows are
+  // preserved so a flip-back restores them.
+  const discordChannel = config.discord.enabled
+    ? createDiscordChannel({
+        webhooks: discordWebhookRepo,
+        encryptionKey: config.twoFactor.encryptionKey,
+        logger,
+      })
+    : null;
 
   // The delivery core. The WORKER runs the authoritative instance inside the
   // `notifications.dispatch` job; this API-side twin serves synchronous test
@@ -819,6 +826,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
   const discordSetup = createDiscordSetupService({
+    enabled: config.discord.enabled,
     webhooks: discordWebhookRepo,
     channel: discordChannel,
     encryptionKey: config.twoFactor.encryptionKey,
@@ -836,6 +844,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       webpush: webPushChannel !== null,
       telegramFor: (userId) => telegramSetup.linkedFor(userId),
       discordFor: (userId) => discordSetup.linkedFor(userId),
+    },
+    // Deployment-level enablement — V5-P0 kill-switch driven. When OFF the SPA
+    // hides the setup cards + matrix columns without probing setup endpoints.
+    channelsConfigurable: {
+      telegram: config.telegram.enabled,
+      discord: config.discord.enabled,
     },
     webPushPublicKey: config.webPush.publicKey ?? null,
   });

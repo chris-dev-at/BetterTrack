@@ -3,7 +3,8 @@ import { useEffect, useState } from 'react';
 import {
   NOTIFICATION_SETTING_CHANNELS,
   NOTIFICATION_TYPES,
-  type AccountDefaults,
+  type AccountDefaultsResponse,
+  type NotificationChannelsConfigurable,
   type NotificationMatrix,
   type NotificationSettingChannel,
   type NotificationType,
@@ -45,6 +46,10 @@ export function AccountDefaultsPage() {
   const [visibility, setVisibility] = useState<PortfolioVisibility>('private');
   const [developerStatus, setDeveloperStatus] = useState(false);
   const [matrix, setMatrix] = useState<NotificationMatrix | null>(null);
+  // V5-P0 kill-switch: which of the additive channels this deployment offers
+  // at all. Off ⇒ the matrix editor hides those columns entirely.
+  const [channelsConfigurable, setChannelsConfigurable] =
+    useState<NotificationChannelsConfigurable>({ telegram: true, discord: true });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -56,7 +61,16 @@ export function AccountDefaultsPage() {
     setVisibility(data.defaultPortfolioVisibility);
     setDeveloperStatus(data.developerStatus);
     setMatrix(data.notificationMatrix);
+    setChannelsConfigurable(data.channelsConfigurable);
   }, [data]);
+
+  // Only render channels this deployment actually offers — the V5-P0 kill-switch
+  // hides Telegram + Discord columns when the flag is off.
+  const visibleChannels = NOTIFICATION_SETTING_CHANNELS.filter((channel) => {
+    if (channel === 'telegram') return channelsConfigurable.telegram;
+    if (channel === 'discord') return channelsConfigurable.discord;
+    return true;
+  });
 
   function setCell(type: NotificationType, channel: NotificationSettingChannel, value: boolean) {
     setSaved(false);
@@ -69,7 +83,7 @@ export function AccountDefaultsPage() {
     setSaved(false);
     setSaving(true);
     try {
-      const next: AccountDefaults = await api.updateAccountDefaults({
+      const next: AccountDefaultsResponse = await api.updateAccountDefaults({
         chatEnabled,
         defaultPortfolioVisibility: visibility,
         developerStatus,
@@ -79,6 +93,7 @@ export function AccountDefaultsPage() {
       setVisibility(next.defaultPortfolioVisibility);
       setDeveloperStatus(next.developerStatus);
       setMatrix(next.notificationMatrix);
+      setChannelsConfigurable(next.channelsConfigurable);
       setSaved(true);
     } catch (err) {
       setSaveError(errorMessage(err));
@@ -206,7 +221,7 @@ export function AccountDefaultsPage() {
                 <thead className="bg-neutral-950 text-xs uppercase tracking-wide text-neutral-500">
                   <tr>
                     <th className="px-4 py-2 font-medium">Type</th>
-                    {NOTIFICATION_SETTING_CHANNELS.map((channel) => (
+                    {visibleChannels.map((channel) => (
                       <th key={channel} className="px-3 py-2 text-center font-medium">
                         {CHANNEL_LABEL[channel]}
                       </th>
@@ -217,7 +232,7 @@ export function AccountDefaultsPage() {
                   {NOTIFICATION_TYPES.map((type) => (
                     <tr key={type} className="hover:bg-neutral-900/60">
                       <td className="px-4 py-2 font-mono text-xs text-neutral-300">{type}</td>
-                      {NOTIFICATION_SETTING_CHANNELS.map((channel) => (
+                      {visibleChannels.map((channel) => (
                         <td key={channel} className="px-3 py-2 text-center">
                           <input
                             type="checkbox"

@@ -33,6 +33,24 @@ export function createSettingsRouter(ctx: AppContext): Router {
 
   router.use(requireUser);
 
+  // V5-P0 kill-switch (§13.5, owner directive): every Telegram + Discord
+  // endpoint 404s when the global flag is OFF. Placed BEFORE the handlers
+  // below so a disabled deployment refuses even the read paths — no leak of
+  // per-user linked state, no probe surface, and no matrix column ever
+  // renders (the SPA keys the setup cards off `channelsConfigurable` on the
+  // notifications response). Code, schema and rows all stay intact; flipping
+  // the env restores every route unchanged.
+  if (!ctx.config.telegram.enabled) {
+    router.use('/telegram', (_req, res) => {
+      res.status(404).end();
+    });
+  }
+  if (!ctx.config.discord.enabled) {
+    router.use('/discord', (_req, res) => {
+      res.status(404).end();
+    });
+  }
+
   // GET /settings/notifications — the session user's per-channel state (§8).
   router.get('/notifications', async (req, res) => {
     const settings = await ctx.notificationSettings.get(req.authUser!.id);
