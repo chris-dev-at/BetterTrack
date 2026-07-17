@@ -2,7 +2,14 @@ import { createApp } from './app';
 import { loadConfig } from './config/env';
 import { createDatabase } from './data/db';
 import { buildContext } from './http/context';
+import { ALL_QUEUE_NAMES } from './jobs';
 import { createLogger } from './logger';
+import {
+  createMetricsServer,
+  setQueueDepthCollector,
+  setWebsocketGauge,
+  type QueueDepthSample,
+} from './metrics';
 import { createRedis } from './redis';
 
 const config = loadConfig();
@@ -27,6 +34,26 @@ const server = app.listen(config.port, () => {
 // when REALTIME_ENABLED=false — no socket server exists, zero behavior change.
 await ctx.realtime.attach(server);
 
+// Prometheus scrape listener (§13.5 V5-P2): its OWN localhost/LAN-bound HTTP
+// server, never on the public /api/v1 surface. `null` when disabled (binds no
+// port). The queue-depth and websocket gauges are sampled lazily on each scrape
+// off the live registry and gateway, so no background timer is needed.
+setWebsocketGauge(() => ctx.realtime.connectionCount());
+if (ctx.queues) {
+  const queues = ctx.queues;
+  setQueueDepthCollector(async () => {
+    const samples: QueueDepthSample[] = [];
+    for (const name of ALL_QUEUE_NAMES) {
+      const counts = await queues.get(name).getJobCounts('waiting', 'active', 'delayed', 'failed');
+      for (const [state, value] of Object.entries(counts)) {
+        samples.push({ queue: name, state, value });
+      }
+    }
+    return samples;
+  });
+}
+const metricsServer = createMetricsServer(config, logger);
+
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -42,6 +69,11 @@ async function shutdown(signal: string): Promise<void> {
     ctx.liveMode.close();
     server.closeIdleConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Close the metrics scrape listener alongside the main server.
+    if (metricsServer) {
+      metricsServer.closeIdleConnections();
+      await new Promise<void>((resolve) => metricsServer.close(() => resolve()));
+    }
     // Let in-flight background cache revalidations write their results before
     // their Redis connection goes away.
     await ctx.marketData.settled();
