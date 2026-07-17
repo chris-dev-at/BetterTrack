@@ -802,7 +802,7 @@ describe('Google sign-in — admin accounts are refused (#400)', () => {
     );
     const res = await runGoogleFlow(g.adminAgent);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('/settings/security?error=google_admin');
+    expect(res.headers.location).toContain('/settings/connections?error=google_admin');
 
     const identities = await g.harness.db
       .select()
@@ -834,7 +834,7 @@ describe('Google sign-in — Settings connect is email-match-only (owner order 2
 
     const res = await runGoogleFlow(agent);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('/settings/security?google=linked');
+    expect(res.headers.location).toContain('/settings/connections?google=linked');
 
     const identities = await g.harness.db
       .select()
@@ -862,7 +862,7 @@ describe('Google sign-in — Settings connect is email-match-only (owner order 2
 
     const res = await runGoogleFlow(agent);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('/settings/security?error=google_email_mismatch');
+    expect(res.headers.location).toContain('/settings/connections?error=google_email_mismatch');
 
     // No identity planted — neither on the account nor for the Google subject.
     expect(
@@ -920,7 +920,7 @@ describe('Google sign-in — Settings connect is email-match-only (owner order 2
     g.setClaims(claims({ sub: 'sub-b', email: 'already@example.com', emailVerified: true }));
     const res = await runGoogleFlow(agent);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('/settings/security?error=google_already_linked');
+    expect(res.headers.location).toContain('/settings/connections?error=google_already_linked');
 
     // Still exactly the original identity.
     const identities = await g.harness.db
@@ -953,7 +953,7 @@ describe('Google sign-in — Settings connect is email-match-only (owner order 2
     g.setClaims(claims({ sub: 'sub-shared', email: 'owner@example.com', emailVerified: true }));
     const res = await runGoogleFlow(a2);
     expect(res.status).toBe(302);
-    expect(res.headers.location).toContain('/settings/security?error=google_email_mismatch');
+    expect(res.headers.location).toContain('/settings/connections?error=google_email_mismatch');
 
     expect(
       await g.harness.db

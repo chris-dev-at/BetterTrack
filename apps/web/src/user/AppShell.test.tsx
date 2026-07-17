@@ -163,7 +163,8 @@ test.each([
   // /social/profile is now the live My Public Profile settings page (V3-P6),
   // no longer Coming Soon.
   ['/settings/imports', 'Imports & Exports'],
-  ['/settings/connections', 'Connections'],
+  // /settings/connections is now the live Connections hub (V5-P0c), no longer
+  // Coming Soon — its own suite covers it.
   ['/settings/backups', 'Backups'],
   // /settings/api is now a built page (API Access, V2-P12), no longer Coming Soon.
 ])('deep link %s resolves to a designed Coming Soon page', async (path, title) => {

@@ -277,7 +277,29 @@
       "description": "Broker-CSV-Importe (Trade Republic, George, …) und vollständiger Konto-Datenexport."
     },
     "connections": {
-      "description": "Google-Login und andere Verbindungen zu Drittanbietern."
+      "title": "Verbindungen",
+      "subtitle": "Alles, was BetterTrack mit der Außenwelt verbindet — dein Google-Login und die bald verfügbaren Connectors.",
+      "comingSoon": "Bald verfügbar",
+      "slotsTitle": "Connectors",
+      "slotsSubtitle": "Synchronisiere deine Daten mit externen Diensten. Sie sind in Arbeit — noch nichts einzurichten.",
+      "sync": {
+        "oneTime": "Einmaliger Import — läuft einmal beim Verbinden.",
+        "stayConnected": "Bleibt verbunden — synchronisiert automatisch."
+      },
+      "slots": {
+        "drive": {
+          "name": "Google-Drive-Backup",
+          "purpose": "Halte ein verschlüsseltes Off-site-Backup deines Kontos auf deinem eigenen Drive."
+        },
+        "bankCash": {
+          "name": "Bank- & Broker-Cash-Sync",
+          "purpose": "Halte deine Barbestände mit deinen Bank- und Broker-Konten im Einklang."
+        },
+        "parqet": {
+          "name": "Parqet",
+          "purpose": "Übernimm deine Positionen aus einem Parqet-Portfolio."
+        }
+      }
     },
     "backups": {
       "description": "Automatische Backups zu Google Drive und anderswo."
@@ -1831,6 +1853,9 @@
     }
   },
   "assets": {
+    "capability": {
+      "parqet": "Synchronisiert mit Parqet"
+    },
     "detail": {
       "chartAriaLabel": "Kursdiagramm für {{symbol}}",
       "stale": "Veraltet",

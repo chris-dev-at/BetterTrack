@@ -30,6 +30,7 @@ import {
   roundWeight,
   type BuilderPosition,
 } from '../workboard/conglomerateBuilder';
+import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
 
 const DEBOUNCE_MS = 300;
@@ -406,11 +407,12 @@ function ResultRow({
         aria-label={t('assets.searchBox.openAria', { symbol: item.symbol, name: item.name })}
         className="flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm font-semibold text-neutral-100">{item.symbol}</span>
           <span className={cx('rounded px-1.5 py-0.5 text-xs font-medium', badgeClass)}>
             {item.type}
           </span>
+          <CapabilityTags type={item.type} />
         </div>
         <span className="truncate text-xs text-neutral-400">
           {item.name}
@@ -695,11 +697,12 @@ function SelectRow({ item, onSelect }: { item: SearchResultItem; onSelect: () =>
         )}
       >
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="font-mono text-sm font-semibold text-neutral-100">{item.symbol}</span>
             <span className={cx('rounded px-1.5 py-0.5 text-xs font-medium', badgeClass)}>
               {item.type}
             </span>
+            <CapabilityTags type={item.type} />
           </div>
           <span className="truncate text-xs text-neutral-400">
             {item.name}

@@ -65,6 +65,36 @@ async function passwordSignIn(page: Page, identifier: string): Promise<void> {
   await expect(page).toHaveURL(/\/portfolio$/, { timeout: 20_000 });
 }
 
+test('google identity block lives under Settings → Connections and is gone from Security (V5-P0c)', async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+
+  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+  await loginAsAdmin(apiRequest);
+  const user = await provisionUser(browser, apiRequest, 'gconn');
+  try {
+    const page = user.page;
+
+    // The moved home: Connections carries the Google account block (unlinked
+    // here → the "Connect Google" affordance) plus the coming-soon connector.
+    await page.goto('/settings/connections');
+    await expect(page.getByRole('heading', { name: 'Google account' })).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
+    await expect(page.getByText('Google Drive backup')).toBeVisible();
+
+    // The old home no longer shows it (only relocated, never duplicated).
+    await page.goto('/settings/security');
+    await expect(page.getByRole('heading', { name: 'Security' })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('heading', { name: 'Google account' })).toHaveCount(0);
+  } finally {
+    await user.context.close();
+    await apiRequest.dispose();
+  }
+});
+
 test('google login: verified-email match links an existing account; Google and password both sign in', async ({
   browser,
 }) => {

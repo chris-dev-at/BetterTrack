@@ -33,6 +33,7 @@ import { formatDateTime, formatSignedPercent } from '../../lib/format';
 import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
+import { CapabilityTags } from './capabilityTags';
 import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
 import { Alert, Button } from '../components/ui';
@@ -138,6 +139,7 @@ function AssetHeader({
             <span className="mx-1.5 text-neutral-600">·</span>
             <span className="capitalize">{asset.type}</span>
           </p>
+          <CapabilityTags type={asset.type} className="mt-1.5" />
         </div>
 
         {quote ? (

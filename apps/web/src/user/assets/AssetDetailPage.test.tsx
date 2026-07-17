@@ -160,6 +160,23 @@ describe('AssetDetailPage — header rendering', () => {
     expect(screen.getByText('XETRA')).toBeInTheDocument();
   });
 
+  test('renders the Parqet capability tag for a supported (stock) asset', async () => {
+    // baseDetail.asset.type is 'stock' — Parqet syncs stocks (V5-P0c).
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.getByText('Syncs with Parqet')).toBeInTheDocument();
+  });
+
+  test('renders no capability tag for an unsupported (index) asset', async () => {
+    vi.mocked(getAssetDetail).mockResolvedValue({
+      ...baseDetail,
+      asset: { ...baseDetail.asset, type: 'index' as const },
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText('Syncs with Parqet')).not.toBeInTheDocument();
+  });
+
   test('shows native price with currency symbol', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
