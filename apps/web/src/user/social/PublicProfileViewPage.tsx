@@ -215,7 +215,7 @@ export function PublicProfileViewPage() {
     <Shell>
       <div className="flex flex-col gap-8">
         <div className="flex items-center gap-4">
-          <Avatar name={data.username} size="lg" />
+          <Avatar name={data.username} iconId={data.profileIcon} size="lg" />
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-2xl font-semibold">@{data.username}</h1>
             <p className="mt-0.5 text-sm text-neutral-500">

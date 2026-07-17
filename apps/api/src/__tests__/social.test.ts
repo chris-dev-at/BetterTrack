@@ -217,6 +217,7 @@ describe('GET /api/v1/social/requests', () => {
     expect(aliceReqs.outgoing[0]?.user).toEqual({
       id: expect.any(String),
       username: 'bob',
+      profileIcon: null,
     });
     // strict schema already rejects an `email` field; assert explicitly too.
     expect(aliceReqs.outgoing[0]?.user).not.toHaveProperty('email');

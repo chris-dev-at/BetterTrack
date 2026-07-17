@@ -221,6 +221,19 @@ describe('AssetSearchBox', () => {
     expect(screen.getAllByText('stock')).toHaveLength(2);
   });
 
+  test('renders the Parqet capability tag for a supported asset, and not for an unsupported one', async () => {
+    const CPI: SearchResultItem = { ...NVDA, id: 'asset-cpi', symbol: 'CPI', type: 'index' };
+    vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA, CPI]));
+    const user = userEvent.setup();
+    renderSearchBox();
+
+    await user.type(screen.getByRole('searchbox'), 'NV');
+    await screen.findByText('NVDA');
+
+    // Stocks sync with Parqet; the index type does not — exactly one tag renders.
+    expect(screen.getAllByText('Syncs with Parqet')).toHaveLength(1);
+  });
+
   test('renders every direct action on each result', async () => {
     vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
     const user = userEvent.setup();

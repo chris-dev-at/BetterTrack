@@ -537,7 +537,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         res.redirect(`${web}/?google=signed_in`);
         return;
       case 'linked':
-        res.redirect(`${web}/settings/security?google=linked`);
+        res.redirect(`${web}/settings/connections?google=linked`);
         return;
       case 'register':
         // A brand-new identity: bind the pending ticket to this browser and land
@@ -547,7 +547,7 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
         res.redirect(`${web}/register?google=connected`);
         return;
       case 'error': {
-        const base = result.intent === 'link' ? '/settings/security' : '/login';
+        const base = result.intent === 'link' ? '/settings/connections' : '/login';
         res.redirect(`${web}${base}?error=${googleErrorParam(result.code)}`);
         return;
       }

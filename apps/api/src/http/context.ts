@@ -829,6 +829,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     follows: userFollowsRepo,
     itemFollows: itemFollowsRepo,
     profile: profileRepo,
+    userRepo,
     audience,
     portfolio,
     conglomerate,

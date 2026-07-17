@@ -351,6 +351,13 @@
       "when": 1784249252477,
       "tag": "0049_portfolio_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1784250000000,
+      "tag": "0050_profile_icon",
+      "breakpoints": true
     }
   ]
 }

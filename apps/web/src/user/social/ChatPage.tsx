@@ -308,7 +308,7 @@ function ConversationRow({
         active ? 'bg-neutral-800' : 'hover:bg-neutral-800/50',
       )}
     >
-      <Avatar name={displayName} size="md" />
+      <Avatar name={displayName} iconId={convo.user?.profileIcon ?? null} size="md" />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-2">
           <span
@@ -374,7 +374,7 @@ function NewChatDialog({ onClose }: { onClose: () => void }) {
                   }}
                   className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
                 >
-                  <Avatar name={f.user.username} size="sm" />
+                  <Avatar name={f.user.username} iconId={f.user.profileIcon} size="sm" />
                   <span className="text-sm font-medium text-neutral-100">{f.user.username}</span>
                 </button>
               </li>
@@ -738,7 +738,7 @@ function ChatThreadPane({
         >
           ←
         </Link>
-        <Avatar name={otherName} size="sm" />
+        <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="sm" />
         <span
           className={cx(
             'text-sm font-semibold',
@@ -770,7 +770,7 @@ function ChatThreadPane({
           <Alert tone="error">{t('social.chat.error')}</Alert>
         ) : messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
-            <Avatar name={otherName} size="lg" />
+            <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="lg" />
             <p className="text-base font-semibold text-neutral-100">
               {t('social.chat.sayHi', { username: otherName })}
             </p>

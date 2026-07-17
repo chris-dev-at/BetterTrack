@@ -1,14 +1,16 @@
-import type {
-  AdminInvite,
-  AdminUser,
-  Alert,
-  AppSettingsResponse,
-  AuditLogEntry,
-  EmailLogEntry,
-  MeResponse,
-  RegistrationRequest,
-  RegistrationToken,
-  WorkboardItem,
+import {
+  profileIconIdSchema,
+  type AdminInvite,
+  type AdminUser,
+  type Alert,
+  type AppSettingsResponse,
+  type AuditLogEntry,
+  type EmailLogEntry,
+  type MeResponse,
+  type ProfileIconId,
+  type RegistrationRequest,
+  type RegistrationToken,
+  type WorkboardItem,
 } from '@bettertrack/contracts';
 
 import type { AlertRecord } from '../data/repositories/alertRepository';
@@ -32,6 +34,20 @@ const toIso = (value: Date | string | null | undefined): string | null => {
 const toIsoRequired = (value: Date | string): string =>
   value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 
+/**
+ * Coerce a stored `profile_icon` column value to a curated icon id, or `null`.
+ * The write path validates against {@link profileIconIdSchema} before storing,
+ * so under normal operation this only ever sees a known id or `null`; any
+ * unexpected value (a pre-existing hand-edit, a removed curated id from an
+ * older deploy) reads back as `null` and the SPA falls through to the
+ * deterministic default, so no surface ever renders broken.
+ */
+export function coerceProfileIcon(value: string | null | undefined): ProfileIconId | null {
+  if (value == null) return null;
+  const parsed = profileIconIdSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 export function toAuthUser(row: UserRow): AuthUser {
   return {
     id: row.id,
@@ -44,6 +60,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     pinLockIdleMinutes: row.pinLockIdleMinutes,
     baseCurrency: row.baseCurrency,
     locale: row.locale,
+    profileIcon: coerceProfileIcon(row.profileIcon),
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
   };
@@ -61,6 +78,7 @@ export function toMeResponse(user: AuthUser): MeResponse {
     pinLockIdleMinutes: user.pinLockIdleMinutes,
     baseCurrency: user.baseCurrency,
     locale: user.locale,
+    profileIcon: user.profileIcon,
     lastLoginAt: toIso(user.lastLoginAt),
     createdAt: toIsoRequired(user.createdAt),
   };
