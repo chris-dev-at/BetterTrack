@@ -395,6 +395,30 @@ export function createPortfolioRepository(db: Database) {
         .map((r) => ({ assetId: r.assetId, date: r.date, close: Number(r.close) }))
         .filter((r) => Number.isFinite(r.close));
     },
+
+    /**
+     * Each asset's LATEST stored close/value point (issue #553): the snapshot
+     * read path's fallback price for the fresh "today" point when the live
+     * quote is unavailable — mirroring how the value engine would carry the
+     * last known close forward.
+     */
+    async latestClosesForAssets(ids: readonly string[]): Promise<Map<string, number>> {
+      if (ids.length === 0) return new Map();
+      const rows = await db
+        .selectDistinctOn([priceHistory.assetId], {
+          assetId: priceHistory.assetId,
+          close: priceHistory.close,
+        })
+        .from(priceHistory)
+        .where(inArray(priceHistory.assetId, [...ids]))
+        .orderBy(asc(priceHistory.assetId), desc(priceHistory.date));
+      const latest = new Map<string, number>();
+      for (const row of rows) {
+        const close = Number(row.close);
+        if (Number.isFinite(close)) latest.set(row.assetId, close);
+      }
+      return latest;
+    },
   };
 }
 

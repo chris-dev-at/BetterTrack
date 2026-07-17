@@ -22,6 +22,10 @@ export const QUEUE_NAMES = {
   // zip on demand; the cleanup job prunes expired exports on a daily schedule.
   dataExport: 'data.export',
   dataExportCleanup: 'data.exportCleanup',
+  // V5-P1 daily snapshots (#553): on-demand recompute of one invalidated
+  // portfolio, and the nightly roll/backfill sweep over every portfolio.
+  snapshotsRecompute: 'snapshots.recompute',
+  snapshotsBackfill: 'snapshots.backfill',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -43,6 +47,8 @@ export interface JobPayloads {
   'notifications.dispatch': { event: DomainEvent };
   'data.export': { jobId: string };
   'data.exportCleanup': Record<string, never>;
+  'snapshots.recompute': { portfolioId: string };
+  'snapshots.backfill': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }
 

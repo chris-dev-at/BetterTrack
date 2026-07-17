@@ -1014,6 +1014,66 @@ export const portfolioCashMovements = pgTable(
 );
 
 /**
+ * Precomputed per-portfolio daily series (V5-P1 arc a, issue #553): one row per
+ * (portfolio, calendar day) from the portfolio's first event through
+ * *yesterday* — the live "today" point is always computed fresh from quotes and
+ * NEVER persisted. Graphs/analytics read these rows instead of re-running the
+ * value engine; the engine itself remains the single writer ("one math, two
+ * uses"). All money columns are unconstrained `numeric` holding the engine's
+ * full-precision output verbatim (§5.4 — no snapshot-side rounding), so a
+ * stored day round-trips bit-identical to a fresh recompute.
+ *
+ * Invalidation (§16 2026-07-17): every history-mutating write deletes the rows
+ * from its earliest affected day and marks `portfolio_snapshot_state` dirty;
+ * rows strictly before that day are never touched. Portfolio deletion cascades
+ * both tables away.
+ */
+export const portfolioDailySnapshots = pgTable(
+  'portfolio_daily_snapshots',
+  {
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    date: date('date').notNull(),
+    /** Net worth: holdings value + EOD cash balance (#311 semantics), EUR. */
+    valueEur: numeric('value_eur').notNull(),
+    /** Open cost basis (Σ held qty · avg cost) at that day's FX, EUR. */
+    costBasisEur: numeric('cost_basis_eur').notNull(),
+    /** Unrealized P/L of the holdings leg: holdings value − cost basis, EUR. */
+    plEur: numeric('pl_eur').notNull(),
+    /** Net external TWR flow that day (0 = none), EUR — feeds timeWeightedReturn. */
+    flowEur: numeric('flow_eur').notNull(),
+    /** Per-source EOD cash split: `{ [sourceId]: balanceEur }` (V3-P3 sources). */
+    cashBySource: jsonb('cash_by_source').notNull(),
+    /** Per-asset EUR value that day: `{ [assetId]: valueEur }` — the analytics feed. */
+    assetValues: jsonb('asset_values').notNull(),
+    computedAt: timestamp('computed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ name: 'portfolio_daily_snapshots_pk', columns: [t.portfolioId, t.date] })],
+);
+
+/**
+ * Per-portfolio snapshot bookkeeping (issue #553): `computed_through` is the
+ * last day the writer fully computed (always yesterday at write time);
+ * `dirty_from` non-null means a history-mutating write invalidated the tail
+ * from that day and a recompute is owed — readers must not serve the rows.
+ * Rows are valid exactly when `dirty_from IS NULL AND computed_through ≥
+ * yesterday`; anything else falls back to the live engine (which refills).
+ */
+export const portfolioSnapshotState = pgTable('portfolio_snapshot_state', {
+  portfolioId: uuid('portfolio_id')
+    .primaryKey()
+    .references(() => portfolios.id, { onDelete: 'cascade' }),
+  computedThrough: date('computed_through').notNull(),
+  dirtyFrom: date('dirty_from'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type PortfolioDailySnapshotRow = typeof portfolioDailySnapshots.$inferSelect;
+export type NewPortfolioDailySnapshotRow = typeof portfolioDailySnapshots.$inferInsert;
+export type PortfolioSnapshotStateRow = typeof portfolioSnapshotState.$inferSelect;
+
+/**
  * Per-user tax settings (V3-P4, §13.3): Settings → Taxes. One optional row per
  * user — a missing row IS `none` mode (the pre-V3-P4 default), so the feature
  * is additive by construction. `country` is set exactly when the mode is
@@ -1959,6 +2019,8 @@ export const schema = {
   portfolioCashSources,
   dividends,
   portfolioCashMovements,
+  portfolioDailySnapshots,
+  portfolioSnapshotState,
   userTaxSettings,
   friendRequests,
   friendships,

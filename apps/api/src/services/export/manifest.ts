@@ -94,6 +94,17 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
     'Per-user Discord webhook URL stored encrypted at rest (opaque outbound-only secret).',
   ),
 
+  // ── Derived caches (recomputable from exported source data) ───────────────
+  // V5-P1 daily snapshots (#553): every row is a pure derivation of the
+  // exported transactions/dividends/cash movements + market data — the engine
+  // rebuilds them from scratch, so exporting them would carry no user data.
+  portfolio_daily_snapshots: skipped(
+    'Precomputed daily series cache — fully derivable from exported transactions/cash/dividends.',
+  ),
+  portfolio_snapshot_state: skipped(
+    'Snapshot recompute bookkeeping (watermark + dirty marker), not user data.',
+  ),
+
   // ── This feature's own bookkeeping ────────────────────────────────────────
   export_jobs: skipped("Account-export job bookkeeping — this feature's own metadata."),
   // Broker-import staging (V4-P8): applied rows land in transactions/dividends/

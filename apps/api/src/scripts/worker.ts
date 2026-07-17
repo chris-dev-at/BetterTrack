@@ -27,10 +27,19 @@ import {
   createJobWorkers,
   createNotificationsDispatchJob,
   createQueueRegistry,
+  createSnapshotsBackfillJob,
+  createSnapshotsRecomputeJob,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
 } from '../jobs';
+import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
+import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
+import { createPortfolioSnapshotRepository } from '../data/repositories/portfolioSnapshotRepository';
+import { createTransactionRepository } from '../data/repositories/transactionRepository';
+import { createCurrencyService } from '../services/currency/currencyService';
+import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
+import { createPortfolioSnapshotService } from '../services/portfolio/portfolioSnapshots';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
 import { initObservability } from '../services/observability/sentry';
@@ -159,6 +168,22 @@ const dataExportService = createExportService({
   logger,
 });
 
+// V5-P1 daily snapshots (#553): the worker runs the SAME snapshot engine the
+// API serves reads from — one math, two uses. The nightly `snapshots.backfill`
+// sweep (03:30 Vienna, after prices.refreshDaily) doubles as the first-run
+// backfill of all existing portfolios; `snapshots.recompute` refills a single
+// portfolio a write invalidated. No `requestRecompute` here — the jobs ARE the
+// recompute, nothing to re-enqueue.
+const snapshots = createPortfolioSnapshotService({
+  snapshotRepo: createPortfolioSnapshotRepository(db),
+  portfolioRepo: createPortfolioRepository(db),
+  transactionRepo: createTransactionRepository(db),
+  cashMovementRepo: createCashMovementRepository(db),
+  marketData,
+  currencyService: createCurrencyService({ source: createMarketDataFxSource(marketData) }),
+  logger,
+});
+
 const definitions = [
   ...createJobDefinitions({
     db,
@@ -172,6 +197,8 @@ const definitions = [
   createNotificationsDispatchJob({ dispatcher }),
   createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob({ exportService: dataExportService }),
+  createSnapshotsRecomputeJob({ snapshots }),
+  createSnapshotsBackfillJob({ snapshots }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

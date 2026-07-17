@@ -505,6 +505,70 @@ export function projectCashLedgerBySource(
   return projections;
 }
 
+/** One day's end-of-day balance per cash source (V5-P1 snapshots, issue #553). */
+export interface CashBySourcePoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /**
+   * EOD balance per source id, full FP precision (§5.4 — quantize with
+   * {@link floorCents} at the display boundary). Sources with no movement on
+   * or before the day are absent, not 0 — callers supply zeroes for
+   * freshly-created sources exactly like {@link cashBalancesBySource}.
+   */
+  balances: ReadonlyMap<string, number>;
+}
+
+/**
+ * Dense daily end-of-day balances of **each** source (V5-P1 snapshots, issue
+ * #553): one point per calendar day from the first movement day through
+ * `endDay`, each carrying every touched source's running balance carried
+ * forward between its movement days. The replay order (chronological, ties by
+ * input order) and the movements-after-the-grid-end exclusion mirror
+ * {@link netWorthSeries}'s cash leg exactly, so summing a day's balances
+ * reproduces that day's cash component of the net-worth curve. Deliberately no
+ * solvency gate — this is a display derivation (see {@link netWorthSeries}).
+ *
+ * Returns an empty series when there are no movements on or before `endDay`.
+ * Throws {@link CashLedgerError} on malformed input.
+ */
+export function cashBySourceOverTime(
+  movements: readonly SourcedCashMovement[],
+  endDay: string,
+): CashBySourcePoint[] {
+  if (!ISO_DAY_RE.test(endDay)) {
+    throw new CashLedgerError(`endDay must be ISO YYYY-MM-DD, got ${endDay}`);
+  }
+  movements.forEach((movement, i) => {
+    assertValidMovement(movement, i);
+    assertSourced(movement, i);
+  });
+
+  const endMs = isoDayToMs(endDay);
+  const ordered = movements
+    .map((movement, index) => ({ movement, index, ms: occurredAtToMs(movement.occurredAt) }))
+    .sort((a, b) => a.ms - b.ms || a.index - b.index)
+    // Movements dated after the grid end never enter (netWorthSeries's rule).
+    .filter(({ movement }) => isoDayToMs(dayOf(movement.occurredAt)) <= endMs);
+  const first = ordered[0];
+  if (first === undefined) return [];
+
+  const running = new Map<string, number>();
+  const series: CashBySourcePoint[] = [];
+  let idx = 0;
+  for (let ms = isoDayToMs(dayOf(first.movement.occurredAt)); ms <= endMs; ms += MS_PER_DAY) {
+    const date = new Date(ms).toISOString().slice(0, 10);
+    while (idx < ordered.length) {
+      const entry = ordered[idx];
+      if (entry === undefined || isoDayToMs(dayOf(entry.movement.occurredAt)) > ms) break;
+      const { movement } = entry;
+      running.set(movement.sourceId, (running.get(movement.sourceId) ?? 0) + movement.amountEur);
+      idx += 1;
+    }
+    series.push({ date, balances: new Map(running) });
+  }
+  return series;
+}
+
 /** Input for {@link pairedTransferMovements}. */
 export interface CashTransferInput {
   /** Source the money leaves. Must differ from `toSourceId`. */

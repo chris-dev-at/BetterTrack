@@ -15,7 +15,6 @@ import type {
   SetCashBalanceResponse,
   UpdateCashSourceRequest,
   Holding as HoldingDto,
-  HistoryRange,
   PortfolioAsset,
   PortfolioHistoryOverlay,
   PortfolioHistoryRange,
@@ -24,7 +23,6 @@ import type {
   PortfolioResponse,
   PortfolioSummary,
   PortfolioTotals,
-  PricePoint as ProviderPricePoint,
   TransactionInput,
   TransactionListResponse,
   Transaction as TransactionDto,
@@ -32,7 +30,6 @@ import type {
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 import { customAssetCategorySchema } from '@bettertrack/contracts';
-import type { Redis } from 'ioredis';
 
 import type { AssetRow } from '../../data/schema';
 import { newId } from '../../data/ids';
@@ -59,9 +56,7 @@ import {
   cashBalance,
   cashBalancesBySource,
   CashLedgerError,
-  externalCashFlowsForTwr,
   InsufficientCashError,
-  netWorthSeries,
   pairedTransferMovements,
   projectCashLedgerBySource,
   floorCents,
@@ -71,29 +66,25 @@ import {
   type SourcedCashMovement,
 } from '../../domain/cashLedger';
 import {
-  dailyCloseSeries,
   deriveHoldings,
-  netFlowsOverTime,
   OversellError,
   rebasePerformance,
   reducePosition,
   timeWeightedReturn,
-  valueOverTime,
   type FlowPoint,
   type Holding,
   type HoldingAssetInput,
-  type PricePoint,
   type Transaction as DomainTransaction,
-  type ValueOverTimeAsset,
 } from '../../domain/holdings';
 import { badRequest, conflict, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
-import { rangeStartMs, type MarketDataService } from '../../providers';
+import type { MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 import type { TaxService } from '../tax/taxService';
+import type { PortfolioSnapshotService } from './portfolioSnapshots';
 
 /**
  * Portfolio service (PROJECTPLAN.md §6.9). Owns the write-side validation and
@@ -111,8 +102,11 @@ import type { TaxService } from '../tax/taxService';
  *    holding — means a back-dated transaction is judged correctly.
  *  - **EUR conversion** routes exclusively through the {@link CurrencyService}
  *    keystone (§5.4); no FX math is done here.
- *  - **The value series is cached 1 h** and invalidated on every write (any
- *    transaction or value-point change), per §6.9.
+ *  - **The value series is served from the V5-P1 daily snapshot table** (issue
+ *    #553): historical days come precomputed from `portfolio_daily_snapshots`
+ *    via the {@link PortfolioSnapshotService}, the "today" point is always
+ *    computed fresh from live quotes, and every history-mutating write below
+ *    invalidates from its exact earliest affected day (§16 2026-07-17).
  */
 
 export interface PortfolioServiceDeps {
@@ -123,7 +117,12 @@ export interface PortfolioServiceDeps {
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
-  redis: Redis;
+  /**
+   * The V5-P1 snapshot layer (issue #553): serves the historical series from
+   * precomputed daily rows (fresh "today" appended) and owns the day-precise
+   * invalidation every write path below reports into.
+   */
+  snapshots: PortfolioSnapshotService;
   /**
    * Tax engine (V3-P4): plans the per-sell tax facts + settlement movements a
    * transaction write must carry, and the year corrections a delete posts.
@@ -325,41 +324,27 @@ export interface PortfolioService {
     today: string;
     assets: Array<{ asset: PortfolioAsset; points: Array<{ date: string; valueEur: number }> }>;
   }>;
-  /** Drop the cached value series for a portfolio (called on any write). */
-  invalidateHistory(portfolioId: string): Promise<void>;
+  /**
+   * Invalidate the precomputed snapshot series from `fromDay` (ISO
+   * `YYYY-MM-DD`) — the earliest day the calling write can have reshaped.
+   * Days before it stay untouched (§16 2026-07-17); a durable recompute of
+   * the deleted tail is triggered, with lazy read-side refill as the backstop.
+   */
+  invalidateHistory(portfolioId: string, fromDay: string): Promise<void>;
 }
 
 const DEFAULT_LIMIT = 50;
-const HISTORY_TTL_SECONDS = 3600; // 1 h (§6.9).
 
 /**
- * Redis key for the cached, full value-over-time payload of a portfolio.
- *
- * Versioned (`v5`): the cached *shape* changed with V3-P10d — the payload now
- * stores the raw EUR **ingredients** (net-worth points + external flows)
- * instead of a precomputed performance curve, so one cached entry serves every
- * per-user base currency via read-time conversion (`v4` was the #311 net-worth
- * semantics, `v3` added the #125 performance series, `v2` the #122 overlays).
- * Bumping the version also wholesale-invalidates every series a *previous*
- * deployment computed. The 1 h TTL is only refreshed by writes, so without the
- * bump a pre-deploy entry — possibly computed by older, buggier code — would
- * keep being served for up to an hour after a fix ships (exactly the stale
- * single-point graph reported in #122).
+ * The series ingredients `getHistory` re-denominates, always EUR (the storage
+ * base): the net-worth value curve and the external TWR flows it pairs with.
+ * Served by the V5-P1 snapshot layer (issue #553) — precomputed rows for
+ * historical days, a fresh quote-driven point for today. Per-user bases are
+ * applied at read time (see `getHistory`).
  */
-export function portfolioHistoryCacheKey(portfolioId: string): string {
-  return `portfolio:history:v5:${portfolioId}`;
-}
-
-/**
- * The full cached graph payload, always EUR-denominated (the storage base):
- * the net-worth value curve, the external TWR flows it pairs with, and the
- * per-asset overlay series (native currency). Per-user bases are applied at
- * read time (see `getHistory`), so this cache stays one-entry-per-portfolio.
- */
-interface HistoryPayload {
+interface SeriesIngredients {
   points: Array<{ date: string; valueEur: number }>;
   flows: FlowPoint[];
-  assets: PortfolioHistoryOverlay[];
 }
 
 /**
@@ -386,7 +371,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     marketData,
     currencyService,
     referenceBackfill,
-    redis,
+    snapshots,
     taxService,
     friendshipRepo,
     audience,
@@ -508,8 +493,22 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     }
   }
 
-  async function invalidateHistory(portfolioId: string): Promise<void> {
-    await redis.del(portfolioHistoryCacheKey(portfolioId));
+  /**
+   * Report a history-mutating write to the snapshot layer (§16 2026-07-17):
+   * `fromDay` is the earliest day the write can have reshaped — rows before it
+   * are provably unchanged and stay untouched.
+   */
+  async function invalidateHistory(portfolioId: string, fromDay: string): Promise<void> {
+    await snapshots.invalidate(portfolioId, fromDay);
+  }
+
+  /** ISO day of a Date/ISO timestamp (UTC). */
+  const dayOf = (value: Date | string): string =>
+    (typeof value === 'string' ? new Date(value) : value).toISOString().slice(0, 10);
+
+  /** The earliest of a set of ISO days — the invalidation anchor of a write. */
+  function minDay(days: readonly string[]): string {
+    return days.reduce((a, b) => (a < b ? a : b));
   }
 
   /**
@@ -783,9 +782,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * starts where it can be stated honestly in the requested base.
    */
   async function seriesInBase(
-    payload: HistoryPayload,
+    payload: SeriesIngredients,
     fx: CurrencyService,
-  ): Promise<{ points: HistoryPayload['points']; flows: FlowPoint[] }> {
+  ): Promise<{ points: SeriesIngredients['points']; flows: FlowPoint[] }> {
     if (fx.baseCurrency === baseCurrency) return { points: payload.points, flows: payload.flows };
 
     const dates = new Set<string>();
@@ -861,298 +860,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     return null;
   }
 
-  /** The empty graph payload (no transactions / nothing convertible to plot). */
-  const emptyHistory = (): HistoryPayload => ({ points: [], flows: [], assets: [] });
-
   /**
-   * The full value-over-time payload for a portfolio (first transaction or
-   * cash movement → today), cached 1 h: the EUR **net-worth** curve (holdings
-   * value + EOD cash balance, #311), its TWR performance series, and each held
-   * asset's own daily price series (the #122 overlay). Recomputed on a cache
-   * miss and re-stored; the range slice is applied by the caller. Invalidated
-   * wholesale on any write — transactions, value points *and* cash movements —
-   * so a back-dated entry reshapes the history immediately (§6.9).
-   *
-   * Per-asset daily prices come from the provider layer (`marketData.getHistory`
-   * at `1d`, §5.2/§5.3 — cached, coalesced, budgeted), merged over the stored
-   * `price_history` rows which act as the outage fallback — see
-   * {@link mergeDailyPrices}. The overlay series reuse exactly these merged
-   * prices, so overlays add **zero** provider requests.
+   * The series ingredients for a portfolio (first transaction or cash
+   * movement → today): the EUR **net-worth** curve (holdings value + EOD cash
+   * balance, #311) and the external TWR flows (#125), served by the V5-P1
+   * snapshot layer (issue #553) — precomputed daily rows for historical days
+   * (the engine runs only as the snapshot writer / dirty-state fallback), plus
+   * an always-fresh quote-driven "today" point. The range slice is applied by
+   * the caller.
    */
-  async function loadSeries(portfolioId: string): Promise<HistoryPayload> {
-    const key = portfolioHistoryCacheKey(portfolioId);
-    const cached = await redis.get(key);
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as HistoryPayload;
-        // Shape guard: only trust entries this code version wrote.
-        if (
-          parsed &&
-          Array.isArray(parsed.points) &&
-          Array.isArray(parsed.flows) &&
-          Array.isArray(parsed.assets)
-        ) {
-          return parsed;
-        }
-      } catch {
-        // Corrupt cache entry — fall through and recompute.
-      }
-    }
-
-    const [txns, cashRecords] = await Promise.all([
-      transactionRepo.listForPortfolio(portfolioId),
-      cashMovementRepo.listForPortfolio(portfolioId),
-    ]);
-    if (txns.length === 0 && cashRecords.length === 0) {
-      const empty = emptyHistory();
-      await redis.set(key, JSON.stringify(empty), 'EX', HISTORY_TTL_SECONDS);
-      return empty;
-    }
-
-    const today = todayIso();
-    const movements = cashRecords.map(toDomainMovement);
-    // Transactions with a linked cash movement (§14): internal cash↔holdings
-    // conversions, excluded from the external TWR flows below (their external
-    // flow was booked when the cash was deposited — cashLedger wiring rule 2).
-    const linkedTxnIds = new Set(
-      cashRecords.map((r) => r.transactionId).filter((id): id is string => id !== null),
-    );
-    // Backdated pay-from-cash settled as of today (#378): a linked `buy`
-    // movement whose day differs from its transaction's day. The acquisition sits
-    // on the past buy day, the cash withdrawal on the settle day — no longer
-    // cancelling within one day as a same-day cash-funded buy does, so TWR needs
-    // a compensating flow pair (see buildHoldingsLegs) to stay neutral across the
-    // split. (Cash-linked txns cannot have their date edited, so a day mismatch
-    // is always this deliberate split, never drift.)
-    const txnDayById = new Map(txns.map((t) => [t.id, t.executedAt.toISOString().slice(0, 10)]));
-    const splitCashBuys = cashRecords.flatMap((r) => {
-      if (r.kind !== 'buy' || r.transactionId === null) return [];
-      const buyDay = txnDayById.get(r.transactionId);
-      const settleDay = r.executedAt.toISOString().slice(0, 10);
-      if (buyDay === undefined || buyDay === settleDay) return [];
-      return [{ txnId: r.transactionId, buyDay, settleDay, amountEur: r.amountEur }];
-    });
-    const legs =
-      txns.length > 0
-        ? await buildHoldingsLegs(txns, linkedTxnIds, splitCashBuys, today)
-        : { points: [], flows: [], overlays: [] };
-
-    // The absolute curve is the NET-WORTH curve (#311): holdings value plus
-    // the end-of-day cash balance — a deposit moves it by exactly its amount,
-    // a cash-funded buy leaves it flat at the trade moment (money changes
-    // form). The EXTERNAL flows (#125) — ledger deposits/withdrawals plus
-    // transactions not funded from cash — are cached alongside rather than a
-    // precomputed TWR curve, because the performance in a non-EUR base needs
-    // BOTH ingredients converted per day first (V3-P10d); timeWeightedReturn
-    // aggregates same-day flows, so the two sparse series concatenate safely.
-    const points = netWorthSeries({ holdingsValues: legs.points, movements, today });
-    const flows = [...legs.flows, ...externalCashFlowsForTwr(movements)];
-
-    const payload: HistoryPayload = { points, flows, assets: legs.overlays };
-    await redis.set(key, JSON.stringify(payload), 'EX', HISTORY_TTL_SECONDS);
-    return payload;
-  }
-
-  /**
-   * Assemble each transacted, EUR-convertible asset's merged, smoothing-aware
-   * daily price series (§5.2/§5.3): stored `price_history` rows as the durable
-   * fallback layer, overlaid with each asset's real daily market history
-   * (custom assets route through the manual provider via the exact same call,
-   * so V3-P2 value-smoothing is applied transparently). The shared price
-   * assembly reused by both the net-worth curve ({@link buildHoldingsLegs}) and
-   * the per-asset Analytics series ({@link getAssetValueSeries}, V3-P9) — one
-   * place owns the currency-convertibility probe and provider fan-out. When no
-   * holding is EUR-convertible, `valueAssets` is empty and callers degrade.
-   * Assumes `txns` is non-empty (both callers guard).
-   */
-  async function buildValueAssets(
-    txns: TransactionRecord[],
-    today: string,
-  ): Promise<{
-    assetsById: Map<string, AssetRow>;
-    valueAssets: ValueOverTimeAsset[];
-    usableAssetIds: string[];
-    usableIdSet: Set<string>;
-    firstTxnDay: string;
-  }> {
-    const assetIds = [...new Set(txns.map((t) => t.assetId))];
-    const assetsById = new Map((await portfolioRepo.assetsByIds(assetIds)).map((r) => [r.id, r]));
-
-    // The value series converts each day's native sum to EUR via *historical* FX,
-    // which is not yet available for non-base currencies (§5.4 future work). Rather
-    // than 500 on a non-EUR holding (e.g. a USD custom asset or market stock), we
-    // degrade exactly like getPortfolio drops an unconvertible quote: probe each
-    // distinct non-base currency once and exclude assets we can't convert from the
-    // series. When historical FX lands this path starts including them automatically.
-    const convertible = new Map<string, boolean>();
-    for (const asset of assetsById.values()) {
-      const ccy = asset.currency;
-      if (ccy === baseCurrency || convertible.has(ccy)) continue;
-      try {
-        await currencyService.toBase(1, ccy, { date: today });
-        convertible.set(ccy, true);
-      } catch {
-        convertible.set(ccy, false);
-      }
-    }
-    const isConvertible = (ccy: string): boolean =>
-      ccy === baseCurrency || convertible.get(ccy) === true;
-
-    const usableAssetIds = assetIds.filter((id) => {
-      const asset = assetsById.get(id);
-      return asset !== undefined && isConvertible(asset.currency);
-    });
-
-    const usableIdSet = new Set(usableAssetIds);
-    const firstTxnDay = txns
-      .map((t) => t.executedAt.toISOString().slice(0, 10))
-      .reduce((a, b) => (a < b ? a : b));
-
-    // No EUR-convertible holding: nothing to price (callers degrade to empty).
-    if (usableAssetIds.length === 0) {
-      return { assetsById, valueAssets: [], usableAssetIds, usableIdSet, firstTxnDay };
-    }
-
-    // Stored daily closes / custom value points (`price_history`): the durable
-    // fallback layer of the series.
-    const priceRows = await portfolioRepo.pricesForAssets(usableAssetIds);
-    const storedByAsset = new Map<string, PricePoint[]>();
-    for (const row of priceRows) {
-      const list = storedByAsset.get(row.assetId);
-      const point: PricePoint = { date: row.date, close: row.close };
-      if (list) list.push(point);
-      else storedByAsset.set(row.assetId, [point]);
-    }
-
-    // The primary layer is each asset's real daily history through the
-    // market-data keystone (§5.2/§5.3) — cached, coalesced, serve-stale — so
-    // the curve moves with the market day by day instead of only at
-    // transaction or value-point events. Custom assets route through the
-    // manual provider via the exact same call: zero special-casing (§5.2).
-    // Best-effort per asset: an outage past the stale window degrades that
-    // asset to its stored rows above — the chart renders what is available.
-    const range = seriesHistoryRange(firstTxnDay, today);
-    const providerPrices = await Promise.all(
-      usableAssetIds.map(async (assetId): Promise<readonly ProviderPricePoint[]> => {
-        const asset = assetsById.get(assetId);
-        if (!asset) return [];
-        try {
-          const cached = await marketData.getHistory(
-            { providerId: asset.providerId, providerRef: asset.providerRef },
-            range,
-            '1d',
-          );
-          return cached.value;
-        } catch {
-          return [];
-        }
-      }),
-    );
-
-    const valueAssets: ValueOverTimeAsset[] = usableAssetIds.map((assetId, i) => {
-      const asset = assetsById.get(assetId);
-      if (!asset) throw new Error(`Asset ${assetId} missing while building value series`);
-      return {
-        assetId,
-        currency: asset.currency,
-        prices: mergeDailyPrices(storedByAsset.get(assetId) ?? [], providerPrices[i] ?? []),
-      };
-    });
-
-    return { assetsById, valueAssets, usableAssetIds, usableIdSet, firstTxnDay };
-  }
-
-  /**
-   * The holdings-only legs of the graph payload: the daily holdings value
-   * curve, the external transaction flows (cash-funded transactions excluded,
-   * see {@link loadSeries}), and the #122 overlay series. Degrades to empty
-   * legs when no holding is EUR-convertible.
-   */
-  async function buildHoldingsLegs(
-    txns: TransactionRecord[],
-    linkedTxnIds: ReadonlySet<string>,
-    splitCashBuys: ReadonlyArray<{
-      txnId: string;
-      buyDay: string;
-      settleDay: string;
-      amountEur: number;
-    }>,
-    today: string,
-  ): Promise<{
-    points: Array<{ date: string; valueEur: number }>;
-    flows: FlowPoint[];
-    overlays: PortfolioHistoryOverlay[];
-  }> {
-    const { assetsById, valueAssets, usableIdSet, firstTxnDay } = await buildValueAssets(
-      txns,
-      today,
-    );
-
-    // No EUR-convertible holding has any history to plot — degrade to empty
-    // legs instead of throwing mid-conversion (the cash leg still renders).
-    if (valueAssets.length === 0) return { points: [], flows: [], overlays: [] };
-
-    const usableRecords = txns.filter((t) => usableIdSet.has(t.assetId));
-    const usableTxns = usableRecords.map(recordToDomain);
-    const points = await valueOverTime({
-      transactions: usableTxns,
-      assets: valueAssets,
-      today,
-      converter: currencyService,
-    });
-
-    // External transaction flows (#125): a buy/sell settled *outside* the
-    // portfolio is money crossing the boundary. Cash-funded transactions are
-    // internal conversions and are excluded here (#311, cashLedger wiring
-    // rule 2) — their external flow was already booked when the cash entered
-    // the ledger; counting them again would double the flow.
-    const flows = await netFlowsOverTime({
-      transactions: usableRecords.filter((t) => !linkedTxnIds.has(t.id)).map(recordToDomain),
-      currencyByAsset: new Map(valueAssets.map((a) => [a.assetId, a.currency])),
-      converter: currencyService,
-    });
-
-    // TWR neutraliser for a backdated buy settled as of today (#378). Its
-    // acquisition lands on the buy day (holdings ↑, no cash change that day) and
-    // its cash withdrawal on the settle day (cash ↓, holdings unchanged) — two
-    // steps a same-day cash-funded buy would cancel in one instant. Left alone
-    // the buy day reads as a phantom gain and the settle day as a phantom loss
-    // (net worth moves with no flow). Adding +cost on the buy day and −cost on
-    // the settle day makes each step flow-explained: the buy contributes exactly
-    // the return a same-day cash-funded buy would (execution→close move, fee
-    // drag), and the settle day is perfectly flat. The pair nets to zero, so
-    // total contribution is unchanged. Only for plotted (EUR-convertible) assets;
-    // the amount is the stored EUR cash leg (negative), so +cost = −amountEur.
-    const txnAssetById = new Map(txns.map((t) => [t.id, t.assetId]));
-    for (const split of splitCashBuys) {
-      const assetId = txnAssetById.get(split.txnId);
-      if (assetId === undefined || !usableIdSet.has(assetId)) continue;
-      flows.push({ date: split.buyDay, flowEur: -split.amountEur });
-      flows.push({ date: split.settleDay, flowEur: split.amountEur });
-    }
-
-    // Overlay series (#122): each held asset's own daily closes over the same
-    // window, expanded to the portfolio curve's daily grid (weekends/holidays
-    // carry the last known close forward — see dailyCloseSeries) so every
-    // overlay point lines up with a curve point. Built from the merged prices
-    // already fetched above; assets whose price data starts later simply start
-    // where their data starts, and assets with no data at all are omitted.
-    const overlays: PortfolioHistoryOverlay[] = [];
-    for (const valueAsset of valueAssets) {
-      const asset = assetsById.get(valueAsset.assetId);
-      if (!asset) continue; // unreachable: valueAssets is built from assetsById
-      const overlayPoints = dailyCloseSeries(valueAsset.prices, firstTxnDay, today);
-      if (overlayPoints.length === 0) continue;
-      overlays.push({
-        assetId: asset.id,
-        symbol: asset.symbol,
-        name: asset.name,
-        currency: asset.currency,
-        points: overlayPoints,
-      });
-    }
-
-    return { points, flows, overlays };
+  async function loadSeries(portfolioId: string): Promise<SeriesIngredients> {
+    const series = await snapshots.getSeries(portfolioId);
+    return { points: series.points, flows: series.flows };
   }
 
   return {
@@ -1248,8 +967,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // already exclude a vanished subject (a lingering chat share-chip resolves
       // to the not-available state via those same joins, #349/#332).
       await audience.clearForSubject('portfolio', portfolioId);
-      // Drop the orphaned value-over-time graph cache for the now-gone portfolio.
-      await invalidateHistory(portfolioId);
+      // The snapshot rows + state died with the portfolio (FK cascade, §16
+      // 2026-07-17 rule 8) — nothing to invalidate here.
     },
 
     async updatePortfolio(userId, portfolioId, patch) {
@@ -1463,7 +1182,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         taxPlan.extras,
       );
 
-      await invalidateHistory(portfolioId);
+      // Earliest affected day (§16 rule 1): the batch's earliest transaction
+      // day or cash/tax leg — a settle-as-of-today leg lands later, a tax
+      // correction at "now"; the minimum covers every written row.
+      await invalidateHistory(
+        portfolioId,
+        minDay([
+          ...inputs.map((i) => dayOf(i.executedAt)),
+          ...proposed.map((m) => dayOf(m.occurredAt)),
+        ]),
+      );
 
       // First reference (§6.2/§9): transacting on an asset warms its daily
       // history so the value-over-time series has closes to plot — seeded and
@@ -1574,7 +1302,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
       if (!updated) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
 
-      await invalidateHistory(portfolioId);
+      // A (possibly backdated) edit reshapes history from the earlier of the
+      // row's old and new day (§16 rule 2); nothing before both can change.
+      await invalidateHistory(
+        portfolioId,
+        minDay([dayOf(existing.executedAt), dayOf(updated.executedAt)]),
+      );
 
       const [asset] = await portfolioRepo.assetsByIds([updated.assetId]);
       if (!asset) throw new Error(`Asset ${updated.assetId} missing after update`);
@@ -1643,7 +1376,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         await cashMovementRepo.insert(portfolioId, correction);
       }
 
-      await invalidateHistory(portfolioId);
+      // The removed row's day, or an earlier-dated tax correction (§16 rule 3).
+      await invalidateHistory(
+        portfolioId,
+        minDay([dayOf(existing.executedAt), ...taxCorrections.map((c) => dayOf(c.executedAt))]),
+      );
     },
 
     async getPortfolio(userId, portfolioId, opts) {
@@ -1889,9 +1626,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         },
       ]);
       // The paired legs cancel in the net-worth curve and are never TWR flows,
-      // so the cached series is provably identical — invalidate anyway to keep
-      // the blanket "every cash write invalidates" rule simple and true.
-      await invalidateHistory(portfolioId);
+      // but they DO move the per-source cash split on the snapshot rows —
+      // invalidate from the (possibly back-dated) transfer day (§16 rule 4).
+      await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
       return {
         outgoing: movementToDto(outgoing),
@@ -1940,8 +1677,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         executedAt: new Date(domainMovement.occurredAt),
         note: input.note ?? null,
       });
-      // Cash is part of the net-worth curve (#311) — drop the cached series.
-      await invalidateHistory(portfolioId);
+      // Cash is part of the net-worth curve (#311); set-balance is always
+      // effective now, so only today's (never-persisted) point moves (§16 rule 4).
+      await invalidateHistory(portfolioId, dayOf(domainMovement.occurredAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
       return {
         movement: movementToDto(movement),
@@ -1964,8 +1702,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         executedAt,
         note: input.note ?? null,
       });
-      // Cash is part of the net-worth curve (#311) — drop the cached series.
-      await invalidateHistory(portfolioId);
+      // Cash is part of the net-worth curve (#311): a (possibly back-dated)
+      // deposit reshapes it from its own day on (§16 rule 4).
+      await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
       return {
         movement: movementToDto(movement),
@@ -2000,8 +1739,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         executedAt,
         note: input.note ?? null,
       });
-      // Cash is part of the net-worth curve (#311) — drop the cached series.
-      await invalidateHistory(portfolioId);
+      // Cash is part of the net-worth curve (#311): a (possibly back-dated)
+      // withdrawal reshapes it from its own day on (§16 rule 4).
+      await invalidateHistory(portfolioId, dayOf(executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
       return {
         movement: movementToDto(movement),
@@ -2079,8 +1819,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
       // Overlays share the curve's daily grid, so the same range slice keeps
       // them point-for-point aligned. An asset whose data lies entirely outside
-      // the window is dropped rather than sent as an empty series.
-      const assets = payload.assets
+      // the window is dropped rather than sent as an empty series. Overlays are
+      // per-asset PRICE curves — not snapshot material — assembled on demand
+      // from the §5.3-cached provider histories + stored `price_history` rows.
+      const assets = (await snapshots.getOverlays(portfolioId))
         .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
         .filter((a) => a.points.length > 0);
       return { range, baseCurrency: fx.baseCurrency, points, performance, assets };
@@ -2090,32 +1832,31 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Ownership enforced against the scoped id (§6.8): a foreign/missing id 404s.
       const summary = await requireOwnedPortfolio(userId, portfolioId);
       const today = todayIso();
-      const txns = await transactionRepo.listForPortfolio(portfolioId);
-      if (txns.length === 0) {
+
+      // The per-asset breakdown of the SAME series the overview sums (V3-P9):
+      // served by the snapshot layer — per-asset values ride each daily row,
+      // and the "today" point per asset is quote-fresh. Summing any visible
+      // subset reproduces the overview total, because valueOverTime is linear
+      // in its assets (§13.3 V3-P9). A portfolio without transactions simply
+      // yields an empty asset list — no separate pre-check query needed.
+      const series = await snapshots.getSeries(portfolioId);
+      if (series.assets.length === 0) {
         return { baseCurrency, name: summary.name, today, assets: [] };
       }
-
-      // Reuse the exact overview price pipeline (smoothing-aware, provider-
-      // coalesced) but keep the per-asset breakdown instead of summing it away:
-      // one valueOverTime pass per asset yields its own EUR value curve. Summing
-      // these over any visible subset reproduces the overview total exactly,
-      // because valueOverTime is linear in its assets (§13.3 V3-P9).
-      const { assetsById, valueAssets } = await buildValueAssets(txns, today);
+      const assetsById = new Map(
+        (await portfolioRepo.assetsByIds(series.assets.map((a) => a.assetId))).map((r) => [
+          r.id,
+          r,
+        ]),
+      );
       const assets: Array<{
         asset: PortfolioAsset;
         points: Array<{ date: string; valueEur: number }>;
       }> = [];
-      for (const valueAsset of valueAssets) {
-        const row = assetsById.get(valueAsset.assetId);
-        if (!row) continue; // unreachable: valueAssets is built from assetsById
-        const assetTxns = txns.filter((t) => t.assetId === valueAsset.assetId).map(recordToDomain);
-        const points = await valueOverTime({
-          transactions: assetTxns,
-          assets: [valueAsset],
-          today,
-          converter: currencyService,
-        });
-        assets.push({ asset: assetToDto(row), points });
+      for (const entry of series.assets) {
+        const row = assetsById.get(entry.assetId);
+        if (!row) continue; // unreachable: the series only carries live assets
+        assets.push({ asset: assetToDto(row), points: entry.points });
       }
       return { baseCurrency, name: summary.name, today, assets };
     },
@@ -2190,56 +1931,6 @@ export function monthsBefore(today: string, months: number): string {
   ).getUTCDate();
   d.setUTCDate(Math.min(dayOfMonth, lastDayOfTargetMonth));
   return d.toISOString().slice(0, 10);
-}
-
-/**
- * Left-edge margin when picking the provider history window: the series starts
- * at the first transaction day, which may be a weekend/market holiday, so the
- * window must reach back far enough that a prior close exists to carry forward.
- */
-const SERIES_EDGE_MARGIN_DAYS = 7;
-
-const SERIES_RANGE_LADDER: ReadonlyArray<Exclude<HistoryRange, '1D' | '1W' | 'MAX'>> = [
-  '1M',
-  '6M',
-  '1Y',
-  '5Y',
-];
-
-/**
- * Smallest §5.3 range preset whose lookback (per {@link rangeStartMs}) covers
- * the first transaction day plus {@link SERIES_EDGE_MARGIN_DAYS}. The interval
- * is always `1d` — the value series is daily regardless of span.
- */
-function seriesHistoryRange(firstTxnDay: string, today: string): HistoryRange {
-  const todayMs = Date.parse(`${today}T00:00:00.000Z`);
-  const neededMs =
-    Date.parse(`${firstTxnDay}T00:00:00.000Z`) - SERIES_EDGE_MARGIN_DAYS * 86_400_000;
-  for (const range of SERIES_RANGE_LADDER) {
-    if (rangeStartMs(todayMs, range) <= neededMs) return range;
-  }
-  return 'MAX';
-}
-
-/**
- * Combine an asset's stored `price_history` rows with its provider history into
- * one daily series for {@link valueOverTime}. Provider candles collapse to one
- * close per calendar day (chronological order upstream, so the last candle of a
- * day wins) and take precedence over a stored row on the same date — they are
- * adjusted and fresher; stored rows fill dates the provider window missed and
- * carry the whole asset when the provider call failed.
- */
-function mergeDailyPrices(
-  stored: readonly PricePoint[],
-  provider: readonly ProviderPricePoint[],
-): PricePoint[] {
-  const byDate = new Map<string, number>();
-  for (const p of stored) byDate.set(p.date, p.close);
-  for (const p of provider) {
-    if (!Number.isFinite(p.close)) continue;
-    byDate.set(p.time.slice(0, 10), p.close);
-  }
-  return [...byDate].map(([date, close]) => ({ date, close }));
 }
 
 /**
