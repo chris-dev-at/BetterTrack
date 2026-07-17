@@ -4,6 +4,9 @@ import { createInvite, loginAsAdmin } from './support/adminApi';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { acceptInvite } from './support/flows';
 
+/** Every mutating API call rides through the CSRF guard — same header the SPA sends. */
+const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' } as const;
+
 /**
  * V4-P2b — the OAuth consent screen ALWAYS interposes an account confirmation
  * before any redirect, INCLUDING first-party auto-approve clients (owner
@@ -138,5 +141,98 @@ test('oauth consent: first-party chooser renders and Use another account round-t
     expect(approveHits).toHaveLength(0);
   } finally {
     await contextA.close();
+  }
+});
+
+/**
+ * V5-P0b — the OAuth consent screen groups a third-party app's requested
+ * scopes by module (Portfolio, Social, Market, …) instead of listing them as
+ * a flat run of per-scope lines. The declutter is presentational only — the
+ * underlying scope strings are byte-identical (§13.5 V5-P0b acceptance:
+ * "grouped plain-language permissions per module").
+ *
+ * Provisions a fresh user, registers a THIRD-party app owned by that user with
+ * `portfolio:read + market:read + social:read`, then navigates the same user
+ * to `/oauth/authorize?…` for that client. Asserts:
+ *   1. the module headings render (Portfolio, Market, Social) — the grouping;
+ *   2. each requested scope's plain-language label renders under the right
+ *      heading — no raw `portfolio:read` tokens.
+ *
+ * Not exercised: Approve → callback (the redirect URI is `https://` here so
+ * Playwright's Chromium *can* follow it, but that path is covered by the unit
+ * suite; keeping the e2e focused on the grouping avoids the callback dance).
+ */
+test('oauth consent: third-party scopes render grouped by module in plain language', async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+
+  const runId = Date.now();
+  const email = `e2e-consent-group-${runId}@bettertrack.local`;
+  const username = `e2econsentgrp${runId}`.slice(0, 40);
+  const redirectUri = `https://third-party-${runId}.example.com/cb`;
+
+  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+  await loginAsAdmin(apiRequest);
+  const invite = await createInvite(apiRequest, email);
+  await apiRequest.dispose();
+
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  try {
+    await acceptInvite(page, invite, username, ACCOUNT_PASSWORD);
+
+    // Register a THIRD-party OAuth app owned by the freshly-provisioned user
+    // (POST /settings/oauth-clients, same endpoint the ApiAccessPage uses).
+    // Three scopes spanning three modules so the grouping has something to
+    // group.
+    const created = await context.request.post(`${API_BASE_URL}/api/v1/settings/oauth-clients`, {
+      headers: CSRF_HEADERS,
+      data: {
+        name: `Grouped Consent Tester ${runId}`,
+        redirectUris: [redirectUri],
+        scopes: ['portfolio:read', 'market:read', 'social:read'],
+        public: false,
+      },
+    });
+    expect(created.ok(), await created.text()).toBe(true);
+    const body = (await created.json()) as { client: { clientId: string } };
+    const clientId = body.client.clientId;
+
+    const authorizeQuery = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      scope: 'portfolio:read market:read social:read',
+      state: `e2e-group-${runId}`,
+      code_challenge: 'e2e-pkce-challenge-abcdefghijklmnopqrstuvwxyz01234',
+      code_challenge_method: 'S256',
+    }).toString();
+    await page.goto(`/oauth/authorize?${authorizeQuery}`);
+
+    // Third-party framing — the grouped scope summary is only rendered for
+    // third-party clients, so this asserts we're on the right branch.
+    await expect(page.getByText('Third-party app')).toBeVisible({ timeout: 20_000 });
+
+    // The grouping: each module heading is present (Portfolio, Market, Social)
+    // with its plain-language label beneath. Two others (Workboard, Chat, …)
+    // stay hidden because the app never asked for them — modules the request
+    // doesn't touch don't fatten the screen.
+    await expect(page.getByText('Portfolio', { exact: true })).toBeVisible();
+    await expect(page.getByText('Market', { exact: true })).toBeVisible();
+    await expect(page.getByText('Social', { exact: true })).toBeVisible();
+    await expect(page.getByText('Workboard', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Chat', { exact: true })).toHaveCount(0);
+
+    // Plain-language labels (from OAUTH_SCOPE_LABELS) — never the raw scope
+    // tokens. This is the "plain language" half of the acceptance.
+    await expect(
+      page.getByText('View your portfolios, holdings, transactions and cash balances'),
+    ).toBeVisible();
+    await expect(page.getByText('Search assets and read market data')).toBeVisible();
+    await expect(page.getByText('See your friends and the items shared with you')).toBeVisible();
+  } finally {
+    await context.close();
   }
 });

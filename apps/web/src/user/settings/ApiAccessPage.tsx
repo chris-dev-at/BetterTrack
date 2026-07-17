@@ -4,11 +4,8 @@ import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
-  API_KEY_SCOPES,
   OAUTH_SCOPE_LABELS,
-  impliedReadScope,
   withImpliedReadScopes,
-  writeScopeForRead,
   type ApiKeyScope,
   type ApiKeySummary,
   type CreateApiKeyResponse,
@@ -19,7 +16,6 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import type { TranslateFn } from '../../i18n';
 import { createApiKey, listApiKeys, revokeApiKey } from '../../lib/apiKeysApi';
 import {
   createOAuthClient,
@@ -29,75 +25,13 @@ import {
   revokeOAuthGrant,
 } from '../../lib/oauthApi';
 import { formatDate } from '../../lib/format';
-import { EmptyState, Skeleton } from '../../ui';
+import { EmptyState, ScopePicker, Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, TextField, cx } from '../components/ui';
 
 const API_KEYS_KEY = ['settings', 'api-keys'] as const;
 const OAUTH_CLIENTS_KEY = ['settings', 'oauth-clients'] as const;
 const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
-
-/** Human labels for each grantable scope (§6.13). */
-function scopeMeta(t: TranslateFn): Record<ApiKeyScope, { label: string; description: string }> {
-  return {
-    'portfolio:read': {
-      label: t('settings.api.scope.portfolioRead.label'),
-      description: t('settings.api.scope.portfolioRead.description'),
-    },
-    'portfolio:write': {
-      label: t('settings.api.scope.portfolioWrite.label'),
-      description: t('settings.api.scope.portfolioWrite.description'),
-    },
-    'workboard:read': {
-      label: t('settings.api.scope.workboardRead.label'),
-      description: t('settings.api.scope.workboardRead.description'),
-    },
-    'workboard:write': {
-      label: t('settings.api.scope.workboardWrite.label'),
-      description: t('settings.api.scope.workboardWrite.description'),
-    },
-    'market:read': {
-      label: t('settings.api.scope.marketRead.label'),
-      description: t('settings.api.scope.marketRead.description'),
-    },
-    'social:read': {
-      label: t('settings.api.scope.socialRead.label'),
-      description: t('settings.api.scope.socialRead.description'),
-    },
-    'social:write': {
-      label: t('settings.api.scope.socialWrite.label'),
-      description: t('settings.api.scope.socialWrite.description'),
-    },
-    'notifications:read': {
-      label: t('settings.api.scope.notificationsRead.label'),
-      description: t('settings.api.scope.notificationsRead.description'),
-    },
-    'notifications:write': {
-      label: t('settings.api.scope.notificationsWrite.label'),
-      description: t('settings.api.scope.notificationsWrite.description'),
-    },
-    'chat:read': {
-      label: t('settings.api.scope.chatRead.label'),
-      description: t('settings.api.scope.chatRead.description'),
-    },
-    'chat:write': {
-      label: t('settings.api.scope.chatWrite.label'),
-      description: t('settings.api.scope.chatWrite.description'),
-    },
-    'account:security': {
-      label: t('settings.api.scope.accountSecurity.label'),
-      description: t('settings.api.scope.accountSecurity.description'),
-    },
-    'alerts:read': {
-      label: t('settings.api.scope.alertsRead.label'),
-      description: t('settings.api.scope.alertsRead.description'),
-    },
-    'alerts:write': {
-      label: t('settings.api.scope.alertsWrite.label'),
-      description: t('settings.api.scope.alertsWrite.description'),
-    },
-  };
-}
 
 /** The one-time token modal — the plaintext is available here and never again. */
 function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose: () => void }) {
@@ -146,7 +80,6 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set());
   const [error, setError] = useState<string | null>(null);
-  const meta = scopeMeta(t);
 
   const mutation = useMutation({
     mutationFn: (input: { name: string; scopes: ApiKeyScope[] }) => createApiKey(input),
@@ -159,24 +92,6 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
     },
     onError: () => setError(t('settings.api.keys.createError')),
   });
-
-  function toggle(scope: ApiKeyScope) {
-    setScopes((prev) => {
-      const next = new Set(prev);
-      if (next.has(scope)) {
-        // A read implied by a still-selected write is locked on — leave it.
-        const write = writeScopeForRead(scope);
-        if (write && next.has(write)) return prev;
-        next.delete(scope);
-      } else {
-        next.add(scope);
-        // Write-implies-read (#371): selecting a write auto-selects its read.
-        const read = impliedReadScope(scope);
-        if (read) next.add(read);
-      }
-      return next;
-    });
-  }
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -206,39 +121,14 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
         placeholder={t('settings.api.keys.namePlaceholder')}
         required
       />
-      <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">
-          {t('settings.api.scopesLegend')}
-        </legend>
-        {API_KEY_SCOPES.map((scope) => {
-          // A read whose implying write is selected is auto-included and locked.
-          const impliedByWrite = writeScopeForRead(scope);
-          const locked = impliedByWrite !== undefined && scopes.has(impliedByWrite);
-          return (
-            <label
-              key={scope}
-              className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
-            >
-              <input
-                type="checkbox"
-                checked={scopes.has(scope) || locked}
-                disabled={locked}
-                onChange={() => toggle(scope)}
-                className="mt-1 h-4 w-4 accent-sky-500 disabled:opacity-60"
-              />
-              <span className="flex flex-col gap-0.5">
-                <span className="text-sm font-medium text-neutral-100">{meta[scope].label}</span>
-                <span className="text-xs text-neutral-500">{meta[scope].description}</span>
-                {locked ? (
-                  <span className="text-xs text-neutral-600">
-                    {t('settings.api.scope.impliedByWrite')}
-                  </span>
-                ) : null}
-              </span>
-            </label>
-          );
-        })}
-      </fieldset>
+      {/* V5-P0b: one row per module, collapsed by default so an unrelated key
+          form doesn't hog vertical space above the OAuth registration. */}
+      <ScopePicker
+        scopes={scopes}
+        onChange={setScopes}
+        collapsible
+        legend={t('settings.api.scopesLegend')}
+      />
       <div>
         <Button type="submit" disabled={mutation.isPending}>
           {mutation.isPending ? t('settings.api.keys.creating') : t('settings.api.keys.create')}
@@ -420,24 +310,6 @@ function RegisterOAuthClientForm({
     onError: () => setError(t('settings.api.oauth.registerError')),
   });
 
-  function toggleScope(scope: ApiKeyScope) {
-    setScopes((prev) => {
-      const next = new Set(prev);
-      if (next.has(scope)) {
-        // A read implied by a still-selected write is locked on — leave it.
-        const write = writeScopeForRead(scope);
-        if (write && next.has(write)) return prev;
-        next.delete(scope);
-      } else {
-        next.add(scope);
-        // Write-implies-read (#371): selecting a write auto-selects its read.
-        const read = impliedReadScope(scope);
-        if (read) next.add(read);
-      }
-      return next;
-    });
-  }
-
   function setUriAt(index: number, value: string) {
     setRedirectUris((prev) => prev.map((uri, i) => (i === index ? value : uri)));
   }
@@ -530,39 +402,18 @@ function RegisterOAuthClientForm({
           </div>
         ) : null}
       </fieldset>
-      <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium text-neutral-300">
-          {t('settings.api.scopesLegend')}
-        </legend>
+      {/* V5-P0b: shared ScopePicker (one row per module, write implies read).
+          Collapsed by default per the anti-bloat rule so registering an app
+          doesn't scroll past every module tick to reach the public toggle. */}
+      <div className="flex flex-col gap-1.5">
         <p className="text-xs text-neutral-500">{t('settings.api.oauth.scopesHint')}</p>
-        {API_KEY_SCOPES.map((scope) => {
-          // A read whose implying write is selected is auto-included and locked.
-          const impliedByWrite = writeScopeForRead(scope);
-          const locked = impliedByWrite !== undefined && scopes.has(impliedByWrite);
-          return (
-            <label
-              key={scope}
-              className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
-            >
-              <input
-                type="checkbox"
-                checked={scopes.has(scope) || locked}
-                disabled={locked}
-                onChange={() => toggleScope(scope)}
-                className="mt-1 h-4 w-4 accent-sky-500 disabled:opacity-60"
-              />
-              <span className="flex flex-col gap-0.5">
-                <span className="text-sm text-neutral-100">{OAUTH_SCOPE_LABELS[scope]}</span>
-                {locked ? (
-                  <span className="text-xs text-neutral-600">
-                    {t('settings.api.scope.impliedByWrite')}
-                  </span>
-                ) : null}
-              </span>
-            </label>
-          );
-        })}
-      </fieldset>
+        <ScopePicker
+          scopes={scopes}
+          onChange={setScopes}
+          collapsible
+          legend={t('settings.api.scopesLegend')}
+        />
+      </div>
       <label className="flex cursor-pointer items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
         <input
           type="checkbox"

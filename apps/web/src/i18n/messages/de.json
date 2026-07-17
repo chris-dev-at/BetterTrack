@@ -233,6 +233,56 @@
     },
     "or": "oder"
   },
+  "ui": {
+    "scopePicker": {
+      "legend": "Berechtigungen",
+      "read": "Lesen",
+      "write": "Schreiben",
+      "access": "Zugriff",
+      "readAria": "{{module}} · Lesen",
+      "writeAria": "{{module}} · Schreiben",
+      "accessAria": "{{module}} · Zugriff",
+      "moreInfoAria": "Mehr Infos zu {{module}}",
+      "impliedByWrite": "Lesen ist beim Schreibzugriff automatisch enthalten.",
+      "selectedNone": "Keine ausgewählt",
+      "selectedOne": "1 ausgewählt",
+      "selectedOther": "{{count}} ausgewählt",
+      "module": {
+        "portfolio": {
+          "label": "Portfolio",
+          "description": "Deine Portfolios, Bestände und Kassenbestände lesen oder Portfolios, Transaktionen, benutzerdefinierte Anlagen und Kassenbewegungen erstellen und bearbeiten."
+        },
+        "workboard": {
+          "label": "Workboard",
+          "description": "Watchlists, Konglomerate und Backtests lesen oder bearbeiten und Backtests ausführen."
+        },
+        "market": {
+          "label": "Markt",
+          "description": "Anlagen suchen und Kurse, Historie sowie Referenzdaten lesen."
+        },
+        "social": {
+          "label": "Sozial",
+          "description": "Deine Freunde und mit dir geteilte Inhalte sehen oder Freundschaftsanfragen senden und beantworten und deine Freunde verwalten."
+        },
+        "notifications": {
+          "label": "Benachrichtigungen",
+          "description": "Deinen Benachrichtigungs-Posteingang lesen oder Benachrichtigungen als gelesen markieren und Einstellungen ändern."
+        },
+        "chat": {
+          "label": "Chat",
+          "description": "Deine Nachrichten lesen oder Nachrichten in deinem Namen senden."
+        },
+        "alerts": {
+          "label": "Preisalarme",
+          "description": "Deine Preisalarme lesen oder erstellen, bearbeiten, neu aktivieren und löschen."
+        },
+        "accountSecurity": {
+          "label": "Kontosicherheit",
+          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+        }
+      }
+    }
+  },
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workboard",

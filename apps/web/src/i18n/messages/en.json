@@ -233,6 +233,56 @@
     },
     "or": "or"
   },
+  "ui": {
+    "scopePicker": {
+      "legend": "Permissions",
+      "read": "Read",
+      "write": "Write",
+      "access": "Access",
+      "readAria": "{{module}} · Read",
+      "writeAria": "{{module}} · Write",
+      "accessAria": "{{module}} · Access",
+      "moreInfoAria": "More info about {{module}}",
+      "impliedByWrite": "Read is included automatically with write access.",
+      "selectedNone": "None selected",
+      "selectedOne": "1 selected",
+      "selectedOther": "{{count}} selected",
+      "module": {
+        "portfolio": {
+          "label": "Portfolio",
+          "description": "Read your portfolios, holdings and cash balances, or create and edit portfolios, transactions, custom assets and cash movements."
+        },
+        "workboard": {
+          "label": "Workboard",
+          "description": "Read watchlists, conglomerates and backtests, or edit them and run backtests."
+        },
+        "market": {
+          "label": "Market",
+          "description": "Search assets and read quotes, history and reference data."
+        },
+        "social": {
+          "label": "Social",
+          "description": "See your friends and items shared with you, or send and answer friend requests and manage your friends."
+        },
+        "notifications": {
+          "label": "Notifications",
+          "description": "Read your notification inbox, or mark notifications as read and change notification settings."
+        },
+        "chat": {
+          "label": "Chat",
+          "description": "Read your messages, or send messages on your behalf."
+        },
+        "alerts": {
+          "label": "Alerts",
+          "description": "Read your price alerts, or create, edit, re-arm and delete them."
+        },
+        "accountSecurity": {
+          "label": "Account security",
+          "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
+        }
+      }
+    }
+  },
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workboard",
