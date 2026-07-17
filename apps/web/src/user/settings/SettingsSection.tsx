@@ -613,10 +613,11 @@ function readErrorCode(err: unknown): string | null {
 }
 
 /**
- * Card wrapper: fetches the Telegram state once and only renders the panel
- * when the deployment has Telegram configured (bot token set). No render when
- * unavailable — the matrix column stays hidden and the settings page shows
- * neither the row nor the setup card.
+ * Card wrapper: fetches the Telegram state and renders the panel when the
+ * deployment offers Telegram (V5-P0 kill-switch parent gate + bot token set).
+ * When the kill-switch is off the parent skips rendering this entirely, so
+ * this component never probes `/settings/telegram` and the setup endpoints
+ * stay 404-only.
  */
 function TelegramSetupCard() {
   const query = useQuery({
@@ -628,7 +629,11 @@ function TelegramSetupCard() {
   return <TelegramLinkPanel initial={query.data} />;
 }
 
-/** Card wrapper: unlike Telegram, Discord is always available server-side. */
+/**
+ * Card wrapper: Discord is available server-side whenever the V5-P0 kill-switch
+ * is on. Its rendering is gated by the parent on `channelsConfigurable.discord`,
+ * so the setup card never probes `/settings/discord` while the flag is off.
+ */
 function DiscordSetupCard() {
   const query = useQuery({
     queryKey: DISCORD_KEY,
@@ -1145,8 +1150,8 @@ export function NotificationSettingsPage() {
             <WebPushOptIn publicKey={query.data.webPushPublicKey} />
           ) : null}
 
-          <TelegramSetupCard />
-          <DiscordSetupCard />
+          {query.data.channelsConfigurable.telegram ? <TelegramSetupCard /> : null}
+          {query.data.channelsConfigurable.discord ? <DiscordSetupCard /> : null}
 
           <NotificationMatrixGrid
             settings={query.data}

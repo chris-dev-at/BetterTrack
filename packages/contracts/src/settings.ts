@@ -86,16 +86,37 @@ export const notificationChannelAvailabilitySchema = z
 export type NotificationChannelAvailability = z.infer<typeof notificationChannelAvailabilitySchema>;
 
 /**
+ * Deployment-level "is this channel offered at all in this build?" flags for
+ * the V4-P10 additive channels (V5-P0 kill-switch). Distinct from
+ * {@link notificationChannelAvailabilitySchema} — which conflates deployment
+ * config with per-user linked state — these flip strictly with the
+ * `BT_TELEGRAM_DISCORD_ENABLED` env kill-switch (Telegram also requires a bot
+ * token). Drives whether the SPA renders the setup cards at all so it never
+ * needs to probe the setup endpoints to decide.
+ */
+export const notificationChannelsConfigurableSchema = z
+  .object({
+    telegram: z.boolean(),
+    discord: z.boolean(),
+  })
+  .strict();
+export type NotificationChannelsConfigurable = z.infer<
+  typeof notificationChannelsConfigurableSchema
+>;
+
+/**
  * `GET /settings/notifications` response — the session user's full type × channel
  * matrix (every type present, defaults applied), the global-mute flag, which
- * channels this deployment has configured, and — when browser push is live —
- * the VAPID public key the SPA needs for `PushManager.subscribe`.
+ * channels this deployment has configured, which of the V4-P10 additive channels
+ * are OFFERED by this build at all (V5-P0 kill-switch), and — when browser push
+ * is live — the VAPID public key the SPA needs for `PushManager.subscribe`.
  */
 export const notificationSettingsResponseSchema = z
   .object({
     matrix: notificationMatrixSchema,
     muted: z.boolean(),
     channels: notificationChannelAvailabilitySchema,
+    channelsConfigurable: notificationChannelsConfigurableSchema,
     webPushPublicKey: z.string().nullable(),
   })
   .strict();

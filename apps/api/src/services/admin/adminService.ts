@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import type { Redis } from 'ioredis';
 
 import type {
-  AccountDefaults,
+  AccountDefaultsResponse,
   BulkUserActionRequest,
   BulkUserActionResponse,
   CreateInviteRequest,
@@ -91,6 +91,13 @@ export function createAdminService(deps: AdminServiceDeps) {
     const user = await userRepo.findById(id);
     if (!user) throw notFound('User not found.', 'USER_NOT_FOUND');
     return user;
+  }
+
+  // V5-P0 kill-switch (§13.5): the account-defaults response advertises which
+  // additive channels this deployment offers at all so the admin editor hides
+  // their matrix columns when the flag is off.
+  function channelsConfigurableFromConfig(): { telegram: boolean; discord: boolean } {
+    return { telegram: config.telegram.enabled, discord: config.discord.enabled };
   }
 
   async function ensureNotLastActiveAdmin(target: UserRow): Promise<void> {
@@ -665,7 +672,10 @@ export function createAdminService(deps: AdminServiceDeps) {
     },
 
     /** Current new-account defaults, lean fallbacks filled in (§13.4 V4-P0d). */
-    getAccountDefaults: (): Promise<AccountDefaults> => appSettings.getAccountDefaults(),
+    async getAccountDefaults(): Promise<AccountDefaultsResponse> {
+      const defaults = await appSettings.getAccountDefaults();
+      return { ...defaults, channelsConfigurable: channelsConfigurableFromConfig() };
+    },
 
     /**
      * Persist a new-account-defaults change and audit it (§13.4 V4-P0d). The change
@@ -674,7 +684,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     async updateAccountDefaults(
       input: UpdateAccountDefaultsRequest,
       actor: AdminActor,
-    ): Promise<AccountDefaults> {
+    ): Promise<AccountDefaultsResponse> {
       const defaults = await appSettings.updateAccountDefaults(input, actor.id);
       await audit.record({
         actorId: actor.id,
@@ -684,7 +694,7 @@ export function createAdminService(deps: AdminServiceDeps) {
         ip: actor.ip,
         meta: { changed: input },
       });
-      return defaults;
+      return { ...defaults, channelsConfigurable: channelsConfigurableFromConfig() };
     },
 
     /**

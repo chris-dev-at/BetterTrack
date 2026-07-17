@@ -122,10 +122,14 @@ describe('settings response shape (#368)', () => {
       push: false,
       webpush: false,
     };
+    // V5-P0 kill-switch: the response also carries the deployment-level
+    // "offered at all?" flags so the SPA hides the setup cards without probing.
+    const channelsConfigurable = { telegram: false, discord: false };
     const parsed = notificationSettingsResponseSchema.safeParse({
       matrix,
       muted: false,
       channels,
+      channelsConfigurable,
       webPushPublicKey: null,
     });
     expect(parsed.success).toBe(true);
@@ -136,6 +140,7 @@ describe('settings response shape (#368)', () => {
         matrix: incomplete,
         muted: false,
         channels,
+        channelsConfigurable,
         webPushPublicKey: null,
       }).success,
     ).toBe(false);

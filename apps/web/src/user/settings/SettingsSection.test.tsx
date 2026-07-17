@@ -125,6 +125,14 @@ function makeSettings(
       push: false,
       webpush: false,
     },
+    // V5-P0 kill-switch: deployment-level "offered at all?" flag. Default OFF
+    // in unit tests so the setup cards stay hidden by default; tests that want
+    // to exercise the setup surfaces flip these to true (mirroring an
+    // opt-in deployment with `BT_TELEGRAM_DISCORD_ENABLED=true`).
+    channelsConfigurable: {
+      telegram: false,
+      discord: false,
+    },
     webPushPublicKey: null,
     ...overrides,
   };
@@ -737,6 +745,9 @@ describe('NotificationSettingsPage — Telegram & Discord channels (V4-P10)', ()
           push: false,
           webpush: false,
         },
+        // Kill-switch is on AND the caller has completed setup — both cards
+        // AND matrix columns render.
+        channelsConfigurable: { telegram: true, discord: true },
       }),
     );
     renderPage();
@@ -751,6 +762,10 @@ describe('NotificationSettingsPage — Telegram & Discord channels (V4-P10)', ()
   });
 
   test('surfaces an invalid webhook error at save time (no persistence)', async () => {
+    // The setup card only renders when the V5-P0 kill-switch is on.
+    vi.mocked(getNotificationSettings).mockResolvedValue(
+      makeSettings({ channelsConfigurable: { telegram: true, discord: true } }),
+    );
     const user = userEvent.setup();
     class ApiErrorLike extends Error {
       code = 'invalid_webhook';
@@ -765,7 +780,26 @@ describe('NotificationSettingsPage — Telegram & Discord channels (V4-P10)', ()
     expect(await screen.findByText(/Discord rejected this webhook/)).toBeInTheDocument();
   });
 
+  test('the V5-P0 kill-switch hides the setup cards without probing endpoints', async () => {
+    // Default fixture already has channelsConfigurable off; assert we NEVER
+    // hit `getTelegramSettings`/`getDiscordSettings` when the flag is off.
+    renderPage();
+    // Wait for the main matrix row so we know the page has settled.
+    expect(
+      await screen.findByRole('switch', { name: 'Friend requests via In-app' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('Webhook URL')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Telegram link' })).not.toBeInTheDocument();
+    // The setup endpoints are NEVER probed when the flag is off (no 404 storm).
+    expect(getTelegramSettings).not.toHaveBeenCalled();
+    expect(getDiscordSettings).not.toHaveBeenCalled();
+  });
+
   test('starts + confirms the Telegram link handshake', async () => {
+    // Kill-switch must be ON for the Telegram card to render.
+    vi.mocked(getNotificationSettings).mockResolvedValue(
+      makeSettings({ channelsConfigurable: { telegram: true, discord: true } }),
+    );
     vi.mocked(getTelegramSettings).mockResolvedValue({
       available: true,
       linked: false,

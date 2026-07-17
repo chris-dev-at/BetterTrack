@@ -24,20 +24,35 @@ export interface DiscordSetupService {
 }
 
 export interface DiscordSetupServiceDeps {
+  /**
+   * From `config.discord.enabled`; when false the setup routes 404 and
+   * `linkedFor` reports the channel unavailable even if the caller has a saved
+   * webhook row. The row itself is preserved so flipping the flag restores.
+   */
+  enabled: boolean;
   webhooks: DiscordWebhookRepository;
-  channel: DiscordChannel;
+  /** Null when the deployment kill-switch is off — no channel to probe. */
+  channel: DiscordChannel | null;
   /** Same key as `services/crypto/secretBox` uses everywhere else. */
   encryptionKey: Buffer;
   logger: Logger;
 }
 
 export function createDiscordSetupService(deps: DiscordSetupServiceDeps): DiscordSetupService {
-  const { webhooks, channel, encryptionKey, logger } = deps;
+  const { enabled, webhooks, channel, encryptionKey, logger } = deps;
 
   async function toResponse(userId: string): Promise<DiscordSettingsResponse> {
+    if (!enabled) {
+      return {
+        available: false,
+        linked: false,
+        webhookIdMasked: null,
+        configuredAt: null,
+      };
+    }
     const row = await webhooks.findForUser(userId);
     return {
-      // Always available (no server env needed) — but "linked" is per-user.
+      // Available when the kill-switch is on — "linked" is per-user.
       available: true,
       linked: Boolean(row),
       webhookIdMasked: row?.webhookIdMasked ?? null,
@@ -51,11 +66,15 @@ export function createDiscordSetupService(deps: DiscordSetupServiceDeps): Discor
     },
 
     async linkedFor(userId): Promise<boolean> {
+      if (!enabled) return false;
       const row = await webhooks.findForUser(userId);
       return Boolean(row);
     },
 
     async save(userId, url): Promise<DiscordSettingsResponse> {
+      if (!enabled || !channel) {
+        throw new DiscordSetupError('not_available');
+      }
       // Live test send against the candidate URL, so a copy-paste typo or a
       // stale webhook is rejected at save (never persisted).
       const outcome = await channel.probe(
@@ -74,6 +93,7 @@ export function createDiscordSetupService(deps: DiscordSetupServiceDeps): Discor
     },
 
     async test(userId): Promise<DiscordSendOutcome> {
+      if (!enabled || !channel) return 'gone';
       return channel.sendTest(userId);
     },
 
@@ -104,8 +124,8 @@ function maskWebhookUrl(url: string): string {
 
 /** Save-flow errors surfaced as 4xx with an i18n key. */
 export class DiscordSetupError extends Error {
-  readonly code: 'invalid_webhook' | 'send_failed';
-  constructor(code: 'invalid_webhook' | 'send_failed') {
+  readonly code: 'invalid_webhook' | 'send_failed' | 'not_available';
+  constructor(code: 'invalid_webhook' | 'send_failed' | 'not_available') {
     super(code);
     this.name = 'DiscordSetupError';
     this.code = code;

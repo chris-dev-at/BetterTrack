@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { emailSchema, roleSchema, userStatusSchema, usernameSchema } from './auth';
 import { portfolioVisibilitySchema } from './portfolio';
-import { notificationMatrixSchema } from './settings';
+import { notificationChannelsConfigurableSchema, notificationMatrixSchema } from './settings';
 
 /**
  * Global registration mode (PROJECTPLAN.md §4, §6.12, §13.4 V4-P4a). Governs how
@@ -88,8 +88,16 @@ export const accountDefaultsSchema = z
   .strict();
 export type AccountDefaults = z.infer<typeof accountDefaultsSchema>;
 
-/** `GET /admin/account-defaults` — the current defaults, lean values filled in. */
-export const accountDefaultsResponseSchema = accountDefaultsSchema;
+/**
+ * `GET /admin/account-defaults` — the current defaults, lean values filled in,
+ * plus which of the V4-P10 additive channels this deployment offers at all
+ * (V5-P0 kill-switch). The admin matrix editor hides the Telegram/Discord
+ * columns when both are off so the surface never looks configurable while the
+ * channels are deactivated.
+ */
+export const accountDefaultsResponseSchema = accountDefaultsSchema.extend({
+  channelsConfigurable: notificationChannelsConfigurableSchema,
+});
 export type AccountDefaultsResponse = z.infer<typeof accountDefaultsResponseSchema>;
 
 /** `PATCH /admin/account-defaults` — partial update; at least one field required. */
