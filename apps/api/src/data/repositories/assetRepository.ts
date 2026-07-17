@@ -20,6 +20,14 @@ import type { AssetRow } from '../schema';
  */
 export const FUZZY_SIMILARITY_THRESHOLD = 0.3;
 
+/**
+ * Milliseconds encoded in a UUIDv7's leading 48 bits — the row's creation time.
+ * (UUIDv7 layout: `unix_ts_ms(48) | ver | rand`, big-endian, §4.4.)
+ */
+function uuidV7Millis(id: string): number {
+  return parseInt(id.replace(/-/g, '').slice(0, 12), 16);
+}
+
 /** One ranked hit from the local catalog (§6.2): a global market asset or the caller's own custom asset. */
 export interface CatalogSearchMatch {
   id: string;
@@ -131,6 +139,31 @@ export function createAssetRepository(db: Database) {
         .limit(limit);
 
       return rows.map((r) => ({ ...r, exchange: r.exchange ?? null, ownerId: r.ownerId ?? null }));
+    },
+
+    /**
+     * Freshness watermark for `userId`'s visible catalog (issue #555): the
+     * creation time of the newest visible asset — every global market asset
+     * plus the caller's own custom assets, the same visibility the search read
+     * enforces. The `assets` table stores no per-row timestamp, but ids are
+     * UUIDv7 (§4.4), whose leading 48 bits ARE the row's creation-ms, so
+     * `max(id)` (uuid order == time order) yields it without a schema change.
+     * Drives the catalog-search `Last-Modified`; null when the caller can see
+     * no assets. Deliberately query-independent — over-invalidation (a 200
+     * instead of a 304) is always safe, and content edits (a rename that keeps
+     * the id) are caught by the per-request body ETag, not this watermark.
+     */
+    async catalogWatermark(userId: string): Promise<Date | null> {
+      // Newest visible id (uuid order == time order) — an ORDER BY over the id
+      // index, no aggregate on the uuid type (portable across engines).
+      const rows = await db
+        .select({ id: assets.id })
+        .from(assets)
+        .where(or(isNull(assets.ownerId), eq(assets.ownerId, userId)))
+        .orderBy(desc(assets.id))
+        .limit(1);
+      const newest = rows[0]?.id ?? null;
+      return newest === null ? null : new Date(uuidV7Millis(newest));
     },
 
     /**

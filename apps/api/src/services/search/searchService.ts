@@ -14,6 +14,14 @@ import type { CatalogEnrichment } from './catalogEnrichment';
  */
 export interface SearchService {
   search(userId: string, rawQuery: string): Promise<SearchResponse>;
+  /**
+   * Freshness watermark for the conditional catalog-search read (issue #555):
+   * the creation time of the newest asset in the caller's visible catalog
+   * (global assets + their own custom assets). Drives `Last-Modified`; null
+   * when empty. Kept separate from {@link SearchService.search} so its return
+   * stays the exact `SearchResponse` contract shape.
+   */
+  catalogFreshness(userId: string): Promise<Date | null>;
   /** Resolves once in-flight background enrichments have finished (graceful shutdown, deterministic tests). */
   enrichmentSettled(): Promise<void>;
 }
@@ -70,6 +78,8 @@ export function createSearchService(deps: SearchServiceDeps): SearchService {
 
       return { results, enriching };
     },
+
+    catalogFreshness: (userId) => assetRepo.catalogWatermark(userId),
 
     enrichmentSettled: () => enrichment.settled(),
   };

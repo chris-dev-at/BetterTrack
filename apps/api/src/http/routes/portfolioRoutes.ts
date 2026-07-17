@@ -42,6 +42,7 @@ import {
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
+import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
 import { createIdempotency } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -109,14 +110,24 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     res.status(204).send();
   });
 
-  // GET /portfolios/:portfolioId — holdings + totals (§6.8).
-  router.get('/:portfolioId', validateParams(portfolioIdParamSchema), async (req, res) => {
-    const { portfolioId } = req.valid?.params as { portfolioId: string };
-    const portfolio = await ctx.portfolio.getPortfolio(req.authUser!.id, portfolioId, {
-      baseCurrency: req.authUser!.baseCurrency,
-    });
-    res.json(portfolio);
-  });
+  // GET /portfolios/:portfolioId — holdings + totals (§6.8). Conditional read
+  // (V5-P1b, #555): body-derived ETag + snapshot-state Last-Modified; liveToday
+  // so a fresh intraday quote is only reflected via the ETag, never masked by
+  // an If-Modified-Since 304.
+  router.get(
+    '/:portfolioId',
+    validateParams(portfolioIdParamSchema),
+    conditionalGet({ liveToday: true }),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const portfolio = await ctx.portfolio.getPortfolio(req.authUser!.id, portfolioId, {
+        baseCurrency: req.authUser!.baseCurrency,
+      });
+      const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
+      if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
+      res.json(portfolio);
+    },
+  );
 
   // PATCH /portfolios/:portfolioId — rename and/or change visibility (§6.8).
   router.patch(
@@ -148,6 +159,10 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     '/:portfolioId/history',
     validateParams(portfolioIdParamSchema),
     validateQuery(portfolioHistoryQuerySchema),
+    // Conditional read (V5-P1b, #555): body-derived ETag + snapshot-state
+    // Last-Modified (issue #553 drives series freshness). liveToday because the
+    // trailing point is a fresh quote — ETag-only revalidation, never masked.
+    conditionalGet({ liveToday: true }),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const { range, overlay } = req.valid?.query as PortfolioHistoryQuery;
@@ -155,6 +170,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         overlay,
         baseCurrency: req.authUser!.baseCurrency,
       });
+      const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
+      if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
       res.json(history);
     },
   );
