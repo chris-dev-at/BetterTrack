@@ -13,6 +13,7 @@ import type { CustomAssetRepository } from '../../data/repositories/customAssetR
 import type { AssetRow } from '../../data/schema';
 import { badRequest, notFound } from '../../errors';
 import type { PortfolioService } from '../portfolio/portfolioService';
+import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 
 /**
  * Custom-investment service (PROJECTPLAN.md §6.9, §5.1).
@@ -23,14 +24,17 @@ import type { PortfolioService } from '../portfolio/portfolioService';
  * quote — the rest of the system values a custom asset exactly like a stock.
  *
  * The optional initial purchase is recorded as an ordinary BUY transaction
- * through the {@link PortfolioService}, which also owns the value-series cache;
- * every value-point change here invalidates that cache so the portfolio chart
- * never serves a stale series (§6.9).
+ * through the {@link PortfolioService}. Value-point / smoothing / deletion
+ * changes here reshape the reconstructed series of EVERY portfolio holding the
+ * asset, so they invalidate the V5-P1 daily snapshots asset-scoped (issue
+ * #553, §16 2026-07-17 rule 7): each holding portfolio, from the earliest
+ * changed day (floored at that portfolio's first transaction on the asset).
  */
 
 export interface CustomAssetServiceDeps {
   repo: CustomAssetRepository;
   portfolio: PortfolioService;
+  snapshots: PortfolioSnapshotService;
 }
 
 export interface CustomAssetService {
@@ -77,7 +81,7 @@ function toDto(row: AssetRow): CustomAsset {
 }
 
 export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAssetService {
-  const { repo, portfolio } = deps;
+  const { repo, portfolio, snapshots } = deps;
 
   async function requireOwned(userId: string, id: string): Promise<AssetRow> {
     const row = await repo.findForUser(userId, id);
@@ -153,14 +157,14 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
       const updated = await repo.update(userId, id, { name: patch.name, meta });
       if (!updated) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
 
-      // Smoothing reshapes every reconstructed value series (§6.9), so a toggle
-      // must drop the cached portfolio history the same way a value-point edit
-      // does — otherwise the curve would serve the pre-toggle shape for up to 1 h.
+      // Smoothing reshapes the asset's whole reconstructed value series (§6.9),
+      // so a toggle invalidates every holding portfolio's snapshots from its
+      // first transaction on the asset (§16 rule 7) — same as a value-point edit.
       if (
         patch.smoothing !== undefined &&
         patch.smoothing !== (metaOf(existing).smoothing === true)
       ) {
-        await portfolio.invalidateHistory(await portfolio.getDefaultPortfolioId(userId));
+        await snapshots.invalidateForAsset(id);
       }
 
       return toDto(updated);
@@ -175,10 +179,16 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
     },
 
     async remove(userId, id) {
+      // Resolve the holding portfolios BEFORE the delete — the transactions the
+      // fan-out reads cascade away with the asset — but invalidate only AFTER
+      // it commits, so a fast recompute can never persist pre-delete data and
+      // then be trusted (§16 rule 7).
+      const refs = await snapshots.resolveAssetReferences(id);
       const deleted = await repo.deleteForUser(userId, id);
       if (!deleted) throw notFound('Custom asset not found.', 'CUSTOM_ASSET_NOT_FOUND');
-      // The asset's transactions + value points cascade away; drop the series.
-      await portfolio.invalidateHistory(await portfolio.getDefaultPortfolioId(userId));
+      for (const ref of refs) {
+        await snapshots.invalidate(ref.portfolioId, ref.fromDay);
+      }
     },
 
     async getValuePoints(userId, id) {
@@ -202,11 +212,25 @@ export function createCustomAssetService(deps: CustomAssetServiceDeps): CustomAs
         seen.add(p.date);
       }
 
+      // Diff against the stored points to find the earliest day the replace
+      // actually changes — carry-forward means the series reshapes from there
+      // on (§16 rule 7). An identical re-save invalidates nothing.
+      const before = await repo.getValuePoints(id);
+      const beforeByDate = new Map(before.map((p) => [p.date, p.value]));
+      const afterByDate = new Map(points.map((p) => [p.date, p.value]));
+      let changedFrom: string | undefined;
+      for (const date of new Set([...beforeByDate.keys(), ...afterByDate.keys()])) {
+        if (beforeByDate.get(date) === afterByDate.get(date)) continue;
+        if (changedFrom === undefined || date < changedFrom) changedFrom = date;
+      }
+
       await repo.replaceValuePoints(
         id,
         points.map((p) => ({ date: p.date, value: p.value })),
       );
-      await portfolio.invalidateHistory(await portfolio.getDefaultPortfolioId(userId));
+      if (changedFrom !== undefined) {
+        await snapshots.invalidateForAsset(id, changedFrom);
+      }
 
       const stored = await repo.getValuePoints(id);
       return stored.map((p) => ({ date: p.date, value: p.value }));

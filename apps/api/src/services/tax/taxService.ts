@@ -12,7 +12,6 @@ import type {
   TransactionInput,
   UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
-import type { Redis } from 'ioredis';
 
 import type { AssetRow } from '../../data/schema';
 import type {
@@ -56,7 +55,7 @@ import {
 import { badRequest, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
-import { portfolioHistoryCacheKey } from '../portfolio/portfolioService';
+import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 
 /**
  * Tax service (V3-P4, §13.3, issue #331): the orchestration seam between the
@@ -93,7 +92,8 @@ export interface TaxServiceDeps {
   cashSourceRepo: CashSourceRepository;
   portfolioRepo: PortfolioRepository;
   currencyService: CurrencyService;
-  redis: Redis;
+  /** The V5-P1 snapshot layer (issue #553): dividend writes invalidate through it. */
+  snapshots: PortfolioSnapshotService;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -185,7 +185,7 @@ const isTaxMovementKind = (kind: CashMovementRecord['kind']): boolean =>
 
 export function createTaxService(deps: TaxServiceDeps): TaxService {
   const { taxRepo, transactionRepo, cashMovementRepo, cashSourceRepo, portfolioRepo } = deps;
-  const { currencyService, redis } = deps;
+  const { currencyService, snapshots } = deps;
   const now = deps.now ?? Date.now;
 
   // ── Shared plumbing ────────────────────────────────────────────────────────
@@ -493,9 +493,16 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   const correctionSourceId = (portfolioId: string): Promise<string> =>
     cashSourceRepo.getOrCreateMain(portfolioId).then((s) => s.id);
 
-  async function invalidateHistory(portfolioId: string): Promise<void> {
-    await redis.del(portfolioHistoryCacheKey(portfolioId));
+  /**
+   * Report a history-mutating dividend write to the snapshot layer from its
+   * earliest affected day (§16 2026-07-17 rules 5/6).
+   */
+  async function invalidateHistory(portfolioId: string, fromDay: string): Promise<void> {
+    await snapshots.invalidate(portfolioId, fromDay);
   }
+
+  /** ISO day of a Date (UTC). */
+  const dayOfDate = (at: Date): string => at.toISOString().slice(0, 10);
 
   /** Reject manual tax entries wherever the mode does not accept them. */
   function assertManualEntryAllowed(
@@ -975,7 +982,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       },
       movements,
     );
-    await invalidateHistory(portfolioId);
+    // Earliest affected day (§16 rule 5): the (possibly backdated) dividend's
+    // own day — its gross + settlement legs share it; corrections post at now.
+    const affectedFrom = movements
+      .map((m) => dayOfDate(m.executedAt))
+      .reduce((a, b) => (a < b ? a : b));
+    await invalidateHistory(portfolioId, affectedFrom);
 
     const { balanceBySource, totalEur } = await cashBalances(portfolioId);
     return {
@@ -1094,7 +1106,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     for (const correction of corrections) {
       await cashMovementRepo.insert(portfolioId, correction);
     }
-    await invalidateHistory(portfolioId);
+    // The removed dividend's day, or an earlier-dated correction (§16 rule 6).
+    const affectedFrom = [
+      dayOfDate(dividend.executedAt),
+      ...corrections.map((c) => dayOfDate(c.executedAt)),
+    ].reduce((a, b) => (a < b ? a : b));
+    await invalidateHistory(portfolioId, affectedFrom);
   }
 
   // ── Reports ────────────────────────────────────────────────────────────────

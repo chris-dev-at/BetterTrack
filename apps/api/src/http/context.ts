@@ -147,6 +147,11 @@ import {
   type PortfolioService,
 } from '../services/portfolio/portfolioService';
 import {
+  createPortfolioSnapshotService,
+  type PortfolioSnapshotService,
+} from '../services/portfolio/portfolioSnapshots';
+import { createPortfolioSnapshotRepository } from '../data/repositories/portfolioSnapshotRepository';
+import {
   createLiveModeService,
   type LiveModeService,
   type LiveModeServiceOptions,
@@ -187,6 +192,13 @@ export interface AppContext {
   search: SearchService;
   /** Transactions, holdings/totals and the value-over-time series (§6.9). */
   portfolio: PortfolioService;
+  /**
+   * V5-P1 daily snapshot layer (issue #553): the precomputed per-portfolio
+   * series the graph/analytics reads serve from, its day-precise invalidation,
+   * and the recompute engine the worker's snapshot jobs run. On the context so
+   * tests can drive recomputes synchronously (no BullMQ under test).
+   */
+  snapshots: PortfolioSnapshotService;
   /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
   tax: TaxService;
   /** Custom investments + their value-points editor (§6.9). */
@@ -671,6 +683,28 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const transactionRepo = createTransactionRepository(db);
   const cashMovementRepo = createCashMovementRepository(db);
   const cashSourceRepo = createCashSourceRepository(db);
+  // V5-P1 daily snapshots (issue #553): the precomputed series layer under the
+  // graph/analytics reads. Built before the tax + portfolio services — both
+  // report their history-mutating writes into its day-precise invalidation
+  // (§16 2026-07-17). Production accelerates refills through the durable
+  // `snapshots.recompute` queue; tests/queueless processes rely on the read
+  // path's lazy refill (same engine, same rows).
+  const snapshots = createPortfolioSnapshotService({
+    snapshotRepo: createPortfolioSnapshotRepository(db),
+    portfolioRepo,
+    transactionRepo,
+    cashMovementRepo,
+    marketData,
+    currencyService: currency,
+    ...(queues
+      ? {
+          requestRecompute: async (portfolioId: string) => {
+            await queues.enqueue('snapshots.recompute', { portfolioId });
+          },
+        }
+      : {}),
+    logger,
+  });
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
@@ -681,7 +715,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashSourceRepo,
     portfolioRepo,
     currencyService: currency,
-    redis,
+    snapshots,
     logger,
   });
   const portfolio = createPortfolioService({
@@ -692,7 +726,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     currencyService: currency,
     referenceBackfill,
-    redis,
+    snapshots,
     taxService: tax,
     friendshipRepo,
     audience,
@@ -701,7 +735,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
   const customAssetRepo = createCustomAssetRepository(db);
-  const customAssets = createCustomAssetService({ repo: customAssetRepo, portfolio });
+  const customAssets = createCustomAssetService({
+    repo: customAssetRepo,
+    portfolio,
+    snapshots,
+  });
 
   // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
   const conglomerateRepo = createConglomerateRepository(db);
@@ -997,6 +1035,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     assets,
     search,
     portfolio,
+    snapshots,
     tax,
     customAssets,
     conglomerate,

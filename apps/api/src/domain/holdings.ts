@@ -694,6 +694,189 @@ export async function valueOverTime(input: ValueOverTimeInput): Promise<ValuePoi
 }
 
 // ---------------------------------------------------------------------------
+// Cost basis over time (V5-P1 snapshots, issue #553)
+// ---------------------------------------------------------------------------
+
+/** One point on the daily open-cost-basis series. */
+export interface CostBasisPoint {
+  /** ISO `YYYY-MM-DD`. */
+  date: string;
+  /** Open cost basis (Σ held qty · avg cost) in EUR at that day's FX rate. */
+  costBasisEur: number;
+}
+
+/** Input for {@link costBasisOverTime} — deliberately the same shape as {@link valueOverTime}. */
+export interface CostBasisOverTimeInput {
+  /** Every transaction across the portfolio (any order). */
+  transactions: readonly Transaction[];
+  /**
+   * One entry per transacted asset — the SAME inputs {@link valueOverTime}
+   * takes. Only the price series' *dates* matter here: an asset contributes
+   * cost basis on a day exactly when it would contribute value (a close on or
+   * before that day exists), so `pl = value − cost` never mixes two different
+   * asset sets. The close amounts themselves are never read.
+   */
+  assets: readonly ValueOverTimeAsset[];
+  /** The last day of the series, ISO `YYYY-MM-DD`. */
+  today: string;
+  converter: CurrencyConverter;
+}
+
+/**
+ * Reconstruct the daily **open cost basis** series in EUR (V5-P1 daily
+ * snapshots, issue #553): for every calendar day from the first transaction to
+ * `today`, `cost(d) = Σ over assets of qty_held(d) · avg_cost(d) · fx(ccy, d)`.
+ *
+ * The position math is **not re-derived here**: each asset's `(qty, avgCost)`
+ * as of a day is {@link reducePosition} replayed over exactly the transactions
+ * up to and including that day (prefixes preserve the input's relative order,
+ * so same-instant tie-breaking matches a full replay — no forked formulas).
+ * Between transaction days the state carries forward. Conversion happens at
+ * each day's **historical** FX rate — the same convention the value series
+ * uses — coalesced to one lookup per (currency, day), so the derived
+ * `pl(d) = holdingsValue(d) − cost(d)` compares like with like day by day.
+ *
+ * An asset contributes only from the day its first price is known (the
+ * {@link valueOverTime} gate): before that the value series carries 0 for it,
+ * and a nonzero cost against a zero value would fake a total loss.
+ *
+ * Returns an empty series when there are no transactions, or when the first
+ * transaction is after `today`.
+ */
+export async function costBasisOverTime(input: CostBasisOverTimeInput): Promise<CostBasisPoint[]> {
+  const { transactions, assets, today, converter } = input;
+  assertIsoDate(today, 'today');
+
+  if (transactions.length === 0) return [];
+
+  const assetById = new Map<string, ValueOverTimeAsset>();
+  for (const a of assets) assetById.set(a.assetId, a);
+
+  // Group transactions by asset (original order preserved) + find the start day.
+  const txnsByAsset = new Map<string, Transaction[]>();
+  let startDay: string | null = null;
+  for (const t of transactions) {
+    const day = dayOf(t.executedAt);
+    if (startDay === null || day < startDay) startDay = day;
+    if (!assetById.has(t.assetId)) {
+      throw new Error(
+        `costBasisOverTime: transaction references asset ${t.assetId} with no price/currency input.`,
+      );
+    }
+    const list = txnsByAsset.get(t.assetId);
+    if (list) list.push(t);
+    else txnsByAsset.set(t.assetId, [t]);
+  }
+  if (startDay === null || startDay > today) return [];
+
+  // Per-asset cursors: the distinct transaction days (each holding a prefix
+  // reduction of every transaction up to and including that day) plus a price
+  // cursor for the priced-yet gate.
+  interface Cursor {
+    currency: string;
+    /** Ascending distinct txn days, each with the reduced state through that day. */
+    states: Array<{ day: string; quantity: number; avgCost: number }>;
+    priceDates: string[]; // sorted ascending
+    stateIdx: number;
+    priceIdx: number;
+    quantity: number;
+    avgCost: number;
+    priced: boolean;
+  }
+  const cursors: Cursor[] = [];
+  for (const [assetId, txns] of txnsByAsset) {
+    const asset = assetById.get(assetId);
+    if (!asset) continue; // unreachable: validated above
+    const distinctDays = [...new Set(txns.map((t) => dayOf(t.executedAt)))].sort();
+    // Prefix replays reuse reducePosition verbatim — the money math has one
+    // home. A filter preserves relative input order, so ties resolve exactly
+    // as they would in a full replay.
+    const states = distinctDays.map((day) => {
+      const prefix = txns.filter((t) => dayOf(t.executedAt) <= day);
+      const state = reducePosition(prefix);
+      return { day, quantity: state.quantity, avgCost: state.avgCost };
+    });
+    for (const point of asset.prices) assertIsoDate(point.date, 'price point date');
+    const priceDates = asset.prices.map((p) => p.date).sort();
+    cursors.push({
+      currency: asset.currency,
+      states,
+      priceDates,
+      stateIdx: 0,
+      priceIdx: 0,
+      quantity: 0,
+      avgCost: 0,
+      priced: false,
+    });
+  }
+
+  // Pass 1 (sync): per day, sum each asset's native open cost by currency.
+  const startMs = dateToMs(startDay);
+  const endMs = dateToMs(today);
+  const days: string[] = [];
+  const buckets: Array<Map<string, number>> = [];
+  for (let ms = startMs; ms <= endMs; ms += MS_PER_DAY) {
+    const day = new Date(ms).toISOString().slice(0, 10);
+    days.push(day);
+    const bucket = new Map<string, number>();
+
+    for (const c of cursors) {
+      while (c.stateIdx < c.states.length) {
+        const state = c.states[c.stateIdx];
+        if (state === undefined || state.day > day) break;
+        c.quantity = state.quantity;
+        c.avgCost = state.avgCost;
+        c.stateIdx += 1;
+      }
+      while (c.priceIdx < c.priceDates.length) {
+        const date = c.priceDates[c.priceIdx];
+        if (date === undefined || date > day) break;
+        c.priced = true;
+        c.priceIdx += 1;
+      }
+      if (!c.priced || c.quantity <= QTY_EPSILON) continue;
+      const native = c.quantity * c.avgCost;
+      if (native === 0) continue;
+      bucket.set(c.currency, (bucket.get(c.currency) ?? 0) + native);
+    }
+
+    buckets.push(bucket);
+  }
+
+  // Pass 2 (async): one FX resolution per distinct (currency, day) — the same
+  // coalescing valueOverTime applies, and conversion is linear so summing
+  // native amounts first is exact.
+  const rateCache = new Map<string, Promise<number>>();
+  const rateToBase = (currency: string, date: string): Promise<number> => {
+    const key = `${currency}|${date}`;
+    let pending = rateCache.get(key);
+    if (!pending) {
+      pending = converter.toBase(1, currency, { date });
+      rateCache.set(key, pending);
+    }
+    return pending;
+  };
+
+  const series: CostBasisPoint[] = [];
+  for (let i = 0; i < days.length; i += 1) {
+    const day = days[i];
+    const bucket = buckets[i];
+    if (day === undefined || bucket === undefined) continue; // unreachable
+    let costBasisEur = 0;
+    for (const [currency, native] of bucket) {
+      const rate = await rateToBase(currency, day);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        throw new Error(`Invalid FX rate ${rate} for ${currency} on ${day}`);
+      }
+      costBasisEur += native * rate;
+    }
+    series.push({ date: day, costBasisEur });
+  }
+
+  return series;
+}
+
+// ---------------------------------------------------------------------------
 // Performance over time — time-weighted return (issue #125)
 // ---------------------------------------------------------------------------
 

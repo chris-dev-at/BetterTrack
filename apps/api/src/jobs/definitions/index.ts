@@ -59,6 +59,16 @@ export {
 } from './exportJobs';
 
 export {
+  createSnapshotsRecomputeJob,
+  createSnapshotsBackfillJob,
+  SNAPSHOTS_BACKFILL_SCHEDULER_ID,
+  SNAPSHOTS_BACKFILL_CRON,
+  SNAPSHOTS_BACKFILL_TZ,
+  SNAPSHOT_HEAL_WINDOW_DAYS,
+  type SnapshotJobDeps,
+} from './snapshotJobs';
+
+export {
   createPricesRefreshDailyJob,
   createPricesBackfillJob,
   createFxRefreshSpotJob,
