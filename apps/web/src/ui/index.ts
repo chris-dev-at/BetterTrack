@@ -6,3 +6,9 @@ export { ComingSoon, type ComingSoonProps } from './ComingSoon';
 export { Skeleton, type SkeletonProps } from './Skeleton';
 export { ErrorBoundary, type ErrorBoundaryProps } from './ErrorBoundary';
 export { Disclaimer, TAGLINE, type DisclaimerProps } from './Disclaimer';
+export {
+  ScopePicker,
+  ScopeSummary,
+  type ScopePickerProps,
+  type ScopeSummaryProps,
+} from './ScopePicker';

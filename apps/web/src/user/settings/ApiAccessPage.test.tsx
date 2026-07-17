@@ -129,7 +129,10 @@ describe('ApiAccessPage', () => {
     renderPage();
 
     await user.type(await screen.findByLabelText('Name'), 'New key');
-    await user.click(screen.getByRole('checkbox', { name: /portfolio · read/i }));
+    // V5-P0b: scope picker is per-module; scope the query to THIS form so the
+    // sibling OAuth-app form's picker doesn't cause a duplicate match.
+    const createKeyForm = screen.getByRole('button', { name: 'Create key' }).closest('form')!;
+    await user.click(within(createKeyForm).getByRole('checkbox', { name: /portfolio · read/i }));
     await user.click(screen.getByRole('button', { name: 'Create key' }));
 
     await waitFor(() =>
@@ -153,6 +156,20 @@ describe('ApiAccessPage', () => {
     expect(createApiKey).not.toHaveBeenCalled();
   });
 
+  test('V5-P0b: scope picker sections are collapsed by default (anti-bloat)', async () => {
+    vi.mocked(listApiKeys).mockResolvedValue(EMPTY);
+    const { container } = renderPage();
+    // Both forms (create key + register OAuth app) render a native <details>
+    // scope picker that starts closed, so the OAuth section isn't scrolled
+    // past every API-key tick.
+    await screen.findByLabelText('Name');
+    const detailsElements = container.querySelectorAll('details');
+    expect(detailsElements.length).toBeGreaterThanOrEqual(2);
+    detailsElements.forEach((d) => expect(d.open).toBe(false));
+    // Header still shows a "None selected" affordance in each collapsed picker.
+    expect(screen.getAllByText(/none selected/i).length).toBeGreaterThanOrEqual(2);
+  });
+
   test('revokes a key after confirmation', async () => {
     vi.mocked(listApiKeys).mockResolvedValue(ONE_KEY);
     vi.mocked(revokeApiKey).mockResolvedValue(undefined);
@@ -173,12 +190,10 @@ describe('ApiAccessPage', () => {
 
     await user.type(await screen.findByLabelText('App name'), 'My mobile app');
     await user.type(screen.getByLabelText('Redirect URI 1'), 'https://example.com/callback');
-    // The OAuth scope checkbox is named by the plain-language label + scope token.
-    await user.click(
-      screen.getByRole('checkbox', {
-        name: /view your portfolios, holdings, transactions and cash balances/i,
-      }),
-    );
+    // V5-P0b: scope query is scoped to the OAuth-app form so the sibling API
+    // key form's picker doesn't cause a duplicate match.
+    const registerForm = screen.getByRole('button', { name: 'Register app' }).closest('form')!;
+    await user.click(within(registerForm).getByRole('checkbox', { name: /portfolio · read/i }));
     await user.click(screen.getByRole('button', { name: 'Register app' }));
 
     await waitFor(() =>
@@ -204,14 +219,13 @@ describe('ApiAccessPage', () => {
 
     await user.type(await screen.findByLabelText('App name'), 'Writer app');
     await user.type(screen.getByLabelText('Redirect URI 1'), 'https://example.com/callback');
-    // Select the write scope — the implied read should auto-select and lock on.
-    await user.click(
-      screen.getByRole('checkbox', {
-        name: /create and edit portfolios, transactions, custom assets and cash/i,
-      }),
-    );
-    const readCheckbox = screen.getByRole('checkbox', {
-      name: /view your portfolios, holdings, transactions and cash balances/i,
+    // Tick Portfolio · Write in the OAuth-app form — the implied read
+    // auto-selects and locks per #371. Scope queries to the register form so
+    // the sibling API-key form's picker doesn't cause a duplicate match.
+    const registerForm = screen.getByRole('button', { name: 'Register app' }).closest('form')!;
+    await user.click(within(registerForm).getByRole('checkbox', { name: /portfolio · write/i }));
+    const readCheckbox = within(registerForm).getByRole('checkbox', {
+      name: /portfolio · read/i,
     });
     expect(readCheckbox).toBeChecked();
     expect(readCheckbox).toBeDisabled();

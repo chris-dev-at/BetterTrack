@@ -2,11 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 
 import {
-  API_KEY_SCOPES,
-  OAUTH_SCOPE_LABELS,
-  impliedReadScope,
   withImpliedReadScopes,
-  writeScopeForRead,
   type ApiKeyScope,
   type CreateOAuthClientResponse,
   type OAuthClientSummary,
@@ -14,6 +10,7 @@ import {
 
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
+import { ScopePicker } from '../../ui';
 import { formatDateTime } from '../format';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
@@ -30,73 +27,6 @@ import {
 
 function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
-}
-
-/**
- * Toggle a scope in an allowed set with write-implies-read (#371): selecting a
- * `:write` auto-selects its `:read`, and a read stays locked on while its
- * implying write is still selected.
- */
-function toggleScopeWithImplied(prev: Set<ApiKeyScope>, scope: ApiKeyScope): Set<ApiKeyScope> {
-  const next = new Set(prev);
-  if (next.has(scope)) {
-    const write = writeScopeForRead(scope);
-    if (write && next.has(write)) return prev;
-    next.delete(scope);
-  } else {
-    next.add(scope);
-    const read = impliedReadScope(scope);
-    if (read) next.add(read);
-  }
-  return next;
-}
-
-/** A read scope auto-included (and locked) because its implying write is selected. */
-function isScopeLocked(scopes: Set<ApiKeyScope>, scope: ApiKeyScope): boolean {
-  const write = writeScopeForRead(scope);
-  return write !== undefined && scopes.has(write);
-}
-
-/** The shared scope checkbox grid used by both the register and edit forms. */
-function ScopePicker({
-  scopes,
-  onToggle,
-}: {
-  scopes: Set<ApiKeyScope>;
-  onToggle: (scope: ApiKeyScope) => void;
-}) {
-  return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {API_KEY_SCOPES.map((scope) => {
-        const locked = isScopeLocked(scopes, scope);
-        return (
-          <label
-            key={scope}
-            className="flex items-start gap-2 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-200"
-          >
-            <input
-              type="checkbox"
-              className="mt-1 disabled:opacity-60"
-              checked={scopes.has(scope) || locked}
-              disabled={locked}
-              onChange={() => onToggle(scope)}
-            />
-            <span>
-              <span className="font-mono text-xs text-neutral-400">{scope}</span>
-              <br />
-              {OAUTH_SCOPE_LABELS[scope]}
-              {locked ? (
-                <>
-                  <br />
-                  <span className="text-xs text-neutral-600">Included with write access.</span>
-                </>
-              ) : null}
-            </span>
-          </label>
-        );
-      })}
-    </div>
-  );
 }
 
 /**
@@ -119,10 +49,6 @@ export function OAuthAppsPage() {
   const [editing, setEditing] = useState<OAuthClientSummary | null>(null);
 
   const apps = useResource((signal) => api.listFirstPartyApps(signal), []);
-
-  function toggleScope(scope: ApiKeyScope) {
-    setScopes((prev) => toggleScopeWithImplied(prev, scope));
-  }
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -198,7 +124,7 @@ export function OAuthAppsPage() {
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
-          <ScopePicker scopes={scopes} onToggle={toggleScope} />
+          <ScopePicker scopes={scopes} onChange={setScopes} collapsible />
         </fieldset>
 
         <label className="flex items-start gap-2 text-sm text-neutral-200">
@@ -354,10 +280,6 @@ function EditOAuthAppModal({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  function toggleScope(scope: ApiKeyScope) {
-    setScopes((prev) => toggleScopeWithImplied(prev, scope));
-  }
-
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -424,7 +346,7 @@ function EditOAuthAppModal({
             Adding a scope does not grant it to users already signed in — they must re-consent.
             Removing a scope takes effect immediately.
           </p>
-          <ScopePicker scopes={scopes} onToggle={toggleScope} />
+          <ScopePicker scopes={scopes} onChange={setScopes} collapsible />
         </fieldset>
 
         {error ? <Alert tone="error">{error}</Alert> : null}
