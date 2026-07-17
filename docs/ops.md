@@ -269,6 +269,70 @@ after stopping api + worker (see the "Restore from a dump" block in
 artifact is a superset of that dump; once decrypted it's a normal
 `.sql.gz` file usable with the existing local-restore procedure.
 
+## Observability (Prometheus + Grafana)
+
+Full monitoring ships **inside the deploy stack** — PROJECTPLAN.md §13.5 V5-P2
+arc (a), §16 (2026-07-17). **There is nothing to set up.** No external account,
+no SaaS console, no manual dashboard import: `docker compose up -d` in `infra/`
+starts two extra services that provision themselves.
+
+```
+┌──────────────┐   scrape api:9464/metrics   ┌──────────────┐   query   ┌──────────┐
+│ api          │ ◀────────────────────────── │ prometheus   │ ◀──────── │ grafana  │
+│  (metrics on │   internal docker network   │  (15d TSDB)  │           │  (dash-  │
+│   0.0.0.0:   │   — NO host port published  │              │           │  boards) │
+│   9464)      │                             │              │           │          │
+└──────────────┘                             └──────┬───────┘           └────┬─────┘
+                                                     │ 127.0.0.1:9090         │ 127.0.0.1:3001
+                                                     ▼                        ▼
+                                            localhost / LAN only — never the public origin
+```
+
+- **`prometheus`** (`prom/prometheus`) scrapes the API's dedicated `/metrics`
+  listener (#564) over the internal compose network at `api:9464`. Config:
+  `infra/prometheus/prometheus.yml`. Data persists in the `promdata` volume
+  (15-day retention).
+- **`grafana`** (`grafana/grafana-oss`) auto-provisions the Prometheus
+  datasource (`infra/grafana/provisioning/datasources/`) and the starter
+  dashboard **"BetterTrack — API & workers overview"**
+  (`infra/grafana/dashboards/bettertrack-overview.json`) on first boot. It
+  renders live: HTTP request rate + latency (p50/p95/p99), per-route counters,
+  BullMQ queue depth + job outcomes, provider calls, market cache hit rate, and
+  websocket connections. Data persists in the `grafanadata` volume.
+
+### Exposure guarantee (localhost/LAN only)
+
+Neither service is ever reachable from a public origin. The owner decision
+(§16, 2026-07-17) is **localhost/LAN-only** — the admin panel is the only public
+management surface.
+
+- The API metrics listener binds `0.0.0.0` **inside** the api container so
+  Prometheus can scrape it, but its port is **never** published to a host port,
+  so it is unreachable from outside the docker network.
+- Prometheus (`:9090`) and Grafana (`:3001`) publish host ports bound to
+  **`BT_OBS_BIND_HOST`** (default `127.0.0.1` = localhost only). They are **not**
+  added to any port overlay (`docker-compose.ports.yml` /
+  `docker-compose.subdomains.yml`) and are **not** routed by the `web`/nginx
+  front proxy — verifiable in `infra/docker-compose.yml` and `infra/nginx/`.
+
+### Reaching Grafana
+
+- **From the deploy host** — open `http://127.0.0.1:3001`.
+- **Over SSH from your laptop** (keeps the default localhost bind):
+
+  ```
+  ssh -N -L 3001:127.0.0.1:3001 you@deploy-host
+  # then open http://localhost:3001 on your laptop
+  ```
+
+- **From your LAN** — set `BT_OBS_BIND_HOST` in `infra/.env` to the host's LAN
+  IP (e.g. `192.168.1.10`), `docker compose up -d`, then open
+  `http://192.168.1.10:3001`. **Never** set it to `0.0.0.0` on a public host.
+
+Log in with `BT_GRAFANA_ADMIN_USER` / `BT_GRAFANA_ADMIN_PASSWORD` from
+`infra/.env` — change the default before first boot. Sign-up and anonymous
+access are disabled. See `infra/.env.production.example` for every knob.
+
 ## Troubleshooting
 
 **"offsite skipped (unset: …)"** — one or both of

@@ -1,0 +1,33 @@
+# Prometheus scrape config for the BetterTrack deploy stack
+# (PROJECTPLAN.md §13.5 V5-P2 arc (a), §16 2026-07-17).
+#
+# Runs INSIDE the compose network and scrapes the API's dedicated metrics
+# listener (#564) at `api:9464/metrics`. That listener is never published on a
+# host port, so it is reachable only from inside this network — and Grafana
+# reads Prometheus, never the raw endpoint. Nothing here is exposed to the
+# public origins.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    stack: bettertrack
+
+scrape_configs:
+  # The BetterTrack API metrics listener. The api container binds it on
+  # BT_METRICS_PORT (default 9464) and is resolvable by service name on the
+  # internal docker network. If you override BT_METRICS_PORT in infra/.env,
+  # update the port in the target below to match.
+  - job_name: bettertrack-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api:9464']
+        labels:
+          service: api
+
+  # Prometheus scrapes itself so the dashboards can show scrape health.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: prometheus
