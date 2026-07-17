@@ -156,6 +156,15 @@ const envSchema = z.object({
   // ON restores every behavior unchanged. Neither channel is deleted; the
   // owner explicitly asked for "deactivate, not delete".
   BT_TELEGRAM_DISCORD_ENABLED: z.string().optional(),
+
+  // ── Prometheus metrics endpoint (§13.5 V5-P2 arc (a), §16 2026-07-17) ───────
+  // A dedicated scrape listener, bound localhost/LAN-only and kept OFF the
+  // public `/api/v1` surface. Enabled by default (zero owner setup); the bind
+  // host defaults to loopback and can be widened to a LAN interface, and the
+  // port defaults to 9464 (the OpenMetrics-registered exporter port).
+  BT_METRICS_ENABLED: z.string().optional(),
+  BT_METRICS_HOST: z.string().min(1).default('127.0.0.1'),
+  BT_METRICS_PORT: z.coerce.number().int().positive().default(9464),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -363,6 +372,15 @@ export interface AppConfig {
     /** When false the Socket.IO server is never attached — zero behavior change. */
     enabled: boolean;
   };
+  /** Prometheus scrape listener (§13.5 V5-P2). localhost/LAN-only, never public. */
+  metrics: {
+    /** Default true — enabled with zero owner setup; false binds no metrics port. */
+    enabled: boolean;
+    /** Bind host; defaults to `127.0.0.1`, configurable to a LAN interface. */
+    host: string;
+    /** Dedicated port for the `/metrics` listener (default 9464). */
+    port: number;
+  };
   /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
   sentry: {
     enabled: boolean;
@@ -543,6 +561,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     realtime: {
       enabled: boolFrom(e.REALTIME_ENABLED, true),
+    },
+    metrics: {
+      enabled: boolFrom(e.BT_METRICS_ENABLED, true),
+      host: e.BT_METRICS_HOST,
+      port: e.BT_METRICS_PORT,
     },
     sentry: {
       enabled: Boolean(e.BT_SENTRY_DSN),

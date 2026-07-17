@@ -1,6 +1,8 @@
 import type { CachedResult } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
+import { cacheEventsTotal } from '../metrics';
+
 import { AssetNotFoundError } from './errors';
 import { NEGATIVE_TTL_SECONDS, STALE_TTL_SECONDS } from './ttl';
 
@@ -324,6 +326,7 @@ export function createMarketCache(
       const [freshRaw, staleRaw] = await redis.mget(freshCacheKey(key), staleCacheKey(key));
       const fresh = parseEntry<T>(freshRaw);
       if (fresh) {
+        cacheEventsTotal.inc({ result: 'hit' });
         return { value: fresh.value, stale: false, asOf: fresh.asOf };
       }
 
@@ -331,13 +334,20 @@ export function createMarketCache(
       // immediately marked stale while one background refresh runs.
       const stale = parseEntry<T>(staleRaw);
       if (stale) {
+        cacheEventsTotal.inc({ result: 'stale' });
         maybeRevalidate(params);
         return { value: stale.value, stale: true, asOf: stale.asOf };
       }
 
       // Negative cache (§5.3): a recent "does not exist" answers without upstream.
       const negative = await readNegative(key);
-      if (negative) throw new AssetNotFoundError(negative.message, true);
+      if (negative) {
+        cacheEventsTotal.inc({ result: 'negative' });
+        throw new AssetNotFoundError(negative.message, true);
+      }
+
+      // A cold miss: no fresh, stale or negative copy for this key.
+      cacheEventsTotal.inc({ result: 'miss' });
 
       // Coalesce concurrent cold misses onto one shared load.
       const existing = inflight.get(key);
