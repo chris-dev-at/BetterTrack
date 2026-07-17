@@ -17,6 +17,7 @@ import type {
   Holding as HoldingDto,
   PortfolioAsset,
   PortfolioHistoryOverlay,
+  PortfolioHistoryPoint,
   PortfolioHistoryRange,
   PortfolioPerformancePoint,
   PortfolioListResponse,
@@ -81,9 +82,18 @@ import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 import type { ReferenceBackfill } from '../assets/referenceBackfill';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
+import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
 import type { TaxService } from '../tax/taxService';
+import {
+  buildIntradayEurValuePoints,
+  intradayIntervalFor,
+  intradayPerformancePoints,
+  isIntradayRange,
+  type IntradayCandle,
+  type IntradayValuePoint,
+} from './portfolioIntraday';
 import type { PortfolioSnapshotService } from './portfolioSnapshots';
 
 /**
@@ -141,6 +151,13 @@ export interface PortfolioServiceDeps {
   profile: ProfileRepository;
   /** The central notification pipeline (#368): portfolio.shared + friend.activity. */
   notify: NotificationCenter;
+  /**
+   * The Live-Mode per-asset ring buffer (§6.3, V3-P7b). Optional: the intraday
+   * 1D/1W series (issue #556) prefers its already-recorded ticks over new
+   * provider calls where present; absent under test / in processes without it,
+   * the cached provider intraday history covers the window on its own.
+   */
+  liveRing?: LiveRingBuffer;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -301,7 +318,8 @@ export interface PortfolioService {
   ): Promise<{
     range: PortfolioHistoryRange;
     baseCurrency: string;
-    points: Array<{ date: string; valueEur: number }>;
+    /** Daily on 1M+; a dense intraday curve (each point carries `time`) on 1D/1W (#556). */
+    points: PortfolioHistoryPoint[];
     performance: PortfolioPerformancePoint[];
     assets?: PortfolioHistoryOverlay[];
   }>;
@@ -386,6 +404,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     audience,
     profile,
     notify,
+    liveRing,
     logger,
   } = deps;
   const now = deps.now ?? Date.now;
@@ -881,6 +900,148 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   async function loadSeries(portfolioId: string): Promise<SeriesIngredients> {
     const series = await snapshots.getSeries(portfolioId);
     return { points: series.points, flows: series.flows };
+  }
+
+  /**
+   * One asset's native intraday candles for the window (issue #556). The
+   * cached/coalesced provider history is the source (§5.3 — a burst of series
+   * reads costs one upstream fetch per asset/interval); where the Live-Mode
+   * ring buffer already holds recent ticks they are preferred (fresher, and no
+   * new provider call), the ring winning at its own instants. Best-effort: a
+   * provider or ring failure degrades to whatever the other supplied (an asset
+   * left without any intraday data carries forward in the builder).
+   */
+  async function loadIntradayCandles(
+    asset: { id: string; providerId: string; providerRef: string },
+    range: '1D' | '1W',
+    cutoffMs: number,
+  ): Promise<IntradayCandle[]> {
+    const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
+    const byMs = new Map<number, number>();
+    try {
+      const history = await marketData.getHistory(ref, range, intradayIntervalFor(range));
+      for (const point of history.value) {
+        const atMs = Date.parse(point.time);
+        if (!Number.isNaN(atMs) && Number.isFinite(point.close)) byMs.set(atMs, point.close);
+      }
+    } catch {
+      // Provider outage past the stale window — the ring (if any) still seeds it.
+    }
+    if (liveRing) {
+      try {
+        for (const frame of await liveRing.readSince(asset.id, cutoffMs)) {
+          const atMs = Date.parse(frame.at);
+          // Ring ticks win at their instant — the freshest observed native price.
+          if (!Number.isNaN(atMs) && Number.isFinite(frame.price)) byMs.set(atMs, frame.price);
+        }
+      } catch {
+        // The ring is a best-effort accelerator; ignore a Redis hiccup.
+      }
+    }
+    return [...byMs].map(([atMs, price]) => ({ atMs, price })).sort((a, b) => a.atMs - b.atMs);
+  }
+
+  /**
+   * The dense intraday history for a 1D/1W range (issue #556): the daily
+   * snapshot series scaled by each held asset's intraday price ratio (see
+   * {@link buildIntradayEurValuePoints}). Returns `null` for a portfolio with no
+   * history at all (the caller falls through to the daily path's empty result).
+   * With no intraday candles for any asset the builder degrades to one point per
+   * in-window day — exactly the pre-#556 daily slice.
+   */
+  async function buildIntradayHistory(
+    portfolioId: string,
+    range: '1D' | '1W',
+    fx: CurrencyService,
+    today: string,
+  ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
+    const series = await snapshots.getSeries(portfolioId);
+    if (series.points.length === 0) return null;
+
+    const cutoffDay = rangeCutoffIso(range, today);
+    const cutoffMs = Date.parse(`${cutoffDay}T00:00:00.000Z`);
+    const nowMs = now();
+
+    const dailyValueEurByDay = new Map(series.points.map((p) => [p.date, p.valueEur]));
+    const perAssetEurByDay = new Map<string, Map<string, number>>();
+    for (const asset of series.assets) {
+      perAssetEurByDay.set(asset.assetId, new Map(asset.points.map((p) => [p.date, p.valueEur])));
+    }
+
+    // Fetch candles only for assets actually held during the window; manual /
+    // custom assets have no intraday history and always carry forward.
+    const heldAssetIds = series.assets
+      .filter((a) => a.points.some((p) => p.date >= cutoffDay))
+      .map((a) => a.assetId);
+    const assetsById = new Map(
+      (await portfolioRepo.assetsByIds(heldAssetIds)).map((r) => [r.id, r]),
+    );
+    const candlesByAsset = new Map<string, IntradayCandle[]>();
+    await Promise.all(
+      heldAssetIds.map(async (assetId) => {
+        const asset = assetsById.get(assetId);
+        if (!asset || asset.providerId === 'manual') return;
+        const candles = await loadIntradayCandles(asset, range, cutoffMs);
+        if (candles.length > 0) candlesByAsset.set(assetId, candles);
+      }),
+    );
+
+    const eurPoints = buildIntradayEurValuePoints({
+      range,
+      cutoffDay,
+      nowMs,
+      dailyValueEurByDay,
+      perAssetEurByDay,
+      candlesByAsset,
+    });
+    if (eurPoints.length === 0) return null;
+
+    // Re-denominate EUR → the caller's base with per-day historical rates (§5.4,
+    // identity for EUR) — the same treatment `seriesInBase` gives the daily
+    // curve, so 1D/1W stay currency-consistent with 1M+. Days whose FX is
+    // unavailable in the requested base drop, exactly as they do daily.
+    const points: PortfolioHistoryPoint[] = [];
+    if (fx.baseCurrency === baseCurrency) {
+      for (const p of eurPoints) {
+        points.push({ date: p.date, time: new Date(p.timeMs).toISOString(), valueEur: p.valueEur });
+      }
+    } else {
+      const rateByDay = new Map<string, number>();
+      for (const day of new Set(eurPoints.map((p) => p.date))) {
+        try {
+          rateByDay.set(day, await fx.getRate(baseCurrency, fx.baseCurrency, { date: day }));
+        } catch (err) {
+          if (err instanceof FxRateUnavailableError) continue;
+          throw err;
+        }
+      }
+      for (const p of eurPoints) {
+        const rate = rateByDay.get(p.date);
+        if (rate === undefined) continue;
+        points.push({
+          date: p.date,
+          time: new Date(p.timeMs).toISOString(),
+          valueEur: p.valueEur * rate,
+        });
+      }
+    }
+    if (points.length === 0) return null;
+
+    // Performance is anchored to the daily TWR (in the caller's base), so 1D/1W
+    // agree with the 1M+ ranges at each day close (see intradayPerformancePoints).
+    const baseDaily = await seriesInBase({ points: series.points, flows: series.flows }, fx);
+    const baseIntraday: IntradayValuePoint[] = points.map((p) => ({
+      date: p.date,
+      timeMs: Date.parse(p.time!),
+      valueEur: p.valueEur,
+    }));
+    const performance: PortfolioPerformancePoint[] = intradayPerformancePoints({
+      intradayPoints: baseIntraday,
+      dailyBasePoints: baseDaily.points,
+      flowsBase: baseDaily.flows,
+    }).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
+
+    return { points, performance };
   }
 
   return {
@@ -1808,6 +1969,37 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const fx = fxFor(opts?.baseCurrency);
 
       const today = todayIso();
+
+      // 1D / 1W render a dense intraday curve rather than a ~2-point daily slice
+      // (V5-P1 arc d, issue #556). The intraday builder degrades to the daily
+      // slice when no intraday data exists, and returns null only for a
+      // history-less portfolio — which falls through to the empty daily result.
+      if (isIntradayRange(range)) {
+        const intraday = await buildIntradayHistory(portfolioId, range, fx, today);
+        if (intraday) {
+          if (!overlay) {
+            return {
+              range,
+              baseCurrency: fx.baseCurrency,
+              points: intraday.points,
+              performance: intraday.performance,
+            };
+          }
+          // Overlays stay per-asset daily price curves (issue #122), sliced to
+          // the window — the intraday densification is the portfolio curve only.
+          const overlayAssets = (await snapshots.getOverlays(portfolioId))
+            .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
+            .filter((a) => a.points.length > 0);
+          return {
+            range,
+            baseCurrency: fx.baseCurrency,
+            points: intraday.points,
+            performance: intraday.performance,
+            assets: overlayAssets,
+          };
+        }
+      }
+
       const payload = await loadSeries(portfolioId);
       // Re-denominate the cached EUR ingredients into the caller's base with
       // per-day historical rates (identity for EUR), THEN derive the TWR — a

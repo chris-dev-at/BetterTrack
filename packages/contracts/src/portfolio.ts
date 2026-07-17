@@ -498,9 +498,11 @@ export type PortfolioResponse = z.infer<typeof portfolioResponseSchema>;
 
 /**
  * Portfolio history ranges (§6.9 + V4-P0): 1D / 1W / 1M / 6M / 1Y / 5Y / MAX.
- * The stored series is daily-resolution, so 1D/1W windows the same daily
- * series (no intraday sourcing — that's Live Mode). Portfolios younger than
- * the selected span degrade to whatever exists, never a broken empty chart.
+ * 1M+ window the daily-resolution snapshot series; **1D / 1W render a dense
+ * intraday curve** (V5-P1 arc d, issue #556) — each point additionally carries
+ * an ISO `time` timestamp (see {@link portfolioHistoryPointSchema}). Portfolios
+ * younger than the selected span degrade to whatever exists, never a broken
+ * empty chart.
  */
 export const PORTFOLIO_HISTORY_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y', 'MAX'] as const;
 export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
@@ -527,7 +529,16 @@ export type PortfolioHistoryQuery = z.infer<typeof portfolioHistoryQuerySchema>;
 /** One point on the portfolio value-over-time series, EUR (§6.9). */
 export const portfolioHistoryPointSchema = z
   .object({
+    /** The calendar day the point falls on (ISO `YYYY-MM-DD`), UTC. */
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    /**
+     * Exact instant of an **intraday** point (ISO-8601), present only on the
+     * 1D/1W dense curves (V5-P1 arc d, issue #556). Absent on the daily-grid
+     * ranges (1M+), where `date` alone locates the point. Multiple intraday
+     * points share a `date` and are disambiguated by `time`; the client keys
+     * the chart on `time ?? date`.
+     */
+    time: z.string().datetime().optional(),
     valueEur: z.number(),
   })
   .strict();
@@ -568,6 +579,12 @@ export type PortfolioHistoryOverlay = z.infer<typeof portfolioHistoryOverlaySche
 export const portfolioPerformancePointSchema = z
   .object({
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    /**
+     * Exact instant of an intraday performance point (ISO-8601), present only
+     * on the 1D/1W dense curves (issue #556) and aligned 1:1 with `points`.
+     * Absent on the daily-grid ranges.
+     */
+    time: z.string().datetime().optional(),
     pct: z.number(),
   })
   .strict();
@@ -579,7 +596,8 @@ export const portfolioHistoryResponseSchema = z
     range: portfolioHistoryRangeSchema,
     baseCurrency: currencyCodeSchema,
     points: z.array(portfolioHistoryPointSchema),
-    /** Performance-% display mode data (issue #125), same daily grid as `points`. */
+    /** Performance-% display mode data (issue #125), aligned 1:1 with `points`
+     * (daily grid on 1M+, the intraday grid on 1D/1W — issue #556). */
     performance: z.array(portfolioPerformancePointSchema),
     assets: z.array(portfolioHistoryOverlaySchema).optional(),
   })

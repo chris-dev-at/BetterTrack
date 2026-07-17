@@ -1052,19 +1052,16 @@ export function PortfolioPage() {
 
   // #125: in performance mode the curve is the deposit-neutralized TWR series —
   // a 1 000 € top-up causes no jump; the line only moves when holdings move.
-  const chartPoints = useMemo(
-    () =>
-      perfMode
-        ? (historyQuery.data?.performance ?? []).map((p) => ({
-            time: p.date as Time,
-            value: p.pct,
-          }))
-        : (historyQuery.data?.points ?? []).map((p) => ({
-            time: p.date as Time,
-            value: p.valueEur,
-          })),
-    [historyQuery.data, perfMode],
-  );
+  // #556: 1D/1W points carry an intraday `time` — key the chart on the exact
+  // instant (a UNIX-second `Time`) so the dense curve plots, versus the
+  // business-day string the daily ranges use.
+  const chartPoints = useMemo(() => {
+    const at = (p: { date: string; time?: string }): Time =>
+      p.time !== undefined ? (Math.floor(Date.parse(p.time) / 1000) as Time) : (p.date as Time);
+    return perfMode
+      ? (historyQuery.data?.performance ?? []).map((p) => ({ time: at(p), value: p.pct }))
+      : (historyQuery.data?.points ?? []).map((p) => ({ time: at(p), value: p.valueEur }));
+  }, [historyQuery.data, perfMode]);
 
   // ── Loading / error ──
   if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
