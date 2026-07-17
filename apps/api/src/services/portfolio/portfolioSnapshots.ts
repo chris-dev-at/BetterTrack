@@ -146,6 +146,14 @@ export interface PortfolioSnapshotService {
    * {@link PortfolioSnapshotService.invalidate} each ref after it commits.
    */
   resolveAssetReferences(assetId: string): Promise<Array<{ portfolioId: string; fromDay: string }>>;
+  /**
+   * The snapshot-state watermark (`updated_at`) for `portfolioId`, or null when
+   * no state row exists yet. Bumps on every history-invalidating write and on
+   * each recompute (issue #553), so it is the freshness source the conditional
+   * read layer (issue #555) hangs `Last-Modified` on. Ownership is the caller's
+   * concern — this is a raw metadata read.
+   */
+  getStateUpdatedAt(portfolioId: string): Promise<Date | null>;
   /** Run the engine and persist rows through yesterday. */
   recompute(portfolioId: string, opts?: RecomputeOptions): Promise<void>;
   /**
@@ -841,6 +849,11 @@ export function createPortfolioSnapshotService(
     },
 
     invalidate,
+
+    async getStateUpdatedAt(portfolioId) {
+      const state = await snapshotRepo.getState(portfolioId);
+      return state?.updatedAt ?? null;
+    },
 
     async resolveAssetReferences(assetId) {
       const refs = await snapshotRepo.portfoliosReferencingAsset(assetId);

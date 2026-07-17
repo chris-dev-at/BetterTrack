@@ -331,6 +331,15 @@ export interface PortfolioService {
    * the deleted tail is triggered, with lazy read-side refill as the backstop.
    */
   invalidateHistory(portfolioId: string, fromDay: string): Promise<void>;
+  /**
+   * Freshness watermark for the summary + history conditional reads (issue
+   * #555): the snapshot-state `updated_at` (issue #553), which advances on
+   * every history-invalidating write. Ownership-checked (404 on a
+   * foreign/missing id); null when the portfolio has no computed history yet.
+   * Advisory `Last-Modified` only — the authoritative validator is the
+   * body-derived ETag (a live "today" quote moves the ETag, not this).
+   */
+  getSnapshotFreshness(userId: string, portfolioId: string): Promise<Date | null>;
 }
 
 const DEFAULT_LIMIT = 50;
@@ -1862,6 +1871,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     },
 
     invalidateHistory,
+
+    async getSnapshotFreshness(userId, portfolioId) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      return snapshots.getStateUpdatedAt(portfolioId);
+    },
   };
 }
 
