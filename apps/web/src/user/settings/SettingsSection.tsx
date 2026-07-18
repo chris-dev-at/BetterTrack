@@ -156,6 +156,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.alertTriggered.label'),
       description: t('settings.notifications.types.alertTriggered.description'),
     },
+    'earnings.reminder': {
+      label: t('settings.notifications.types.earningsReminder.label'),
+      description: t('settings.notifications.types.earningsReminder.description'),
+    },
     'chat.message': {
       label: t('settings.notifications.types.chatMessage.label'),
       description: t('settings.notifications.types.chatMessage.description'),
@@ -180,6 +184,7 @@ function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string>
     sharing: t('settings.notifications.categories.sharing'),
     chat: t('settings.notifications.categories.chat'),
     alerts: t('settings.notifications.categories.alerts'),
+    markets: t('settings.notifications.categories.markets'),
     account: t('settings.notifications.categories.account'),
   };
 }

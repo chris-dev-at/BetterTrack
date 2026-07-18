@@ -36,6 +36,9 @@ export const QUEUE_NAMES = {
   // V5-P2 usage analytics (#567): the nightly rollup that materializes the
   // per-day usage aggregates the admin usage-analytics page serves.
   usageRollup: 'usage.rollup',
+  // V5-P5 market intelligence (#582): the daily scan that emits the opt-in
+  // earnings reminder for held/watched assets with a report in the lead window.
+  earningsRemind: 'notifications.earningsRemind',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -63,6 +66,7 @@ export interface JobPayloads {
   'snapshots.recompute': { portfolioId: string };
   'snapshots.backfill': Record<string, never>;
   'usage.rollup': Record<string, never>;
+  'notifications.earningsRemind': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }
 

@@ -34,11 +34,13 @@ import {
   createSnapshotsBackfillJob,
   createSnapshotsRecomputeJob,
   createUsageRollupJob,
+  createEarningsReminderJob,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
 } from '../jobs';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
+import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createPortfolioSnapshotRepository } from '../data/repositories/portfolioSnapshotRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
@@ -260,6 +262,15 @@ const definitions = [
   createSnapshotsRecomputeJob({ snapshots }),
   createSnapshotsBackfillJob({ snapshots }),
   createUsageRollupJob({ usageAnalytics }),
+  // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
+  // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
+  // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
+  createEarningsReminderJob({
+    intelRepo: createMarketIntelRepository(db),
+    marketData,
+    notify,
+    enabled: config.marketIntel.enabled,
+  }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

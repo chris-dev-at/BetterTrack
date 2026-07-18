@@ -8,6 +8,7 @@ import { createAppSettingsRepository } from '../data/repositories/appSettingsRep
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
+import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createIdeaRepository } from '../data/repositories/ideaRepository';
@@ -778,6 +779,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const marketIntel = createMarketIntelService({
     marketData,
     assetRepo,
+    intelRepo: createMarketIntelRepository(db),
     enabled: config.marketIntel.enabled,
   });
 

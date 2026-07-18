@@ -389,6 +389,10 @@
           "label": "Price alerts",
           "description": "When one of your price alerts fires."
         },
+        "earningsReminder": {
+          "label": "Earnings reminders",
+          "description": "Ahead of an earnings report for an asset you hold or watch. Off by default."
+        },
         "chatMessage": {
           "label": "Chat messages",
           "description": "When a friend sends you a message."
@@ -476,6 +480,7 @@
         "sharing": "Sharing & activity",
         "chat": "Chat",
         "alerts": "Price alerts",
+        "markets": "Markets",
         "account": "Account"
       },
       "grid": {
@@ -1645,6 +1650,17 @@
         "removeAriaLabel": "Remove {{symbol}} from watchlist",
         "sparklineAriaLabel": "1-month trend for {{symbol}}"
       },
+      "earnings": {
+        "heading": "Upcoming earnings",
+        "held": "Held",
+        "watched": "Watch",
+        "heldTitle": "You hold this asset",
+        "watchedTitle": "On your watchlist",
+        "estimated": "Estimated",
+        "confirmed": "Confirmed",
+        "showMore": "Show {{count}} more",
+        "showLess": "Show less"
+      },
       "alerts": {
         "heading": "Alerts",
         "emptyTitle": "Alerts panel coming soon",
@@ -1960,6 +1976,19 @@
         "title": "Appears in",
         "emptyTitle": "Not in any conglomerate or portfolio",
         "emptyDescription": "Add this asset to a conglomerate or record a transaction to see it here."
+      },
+      "earnings": {
+        "title": "Earnings",
+        "nextLabel": "Next report",
+        "recentLabel": "Recent reports",
+        "estimated": "Estimated",
+        "confirmed": "Confirmed",
+        "epsEstimate": "Est. EPS {{value}}",
+        "epsActual": "EPS {{value}}"
+      },
+      "splits": {
+        "title": "Stock splits",
+        "announced": "Announced"
       },
       "watchlistAddError": "Failed to add to Watchlist. Please try again.",
       "quickActions": "Quick actions",

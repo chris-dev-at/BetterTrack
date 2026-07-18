@@ -91,6 +91,14 @@ export {
 } from './usageAnalyticsJobs';
 
 export {
+  createEarningsReminderJob,
+  EARNINGS_REMINDER_SCHEDULER_ID,
+  EARNINGS_REMINDER_CRON,
+  EARNINGS_REMINDER_TZ,
+  type EarningsReminderJobDeps,
+} from './earningsReminderJob';
+
+export {
   createPricesRefreshDailyJob,
   createPricesBackfillJob,
   createFxRefreshSpotJob,

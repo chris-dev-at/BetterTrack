@@ -242,6 +242,29 @@ export interface AccountDataExportEvent {
 }
 
 /**
+ * `earnings.reminder` → a held/watched asset's earnings report is coming up
+ * inside the reminder lead window (§13.5 V5-P5 arc b). Purely informational and
+ * OPT-IN (default off on every channel); `userId` is the recipient who holds or
+ * watches the asset. Deduped per (user, asset, report date) by the dispatcher's
+ * eventKey and a scan-side Redis lock, so a daily re-scan across the multi-day
+ * window never re-notifies. All display strings (symbol/name/date) ride the
+ * event so the dispatcher renders without a second lookup.
+ */
+export interface EarningsReminderEvent {
+  type: 'earnings.reminder';
+  /** Recipient — the user who holds or watches the asset. */
+  userId: string;
+  assetId: string;
+  symbol: string;
+  name: string;
+  /** The upcoming earnings report date (ISO-8601). */
+  earningsDate: string;
+  /** Whether the report date is an estimate rather than a confirmed date. */
+  estimated: boolean;
+  occurredAt: string;
+}
+
+/**
  * `chat.message` → a friend sent the recipient a chat message (§13.3 V3-P8).
  * `userId` is the **recipient**; `senderId`/`senderUsername` identify the sender.
  * Two independent subscribers consume it: the realtime gateway pushes it to the
@@ -286,6 +309,7 @@ export type DomainEvent =
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
   | AccountDataExportEvent
+  | EarningsReminderEvent
   | ChatMessageEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
@@ -312,5 +336,6 @@ export const DOMAIN_EVENT_TYPES = [
   'follow.alert.fired',
   'account.temp_password',
   'account.data_export',
+  'earnings.reminder',
   'chat.message',
 ] as const satisfies readonly DomainEventType[];

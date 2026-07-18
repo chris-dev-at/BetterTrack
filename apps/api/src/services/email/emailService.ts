@@ -5,6 +5,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  earningsReminderEmail,
   deferredNotificationEmail,
   digestEmail,
   followAlertEmail,
@@ -181,6 +182,16 @@ export interface EmailService {
     body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: an opt-in earnings reminder for a held/watched asset (§13.5 V5-P5). */
+  sendEarningsReminder(params: {
+    to: string;
+    userId: string;
+    symbol: string;
+    name: string;
+    earningsDate: string;
+    estimated: boolean;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /** Notification email: a friend sent `userId` a chat message (§13.3 V3-P8). No message content. */
   sendChatMessage(params: {
     to: string;
@@ -244,6 +255,7 @@ type EmailTemplateKind =
   | 'follow_alert_created'
   | 'follow_alert_fired'
   | 'alert_triggered'
+  | 'earnings_reminder'
   | 'chat_message'
   | 'digest';
 
@@ -470,6 +482,21 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         {
           userId,
         },
+      ),
+
+    sendEarningsReminder: ({ to, userId, symbol, name, earningsDate, estimated, locale }) =>
+      deliver(
+        'earnings_reminder',
+        to,
+        earningsReminderEmail({
+          symbol,
+          name,
+          earningsDate,
+          estimated,
+          appUrl: config.appOrigin,
+          locale,
+        }),
+        { userId },
       ),
 
     sendChatMessage: ({ to, userId, actorUsername, locale }) =>

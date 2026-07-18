@@ -145,6 +145,7 @@ const componentSchemas = {
   MarketIntelStatusResponse: contracts.marketIntelStatusResponseSchema,
   DividendsResponse: contracts.dividendsResponseSchema,
   EarningsResponse: contracts.earningsResponseSchema,
+  EarningsCalendarResponse: contracts.earningsCalendarResponseSchema,
   NewsResponse: contracts.newsResponseSchema,
   SplitsResponse: contracts.splitsResponseSchema,
 
@@ -1454,6 +1455,14 @@ const endpoints: EndpointDef[] = [
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.EarningsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/intel/earnings-calendar',
+    tag: 'Assets',
+    summary: 'Upcoming earnings across the caller’s held + watched assets (Workboard panel).',
+    status: 200,
+    response: R.EarningsCalendarResponse,
   },
   {
     method: 'get',
