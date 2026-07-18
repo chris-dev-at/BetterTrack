@@ -624,6 +624,79 @@ describe('switching AT→DE mid-year applies forward only', () => {
     );
     expect(corrections).toHaveLength(0);
   });
+
+  it('a DE dividend backdated below a frozen-AT year replays that year for the ripple', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset('BAYN.DE');
+
+    // AT era: buy 2025, sell 2026 → frozen AT withholding 27.5 % × 450 = 123.75.
+    await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'AT' });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2025-01-10T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 19,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+
+    await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'DE' });
+
+    // Backdated into 2025 — below the AT sell's year, so the DE ripple visits
+    // 2026 and needs that AT sell's realization replayed (this exact shape
+    // used to 500 with "Tax engine: no realization for AT sell").
+    // 2,000 − 1,000 allowance → KapESt 250.00 + Soli 13.75 = 263.75.
+    const div = await dividend(agent, pid, {
+      assetId: asset.id,
+      grossAmountEur: 2000,
+      executedAt: '2025-07-01T12:00:00.000Z',
+    });
+    expect(div.body.dividend.taxAmountEur).toBe(263.75);
+
+    const movements = await cashMovements(agent, pid);
+    const withheld = movements
+      .filter((m) => m.kind === 'tax_withholding')
+      .map((m) => [m.amountEur, m.taxYear]);
+    expect(withheld).toEqual(
+      expect.arrayContaining([
+        [-263.75, 2025],
+        [-123.75, 2026],
+      ]),
+    );
+    // 2026's combined target did not move (its DE component is 0): the ripple
+    // settles to a zero delta and posts no unattached correction.
+    const unattached = movements.filter(
+      (m) =>
+        (m.kind === 'tax_withholding' || m.kind === 'tax_refund') &&
+        m.transactionId === null &&
+        m.dividendId === null,
+    );
+    expect(unattached).toHaveLength(0);
+
+    const years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2025)).toMatchObject({
+      taxNetEur: 263.75,
+      de: { allowanceUsedEur: 1000, kapestEur: 250, soliEur: 13.75 },
+    });
+    const y2026 = years.find((y) => y.year === 2026)!;
+    expect(y2026.taxNetEur).toBe(123.75);
+    expect(y2026.de).toBeUndefined();
+  });
 });
 
 // ─── Delete-and-re-add + the downstream ripple ────────────────────────────────

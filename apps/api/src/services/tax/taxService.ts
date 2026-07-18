@@ -1115,10 +1115,21 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       ]);
       const involveDe = country === TAX_COUNTRY_DE || portfolioHasDeRows(allTxns, dividendRows);
 
+      // A DE dividend re-settles every LATER country-specific year (the
+      // ripple loop below), whose AT targets need those years' sell
+      // realizations replayed too — not just the dividend's own year.
+      const rippleYears =
+        country === TAX_COUNTRY_DE
+          ? countrySpecificYears(allTxns, dividendRows, movements, viennaYearOfDate).filter(
+              (y) => y > year,
+            )
+          : [];
+
       const neededAssetIds = new Set<string>();
       for (const t of allTxns) {
         if (t.side !== 'sell' || t.taxMode !== 'country_specific') continue;
-        if (viennaYearOfDate(t.executedAt) === year || (involveDe && isDeSell(t))) {
+        const txnYear = viennaYearOfDate(t.executedAt);
+        if (txnYear === year || rippleYears.includes(txnYear) || (involveDe && isDeSell(t))) {
           neededAssetIds.add(t.assetId);
         }
       }
@@ -1185,9 +1196,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       if (country === TAX_COUNTRY_DE) {
         const newEvent: DeTaxableEvent = { kind: 'dividend', amountEur: grossEur };
         const withNew = deEventsByYear(deView, new Map([[year, [newEvent]]]));
-        const csYears = countrySpecificYears(allTxns, dividendRows, movements, viennaYearOfDate);
-        for (const y of csYears) {
-          if (y <= year) continue;
+        for (const y of rippleYears) {
           const targetEur = floorCents(
             atTargetForYear(allTxns, dividendRows, realizations, y) + deTargetForYear(withNew, y),
           );
