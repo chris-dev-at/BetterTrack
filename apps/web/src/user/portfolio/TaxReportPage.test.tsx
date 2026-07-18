@@ -64,6 +64,10 @@ beforeEach(() => {
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
   vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
+  vi.mocked(portfolioApi.taxYearReportCsvUrl).mockImplementation(
+    (pid, year, locale) =>
+      `/api/v1/portfolios/${pid}/reports/tax-years/${year}/export.csv?locale=${locale}`,
+  );
 });
 
 describe('TaxReportPage', () => {
@@ -248,5 +252,38 @@ describe('TaxReportPage', () => {
     await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
     await screen.findByText('AAPL');
     expect(screen.queryByText('Germany (Abgeltungsteuer)')).not.toBeInTheDocument();
+  });
+
+  test('an expanded year offers CSV export and a print/PDF link scoped to that year', async () => {
+    vi.mocked(portfolioApi.getTaxYearReport).mockResolvedValue({
+      year: 2026,
+      summary: YEAR_2026,
+      positions: [
+        {
+          asset: APPLE,
+          realizedPnlEur: 350,
+          dividendsGrossEur: 0,
+          taxEur: 96.25,
+          sells: [],
+          dividends: [],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await screen.findByText('AAPL');
+
+    const csv = screen.getByRole('link', { name: /Export CSV/i });
+    expect(csv).toHaveAttribute(
+      'href',
+      '/api/v1/portfolios/p1/reports/tax-years/2026/export.csv?locale=en',
+    );
+    expect(csv).toHaveAttribute('download');
+    expect(portfolioApi.taxYearReportCsvUrl).toHaveBeenCalledWith('p1', 2026, 'en');
+
+    const print = screen.getByRole('link', { name: /Print \/ PDF/i });
+    expect(print).toHaveAttribute('href', '/portfolio/tax/print?portfolio=p1&year=2026');
   });
 });

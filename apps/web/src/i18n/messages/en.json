@@ -1292,6 +1292,20 @@
         "sonstigePot": "Other-loss pot (in → out)",
         "kapest": "KapESt (25 %)",
         "soli": "Soli (5.5 % of tax)"
+      },
+      "dividend": {
+        "gross": "Gross",
+        "tax": "Tax"
+      },
+      "export": {
+        "csv": "Export CSV",
+        "print": "Print / PDF"
+      },
+      "print": {
+        "print": "Print",
+        "back": "Back to report",
+        "missingParams": "Choose a portfolio and year to print.",
+        "loadError": "Couldn’t load the report for printing."
       }
     },
     "section": {
