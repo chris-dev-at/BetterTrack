@@ -21,6 +21,12 @@ import {
 import { useT } from '../../i18n';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
+import {
+  ASSET_EARNINGS_QUERY_KEY,
+  ASSET_SPLITS_QUERY_KEY,
+  getAssetEarnings,
+  getAssetSplits,
+} from '../../lib/marketIntelApi';
 import { useLiveFrames } from '../../lib/realtime';
 import {
   WATCHLISTS_QUERY_KEY,
@@ -29,7 +35,7 @@ import {
   useWatchlistMembership,
 } from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
-import { formatDateTime, formatSignedPercent } from '../../lib/format';
+import { formatDate, formatDateTime, formatSignedPercent } from '../../lib/format';
 import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
@@ -297,6 +303,171 @@ function AppearsInSection() {
     </section>
   );
 }
+
+// ─── Market intelligence: earnings + splits (§13.5 V5-P5) ────────────────────
+
+/**
+ * A small confirmed/estimated pill for an earnings date. Estimated dates are
+ * still soft (a provider guess), so they read amber; confirmed reads emerald.
+ */
+function EstimatedBadge({ estimated }: { estimated: boolean }) {
+  const t = useT();
+  return (
+    <span
+      className={cx(
+        'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide ring-1',
+        estimated
+          ? 'bg-amber-950/40 text-amber-300 ring-amber-800/60'
+          : 'bg-emerald-950/40 text-emerald-300 ring-emerald-800/60',
+      )}
+    >
+      {estimated ? t('assets.detail.earnings.estimated') : t('assets.detail.earnings.confirmed')}
+    </span>
+  );
+}
+
+/**
+ * Earnings block (arc b): the next report date (confirmed vs estimated) plus a
+ * compact list of recent past reports with EPS. Hidden entirely when the
+ * capability is unavailable or there is nothing to show (anti-bloat).
+ */
+function EarningsSection({ assetId }: { assetId: string }) {
+  const t = useT();
+  const { data } = useQuery({
+    queryKey: ASSET_EARNINGS_QUERY_KEY(assetId),
+    queryFn: ({ signal }) => getAssetEarnings(assetId, signal),
+    staleTime: 15 * 60_000,
+  });
+
+  // Invisible when unconfigured (gate off / no capability / upstream error) or
+  // when the provider knows of no earnings at all.
+  if (!data || !data.available) return null;
+  if (!data.next && data.recent.length === 0) return null;
+
+  return (
+    <section aria-labelledby="earnings-heading" className="flex flex-col gap-3">
+      <h2 id="earnings-heading" className="text-base font-semibold text-neutral-200">
+        {t('assets.detail.earnings.title')}
+      </h2>
+      <div className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+        {data.next && data.next.date ? (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-col">
+              <span className="text-xs uppercase tracking-wide text-neutral-500">
+                {t('assets.detail.earnings.nextLabel')}
+              </span>
+              <span className="text-sm font-medium text-neutral-100">
+                {formatDate(data.next.date)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {data.next.epsEstimate != null ? (
+                <span className="text-xs text-neutral-400">
+                  {t('assets.detail.earnings.epsEstimate', {
+                    value: data.next.epsEstimate.toFixed(2),
+                  })}
+                </span>
+              ) : null}
+              <EstimatedBadge estimated={data.next.estimated} />
+            </div>
+          </div>
+        ) : null}
+
+        {data.recent.length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs uppercase tracking-wide text-neutral-500">
+              {t('assets.detail.earnings.recentLabel')}
+            </span>
+            <ul className="flex flex-col gap-1">
+              {data.recent
+                .slice()
+                .reverse()
+                .map((e) => (
+                  <li
+                    key={e.date ?? `${e.epsActual}-${e.epsEstimate}`}
+                    className="flex items-center justify-between text-sm text-neutral-300"
+                  >
+                    <span className="tabular-nums text-neutral-400">{formatDate(e.date)}</span>
+                    <span className="tabular-nums">
+                      {e.epsActual != null
+                        ? t('assets.detail.earnings.epsActual', { value: e.epsActual.toFixed(2) })
+                        : e.epsEstimate != null
+                          ? t('assets.detail.earnings.epsEstimate', {
+                              value: e.epsEstimate.toFixed(2),
+                            })
+                          : EM_DASH_TEXT}
+                    </span>
+                  </li>
+                ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** Format a split as its ratio, preferring the provider's display string. */
+function splitRatio(numerator: number, denominator: number, ratio: string): string {
+  if (ratio) return ratio;
+  return `${numerator}:${denominator}`;
+}
+
+/**
+ * Splits block (arc d): announced (upcoming) splits first, then past splits,
+ * each with its ratio. Awareness only — no holdings math. Hidden when the
+ * capability is unavailable or there are no splits (anti-bloat).
+ */
+function SplitsSection({ assetId }: { assetId: string }) {
+  const t = useT();
+  const { data } = useQuery({
+    queryKey: ASSET_SPLITS_QUERY_KEY(assetId),
+    queryFn: ({ signal }) => getAssetSplits(assetId, signal),
+    staleTime: 60 * 60_000,
+  });
+
+  if (!data || !data.available) return null;
+  if (data.history.length === 0 && data.upcoming.length === 0) return null;
+
+  return (
+    <section aria-labelledby="splits-heading" className="flex flex-col gap-3">
+      <h2 id="splits-heading" className="text-base font-semibold text-neutral-200">
+        {t('assets.detail.splits.title')}
+      </h2>
+      <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+        {data.upcoming.map((s, i) => (
+          <div
+            key={`upcoming-${s.date ?? i}`}
+            className="flex items-center justify-between text-sm"
+          >
+            <span className="flex items-center gap-2">
+              <span className="inline-flex items-center rounded-full bg-sky-950/40 px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide text-sky-300 ring-1 ring-sky-800/60">
+                {t('assets.detail.splits.announced')}
+              </span>
+              <span className="tabular-nums text-neutral-400">{formatDate(s.date)}</span>
+            </span>
+            <span className="font-mono text-neutral-100">
+              {splitRatio(s.numerator, s.denominator, s.ratio)}
+            </span>
+          </div>
+        ))}
+        {data.history
+          .slice()
+          .reverse()
+          .map((s, i) => (
+            <div key={`past-${s.date ?? i}`} className="flex items-center justify-between text-sm">
+              <span className="tabular-nums text-neutral-400">{formatDate(s.date)}</span>
+              <span className="font-mono text-neutral-200">
+                {splitRatio(s.numerator, s.denominator, s.ratio)}
+              </span>
+            </div>
+          ))}
+      </div>
+    </section>
+  );
+}
+
+const EM_DASH_TEXT = '—';
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
@@ -762,6 +933,11 @@ export function AssetDetailPage() {
 
       {/* Sections */}
       <AppearsInSection />
+      {/* Market intelligence (§13.5 V5-P5) — each block self-hides when its
+          capability is unavailable, so the page is byte-identical when the arc
+          is unconfigured. */}
+      <EarningsSection assetId={id} />
+      <SplitsSection assetId={id} />
       <AlertsSection
         asset={{
           id,

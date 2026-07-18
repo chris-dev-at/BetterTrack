@@ -20,6 +20,13 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
 
   router.use(requireUser);
 
+  // GET /assets/intel/earnings-calendar — the caller's upcoming-earnings feed
+  // across held + watched assets (the Workboard panel, arc b). Registered before
+  // the `/:id/intel` family so the literal `intel` segment can't be read as an id.
+  router.get('/intel/earnings-calendar', async (req, res) => {
+    res.json(await ctx.marketIntel.earningsCalendar(req.authUser!.id));
+  });
+
   // GET /assets/:id/intel — capability descriptor (gate + per-capability map).
   router.get('/:id/intel', validateParams(assetIdParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };

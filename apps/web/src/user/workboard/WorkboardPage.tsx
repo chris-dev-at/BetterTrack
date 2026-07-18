@@ -12,7 +12,8 @@ import type { WorkboardItem } from '@bettertrack/contracts';
 
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
-import { formatSignedPercent } from '../../lib/format';
+import { formatDate, formatSignedPercent } from '../../lib/format';
+import { EARNINGS_CALENDAR_QUERY_KEY, getEarningsCalendar } from '../../lib/marketIntelApi';
 import { useT } from '../../i18n';
 import {
   WATCHLIST_SHARING_QUERY_KEY,
@@ -407,6 +408,98 @@ function WatchlistZone() {
   );
 }
 
+// ─── Upcoming earnings panel (§13.5 V5-P5 arc b) ─────────────────────────────
+
+/** How many rows show before the panel offers "show more" (anti-bloat: compact). */
+const EARNINGS_PANEL_COLLAPSED = 5;
+
+/**
+ * Compact "Upcoming earnings" panel: the next earnings dates across the user's
+ * held + watched assets, chronological, estimated vs confirmed flagged,
+ * expandable past the first few. Entirely ABSENT when the calendar is
+ * unavailable (gate off / no capability) or empty — never an empty shell.
+ */
+function UpcomingEarningsZone() {
+  const t = useT();
+  const [expanded, setExpanded] = useState(false);
+  const { data } = useQuery({
+    queryKey: EARNINGS_CALENDAR_QUERY_KEY,
+    queryFn: ({ signal }) => getEarningsCalendar(signal),
+    staleTime: 15 * 60_000,
+  });
+
+  // Invisible when unconfigured or when nothing is coming up (anti-bloat rule).
+  if (!data || !data.available || data.entries.length === 0) return null;
+
+  const rows = expanded ? data.entries : data.entries.slice(0, EARNINGS_PANEL_COLLAPSED);
+  const hiddenCount = data.entries.length - rows.length;
+
+  return (
+    <section aria-labelledby="earnings-heading" className="flex flex-col gap-4">
+      <h2 id="earnings-heading" className="text-lg font-semibold text-neutral-200">
+        {t('workboard.overview.earnings.heading')}
+      </h2>
+      <div className="overflow-hidden rounded-lg border border-neutral-800">
+        <ul className="divide-y divide-neutral-800">
+          {rows.map((e) => (
+            <li key={`${e.assetId}-${e.date}`} className="flex items-center gap-3 px-4 py-2.5">
+              <div className="flex min-w-0 flex-1 flex-col">
+                <Link
+                  to={`/assets/${e.assetId}`}
+                  className="font-mono text-sm font-medium text-neutral-100 transition-colors hover:text-sky-400"
+                >
+                  {e.symbol}
+                </Link>
+                <span className="max-w-[14rem] truncate text-xs text-neutral-500" title={e.name}>
+                  {e.name}
+                </span>
+              </div>
+              <span
+                className="inline-flex items-center rounded-full bg-neutral-800 px-2 py-0.5 text-[0.65rem] uppercase tracking-wide text-neutral-400 ring-1 ring-neutral-700"
+                title={
+                  e.held
+                    ? t('workboard.overview.earnings.heldTitle')
+                    : t('workboard.overview.earnings.watchedTitle')
+                }
+              >
+                {e.held
+                  ? t('workboard.overview.earnings.held')
+                  : t('workboard.overview.earnings.watched')}
+              </span>
+              <span
+                className={cx(
+                  'inline-flex items-center rounded-full px-2 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide ring-1',
+                  e.estimated
+                    ? 'bg-amber-950/40 text-amber-300 ring-amber-800/60'
+                    : 'bg-emerald-950/40 text-emerald-300 ring-emerald-800/60',
+                )}
+              >
+                {e.estimated
+                  ? t('workboard.overview.earnings.estimated')
+                  : t('workboard.overview.earnings.confirmed')}
+              </span>
+              <span className="w-24 shrink-0 text-right text-sm tabular-nums text-neutral-300">
+                {formatDate(e.date)}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {hiddenCount > 0 || expanded ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="w-full border-t border-neutral-800 bg-neutral-900/60 py-2 text-xs font-medium text-sky-400 transition-colors hover:bg-neutral-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          >
+            {expanded
+              ? t('workboard.overview.earnings.showLess')
+              : t('workboard.overview.earnings.showMore', { count: hiddenCount })}
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 // ─── Zone 2: Alerts (placeholder) ────────────────────────────────────────────
 
 function AlertsZone() {
@@ -461,6 +554,7 @@ export function WorkboardPage() {
         <p className="mt-1 text-sm text-neutral-400">{t('workboard.overview.subtitle')}</p>
       </div>
       <WatchlistZone />
+      <UpcomingEarningsZone />
       <AlertsZone />
       <ConglomeratesZone />
     </div>

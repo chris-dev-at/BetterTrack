@@ -6,7 +6,9 @@ import {
   DEFAULT_QUIET_HOURS,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_TYPES,
+  OPT_IN_NOTIFICATION_TYPES,
   isAccountSecurityNotificationType,
+  isOptInNotificationType,
   isUrgentNotification,
   notificationChannelDefaultEnabled,
   quietHoursSchema,
@@ -40,6 +42,7 @@ describe('notification taxonomy (#368)', () => {
       'account.temp_password',
       'account.data_export',
       'alert.triggered',
+      'earnings.reminder',
       'chat.message',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
@@ -65,8 +68,10 @@ describe('lean email defaults (V4-P0c)', () => {
     }
   });
 
-  it('email defaults ON only for account/security; other channels default ON for every type', () => {
+  it('email defaults ON only for account/security; other channels default ON for every non-opt-in type', () => {
     for (const type of NOTIFICATION_TYPES) {
+      // V5-P5 opt-in types default OFF on every channel — covered separately below.
+      if (isOptInNotificationType(type)) continue;
       const accountSecurity = isAccountSecurityNotificationType(type);
       expect(notificationChannelDefaultEnabled('email', type)).toBe(accountSecurity);
       expect(notificationChannelDefaultEnabled('inapp', type)).toBe(true);
@@ -76,6 +81,22 @@ describe('lean email defaults (V4-P0c)', () => {
       expect(notificationChannelDefaultEnabled('telegram', type)).toBe(true);
       expect(notificationChannelDefaultEnabled('discord', type)).toBe(true);
     }
+  });
+});
+
+describe('opt-in notification types (§13.5 V5-P5)', () => {
+  it('earnings.reminder is the opt-in set and defaults OFF on every channel', () => {
+    expect([...OPT_IN_NOTIFICATION_TYPES]).toEqual(['earnings.reminder']);
+    for (const type of OPT_IN_NOTIFICATION_TYPES) {
+      expect(isOptInNotificationType(type)).toBe(true);
+      for (const channel of ['inapp', 'email', 'telegram', 'discord', 'push', 'webpush']) {
+        expect(notificationChannelDefaultEnabled(channel, type)).toBe(false);
+      }
+    }
+  });
+
+  it('opt-in types are not in the urgent-bypass class (quiet hours still applies)', () => {
+    expect(isUrgentNotification({ type: 'earnings.reminder' })).toBe(false);
   });
 });
 

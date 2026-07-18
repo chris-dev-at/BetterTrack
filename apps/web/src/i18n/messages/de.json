@@ -389,6 +389,10 @@
           "label": "Preisalarme",
           "description": "Wenn einer deiner Preisalarme auslöst."
         },
+        "earningsReminder": {
+          "label": "Erinnerungen an Quartalszahlen",
+          "description": "Vor einem Quartalsbericht für einen Wert, den du hältst oder beobachtest. Standardmäßig aus."
+        },
         "chatMessage": {
           "label": "Chat-Nachrichten",
           "description": "Wenn dir ein Freund eine Nachricht sendet."
@@ -476,6 +480,7 @@
         "sharing": "Teilen & Aktivität",
         "chat": "Chat",
         "alerts": "Preisalarme",
+        "markets": "Märkte",
         "account": "Konto"
       },
       "grid": {
@@ -1645,6 +1650,17 @@
         "removeAriaLabel": "{{symbol}} von der Watchlist entfernen",
         "sparklineAriaLabel": "1-Monats-Trend für {{symbol}}"
       },
+      "earnings": {
+        "heading": "Anstehende Quartalszahlen",
+        "held": "Gehalten",
+        "watched": "Beobachtet",
+        "heldTitle": "Du hältst diesen Wert",
+        "watchedTitle": "Auf deiner Watchlist",
+        "estimated": "Geschätzt",
+        "confirmed": "Bestätigt",
+        "showMore": "{{count}} weitere anzeigen",
+        "showLess": "Weniger anzeigen"
+      },
       "alerts": {
         "heading": "Alarme",
         "emptyTitle": "Alarm-Panel folgt in Kürze",
@@ -1960,6 +1976,19 @@
         "title": "Enthalten in",
         "emptyTitle": "In keinem Konglomerat oder Portfolio",
         "emptyDescription": "Füge diese Anlage einem Konglomerat hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
+      },
+      "earnings": {
+        "title": "Quartalszahlen",
+        "nextLabel": "Nächster Bericht",
+        "recentLabel": "Letzte Berichte",
+        "estimated": "Geschätzt",
+        "confirmed": "Bestätigt",
+        "epsEstimate": "Erw. EPS {{value}}",
+        "epsActual": "EPS {{value}}"
+      },
+      "splits": {
+        "title": "Aktiensplits",
+        "announced": "Angekündigt"
       },
       "watchlistAddError": "Konnte nicht zur Watchlist hinzugefügt werden. Bitte versuche es erneut.",
       "quickActions": "Schnellaktionen",

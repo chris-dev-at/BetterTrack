@@ -7,6 +7,7 @@ import {
   NOTIFICATION_TYPES,
   accountSettingsResponseSchema,
   isAccountSecurityNotificationType,
+  isOptInNotificationType,
   meResponseSchema,
   notificationSettingsResponseSchema,
 } from '@bettertrack/contracts';
@@ -76,6 +77,18 @@ describe('GET /api/v1/settings/notifications', () => {
     const settings = await getSettings(agent);
     expect(Object.keys(settings!.matrix).sort()).toEqual([...NOTIFICATION_TYPES].sort());
     for (const type of NOTIFICATION_TYPES) {
+      if (isOptInNotificationType(type)) {
+        // V5-P5 opt-in types default OFF on every channel until enabled.
+        expect(settings!.matrix[type]).toEqual({
+          inapp: false,
+          email: false,
+          telegram: false,
+          discord: false,
+          push: false,
+          webpush: false,
+        });
+        continue;
+      }
       expect(settings!.matrix[type]).toEqual({
         inapp: true,
         email: isAccountSecurityNotificationType(type),

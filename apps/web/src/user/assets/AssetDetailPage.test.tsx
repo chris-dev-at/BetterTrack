@@ -19,6 +19,13 @@ vi.mock('../../lib/workboardApi', () => ({
   WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
 }));
 
+vi.mock('../../lib/marketIntelApi', () => ({
+  ASSET_EARNINGS_QUERY_KEY: (id: string) => ['asset', id, 'intel', 'earnings'],
+  ASSET_SPLITS_QUERY_KEY: (id: string) => ['asset', id, 'intel', 'splits'],
+  getAssetEarnings: vi.fn(),
+  getAssetSplits: vi.fn(),
+}));
+
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
 // exactly as the PriceChart tests do (same shape, different file).
 const chartMocks = vi.hoisted(() => {
@@ -50,8 +57,12 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { getAssetEarnings, getAssetSplits } from '../../lib/marketIntelApi';
 import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { AssetDetailPage } from './AssetDetailPage';
+
+const UNAVAILABLE_EARNINGS = { available: false as const, next: null, recent: [] };
+const UNAVAILABLE_SPLITS = { available: false as const, history: [], upcoming: [] };
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -150,6 +161,56 @@ beforeEach(() => {
   vi.mocked(getAssetHistory).mockResolvedValue(baseHistory);
   vi.mocked(useWatchlistMembership).mockReturnValue(makeWatchlistMembership());
   vi.mocked(useAddToWatchlist).mockReturnValue(makeAddToWatchlistMutation());
+  // Market-intel blocks hidden by default (unconfigured) — individual tests opt in.
+  vi.mocked(getAssetEarnings).mockResolvedValue(UNAVAILABLE_EARNINGS);
+  vi.mocked(getAssetSplits).mockResolvedValue(UNAVAILABLE_SPLITS);
+});
+
+describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
+  test('shows the earnings block with the next date + estimated badge', async () => {
+    vi.mocked(getAssetEarnings).mockResolvedValue({
+      available: true,
+      next: {
+        date: '2026-08-10T00:00:00.000Z',
+        epsEstimate: 1.42,
+        epsActual: null,
+        estimated: true,
+      },
+      recent: [
+        { date: '2026-04-30T00:00:00.000Z', epsEstimate: 1.5, epsActual: 1.53, estimated: false },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Earnings')).toBeInTheDocument());
+    expect(screen.getByText('Next report')).toBeInTheDocument();
+    // Estimated (amber) badge distinguishes an unconfirmed date.
+    expect(screen.getByText('Estimated')).toBeInTheDocument();
+  });
+
+  test('hides the earnings block when the capability is unavailable', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText('Earnings')).not.toBeInTheDocument();
+  });
+
+  test('shows past + announced splits with ratio formatting', async () => {
+    vi.mocked(getAssetSplits).mockResolvedValue({
+      available: true,
+      history: [{ date: '2020-08-31T00:00:00.000Z', numerator: 4, denominator: 1, ratio: '4:1' }],
+      upcoming: [{ date: '2026-09-01T00:00:00.000Z', numerator: 2, denominator: 1, ratio: '2:1' }],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Stock splits')).toBeInTheDocument());
+    expect(screen.getByText('Announced')).toBeInTheDocument();
+    expect(screen.getByText('2:1')).toBeInTheDocument();
+    expect(screen.getByText('4:1')).toBeInTheDocument();
+  });
+
+  test('hides the splits block when there are no splits', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText('Stock splits')).not.toBeInTheDocument();
+  });
 });
 
 describe('AssetDetailPage — header rendering', () => {

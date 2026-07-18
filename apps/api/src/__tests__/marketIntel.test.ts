@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   dividendsResponseSchema,
+  earningsCalendarResponseSchema,
   earningsResponseSchema,
   marketIntelStatusResponseSchema,
   newsResponseSchema,
@@ -263,5 +264,72 @@ describe('market intel — unconfigured shapes', () => {
     if (!parsed.success) return;
     expect(parsed.data.available).toBe(false);
     expect(parsed.data.history).toEqual([]);
+  });
+});
+
+describe('GET /api/v1/assets/intel/earnings-calendar (Workboard panel, arc b)', () => {
+  /** Add `asset` to `user`'s default watchlist so it counts as "watched". */
+  async function watch(h: TestHarness, userId: string, assetId: string) {
+    const [wl] = await h.db
+      .insert(schema.watchlists)
+      .values({ userId, name: 'General', isDefault: true })
+      .returning({ id: schema.watchlists.id });
+    await h.db
+      .insert(schema.workboardItems)
+      .values({ userId, watchlistId: wl!.id, assetId, sortOrder: 0 });
+  }
+
+  it('requires authentication', async () => {
+    const h = await createTestApp({ marketData: fullIntelStub() });
+    const res = await request(h.app).get('/api/v1/assets/intel/earnings-calendar');
+    expect(res.status).toBe(401);
+  });
+
+  it('lists a watched asset with its upcoming earnings date + estimated flag', async () => {
+    const h = await createTestApp({ marketData: fullIntelStub() });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    await watch(h, user.id, asset.id);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/assets/intel/earnings-calendar');
+    expect(res.status).toBe(200);
+    const parsed = earningsCalendarResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.available).toBe(true);
+    expect(parsed.data.entries).toHaveLength(1);
+    expect(parsed.data.entries[0]).toMatchObject({
+      assetId: asset.id,
+      symbol: 'AAPL',
+      held: false,
+      watched: true,
+      estimated: true,
+    });
+  });
+
+  it('is empty (available:true) for a user with no held/watched assets', async () => {
+    const h = await createTestApp({ marketData: fullIntelStub() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/assets/intel/earnings-calendar');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: true, entries: [] });
+  });
+
+  it('MARKET_INTEL_ENABLED=false ⇒ available:false, empty (invisible when unconfigured)', async () => {
+    const h = await createTestApp({
+      marketData: fullIntelStub(),
+      env: { MARKET_INTEL_ENABLED: 'false' },
+    });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    await watch(h, user.id, asset.id);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get('/api/v1/assets/intel/earnings-calendar');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ available: false, entries: [] });
   });
 });

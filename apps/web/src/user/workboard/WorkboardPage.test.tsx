@@ -21,6 +21,11 @@ vi.mock('../../lib/assetApi', () => ({
   getAssetHistory: vi.fn(),
 }));
 
+vi.mock('../../lib/marketIntelApi', () => ({
+  EARNINGS_CALENDAR_QUERY_KEY: ['intel', 'earnings-calendar'],
+  getEarningsCalendar: vi.fn(),
+}));
+
 import {
   getWatchlistSharing,
   listWorkboard,
@@ -29,7 +34,10 @@ import {
   updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { getEarningsCalendar } from '../../lib/marketIntelApi';
 import { WorkboardPage } from './WorkboardPage';
+
+const EMPTY_EARNINGS_CALENDAR = { available: false as const, entries: [] };
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -114,6 +122,71 @@ beforeEach(() => {
   vi.mocked(removeFromWorkboard).mockResolvedValue(undefined);
   vi.mocked(reorderWorkboard).mockResolvedValue(undefined);
   vi.mocked(getWatchlistSharing).mockResolvedValue({ visibility: 'private' });
+  // Earnings panel hidden by default (unconfigured); opt-in tests override.
+  vi.mocked(getEarningsCalendar).mockResolvedValue(EMPTY_EARNINGS_CALENDAR);
+});
+
+// ─── Upcoming earnings panel (§13.5 V5-P5) ───────────────────────────────────
+
+describe('WorkboardPage — upcoming earnings panel', () => {
+  const CAL_ENTRY = (over: Record<string, unknown>) => ({
+    assetId: 'aa000000-0000-0000-0000-000000000009',
+    symbol: 'AAA',
+    name: 'Asset AAA',
+    date: '2026-08-10T00:00:00.000Z',
+    epsEstimate: 1.2,
+    estimated: false,
+    held: true,
+    watched: false,
+    ...over,
+  });
+
+  test('lists held + watched assets chronologically with confirmed/estimated flags', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+    vi.mocked(getEarningsCalendar).mockResolvedValue({
+      available: true,
+      entries: [
+        CAL_ENTRY({
+          symbol: 'MSFT',
+          name: 'Microsoft',
+          date: '2026-07-25T00:00:00.000Z',
+          estimated: false,
+          held: false,
+          watched: true,
+        }),
+        CAL_ENTRY({
+          symbol: 'AAPL',
+          name: 'Apple',
+          date: '2026-08-10T00:00:00.000Z',
+          estimated: true,
+          held: true,
+          watched: false,
+        }),
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Upcoming earnings')).toBeInTheDocument());
+    expect(screen.getByText('MSFT')).toBeInTheDocument();
+    expect(screen.getByText('AAPL')).toBeInTheDocument();
+    expect(screen.getByText('Estimated')).toBeInTheDocument();
+    expect(screen.getByText('Confirmed')).toBeInTheDocument();
+  });
+
+  test('is absent when the calendar is unavailable (gate off / no capability)', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+    vi.mocked(getEarningsCalendar).mockResolvedValue({ available: false, entries: [] });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alerts panel coming soon')).toBeInTheDocument());
+    expect(screen.queryByText('Upcoming earnings')).not.toBeInTheDocument();
+  });
+
+  test('is absent when there are no upcoming events', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+    vi.mocked(getEarningsCalendar).mockResolvedValue({ available: true, entries: [] });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Alerts panel coming soon')).toBeInTheDocument());
+    expect(screen.queryByText('Upcoming earnings')).not.toBeInTheDocument();
+  });
 });
 
 // ─── Empty state ──────────────────────────────────────────────────────────────

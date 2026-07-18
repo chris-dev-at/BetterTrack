@@ -131,6 +131,41 @@ export const earningsResponseSchema = earningsEventsSchema
   .strict();
 export type EarningsResponse = z.infer<typeof earningsResponseSchema>;
 
+/**
+ * One held/watched asset's next earnings report — a row in the Workboard
+ * "Upcoming earnings" panel (arc b). `held`/`watched` are independent flags (an
+ * asset can be both); `date` is the next report date (always present — the
+ * calendar drops assets with no dated upcoming report); `estimated`
+ * distinguishes a confirmed date from an estimated one in the UI.
+ */
+export const earningsCalendarEntrySchema = z
+  .object({
+    assetId: z.string(),
+    symbol: z.string(),
+    name: z.string(),
+    date: z.string().datetime(),
+    epsEstimate: z.number().nullable(),
+    estimated: z.boolean(),
+    held: z.boolean(),
+    watched: z.boolean(),
+  })
+  .strict();
+export type EarningsCalendarEntry = z.infer<typeof earningsCalendarEntrySchema>;
+
+/**
+ * `GET /assets/intel/earnings-calendar` — the caller's upcoming-earnings feed
+ * across held + watched assets, ascending by date (the Workboard panel, arc b).
+ * `available` is false (and `entries` empty) whenever the global gate is off, so
+ * the panel stays invisible when the arc is unconfigured.
+ */
+export const earningsCalendarResponseSchema = z
+  .object({
+    available: z.boolean(),
+    entries: z.array(earningsCalendarEntrySchema),
+  })
+  .strict();
+export type EarningsCalendarResponse = z.infer<typeof earningsCalendarResponseSchema>;
+
 // ── News (arc c) ─────────────────────────────────────────────────────────────
 
 /** One news headline linked to an asset. `url` is the article link. */
