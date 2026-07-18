@@ -8,6 +8,7 @@ import { AccountDefaultsPage } from './pages/AccountDefaultsPage';
 import { AnnouncementsPage } from './pages/AnnouncementsPage';
 import { AuditPage } from './pages/AuditPage';
 import { EmailPage } from './pages/EmailPage';
+import { FeatureFlagsPage } from './pages/FeatureFlagsPage';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { HealthPage } from './pages/HealthPage';
 import { InvitesPage } from './pages/InvitesPage';
@@ -50,6 +51,7 @@ function AdminShell() {
         <Route path="problems" element={<ProblemsPage />} />
         <Route path="usage-analytics" element={<UsageAnalyticsPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="feature-flags" element={<FeatureFlagsPage />} />
         <Route path="account-defaults" element={<AccountDefaultsPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />
         <Route path="security" element={<SecuritySettingsPage />} />

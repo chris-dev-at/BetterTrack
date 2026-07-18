@@ -1,10 +1,14 @@
 import {
+  DEFAULT_NOTIFICATION_CADENCE,
+  DEFAULT_QUIET_HOURS,
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
+  type NotificationCadenceMap,
   type NotificationChannelsConfigurable,
   type NotificationMatrix,
   type NotificationSettingsResponse,
   type NotificationType,
+  type QuietHours,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -12,6 +16,7 @@ import type {
   NotificationChannel,
   NotificationRepository,
 } from '../../data/repositories/notificationRepository';
+import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 
 /**
@@ -39,8 +44,16 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 
 export interface NotificationSettingsServiceDeps {
   repo: NotificationRepository;
-  /** Global-mute storage (users.notifications_muted, #368). */
-  users: Pick<UserRepository, 'findById' | 'setNotificationsMuted'>;
+  /**
+   * Per-type outbound digest cadence storage (V5-P3). Read into the response's
+   * `cadence` map (defaults filled in here) and written on PATCH.
+   */
+  cadence: Pick<NotificationDigestRepository, 'cadenceMapForUser' | 'setCadences'>;
+  /**
+   * Global-mute storage (users.notifications_muted, #368) + quiet-hours window /
+   * timezone storage (§13.5 V5-P3), both on the users row.
+   */
+  users: Pick<UserRepository, 'findById' | 'setNotificationsMuted' | 'setQuietHours'>;
   /**
    * Which channels this deployment has configured. `email`/`push`/`webpush`
    * are deployment-scoped booleans (SMTP / FCM key / VAPID); `telegram` +
@@ -79,7 +92,8 @@ const MATRIX_CHANNELS = ['inapp', 'email', 'telegram', 'discord', 'push', 'webpu
 export function createNotificationSettingsService(
   deps: NotificationSettingsServiceDeps,
 ): NotificationSettingsService {
-  const { repo, users, channelAvailability, channelsConfigurable, webPushPublicKey } = deps;
+  const { repo, cadence, users, channelAvailability, channelsConfigurable, webPushPublicKey } =
+    deps;
 
   /**
    * Resolve one channel's effective state for a type from the stored channel
@@ -101,9 +115,10 @@ export function createNotificationSettingsService(
   }
 
   async function read(userId: string): Promise<NotificationSettingsResponse> {
-    const [states, user] = await Promise.all([
+    const [states, user, cadenceOverrides] = await Promise.all([
       repo.channelStatesForUser(userId),
       users.findById(userId),
+      cadence.cadenceMapForUser(userId),
     ]);
     // The Telegram + Discord availability flags are per-user (linked chat /
     // saved webhook) — resolved from deps so the settings response reflects
@@ -125,8 +140,29 @@ export function createNotificationSettingsService(
         },
       ]),
     ) as NotificationMatrix;
+    // The full cadence map: every type present, stored override or the default
+    // (`instant`) — mirrors how the matrix always ships every type.
+    const cadenceMap = Object.fromEntries(
+      NOTIFICATION_TYPES.map((type) => [
+        type,
+        cadenceOverrides[type] ?? DEFAULT_NOTIFICATION_CADENCE,
+      ]),
+    ) as NotificationCadenceMap;
+    // Quiet hours (V5-P3): the stored window/timezone, or the off-by-default
+    // fallback when the user has no row (never happens for a real user, but keeps
+    // the read total).
+    const quietHours: QuietHours = user
+      ? {
+          enabled: user.quietHoursEnabled,
+          startMinute: user.quietHoursStartMinute,
+          endMinute: user.quietHoursEndMinute,
+          timezone: user.timezone ?? null,
+        }
+      : DEFAULT_QUIET_HOURS;
     return {
       matrix,
+      cadence: cadenceMap,
+      quietHours,
       muted: user?.notificationsMuted ?? false,
       channels: {
         inapp: true,
@@ -160,6 +196,15 @@ export function createNotificationSettingsService(
         if (overrides && Object.keys(overrides).length > 0) {
           await repo.upsertChannelConfig(userId, channel, overrides);
         }
+      }
+      // Per-type cadence changes (V5-P3): upsert only the supplied types; the
+      // rest keep their stored (or default) cadence.
+      if (body.cadence && Object.keys(body.cadence).length > 0) {
+        await cadence.setCadences(userId, body.cadence);
+      }
+      // Quiet-hours changes (V5-P3): patch only the supplied fields.
+      if (body.quietHours && Object.keys(body.quietHours).length > 0) {
+        await users.setQuietHours(userId, body.quietHours);
       }
       if (body.muted !== undefined) {
         await users.setNotificationsMuted(userId, body.muted);

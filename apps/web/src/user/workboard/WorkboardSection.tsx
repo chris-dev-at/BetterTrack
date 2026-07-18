@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { useFeatureEnabled } from '../../lib/featureFlags';
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 import { WatchlistsPage } from './WatchlistsPage';
@@ -11,12 +12,15 @@ import { WatchlistsPage } from './WatchlistsPage';
  * Conglomerates · Watchlists · Alerts, plus the Coming-Soon experiments
  * (Backtests · Calculators · Comparisons · Saved Ideas).
  */
-function workboardSubnav(t: TranslateFn): readonly SubNavItem[] {
+function workboardSubnav(t: TranslateFn, alertsEnabled: boolean): readonly SubNavItem[] {
   return [
     { to: '/workboard', label: t('workboard.section.subnav.overview'), end: true },
     { to: '/workboard/conglomerates', label: t('workboard.section.subnav.conglomerates') },
     { to: '/workboard/watchlist', label: t('workboard.section.subnav.watchlists') },
-    { to: '/workboard/alerts', label: t('workboard.section.subnav.alerts') },
+    // Runtime kill-switch (§13.5 V5-P2 arc (c)): alerts OFF hides the tab.
+    ...(alertsEnabled
+      ? [{ to: '/workboard/alerts', label: t('workboard.section.subnav.alerts') } as SubNavItem]
+      : []),
     {
       to: '/workboard/backtests',
       label: t('workboard.section.subnav.backtests'),
@@ -38,9 +42,10 @@ function workboardSubnav(t: TranslateFn): readonly SubNavItem[] {
 
 export function WorkboardLayout() {
   const t = useT();
+  const alertsEnabled = useFeatureEnabled('alerts');
   return (
     <div className="flex flex-col gap-6">
-      <SubNav items={workboardSubnav(t)} />
+      <SubNav items={workboardSubnav(t, alertsEnabled)} />
       <Outlet />
     </div>
   );

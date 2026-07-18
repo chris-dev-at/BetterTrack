@@ -6,6 +6,7 @@ import {
   adminUserListResponseSchema,
   adminUserSchema,
   accountDefaultsResponseSchema,
+  adminFeatureFlagsResponseSchema,
   announcementListResponseSchema,
   announcementSchema,
   appSettingsResponseSchema,
@@ -41,6 +42,8 @@ import {
   type AdminUser,
   type AdminUserListResponse,
   type AccountDefaultsResponse,
+  type AdminFeatureFlagsResponse,
+  type FeatureFlagKey,
   type Announcement,
   type AnnouncementListResponse,
   type AppSettingsResponse,
@@ -354,6 +357,24 @@ export async function getSettings(signal?: AbortSignal): Promise<AppSettingsResp
 export async function updateSettings(body: UpdateAppSettingsRequest): Promise<AppSettingsResponse> {
   const data = await apiRequest<unknown>('/admin/settings', { method: 'PATCH', body });
   return appSettingsResponseSchema.parse(data);
+}
+
+// --- Admin: runtime feature kill-switches (§13.5 V5-P2 arc (c)) ------------
+
+export async function getFeatureFlags(signal?: AbortSignal): Promise<AdminFeatureFlagsResponse> {
+  const data = await apiRequest<unknown>('/admin/feature-flags', { signal });
+  return adminFeatureFlagsResponseSchema.parse(data);
+}
+
+export async function setFeatureFlag(
+  key: FeatureFlagKey,
+  enabled: boolean,
+): Promise<AdminFeatureFlagsResponse> {
+  const data = await apiRequest<unknown>(`/admin/feature-flags/${key}`, {
+    method: 'PATCH',
+    body: { enabled },
+  });
+  return adminFeatureFlagsResponseSchema.parse(data);
 }
 
 // --- Admin: new-account defaults (§13.4 V4-P0d) ---------------------------

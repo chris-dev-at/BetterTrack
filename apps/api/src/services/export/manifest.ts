@@ -92,6 +92,12 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   two_factor_recovery_codes: skipped('2FA recovery-code hashes (secrets).'),
   device_tokens: skipped('Ephemeral FCM push-transport registrations (opaque device secrets).'),
   push_subscriptions: skipped('Ephemeral web-push transport subscriptions (opaque secrets).'),
+  notification_digest_queue: skipped(
+    'Transient outbound digest delivery queue (V5-P3) — rows are claimed and dropped on delivery, not user data.',
+  ),
+  notification_cadences: skipped(
+    'Per-type outbound digest-cadence preference (V5-P3); absence reconstructs to the `instant` default. Export coverage lands with the V5-P4 export work.',
+  ),
   oauth_auth_codes: skipped('Single-use OAuth authorization codes (transient secrets).'),
   oauth_access_tokens: skipped('Short-lived OAuth access-token hashes (transient secrets).'),
   oauth_refresh_tokens: skipped('Rotating OAuth refresh-token hashes (transient secrets).'),

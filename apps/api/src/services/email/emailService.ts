@@ -5,6 +5,8 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  deferredNotificationEmail,
+  digestEmail,
   followAlertEmail,
   conglomerateSharedEmail,
   friendAcceptedEmail,
@@ -186,6 +188,30 @@ export interface EmailService {
     actorUsername: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /**
+   * Digest summary email (V5-P3): ONE send bundling a period's deferred
+   * notifications (each the same title/body the instant email would carry).
+   * Best-effort like every send; localized to the recipient.
+   */
+  sendDigest(params: {
+    to: string;
+    userId: string;
+    cadence: 'daily' | 'weekly';
+    items: readonly { title: string; body: string }[];
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /**
+   * Quiet-hours deferred notification email (§13.5 V5-P3): the single held-back
+   * notification (or a quiet-blocked digest summary) delivered at window end.
+   * Best-effort like every send; localized chrome around the rendered title/body.
+   */
+  sendDeferred(params: {
+    to: string;
+    userId: string;
+    title: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
 }
 
 export interface EmailServiceDeps {
@@ -218,7 +244,8 @@ type EmailTemplateKind =
   | 'follow_alert_created'
   | 'follow_alert_fired'
   | 'alert_triggered'
-  | 'chat_message';
+  | 'chat_message'
+  | 'digest';
 
 /** Coarse, secret-free error tag for logs/audit. Never the raw SMTP response. */
 function errorCode(err: unknown): string {
@@ -450,6 +477,19 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'chat_message',
         to,
         chatMessageEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendDigest: ({ to, userId, cadence, items, locale }) =>
+      deliver('digest', to, digestEmail({ cadence, items, appUrl: config.appOrigin, locale }), {
+        userId,
+      }),
+
+    sendDeferred: ({ to, userId, title, body, locale }) =>
+      deliver(
+        'digest',
+        to,
+        deferredNotificationEmail({ title, body, appUrl: config.appOrigin, locale }),
         { userId },
       ),
   };

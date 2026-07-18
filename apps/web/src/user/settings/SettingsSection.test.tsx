@@ -26,8 +26,10 @@ vi.mock('../../lib/notificationsApi', () => ({
 }));
 
 import {
+  DEFAULT_NOTIFICATION_CADENCE,
   NOTIFICATION_TYPES,
   type Notification,
+  type NotificationCadenceMap,
   type NotificationListResponse,
   type NotificationMatrix,
   type NotificationSettingsResponse,
@@ -107,12 +109,24 @@ function makeMatrix(overrides: Partial<NotificationMatrix> = {}): NotificationMa
   };
 }
 
-/** The GET/PATCH response shape (#368): matrix + mute + channel availability. */
+/** A full per-type cadence map, all types on the default `instant` (V5-P3). */
+function makeCadence(overrides: Partial<NotificationCadenceMap> = {}): NotificationCadenceMap {
+  return {
+    ...(Object.fromEntries(
+      NOTIFICATION_TYPES.map((type) => [type, DEFAULT_NOTIFICATION_CADENCE]),
+    ) as NotificationCadenceMap),
+    ...overrides,
+  };
+}
+
+/** The GET/PATCH response shape (#368): matrix + cadence + mute + channel availability. */
 function makeSettings(
   overrides: Partial<NotificationSettingsResponse> = {},
 ): NotificationSettingsResponse {
   return {
     matrix: makeMatrix(),
+    cadence: makeCadence(),
+    quietHours: { enabled: false, startMinute: 22 * 60, endMinute: 7 * 60, timezone: null },
     muted: false,
     // Email is live, the push channels are not — their columns must be absent.
     // Telegram + Discord default to unavailable in unit tests (no bot token,
@@ -337,6 +351,26 @@ describe('NotificationSettingsPage', () => {
     await waitFor(() =>
       expect(screen.getByRole('switch', { name: 'Friend requests via In-app' })).toBeDisabled(),
     );
+  });
+
+  test('the digest cadence selector PATCHes that type’s cadence (V5-P3)', async () => {
+    vi.mocked(updateNotificationSettings).mockResolvedValue(
+      makeSettings({ cadence: makeCadence({ 'alert.triggered': 'daily' }) }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    // The block is collapsed by default (anti-bloat) — expand it first.
+    await user.click(await screen.findByText('Delivery frequency'));
+    const select = await screen.findByRole('combobox', {
+      name: 'Delivery frequency for Price alerts',
+    });
+    expect(select).toHaveValue('instant');
+    await user.selectOptions(select, 'daily');
+
+    expect(updateNotificationSettings).toHaveBeenCalledWith({
+      cadence: { 'alert.triggered': 'daily' },
+    });
   });
 
   test('account rows: invite cells locked, temp-password email locked (transactional)', async () => {

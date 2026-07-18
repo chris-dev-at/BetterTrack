@@ -27,6 +27,7 @@ const NAV_SECTIONS: Array<{ key: string; items: NavItem[] }> = [
     key: 'config',
     items: [
       { to: '/admin/settings', label: 'Settings' },
+      { to: '/admin/feature-flags', labelKey: 'admin.nav.featureFlags' },
       { to: '/admin/account-defaults', label: 'Account defaults' },
       { to: '/admin/announcements', label: 'Announcements' },
       { to: '/admin/oauth-apps', label: 'OAuth apps' },

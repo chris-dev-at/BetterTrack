@@ -3,11 +3,11 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
-import {
-  TAX_MODES,
-  type TaxMode,
-  type TaxSettingsResponse,
-  type UpdateTaxSettingsRequest,
+import type {
+  TaxCountry,
+  TaxMode,
+  TaxSettingsResponse,
+  UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
@@ -17,26 +17,53 @@ import { Alert, cx } from '../components/ui';
 
 const TAX_SETTINGS_KEY = ['settings', 'taxes'] as const;
 
-/** The country a `country_specific` selection ships (V3-P4: Austria only, §13.3). */
-const COUNTRY_SPECIFIC_COUNTRY = 'AT' as const;
-
 /**
- * Turn a picked mode into the `PATCH /settings/taxes` body: `country_specific`
- * carries the (only shipped) country, every other mode carries none — mirroring
- * the contract's `mode ↔ country` refinement so the request is always valid.
+ * One selectable row of the picker: a plain mode, or `country_specific` with a
+ * concrete country (V5-P4: the country picker is the option list itself — one
+ * compact row per shipped country, no nested controls).
  */
-function bodyForMode(mode: TaxMode): UpdateTaxSettingsRequest {
-  return mode === 'country_specific' ? { mode, country: COUNTRY_SPECIFIC_COUNTRY } : { mode };
+interface TaxOption {
+  /** i18n key under `settings.taxes.mode.` */
+  i18nKey: string;
+  mode: TaxMode;
+  country?: TaxCountry;
 }
 
-/** One selectable tax-mode row: a radio + its label and explanation. */
+const TAX_OPTIONS: readonly TaxOption[] = [
+  { i18nKey: 'none', mode: 'none' },
+  { i18nKey: 'manual_per_trade', mode: 'manual_per_trade' },
+  { i18nKey: 'country_specific', mode: 'country_specific', country: 'AT' },
+  { i18nKey: 'country_specific_de', mode: 'country_specific', country: 'DE' },
+];
+
+/**
+ * Turn a picked option into the `PATCH /settings/taxes` body: a country option
+ * carries its country, every other mode carries none — mirroring the
+ * contract's `mode ↔ country` refinement so the request is always valid.
+ */
+function bodyForOption(option: TaxOption): UpdateTaxSettingsRequest {
+  return option.country !== undefined
+    ? { mode: option.mode, country: option.country }
+    : { mode: option.mode };
+}
+
+/** Whether an option matches the saved settings. */
+function isSelected(option: TaxOption, settings: TaxSettingsResponse | undefined): boolean {
+  const mode = settings?.mode ?? 'none';
+  if (option.mode !== mode) return false;
+  if (option.country === undefined) return true;
+  // Legacy country_specific rows without a country are Austria (V3-P4).
+  return (settings?.country ?? 'AT') === option.country;
+}
+
+/** One selectable tax-option row: a radio + its label and explanation. */
 function ModeOption({
-  mode,
+  option,
   selected,
   disabled,
   onSelect,
 }: {
-  mode: TaxMode;
+  option: TaxOption;
   selected: boolean;
   disabled: boolean;
   onSelect: () => void;
@@ -55,7 +82,7 @@ function ModeOption({
       <input
         type="radio"
         name="tax-mode"
-        value={mode}
+        value={option.country ?? option.mode}
         checked={selected}
         disabled={disabled}
         onChange={onSelect}
@@ -63,10 +90,10 @@ function ModeOption({
       />
       <span className="flex flex-col gap-0.5">
         <span className="text-sm font-medium text-neutral-100">
-          {t(`settings.taxes.mode.${mode}.label`)}
+          {t(`settings.taxes.mode.${option.i18nKey}.label`)}
         </span>
         <span className="text-xs leading-relaxed text-neutral-500">
-          {t(`settings.taxes.mode.${mode}.description`)}
+          {t(`settings.taxes.mode.${option.i18nKey}.description`)}
         </span>
       </span>
     </label>
@@ -74,12 +101,14 @@ function ModeOption({
 }
 
 /**
- * Settings → Taxes (PROJECTPLAN.md §13.3 V3-P4). Picks the per-user tax mode
- * (`GET/PATCH /settings/taxes`): `none`, `manual_per_trade`, or `country_specific`
- * (Austria). The Austria option spells out the model it applies (27.5 % KESt,
- * moving-average cost basis, same-year loss offset with refund, hard Jan-1 reset,
- * no cross-year carry). Switching applies forward only — recorded rows keep the
- * tax frozen at their recording time (§16). All copy comes from the i18n layer.
+ * Settings → Taxes (PROJECTPLAN.md §13.3 V3-P4; §13.5 V5-P4). Picks the
+ * per-user tax mode (`GET/PATCH /settings/taxes`): `none`, `manual_per_trade`,
+ * or `country_specific` — Austria (27.5 % KESt, moving-average basis, hard
+ * Jan-1 reset) or Germany (25 % Abgeltungsteuer + Soli, FIFO lots,
+ * Sparer-Pauschbetrag, dual carry-forward loss pots), each option spelling out
+ * the model it applies. Switching applies forward only — recorded rows keep
+ * the tax frozen at their recording time (§16). All copy comes from the i18n
+ * layer.
  */
 export function TaxSettingsPage() {
   const t = useT();
@@ -106,9 +135,9 @@ export function TaxSettingsPage() {
 
   const mode = query.data?.mode ?? 'none';
 
-  function selectMode(next: TaxMode) {
-    if (next === mode || mutation.isPending) return;
-    mutation.mutate(bodyForMode(next));
+  function selectOption(option: TaxOption) {
+    if (isSelected(option, query.data) || mutation.isPending) return;
+    mutation.mutate(bodyForOption(option));
   }
 
   return (
@@ -135,13 +164,13 @@ export function TaxSettingsPage() {
           aria-label={t('settings.taxes.groupAria')}
           className="flex flex-col gap-3"
         >
-          {TAX_MODES.map((m) => (
+          {TAX_OPTIONS.map((option) => (
             <ModeOption
-              key={m}
-              mode={m}
-              selected={mode === m}
+              key={option.i18nKey}
+              option={option}
+              selected={isSelected(option, query.data)}
               disabled={mutation.isPending}
-              onSelect={() => selectMode(m)}
+              onSelect={() => selectOption(option)}
             />
           ))}
           {error ? <Alert tone="error">{t('settings.taxes.saveError')}</Alert> : null}

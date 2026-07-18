@@ -30,6 +30,7 @@ import { createRegistrationTokenRepository } from '../data/repositories/registra
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
 import { createDiscordWebhookRepository } from '../data/repositories/discordWebhookRepository';
 import { createTelegramLinkRepository } from '../data/repositories/telegramLinkRepository';
@@ -79,8 +80,13 @@ import {
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
+import {
+  createFeatureFlagService,
+  type FeatureFlagService,
+} from '../services/featureFlags/featureFlagService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
+import { createMarketIntelService, type MarketIntelService } from '../services/marketIntel';
 import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
 import {
   createAnalyticsService,
@@ -130,6 +136,7 @@ import {
   type DispatchableEvent,
   type NotificationDispatcher,
 } from '../services/notifications/notificationDispatcher';
+import { createDigestService, type DigestService } from '../services/notifications/digestService';
 import {
   createNotificationService,
   type NotificationService,
@@ -201,6 +208,13 @@ export interface AppContext {
   marketData: MarketDataService;
   /** Asset detail/quote/history over the market-data layer (§6.3). */
   assets: AssetService;
+  /**
+   * Per-asset market intelligence (§13.5 V5-P5): the dividend/earnings/news/
+   * splits reads + capability descriptor over the provider/cache keystone,
+   * behind the `MARKET_INTEL_ENABLED` gate. Degrades to "unconfigured" rather
+   * than erroring; the follow-up P5 UI keys visibility off `available`.
+   */
+  marketIntel: MarketIntelService;
   /** Local-first catalog search + background provider enrichment (§6.2). */
   search: SearchService;
   /** Transactions, holdings/totals and the value-over-time series (§6.9). */
@@ -266,6 +280,13 @@ export interface AppContext {
    */
   notificationDispatcher: NotificationDispatcher;
   /**
+   * Digest delivery (V5-P3): renders one grouped summary per (user, period) for
+   * the deferred daily/weekly cadences. In production the WORKER's repeatable
+   * digest jobs drive it; the API builds it too so tests can deliver a period
+   * synchronously.
+   */
+  digestService: DigestService;
+  /**
    * The ONE notification entry point (#368) every source emits through. In
    * production it enqueues onto the durable `notifications.dispatch` BullMQ
    * queue; under test it delivers straight into {@link notificationDispatcher}
@@ -330,6 +351,13 @@ export interface AppContext {
    * `/admin/usage-analytics`. Distinct from the user-facing portfolio analytics.
    */
   usageAnalytics: UsageAnalyticsService;
+  /**
+   * Runtime feature kill-switches (§13.5 V5-P2 arc (c)): admin-toggled on/off for
+   * realtime/live-mode/chat/alerts/imports/AI, read per request. Backs the
+   * `requireFeature` route guard, the realtime gateway gate, the admin toggle
+   * router and the SPA-bootstrap advertisement.
+   */
+  featureFlags: FeatureFlagService;
 }
 
 export interface BuildContextDeps {
@@ -430,7 +458,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
   // read by the auth register guard and the admin settings API.
-  const appSettings = createAppSettingsService({ repo: createAppSettingsRepository(db) });
+  const appSettingsRepo = createAppSettingsRepository(db);
+  const appSettings = createAppSettingsService({ repo: appSettingsRepo });
+
+  // Runtime feature kill-switches (§13.5 V5-P2 arc (c)): admin-toggled, read per
+  // request off a cheap Redis snapshot, invalidated on write. Rides the same
+  // `app_settings` KV store (one boolean row per flag). Built early so the
+  // realtime gateway + the gated route guards below can consult it, and the
+  // admin router + SPA-bootstrap route can list/advertise it. Default: all ON.
+  const featureFlags = createFeatureFlagService({ repo: appSettingsRepo, redis, audit, logger });
 
   // Typed domain event bus (§9, §4.5) — EPHEMERAL fan-out only (#368): realtime
   // pushes (bell, quotes, chat threads, presence-adjacent signals). Anything
@@ -474,6 +510,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const queues = config.isTest ? null : createQueueRegistry(redis);
 
   const notificationRepo = createNotificationRepository(db);
+  const notificationDigestRepo = createNotificationDigestRepository(db);
   const deviceTokenRepo = createDeviceTokenRepository(db);
   const pushSubscriptionRepo = createPushSubscriptionRepository(db);
   // V4-P10 additive channels: Telegram (per-user chat link, bot token in env)
@@ -536,6 +573,31 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     telegram: telegramChannel,
     discord: discordChannel,
     presence,
+    // Digest cadence + queue (V5-P3): defers a daily/weekly type's outbound
+    // channels into the digest queue; the in-app row still lands instantly.
+    digest: {
+      cadenceFor: (userId, type) => notificationDigestRepo.cadenceFor(userId, type),
+      enqueue: (item) => notificationDigestRepo.enqueue(item),
+    },
+    // Quiet hours (V5-P3): an instant outbound notification fired inside the
+    // recipient's window is deferred here and delivered at window end by the
+    // deferred-delivery job.
+    quietHours: {
+      enqueueDeferred: (item) => notificationDigestRepo.enqueueDeferred(item),
+    },
+    logger,
+  });
+
+  // Digest delivery (V5-P3): the same core the worker's repeatable digest jobs
+  // drive, built here too so tests can deliver a period synchronously.
+  const digestService = createDigestService({
+    repo: notificationDigestRepo,
+    users: userRepo,
+    email,
+    fcm: fcmChannel,
+    webPush: webPushChannel,
+    // Quiet hours (V5-P3): defer a digest whose delivery lands inside the window.
+    quietHours: notificationDigestRepo,
     logger,
   });
 
@@ -676,6 +738,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     createMarketData({
       db,
       redis,
+      failover: { enabled: config.providers.failover.enabled },
       queueOptions: {
         concurrency: config.providers.maxConcurrency,
         minSpacingMs: config.providers.minSpacingMs,
@@ -707,6 +770,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     assetRepo,
     currencyService: currency,
+  });
+
+  // Per-asset market intelligence (§13.5 V5-P5): a thin read layer over the
+  // provider/cache keystone, gated by MARKET_INTEL_ENABLED. Shares the asset
+  // repository so it enforces the exact §10 access scoping as the asset reads.
+  const marketIntel = createMarketIntelService({
+    marketData,
+    assetRepo,
+    enabled: config.marketIntel.enabled,
   });
 
   // First-reference history warming (§6.2/§9): the first workboard add or
@@ -931,6 +1003,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // settings rows the dispatcher reads, plus deployment channel availability.
   const notificationSettings = createNotificationSettingsService({
     repo: notificationRepo,
+    cadence: notificationDigestRepo,
     users: userRepo,
     channelAvailability: {
       email: email.enabled,
@@ -1067,6 +1140,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return Boolean(await audience.authorizePortfolioRead(userId, portfolioId));
     },
     liveMode,
+    // Runtime kill-switches (§13.5 V5-P2 arc (c)): the handshake refuses new
+    // sockets when `realtime` is flipped OFF, and `live.watch` acks UNAVAILABLE
+    // when `liveMode` is OFF — both read per connection/op, no redeploy.
+    isFeatureEnabled: (key) => featureFlags.isEnabled(key),
     // Global asset or the caller's own custom asset (§10) → provider ref for
     // the shared loop; anything else is a NOT_FOUND-indistinguishable null.
     resolveWatchableAsset: async (userId, assetId) => {
@@ -1103,6 +1180,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     workboard,
     marketData,
     assets,
+    marketIntel,
     search,
     portfolio,
     snapshots,
@@ -1125,6 +1203,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     alerts,
     announcements,
     notificationDispatcher,
+    digestService,
     notify,
     presence,
     realtime,
@@ -1136,5 +1215,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     health,
     problems,
     usageAnalytics,
+    featureFlags,
   };
 }

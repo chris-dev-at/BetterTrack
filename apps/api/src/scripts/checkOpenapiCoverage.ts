@@ -100,6 +100,7 @@ function buildInertContext(): AppContext {
     workboard: inertService('workboard'),
     marketData: inertService('marketData'),
     assets: inertService('assets'),
+    marketIntel: inertService('marketIntel'),
     search: inertService('search'),
     portfolio: inertService('portfolio'),
     snapshots: inertService('snapshots'),
@@ -122,6 +123,7 @@ function buildInertContext(): AppContext {
     alerts: inertService('alerts'),
     announcements: inertService('announcements'),
     notificationDispatcher: inertService('notificationDispatcher'),
+    digestService: inertService('digestService'),
     notify: inertService('notify'),
     presence: inertService('presence'),
     realtime: inertService('realtime'),
@@ -143,6 +145,7 @@ function buildInertContext(): AppContext {
     health: inertService('health'),
     problems: inertService('problems'),
     usageAnalytics: inertService('usageAnalytics'),
+    featureFlags: inertService('featureFlags'),
   };
 }
 

@@ -16,6 +16,7 @@ import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
@@ -26,6 +27,9 @@ import {
   createJobDefinitions,
   createJobWorkers,
   createNotificationsDispatchJob,
+  createDigestDailyJob,
+  createDigestWeeklyJob,
+  createDeferredDeliveryJob,
   createQueueRegistry,
   createSnapshotsBackfillJob,
   createSnapshotsRecomputeJob,
@@ -59,6 +63,7 @@ import { createTwoFactorService } from '../services/auth/twoFactorService';
 import { createFcmChannel } from '../services/notifications/fcm';
 import { createNotificationCenter } from '../services/notifications/notificationCenter';
 import { createNotificationDispatcher } from '../services/notifications/notificationDispatcher';
+import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
 import { createWebPushChannel } from '../services/notifications/webPush';
 
@@ -92,6 +97,7 @@ const marketDataConnection = createConnection();
 const { registry: providerRegistry, service: marketData } = createMarketData({
   db,
   redis: marketDataConnection,
+  failover: { enabled: config.providers.failover.enabled },
   queueOptions: {
     concurrency: config.providers.maxConcurrency,
     minSpacingMs: config.providers.minSpacingMs,
@@ -121,7 +127,18 @@ const email = createEmailService({
   transport: config.email.enabled ? createSmtpTransport(config.email) : null,
 });
 const notificationRepo = createNotificationRepository(db);
+const notificationDigestRepo = createNotificationDigestRepository(db);
 const alertRepo = createAlertRepository(db);
+const fcmChannel = createFcmChannel({
+  serviceAccountFile: config.push.fcmServiceAccountFile,
+  devices: createDeviceTokenRepository(db),
+  logger,
+});
+const webPushChannel = createWebPushChannel({
+  vapid: config.webPush,
+  subscriptions: createPushSubscriptionRepository(db),
+  logger,
+});
 const dispatcher = createNotificationDispatcher({
   bus: events,
   repo: notificationRepo,
@@ -130,17 +147,35 @@ const dispatcher = createNotificationDispatcher({
   resolveAlert: (alertId) => alertRepo.findNotificationContext(alertId),
   // Push channels are env-gated (#421): unset/missing config ⇒ null + one warn
   // log here at boot; the worker runs on either way.
-  fcm: createFcmChannel({
-    serviceAccountFile: config.push.fcmServiceAccountFile,
-    devices: createDeviceTokenRepository(db),
-    logger,
-  }),
-  webPush: createWebPushChannel({
-    vapid: config.webPush,
-    subscriptions: createPushSubscriptionRepository(db),
-    logger,
-  }),
+  fcm: fcmChannel,
+  webPush: webPushChannel,
   presence: createPresenceStore({ redis: deadLetterConnection }),
+  // Digest cadence + queue (V5-P3): a daily/weekly type's outbound channels are
+  // deferred into the digest queue; the digest jobs below deliver them.
+  digest: {
+    cadenceFor: (userId, type) => notificationDigestRepo.cadenceFor(userId, type),
+    enqueue: (item) => notificationDigestRepo.enqueue(item),
+  },
+  // Quiet hours (V5-P3): an instant outbound notification fired inside the
+  // recipient's quiet window is deferred here; the deferred-delivery job below
+  // sends it at window end.
+  quietHours: {
+    enqueueDeferred: (item) => notificationDigestRepo.enqueueDeferred(item),
+  },
+  logger,
+});
+
+// The V5-P3 digest delivery core: the repeatable digest jobs drive it to render
+// one grouped summary per (user, period) for the daily/weekly cadences.
+const digestService = createDigestService({
+  repo: notificationDigestRepo,
+  users: createUserRepository(db),
+  email,
+  fcm: fcmChannel,
+  webPush: webPushChannel,
+  // Quiet hours (V5-P3): a digest whose delivery moment lands inside the user's
+  // window is deferred to window end via the deferral store.
+  quietHours: notificationDigestRepo,
   logger,
 });
 
@@ -217,6 +252,9 @@ const definitions = [
       providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
   }),
   createNotificationsDispatchJob({ dispatcher }),
+  createDigestDailyJob({ digest: digestService }),
+  createDigestWeeklyJob({ digest: digestService }),
+  createDeferredDeliveryJob({ digest: digestService }),
   createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob({ exportService: dataExportService }),
   createSnapshotsRecomputeJob({ snapshots }),

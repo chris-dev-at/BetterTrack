@@ -46,6 +46,22 @@ export interface NotificationEmailCopy {
   /** Approval-queue decision emails (§6.12, §13.4 V4-P4a). Approved bolds `{username}`. */
   registrationApproved: { subject: string; heading: string; body: string; button: string };
   registrationRejected: { subject: string; heading: string; body: string };
+  /**
+   * Digest summary email + push (V5-P3). One send per period bundles a day's /
+   * week's deferred notifications; `intro` introduces the list, the push copy is
+   * a compact "{count} new notifications" summary.
+   */
+  digest: {
+    subjectDaily: string;
+    subjectWeekly: string;
+    headingDaily: string;
+    headingWeekly: string;
+    intro: string;
+    button: string;
+    pushTitleDaily: string;
+    pushTitleWeekly: string;
+    pushBody: string;
+  };
 }
 
 export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy> = {
@@ -125,6 +141,17 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       heading: 'Registration not approved',
       body: 'Thanks for your interest in BetterTrack. Your registration request was not approved, so no account was created. If you think this was a mistake, please contact the administrator.',
     },
+    digest: {
+      subjectDaily: 'Your daily BetterTrack summary',
+      subjectWeekly: 'Your weekly BetterTrack summary',
+      headingDaily: 'Your daily summary',
+      headingWeekly: 'Your weekly summary',
+      intro: "Here's what happened on BetterTrack since your last summary.",
+      button: 'Open BetterTrack',
+      pushTitleDaily: 'Your daily BetterTrack summary',
+      pushTitleWeekly: 'Your weekly BetterTrack summary',
+      pushBody: '{count} new notifications',
+    },
   },
   de: {
     footer:
@@ -201,6 +228,17 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       subject: 'Deine BetterTrack-Registrierung',
       heading: 'Registrierung nicht freigegeben',
       body: 'Danke für dein Interesse an BetterTrack. Deine Registrierungsanfrage wurde nicht freigegeben, daher wurde kein Konto erstellt. Falls du das für einen Irrtum hältst, wende dich bitte an die Administration.',
+    },
+    digest: {
+      subjectDaily: 'Deine tägliche BetterTrack-Zusammenfassung',
+      subjectWeekly: 'Deine wöchentliche BetterTrack-Zusammenfassung',
+      headingDaily: 'Deine tägliche Zusammenfassung',
+      headingWeekly: 'Deine wöchentliche Zusammenfassung',
+      intro: 'Das ist seit deiner letzten Zusammenfassung auf BetterTrack passiert.',
+      button: 'BetterTrack öffnen',
+      pushTitleDaily: 'Deine tägliche BetterTrack-Zusammenfassung',
+      pushTitleWeekly: 'Deine wöchentliche BetterTrack-Zusammenfassung',
+      pushBody: '{count} neue Benachrichtigungen',
     },
   },
 };

@@ -177,4 +177,76 @@ describe('TaxReportPage', () => {
     expect(cells[4]).toHaveTextContent('0,00 €'); // realized P/L — no fabricated gain
     expect(cells[4]).not.toHaveTextContent('500');
   });
+
+  test('a DE year renders the compact Germany block — allowance, pots, KapESt/Soli split', async () => {
+    // The S8-shaped DE year (V5-P4, #576): 1,250 net gain over an 800 pot,
+    // allowance exhausted, 62.50 KapESt + 3.43 Soli, a 300 Sonstige pot out.
+    const DE_YEAR: TaxYearSummary = {
+      year: 2025,
+      realizedPnlEur: 1250,
+      dividendsGrossEur: 0,
+      taxWithheldEur: 263.75,
+      taxRefundedEur: 197.82,
+      taxNetEur: 65.93,
+      de: {
+        allowanceUsedEur: 1000,
+        allowanceRemainingEur: 0,
+        aktienPotInEur: 800,
+        aktienPotOutEur: 0,
+        sonstigePotInEur: 0,
+        sonstigePotOutEur: 300,
+        kapestEur: 62.5,
+        soliEur: 3.43,
+      },
+    };
+    vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [DE_YEAR] });
+    vi.mocked(portfolioApi.getTaxYearReport).mockResolvedValue({
+      year: 2025,
+      summary: DE_YEAR,
+      positions: [
+        {
+          asset: APPLE,
+          realizedPnlEur: 1250,
+          dividendsGrossEur: 0,
+          taxEur: 65.93,
+          sells: [],
+          dividends: [],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2025 details/i }));
+    expect(await screen.findByText('Germany (Abgeltungsteuer)')).toBeInTheDocument();
+    expect(screen.getByText(/Allowance used/i)).toBeInTheDocument();
+    expect(screen.getByText('1.000,00 €')).toBeInTheDocument(); // allowance used
+    expect(screen.getByText('62,50 €')).toBeInTheDocument(); // KapESt
+    expect(screen.getByText('3,43 €')).toBeInTheDocument(); // Soli (floored, statutory)
+    expect(screen.getByText(/Share-loss pot/i)).toBeInTheDocument();
+    expect(screen.getByText('800,00 €')).toBeInTheDocument(); // Aktien pot in
+  });
+
+  test('an AT year renders NO Germany block', async () => {
+    vi.mocked(portfolioApi.getTaxYearReport).mockResolvedValue({
+      year: 2026,
+      summary: YEAR_2026,
+      positions: [
+        {
+          asset: APPLE,
+          realizedPnlEur: 350,
+          dividendsGrossEur: 0,
+          taxEur: 96.25,
+          sells: [],
+          dividends: [],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await screen.findByText('AAPL');
+    expect(screen.queryByText('Germany (Abgeltungsteuer)')).not.toBeInTheDocument();
+  });
 });

@@ -494,13 +494,68 @@ export const HEALTH_CIRCUIT_STATES = ['closed', 'open', 'half-open'] as const;
 export const healthCircuitStateSchema = z.enum(HEALTH_CIRCUIT_STATES);
 export type HealthCircuitState = z.infer<typeof healthCircuitStateSchema>;
 
-/** Market-data providers: overall status + each provider's breaker state (§5.1). */
+/**
+ * One provider failover chain (§13.5 V5-P1c): the ordered candidate providers
+ * for a primary source, and which one is currently serving its traffic. When
+ * the primary is healthy `serving === primaryId`; when it is unhealthy (circuit
+ * open) and a secondary is serving, `serving` is that secondary and `since`
+ * marks when the switch happened.
+ */
+export const adminHealthProviderChainSchema = z
+  .object({
+    /** The asset's own provider id, i.e. the chain root (e.g. `yahoo`). */
+    primaryId: z.string(),
+    /** Provider currently serving this chain, or null before any traffic. */
+    serving: z.string().nullable(),
+    /** ISO-8601 time the current serving provider took over; null if none yet. */
+    since: z.string().nullable(),
+    /** Full ordered candidate chain (primary first, then failover sources). */
+    providerIds: z.array(z.string()),
+  })
+  .strict();
+export type AdminHealthProviderChain = z.infer<typeof adminHealthProviderChainSchema>;
+
+/** One recorded failover/recovery switch: the serving provider changed (§13.5 V5-P1c). */
+export const adminHealthProviderSwitchSchema = z
+  .object({
+    primaryId: z.string(),
+    /** Previously-serving provider, or null when nothing had served yet. */
+    from: z.string().nullable(),
+    /** Now-serving provider. */
+    to: z.string(),
+    /** ISO-8601 timestamp of the switch. */
+    at: z.string(),
+  })
+  .strict();
+export type AdminHealthProviderSwitch = z.infer<typeof adminHealthProviderSwitchSchema>;
+
+/** Per-provider attribution: how many reads this provider served (§13.5 V5-P1c). */
+export const adminHealthProviderServeSchema = z
+  .object({
+    providerId: z.string(),
+    /** Count of quote/history/meta reads served by this provider since boot. */
+    serves: z.number().int().nonnegative(),
+    /** ISO-8601 time of the most recent read this provider served, or null. */
+    lastServedAt: z.string().nullable(),
+  })
+  .strict();
+export type AdminHealthProviderServe = z.infer<typeof adminHealthProviderServeSchema>;
+
+/**
+ * Market-data providers: overall status, each provider's breaker state (§5.1),
+ * plus the failover chains, currently-serving provider, recent switch events and
+ * which-provider-served-what attribution (§13.5 V5-P1c). The failover arrays are
+ * empty when no secondary source is configured — the byte-identical default.
+ */
 export const adminHealthProvidersSchema = z
   .object({
     status: healthStatusSchema,
     breakers: z.array(
       z.object({ providerId: z.string(), state: healthCircuitStateSchema }).strict(),
     ),
+    chains: z.array(adminHealthProviderChainSchema),
+    switches: z.array(adminHealthProviderSwitchSchema),
+    attribution: z.array(adminHealthProviderServeSchema),
   })
   .strict();
 export type AdminHealthProviders = z.infer<typeof adminHealthProvidersSchema>;

@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
+import { useFeatureEnabled } from '../../lib/featureFlags';
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 
@@ -14,10 +15,13 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
  */
 export function SocialLayout() {
   const t = useT();
+  // Runtime kill-switch (§13.5 V5-P2 arc (c)): with chat OFF the Messages tab
+  // disappears client-side; the /chat routes also 404 server-side.
+  const chatEnabled = useFeatureEnabled('chat');
   const subnav: readonly SubNavItem[] = [
     { to: '/social/friends', label: t('social.nav.friends') },
     { to: '/social/my-shared', label: t('social.nav.myItems') },
-    { to: '/social/chat', label: t('social.nav.messages') },
+    ...(chatEnabled ? [{ to: '/social/chat', label: t('social.nav.messages') } as SubNavItem] : []),
   ];
   return (
     <div className="flex flex-col gap-6">

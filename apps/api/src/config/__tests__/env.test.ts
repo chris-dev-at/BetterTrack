@@ -203,6 +203,22 @@ describe('realtime flag (§4.5, V3-P7a)', () => {
   });
 });
 
+describe('market-intelligence gate (§13.5 V5-P5)', () => {
+  it('defaults to enabled (Yahoo is keyless)', () => {
+    expect(config({}).marketIntel.enabled).toBe(true);
+  });
+
+  it('MARKET_INTEL_ENABLED=false hides the whole arc', () => {
+    expect(config({ MARKET_INTEL_ENABLED: 'false' }).marketIntel.enabled).toBe(false);
+    expect(config({ MARKET_INTEL_ENABLED: '0' }).marketIntel.enabled).toBe(false);
+  });
+
+  it('truthy spellings enable it explicitly', () => {
+    expect(config({ MARKET_INTEL_ENABLED: 'true' }).marketIntel.enabled).toBe(true);
+    expect(config({ MARKET_INTEL_ENABLED: '1' }).marketIntel.enabled).toBe(true);
+  });
+});
+
 describe('web-push VAPID config (#368)', () => {
   it('keys-only config enables the channel with the mailto subject derived from BT_DOMAIN', () => {
     const c = config({

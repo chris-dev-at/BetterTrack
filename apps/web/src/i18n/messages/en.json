@@ -489,6 +489,24 @@
         "label": "Mute all notifications",
         "description": "While muted, nothing is delivered on any channel. Your choices below are kept."
       },
+      "digest": {
+        "title": "Delivery frequency",
+        "description": "Group email and push notifications into a daily or weekly summary. The in-app bell always updates instantly.",
+        "instant": "Instant",
+        "daily": "Daily digest",
+        "weekly": "Weekly digest",
+        "selectAria": "Delivery frequency for {{type}}"
+      },
+      "quietHours": {
+        "title": "Quiet hours",
+        "description": "Hold back email and push notifications during a window each day. Urgent account and security alerts always get through, and the in-app bell stays instant.",
+        "enable": "Enable quiet hours",
+        "start": "From",
+        "end": "Until",
+        "timezone": "Timezone",
+        "timezoneNone": "UTC (no timezone set)",
+        "useDetected": "Use my timezone ({{zone}})"
+      },
       "webPush": {
         "title": "Browser push in this browser",
         "description": "Get desktop notifications even with the tab closed. Enable per browser; the column below chooses what is pushed.",
@@ -880,6 +898,10 @@
         "country_specific": {
           "label": "Austria (KESt)",
           "description": "27.5 % KESt on realized gains and dividends, with a moving-average cost basis. A loss in the same calendar year offsets earlier gains and refunds the tax already withheld. Everything resets on 1 January — no losses carry into the next year."
+        },
+        "country_specific_de": {
+          "label": "Germany (Abgeltungsteuer)",
+          "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years."
         }
       }
     },
@@ -1256,6 +1278,15 @@
         "title": "Tax tracking is off",
         "description": "Turn on a tax mode to see realized gains and tax by year.",
         "link": "Choose a tax mode in Settings → Taxes →"
+      },
+      "de": {
+        "title": "Germany (Abgeltungsteuer)",
+        "allowanceUsed": "Allowance used",
+        "allowanceRemaining": "Allowance remaining",
+        "aktienPot": "Share-loss pot (in → out)",
+        "sonstigePot": "Other-loss pot (in → out)",
+        "kapest": "KapESt (25 %)",
+        "soli": "Soli (5.5 % of tax)"
       }
     },
     "section": {
@@ -2402,6 +2433,7 @@
       "openMenu": "Open admin menu",
       "closeMenu": "Close admin menu",
       "problems": "Problems",
+      "featureFlags": "Feature flags",
       "usageAnalytics": "Usage analytics"
     },
     "security": {
@@ -2525,6 +2557,14 @@
       "providers": {
         "none": "No upstream providers"
       },
+      "failover": {
+        "title": "Provider failover",
+        "viaFailover": "Failover active",
+        "since": "since {{time}}",
+        "served": "{{count}} served",
+        "switchesTitle": "Recent switches",
+        "noSwitches": "No switches recorded"
+      },
       "queues": {
         "unavailable": "No queue registry in this process",
         "empty": "No jobs",
@@ -2566,6 +2606,47 @@
       "context": "Context",
       "resolve": "Resolve",
       "reopen": "Reopen"
+    },
+    "featureFlags": {
+      "title": "Feature flags",
+      "subtitle": "Runtime kill-switches. Flipping one takes effect on the next request — no redeploy.",
+      "refresh": "Refresh",
+      "loadError": "Could not load feature flags.",
+      "actionError": "Could not update the feature flag.",
+      "featureColumn": "Feature",
+      "stateColumn": "State",
+      "lastChangedColumn": "Last changed",
+      "on": "On",
+      "off": "Off",
+      "enable": "Enable",
+      "disable": "Disable",
+      "never": "Never changed",
+      "flag": {
+        "realtime": {
+          "name": "Realtime",
+          "description": "Live push updates over the realtime connection."
+        },
+        "liveMode": {
+          "name": "Live Mode",
+          "description": "Intraday live streaming of asset prices."
+        },
+        "chat": {
+          "name": "Chat",
+          "description": "Friend direct messages."
+        },
+        "alerts": {
+          "name": "Price alerts",
+          "description": "Price-alert rules and firing."
+        },
+        "imports": {
+          "name": "Imports",
+          "description": "Broker CSV imports."
+        },
+        "ai": {
+          "name": "AI",
+          "description": "AI insights and assistant (reserved — not yet built)."
+        }
+      }
     },
     "usageAnalytics": {
       "title": "Usage analytics",

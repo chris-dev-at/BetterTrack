@@ -4,7 +4,7 @@
  * service and the provider interface — never a concrete provider.
  */
 export type { AssetProvider } from './AssetProvider';
-export { createProviderRegistry, type ProviderRegistry } from './registry';
+export { createProviderRegistry, providerCapabilities, type ProviderRegistry } from './registry';
 export {
   createMarketDataService,
   defaultIntervalForRange,
@@ -13,7 +13,24 @@ export {
   type MarketDataServiceOptions,
   type CreateMarketDataServiceDeps,
 } from './marketDataService';
-export { AssetNotFoundError, isNotFoundError, isRateLimitError } from './errors';
+export {
+  createFailoverResolver,
+  classifyRefClass,
+  NO_FAILOVER,
+  DEFAULT_MAX_SWITCH_EVENTS,
+  type FailoverChains,
+  type FailoverResolver,
+  type FailoverStatus,
+  type FailoverChainSummary,
+  type FailoverSwitchEvent,
+  type ProviderServeStat,
+} from './failoverChain';
+export {
+  AssetNotFoundError,
+  CapabilityUnavailableError,
+  isNotFoundError,
+  isRateLimitError,
+} from './errors';
 export {
   CircuitBreaker,
   CircuitOpenError,
@@ -29,12 +46,25 @@ export {
   STALE_TTL_SECONDS,
   SEARCH_TTL_SECONDS,
   NEGATIVE_TTL_SECONDS,
+  DIVIDENDS_TTL_SECONDS,
+  EARNINGS_TTL_SECONDS,
+  SPLITS_TTL_SECONDS,
+  NEWS_TTL_SECONDS,
   historyTtlSeconds,
 } from './ttl';
 
 // Concrete providers (§5.1, §5.2) and the composition root that registers them.
 export { createYahooProvider, type CreateYahooProviderDeps } from './yahooProvider';
 export { createYahooClient, type YahooClient } from './yahooClient';
+export { createStooqProvider, type CreateStooqProviderDeps } from './stooqProvider';
+export {
+  createStooqClient,
+  type StooqClient,
+  type StooqQuoteRow,
+  type StooqHistoryRow,
+  type CreateStooqClientDeps,
+} from './stooqClient';
+export { mapToStooq, stooqCanServe, type StooqRef } from './stooqMapping';
 export {
   createManualProvider,
   createManualAssetSource,
@@ -51,4 +81,9 @@ export {
   type RequestQueue,
   type RequestQueueOptions,
 } from './requestQueue';
-export { createMarketData, type CreateMarketDataDeps, type MarketData } from './createMarketData';
+export {
+  createMarketData,
+  STOOQ_FAILOVER_CHAINS,
+  type CreateMarketDataDeps,
+  type MarketData,
+} from './createMarketData';
