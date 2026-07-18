@@ -173,8 +173,8 @@ export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific'] as con
 export const taxModeSchema = z.enum(TAX_MODES);
 export type TaxMode = z.infer<typeof taxModeSchema>;
 
-/** Countries `country_specific` mode ships for (V3-P4: Austria only, §13.3). */
-export const TAX_COUNTRIES = ['AT'] as const;
+/** Countries `country_specific` mode ships for (V3-P4: Austria; V5-P4: Germany). */
+export const TAX_COUNTRIES = ['AT', 'DE'] as const;
 export const taxCountrySchema = z.enum(TAX_COUNTRIES);
 export type TaxCountry = z.infer<typeof taxCountrySchema>;
 
@@ -1030,6 +1030,29 @@ export const dividendParamsSchema = z
  * `taxRefundedEur` sum the year's settlement movements (corrections included)
  * and `taxNetEur = taxWithheldEur − taxRefundedEur` is what the year holds.
  */
+/**
+ * The German year-end state of one Vienna calendar year (V5-P4, issue #580):
+ * present exactly when the year contains DE-taxed rows. Everything derives
+ * append-only from rows + movements (like the AT pool — no stored state): the
+ * Sparer-Pauschbetrag consumed/lost (§20 Abs. 9 EStG — unused remainder never
+ * carries), both loss pots entering and leaving the year (§20 Abs. 6 EStG —
+ * pots DO carry, stored positive), and the KapESt/Soli split of the year's
+ * target (settlements post combined; the report derives the split).
+ */
+export const taxYearDeSummarySchema = z
+  .object({
+    allowanceUsedEur: z.number(),
+    allowanceRemainingEur: z.number(),
+    aktienPotInEur: z.number(),
+    aktienPotOutEur: z.number(),
+    sonstigePotInEur: z.number(),
+    sonstigePotOutEur: z.number(),
+    kapestEur: z.number(),
+    soliEur: z.number(),
+  })
+  .strict();
+export type TaxYearDeSummary = z.infer<typeof taxYearDeSummarySchema>;
+
 export const taxYearSummarySchema = z
   .object({
     year: z.number().int(),
@@ -1038,6 +1061,8 @@ export const taxYearSummarySchema = z
     taxWithheldEur: z.number(),
     taxRefundedEur: z.number(),
     taxNetEur: z.number(),
+    /** German year-end block (V5-P4) — present exactly when the year has DE-taxed rows. */
+    de: taxYearDeSummarySchema.optional(),
   })
   .strict();
 export type TaxYearSummary = z.infer<typeof taxYearSummarySchema>;

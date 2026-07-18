@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCOUNT_SECURITY_NOTIFICATION_TYPES,
   DEVICE_PLATFORMS,
+  DEFAULT_QUIET_HOURS,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_TYPES,
   isAccountSecurityNotificationType,
+  isUrgentNotification,
   notificationChannelDefaultEnabled,
+  quietHoursSchema,
   registerDeviceRequestSchema,
   webPushSubscribeRequestSchema,
 } from './notifications';
@@ -125,8 +128,14 @@ describe('settings response shape (#368)', () => {
     // V5-P0 kill-switch: the response also carries the deployment-level
     // "offered at all?" flags so the SPA hides the setup cards without probing.
     const channelsConfigurable = { telegram: false, discord: false };
+    // V5-P3: a full per-type cadence map ships alongside the matrix.
+    const cadence = Object.fromEntries(NOTIFICATION_TYPES.map((t) => [t, 'instant']));
+    // V5-P3 quiet hours: the window/timezone block ships too (off by default).
+    const quietHours = { enabled: false, startMinute: 1320, endMinute: 420, timezone: null };
     const parsed = notificationSettingsResponseSchema.safeParse({
       matrix,
+      cadence,
+      quietHours,
       muted: false,
       channels,
       channelsConfigurable,
@@ -138,11 +147,68 @@ describe('settings response shape (#368)', () => {
     expect(
       notificationSettingsResponseSchema.safeParse({
         matrix: incomplete,
+        cadence,
+        quietHours,
         muted: false,
         channels,
         channelsConfigurable,
         webPushPublicKey: null,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('quiet hours (§13.5 V5-P3)', () => {
+  it('defaults are off with a 22:00→07:00 window and no timezone', () => {
+    expect(DEFAULT_QUIET_HOURS).toEqual({
+      enabled: false,
+      startMinute: 1320,
+      endMinute: 420,
+      timezone: null,
+    });
+    expect(quietHoursSchema.safeParse(DEFAULT_QUIET_HOURS).success).toBe(true);
+  });
+
+  it('accepts a valid IANA timezone and rejects a bogus one', () => {
+    expect(
+      quietHoursSchema.safeParse({
+        enabled: true,
+        startMinute: 0,
+        endMinute: 1439,
+        timezone: 'Europe/Vienna',
+      }).success,
+    ).toBe(true);
+    expect(
+      quietHoursSchema.safeParse({
+        enabled: true,
+        startMinute: 0,
+        endMinute: 60,
+        timezone: 'Mars/Phobos',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects out-of-range minute boundaries', () => {
+    expect(
+      quietHoursSchema.safeParse({
+        enabled: true,
+        startMinute: 1440,
+        endMinute: 0,
+        timezone: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('urgent bypass = account/security types or critical announcements only', () => {
+    for (const type of ACCOUNT_SECURITY_NOTIFICATION_TYPES) {
+      expect(isUrgentNotification({ type })).toBe(true);
+    }
+    expect(isUrgentNotification({ type: 'friend.request', announcementSeverity: 'critical' })).toBe(
+      true,
+    );
+    expect(isUrgentNotification({ type: 'alert.triggered' })).toBe(false);
+    expect(isUrgentNotification({ type: 'chat.message', announcementSeverity: 'warning' })).toBe(
+      false,
+    );
   });
 });

@@ -489,6 +489,24 @@
         "label": "Alle Benachrichtigungen stummschalten",
         "description": "Solange stummgeschaltet, wird auf keinem Kanal etwas zugestellt. Deine Auswahl unten bleibt erhalten."
       },
+      "digest": {
+        "title": "Zustellhäufigkeit",
+        "description": "Fasse E-Mail- und Push-Benachrichtigungen zu einer täglichen oder wöchentlichen Zusammenfassung zusammen. Die Glocke in der App wird immer sofort aktualisiert.",
+        "instant": "Sofort",
+        "daily": "Tägliche Zusammenfassung",
+        "weekly": "Wöchentliche Zusammenfassung",
+        "selectAria": "Zustellhäufigkeit für {{type}}"
+      },
+      "quietHours": {
+        "title": "Ruhezeiten",
+        "description": "Halte E-Mail- und Push-Benachrichtigungen während eines täglichen Zeitfensters zurück. Dringende Konto- und Sicherheitshinweise kommen immer durch, und die Glocke in der App bleibt sofort.",
+        "enable": "Ruhezeiten aktivieren",
+        "start": "Von",
+        "end": "Bis",
+        "timezone": "Zeitzone",
+        "timezoneNone": "UTC (keine Zeitzone festgelegt)",
+        "useDetected": "Meine Zeitzone verwenden ({{zone}})"
+      },
       "webPush": {
         "title": "Browser-Push in diesem Browser",
         "description": "Erhalte Desktop-Benachrichtigungen auch bei geschlossenem Tab. Pro Browser aktivieren; die Spalte unten bestimmt, was gepusht wird.",
@@ -880,6 +898,10 @@
         "country_specific": {
           "label": "Österreich (KESt)",
           "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
+        },
+        "country_specific_de": {
+          "label": "Deutschland (Abgeltungsteuer)",
+          "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen."
         }
       }
     },
@@ -1256,6 +1278,15 @@
         "title": "Steuererfassung ist aus",
         "description": "Aktiviere einen Steuermodus, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
         "link": "Steuermodus in Einstellungen → Steuern wählen →"
+      },
+      "de": {
+        "title": "Deutschland (Abgeltungsteuer)",
+        "allowanceUsed": "Genutzter Pauschbetrag",
+        "allowanceRemaining": "Verbleibender Pauschbetrag",
+        "aktienPot": "Aktien-Verlusttopf (ein → aus)",
+        "sonstigePot": "Sonstiger Verlusttopf (ein → aus)",
+        "kapest": "KapESt (25 %)",
+        "soli": "Soli (5,5 % der Steuer)"
       }
     },
     "section": {
@@ -2401,7 +2432,8 @@
       "menu": "Admin-Menü",
       "openMenu": "Admin-Menü öffnen",
       "closeMenu": "Admin-Menü schließen",
-      "problems": "Probleme"
+      "problems": "Probleme",
+      "featureFlags": "Feature-Flags"
     },
     "security": {
       "title": "Sicherheit",
@@ -2524,6 +2556,14 @@
       "providers": {
         "none": "Keine externen Anbieter"
       },
+      "failover": {
+        "title": "Anbieter-Failover",
+        "viaFailover": "Failover aktiv",
+        "since": "seit {{time}}",
+        "served": "{{count}} bedient",
+        "switchesTitle": "Letzte Wechsel",
+        "noSwitches": "Keine Wechsel aufgezeichnet"
+      },
       "queues": {
         "unavailable": "Keine Job-Warteschlangen in diesem Prozess",
         "empty": "Keine Jobs",
@@ -2565,6 +2605,47 @@
       "context": "Kontext",
       "resolve": "Erledigen",
       "reopen": "Wieder öffnen"
+    },
+    "featureFlags": {
+      "title": "Feature-Flags",
+      "subtitle": "Laufzeit-Schalter. Eine Änderung wirkt ab der nächsten Anfrage – kein Redeploy.",
+      "refresh": "Aktualisieren",
+      "loadError": "Feature-Flags konnten nicht geladen werden.",
+      "actionError": "Das Feature-Flag konnte nicht aktualisiert werden.",
+      "featureColumn": "Funktion",
+      "stateColumn": "Status",
+      "lastChangedColumn": "Zuletzt geändert",
+      "on": "An",
+      "off": "Aus",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "never": "Nie geändert",
+      "flag": {
+        "realtime": {
+          "name": "Echtzeit",
+          "description": "Live-Push-Updates über die Echtzeitverbindung."
+        },
+        "liveMode": {
+          "name": "Live-Modus",
+          "description": "Intraday-Live-Streaming von Kursen."
+        },
+        "chat": {
+          "name": "Chat",
+          "description": "Direktnachrichten zwischen Freunden."
+        },
+        "alerts": {
+          "name": "Kurs-Alarme",
+          "description": "Kurs-Alarm-Regeln und deren Auslösung."
+        },
+        "imports": {
+          "name": "Importe",
+          "description": "Broker-CSV-Importe."
+        },
+        "ai": {
+          "name": "KI",
+          "description": "KI-Einblicke und Assistent (reserviert – noch nicht gebaut)."
+        }
+      }
     }
   }
 }

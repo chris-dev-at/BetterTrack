@@ -74,8 +74,19 @@ function stubMarketData(
     search: unused('search'),
     getMeta: unused('getMeta'),
     pollQuote: unused('pollQuote'),
+    intelCapabilities: () => ({
+      dividends: false,
+      earnings: false,
+      news: false,
+      splits: false,
+    }),
+    getDividendEvents: unused('getDividendEvents'),
+    getEarningsEvents: unused('getEarningsEvents'),
+    getNewsHeadlines: unused('getNewsHeadlines'),
+    getSplitEvents: unused('getSplitEvents'),
     settled: async () => {},
     breakerStates: () => [],
+    failoverStatus: () => ({ chains: [], switches: [], attribution: [] }),
   };
   return { service, getQuote, getHistory };
 }

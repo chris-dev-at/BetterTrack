@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { useFeatureEnabled } from '../../lib/featureFlags';
 import { ComingSoon } from '../../ui';
 import { SubNav, type SubNavItem } from '../components/SubNav';
 import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from './PortfolioSwitcher';
@@ -10,7 +11,7 @@ import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from './PortfolioSwitcher';
  * Portfolio section shell (PROJECTPLAN.md §6.8, §7.2). Hosts the portfolio
  * switcher placeholder and the section subnav above every portfolio route.
  */
-function portfolioSubNav(t: TranslateFn): readonly SubNavItem[] {
+function portfolioSubNav(t: TranslateFn, importsEnabled: boolean): readonly SubNavItem[] {
   return [
     { to: '/portfolio', label: t('portfolio.section.subnav.overview'), end: true },
     { to: '/portfolio/analytics', label: t('portfolio.section.subnav.analytics') },
@@ -18,12 +19,16 @@ function portfolioSubNav(t: TranslateFn): readonly SubNavItem[] {
     { to: '/portfolio/custom-assets', label: t('portfolio.section.subnav.customAssets') },
     { to: '/portfolio/cash', label: t('portfolio.section.subnav.cash') },
     { to: '/portfolio/tax', label: t('portfolio.section.subnav.tax') },
-    { to: '/portfolio/import', label: t('portfolio.section.subnav.import') },
+    // Runtime kill-switch (§13.5 V5-P2 arc (c)): imports OFF hides the tab.
+    ...(importsEnabled
+      ? [{ to: '/portfolio/import', label: t('portfolio.section.subnav.import') } as SubNavItem]
+      : []),
   ];
 }
 
 export function PortfolioLayout() {
   const t = useT();
+  const importsEnabled = useFeatureEnabled('imports');
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -32,7 +37,10 @@ export function PortfolioLayout() {
       {/* The active portfolio lives only in `?portfolio=<id>` (PortfolioSwitcher);
           carry it across the subnav so opening Transactions / Custom Assets keeps
           the selection instead of silently reverting to the default (#322). */}
-      <SubNav items={portfolioSubNav(t)} preserveParams={[ACTIVE_PORTFOLIO_PARAM]} />
+      <SubNav
+        items={portfolioSubNav(t, importsEnabled)}
+        preserveParams={[ACTIVE_PORTFOLIO_PARAM]}
+      />
       <Outlet />
     </div>
   );

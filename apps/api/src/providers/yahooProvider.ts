@@ -2,18 +2,30 @@ import type {
   AssetMeta,
   AssetRef,
   AssetSearchResult,
+  DividendEvents,
+  EarningsEvents,
   HistoryInterval,
   HistoryRange,
+  NewsHeadline,
   PricePoint,
   Quote,
+  SplitEvents,
 } from '@bettertrack/contracts';
 
 import type { AssetProvider } from './AssetProvider';
 import { AssetNotFoundError } from './errors';
 import { rangeStartMs } from './historyWindow';
 import { createRequestQueue, type RequestQueue, type RequestQueueOptions } from './requestQueue';
-import { currencyForSearchResult, mapAssetType, normalizeCurrency } from './yahooMapping';
-import type { YahooChartInterval, YahooClient } from './yahooClient';
+import {
+  currencyForSearchResult,
+  mapAssetType,
+  mapDividendEvents,
+  mapEarningsEvents,
+  mapNewsHeadlines,
+  mapSplitEvents,
+  normalizeCurrency,
+} from './yahooMapping';
+import type { YahooChartEventsResult, YahooChartInterval, YahooClient } from './yahooClient';
 
 /**
  * The Yahoo Finance provider (PROJECTPLAN.md §5.2): `search`/`getQuote`/
@@ -28,6 +40,9 @@ import type { YahooChartInterval, YahooClient } from './yahooClient';
  */
 
 const PROVIDER_ID = 'yahoo';
+
+/** How many headlines to request per asset (§13.5 V5-P5) — compact, expandable. */
+const NEWS_HEADLINE_COUNT = 20;
 
 /** §5.3 interval → the matching `yahoo-finance2` candle granularity. */
 const INTERVAL_MAP: Record<HistoryInterval, YahooChartInterval> = {
@@ -165,5 +180,72 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
     };
   }
 
-  return { id: PROVIDER_ID, search, getQuote, getHistory, getMeta };
+  // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
+  // Corporate actions come from `chart` events over the full window; the forward
+  // calendar and earnings/detail modules from `quoteSummary`; headlines from
+  // `search`. Every upstream call flows through the same queue as the price
+  // paths; caching/coalescing/breaker are added by the market-data service.
+
+  /** Deepest window Yahoo will serve (upstream clamps to what it actually has). */
+  const eventsPeriod1 = (): Date => new Date(rangeStartMs(now(), 'MAX'));
+
+  async function getDividendEvents(ref: AssetRef): Promise<DividendEvents> {
+    // History (chart) and the forward calendar + yield (quoteSummary) are two
+    // independent calls; a hiccup on one must not blank the other, but a total
+    // failure must surface so the breaker counts it and the read layer degrades.
+    const [chartResult, summaryResult] = await Promise.allSettled([
+      queue.run(() =>
+        client.chartEvents(ref.providerRef, {
+          period1: eventsPeriod1(),
+          interval: '1mo',
+          events: 'div',
+        }),
+      ),
+      queue.run(() => client.quoteSummary(ref.providerRef, ['calendarEvents', 'summaryDetail'])),
+    ]);
+    if (chartResult.status === 'rejected' && summaryResult.status === 'rejected') {
+      throw chartResult.reason;
+    }
+    const chart: YahooChartEventsResult =
+      chartResult.status === 'fulfilled'
+        ? chartResult.value
+        : { meta: {}, dividends: [], splits: [] };
+    const summary = summaryResult.status === 'fulfilled' ? summaryResult.value : {};
+    return mapDividendEvents(chart, summary);
+  }
+
+  async function getEarningsEvents(ref: AssetRef): Promise<EarningsEvents> {
+    const summary = await queue.run(() =>
+      client.quoteSummary(ref.providerRef, ['calendarEvents', 'earningsHistory']),
+    );
+    return mapEarningsEvents(summary);
+  }
+
+  async function getNewsHeadlines(ref: AssetRef): Promise<NewsHeadline[]> {
+    const result = await queue.run(() => client.searchNews(ref.providerRef, NEWS_HEADLINE_COUNT));
+    return mapNewsHeadlines(result);
+  }
+
+  async function getSplitEvents(ref: AssetRef): Promise<SplitEvents> {
+    const chart = await queue.run(() =>
+      client.chartEvents(ref.providerRef, {
+        period1: eventsPeriod1(),
+        interval: '1mo',
+        events: 'split',
+      }),
+    );
+    return mapSplitEvents(chart);
+  }
+
+  return {
+    id: PROVIDER_ID,
+    search,
+    getQuote,
+    getHistory,
+    getMeta,
+    getDividendEvents,
+    getEarningsEvents,
+    getNewsHeadlines,
+    getSplitEvents,
+  };
 }

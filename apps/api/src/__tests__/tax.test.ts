@@ -174,10 +174,12 @@ describe('Settings → Taxes (V3-P4b)', () => {
       .send({ mode: 'manual_per_trade', country: 'AT' });
     expect(strayCountry.status).toBe(400);
 
+    // Germany became a valid country in V5-P4 (#580) — probe with a genuinely
+    // unshipped one to keep pinning the unknown-country rejection.
     const unknownCountry = await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
-      .send({ mode: 'country_specific', country: 'DE' });
+      .send({ mode: 'country_specific', country: 'FR' });
     expect(unknownCountry.status).toBe(400);
   });
 });

@@ -111,6 +111,23 @@ export const users = pgTable(
     // EVERY channel for every type — a kill switch over the per-type matrix,
     // which stays stored untouched underneath.
     notificationsMuted: boolean('notifications_muted').notNull().default(false),
+    // Quiet hours (§13.5 V5-P3). An optional per-user window that defers the
+    // OUTBOUND channels (email/push/webpush) — the in-app bell is never touched.
+    // OFF by default so existing users behave byte-identically; when enabled, a
+    // non-urgent outbound notification fired inside the window is queued and
+    // delivered at window end. `start`/`end` are minutes-since-local-midnight
+    // (an overnight window is start > end). `timezone` is a nullable IANA name —
+    // NULL = UTC / server-global (the pre-quiet-hours behaviour); it is stored
+    // independently of the flag because the V5-P3 digest boundaries also align
+    // to it (a daily digest lands in the user's local morning).
+    quietHoursEnabled: boolean('quiet_hours_enabled').notNull().default(false),
+    quietHoursStartMinute: integer('quiet_hours_start_minute')
+      .notNull()
+      .default(22 * 60),
+    quietHoursEndMinute: integer('quiet_hours_end_minute')
+      .notNull()
+      .default(7 * 60),
+    timezone: text('timezone'),
     // Default friend-sharing visibility applied when the user creates a *new*
     // portfolio (§6.9, §13.2 V2-P9). Only affects the default at creation time;
     // existing portfolios and explicit per-item toggles are untouched. The
@@ -680,6 +697,87 @@ export const notificationSettings = pgTable(
   },
   (t) => [
     primaryKey({ name: 'notification_settings_user_channel_pk', columns: [t.userId, t.channel] }),
+  ],
+);
+
+/**
+ * Per-user per-type OUTBOUND delivery cadence (V5-P3 digest mode). `instant`
+ * (the pre-digest behaviour) delivers each event immediately; `daily`/`weekly`
+ * defer the outbound channels (email/push/webpush) into ONE grouped digest per
+ * period. Absence of a row = `instant` — so the whole feature is additive and no
+ * existing user is migrated. Governs outbound channels only; the in-app bell is
+ * always instant (§13.5 V5-P3).
+ */
+export const notificationCadenceEnum = pgEnum('notification_cadence', [
+  'instant',
+  'daily',
+  'weekly',
+]);
+
+export const notificationCadences = pgTable(
+  'notification_cadences',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    cadence: notificationCadenceEnum('cadence').notNull(),
+  },
+  (t) => [primaryKey({ name: 'notification_cadences_user_type_pk', columns: [t.userId, t.type] })],
+);
+
+/**
+ * The digest queue (V5-P3). A deferred (daily/weekly) notification lands here as
+ * ONE row per outbound channel it routes to, carrying the already-rendered
+ * title/body (+ push deep-link `data`) and the `period` key the digest job
+ * groups by. The digest job claims a whole (user, period) group atomically —
+ * stamping `delivered_at` in the same UPDATE it reads the rows — so a re-run or
+ * a second worker never double-sends (idempotent per (user, period)). `channel`
+ * reuses the notification_channel enum but only ever holds email/push/webpush.
+ * The `period` is computed per user at enqueue in the user's timezone (§13.5
+ * V5-P3 quiet hours) so a daily/weekly digest buckets by the user's LOCAL day.
+ *
+ * The same table doubles as the quiet-hours **deferral store** (§13.5 V5-P3):
+ * an INSTANT-cadence outbound notification fired inside a user's quiet window is
+ * queued here with `cadence = 'instant'` and a `deliver_after` = window end, and
+ * the deferred-delivery job sends each such row INDIVIDUALLY once due (never
+ * grouped — the grouped-summary path only ever queries the daily/weekly
+ * cadences). `deliver_after` is NULL for the grouped digest rows.
+ */
+export const notificationDigestQueue = pgTable(
+  'notification_digest_queue',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    channel: notificationChannelEnum('channel').notNull(),
+    cadence: notificationCadenceEnum('cadence').notNull(),
+    period: text('period').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    data: jsonb('data'),
+    // Quiet-hours deferral (V5-P3): the wall-clock moment a deferred INSTANT row
+    // becomes due for individual delivery (= the user's quiet-window end). NULL
+    // for grouped daily/weekly digest rows, which deliver on the digest cron.
+    deliverAfter: timestamp('deliver_after', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  },
+  (t) => [
+    // The job scans pending rows by cadence and groups by (user, period); the
+    // claim UPDATE filters (user, period, cadence) WHERE delivered_at IS NULL.
+    // Partial on the pending set keeps the scan/claim off delivered history.
+    index('notification_digest_queue_pending_idx')
+      .on(t.cadence, t.userId, t.period)
+      .where(sql`${t.deliveredAt} is null`),
+    index('notification_digest_queue_user_idx').on(t.userId),
+    // The quiet-hours deferred-delivery job claims due rows by `deliver_after`;
+    // partial on the still-pending deferred set keeps the scan off history.
+    index('notification_digest_queue_deferred_idx')
+      .on(t.deliverAfter)
+      .where(sql`${t.deliveredAt} is null and ${t.deliverAfter} is not null`),
   ],
 );
 
@@ -1731,6 +1829,9 @@ export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;
 export type NotificationRow = typeof notifications.$inferSelect;
 export type NotificationSettingRow = typeof notificationSettings.$inferSelect;
+export type NotificationCadenceRow = typeof notificationCadences.$inferSelect;
+export type NotificationDigestQueueRow = typeof notificationDigestQueue.$inferSelect;
+export type NewNotificationDigestQueueRow = typeof notificationDigestQueue.$inferInsert;
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
 export type NewDeviceTokenRow = typeof deviceTokens.$inferInsert;
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
@@ -2071,6 +2172,8 @@ export const schema = {
   alerts,
   notifications,
   notificationSettings,
+  notificationCadences,
+  notificationDigestQueue,
   deviceTokens,
   pushSubscriptions,
   emailLog,
@@ -2111,6 +2214,7 @@ export const schema = {
   alertKindEnum,
   alertStatusEnum,
   notificationChannelEnum,
+  notificationCadenceEnum,
   devicePlatformEnum,
   emailStatusEnum,
   conglomerateStatusEnum,

@@ -12,8 +12,10 @@ import {
   createUserRequestSchema,
   deleteUserRequestSchema,
   emailLogQuerySchema,
+  featureFlagKeyParamSchema,
   idParamSchema,
   testEmailRequestSchema,
+  updateFeatureFlagRequestSchema,
   updateAccountDefaultsRequestSchema,
   updateAnnouncementRequestSchema,
   updateAppSettingsRequestSchema,
@@ -29,7 +31,9 @@ import {
   type CreateUserRequest,
   type DeleteUserRequest,
   type EmailLogQuery,
+  type FeatureFlagKeyParam,
   type TestEmailRequest,
+  type UpdateFeatureFlagRequest,
   type UpdateAnnouncementRequest,
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
@@ -240,6 +244,27 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     );
     res.json(toAppSettings(settings));
   });
+
+  // Runtime feature kill-switches (§13.5 V5-P2 arc (c)): list the registry and
+  // flip one flag. Each flip is audit-logged in the service and invalidates the
+  // shared snapshot, so the gated routers/gateway refuse on the very next
+  // request/connection — no redeploy. `requireAdmin` on the parent router fences
+  // this to admins (404 to everyone else).
+  router.get('/feature-flags', async (_req, res) => {
+    res.json({ flags: await ctx.featureFlags.listForAdmin() });
+  });
+
+  router.patch(
+    '/feature-flags/:key',
+    validateParams(featureFlagKeyParamSchema),
+    validateBody(updateFeatureFlagRequestSchema),
+    async (req, res) => {
+      const { key } = req.valid?.params as FeatureFlagKeyParam;
+      const { enabled } = req.valid?.body as UpdateFeatureFlagRequest;
+      const flags = await ctx.featureFlags.setFlag(key, enabled, actorOf(req));
+      res.json({ flags });
+    },
+  );
 
   // New-account defaults (§13.4 V4-P0d): what every NEW account starts with —
   // chat on/off, default portfolio visibility, an inert developer-status flag, and

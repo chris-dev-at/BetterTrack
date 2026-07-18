@@ -309,6 +309,79 @@ export function chatMessageEmail(params: {
   };
 }
 
+/**
+ * Digest summary email (V5-P3): one send bundling a day's / week's deferred
+ * notifications into a single list, each row the same title + body the instant
+ * email would have carried. Rendered in the recipient's locale like every other
+ * notification email.
+ */
+export function digestEmail(params: {
+  cadence: 'daily' | 'weekly';
+  items: readonly { title: string; body: string }[];
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { cadence, items, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.digest;
+  const subject = cadence === 'daily' ? c.subjectDaily : c.subjectWeekly;
+  const heading = cadence === 'daily' ? c.headingDaily : c.headingWeekly;
+  const listHtml = items
+    .map(
+      (item) =>
+        `<li style="margin-bottom:12px;"><strong>${escapeHtml(item.title)}</strong><br>${escapeHtml(item.body)}</li>`,
+    )
+    .join('');
+  const listText = items.map((item) => `• ${item.title}\n  ${item.body}`).join('\n');
+  return {
+    subject,
+    html: layout(
+      heading,
+      [
+        `<p>${escapeHtml(c.intro)}</p>`,
+        `<ul style="padding-left:18px;margin:16px 0;list-style:disc;">${listHtml}</ul>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [c.intro, '', listText, '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/**
+ * Quiet-hours deferred notification email (§13.5 V5-P3). Sent at the user's
+ * quiet-window end for a single instant notification (or a quiet-blocked digest
+ * summary) that was held back. The content is the already-rendered title + body
+ * — English like every inbox row and the digest list — wrapped in the localized
+ * chrome (footer + app button), mirroring how {@link digestEmail} presents its
+ * deferred items. Multi-line bodies (a deferred digest summary) keep their line
+ * breaks in both HTML and text.
+ */
+export function deferredNotificationEmail(params: {
+  title: string;
+  body: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { title, body, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const bodyHtml = escapeHtml(body).replace(/\n/g, '<br>');
+  return {
+    subject: title,
+    html: layout(
+      title,
+      [
+        `<p>${bodyHtml}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, copy.openApp)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [body, '', `${copy.openApp}: ${appUrl}`].join('\n'),
+  };
+}
+
 /** `watchlist.shared` notification email (#368) — mirrors the portfolio one. */
 export function watchlistSharedEmail(params: {
   actorUsername: string;

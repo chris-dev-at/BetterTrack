@@ -113,6 +113,11 @@ const componentSchemas = {
   Problem: contracts.problemSchema,
   ProblemListResponse: contracts.problemListResponseSchema,
 
+  // Runtime feature kill-switches (§13.5 V5-P2 arc (c))
+  FeatureFlagsResponse: contracts.featureFlagsResponseSchema,
+  AdminFeatureFlagsResponse: contracts.adminFeatureFlagsResponseSchema,
+  UpdateFeatureFlagRequest: contracts.updateFeatureFlagRequestSchema,
+
   // Workboard (§6.4, §13.2 V2-P9)
   AddToWorkboardRequest: contracts.addToWorkboardRequestSchema,
   ReorderWorkboardRequest: contracts.reorderWorkboardRequestSchema,
@@ -133,6 +138,13 @@ const componentSchemas = {
   QuoteResponse: contracts.quoteResponseSchema,
   HistoryResponse: contracts.historyResponseSchema,
   DailyClosesResponse: contracts.dailyClosesResponseSchema,
+
+  // Market intelligence (§13.5 V5-P5)
+  MarketIntelStatusResponse: contracts.marketIntelStatusResponseSchema,
+  DividendsResponse: contracts.dividendsResponseSchema,
+  EarningsResponse: contracts.earningsResponseSchema,
+  NewsResponse: contracts.newsResponseSchema,
+  SplitsResponse: contracts.splitsResponseSchema,
 
   // Portfolios (§6.8, §13.2 V2-P8)
   CreatePortfolioRequest: contracts.createPortfolioRequestSchema,
@@ -391,6 +403,15 @@ const endpoints: EndpointDef[] = [
     public: true,
     status: 200,
     response: R.HealthResponse,
+  },
+  {
+    method: 'get',
+    path: '/feature-flags',
+    tag: 'Meta',
+    summary:
+      'Effective runtime feature flags advertised to the SPA (killed features hide client-side).',
+    status: 200,
+    response: R.FeatureFlagsResponse,
   },
   {
     method: 'get',
@@ -1131,6 +1152,25 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/admin/feature-flags',
+    tag: 'Admin',
+    summary:
+      'Runtime feature kill-switches (realtime/live/chat/alerts/imports/AI) with change metadata.',
+    status: 200,
+    response: R.AdminFeatureFlagsResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/feature-flags/{key}',
+    tag: 'Admin',
+    summary: 'Flip one feature kill-switch (audit-logged; effective on the next request).',
+    params: contracts.featureFlagKeyParamSchema,
+    body: R.UpdateFeatureFlagRequest,
+    status: 200,
+    response: R.AdminFeatureFlagsResponse,
+  },
+  {
+    method: 'get',
     path: '/admin/account-defaults',
     tag: 'Admin',
     summary: 'New-account defaults (chat, portfolio visibility, dev status, notifications).',
@@ -1375,6 +1415,53 @@ const endpoints: EndpointDef[] = [
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.DailyClosesResponse,
+  },
+
+  // Market intelligence (§13.5 V5-P5)
+  {
+    method: 'get',
+    path: '/assets/{id}/intel',
+    tag: 'Assets',
+    summary: 'Market-intelligence capability descriptor (gate + per-capability availability).',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.MarketIntelStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/dividends',
+    tag: 'Assets',
+    summary: 'Dividend history, upcoming ex/pay dates and forward yield.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.DividendsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/earnings',
+    tag: 'Assets',
+    summary: 'Next and recent past earnings reports.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.EarningsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/news',
+    tag: 'Assets',
+    summary: 'Recent news headlines for the asset.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.NewsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/splits',
+    tag: 'Assets',
+    summary: 'Past and announced stock splits.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.SplitsResponse,
   },
 
   // Portfolios (§6.8)

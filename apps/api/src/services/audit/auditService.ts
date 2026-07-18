@@ -74,6 +74,8 @@ export const AuditAction = {
   // Admin Problems page (§13.5 V5-P2, the Sentry replacement).
   ProblemResolved: 'problem.resolved',
   ProblemReopened: 'problem.reopened',
+  // Runtime feature kill-switches (§13.5 V5-P2 arc (c)).
+  FeatureFlagChanged: 'feature_flag.changed',
 } as const;
 
 export interface AuditService {

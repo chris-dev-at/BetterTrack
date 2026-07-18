@@ -39,6 +39,10 @@ describe('admin health + queue inspector', () => {
     expect(body.components.redis.status).toBe('ok');
     // The stub market data registers no upstream breakers under test.
     expect(body.components.providers.status).toBe('ok');
+    // No secondary configured under the stub ⇒ empty failover attribution (§13.5 V5-P1c).
+    expect(body.components.providers.chains).toEqual([]);
+    expect(body.components.providers.switches).toEqual([]);
+    expect(body.components.providers.attribution).toEqual([]);
     // The test process holds no BullMQ registry (ioredis-mock).
     expect(body.components.queues.available).toBe(false);
     expect(body.components.gateway.status).toBe('ok');

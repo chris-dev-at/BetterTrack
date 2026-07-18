@@ -68,6 +68,11 @@ const envSchema = z.object({
   // each service's env if a tighter combined budget is needed.
   PROVIDER_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
   PROVIDER_MIN_SPACING_MS: z.coerce.number().int().nonnegative().default(250),
+  // Provider failover chain (§13.5 V5-P1c): opt into the keyless Stooq secondary
+  // with health-based failover + recovery. Default OFF so the shipped behaviour
+  // is byte-identical to a single-provider (Yahoo-only) setup; set to enable —
+  // no keys or accounts required. Which-provider-served-what shows in admin health.
+  MARKET_FAILOVER_ENABLED: z.string().optional(),
   // Short-window burst dimension of the general limiter (§10, owner report #202):
   // the 15-min steady-state allowance is generous enough that a rapid page-reload
   // flood never reaches it, so a second, short window catches the flood without
@@ -165,6 +170,14 @@ const envSchema = z.object({
   BT_METRICS_ENABLED: z.string().optional(),
   BT_METRICS_HOST: z.string().min(1).default('127.0.0.1'),
   BT_METRICS_PORT: z.coerce.number().int().positive().default(9464),
+
+  // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
+  // Global kill-switch for the dividend/earnings/news/splits intel surfaces.
+  // Default ON (Yahoo is keyless, so a stock deploy has the data): OFF ⇒ every
+  // capability reports unavailable and the per-asset intel endpoints return the
+  // "unconfigured" shape (`available: false`, empty), so the P5 UI stays
+  // invisible. Flips without touching provider wiring.
+  MARKET_INTEL_ENABLED: z.string().optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -366,6 +379,11 @@ export interface AppConfig {
   providers: {
     maxConcurrency: number;
     minSpacingMs: number;
+    /** Provider failover chain (§13.5 V5-P1c): opt-in keyless Stooq secondary. */
+    failover: {
+      /** When true, register Stooq and apply the failover chains; default false. */
+      enabled: boolean;
+    };
   };
   /** Realtime gateway (§4.5, V3-P7a). */
   realtime: {
@@ -380,6 +398,14 @@ export interface AppConfig {
     host: string;
     /** Dedicated port for the `/metrics` listener (default 9464). */
     port: number;
+  };
+  /**
+   * Market-intelligence surfaces (§13.5 V5-P5). `enabled` defaults to true;
+   * when false every intel capability reports unavailable and the per-asset
+   * endpoints return the "unconfigured" shape, hiding the whole arc.
+   */
+  marketIntel: {
+    enabled: boolean;
   };
   /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
   sentry: {
@@ -558,6 +584,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providers: {
       maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,
       minSpacingMs: e.PROVIDER_MIN_SPACING_MS,
+      failover: {
+        enabled: boolFrom(e.MARKET_FAILOVER_ENABLED, false),
+      },
     },
     realtime: {
       enabled: boolFrom(e.REALTIME_ENABLED, true),
@@ -566,6 +595,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: boolFrom(e.BT_METRICS_ENABLED, true),
       host: e.BT_METRICS_HOST,
       port: e.BT_METRICS_PORT,
+    },
+    // V5-P5 kill-switch: default ON (Yahoo is keyless). OFF hides every intel
+    // surface via the "unconfigured" endpoint shape without any provider change.
+    marketIntel: {
+      enabled: boolFrom(e.MARKET_INTEL_ENABLED, true),
     },
     sentry: {
       enabled: Boolean(e.BT_SENTRY_DSN),

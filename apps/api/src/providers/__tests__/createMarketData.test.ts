@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTestApp, type TestHarness } from '../../testing/createTestApp';
 import { CircuitOpenError } from '../circuitBreaker';
 import { createMarketData } from '../createMarketData';
+import type { StooqClient } from '../stooqClient';
 import type { YahooClient, YahooQuoteResult } from '../yahooClient';
 
 const YAHOO_REF: AssetRef = { providerId: 'yahoo', providerRef: 'AAPL' };
@@ -24,6 +25,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote: () => Promise.resolve({}),
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { registry } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
 
@@ -43,6 +47,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote,
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { service } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
 
@@ -69,6 +76,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote,
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { service } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
 
@@ -81,5 +91,55 @@ describe('createMarketData registers both providers (§5.1)', () => {
     // Breaker open → fail fast with zero further upstream calls.
     await expect(service.getQuote(YAHOO_REF)).rejects.toBeInstanceOf(CircuitOpenError);
     expect(quote).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT register Stooq when failover is disabled (byte-identical default)', () => {
+    const stub: YahooClient = {
+      search: () => Promise.resolve({ quotes: [] }),
+      quote: () => Promise.resolve({}),
+      chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
+    };
+    const { registry } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
+    expect(registry.has('stooq')).toBe(false);
+  });
+
+  it('registers Stooq and fails over to it when enabled and Yahoo is down (§13.5 V5-P1c)', async () => {
+    await h.ctx.redis.flushall();
+    const yahoo: YahooClient = {
+      search: () => Promise.resolve({ quotes: [] }),
+      quote: () => Promise.reject(new Error('yahoo down')),
+      chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
+    };
+    const stooq: StooqClient = {
+      quote: async () => ({ symbol: 'AAPL.US', date: '2026-07-16', time: '22:00:00', close: 200 }),
+      history: async () => [],
+    };
+    const { registry, service } = createMarketData({
+      db: h.db,
+      redis: h.ctx.redis,
+      yahooClient: yahoo,
+      stooqClient: stooq,
+      failover: { enabled: true },
+      queueOptions: { minSpacingMs: 0 },
+    });
+
+    expect(registry.has('stooq')).toBe(true);
+
+    // Yahoo is dead ⇒ the quote keeps flowing from Stooq, under the yahoo cache key.
+    const quote = await service.getQuote(YAHOO_REF);
+    expect(quote.value.price).toBe(200);
+    expect(quote.value.currency).toBe('USD');
+
+    // The switch is visible in the admin attribution.
+    expect(service.failoverStatus().chains[0]).toMatchObject({
+      primaryId: 'yahoo',
+      serving: 'stooq',
+    });
   });
 });

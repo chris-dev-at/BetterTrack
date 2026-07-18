@@ -2,7 +2,13 @@ import { z } from 'zod';
 
 import { MAX_PASSWORD_LENGTH } from './auth';
 import { localeSchema } from './i18n';
-import { NOTIFICATION_TYPES, type NotificationType } from './notifications';
+import {
+  NOTIFICATION_TYPES,
+  notificationCadenceSchema,
+  quietHoursSchema,
+  quietHoursUpdateSchema,
+  type NotificationType,
+} from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
 
 /**
@@ -65,6 +71,22 @@ const partialMatrixShape = Object.fromEntries(
 export const notificationMatrixSchema = z.object(requiredMatrixShape).strict();
 export type NotificationMatrix = z.infer<typeof notificationMatrixSchema>;
 
+// The per-type digest cadence map (V5-P3). Like the matrix it is keyed by every
+// type: the GET response carries a full map (defaults applied), the PATCH body a
+// partial one. Governs the OUTBOUND channels only — the in-app bell is always
+// instant regardless of a type's cadence.
+const requiredCadenceShape = Object.fromEntries(
+  NOTIFICATION_TYPES.map((type) => [type, notificationCadenceSchema]),
+) as Record<NotificationType, typeof notificationCadenceSchema>;
+
+const partialCadenceShape = Object.fromEntries(
+  NOTIFICATION_TYPES.map((type) => [type, notificationCadenceSchema.optional()]),
+) as Record<NotificationType, z.ZodOptional<typeof notificationCadenceSchema>>;
+
+/** The full cadence map: every type present, defaults applied — GET response shape. */
+export const notificationCadenceMapSchema = z.object(requiredCadenceShape).strict();
+export type NotificationCadenceMap = z.infer<typeof notificationCadenceMapSchema>;
+
 /**
  * Which channels the deployment can actually deliver on. `inapp` is always
  * true; the rest reflect server config (SMTP / FCM service account / VAPID)
@@ -114,6 +136,10 @@ export type NotificationChannelsConfigurable = z.infer<
 export const notificationSettingsResponseSchema = z
   .object({
     matrix: notificationMatrixSchema,
+    /** Per-type outbound delivery cadence (V5-P3): instant / daily / weekly. */
+    cadence: notificationCadenceMapSchema,
+    /** Quiet-hours window + timezone (V5-P3); off by default (defaults applied). */
+    quietHours: quietHoursSchema,
     muted: z.boolean(),
     channels: notificationChannelAvailabilitySchema,
     channelsConfigurable: notificationChannelsConfigurableSchema,
@@ -130,12 +156,24 @@ export type NotificationSettingsResponse = z.infer<typeof notificationSettingsRe
 export const updateNotificationSettingsRequestSchema = z
   .object({
     matrix: z.object(partialMatrixShape).strict().optional(),
+    /** Partial per-type cadence changes (V5-P3); each supplied type is upserted. */
+    cadence: z.object(partialCadenceShape).strict().optional(),
+    /** Partial quiet-hours changes (V5-P3); supplied fields are upserted. */
+    quietHours: quietHoursUpdateSchema.optional(),
     muted: z.boolean().optional(),
   })
   .strict()
-  .refine((body) => body.muted !== undefined || Object.keys(body.matrix ?? {}).length > 0, {
-    message: 'At least one notification type or the muted flag is required.',
-  });
+  .refine(
+    (body) =>
+      body.muted !== undefined ||
+      Object.keys(body.matrix ?? {}).length > 0 ||
+      Object.keys(body.cadence ?? {}).length > 0 ||
+      (body.quietHours !== undefined && Object.keys(body.quietHours).length > 0),
+    {
+      message:
+        'At least one notification type, cadence, quiet-hours field, or the muted flag is required.',
+    },
+  );
 export type UpdateNotificationSettingsRequest = z.infer<
   typeof updateNotificationSettingsRequestSchema
 >;

@@ -2,10 +2,14 @@ import type {
   AssetMeta,
   AssetRef,
   AssetSearchResult,
+  DividendEvents,
+  EarningsEvents,
   HistoryInterval,
   HistoryRange,
+  NewsHeadline,
   PricePoint,
   Quote,
+  SplitEvents,
 } from '@bettertrack/contracts';
 
 /**
@@ -31,6 +35,17 @@ export interface AssetProvider {
    */
   readonly local?: boolean;
 
+  /**
+   * Failover capability gate (§13.5 V5-P1c). A *secondary* provider returns
+   * false for a ref whose asset it cannot map into its own universe (e.g. Stooq
+   * for a crypto or an unlisted exchange), so the failover chain skips it
+   * instead of asking — which would surface a spurious "not found" and poison
+   * the (primary-keyed) negative cache. Omitted ⇒ the provider serves any ref
+   * routed to it (the primary's own assets always resolve, so the primary
+   * never needs this).
+   */
+  canServe?(ref: AssetRef): boolean;
+
   /** Symbol/name lookup across this provider's universe (§6.2). */
   search(query: string): Promise<AssetSearchResult[]>;
 
@@ -42,4 +57,24 @@ export interface AssetProvider {
 
   /** Descriptive metadata: name, symbol, exchange, currency, type (§5.1). */
   getMeta(ref: AssetRef): Promise<AssetMeta>;
+
+  // ── Market-intelligence capabilities (§13.5 V5-P5) ─────────────────────────
+  // All four are OPTIONAL: a provider implements any subset, and the registry
+  // reports per-provider availability (a provider that lacks a capability simply
+  // does not advertise it — see `providerCapabilities`). A secondary/failover
+  // provider that carries none is fully valid. Freshness caching, coalescing and
+  // circuit breaking are layered on by the market-data service exactly like the
+  // quote/history paths, so these methods never touch Redis.
+
+  /** Dividend history + known upcoming ex/pay dates + forward yield (arc a). */
+  getDividendEvents?(ref: AssetRef): Promise<DividendEvents>;
+
+  /** Next + recent past earnings reports, with a confirmed/estimated flag (arc b). */
+  getEarningsEvents?(ref: AssetRef): Promise<EarningsEvents>;
+
+  /** Recent news headlines for the asset (arc c). */
+  getNewsHeadlines?(ref: AssetRef): Promise<NewsHeadline[]>;
+
+  /** Past + announced stock splits with ratios (arc d). */
+  getSplitEvents?(ref: AssetRef): Promise<SplitEvents>;
 }

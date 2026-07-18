@@ -243,6 +243,29 @@ export function createUserRepository(db: Database) {
       await db.update(users).set({ profileIcon, updatedAt: new Date() }).where(eq(users.id, id));
     },
 
+    /**
+     * Patch the caller's quiet-hours window + timezone (§13.5 V5-P3). Only the
+     * supplied fields are written; omitted ones keep their stored value.
+     * `timezone: null` explicitly clears the zone (back to UTC). The contract
+     * validates the minute bounds and the IANA name before this is reached.
+     */
+    async setQuietHours(
+      id: string,
+      patch: {
+        enabled?: boolean;
+        startMinute?: number;
+        endMinute?: number;
+        timezone?: string | null;
+      },
+    ): Promise<void> {
+      const set: Record<string, unknown> = { updatedAt: new Date() };
+      if (patch.enabled !== undefined) set.quietHoursEnabled = patch.enabled;
+      if (patch.startMinute !== undefined) set.quietHoursStartMinute = patch.startMinute;
+      if (patch.endMinute !== undefined) set.quietHoursEndMinute = patch.endMinute;
+      if (patch.timezone !== undefined) set.timezone = patch.timezone;
+      await db.update(users).set(set).where(eq(users.id, id));
+    },
+
     /** Set the global notification mute (#368) — the dispatcher's kill switch. */
     async setNotificationsMuted(id: string, muted: boolean): Promise<void> {
       await db

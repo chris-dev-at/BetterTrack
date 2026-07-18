@@ -221,6 +221,45 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     });
   });
 
+  it('quiet hours: off by default, editable via PATCH, and a bogus timezone is rejected (§13.5 V5-P3)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const before = notificationSettingsResponseSchema.parse(
+      (await agent.get('/api/v1/settings/notifications')).body,
+    );
+    expect(before.quietHours).toEqual({
+      enabled: false,
+      startMinute: 22 * 60,
+      endMinute: 7 * 60,
+      timezone: null,
+    });
+
+    const patched = await agent
+      .patch('/api/v1/settings/notifications')
+      .set(...XRW)
+      .send({ quietHours: { enabled: true, startMinute: 90, timezone: 'Europe/Vienna' } });
+    expect(patched.status).toBe(200);
+    const after = notificationSettingsResponseSchema.parse(patched.body);
+    expect(after.quietHours).toEqual({
+      enabled: true,
+      startMinute: 90,
+      endMinute: 7 * 60, // untouched
+      timezone: 'Europe/Vienna',
+    });
+
+    // A bogus IANA name is a 400 (contract-validated), never persisted.
+    const bad = await agent
+      .patch('/api/v1/settings/notifications')
+      .set(...XRW)
+      .send({ quietHours: { timezone: 'Mars/Phobos' } });
+    expect(bad.status).toBe(400);
+    const still = notificationSettingsResponseSchema.parse(
+      (await agent.get('/api/v1/settings/notifications')).body,
+    );
+    expect(still.quietHours.timezone).toBe('Europe/Vienna');
+  });
+
   it('new account: email defaults ON only for the account/security category, OFF everywhere else (V4-P0c)', async () => {
     const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
     const agent = await loginAgent(harness.app, alice.email, alice.password);

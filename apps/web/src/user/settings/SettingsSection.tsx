@@ -1,14 +1,17 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import {
+  NOTIFICATION_CADENCES,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_SETTING_CHANNELS,
+  NOTIFICATION_TYPES,
   NOTIFICATION_VIEWS,
   type DiscordSettingsResponse,
   type MarkReadRequest,
   type Notification,
+  type NotificationCadence,
   type NotificationCategoryKey,
   type NotificationSettingChannel,
   type NotificationSettingsResponse,
@@ -356,6 +359,214 @@ function NotificationMatrixGrid({
         ))}
       </table>
     </div>
+  );
+}
+
+/**
+ * Compact per-type digest cadence block (V5-P3). Anti-bloat: NOT another
+ * settings wall — a single collapsed `<details>` with a small instant/daily/
+ * weekly selector per type. Cadence governs the OUTBOUND channels only; the
+ * in-app bell always updates instantly, which the description states.
+ */
+function NotificationCadenceControls({
+  settings,
+  busy,
+  onUpdate,
+}: {
+  settings: NotificationSettingsResponse;
+  busy: boolean;
+  onUpdate: (patch: UpdateNotificationSettingsRequest) => void;
+}) {
+  const t = useT();
+  const typeMeta = notificationTypeMeta(t);
+  // account.invite has no per-user routing, so its cadence is meaningless.
+  const types = NOTIFICATION_TYPES.filter((type) => type !== 'account.invite');
+
+  return (
+    <details className="rounded-md border border-neutral-800 bg-neutral-900">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-neutral-100">
+        {t('settings.notifications.digest.title')}
+        <p className="mt-0.5 text-xs font-normal text-neutral-500">
+          {t('settings.notifications.digest.description')}
+        </p>
+      </summary>
+      <ul className="flex flex-col border-t border-neutral-800">
+        {types.map((type) => (
+          <li
+            key={type}
+            className="flex items-center justify-between gap-3 border-b border-neutral-800/60 px-4 py-2.5 last:border-b-0"
+          >
+            <span className="min-w-0 text-sm text-neutral-200">{typeMeta[type].label}</span>
+            <select
+              aria-label={t('settings.notifications.digest.selectAria', {
+                type: typeMeta[type].label,
+              })}
+              value={settings.cadence[type]}
+              disabled={busy}
+              onChange={(event) =>
+                onUpdate({ cadence: { [type]: event.target.value as NotificationCadence } })
+              }
+              className={cx(
+                'rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100',
+                busy && 'cursor-not-allowed opacity-50',
+              )}
+            >
+              {NOTIFICATION_CADENCES.map((cadence) => (
+                <option key={cadence} value={cadence}>
+                  {t(`settings.notifications.digest.${cadence}`)}
+                </option>
+              ))}
+            </select>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+/** HH:MM (24h) ⇄ minutes-since-midnight for the quiet-hours time inputs. */
+function timeFromMinutes(minutes: number): string {
+  const h = String(Math.floor(minutes / 60)).padStart(2, '0');
+  const m = String(minutes % 60).padStart(2, '0');
+  return `${h}:${m}`;
+}
+function minutesFromTime(value: string): number | null {
+  if (!value) return null;
+  const [h, m] = value.split(':').map(Number);
+  if (h === undefined || m === undefined || Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+/** The runtime's IANA zone list (+ the current/detected ones), deduped + sorted. */
+function timeZoneOptions(current: string | null): string[] {
+  const zones = new Set<string>();
+  const detected = detectedTimeZone();
+  if (detected) zones.add(detected);
+  const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+    .supportedValuesOf;
+  if (typeof supported === 'function') {
+    for (const zone of supported('timeZone')) zones.add(zone);
+  }
+  if (current) zones.add(current);
+  return [...zones].sort();
+}
+
+/** The browser's own timezone, for the "use my timezone" shortcut. */
+function detectedTimeZone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compact quiet-hours block (§13.5 V5-P3). Anti-bloat: a single collapsed
+ * `<details>` alongside the digest block — a switch, and only when enabled the
+ * window (start/end) + timezone fold open. Quiet hours defer the OUTBOUND
+ * channels only; the in-app bell stays instant, which the description states.
+ */
+function QuietHoursControls({
+  settings,
+  busy,
+  onUpdate,
+}: {
+  settings: NotificationSettingsResponse;
+  busy: boolean;
+  onUpdate: (patch: UpdateNotificationSettingsRequest) => void;
+}) {
+  const t = useT();
+  const quiet = settings.quietHours;
+  const zones = useMemo(() => timeZoneOptions(quiet.timezone), [quiet.timezone]);
+  const detected = detectedTimeZone();
+
+  return (
+    <details className="rounded-md border border-neutral-800 bg-neutral-900">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-neutral-100">
+        {t('settings.notifications.quietHours.title')}
+        <p className="mt-0.5 text-xs font-normal text-neutral-500">
+          {t('settings.notifications.quietHours.description')}
+        </p>
+      </summary>
+      <div className="flex flex-col gap-3 border-t border-neutral-800 px-4 py-3">
+        <label className="flex items-center justify-between gap-3">
+          <span className="text-sm text-neutral-200">
+            {t('settings.notifications.quietHours.enable')}
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label={t('settings.notifications.quietHours.enable')}
+            checked={quiet.enabled}
+            disabled={busy}
+            onChange={(event) => onUpdate({ quietHours: { enabled: event.target.checked } })}
+            className={cx('h-4 w-4 accent-sky-500', busy && 'cursor-not-allowed opacity-50')}
+          />
+        </label>
+        {quiet.enabled ? (
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-4">
+              <label className="flex flex-col gap-1 text-sm text-neutral-300">
+                {t('settings.notifications.quietHours.start')}
+                <input
+                  type="time"
+                  value={timeFromMinutes(quiet.startMinute)}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const minute = minutesFromTime(event.target.value);
+                    if (minute !== null) onUpdate({ quietHours: { startMinute: minute } });
+                  }}
+                  className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm text-neutral-300">
+                {t('settings.notifications.quietHours.end')}
+                <input
+                  type="time"
+                  value={timeFromMinutes(quiet.endMinute)}
+                  disabled={busy}
+                  onChange={(event) => {
+                    const minute = minutesFromTime(event.target.value);
+                    if (minute !== null) onUpdate({ quietHours: { endMinute: minute } });
+                  }}
+                  className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100"
+                />
+              </label>
+            </div>
+            <label className="flex flex-col gap-1 text-sm text-neutral-300">
+              {t('settings.notifications.quietHours.timezone')}
+              <select
+                value={quiet.timezone ?? ''}
+                disabled={busy}
+                onChange={(event) =>
+                  onUpdate({
+                    quietHours: { timezone: event.target.value === '' ? null : event.target.value },
+                  })
+                }
+                className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100"
+              >
+                <option value="">{t('settings.notifications.quietHours.timezoneNone')}</option>
+                {zones.map((zone) => (
+                  <option key={zone} value={zone}>
+                    {zone}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {detected && quiet.timezone !== detected ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onUpdate({ quietHours: { timezone: detected } })}
+                className="self-start text-xs font-medium text-sky-400 hover:text-sky-300 disabled:opacity-50"
+              >
+                {t('settings.notifications.quietHours.useDetected', { zone: detected })}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -1155,6 +1366,16 @@ export function NotificationSettingsPage() {
           {query.data.channelsConfigurable.discord ? <DiscordSetupCard /> : null}
 
           <NotificationMatrixGrid
+            settings={query.data}
+            busy={mutation.isPending}
+            onUpdate={(patch) => mutation.mutate(patch)}
+          />
+          <NotificationCadenceControls
+            settings={query.data}
+            busy={mutation.isPending}
+            onUpdate={(patch) => mutation.mutate(patch)}
+          />
+          <QuietHoursControls
             settings={query.data}
             busy={mutation.isPending}
             onUpdate={(patch) => mutation.mutate(patch)}

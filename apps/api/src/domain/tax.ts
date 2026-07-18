@@ -59,11 +59,43 @@
 export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific'] as const;
 export type TaxMode = (typeof TAX_MODES)[number];
 
-/** The single shipped country of `country_specific` mode (§13.3 V3-P4b). */
+/** The first shipped country of `country_specific` mode (§13.3 V3-P4b). */
 export const TAX_COUNTRY_AT = 'AT';
+
+/** The second shipped country of `country_specific` mode (§13.5 V5-P4, #580). */
+export const TAX_COUNTRY_DE = 'DE';
 
 /** Austrian flat KESt rate on realized gains and dividends (§13.3 V3-P4b). */
 export const AT_KEST_RATE = 0.275;
+
+/** German flat Abgeltungsteuer rate on capital income (§32d Abs. 1 EStG). */
+export const DE_KAPEST_RATE = 0.25;
+
+/** Solidaritätszuschlag, levied on the KapESt itself (§3 Abs. 1 Nr. 5, §4 SolzG). */
+export const DE_SOLI_RATE = 0.055;
+
+/**
+ * Sparer-Pauschbetrag per calendar year (§20 Abs. 9 EStG; €1,000 since VZ
+ * 2023). Applied after loss offset, floored at zero; the unused remainder does
+ * NOT carry into the next year — unlike the loss pots, which do.
+ */
+export const DE_SPARER_PAUSCHBETRAG_EUR = 1000;
+
+/**
+ * Cost-basis strategies of the EUR tax replay (V5-P4, #580): `moving-average`
+ * is the AT method (gleitender Durchschnittspreis — the pre-V5-P4 behavior,
+ * byte-identical), `fifo` the German per-lot consumption (§20 Abs. 4 Satz 7
+ * EStG). The strategy is selected by the active tax country via
+ * {@link costBasisStrategyForCountry}; the P4 custom tax mode will later pick
+ * one directly through the same seam.
+ */
+export const COST_BASIS_STRATEGIES = ['moving-average', 'fifo'] as const;
+export type CostBasisStrategy = (typeof COST_BASIS_STRATEGIES)[number];
+
+/** The cost-basis strategy a tax country mandates (DE = FIFO, AT = average). */
+export function costBasisStrategyForCountry(country: string | null | undefined): CostBasisStrategy {
+  return country === TAX_COUNTRY_DE ? 'fifo' : 'moving-average';
+}
 
 /**
  * The timezone whose calendar defines a tax year (§16 2026-07-08): trades are
@@ -236,31 +268,91 @@ function executedAtToMs(executedAt: string, id: string): number {
 }
 
 /**
- * Replay a (multi-asset) EUR transaction log through the moving-average cost
- * basis and return one {@link SellRealizationEur} per SELL, in chronological
- * order (`executedAt` ascending as epoch-ms — never a string compare — with
- * ties broken by input order, mirroring `holdings.reducePosition`).
+ * One FIFO tax lot (§20 Abs. 4 Satz 7 EStG): units still held from one BUY,
+ * basised at the buy's per-unit price plus its pro-rated fee
+ * (Anschaffungsnebenkosten capitalise into the lot, mirroring how the buy fee
+ * enters the moving average).
+ */
+interface FifoLot {
+  units: number;
+  perUnitEur: number;
+}
+
+/** Per-asset replay state — one variant per {@link CostBasisStrategy}. */
+type PositionState =
+  | { strategy: 'moving-average'; held: number; avg: number }
+  | { strategy: 'fifo'; lots: FifoLot[] };
+
+const fifoHeld = (lots: readonly FifoLot[]): number =>
+  lots.reduce((sum, lot) => sum + lot.units, 0);
+
+/**
+ * Consume `quantity` units from the front of the lot queue (oldest first,
+ * §20 Abs. 4 Satz 7) and return the released cost basis, EUR. The caller has
+ * already verified coverage; a shortfall beyond {@link QTY_EPSILON} would mean
+ * the queue and the covered quantity disagree — fail loud, never fabricate.
+ */
+function consumeFifoLots(lots: FifoLot[], quantity: number, id: string): number {
+  let remaining = quantity;
+  let releasedEur = 0;
+  while (remaining > QTY_EPSILON) {
+    const lot = lots[0];
+    if (!lot) {
+      throw new TaxComputationError(
+        `FIFO lot queue exhausted with ${remaining} units unconsumed (transaction ${id}).`,
+      );
+    }
+    const take = Math.min(lot.units, remaining);
+    releasedEur += take * lot.perUnitEur;
+    lot.units -= take;
+    remaining -= take;
+    // Drop the lot once fully consumed (float dust included).
+    if (lot.units <= QTY_EPSILON) lots.shift();
+  }
+  return releasedEur;
+}
+
+/**
+ * Replay a (multi-asset) EUR transaction log through the chosen cost-basis
+ * strategy and return one {@link SellRealizationEur} per SELL, in
+ * chronological order (`executedAt` ascending as epoch-ms — never a string
+ * compare — with ties broken by input order, mirroring
+ * `holdings.reducePosition`).
  *
- * Semantics per asset are exactly `reducePosition`'s, in EUR: BUY re-averages
- * with the fee capitalised into the basis; SELL realizes against the running
- * average, leaves the average unchanged, and clamps float dust when the
- * position closes. A sell exceeding the held quantity beyond
- * {@link QTY_EPSILON} throws — the primary oversell gate lives on the write
- * path; here it means the caller fed an inconsistent log, and a silently
- * wrong basis would poison every tax figure downstream.
+ * The default `moving-average` strategy is the AT method with exactly the
+ * pre-V5-P4 semantics (byte-identical — same operations in the same order):
+ * BUY re-averages with the fee capitalised into the basis; SELL realizes
+ * against the running average, leaves the average unchanged, and clamps float
+ * dust when the position closes. The `fifo` strategy (DE, §20 Abs. 4 Satz 7
+ * EStG) keeps per-buy lots instead: BUY enqueues a lot basised at price plus
+ * pro-rated fee; SELL consumes lots oldest-first and realizes against the
+ * consumed lots' basis. Sell fees reduce proceeds identically under both.
+ *
+ * A sell exceeding the held quantity beyond {@link QTY_EPSILON} throws unless
+ * acknowledged as uncovered (#369) — the primary oversell gate lives on the
+ * write path; here it means the caller fed an inconsistent log, and a silently
+ * wrong basis would poison every tax figure downstream. An uncovered sell
+ * behaves the same under both strategies: the covered shares release their
+ * strategy basis, the uncovered remainder is basised at the supplied entry
+ * price (or the sale price → 0 gain), and the position closes at 0.
  *
  * Full FP precision throughout — quantize only the derived settlement deltas
- * ({@link settleAtYear}), never the replay.
+ * ({@link settleAtYear} / {@link settleDeYear}), never the replay.
  */
 export function realizedSellsEur(
   transactions: readonly TaxableTransaction[],
+  strategy: CostBasisStrategy = 'moving-average',
 ): SellRealizationEur[] {
   const ordered = transactions
     .map((t, index) => ({ t, index, ms: executedAtToMs(t.executedAt, t.id) }))
     .sort((a, b) => a.ms - b.ms || a.index - b.index);
 
-  const positions = new Map<string, { held: number; avg: number }>();
+  const positions = new Map<string, PositionState>();
   const realizations: SellRealizationEur[] = [];
+  const emptyPosition = (): PositionState =>
+    strategy === 'fifo'
+      ? { strategy: 'fifo', lots: [] }
+      : { strategy: 'moving-average', held: 0, avg: 0 };
 
   for (const { t } of ordered) {
     if (!Number.isFinite(t.quantity) || t.quantity <= 0) {
@@ -271,30 +363,40 @@ export function realizedSellsEur(
     assertFiniteNonNegative(t.priceEur, 'Transaction priceEur', t.id);
     assertFiniteNonNegative(t.feeEur, 'Transaction feeEur', t.id);
 
-    const pos = positions.get(t.assetId) ?? { held: 0, avg: 0 };
+    const pos = positions.get(t.assetId) ?? emptyPosition();
 
     if (t.side === 'buy') {
-      const newHeld = pos.held + t.quantity;
-      // newHeld > 0 always (held ≥ 0, quantity > 0), so the division is safe.
-      pos.avg = (pos.held * pos.avg + t.quantity * t.priceEur + t.feeEur) / newHeld;
-      pos.held = newHeld;
+      if (pos.strategy === 'moving-average') {
+        const newHeld = pos.held + t.quantity;
+        // newHeld > 0 always (held ≥ 0, quantity > 0), so the division is safe.
+        pos.avg = (pos.held * pos.avg + t.quantity * t.priceEur + t.feeEur) / newHeld;
+        pos.held = newHeld;
+      } else {
+        // The lot's per-unit basis is price plus pro-rated buy fee — total lot
+        // cost / units, so a fully consumed lot releases exactly qty·price + fee.
+        pos.lots.push({
+          units: t.quantity,
+          perUnitEur: (t.quantity * t.priceEur + t.feeEur) / t.quantity,
+        });
+      }
     } else if (t.side === 'sell') {
-      const oversell = t.quantity > pos.held + QTY_EPSILON;
+      const heldUnits = pos.strategy === 'moving-average' ? pos.held : fifoHeld(pos.lots);
+      const oversell = t.quantity > heldUnits + QTY_EPSILON;
       if (oversell && !t.allowUncovered) {
         // Not an acknowledged uncovered sell (issue #369): a genuine oversell in
         // the replay means the caller fed an inconsistent log, and a silently
         // wrong basis would poison every tax figure downstream.
         throw new TaxComputationError(
-          `Sell of ${t.quantity} exceeds the held ${pos.held} units of ${t.assetId} ` +
+          `Sell of ${t.quantity} exceeds the held ${heldUnits} units of ${t.assetId} ` +
             `(transaction ${t.id}); the transaction log is inconsistent.`,
         );
       }
-      // Covered shares release the running average; the uncovered remainder is
+      // Covered shares release the strategy basis; the uncovered remainder is
       // basised at its supplied EUR entry price, or the sale price when none was
       // given (→ 0 gain, no phantom acquisition to tax). No shorts: the position
       // closes at 0 on an uncovered sell.
-      const covered = oversell ? pos.held : t.quantity;
-      const uncovered = oversell ? t.quantity - pos.held : 0;
+      const covered = oversell ? heldUnits : t.quantity;
+      const uncovered = oversell ? t.quantity - heldUnits : 0;
       if (uncovered > 0 && t.uncoveredEntryPriceEur != null) {
         assertFiniteNonNegative(
           t.uncoveredEntryPriceEur,
@@ -304,7 +406,14 @@ export function realizedSellsEur(
       }
       const uncoveredBasisEur = t.uncoveredEntryPriceEur ?? t.priceEur;
       const proceedsEur = t.quantity * t.priceEur - t.feeEur;
-      const costBasisEur = covered * pos.avg + uncovered * uncoveredBasisEur;
+      const coveredBasisEur =
+        pos.strategy === 'moving-average'
+          ? covered * pos.avg
+          : oversell
+            ? // Full close: release every lot exactly (no dust left behind).
+              pos.lots.reduce((sum, lot) => sum + lot.units * lot.perUnitEur, 0)
+            : consumeFifoLots(pos.lots, covered, t.id);
+      const costBasisEur = coveredBasisEur + uncovered * uncoveredBasisEur;
       realizations.push({
         id: t.id,
         assetId: t.assetId,
@@ -315,16 +424,20 @@ export function realizedSellsEur(
         realizedPnlEur: proceedsEur - costBasisEur,
         uncoveredQuantity: uncovered,
       });
-      if (oversell) {
-        pos.held = 0;
-        pos.avg = 0;
-      } else {
-        pos.held -= t.quantity;
-        // Clamp float dust: selling everything leaves ~±1e-15, not 0.
-        if (Math.abs(pos.held) <= QTY_EPSILON) {
+      if (pos.strategy === 'moving-average') {
+        if (oversell) {
           pos.held = 0;
           pos.avg = 0;
+        } else {
+          pos.held -= t.quantity;
+          // Clamp float dust: selling everything leaves ~±1e-15, not 0.
+          if (Math.abs(pos.held) <= QTY_EPSILON) {
+            pos.held = 0;
+            pos.avg = 0;
+          }
         }
+      } else if (oversell || fifoHeld(pos.lots) <= QTY_EPSILON) {
+        pos.lots.length = 0;
       }
     } else {
       throw new TaxComputationError(
@@ -467,6 +580,285 @@ export function settleAtYear(input: AtYearSettlementInput): AtYearSettlementResu
   }
 
   return { correctionDeltaEur, newEventDeltasEur, heldAfterEur: heldEur };
+}
+
+// ---------------------------------------------------------------------------
+// DE year settlement (Abgeltungsteuer + Soli, dual loss pots, allowance)
+// ---------------------------------------------------------------------------
+
+/**
+ * Loss-pot category of a sale under §20 Abs. 6 EStG: `aktien` = shares (app
+ * asset type `stock`), `sonstige` = everything else. Dividends carry no
+ * category — they are always Sonstige-side income (§20 Abs. 1 Nr. 1: not
+ * Veräußerungsgewinne, so the Aktien ring-fence never reaches them).
+ */
+export type DePotCategory = 'aktien' | 'sonstige';
+
+/** The DE loss pot an app asset type's sale P/L belongs to (#576: `stock` → aktien). */
+export function dePotCategoryForAssetType(assetType: string): DePotCategory {
+  return assetType === 'stock' ? 'aktien' : 'sonstige';
+}
+
+/**
+ * One taxable DE event entering a year: a sell's **signed** FIFO realized
+ * gain/loss with its pot {@link DePotCategory}, or a strictly positive gross
+ * dividend (always Sonstige-side — no category to pick).
+ */
+export type DeTaxableEvent =
+  | { kind: 'sell_gain'; category: DePotCategory; amountEur: number }
+  | { kind: 'dividend'; amountEur: number };
+
+/** Both DE loss pots, stored positive (a pot holds losses; ≥ 0 by construction). */
+export interface DePots {
+  aktienEur: number;
+  sonstigeEur: number;
+}
+
+/** The aggregate inputs of one DE calendar year (field names mirror #576's fixtures). */
+export interface DeYearAggregates {
+  /** Aktien loss pot carried IN from the prior year (≥ 0). */
+  aktienPotInEur: number;
+  /** Sonstige loss pot carried IN from the prior year (≥ 0). */
+  sonstigePotInEur: number;
+  /** Signed Σ of the year's Aktien-sale realized P/L. */
+  aktienSalePnlEur: number;
+  /** Signed Σ of the year's Sonstige-sale realized P/L. */
+  sonstigeSalePnlEur: number;
+  /** Σ of the year's gross dividends (Sonstige-side income; ≥ 0). */
+  dividendsEur: number;
+}
+
+/** The DE year-end state {@link deYearOutcome} derives from the aggregates. */
+export interface DeYearOutcome {
+  /** Positive income remaining after both pots + the cross-offset. */
+  taxableBeforeAllowanceEur: number;
+  /** Sparer-Pauschbetrag consumed (≤ {@link DE_SPARER_PAUSCHBETRAG_EUR}). */
+  allowanceUsedEur: number;
+  /** Allowance left unused — lost at year end, never carried (§20 Abs. 9). */
+  allowanceRemainingEur: number;
+  /** `taxableBeforeAllowanceEur − allowanceUsedEur`. */
+  taxableBaseEur: number;
+  /** `floorCents(DE_KAPEST_RATE · taxableBaseEur)` (§32d Abs. 1 EStG). */
+  kapestEur: number;
+  /** `floorCents(DE_SOLI_RATE · kapestEur)` (§4 Satz 2 SolzG — statutory floor). */
+  soliEur: number;
+  /** `kapestEur + soliEur`, cent-exact — the year's held target. */
+  totalTaxEur: number;
+  /** Aktien loss pot carried OUT to the next year (≥ 0). */
+  aktienPotOutEur: number;
+  /** Sonstige loss pot carried OUT to the next year (≥ 0). */
+  sonstigePotOutEur: number;
+}
+
+function assertDeAggregates(agg: DeYearAggregates): void {
+  assertFiniteAmount(agg.aktienSalePnlEur, 'Aktien sale P/L');
+  assertFiniteAmount(agg.sonstigeSalePnlEur, 'Sonstige sale P/L');
+  assertFiniteAmount(agg.dividendsEur, 'Dividends sum');
+  for (const [label, value] of [
+    ['Aktien pot in', agg.aktienPotInEur],
+    ['Sonstige pot in', agg.sonstigePotInEur],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new TaxComputationError(
+        `${label} must be a finite non-negative EUR amount, got ${value}.`,
+      );
+    }
+  }
+  if (agg.dividendsEur < 0) {
+    throw new TaxComputationError(`Dividends sum must be non-negative, got ${agg.dividendsEur}.`);
+  }
+}
+
+/**
+ * The German year-end function (§16 2026-07-17; the analog of
+ * {@link atYearTargetEur}, richer because DE state spans pots and allowance):
+ *
+ *     aktienRemainder   = Σ Aktien-sale P/L − aktienPotIn
+ *     sonstigeRemainder = Σ dividends + Σ other-sale P/L − sonstigePotIn
+ *     // one-directional cross-offset (§20 Abs. 6 Satz 4): a NEGATIVE
+ *     // Sonstige remainder also offsets a positive Aktien remainder;
+ *     // an Aktien loss NEVER offsets Sonstige income (the ring-fence).
+ *     taxableBeforeAllowance = remaining positives after that offset
+ *     allowanceUsed = min(SPARER_PAUSCHBETRAG, taxableBeforeAllowance)
+ *     KapESt = floorCents(0.25 · (taxableBeforeAllowance − allowanceUsed))
+ *     Soli   = floorCents(0.055 · KapESt)
+ *     target = KapESt + Soli; negative remainders leave as potOut (carry).
+ *
+ * KapESt cent-flooring is the app's #370 floor-toward-zero money policy; the
+ * Soli floor is statutory ("Bruchteile eines Cents bleiben außer Ansatz").
+ * Aggregates stay at full FP precision (§5.4); only the two tax figures — and
+ * their sum, re-floored to kill float dust — are quantized, because they are
+ * the boundary amounts settlements steer the held total to.
+ */
+export function deYearOutcome(agg: DeYearAggregates): DeYearOutcome {
+  assertDeAggregates(agg);
+  const aktienRemainder = agg.aktienSalePnlEur - agg.aktienPotInEur;
+  const sonstigeRemainder = agg.dividendsEur + agg.sonstigeSalePnlEur - agg.sonstigePotInEur;
+  let aktienPositive = Math.max(0, aktienRemainder);
+  const aktienPotOutEur = Math.max(0, -aktienRemainder);
+  let sonstigePotOutEur = 0;
+  if (sonstigeRemainder < 0) {
+    const crossOffset = Math.min(-sonstigeRemainder, aktienPositive);
+    aktienPositive -= crossOffset;
+    sonstigePotOutEur = -sonstigeRemainder - crossOffset;
+  }
+  const taxableBeforeAllowanceEur = aktienPositive + Math.max(0, sonstigeRemainder);
+  const allowanceUsedEur = Math.min(DE_SPARER_PAUSCHBETRAG_EUR, taxableBeforeAllowanceEur);
+  const taxableBaseEur = taxableBeforeAllowanceEur - allowanceUsedEur;
+  const kapestEur = floorCents(DE_KAPEST_RATE * taxableBaseEur);
+  const soliEur = floorCents(DE_SOLI_RATE * kapestEur);
+  return {
+    taxableBeforeAllowanceEur,
+    allowanceUsedEur,
+    allowanceRemainingEur: DE_SPARER_PAUSCHBETRAG_EUR - allowanceUsedEur,
+    taxableBaseEur,
+    kapestEur,
+    soliEur,
+    // Both addends are cent-exact; re-floor to normalize FP addition dust.
+    totalTaxEur: floorCents(kapestEur + soliEur),
+    aktienPotOutEur,
+    sonstigePotOutEur,
+  };
+}
+
+function assertDeEvent(event: DeTaxableEvent): void {
+  assertFiniteAmount(event.amountEur, 'DE event amount');
+  if (event.kind === 'dividend') {
+    if (event.amountEur <= 0) {
+      throw new TaxComputationError(
+        `Dividend gross amounts must be strictly positive, got ${event.amountEur}.`,
+      );
+    }
+  } else if (event.kind === 'sell_gain') {
+    if (event.category !== 'aktien' && event.category !== 'sonstige') {
+      throw new TaxComputationError(`Unknown DE pot category ${String(event.category)}.`);
+    }
+  } else {
+    throw new TaxComputationError(
+      `Unknown DE event kind ${String((event as { kind: unknown }).kind)}.`,
+    );
+  }
+}
+
+/** Fold one event into a year's running aggregates (mutates `agg`). */
+function applyDeEvent(agg: DeYearAggregates, event: DeTaxableEvent): void {
+  assertDeEvent(event);
+  if (event.kind === 'dividend') {
+    agg.dividendsEur += event.amountEur;
+  } else if (event.category === 'aktien') {
+    agg.aktienSalePnlEur += event.amountEur;
+  } else {
+    agg.sonstigeSalePnlEur += event.amountEur;
+  }
+}
+
+/**
+ * Chain the DE loss pots across consecutive prior years (§20 Abs. 6 Sätze 2–3:
+ * pots carry indefinitely; the allowance never does): fold each prior year's
+ * events — ascending, gap years omitted (an empty year passes pots through
+ * unchanged) — and return the pots entering the next year. Pots start at zero
+ * before the first DE year by construction.
+ */
+export function deCarryPots(priorYearEvents: ReadonlyArray<readonly DeTaxableEvent[]>): DePots {
+  let aktienEur = 0;
+  let sonstigeEur = 0;
+  for (const events of priorYearEvents) {
+    const agg: DeYearAggregates = {
+      aktienPotInEur: aktienEur,
+      sonstigePotInEur: sonstigeEur,
+      aktienSalePnlEur: 0,
+      sonstigeSalePnlEur: 0,
+      dividendsEur: 0,
+    };
+    for (const event of events) applyDeEvent(agg, event);
+    const outcome = deYearOutcome(agg);
+    aktienEur = outcome.aktienPotOutEur;
+    sonstigeEur = outcome.sonstigePotOutEur;
+  }
+  return { aktienEur, sonstigeEur };
+}
+
+/** Input of {@link settleDeYear} — one Vienna year of one portfolio under DE. */
+export interface DeYearSettlementInput {
+  /** Aktien loss pot carried in from prior years (≥ 0; {@link deCarryPots}). */
+  aktienPotInEur: number;
+  /** Sonstige loss pot carried in from prior years (≥ 0). */
+  sonstigePotInEur: number;
+  /**
+   * **Recomputed** events of the year's already-persisted DE-taxed rows —
+   * sells with their FIFO gains re-derived from the *current* transaction log
+   * (so a backdated buy that re-shaped lot consumption is reflected and the
+   * settlement self-corrects), plus gross dividends. Order is irrelevant: the
+   * year target is a function of the aggregates.
+   */
+  existingEvents: readonly DeTaxableEvent[];
+  /**
+   * Tax currently held for this year's **DE component**, EUR (cent-exact):
+   * what the year's movements hold minus the AT rows' own target when both
+   * countries coexist in the year (§16 cutover — the caller separates the
+   * components; each engine only ever steers its own).
+   */
+  heldEur: number;
+  /** New DE events being recorded now, in recording order (possibly empty). */
+  newEvents: readonly DeTaxableEvent[];
+}
+
+/** Output of {@link settleDeYear} — same movement semantics as the AT engine. */
+export interface DeYearSettlementResult {
+  /**
+   * Delta (EUR, signed: positive = withhold, negative = refund) that brings
+   * the already-persisted events' target in line with `heldEur` *before* any
+   * new event applies — non-zero only when history was re-shaped.
+   */
+  correctionDeltaEur: number;
+  /** Marginal delta per new event, in input order (same sign convention). */
+  newEventDeltasEur: number[];
+  /** Held after all deltas — always exactly the year's final DE target. */
+  heldAfterEur: number;
+  /** The year-end state after every event (existing + new) — feeds the report. */
+  yearEnd: DeYearOutcome;
+}
+
+/**
+ * Settle one Vienna year of one portfolio under DE mode: compute the
+ * cent-exact withholding/refund deltas that keep the year's held tax equal to
+ * {@link deYearOutcome}'s target after every event — the same delta-steering
+ * as {@link settleAtYear} (§43a Abs. 3 Satz 2 EStG obliges exactly this: the
+ * paying agent nets later negative income against the year's already-taxed
+ * income and refunds the excess), with the pots and the Sparer-Pauschbetrag
+ * folded into the target function. Losses park in their pot (held never goes
+ * negative); a later same-year loss refunds tax already withheld down to the
+ * year's net target; pots carry OUT of a net-loss year instead of resetting
+ * (the DE difference to AT's hard Jan-1 reset).
+ */
+export function settleDeYear(input: DeYearSettlementInput): DeYearSettlementResult {
+  assertFiniteAmount(input.heldEur, 'heldEur');
+  const agg: DeYearAggregates = {
+    aktienPotInEur: input.aktienPotInEur,
+    sonstigePotInEur: input.sonstigePotInEur,
+    aktienSalePnlEur: 0,
+    sonstigeSalePnlEur: 0,
+    dividendsEur: 0,
+  };
+  for (const event of input.existingEvents) applyDeEvent(agg, event);
+
+  const correctionDeltaEur = floorCents(deYearOutcome(agg).totalTaxEur - input.heldEur);
+  let heldEur = floorCents(input.heldEur + correctionDeltaEur);
+
+  const newEventDeltasEur: number[] = [];
+  for (const event of input.newEvents) {
+    applyDeEvent(agg, event);
+    const deltaEur = floorCents(deYearOutcome(agg).totalTaxEur - heldEur);
+    newEventDeltasEur.push(deltaEur);
+    heldEur = floorCents(heldEur + deltaEur);
+  }
+
+  return {
+    correctionDeltaEur,
+    newEventDeltasEur,
+    heldAfterEur: heldEur,
+    yearEnd: deYearOutcome(agg),
+  };
 }
 
 // ---------------------------------------------------------------------------
