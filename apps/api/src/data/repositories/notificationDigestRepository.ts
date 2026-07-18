@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 
 import {
   DEFAULT_NOTIFICATION_CADENCE,
@@ -31,6 +31,9 @@ import { notificationCadences, notificationDigestQueue } from '../schema';
 /** The outbound channels a digest item can target (never inapp/telegram/discord). */
 export type DigestChannel = 'email' | 'push' | 'webpush';
 
+/** Sentinel `period` for a quiet-hours-deferred row (delivered by time, not group). */
+const DEFERRED_PERIOD = 'deferred';
+
 /** One deferred item to enqueue (rendered strings + the grouping period). */
 export interface EnqueueDigestItemInput {
   userId: string;
@@ -52,6 +55,35 @@ export interface DigestQueueItem {
   channel: DigestChannel;
   cadence: DigestCadence;
   period: string;
+  title: string;
+  body: string;
+  data: Record<string, string> | null;
+}
+
+/**
+ * One quiet-hours-deferred item (§13.5 V5-P3): an INSTANT-cadence outbound
+ * notification (or a quiet-blocked digest summary) queued for INDIVIDUAL
+ * delivery at `deliverAfter` (= the user's quiet-window end). Stored in the same
+ * table with `cadence = 'instant'` and `deliver_after` set.
+ */
+export interface EnqueueDeferredItemInput {
+  userId: string;
+  type: string;
+  channel: DigestChannel;
+  title: string;
+  body: string;
+  /** Push deep-link data (push/webpush only); null for email. */
+  data?: Record<string, string> | null;
+  /** Wall-clock moment the row becomes due for delivery. */
+  deliverAfter: Date;
+}
+
+/** A claimed deferred row, as the deferred-delivery job sends it individually. */
+export interface DeferredQueueItem {
+  id: string;
+  userId: string;
+  type: string;
+  channel: DigestChannel;
   title: string;
   body: string;
   data: Record<string, string> | null;
@@ -149,14 +181,14 @@ export function createNotificationDigestRepository(db: Database) {
      * The distinct (user, period) groups with pending items for a cadence — the
      * job's work list. Each is delivered as exactly one digest per channel.
      *
-     * Only *complete* periods are returned: `before` is the current (still
-     * accumulating) period key and rows with `period >= before` are excluded, so
-     * the delivery cron — which does not sit on the UTC period boundary — never
-     * flushes a partial day/week and never splits one period across two runs.
-     * Period keys are lexicographically ordered within a cadence
-     * (`d:YYYY-MM-DD`, `w:GGGG-Www`), so a string `<` is the right comparison.
+     * Every pending group is returned (no period filter): whether a group's
+     * period is *complete* is decided per user by the digest service, because
+     * with V5-P3 timezone alignment the current (still-accumulating) period key
+     * differs per recipient — the service compares each group against the user's
+     * own local current period before claiming. Instant deferred rows (`cadence
+     * = 'instant'`) never match here, so the grouped path never sees them.
      */
-    async pendingGroups(cadence: DigestCadence, before: string): Promise<PendingDigestGroup[]> {
+    async pendingGroups(cadence: DigestCadence): Promise<PendingDigestGroup[]> {
       const rows = await db
         .selectDistinct({
           userId: notificationDigestQueue.userId,
@@ -167,10 +199,61 @@ export function createNotificationDigestRepository(db: Database) {
           and(
             eq(notificationDigestQueue.cadence, cadence),
             isNull(notificationDigestQueue.deliveredAt),
-            lt(notificationDigestQueue.period, before),
           ),
         );
       return rows.map((r) => ({ userId: r.userId, period: r.period }));
+    },
+
+    /**
+     * Queue one quiet-hours-deferred item (§13.5 V5-P3) for INDIVIDUAL delivery
+     * at `deliverAfter`. Stored in the same table with `cadence = 'instant'` and
+     * a fixed sentinel `period` (never grouped — the grouped path only queries
+     * daily/weekly), so the deferred-delivery job claims it by `deliver_after`.
+     */
+    async enqueueDeferred(item: EnqueueDeferredItemInput): Promise<void> {
+      await db.insert(notificationDigestQueue).values({
+        userId: item.userId,
+        type: item.type,
+        channel: item.channel,
+        cadence: 'instant',
+        period: DEFERRED_PERIOD,
+        title: item.title,
+        body: item.body,
+        data: item.data ?? null,
+        deliverAfter: item.deliverAfter,
+      });
+    },
+
+    /**
+     * Atomically claim every deferred item now due (`deliver_after <= now`, not
+     * yet delivered): the UPDATE stamps `delivered_at` and RETURNs the rows it
+     * changed in one statement, so a re-run or a second worker claims zero and
+     * never double-sends — the idempotency guarantee, and restart-safe because
+     * the pending rows live in the DB until claimed. Each claimed row is
+     * delivered as ITSELF (never grouped).
+     */
+    async claimDueDeferred(now: Date): Promise<DeferredQueueItem[]> {
+      const rows = await db
+        .update(notificationDigestQueue)
+        .set({ deliveredAt: now })
+        .where(
+          and(
+            eq(notificationDigestQueue.cadence, 'instant'),
+            isNotNull(notificationDigestQueue.deliverAfter),
+            isNull(notificationDigestQueue.deliveredAt),
+            lte(notificationDigestQueue.deliverAfter, now),
+          ),
+        )
+        .returning();
+      return rows.map((row) => ({
+        id: row.id,
+        userId: row.userId,
+        type: row.type,
+        channel: row.channel as DigestChannel,
+        title: row.title,
+        body: row.body,
+        data: (row.data as Record<string, string> | null) ?? null,
+      }));
     },
 
     /**

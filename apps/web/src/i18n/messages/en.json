@@ -497,6 +497,16 @@
         "weekly": "Weekly digest",
         "selectAria": "Delivery frequency for {{type}}"
       },
+      "quietHours": {
+        "title": "Quiet hours",
+        "description": "Hold back email and push notifications during a window each day. Urgent account and security alerts always get through, and the in-app bell stays instant.",
+        "enable": "Enable quiet hours",
+        "start": "From",
+        "end": "Until",
+        "timezone": "Timezone",
+        "timezoneNone": "UTC (no timezone set)",
+        "useDetected": "Use my timezone ({{zone}})"
+      },
       "webPush": {
         "title": "Browser push in this browser",
         "description": "Get desktop notifications even with the tab closed. Enable per browser; the column below chooses what is pushed.",

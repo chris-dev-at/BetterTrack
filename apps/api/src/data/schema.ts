@@ -111,6 +111,23 @@ export const users = pgTable(
     // EVERY channel for every type — a kill switch over the per-type matrix,
     // which stays stored untouched underneath.
     notificationsMuted: boolean('notifications_muted').notNull().default(false),
+    // Quiet hours (§13.5 V5-P3). An optional per-user window that defers the
+    // OUTBOUND channels (email/push/webpush) — the in-app bell is never touched.
+    // OFF by default so existing users behave byte-identically; when enabled, a
+    // non-urgent outbound notification fired inside the window is queued and
+    // delivered at window end. `start`/`end` are minutes-since-local-midnight
+    // (an overnight window is start > end). `timezone` is a nullable IANA name —
+    // NULL = UTC / server-global (the pre-quiet-hours behaviour); it is stored
+    // independently of the flag because the V5-P3 digest boundaries also align
+    // to it (a daily digest lands in the user's local morning).
+    quietHoursEnabled: boolean('quiet_hours_enabled').notNull().default(false),
+    quietHoursStartMinute: integer('quiet_hours_start_minute')
+      .notNull()
+      .default(22 * 60),
+    quietHoursEndMinute: integer('quiet_hours_end_minute')
+      .notNull()
+      .default(7 * 60),
+    timezone: text('timezone'),
     // Default friend-sharing visibility applied when the user creates a *new*
     // portfolio (§6.9, §13.2 V2-P9). Only affects the default at creation time;
     // existing portfolios and explicit per-item toggles are untouched. The
@@ -717,8 +734,15 @@ export const notificationCadences = pgTable(
  * stamping `delivered_at` in the same UPDATE it reads the rows — so a re-run or
  * a second worker never double-sends (idempotent per (user, period)). `channel`
  * reuses the notification_channel enum but only ever holds email/push/webpush.
- * The `period` is computed per user at enqueue (UTC for now) so the quiet-hours
- * follow-up can align delivery to a user timezone with a small change.
+ * The `period` is computed per user at enqueue in the user's timezone (§13.5
+ * V5-P3 quiet hours) so a daily/weekly digest buckets by the user's LOCAL day.
+ *
+ * The same table doubles as the quiet-hours **deferral store** (§13.5 V5-P3):
+ * an INSTANT-cadence outbound notification fired inside a user's quiet window is
+ * queued here with `cadence = 'instant'` and a `deliver_after` = window end, and
+ * the deferred-delivery job sends each such row INDIVIDUALLY once due (never
+ * grouped — the grouped-summary path only ever queries the daily/weekly
+ * cadences). `deliver_after` is NULL for the grouped digest rows.
  */
 export const notificationDigestQueue = pgTable(
   'notification_digest_queue',
@@ -734,6 +758,10 @@ export const notificationDigestQueue = pgTable(
     title: text('title').notNull(),
     body: text('body').notNull(),
     data: jsonb('data'),
+    // Quiet-hours deferral (V5-P3): the wall-clock moment a deferred INSTANT row
+    // becomes due for individual delivery (= the user's quiet-window end). NULL
+    // for grouped daily/weekly digest rows, which deliver on the digest cron.
+    deliverAfter: timestamp('deliver_after', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     deliveredAt: timestamp('delivered_at', { withTimezone: true }),
   },
@@ -745,6 +773,11 @@ export const notificationDigestQueue = pgTable(
       .on(t.cadence, t.userId, t.period)
       .where(sql`${t.deliveredAt} is null`),
     index('notification_digest_queue_user_idx').on(t.userId),
+    // The quiet-hours deferred-delivery job claims due rows by `deliver_after`;
+    // partial on the still-pending deferred set keeps the scan off history.
+    index('notification_digest_queue_deferred_idx')
+      .on(t.deliverAfter)
+      .where(sql`${t.deliveredAt} is null and ${t.deliverAfter} is not null`),
   ],
 );
 

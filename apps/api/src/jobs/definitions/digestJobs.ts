@@ -22,6 +22,15 @@ export const DIGEST_WEEKLY_SCHEDULER_ID = 'notifications.digestWeekly';
 export const DIGEST_WEEKLY_CRON = '0 8 * * 1';
 export const DIGEST_TZ = 'Europe/Vienna';
 
+/**
+ * V5-P3 quiet hours (#579): the deferred-delivery schedule. Runs every minute so
+ * a notification held back past a user's quiet-hours window arrives shortly after
+ * window end. Cheap (a single indexed claim) and idempotent by construction — the
+ * claim stamps `delivered_at`, so an overlapping run sends nothing extra.
+ */
+export const DEFERRED_DELIVERY_SCHEDULER_ID = 'notifications.deferredDelivery';
+export const DEFERRED_DELIVERY_INTERVAL_MS = 60_000;
+
 export interface DigestJobDeps {
   digest: DigestService;
 }
@@ -48,6 +57,21 @@ export function createDigestWeeklyJob(
     async handler(_job, ctx) {
       const result = await deps.digest.deliverDue('weekly');
       ctx.logger.info(result, 'notifications.digestWeekly complete');
+    },
+  };
+}
+
+export function createDeferredDeliveryJob(
+  deps: DigestJobDeps,
+): JobDefinition<'notifications.deferredDelivery'> {
+  return {
+    name: QUEUE_NAMES.notificationsDeferredDelivery,
+    schedule: { id: DEFERRED_DELIVERY_SCHEDULER_ID, every: DEFERRED_DELIVERY_INTERVAL_MS },
+    async handler(_job, ctx) {
+      const result = await deps.digest.deliverDeferred();
+      if (result.claimed > 0) {
+        ctx.logger.info(result, 'notifications.deferredDelivery complete');
+      }
     },
   };
 }

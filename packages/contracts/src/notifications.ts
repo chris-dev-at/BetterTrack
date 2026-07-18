@@ -101,6 +101,101 @@ export function isAccountSecurityNotificationType(type: string): boolean {
   return (ACCOUNT_SECURITY_NOTIFICATION_TYPES as readonly string[]).includes(type);
 }
 
+// ── Quiet hours (§13.5 V5-P3) ────────────────────────────────────────────────
+
+/** Minutes in a day — the ceiling for a quiet-hours window boundary. */
+export const MINUTES_PER_DAY = 1440;
+
+/**
+ * The **urgent-bypass class** for quiet hours (planner-defined, §16-logged
+ * verbatim). A notification in this class is ALWAYS delivered instantly, even
+ * inside a user's quiet-hours window — nothing else bypasses. It is exactly:
+ *   1. every type in {@link ACCOUNT_SECURITY_NOTIFICATION_TYPES}
+ *      (`account.invite`, `account.temp_password`, `account.data_export`), AND
+ *   2. admin announcements of `critical` severity.
+ * Price alerts explicitly do NOT bypass — not being woken by market noise is the
+ * whole point of quiet hours. The dispatcher only ever fans out the account
+ * category through this taxonomy (announcements are in-app-only fan-outs), so it
+ * gates on the type; the `announcementSeverity` arm exists so any surface that
+ * could send a critical announcement out-of-band resolves the same class here.
+ */
+export function isUrgentNotification(input: {
+  type: string;
+  announcementSeverity?: ActiveAnnouncementSeverity | null;
+}): boolean {
+  if (isAccountSecurityNotificationType(input.type)) return true;
+  return input.announcementSeverity === 'critical';
+}
+
+/**
+ * An IANA timezone name (`Europe/Vienna`, `America/New_York`), validated by
+ * asking the runtime's `Intl` engine to build a formatter for it — the only
+ * dependency-free way to reject a bogus zone. `null` everywhere means "no
+ * timezone set": quiet hours and digest boundaries then fall back to UTC (the
+ * pre-quiet-hours behaviour), so an existing user is never migrated.
+ */
+export const ianaTimeZoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(
+    (tz) => {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: tz });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: 'invalid_timezone' },
+  );
+
+const minuteOfDaySchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(MINUTES_PER_DAY - 1);
+
+/**
+ * A user's quiet-hours settings (§13.5 V5-P3). An optional window at minute
+ * granularity plus an IANA timezone; **off by default** so existing users
+ * behave byte-identically. `startMinute`/`endMinute` are minutes-since-local-
+ * midnight; an overnight window (start > end, e.g. 22:00→07:00) is fully
+ * supported. Quiet hours defer OUTBOUND channels only (email/phone push/browser
+ * push) — the in-app bell is the record and always instant. The timezone is
+ * stored independently of `enabled` because the digest boundaries also align to
+ * it (a daily digest lands in the user's morning).
+ */
+export const quietHoursSchema = z
+  .object({
+    enabled: z.boolean(),
+    startMinute: minuteOfDaySchema,
+    endMinute: minuteOfDaySchema,
+    timezone: ianaTimeZoneSchema.nullable(),
+  })
+  .strict();
+export type QuietHours = z.infer<typeof quietHoursSchema>;
+
+/** The quiet-hours defaults a never-configured user resolves to (window off). */
+export const DEFAULT_QUIET_HOURS: QuietHours = {
+  enabled: false,
+  startMinute: 22 * 60, // 22:00
+  endMinute: 7 * 60, // 07:00
+  timezone: null,
+};
+
+/** `PATCH /settings/notifications` quiet-hours changes — every field optional. */
+export const quietHoursUpdateSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    startMinute: minuteOfDaySchema.optional(),
+    endMinute: minuteOfDaySchema.optional(),
+    timezone: ianaTimeZoneSchema.nullable().optional(),
+  })
+  .strict();
+export type QuietHoursUpdate = z.infer<typeof quietHoursUpdateSchema>;
+
 /**
  * The default enabled state for a (channel, type) cell with **no stored
  * override** (V4-P0c lean email defaults, §6.10; V4-P10 telegram/discord).
