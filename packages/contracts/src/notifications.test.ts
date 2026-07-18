@@ -6,7 +6,9 @@ import {
   DEFAULT_QUIET_HOURS,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_TYPES,
+  OPT_IN_NOTIFICATION_TYPES,
   isAccountSecurityNotificationType,
+  isOptInNotificationType,
   isUrgentNotification,
   notificationChannelDefaultEnabled,
   quietHoursSchema,
@@ -41,6 +43,7 @@ describe('notification taxonomy (#368)', () => {
       'account.data_export',
       'alert.triggered',
       'chat.message',
+      'dividend.event',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',
@@ -65,8 +68,9 @@ describe('lean email defaults (V4-P0c)', () => {
     }
   });
 
-  it('email defaults ON only for account/security; other channels default ON for every type', () => {
+  it('email defaults ON only for account/security; other channels default ON for every non-opt-in type', () => {
     for (const type of NOTIFICATION_TYPES) {
+      if (isOptInNotificationType(type)) continue;
       const accountSecurity = isAccountSecurityNotificationType(type);
       expect(notificationChannelDefaultEnabled('email', type)).toBe(accountSecurity);
       expect(notificationChannelDefaultEnabled('inapp', type)).toBe(true);
@@ -75,6 +79,30 @@ describe('lean email defaults (V4-P0c)', () => {
       // V4-P10: telegram + discord follow the same "on once configured" rule.
       expect(notificationChannelDefaultEnabled('telegram', type)).toBe(true);
       expect(notificationChannelDefaultEnabled('discord', type)).toBe(true);
+    }
+  });
+});
+
+describe('opt-in notification types (V5-P5)', () => {
+  it('the market category is exactly the opt-in set', () => {
+    const marketCategory = NOTIFICATION_CATEGORIES.find((c) => c.key === 'market');
+    expect([...OPT_IN_NOTIFICATION_TYPES].sort()).toEqual(
+      [...(marketCategory?.types ?? [])].sort(),
+    );
+  });
+
+  it('an opt-in type defaults OFF on every channel', () => {
+    for (const type of OPT_IN_NOTIFICATION_TYPES) {
+      expect(isOptInNotificationType(type)).toBe(true);
+      for (const channel of NOTIFICATION_SETTING_CHANNELS) {
+        expect(notificationChannelDefaultEnabled(channel, type)).toBe(false);
+      }
+    }
+  });
+
+  it('an opt-in type is not urgent (never bypasses quiet hours)', () => {
+    for (const type of OPT_IN_NOTIFICATION_TYPES) {
+      expect(isUrgentNotification({ type })).toBe(false);
     }
   });
 });

@@ -15,6 +15,7 @@ import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
+import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
@@ -33,6 +34,8 @@ import {
   createQueueRegistry,
   createSnapshotsBackfillJob,
   createSnapshotsRecomputeJob,
+  createDividendEventsScanJob,
+  dividendNotifyGate,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
@@ -247,6 +250,15 @@ const definitions = [
   createExportCleanupJob({ exportService: dataExportService }),
   createSnapshotsRecomputeJob({ snapshots }),
   createSnapshotsBackfillJob({ snapshots }),
+  // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
+  // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
+  createDividendEventsScanJob({
+    repo: createMarketIntelRepository(db),
+    marketData,
+    notify,
+    isEnabled: dividendNotifyGate(notificationRepo),
+    enabled: config.marketIntel.enabled,
+  }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

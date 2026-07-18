@@ -40,6 +40,8 @@ export interface NotificationEmailCopy {
   friendActivity: { subject: string; heading: string; button: string };
   /** Follow-published body sentence is supplied by the caller (same as the bell, #438). */
   followPublished: { subject: string; heading: string; button: string };
+  /** Dividend-event body sentence is supplied by the caller (same as the bell, V5-P5). */
+  dividendEvent: { subject: string; heading: string; button: string };
   /** Alert-follow bodies are supplied by the caller (same as the bell, #455). */
   followAlertCreated: { subject: string; heading: string; button: string };
   followAlertFired: { subject: string; heading: string; button: string };
@@ -118,6 +120,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     followPublished: {
       subject: 'New from someone you follow on BetterTrack',
       heading: 'New from someone you follow',
+      button: 'Open BetterTrack',
+    },
+    dividendEvent: {
+      subject: 'Upcoming dividend on BetterTrack',
+      heading: 'Upcoming dividend',
       button: 'Open BetterTrack',
     },
     followAlertCreated: {
@@ -206,6 +213,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     followPublished: {
       subject: 'Neues von einer Person, der du folgst — auf BetterTrack',
       heading: 'Neues von einer Person, der du folgst',
+      button: 'BetterTrack öffnen',
+    },
+    dividendEvent: {
+      subject: 'Bevorstehende Dividende auf BetterTrack',
+      heading: 'Bevorstehende Dividende',
       button: 'BetterTrack öffnen',
     },
     followAlertCreated: {

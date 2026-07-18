@@ -19,6 +19,11 @@ vi.mock('../../lib/workboardApi', () => ({
   WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
 }));
 
+vi.mock('../../lib/marketIntelApi', () => ({
+  getAssetDividends: vi.fn(),
+  ASSET_DIVIDENDS_QUERY_KEY: (id: string) => ['asset', id, 'dividends'],
+}));
+
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
 // exactly as the PriceChart tests do (same shape, different file).
 const chartMocks = vi.hoisted(() => {
@@ -50,6 +55,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { getAssetDividends } from '../../lib/marketIntelApi';
 import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { AssetDetailPage } from './AssetDetailPage';
 
@@ -148,8 +154,60 @@ beforeEach(() => {
     asOf: '2024-06-01T12:00:00.000Z',
   });
   vi.mocked(getAssetHistory).mockResolvedValue(baseHistory);
+  // Dividends default to the "unavailable" shape (gate off) — the block hides.
+  vi.mocked(getAssetDividends).mockResolvedValue({
+    available: false,
+    currency: null,
+    history: [],
+    upcoming: [],
+    forwardYield: null,
+    trailingAmount: null,
+  });
   vi.mocked(useWatchlistMembership).mockReturnValue(makeWatchlistMembership());
   vi.mocked(useAddToWatchlist).mockReturnValue(makeAddToWatchlistMutation());
+});
+
+describe('AssetDetailPage — dividends block (V5-P5)', () => {
+  const availableDividends = {
+    available: true,
+    currency: 'USD',
+    history: [
+      { exDate: '2026-02-07T00:00:00.000Z', payDate: null, amount: 0.24, currency: 'USD' },
+      { exDate: '2026-05-09T00:00:00.000Z', payDate: null, amount: 0.25, currency: 'USD' },
+    ],
+    upcoming: [
+      {
+        exDate: '2026-08-08T00:00:00.000Z',
+        payDate: '2026-08-15T00:00:00.000Z',
+        amount: null,
+        currency: 'USD',
+      },
+    ],
+    forwardYield: 0.0044,
+    trailingAmount: 0.98,
+  };
+
+  test('renders payout history, forward yield and next ex/pay dates from fixture data', async () => {
+    vi.mocked(getAssetDividends).mockResolvedValue(availableDividends);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(await screen.findByText('Dividends')).toBeInTheDocument();
+    expect(screen.getByText('Forward yield')).toBeInTheDocument();
+    expect(screen.getByText('TTM per share')).toBeInTheDocument();
+    expect(screen.getByText('Next ex-date')).toBeInTheDocument();
+    expect(screen.getByText('Next pay date')).toBeInTheDocument();
+    expect(screen.getByLabelText('Dividend payout history')).toBeInTheDocument();
+  });
+
+  test('is absent when the capability is unavailable (invisible when unconfigured)', async () => {
+    // beforeEach already mocks the unavailable shape.
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    // Give the query a tick to settle, then assert the block never appears.
+    await waitFor(() => expect(getAssetDividends).toHaveBeenCalled());
+    expect(screen.queryByText('Dividends')).not.toBeInTheDocument();
+    expect(screen.queryByText('Forward yield')).not.toBeInTheDocument();
+  });
 });
 
 describe('AssetDetailPage — header rendering', () => {

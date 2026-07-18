@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   ACCOUNT_SECURITY_NOTIFICATION_TYPES,
   NOTIFICATION_TYPES,
+  isOptInNotificationType,
   notificationSettingsResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -270,8 +271,20 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     const emailOn = ACCOUNT_SECURITY_NOTIFICATION_TYPES as readonly string[];
     for (const type of NOTIFICATION_TYPES) {
       const cell = settings.matrix[type];
+      if (isOptInNotificationType(type)) {
+        // Opt-in types (V5-P5) default OFF on EVERY channel until switched on.
+        expect(cell).toEqual({
+          inapp: false,
+          email: false,
+          telegram: false,
+          discord: false,
+          push: false,
+          webpush: false,
+        });
+        continue;
+      }
       // Bell + both push channels + telegram + discord default ON for EVERY
-      // type — unchanged/added by V4-P10.
+      // other type — unchanged/added by V4-P10.
       expect(cell).toMatchObject({
         inapp: true,
         push: true,

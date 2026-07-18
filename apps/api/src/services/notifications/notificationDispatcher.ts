@@ -11,6 +11,7 @@ import type {
   AlertTriggeredEvent,
   ChatMessageEvent,
   ConglomerateSharedEvent,
+  DividendEventNotice,
   FollowAlertCreatedEvent,
   FollowAlertFiredEvent,
   FollowPublishedEvent,
@@ -89,7 +90,8 @@ export type DispatchableEvent =
   | AccountTempPasswordEvent
   | AccountDataExportEvent
   | AlertTriggeredEvent
-  | ChatMessageEvent;
+  | ChatMessageEvent
+  | DividendEventNotice;
 
 /** The `type` strings the dispatcher accepts (guards the job payload). */
 export const DISPATCHABLE_EVENT_TYPES = [
@@ -106,6 +108,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'account.data_export',
   'alert.triggered',
   'chat.message',
+  'dividend.event',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -180,7 +183,27 @@ function eventKeyFor(event: DispatchableEvent): string {
       return `alert.triggered:${event.alertId}:${event.occurredAt.slice(0, 16)}`;
     case 'chat.message':
       return `chat.message:${event.messageId}`;
+    case 'dividend.event':
+      // Deduped per (recipient, asset, ex-date): the daily scan re-sees the same
+      // upcoming event for days on end, but only the first emit surfaces; the
+      // recipient userId (repo-side) keeps holders distinct.
+      return `dividend.event:${event.assetId}:${event.exDate.slice(0, 10)}`;
   }
+}
+
+/**
+ * Localizable-free dividend-event copy (EN — the inbox strings are stored
+ * rendered, like every other type). "in N days" reads naturally for the common
+ * near-term reminder; the payout amount is appended when the provider reported it.
+ */
+function dividendEventCopy(event: DividendEventNotice): { title: string; body: string } {
+  const amountPart =
+    event.amount != null && event.currency ? ` (${event.amount} ${event.currency} per share)` : '';
+  const exDay = event.exDate.slice(0, 10);
+  return {
+    title: `${event.symbol} ex-dividend ${exDay}`,
+    body: `${event.symbol} goes ex-dividend on ${exDay}${amountPart}.`,
+  };
 }
 
 /** The English noun for a followed item's kind (#438). */
@@ -507,6 +530,22 @@ export function createNotificationDispatcher(
           },
           data: { conversationId: event.conversationId, messageId: event.messageId },
         };
+      case 'dividend.event': {
+        const { title, body } = dividendEventCopy(event);
+        return {
+          eventKey,
+          title,
+          body,
+          payload: {
+            eventKey,
+            assetId: event.assetId,
+            symbol: event.symbol,
+            exDate: event.exDate,
+            payDate: event.payDate,
+          },
+          data: { assetId: event.assetId },
+        };
+      }
     }
   }
 
@@ -586,6 +625,11 @@ export function createNotificationDispatcher(
         // No dispatcher email: the export-ready notice is in-app / push only
         // (the download is gated by a token the requester already holds, so an
         // email would carry no actionable link). Mirrors account.temp_password.
+        return;
+      case 'dividend.event':
+        // The rendered body already names the asset + ex-date; the email reuses
+        // it verbatim in the recipient's locale (V5-P5).
+        await email.sendDividendEvent({ to, userId, body: rendered.body, locale });
         return;
     }
   }

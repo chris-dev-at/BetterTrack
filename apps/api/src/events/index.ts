@@ -23,6 +23,7 @@ export type {
   AccountTempPasswordEvent,
   AccountDataExportEvent,
   ChatMessageEvent,
+  DividendEventNotice,
 } from './types';
 export { DOMAIN_EVENT_TYPES } from './types';
 export {

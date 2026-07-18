@@ -7,6 +7,7 @@ import {
   chatMessageEmail,
   deferredNotificationEmail,
   digestEmail,
+  dividendEventEmail,
   followAlertEmail,
   conglomerateSharedEmail,
   friendAcceptedEmail,
@@ -159,6 +160,13 @@ export interface EmailService {
     body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: an upcoming dividend ex-date for an asset `userId` holds (V5-P5). */
+  sendDividendEvent(params: {
+    to: string;
+    userId: string;
+    body: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /** Notification email: someone `userId` follows created a price alert (#455). */
   sendFollowAlertCreated(params: {
     to: string;
@@ -241,6 +249,7 @@ type EmailTemplateKind =
   | 'conglomerate_shared'
   | 'friend_activity'
   | 'follow_published'
+  | 'dividend_event'
   | 'follow_alert_created'
   | 'follow_alert_fired'
   | 'alert_triggered'
@@ -443,6 +452,14 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'follow_published',
         to,
         followPublishedEmail({ body, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendDividendEvent: ({ to, userId, body, locale }) =>
+      deliver(
+        'dividend_event',
+        to,
+        dividendEventEmail({ body, appUrl: config.appOrigin, locale }),
         { userId },
       ),
 

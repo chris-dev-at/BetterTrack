@@ -160,6 +160,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.chatMessage.label'),
       description: t('settings.notifications.types.chatMessage.description'),
     },
+    'dividend.event': {
+      label: t('settings.notifications.types.dividendEvent.label'),
+      description: t('settings.notifications.types.dividendEvent.description'),
+    },
   };
 }
 
@@ -181,6 +185,7 @@ function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string>
     chat: t('settings.notifications.categories.chat'),
     alerts: t('settings.notifications.categories.alerts'),
     account: t('settings.notifications.categories.account'),
+    market: t('settings.notifications.categories.market'),
   };
 }
 

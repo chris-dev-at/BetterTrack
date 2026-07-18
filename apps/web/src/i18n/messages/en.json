@@ -416,6 +416,10 @@
         "followAlertFired": {
           "label": "Fired alerts from people you follow",
           "description": "When a price alert of someone you follow triggers (only people whose alert news you opted into)."
+        },
+        "dividendEvent": {
+          "label": "Dividend reminders",
+          "description": "When a stock you hold is about to go ex-dividend. Off by default."
         }
       },
       "routing": {
@@ -476,7 +480,8 @@
         "sharing": "Sharing & activity",
         "chat": "Chat",
         "alerts": "Price alerts",
-        "account": "Account"
+        "account": "Account",
+        "market": "Market intelligence"
       },
       "grid": {
         "categoryToggleAria": "Toggle all {{category}} notifications",
@@ -1524,6 +1529,21 @@
       "message": "Some custom investments need a category. We moved them to “Other” — open one and pick a real category so it groups correctly.",
       "dismiss": "Dismiss"
     },
+    "dividends": {
+      "ariaLabel": "Dividend income and calendar",
+      "title": "Dividends",
+      "viewGroupLabel": "Projected income period",
+      "view": {
+        "monthly": "Monthly",
+        "yearly": "Yearly"
+      },
+      "perMonth": "projected / month",
+      "perYear": "projected / year",
+      "calendarTitle": "Upcoming ex-dividend dates",
+      "exOn": "ex {{date}}",
+      "showMore": "Show {{count}} more",
+      "showLess": "Show less"
+    },
     "import": {
       "title": "Broker CSV import",
       "intro": "Upload your broker's CSV export to bring existing trades, dividends and cash movements into this portfolio. Rows are staged and previewed first — nothing is recorded until you confirm. Broker accounts are never connected directly.",
@@ -1960,6 +1980,15 @@
         "title": "Appears in",
         "emptyTitle": "Not in any conglomerate or portfolio",
         "emptyDescription": "Add this asset to a conglomerate or record a transaction to see it here."
+      },
+      "dividends": {
+        "title": "Dividends",
+        "forwardYield": "Forward yield",
+        "trailing": "TTM per share",
+        "nextExDate": "Next ex-date",
+        "nextPayDate": "Next pay date",
+        "history": "Payout history",
+        "historyAriaLabel": "Dividend payout history"
       },
       "watchlistAddError": "Failed to add to Watchlist. Please try again.",
       "quickActions": "Quick actions",

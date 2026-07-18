@@ -486,6 +486,35 @@ export function followPublishedEmail(params: {
 }
 
 /**
+ * Dividend-event notification email (§13.5 V5-P5). The body sentence is
+ * pre-rendered by the dispatcher (identical to the bell copy), so this only
+ * wraps it with the localized subject/heading/button chrome — mirroring
+ * {@link followPublishedEmail}.
+ */
+export function dividendEventEmail(params: {
+  body: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { body, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.dividendEvent;
+  return {
+    subject: c.subject,
+    html: layout(
+      c.heading,
+      [
+        `<p>${escapeHtml(body)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [body, '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/**
  * Alert-follow notification emails (#455): a followed person created a price
  * alert (`variant: 'created'`) or one of their alerts fired (`variant:
  * 'fired'`). The body sentence is pre-rendered by the dispatcher (identical to

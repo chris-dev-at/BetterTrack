@@ -268,6 +268,31 @@ export interface ChatMessageEvent {
   occurredAt: string;
 }
 
+/**
+ * `dividend.event` → an upcoming ex-date for an asset the recipient HOLDS
+ * (§13.5 V5-P5, arc a). Opt-in and default-off: the scan job only emits it for a
+ * holder who switched the `dividend.event` type on, and the dispatcher dedupes
+ * per (recipient, asset, ex-date) so a daily rescan of the same upcoming event
+ * fires exactly once. Purely informational (never financial advice); carries the
+ * asset identity + the payout details so the inbox/push renders without a lookup.
+ */
+export interface DividendEventNotice {
+  type: 'dividend.event';
+  /** Recipient — a user who currently holds the asset. */
+  userId: string;
+  assetId: string;
+  symbol: string;
+  /** Upcoming ex-date (ISO-8601) — the (recipient, asset, ex-date) dedupe key. */
+  exDate: string;
+  /** Pay date (ISO-8601) where the provider reports it. */
+  payDate: string | null;
+  /** Per-share payout in `currency`, where the provider reports it. */
+  amount: number | null;
+  /** ISO-4217 currency of the payout, where known. */
+  currency: string | null;
+  occurredAt: string;
+}
+
 /** The discriminated union of every domain event (§9). */
 export type DomainEvent =
   | AlertTriggeredEvent
@@ -286,7 +311,8 @@ export type DomainEvent =
   | FollowAlertFiredEvent
   | AccountTempPasswordEvent
   | AccountDataExportEvent
-  | ChatMessageEvent;
+  | ChatMessageEvent
+  | DividendEventNotice;
 
 /** The `type` discriminant of {@link DomainEvent}. */
 export type DomainEventType = DomainEvent['type'];
@@ -313,4 +339,5 @@ export const DOMAIN_EVENT_TYPES = [
   'account.temp_password',
   'account.data_export',
   'chat.message',
+  'dividend.event',
 ] as const satisfies readonly DomainEventType[];

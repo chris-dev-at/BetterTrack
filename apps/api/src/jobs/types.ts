@@ -33,6 +33,9 @@ export const QUEUE_NAMES = {
   // portfolio, and the nightly roll/backfill sweep over every portfolio.
   snapshotsRecompute: 'snapshots.recompute',
   snapshotsBackfill: 'snapshots.backfill',
+  // V5-P5 market intelligence (#581): the daily scan that fires opt-in dividend
+  // ex-date reminders for held assets (idempotent per user+asset+ex-date).
+  marketIntelDividendScan: 'marketIntel.dividendScan',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -59,6 +62,7 @@ export interface JobPayloads {
   'data.exportCleanup': Record<string, never>;
   'snapshots.recompute': { portfolioId: string };
   'snapshots.backfill': Record<string, never>;
+  'marketIntel.dividendScan': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }
 
