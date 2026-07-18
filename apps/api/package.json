@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check:openapi-coverage": "tsx src/scripts/checkOpenapiCoverage.ts",
+    "check:migrations-immutable": "tsx src/scripts/checkMigrationsImmutable.ts",
     "test:integration": "vitest run --config vitest.config.integration.ts",
     "build": "tsup",
     "db:generate": "drizzle-kit generate",

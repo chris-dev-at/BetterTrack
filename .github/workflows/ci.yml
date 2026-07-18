@@ -20,6 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # Full history so the migrations-immutable gate can diff the PR's drizzle
+        # journal against origin/main (#606). Shallow checkout would silently
+        # no-op that check.
+        with:
+          fetch-depth: 0
 
       - name: Enable Corepack
         run: corepack enable
@@ -46,6 +51,14 @@ jobs:
 
       - name: OpenAPI coverage gate
         run: pnpm --filter @bettertrack/api check:openapi-coverage
+
+      - name: Migrations immutable gate
+        # Freeze released migrations (#606): a deployed DB re-runs any journal
+        # entry whose `when` moves above its high-water mark, so an existing
+        # entry's when/tag/.sql must never change — only appends are allowed.
+        run: |
+          git fetch origin main --quiet
+          pnpm --filter @bettertrack/api check:migrations-immutable
 
       - name: Build
         run: pnpm build
