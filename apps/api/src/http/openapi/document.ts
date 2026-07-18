@@ -112,6 +112,8 @@ const componentSchemas = {
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement)
   Problem: contracts.problemSchema,
   ProblemListResponse: contracts.problemListResponseSchema,
+  // Admin usage analytics (§13.5 V5-P2 arc (b), first-party only)
+  UsageAnalyticsResponse: contracts.usageAnalyticsResponseSchema,
 
   // Workboard (§6.4, §13.2 V2-P9)
   AddToWorkboardRequest: contracts.addToWorkboardRequestSchema,
@@ -1200,6 +1202,14 @@ const endpoints: EndpointDef[] = [
     query: contracts.auditQuerySchema,
     status: 200,
     response: R.AuditLogListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/usage-analytics',
+    tag: 'Admin',
+    summary: 'First-party usage analytics: DAU/WAU/MAU, feature counters, top assets, funnel.',
+    status: 200,
+    response: R.UsageAnalyticsResponse,
   },
   {
     method: 'get',

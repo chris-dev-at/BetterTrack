@@ -69,6 +69,14 @@ export {
 } from './snapshotJobs';
 
 export {
+  createUsageRollupJob,
+  USAGE_ROLLUP_SCHEDULER_ID,
+  USAGE_ROLLUP_CRON,
+  USAGE_ROLLUP_TZ,
+  type UsageRollupJobDeps,
+} from './usageAnalyticsJobs';
+
+export {
   createPricesRefreshDailyJob,
   createPricesBackfillJob,
   createFxRefreshSpotJob,

@@ -19,6 +19,7 @@ import {
   updateAppSettingsRequestSchema,
   updateOAuthClientRequestSchema,
   updateUserRequestSchema,
+  usageAnalyticsResponseSchema,
   type AuditQuery,
   type BulkUserActionRequest,
   type CreateAnnouncementRequest,
@@ -77,6 +78,14 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement): captured
   // errors/failed jobs/provider failures with a resolve flow. Registered flat.
   registerAdminProblemsRoutes(router, ctx);
+
+  // First-party usage analytics (§13.5 V5-P2 arc (b)): DAU/WAU/MAU, feature
+  // counters, top assets and the registration funnel — computed from our own
+  // request/auth stream, no third-party trackers. The read refreshes today's
+  // rollup so the current day is fresh between cron runs.
+  router.get('/usage-analytics', async (_req, res) => {
+    res.json(usageAnalyticsResponseSchema.parse(await ctx.usageAnalytics.overview()));
+  });
 
   router.get('/users', validateQuery(adminUserListQuerySchema), async (req, res) => {
     const { search } = (req.valid?.query ?? {}) as { search?: string };

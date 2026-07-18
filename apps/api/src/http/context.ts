@@ -87,6 +87,11 @@ import {
   type AnalyticsService,
 } from '../services/analytics/analyticsService';
 import { createAuditService } from '../services/audit/auditService';
+import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
+import {
+  createUsageAnalyticsService,
+  type UsageAnalyticsService,
+} from '../services/analytics/usageAnalyticsService';
 import { createProblemRepository } from '../data/repositories/problemRepository';
 import {
   createProblemService,
@@ -318,6 +323,13 @@ export interface AppContext {
    * `/admin/problems`.
    */
   problems: ProblemService;
+  /**
+   * First-party admin usage analytics (§13.5 V5-P2 arc (b)): captures usage
+   * signals off the request stream (no third-party trackers) and serves
+   * DAU/WAU/MAU, feature counters, top assets and the registration funnel behind
+   * `/admin/usage-analytics`. Distinct from the user-facing portfolio analytics.
+   */
+  usageAnalytics: UsageAnalyticsService;
 }
 
 export interface BuildContextDeps {
@@ -395,6 +407,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // built early so the market-data breaker below can report provider failures
   // into it. Rate-capped + PII-scrubbed; the admin resolve flow uses `audit`.
   const problems = createProblemService({ repo: createProblemRepository(db), audit, logger });
+
+  // First-party usage analytics (§13.5 V5-P2 arc (b)): the capture side buffers
+  // in memory and flushes on a timer in real processes; tests keep the timer off
+  // and flush explicitly. Reads back DAU/WAU/MAU + counters behind admin.
+  const usageAnalytics = createUsageAnalyticsService({
+    repo: createUsageAnalyticsRepository(db),
+    logger,
+    startTimer: !config.isTest,
+  });
 
   // Personal API keys (§6.13, V2-P12): issuance/list/revoke + bearer-token
   // resolution for the auth middleware. Owns only issuance + audit; scope
@@ -1114,5 +1135,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     observability,
     health,
     problems,
+    usageAnalytics,
   };
 }

@@ -416,6 +416,56 @@ export const problems = pgTable(
   ],
 );
 
+/**
+ * First-party usage capture (§13.5 V5-P2 arc (b), admin usage analytics). One
+ * row per (user, feature, asset, UTC day) with a hit counter — NOT a raw
+ * per-request log, so it can never grow unbounded: repeated hits of the same
+ * feature on the same day fold into `hits` via the unique index. `asset_id` is
+ * the empty string when the request had no asset (kept non-null so the unique
+ * index folds those rows too — Postgres treats NULLs as distinct). Deleting a
+ * user cascades their rows away. No PII: only ids, a low-cardinality feature
+ * bucket and a day.
+ */
+export const usageEvents = pgTable(
+  'usage_events',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    feature: text('feature').notNull(),
+    assetId: text('asset_id').notNull().default(''),
+    day: date('day').notNull(),
+    hits: integer('hits').notNull().default(1),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('usage_events_unique').on(t.userId, t.feature, t.assetId, t.day),
+    index('usage_events_day_idx').on(t.day),
+    index('usage_events_asset_day_idx').on(t.assetId, t.day),
+  ],
+);
+
+/**
+ * Materialized daily rollup of {@link usageEvents}, refreshed by the
+ * `usage.rollup` cron. One row per (day, feature): `events` sums hits and
+ * `active_users` is the distinct-user count for that day+feature. The special
+ * sentinel feature `'*'` ({@link USAGE_TOTAL_FEATURE}) holds the all-features
+ * per-day totals (its `active_users` is the day's distinct-user count) — the
+ * source for the admin activity series, which can't be summed from the
+ * per-feature rows without double-counting users.
+ */
+export const usageDaily = pgTable(
+  'usage_daily',
+  {
+    day: date('day').notNull(),
+    feature: text('feature').notNull(),
+    events: integer('events').notNull().default(0),
+    activeUsers: integer('active_users').notNull().default(0),
+  },
+  (t) => [primaryKey({ name: 'usage_daily_pk', columns: [t.day, t.feature] })],
+);
+
 // --- Market data: assets & price history ---------------------------------
 
 /**
@@ -1725,6 +1775,10 @@ export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelec
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type ProblemRow = typeof problems.$inferSelect;
 export type NewProblemRow = typeof problems.$inferInsert;
+export type UsageEventRow = typeof usageEvents.$inferSelect;
+export type NewUsageEventRow = typeof usageEvents.$inferInsert;
+export type UsageDailyRow = typeof usageDaily.$inferSelect;
+export type NewUsageDailyRow = typeof usageDaily.$inferInsert;
 export type AssetRow = typeof assets.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type WorkboardItemRow = typeof workboardItems.$inferSelect;

@@ -80,6 +80,12 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   problems: skipped(
     'Operational error/insight capture (the Sentry replacement) — a system diagnostics record, not user-owned.',
   ),
+  usage_events: skipped(
+    'First-party usage telemetry (folded per-feature hit counters, no PII) — an operator-facing analytics record, not user-owned.',
+  ),
+  usage_daily: skipped(
+    'Materialized per-day usage-analytics rollup — an operator-facing aggregate derived from usage_events, not user-owned.',
+  ),
 
   // ── Secrets / transient credentials (nothing meaningful to export) ─────────
   password_reset_tokens: skipped('Single-use password-reset secrets (transient credentials).'),

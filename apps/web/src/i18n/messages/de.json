@@ -2401,7 +2401,8 @@
       "menu": "Admin-Menü",
       "openMenu": "Admin-Menü öffnen",
       "closeMenu": "Admin-Menü schließen",
-      "problems": "Probleme"
+      "problems": "Probleme",
+      "usageAnalytics": "Nutzungsanalyse"
     },
     "security": {
       "title": "Sicherheit",
@@ -2565,6 +2566,40 @@
       "context": "Kontext",
       "resolve": "Erledigen",
       "reopen": "Wieder öffnen"
+    },
+    "usageAnalytics": {
+      "title": "Nutzungsanalyse",
+      "subtitle": "Nur eigene Nutzungsdaten — keine Drittanbieter-Tracker.",
+      "refresh": "Aktualisieren",
+      "loadError": "Nutzungsanalyse konnte nicht geladen werden.",
+      "noData": "Noch keine Daten.",
+      "dau": "Täglich aktive Nutzer",
+      "wau": "Wöchentlich aktive Nutzer",
+      "mau": "Monatlich aktive Nutzer",
+      "funnel": "Registrierungs-Funnel",
+      "features": "Funktionsnutzung",
+      "topAssets": "Top-Assets",
+      "activity": "Aktivität",
+      "windowHint": "Letzte {{days}} Tage",
+      "views": "{{count}} Aufrufe",
+      "eventsLabel": "Ereignisse",
+      "activeUsersLabel": "Aktive Nutzer",
+      "stage": {
+        "registered": "Registriert",
+        "activated": "Aktiviert",
+        "weeklyActive": "Aktiv (7 T.)",
+        "dailyActive": "Aktiv (1 T.)"
+      },
+      "feature": {
+        "portfolio": "Portfolio",
+        "workboard": "Workboard",
+        "assets": "Assets",
+        "social": "Sozial",
+        "alerts": "Benachrichtigungen",
+        "analytics": "Analyse",
+        "imports": "Importe",
+        "settings": "Einstellungen"
+      }
     }
   }
 }
