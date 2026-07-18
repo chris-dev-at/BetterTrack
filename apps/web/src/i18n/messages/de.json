@@ -489,6 +489,14 @@
         "label": "Alle Benachrichtigungen stummschalten",
         "description": "Solange stummgeschaltet, wird auf keinem Kanal etwas zugestellt. Deine Auswahl unten bleibt erhalten."
       },
+      "digest": {
+        "title": "Zustellhäufigkeit",
+        "description": "Fasse E-Mail- und Push-Benachrichtigungen zu einer täglichen oder wöchentlichen Zusammenfassung zusammen. Die Glocke in der App wird immer sofort aktualisiert.",
+        "instant": "Sofort",
+        "daily": "Tägliche Zusammenfassung",
+        "weekly": "Wöchentliche Zusammenfassung",
+        "selectAria": "Zustellhäufigkeit für {{type}}"
+      },
       "webPush": {
         "title": "Browser-Push in diesem Browser",
         "description": "Erhalte Desktop-Benachrichtigungen auch bei geschlossenem Tab. Pro Browser aktivieren; die Spalte unten bestimmt, was gepusht wird.",

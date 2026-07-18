@@ -38,6 +38,27 @@ export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
 
 /**
+ * Per-user per-type **delivery cadence** for the OUTBOUND channels — email,
+ * phone push (FCM) and browser push (V5-P3 digest mode). `instant` (the default
+ * and the pre-digest behaviour) delivers each event the moment it fires;
+ * `daily`/`weekly` defer the outbound channels into ONE grouped digest per
+ * period, honouring the channel matrix. Cadence NEVER touches the in-app
+ * notification center — the bell always receives every item instantly; it is
+ * the record a digest summarizes. Telegram/Discord are outside this (globally
+ * deactivated) and stay on the instant path.
+ */
+export const NOTIFICATION_CADENCES = ['instant', 'daily', 'weekly'] as const;
+export type NotificationCadence = (typeof NOTIFICATION_CADENCES)[number];
+export const notificationCadenceSchema = z.enum(NOTIFICATION_CADENCES);
+
+/** The cadence a type resolves to with no stored override — current behaviour. */
+export const DEFAULT_NOTIFICATION_CADENCE: NotificationCadence = 'instant';
+
+/** The two deferred cadences a digest job renders (everything but `instant`). */
+export const DIGEST_CADENCES = ['daily', 'weekly'] as const;
+export type DigestCadence = (typeof DIGEST_CADENCES)[number];
+
+/**
  * The settings-grid grouping (#368): rows are notification types grouped by
  * category, each category with a master toggle in the UI. Order here IS the
  * display order. Every {@link NOTIFICATION_TYPES} entry appears exactly once

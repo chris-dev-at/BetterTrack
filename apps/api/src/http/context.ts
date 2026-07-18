@@ -30,6 +30,7 @@ import { createRegistrationTokenRepository } from '../data/repositories/registra
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
+import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createDeviceTokenRepository } from '../data/repositories/deviceTokenRepository';
 import { createDiscordWebhookRepository } from '../data/repositories/discordWebhookRepository';
 import { createTelegramLinkRepository } from '../data/repositories/telegramLinkRepository';
@@ -129,6 +130,7 @@ import {
   type DispatchableEvent,
   type NotificationDispatcher,
 } from '../services/notifications/notificationDispatcher';
+import { createDigestService, type DigestService } from '../services/notifications/digestService';
 import {
   createNotificationService,
   type NotificationService,
@@ -264,6 +266,13 @@ export interface AppContext {
    * report channel availability in both processes. It subscribes to nothing.
    */
   notificationDispatcher: NotificationDispatcher;
+  /**
+   * Digest delivery (V5-P3): renders one grouped summary per (user, period) for
+   * the deferred daily/weekly cadences. In production the WORKER's repeatable
+   * digest jobs drive it; the API builds it too so tests can deliver a period
+   * synchronously.
+   */
+  digestService: DigestService;
   /**
    * The ONE notification entry point (#368) every source emits through. In
    * production it enqueues onto the durable `notifications.dispatch` BullMQ
@@ -472,6 +481,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const queues = config.isTest ? null : createQueueRegistry(redis);
 
   const notificationRepo = createNotificationRepository(db);
+  const notificationDigestRepo = createNotificationDigestRepository(db);
   const deviceTokenRepo = createDeviceTokenRepository(db);
   const pushSubscriptionRepo = createPushSubscriptionRepository(db);
   // V4-P10 additive channels: Telegram (per-user chat link, bot token in env)
@@ -534,6 +544,23 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     telegram: telegramChannel,
     discord: discordChannel,
     presence,
+    // Digest cadence + queue (V5-P3): defers a daily/weekly type's outbound
+    // channels into the digest queue; the in-app row still lands instantly.
+    digest: {
+      cadenceFor: (userId, type) => notificationDigestRepo.cadenceFor(userId, type),
+      enqueue: (item) => notificationDigestRepo.enqueue(item),
+    },
+    logger,
+  });
+
+  // Digest delivery (V5-P3): the same core the worker's repeatable digest jobs
+  // drive, built here too so tests can deliver a period synchronously.
+  const digestService = createDigestService({
+    repo: notificationDigestRepo,
+    users: userRepo,
+    email,
+    fcm: fcmChannel,
+    webPush: webPushChannel,
     logger,
   });
 
@@ -930,6 +957,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // settings rows the dispatcher reads, plus deployment channel availability.
   const notificationSettings = createNotificationSettingsService({
     repo: notificationRepo,
+    cadence: notificationDigestRepo,
     users: userRepo,
     channelAvailability: {
       email: email.enabled,
@@ -1128,6 +1156,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     alerts,
     announcements,
     notificationDispatcher,
+    digestService,
     notify,
     presence,
     realtime,

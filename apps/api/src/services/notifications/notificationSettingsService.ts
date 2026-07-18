@@ -1,6 +1,8 @@
 import {
+  DEFAULT_NOTIFICATION_CADENCE,
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
+  type NotificationCadenceMap,
   type NotificationChannelsConfigurable,
   type NotificationMatrix,
   type NotificationSettingsResponse,
@@ -12,6 +14,7 @@ import type {
   NotificationChannel,
   NotificationRepository,
 } from '../../data/repositories/notificationRepository';
+import type { NotificationDigestRepository } from '../../data/repositories/notificationDigestRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 
 /**
@@ -39,6 +42,11 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 
 export interface NotificationSettingsServiceDeps {
   repo: NotificationRepository;
+  /**
+   * Per-type outbound digest cadence storage (V5-P3). Read into the response's
+   * `cadence` map (defaults filled in here) and written on PATCH.
+   */
+  cadence: Pick<NotificationDigestRepository, 'cadenceMapForUser' | 'setCadences'>;
   /** Global-mute storage (users.notifications_muted, #368). */
   users: Pick<UserRepository, 'findById' | 'setNotificationsMuted'>;
   /**
@@ -79,7 +87,8 @@ const MATRIX_CHANNELS = ['inapp', 'email', 'telegram', 'discord', 'push', 'webpu
 export function createNotificationSettingsService(
   deps: NotificationSettingsServiceDeps,
 ): NotificationSettingsService {
-  const { repo, users, channelAvailability, channelsConfigurable, webPushPublicKey } = deps;
+  const { repo, cadence, users, channelAvailability, channelsConfigurable, webPushPublicKey } =
+    deps;
 
   /**
    * Resolve one channel's effective state for a type from the stored channel
@@ -101,9 +110,10 @@ export function createNotificationSettingsService(
   }
 
   async function read(userId: string): Promise<NotificationSettingsResponse> {
-    const [states, user] = await Promise.all([
+    const [states, user, cadenceOverrides] = await Promise.all([
       repo.channelStatesForUser(userId),
       users.findById(userId),
+      cadence.cadenceMapForUser(userId),
     ]);
     // The Telegram + Discord availability flags are per-user (linked chat /
     // saved webhook) — resolved from deps so the settings response reflects
@@ -125,8 +135,17 @@ export function createNotificationSettingsService(
         },
       ]),
     ) as NotificationMatrix;
+    // The full cadence map: every type present, stored override or the default
+    // (`instant`) — mirrors how the matrix always ships every type.
+    const cadenceMap = Object.fromEntries(
+      NOTIFICATION_TYPES.map((type) => [
+        type,
+        cadenceOverrides[type] ?? DEFAULT_NOTIFICATION_CADENCE,
+      ]),
+    ) as NotificationCadenceMap;
     return {
       matrix,
+      cadence: cadenceMap,
       muted: user?.notificationsMuted ?? false,
       channels: {
         inapp: true,
@@ -160,6 +179,11 @@ export function createNotificationSettingsService(
         if (overrides && Object.keys(overrides).length > 0) {
           await repo.upsertChannelConfig(userId, channel, overrides);
         }
+      }
+      // Per-type cadence changes (V5-P3): upsert only the supplied types; the
+      // rest keep their stored (or default) cadence.
+      if (body.cadence && Object.keys(body.cadence).length > 0) {
+        await cadence.setCadences(userId, body.cadence);
       }
       if (body.muted !== undefined) {
         await users.setNotificationsMuted(userId, body.muted);

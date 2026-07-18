@@ -489,6 +489,14 @@
         "label": "Mute all notifications",
         "description": "While muted, nothing is delivered on any channel. Your choices below are kept."
       },
+      "digest": {
+        "title": "Delivery frequency",
+        "description": "Group email and push notifications into a daily or weekly summary. The in-app bell always updates instantly.",
+        "instant": "Instant",
+        "daily": "Daily digest",
+        "weekly": "Weekly digest",
+        "selectAria": "Delivery frequency for {{type}}"
+      },
       "webPush": {
         "title": "Browser push in this browser",
         "description": "Get desktop notifications even with the tab closed. Enable per browser; the column below chooses what is pushed.",
