@@ -26,6 +26,12 @@ export interface CircuitBreakerOptions {
    * (PROJECTPLAN.md §5.3: "429 from upstream opens the circuit breaker").
    */
   tripImmediately?: (err: unknown) => boolean;
+  /**
+   * Called each time the breaker transitions TO open — a definitive provider
+   * failure. Wired to the admin Problems capture (§13.5 V5-P2 arc (d)). Must
+   * never throw; the breaker ignores its return.
+   */
+  onOpen?: (err: unknown, meta: { providerId?: string }) => void;
 }
 
 export class CircuitOpenError extends Error {
@@ -45,6 +51,7 @@ export class CircuitBreaker {
   private readonly openMs: number;
   private readonly now: () => number;
   private readonly tripImmediately?: (err: unknown) => boolean;
+  private readonly onOpen?: (err: unknown, meta: { providerId?: string }) => void;
 
   private state: CircuitState = 'closed';
   private failures = 0;
@@ -60,6 +67,7 @@ export class CircuitBreaker {
     this.openMs = options.openMs ?? DEFAULT_OPEN_MS;
     this.now = options.now ?? Date.now;
     this.tripImmediately = options.tripImmediately;
+    this.onOpen = options.onOpen;
   }
 
   /** Current state, after applying any elapsed-cooldown transition. */
@@ -122,23 +130,25 @@ export class CircuitBreaker {
     // An upstream rate limit is a definitive "back off now" — trip without
     // waiting for the consecutive-failure threshold (§5.3).
     if (this.tripImmediately?.(err)) {
-      this.trip();
+      this.trip(err);
       return;
     }
     if (this.state === 'half-open') {
       // Probe failed → straight back to open with a fresh cooldown.
-      this.trip();
+      this.trip(err);
       return;
     }
     this.failures += 1;
     if (this.failures >= this.failureThreshold) {
-      this.trip();
+      this.trip(err);
     }
   }
 
-  private trip(): void {
+  private trip(err?: unknown): void {
     this.state = 'open';
     this.openedAt = this.now();
+    // A tripped breaker is a definitive provider failure → capture it (§13.5).
+    this.onOpen?.(err, { providerId: this.providerId });
   }
 
   /** Force the breaker back to its initial closed state (tests/admin). */

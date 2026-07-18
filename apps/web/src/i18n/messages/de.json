@@ -2400,7 +2400,8 @@
       "health": "Zustand",
       "menu": "Admin-Menü",
       "openMenu": "Admin-Menü öffnen",
-      "closeMenu": "Admin-Menü schließen"
+      "closeMenu": "Admin-Menü schließen",
+      "problems": "Probleme"
     },
     "security": {
       "title": "Sicherheit",
@@ -2534,6 +2535,36 @@
         "disabled": "Deaktiviert",
         "connections": "{{count}} verbunden"
       }
+    },
+    "problems": {
+      "title": "Probleme",
+      "subtitle": "Erfasste Fehler, fehlgeschlagene Jobs und Provider-Ausfälle. Keine Einrichtung nötig.",
+      "refresh": "Aktualisieren",
+      "loadError": "Probleme konnten nicht geladen werden.",
+      "actionError": "Das Problem konnte nicht aktualisiert werden.",
+      "empty": "Keine Probleme – alles in Ordnung.",
+      "openCount": "{{count}} offen",
+      "filters": {
+        "kind": "Art",
+        "status": "Status",
+        "all": "Alle"
+      },
+      "kind": {
+        "error": "Fehler",
+        "job": "Job",
+        "provider": "Provider"
+      },
+      "status": {
+        "open": "Offen",
+        "resolved": "Erledigt"
+      },
+      "occurrencesLabel": "Vorkommen",
+      "firstSeen": "Zuerst gesehen",
+      "lastSeen": "Zuletzt gesehen",
+      "fingerprint": "Fingerprint",
+      "context": "Kontext",
+      "resolve": "Erledigen",
+      "reopen": "Wieder öffnen"
     }
   }
 }

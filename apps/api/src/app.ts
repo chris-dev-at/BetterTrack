@@ -124,8 +124,15 @@ export function createApp(ctx: AppContext) {
   // details). The public /oauth/token router above already handled its path.
   app.use('/api/v1/oauth', createOAuthRouter(ctx));
 
-  // Unexpected 500s are reported to error tracking (§13.4 V4-P5a); a no-op when
-  // Sentry is disabled. Expected ApiError/ZodError outcomes are never reported.
-  app.use(createErrorHandler(ctx.logger, (err) => ctx.observability.captureException(err)));
+  // Unexpected 500s are reported to error tracking (§13.4 V4-P5a) AND captured
+  // onto the admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement):
+  // the Sentry hook is a no-op when disabled, the DB capture always runs with
+  // zero configuration. Expected ApiError/ZodError outcomes are never reported.
+  app.use(
+    createErrorHandler(ctx.logger, (err) => {
+      ctx.observability.captureException(err);
+      ctx.problems.captureError(err);
+    }),
+  );
   return app;
 }
