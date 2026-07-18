@@ -87,6 +87,11 @@ import {
   type AnalyticsService,
 } from '../services/analytics/analyticsService';
 import { createAuditService } from '../services/audit/auditService';
+import { createProblemRepository } from '../data/repositories/problemRepository';
+import {
+  createProblemService,
+  type ProblemService,
+} from '../services/observability/problemService';
 import {
   createConglomerateService,
   type ConglomerateService,
@@ -306,6 +311,13 @@ export interface AppContext {
   observability: Observability;
   /** Admin health snapshot behind `GET /admin/health` (§13.4 V4-P5a). */
   health: HealthService;
+  /**
+   * DB-backed problem capture + admin resolve flow (§13.5 V5-P2 arc (d), the
+   * Sentry replacement). Captures unhandled errors, failed jobs and provider
+   * failures into the `problems` table with zero configuration; backs
+   * `/admin/problems`.
+   */
+  problems: ProblemService;
 }
 
 export interface BuildContextDeps {
@@ -378,6 +390,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     ephemeralCapMs: config.cookie.ephemeralCapMs,
   });
   const audit = createAuditService(auditRepo);
+
+  // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement):
+  // built early so the market-data breaker below can report provider failures
+  // into it. Rate-capped + PII-scrubbed; the admin resolve flow uses `audit`.
+  const problems = createProblemService({ repo: createProblemRepository(db), audit, logger });
 
   // Personal API keys (§6.13, V2-P12): issuance/list/revoke + bearer-token
   // resolution for the auth middleware. Owns only issuance + audit; scope
@@ -647,6 +664,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
         // already got the stale copy), so the log line is their only trace.
         onBackgroundError: (key, err) =>
           logger.warn({ key, err }, 'market-data background refresh failed'),
+        // A tripped breaker is a definitive provider failure → capture it onto
+        // the admin Problems page (§13.5 V5-P2 arc (d)).
+        breaker: {
+          onOpen: (err, meta) => problems.captureProviderFailure(err, meta),
+        },
       },
     }).service;
 
@@ -1091,5 +1113,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     queues,
     observability,
     health,
+    problems,
   };
 }

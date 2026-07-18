@@ -77,6 +77,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
     'Security audit trail, retained independently of the user (actor set-null on delete).',
   ),
   email_log: skipped('Email delivery log — a system record retained independently of the user.'),
+  problems: skipped(
+    'Operational error/insight capture (the Sentry replacement) — a system diagnostics record, not user-owned.',
+  ),
 
   // ── Secrets / transient credentials (nothing meaningful to export) ─────────
   password_reset_tokens: skipped('Single-use password-reset secrets (transient credentials).'),

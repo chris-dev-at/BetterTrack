@@ -40,6 +40,13 @@ export const userStatusEnum = pgEnum('user_status', ['active', 'disabled']);
  */
 export const portfolioVisibilityEnum = pgEnum('portfolio_visibility', ['private', 'friends']);
 
+/**
+ * Admin "Problems" capture (§13.5 V5-P2 arc (d), the Sentry replacement).
+ * `kind` records what produced the problem; `status` drives the resolve flow.
+ */
+export const problemKindEnum = pgEnum('problem_kind', ['error', 'job', 'provider']);
+export const problemStatusEnum = pgEnum('problem_status', ['open', 'resolved']);
+
 export const users = pgTable(
   'users',
   {
@@ -375,6 +382,38 @@ export const auditLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('audit_log_created_at_idx').on(t.createdAt)],
+);
+
+/**
+ * Admin "Problems" (§13.5 V5-P2 arc (d)): the DB-backed error/insight capture
+ * that replaces Sentry. Unhandled request errors, permanently-failed jobs and
+ * provider failures are folded by `fingerprint` (a stable hash of kind + name +
+ * normalized message) into one row per distinct problem, with an occurrence
+ * count and first/last-seen stamps. Every stored string is PII-scrubbed before
+ * it lands here (no email/token/cookie). Resolving points `resolvedBy` at the
+ * admin who cleared it (nulled if that account is deleted).
+ */
+export const problems = pgTable(
+  'problems',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    fingerprint: text('fingerprint').notNull(),
+    kind: problemKindEnum('kind').notNull(),
+    status: problemStatusEnum('status').notNull().default('open'),
+    title: text('title').notNull(),
+    message: text('message').notNull().default(''),
+    context: jsonb('context'),
+    occurrenceCount: integer('occurrence_count').notNull().default(1),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolvedBy: uuid('resolved_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    uniqueIndex('problems_fingerprint_unique').on(t.fingerprint),
+    index('problems_status_last_seen_idx').on(t.status, t.lastSeenAt),
+    index('problems_kind_idx').on(t.kind),
+  ],
 );
 
 // --- Market data: assets & price history ---------------------------------
@@ -1684,6 +1723,8 @@ export type RegistrationRequestRow = typeof registrationRequests.$inferSelect;
 export type ExternalIdentityRow = typeof externalIdentities.$inferSelect;
 export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
+export type ProblemRow = typeof problems.$inferSelect;
+export type NewProblemRow = typeof problems.$inferInsert;
 export type AssetRow = typeof assets.$inferSelect;
 export type PriceHistoryRow = typeof priceHistory.$inferSelect;
 export type WorkboardItemRow = typeof workboardItems.$inferSelect;
@@ -2022,6 +2063,7 @@ export const schema = {
   passwordResetTokens,
   twoFactorRecoveryCodes,
   auditLog,
+  problems,
   assets,
   priceHistory,
   watchlists,
@@ -2077,6 +2119,8 @@ export const schema = {
   portfolioVisibilityEnum,
   cashMovementKindEnum,
   cashSourceTypeEnum,
+  problemKindEnum,
+  problemStatusEnum,
   friendRequestStatusEnum,
   shareKindEnum,
   shareAudienceEnum,

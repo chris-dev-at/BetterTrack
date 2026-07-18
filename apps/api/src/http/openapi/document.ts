@@ -109,6 +109,9 @@ const componentSchemas = {
   TestEmailResponse: contracts.testEmailResponseSchema,
   AuditLogListResponse: contracts.auditLogListResponseSchema,
   EmailLogListResponse: contracts.emailLogListResponseSchema,
+  // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement)
+  Problem: contracts.problemSchema,
+  ProblemListResponse: contracts.problemListResponseSchema,
 
   // Workboard (§6.4, §13.2 V2-P9)
   AddToWorkboardRequest: contracts.addToWorkboardRequestSchema,
@@ -1197,6 +1200,42 @@ const endpoints: EndpointDef[] = [
     query: contracts.auditQuerySchema,
     status: 200,
     response: R.AuditLogListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/problems',
+    tag: 'Admin',
+    summary: 'Captured problems (errors/failed jobs/provider failures), filter by kind/status.',
+    query: contracts.problemListQuerySchema,
+    status: 200,
+    response: R.ProblemListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/problems/{id}',
+    tag: 'Admin',
+    summary: 'One captured problem.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.Problem,
+  },
+  {
+    method: 'post',
+    path: '/admin/problems/{id}/resolve',
+    tag: 'Admin',
+    summary: 'Mark a problem resolved (audit-logged).',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.Problem,
+  },
+  {
+    method: 'post',
+    path: '/admin/problems/{id}/reopen',
+    tag: 'Admin',
+    summary: 'Reopen a resolved problem (audit-logged).',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.Problem,
   },
 
   // Workboard (§6.4, §13.3 V3-P5)
