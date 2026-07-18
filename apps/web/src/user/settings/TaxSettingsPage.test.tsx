@@ -83,4 +83,43 @@ describe('TaxSettingsPage', () => {
     renderPage();
     expect(await screen.findByText(/Couldn’t load your tax settings/i)).toBeInTheDocument();
   });
+
+  test('offers Germany, explains its model, and persists country_specific with country DE', async () => {
+    vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
+    const user = userEvent.setup();
+    renderPage();
+
+    const germany = await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
+    expect(germany).not.toBeChecked();
+    // The DE option spells out the researched model (V5-P4, #576).
+    expect(germany).toHaveAccessibleName(/25 % flat tax/i);
+    expect(germany).toHaveAccessibleName(/FIFO cost basis/i);
+    expect(germany).toHaveAccessibleName(/Sparer-Pauschbetrag/i);
+    expect(germany).toHaveAccessibleName(/carry forward/i);
+
+    await user.click(germany);
+    await waitFor(() =>
+      expect(updateTaxSettings).toHaveBeenCalledWith({ mode: 'country_specific', country: 'DE' }),
+    );
+    expect(await screen.findByRole('link', { name: /per-year tax report/i })).toHaveAttribute(
+      'href',
+      '/portfolio/tax',
+    );
+  });
+
+  test('saved DE settings mark Germany selected — not Austria', async () => {
+    vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
+    renderPage();
+    expect(
+      await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i }),
+    ).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Austria \(KESt\)/i })).not.toBeChecked();
+  });
+
+  test('saved AT settings mark Austria selected — not Germany', async () => {
+    vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
+    renderPage();
+    expect(await screen.findByRole('radio', { name: /Austria \(KESt\)/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i })).not.toBeChecked();
+  });
 });
