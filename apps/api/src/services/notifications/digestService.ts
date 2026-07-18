@@ -95,7 +95,12 @@ export function createDigestService(deps: DigestServiceDeps): DigestService {
 
   return {
     async deliverDue(cadence): Promise<DigestDeliveryResult> {
-      const groups = await repo.pendingGroups(cadence);
+      // Deliver only *complete* periods: the cron does not sit on the UTC period
+      // boundary, so claiming the still-accumulating current period would split a
+      // day/week across two runs (and double-send). Excluding it yields exactly
+      // one summary per period, delivered the run after that period closes.
+      const currentPeriod = digestPeriodKey(cadence, now());
+      const groups = await repo.pendingGroups(cadence, currentPeriod);
       let sent = 0;
       for (const group of groups) {
         // Atomic claim — a second worker on the same group gets nothing back.

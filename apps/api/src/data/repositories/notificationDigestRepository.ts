@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 
 import {
   DEFAULT_NOTIFICATION_CADENCE,
@@ -148,8 +148,15 @@ export function createNotificationDigestRepository(db: Database) {
     /**
      * The distinct (user, period) groups with pending items for a cadence — the
      * job's work list. Each is delivered as exactly one digest per channel.
+     *
+     * Only *complete* periods are returned: `before` is the current (still
+     * accumulating) period key and rows with `period >= before` are excluded, so
+     * the delivery cron — which does not sit on the UTC period boundary — never
+     * flushes a partial day/week and never splits one period across two runs.
+     * Period keys are lexicographically ordered within a cadence
+     * (`d:YYYY-MM-DD`, `w:GGGG-Www`), so a string `<` is the right comparison.
      */
-    async pendingGroups(cadence: DigestCadence): Promise<PendingDigestGroup[]> {
+    async pendingGroups(cadence: DigestCadence, before: string): Promise<PendingDigestGroup[]> {
       const rows = await db
         .selectDistinct({
           userId: notificationDigestQueue.userId,
@@ -160,6 +167,7 @@ export function createNotificationDigestRepository(db: Database) {
           and(
             eq(notificationDigestQueue.cadence, cadence),
             isNull(notificationDigestQueue.deliveredAt),
+            lt(notificationDigestQueue.period, before),
           ),
         );
       return rows.map((r) => ({ userId: r.userId, period: r.period }));

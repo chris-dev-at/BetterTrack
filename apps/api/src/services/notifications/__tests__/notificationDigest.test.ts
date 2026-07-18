@@ -53,12 +53,23 @@ let dispatcher: NotificationDispatcher;
 let digestService: DigestService;
 let transport: MailTransport & { sent: OutgoingMail[] };
 let digestRepo: ReturnType<typeof createNotificationDigestRepository>;
+let email: EmailService;
+
+/**
+ * The digest cron only delivers *complete* periods. The dispatcher stamps each
+ * queued item with the wall-clock period at dispatch time, so the delivery run
+ * must sit in a later period for the item's day/week to count as closed. Eight
+ * days ahead of the real clock guarantees a strictly later daily AND weekly key.
+ */
+function deliverLater(): Date {
+  return new Date(Date.now() + 8 * 24 * 60 * 60 * 1000);
+}
 
 beforeEach(async () => {
   harness = await createTestApp({ env: SMTP_ENV });
   db = harness.db;
   transport = recordingTransport();
-  const email: EmailService = createEmailService({
+  email = createEmailService({
     config: harness.ctx.config,
     logger: harness.ctx.logger,
     audit: createAuditService(createAuditRepository(db)),
@@ -81,6 +92,7 @@ beforeEach(async () => {
     repo: digestRepo,
     users: createUserRepository(db),
     email,
+    now: deliverLater,
     logger: harness.ctx.logger,
   });
 });
@@ -217,6 +229,37 @@ describe('digest mode (§13.5 V5-P3)', () => {
     expect(transport.sent[0]!.text).not.toContain('watchlist');
   });
 
+  it('never flushes the still-accumulating current period; delivers once it closes', async () => {
+    const user = await harness.seedUser({ email: 'c@bt.test', username: 'currentuser' });
+    await enableEmailFor(user.id, 'friend.request');
+    await digestRepo.setCadences(user.id, { 'friend.request': 'daily' });
+
+    // Queued under the current (in-progress) UTC day.
+    await dispatcher.dispatch(friendRequestEvent({ userId: user.id, requestId: 'r1' }));
+    expect(await emailQueueFor(user.id)).toHaveLength(1);
+
+    // A cron run *inside* the same period (as the misaligned 08:00 Vienna cron
+    // does) must NOT flush the partial day — else a day splits across two sends.
+    const inProgress = createDigestService({
+      repo: digestRepo,
+      users: createUserRepository(db),
+      email,
+      now: () => new Date(), // current period == the item's period
+      logger: harness.ctx.logger,
+    });
+    const early = await inProgress.deliverDue('daily');
+    expect(early.groups).toBe(0);
+    expect(early.sent).toBe(0);
+    expect(transport.sent).toHaveLength(0);
+    // The item is still pending — nothing was claimed.
+    expect(await emailQueueFor(user.id)).toHaveLength(1);
+
+    // Once the period has closed (a later run), exactly one summary is delivered.
+    const closed = await digestService.deliverDue('daily'); // now = +8 days
+    expect(closed.sent).toBe(1);
+    expect(transport.sent).toHaveLength(1);
+  });
+
   it('an empty period produces NO digest send', async () => {
     const user = await harness.seedUser({ email: 'e@bt.test', username: 'emptyuser' });
     // Cadence set, but nothing dispatched — the queue is empty for this period.
@@ -245,6 +288,9 @@ describe('digest mode (§13.5 V5-P3)', () => {
           webpushCalls.push({ userId, message });
         },
       },
+      // Items below are keyed to OCCURRED_AT's day; deliver the next day so that
+      // period counts as closed.
+      now: () => new Date('2026-07-19T08:00:00.000Z'),
       logger: harness.ctx.logger,
     });
 
