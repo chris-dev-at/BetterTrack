@@ -1140,6 +1140,31 @@ export const taxYearParamsSchema = z
   })
   .strict();
 
+/** Header languages the per-year tax-report CSV export ships (V5-P4b). */
+export const TAX_EXPORT_LOCALES = ['en', 'de'] as const;
+export type TaxExportLocale = (typeof TAX_EXPORT_LOCALES)[number];
+
+/**
+ * `GET /portfolios/:portfolioId/reports/tax-years/:year/export.csv?locale=`
+ * query (V5-P4b). `locale` picks the header/label language only (defaults to
+ * `en`); the numbers are the exact same source-of-truth values that
+ * {@link taxYearReportResponseSchema} feeds the on-screen report — the CSV is
+ * serialized from that response, never recomputed.
+ *
+ * Layout (one download per portfolio+year): the file is a sequence of labeled
+ * sections separated by a blank line — `Summary` (the year totals), `Germany`
+ * (present only on DE-taxed years, with the allowance + both loss pots +
+ * KapESt/Soli), `Positions` (per-asset totals), `Sells` and `Dividends` (the
+ * per-row drill-down). Numbers use a period decimal separator with no
+ * thousands grouping (money to 2 decimals); dates are ISO `YYYY-MM-DD`.
+ */
+export const taxYearExportQuerySchema = z
+  .object({
+    locale: z.enum(TAX_EXPORT_LOCALES).optional(),
+  })
+  .strict();
+export type TaxYearExportQuery = z.infer<typeof taxYearExportQuerySchema>;
+
 // --- Custom assets ---------------------------------------------------------
 
 /** Optional initial purchase, recorded as a BUY transaction (§6.9). */

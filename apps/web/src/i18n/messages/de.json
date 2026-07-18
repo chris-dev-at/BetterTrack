@@ -1292,6 +1292,20 @@
         "sonstigePot": "Sonstiger Verlusttopf (ein → aus)",
         "kapest": "KapESt (25 %)",
         "soli": "Soli (5,5 % der Steuer)"
+      },
+      "dividend": {
+        "gross": "Brutto",
+        "tax": "Steuer"
+      },
+      "export": {
+        "csv": "CSV exportieren",
+        "print": "Drucken / PDF"
+      },
+      "print": {
+        "print": "Drucken",
+        "back": "Zurück zum Bericht",
+        "missingParams": "Wähle ein Portfolio und ein Jahr zum Drucken.",
+        "loadError": "Der Bericht konnte nicht zum Drucken geladen werden."
       }
     },
     "section": {
