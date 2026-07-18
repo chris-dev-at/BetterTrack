@@ -4,6 +4,7 @@ export * from './i18n';
 export * from './auth';
 export * from './admin';
 export * from './market';
+export * from './marketIntel';
 export * from './assets';
 export * from './workboard';
 export * from './portfolio';

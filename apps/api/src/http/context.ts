@@ -86,6 +86,7 @@ import {
 } from '../services/featureFlags/featureFlagService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
+import { createMarketIntelService, type MarketIntelService } from '../services/marketIntel';
 import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
 import {
   createAnalyticsService,
@@ -202,6 +203,13 @@ export interface AppContext {
   marketData: MarketDataService;
   /** Asset detail/quote/history over the market-data layer (§6.3). */
   assets: AssetService;
+  /**
+   * Per-asset market intelligence (§13.5 V5-P5): the dividend/earnings/news/
+   * splits reads + capability descriptor over the provider/cache keystone,
+   * behind the `MARKET_INTEL_ENABLED` gate. Degrades to "unconfigured" rather
+   * than erroring; the follow-up P5 UI keys visibility off `available`.
+   */
+  marketIntel: MarketIntelService;
   /** Local-first catalog search + background provider enrichment (§6.2). */
   search: SearchService;
   /** Transactions, holdings/totals and the value-over-time series (§6.9). */
@@ -735,6 +743,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     currencyService: currency,
   });
 
+  // Per-asset market intelligence (§13.5 V5-P5): a thin read layer over the
+  // provider/cache keystone, gated by MARKET_INTEL_ENABLED. Shares the asset
+  // repository so it enforces the exact §10 access scoping as the asset reads.
+  const marketIntel = createMarketIntelService({
+    marketData,
+    assetRepo,
+    enabled: config.marketIntel.enabled,
+  });
+
   // First-reference history warming (§6.2/§9): the first workboard add or
   // transaction on a history-less asset enqueues its max-range backfill —
   // this is how seeded catalog rows (§6.2(c)) get price history at all.
@@ -1134,6 +1151,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     workboard,
     marketData,
     assets,
+    marketIntel,
     search,
     portfolio,
     snapshots,

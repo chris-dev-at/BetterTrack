@@ -139,6 +139,13 @@ const componentSchemas = {
   HistoryResponse: contracts.historyResponseSchema,
   DailyClosesResponse: contracts.dailyClosesResponseSchema,
 
+  // Market intelligence (§13.5 V5-P5)
+  MarketIntelStatusResponse: contracts.marketIntelStatusResponseSchema,
+  DividendsResponse: contracts.dividendsResponseSchema,
+  EarningsResponse: contracts.earningsResponseSchema,
+  NewsResponse: contracts.newsResponseSchema,
+  SplitsResponse: contracts.splitsResponseSchema,
+
   // Portfolios (§6.8, §13.2 V2-P8)
   CreatePortfolioRequest: contracts.createPortfolioRequestSchema,
   UpdatePortfolioRequest: contracts.updatePortfolioRequestSchema,
@@ -1408,6 +1415,53 @@ const endpoints: EndpointDef[] = [
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.DailyClosesResponse,
+  },
+
+  // Market intelligence (§13.5 V5-P5)
+  {
+    method: 'get',
+    path: '/assets/{id}/intel',
+    tag: 'Assets',
+    summary: 'Market-intelligence capability descriptor (gate + per-capability availability).',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.MarketIntelStatusResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/dividends',
+    tag: 'Assets',
+    summary: 'Dividend history, upcoming ex/pay dates and forward yield.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.DividendsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/earnings',
+    tag: 'Assets',
+    summary: 'Next and recent past earnings reports.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.EarningsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/news',
+    tag: 'Assets',
+    summary: 'Recent news headlines for the asset.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.NewsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/splits',
+    tag: 'Assets',
+    summary: 'Past and announced stock splits.',
+    params: contracts.assetIdParamSchema,
+    status: 200,
+    response: R.SplitsResponse,
   },
 
   // Portfolios (§6.8)

@@ -4,7 +4,7 @@
  * service and the provider interface — never a concrete provider.
  */
 export type { AssetProvider } from './AssetProvider';
-export { createProviderRegistry, type ProviderRegistry } from './registry';
+export { createProviderRegistry, providerCapabilities, type ProviderRegistry } from './registry';
 export {
   createMarketDataService,
   defaultIntervalForRange,
@@ -25,7 +25,12 @@ export {
   type FailoverSwitchEvent,
   type ProviderServeStat,
 } from './failoverChain';
-export { AssetNotFoundError, isNotFoundError, isRateLimitError } from './errors';
+export {
+  AssetNotFoundError,
+  CapabilityUnavailableError,
+  isNotFoundError,
+  isRateLimitError,
+} from './errors';
 export {
   CircuitBreaker,
   CircuitOpenError,
@@ -41,6 +46,10 @@ export {
   STALE_TTL_SECONDS,
   SEARCH_TTL_SECONDS,
   NEGATIVE_TTL_SECONDS,
+  DIVIDENDS_TTL_SECONDS,
+  EARNINGS_TTL_SECONDS,
+  SPLITS_TTL_SECONDS,
+  NEWS_TTL_SECONDS,
   historyTtlSeconds,
 } from './ttl';
 

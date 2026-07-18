@@ -100,6 +100,7 @@ function buildInertContext(): AppContext {
     workboard: inertService('workboard'),
     marketData: inertService('marketData'),
     assets: inertService('assets'),
+    marketIntel: inertService('marketIntel'),
     search: inertService('search'),
     portfolio: inertService('portfolio'),
     snapshots: inertService('snapshots'),

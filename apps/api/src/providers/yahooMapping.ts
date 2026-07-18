@@ -1,4 +1,20 @@
-import type { AssetType, CurrencyCode } from '@bettertrack/contracts';
+import type {
+  AssetType,
+  CurrencyCode,
+  DividendEvent,
+  DividendEvents,
+  EarningsEvent,
+  EarningsEvents,
+  NewsHeadline,
+  SplitEvent,
+  SplitEvents,
+} from '@bettertrack/contracts';
+
+import type {
+  YahooChartEventsResult,
+  YahooNewsResult,
+  YahooQuoteSummaryResult,
+} from './yahooClient';
 
 /**
  * Pure shape-mapping helpers between `yahoo-finance2` and the BetterTrack
@@ -234,4 +250,166 @@ export function currencyForSearchResult(
 
   // Default: Yahoo's primary market is the US.
   return 'USD';
+}
+
+// ── Market-intelligence mapping (§13.5 V5-P5) ────────────────────────────────
+
+/**
+ * Best-effort currency normalisation for the *intel* path. Unlike
+ * {@link normalizeCurrency} (which throws to fail loud on the money path), an
+ * asset page's dividend/earnings block is informational, so a missing or
+ * unmappable currency yields `null` (amounts stay unscaled) rather than blowing
+ * up the whole page.
+ */
+export function safeNormalizeCurrency(raw: string | null | undefined): NormalizedCurrency | null {
+  try {
+    return normalizeCurrency(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Coerce a Yahoo date-ish value (Date | epoch-ms | ISO string) to ISO-8601, or null. */
+function toIsoOrNull(value: Date | number | string | null | undefined): string | null {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  }
+  if (typeof value === 'number') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+}
+
+/** Ascending sort key over a nullable ISO date (nulls sort first, stable). */
+function byIsoDate(a: { date?: string | null }, b: { date?: string | null }): number {
+  return (a.date ?? '').localeCompare(b.date ?? '');
+}
+
+/**
+ * Map Yahoo's `chart(events:'div')` history + `quoteSummary` calendar/detail into
+ * the {@link DividendEvents} contract. Per-share amounts are scaled out of any
+ * minor unit (London pence → GBP) exactly like prices, so a GBp payout is never
+ * off by 100×. The chart's own currency wins for the amounts; `summaryDetail`
+ * is a fallback and supplies the forward yield + trailing amount (arc e).
+ */
+export function mapDividendEvents(
+  chart: YahooChartEventsResult,
+  summary: YahooQuoteSummaryResult,
+): DividendEvents {
+  const norm = safeNormalizeCurrency(chart.meta?.currency ?? summary.summaryDetail?.currency);
+  const currency = norm?.code ?? null;
+  const scale = norm?.priceScale ?? 1;
+
+  const history: DividendEvent[] = (chart.dividends ?? [])
+    .map((d) => ({
+      exDate: toIsoOrNull(d.date),
+      payDate: null,
+      amount: typeof d.amount === 'number' ? d.amount * scale : null,
+      currency,
+    }))
+    .sort((a, b) => (a.exDate ?? '').localeCompare(b.exDate ?? ''));
+
+  const cal = summary.calendarEvents ?? {};
+  const upcomingEx = toIsoOrNull(cal.exDividendDate);
+  const upcomingPay = toIsoOrNull(cal.dividendDate);
+  const upcoming: DividendEvent[] =
+    upcomingEx || upcomingPay
+      ? [{ exDate: upcomingEx, payDate: upcomingPay, amount: null, currency }]
+      : [];
+
+  const detail = summary.summaryDetail ?? {};
+  const forwardYield = typeof detail.dividendYield === 'number' ? detail.dividendYield : null;
+  const trailingRaw =
+    typeof detail.trailingAnnualDividendRate === 'number'
+      ? detail.trailingAnnualDividendRate
+      : typeof detail.dividendRate === 'number'
+        ? detail.dividendRate
+        : null;
+  const trailingAmount = trailingRaw != null ? trailingRaw * scale : null;
+
+  return { currency, history, upcoming, forwardYield, trailingAmount };
+}
+
+/**
+ * Map Yahoo's `quoteSummary` calendar + earnings history into the
+ * {@link EarningsEvents} contract: the earliest upcoming date (flagged
+ * estimated) as `next`, and reported quarters as `recent` (ascending by date).
+ */
+export function mapEarningsEvents(summary: YahooQuoteSummaryResult): EarningsEvents {
+  const cal = summary.calendarEvents?.earnings ?? {};
+  const nextDate = (cal.earningsDate ?? [])
+    .map(toIsoOrNull)
+    .filter((d): d is string => d !== null)
+    .sort()[0];
+  // An upcoming date is an estimate unless Yahoo explicitly confirms it.
+  const estimated = cal.isEarningsDateEstimate ?? true;
+  const next: EarningsEvent | null = nextDate
+    ? {
+        date: nextDate,
+        epsEstimate: typeof cal.earningsAverage === 'number' ? cal.earningsAverage : null,
+        epsActual: null,
+        estimated,
+      }
+    : null;
+
+  const recent: EarningsEvent[] = (summary.earningsHistory?.history ?? [])
+    .map((h) => ({
+      date: toIsoOrNull(h.quarter),
+      epsEstimate: typeof h.epsEstimate === 'number' ? h.epsEstimate : null,
+      epsActual: typeof h.epsActual === 'number' ? h.epsActual : null,
+      // History rows are reported actuals, not estimates.
+      estimated: false,
+    }))
+    .sort(byIsoDate);
+
+  return { next, recent };
+}
+
+/**
+ * Map Yahoo's `search(...).news` into {@link NewsHeadline}s. Drops rows missing a
+ * title or a usable http(s) link (the contract requires a URL), and keys each
+ * headline by the provider uuid, falling back to the link.
+ */
+export function mapNewsHeadlines(result: YahooNewsResult): NewsHeadline[] {
+  const out: NewsHeadline[] = [];
+  for (const n of result.news ?? []) {
+    const title = (n.title ?? '').trim();
+    const url = (n.link ?? '').trim();
+    const id = (n.uuid ?? url).trim();
+    if (title === '' || url === '' || id === '') continue;
+    if (!/^https?:\/\//i.test(url)) continue;
+    out.push({
+      id,
+      title,
+      publisher: (n.publisher ?? '').trim() || null,
+      url,
+      publishedAt: toIsoOrNull(n.providerPublishTime),
+    });
+  }
+  return out;
+}
+
+/**
+ * Map Yahoo's `chart(events:'split')` history into the {@link SplitEvents}
+ * contract (ascending by date). Rows with a non-positive numerator/denominator
+ * are dropped; `ratio` falls back to `n:d` when Yahoo omits its display string.
+ * Yahoo exposes only *past* splits, so `upcoming` is always empty here.
+ */
+export function mapSplitEvents(chart: YahooChartEventsResult): SplitEvents {
+  const history: SplitEvent[] = (chart.splits ?? [])
+    .map((s): SplitEvent | null => {
+      const numerator = typeof s.numerator === 'number' ? s.numerator : null;
+      const denominator = typeof s.denominator === 'number' ? s.denominator : null;
+      if (numerator === null || denominator === null || numerator <= 0 || denominator <= 0) {
+        return null;
+      }
+      const ratio = (s.splitRatio ?? `${numerator}:${denominator}`).toString();
+      return { date: toIsoOrNull(s.date), numerator, denominator, ratio };
+    })
+    .filter((s): s is SplitEvent => s !== null)
+    .sort(byIsoDate);
+  return { history, upcoming: [] };
 }

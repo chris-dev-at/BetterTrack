@@ -25,6 +25,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote: () => Promise.resolve({}),
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { registry } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
 
@@ -44,6 +47,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote,
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { service } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
 
@@ -70,6 +76,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote,
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { service } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
 
@@ -89,6 +98,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote: () => Promise.resolve({}),
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const { registry } = createMarketData({ db: h.db, redis: h.ctx.redis, yahooClient: stub });
     expect(registry.has('stooq')).toBe(false);
@@ -100,6 +112,9 @@ describe('createMarketData registers both providers (§5.1)', () => {
       search: () => Promise.resolve({ quotes: [] }),
       quote: () => Promise.reject(new Error('yahoo down')),
       chart: () => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] }),
+      chartEvents: () => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] }),
+      quoteSummary: () => Promise.resolve({}),
+      searchNews: () => Promise.resolve({ news: [] }),
     };
     const stooq: StooqClient = {
       quote: async () => ({ symbol: 'AAPL.US', date: '2026-07-16', time: '22:00:00', close: 200 }),
