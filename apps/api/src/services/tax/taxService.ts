@@ -42,16 +42,35 @@ import {
   type SourcedCashMovement,
 } from '../../domain/cashLedger';
 import {
+  atYearTargetEur,
+  dePotCategoryForAssetType,
   manualTaxEur,
   realizedSellsEur,
   settleAtYear,
+  settleDeYear,
   TAX_COUNTRY_AT,
+  TAX_COUNTRY_DE,
   taxMovementForDelta,
   viennaYearOf,
+  type CostBasisStrategy,
+  type DePotCategory,
+  type DeTaxableEvent,
   type SellRealizationEur,
   type TaxableTransaction,
   type TaxMovementSpec,
 } from '../../domain/tax';
+import {
+  countrySpecificYears,
+  deEventsByYear,
+  dePotsInForYear,
+  deTargetForYear,
+  deYearStateForYear,
+  isDeDividend,
+  isDeSell,
+  portfolioHasDeRows,
+  rowEngineCountry,
+  type DeRowView,
+} from './countryState';
 import { badRequest, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
@@ -137,7 +156,7 @@ export interface TransactionTaxPlanInput {
 export interface TaxService {
   /** Settings → Taxes: the caller's mode (+ country); `none` when never set. */
   getSettings(userId: string): Promise<TaxSettingsResponse>;
-  /** Update the mode; `country` exactly with `country_specific` (AT only). */
+  /** Update the mode; `country` exactly with `country_specific` (AT | DE). */
   updateSettings(userId: string, input: UpdateTaxSettingsRequest): Promise<TaxSettingsResponse>;
   /** The effective settings as a record (missing row = `none`). */
   getEffectiveSettings(userId: string): Promise<UserTaxSettingsRecord>;
@@ -188,7 +207,24 @@ export interface TaxService {
 const NOTE_AT_WITHHELD = 'KESt withheld (AT)';
 const NOTE_AT_REFUNDED = 'KESt refunded (AT)';
 const NOTE_AT_CORRECTION = 'Tax year correction (AT)';
+const NOTE_DE_WITHHELD = 'KapESt + Soli withheld (DE)';
+const NOTE_DE_REFUNDED = 'KapESt + Soli refunded (DE)';
+const NOTE_DE_CORRECTION = 'Tax year correction (DE)';
 const NOTE_MANUAL_WITHHELD = 'Tax withheld (manual entry)';
+
+type EngineCountry = typeof TAX_COUNTRY_AT | typeof TAX_COUNTRY_DE;
+
+const settlementNote = (country: EngineCountry, kind: TaxMovementSpec['kind']): string =>
+  country === TAX_COUNTRY_DE
+    ? kind === 'tax_withholding'
+      ? NOTE_DE_WITHHELD
+      : NOTE_DE_REFUNDED
+    : kind === 'tax_withholding'
+      ? NOTE_AT_WITHHELD
+      : NOTE_AT_REFUNDED;
+
+const correctionNote = (country: EngineCountry): string =>
+  country === TAX_COUNTRY_DE ? NOTE_DE_CORRECTION : NOTE_AT_CORRECTION;
 
 const isTaxMovementKind = (kind: CashMovementRecord['kind']): boolean =>
   kind === 'tax_withholding' || kind === 'tax_refund';
@@ -319,7 +355,42 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
   const realizationsById = (
     taxables: readonly TaxableTransaction[],
-  ): Map<string, SellRealizationEur> => new Map(realizedSellsEur(taxables).map((r) => [r.id, r]));
+    strategy: CostBasisStrategy = 'moving-average',
+  ): Map<string, SellRealizationEur> =>
+    new Map(realizedSellsEur(taxables, strategy).map((r) => [r.id, r]));
+
+  /** The country the ACTIVE `country_specific` settings tax new rows under. */
+  const effectiveCountry = (settings: UserTaxSettingsRecord): EngineCountry =>
+    settings.country === TAX_COUNTRY_DE ? TAX_COUNTRY_DE : TAX_COUNTRY_AT;
+
+  /** A stored 2-char country narrowed to the contract enum (`AT` | `DE` | null). */
+  const toContractCountry = (country: string | null): EngineCountry | null =>
+    country === TAX_COUNTRY_AT || country === TAX_COUNTRY_DE ? country : null;
+
+  /** DE pot category from a preloaded asset map; a miss is a programming error. */
+  function categoryLookup(assetsById: ReadonlyMap<string, AssetRow>) {
+    return (assetId: string): DePotCategory => {
+      const asset = assetsById.get(assetId);
+      if (!asset) throw new Error(`Tax engine: asset ${assetId} missing while classifying`);
+      return dePotCategoryForAssetType(asset.type);
+    };
+  }
+
+  /** Assemble the {@link DeRowView} the countryState derivations run over. */
+  function buildDeView(
+    transactions: readonly TransactionRecord[],
+    dividendRows: readonly DividendRecord[],
+    deRealizations: ReadonlyMap<string, SellRealizationEur>,
+    assetsById: ReadonlyMap<string, AssetRow>,
+  ): DeRowView {
+    return {
+      transactions,
+      dividendRows,
+      deRealizations,
+      categoryOf: categoryLookup(assetsById),
+      yearOf: viennaYearOfDate,
+    };
+  }
 
   /**
    * The tax currently **held** for one Vienna year of one portfolio: the sum
@@ -354,7 +425,11 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     return floorCents(held);
   }
 
-  /** The year's already-persisted AT pool inputs, gains recomputed. */
+  /**
+   * The year's already-persisted AT pool inputs, gains recomputed. DE-frozen
+   * rows are NOT part of the AT pool (V5-P4): they enter the year through the
+   * DE target instead, so both countries' settlements coexist in one year.
+   */
   function existingAtPool(
     transactions: readonly TransactionRecord[],
     dividendRows: readonly DividendRecord[],
@@ -363,7 +438,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   ): { existingGainsEur: number[]; existingDividendsEur: number[] } {
     const existingGainsEur: number[] = [];
     for (const t of transactions) {
-      if (t.side !== 'sell' || t.taxMode !== 'country_specific') continue;
+      if (t.side !== 'sell' || t.taxMode !== 'country_specific' || isDeSell(t)) continue;
       if (viennaYearOfDate(t.executedAt) !== year) continue;
       const realization = realizations.get(t.id);
       if (!realization) {
@@ -372,9 +447,28 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       existingGainsEur.push(realization.realizedPnlEur);
     }
     const existingDividendsEur = dividendRows
-      .filter((d) => d.taxMode === 'country_specific' && viennaYearOfDate(d.executedAt) === year)
+      .filter(
+        (d) =>
+          d.taxMode === 'country_specific' &&
+          !isDeDividend(d) &&
+          viennaYearOfDate(d.executedAt) === year,
+      )
       .map((d) => d.grossAmountEur);
     return { existingGainsEur, existingDividendsEur };
+  }
+
+  /** The AT component of a year's held-tax target (0 without AT rows). */
+  function atTargetForYear(
+    transactions: readonly TransactionRecord[],
+    dividendRows: readonly DividendRecord[],
+    realizations: ReadonlyMap<string, SellRealizationEur>,
+    year: number,
+  ): number {
+    const pool = existingAtPool(transactions, dividendRows, realizations, year);
+    let poolEur = 0;
+    for (const gain of pool.existingGainsEur) poolEur += gain;
+    for (const dividend of pool.existingDividendsEur) poolEur += dividend;
+    return atYearTargetEur(poolEur);
   }
 
   /** Map a settlement spec to the unattached correction movement it posts. */
@@ -382,13 +476,14 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     spec: TaxMovementSpec,
     sourceId: string,
     year: number,
+    note: string = NOTE_AT_CORRECTION,
   ): NewCashMovement {
     return {
       sourceId,
       kind: spec.kind,
       amountEur: spec.amountEur,
       executedAt: new Date(now()),
-      note: NOTE_AT_CORRECTION,
+      note,
       taxYear: year,
     };
   }
@@ -441,7 +536,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       executedAt: record.executedAt.toISOString(),
       note: record.note,
       taxMode: record.taxMode,
-      taxCountry: record.taxCountry === TAX_COUNTRY_AT ? TAX_COUNTRY_AT : null,
+      taxCountry: toContractCountry(record.taxCountry),
       taxAmountEur: record.taxAmountEur,
       cashSourceId: record.cashSourceId,
       source: record.source,
@@ -627,16 +722,20 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       return { rows, extras: [], proposed };
     }
 
-    // ── Country-specific (AT): flat KESt with same-year offset ──────────────
+    // ── Country-specific (AT | DE): the active country's engine settles the
+    // new sells; frozen rows keep their own regime, and a year's held tax is
+    // always the SUM of both countries' independent targets (§16 cutover) ───
+    const country = effectiveCountry(settings);
     const [allTxns, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
       cashMovementRepo.listForPortfolio(portfolioId),
     ]);
+    const involveDe = country === TAX_COUNTRY_DE || portfolioHasDeRows(allTxns, dividendRows);
 
     // Years whose pools this batch touches: the years of its sells, plus —
     // when the batch (back)dates buys of an asset — the years of that asset's
-    // existing AT sells, whose recomputed gains may have shifted.
+    // existing CS sells, whose recomputed gains may have shifted.
     const batchBuyAssets = new Set(inputs.filter((i) => i.side === 'buy').map((i) => i.assetId));
     const affectedYears = new Set<number>(
       pendingSells.map((p) => viennaYearOf(new Date(p.input.executedAt).toISOString())),
@@ -646,17 +745,36 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         affectedYears.add(viennaYearOfDate(t.executedAt));
       }
     }
+    // DE additions (V5-P4): under FIFO, ANY batch trade of an asset can shift
+    // that asset's DE sells' lot consumption (sells consume lots too, unlike
+    // the moving average) — and a changed DE year changes its pot-outs, which
+    // ripples into every later country-specific year. Close the affected set
+    // downstream; a year whose combined target did not move settles to a zero
+    // correction and posts nothing.
+    if (involveDe) {
+      const batchAssets = new Set(inputs.map((i) => i.assetId));
+      for (const t of allTxns) {
+        if (isDeSell(t) && batchAssets.has(t.assetId)) {
+          affectedYears.add(viennaYearOfDate(t.executedAt));
+        }
+      }
+      if (affectedYears.size > 0) {
+        const minYear = Math.min(...affectedYears);
+        const csYears = countrySpecificYears(allTxns, dividendRows, movements, viennaYearOfDate);
+        for (const year of csYears) {
+          if (year > minYear) affectedYears.add(year);
+        }
+      }
+    }
 
-    // Assets whose EUR replay the affected pools need: every batch-sell asset
-    // plus every asset with an existing AT sell in an affected year (pools
-    // span the whole portfolio).
+    // Assets whose EUR replay the affected pools need: every batch-sell asset,
+    // every asset with an existing CS sell in an affected year, and — with DE
+    // involved — every DE-sell asset anywhere (the pot chain spans all prior
+    // years).
     const neededAssetIds = new Set(pendingSells.map((p) => p.input.assetId));
     for (const t of allTxns) {
-      if (
-        t.side === 'sell' &&
-        t.taxMode === 'country_specific' &&
-        affectedYears.has(viennaYearOfDate(t.executedAt))
-      ) {
+      if (t.side !== 'sell' || t.taxMode !== 'country_specific') continue;
+      if (affectedYears.has(viennaYearOfDate(t.executedAt)) || (involveDe && isDeSell(t))) {
         neededAssetIds.add(t.assetId);
       }
     }
@@ -676,6 +794,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       createTradeDateConverter(fxWriteError),
     );
     const realizations = realizationsById(taxables);
+    const deRealizations = involveDe
+      ? realizationsById(taxables, 'fifo')
+      : new Map<string, SellRealizationEur>();
+    const deView = buildDeView(allTxns, dividendRows, deRealizations, mergedAssets);
+    // Pending DE events join the pot chain year by year as the ascending loop
+    // settles them, so a later year's pot-ins see the earlier years' new rows.
+    const pendingDeEvents = new Map<number, DeTaxableEvent[]>();
+    const deEventsWithPending = (): Map<number, DeTaxableEvent[]> =>
+      deEventsByYear(deView, pendingDeEvents);
 
     const extras: BatchCashMovement[] = [];
     const proposed: SourcedCashMovement[] = [];
@@ -688,27 +815,66 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           (a, b) =>
             Date.parse(a.input.executedAt) - Date.parse(b.input.executedAt) || a.index - b.index,
         );
-      const pool = existingAtPool(allTxns, dividendRows, realizations, year);
-      const settlement = settleAtYear({
-        ...pool,
-        heldEur: heldForYear(allTxns, dividendRows, movements, year),
-        newEvents: yearSells.map((p) => {
-          const realization = realizations.get(p.tempId);
-          if (!realization) {
-            throw new Error(`Tax engine: no realization for pending sell ${p.tempId}`);
-          }
-          return { kind: 'sell_gain' as const, amountEur: realization.realizedPnlEur };
-        }),
-      });
+      const heldEur = heldForYear(allTxns, dividendRows, movements, year);
 
-      const correctionSpec = taxMovementForDelta(settlement.correctionDeltaEur);
+      let correctionDeltaEur: number;
+      let newEventDeltasEur: number[];
+      if (country === TAX_COUNTRY_AT) {
+        // The DE component (frozen DE rows only — an AT batch never adds DE
+        // events, but its backdated trades may have re-shaped DE lot bases;
+        // the recomputed FIFO realizations already reflect that).
+        const deTarget = involveDe ? deTargetForYear(deEventsWithPending(), year) : 0;
+        const pool = existingAtPool(allTxns, dividendRows, realizations, year);
+        const settlement = settleAtYear({
+          ...pool,
+          heldEur: floorCents(heldEur - deTarget),
+          newEvents: yearSells.map((p) => {
+            const realization = realizations.get(p.tempId);
+            if (!realization) {
+              throw new Error(`Tax engine: no realization for pending sell ${p.tempId}`);
+            }
+            return { kind: 'sell_gain' as const, amountEur: realization.realizedPnlEur };
+          }),
+        });
+        correctionDeltaEur = settlement.correctionDeltaEur;
+        newEventDeltasEur = settlement.newEventDeltasEur;
+      } else {
+        // DE: the AT component stays put; pots chain over frozen rows plus the
+        // already-settled pending events of earlier years.
+        const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
+        const events = deEventsWithPending();
+        const potIns = dePotsInForYear(events, year);
+        const newEvents: DeTaxableEvent[] = yearSells.map((p) => {
+          const realization = deRealizations.get(p.tempId);
+          if (!realization) {
+            throw new Error(`Tax engine: no FIFO realization for pending sell ${p.tempId}`);
+          }
+          return {
+            kind: 'sell_gain' as const,
+            category: deView.categoryOf(p.input.assetId),
+            amountEur: realization.realizedPnlEur,
+          };
+        });
+        const settlement = settleDeYear({
+          aktienPotInEur: potIns.aktienEur,
+          sonstigePotInEur: potIns.sonstigeEur,
+          existingEvents: events.get(year) ?? [],
+          heldEur: floorCents(heldEur - atTarget),
+          newEvents,
+        });
+        correctionDeltaEur = settlement.correctionDeltaEur;
+        newEventDeltasEur = settlement.newEventDeltasEur;
+        if (newEvents.length > 0) pendingDeEvents.set(year, newEvents);
+      }
+
+      const correctionSpec = taxMovementForDelta(correctionDeltaEur);
       if (correctionSpec) {
         const sourceId = await correctionSourceId(portfolioId);
         extras.push({
           kind: correctionSpec.kind,
           amountEur: correctionSpec.amountEur,
           sourceId,
-          note: NOTE_AT_CORRECTION,
+          note: correctionNote(country),
           taxYear: year,
           executedAt: new Date(now()),
         });
@@ -721,10 +887,10 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       }
 
       for (const [i, pendingSell] of yearSells.entries()) {
-        const deltaEur = settlement.newEventDeltasEur[i]!;
+        const deltaEur = newEventDeltasEur[i]!;
         const executedAtIso = new Date(pendingSell.input.executedAt).toISOString();
         const row: PlannedRowTax = {
-          tax: { mode: 'country_specific', country: TAX_COUNTRY_AT, amountEur: deltaEur },
+          tax: { mode: 'country_specific', country, amountEur: deltaEur },
           movement: null,
         };
         const spec = taxMovementForDelta(deltaEur);
@@ -734,7 +900,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             kind: spec.kind,
             amountEur: spec.amountEur,
             sourceId,
-            note: spec.kind === 'tax_withholding' ? NOTE_AT_WITHHELD : NOTE_AT_REFUNDED,
+            note: settlementNote(country, spec.kind),
             taxYear: year,
           };
           proposed.push({
@@ -757,19 +923,29 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     portfolioId: string,
     transaction: TransactionRecord,
   ): Promise<NewCashMovement[]> {
-    const isAtSell = transaction.side === 'sell' && transaction.taxMode === 'country_specific';
+    const isCsSell = transaction.side === 'sell' && transaction.taxMode === 'country_specific';
     const [allTxns, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
       cashMovementRepo.listForPortfolio(portfolioId),
     ]);
 
-    // Affected years: the deleted AT sell's own year, plus — when a buy is
-    // removed — the years of its asset's AT sells (their averages shift).
+    // Simulate the post-delete world: the row and its movements are gone.
+    const remainingTxns = allTxns.filter((t) => t.id !== transaction.id);
+    const remainingMovements = movements.filter((m) => m.transactionId !== transaction.id);
+
+    const deletedWasDe = isCsSell && rowEngineCountry(transaction.taxCountry) === TAX_COUNTRY_DE;
+    const involveDe = deletedWasDe || portfolioHasDeRows(remainingTxns, dividendRows);
+
+    // Affected years: the deleted CS sell's own year, plus — when a buy is
+    // removed — the years of its asset's CS sells (their recomputed gains
+    // shift). With DE involved, ANY removed trade of the asset can shift its
+    // DE sells' lot consumption (FIFO), and a changed DE year changes its
+    // pot-outs — which ripples into every later country-specific year.
     const affectedYears = new Set<number>();
-    if (isAtSell) affectedYears.add(viennaYearOfDate(transaction.executedAt));
+    if (isCsSell) affectedYears.add(viennaYearOfDate(transaction.executedAt));
     if (transaction.side === 'buy') {
-      for (const t of allTxns) {
+      for (const t of remainingTxns) {
         if (
           t.assetId === transaction.assetId &&
           t.side === 'sell' &&
@@ -779,26 +955,40 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         }
       }
     }
+    if (involveDe) {
+      for (const t of remainingTxns) {
+        if (isDeSell(t) && t.assetId === transaction.assetId) {
+          affectedYears.add(viennaYearOfDate(t.executedAt));
+        }
+      }
+      if (affectedYears.size > 0) {
+        const minYear = Math.min(...affectedYears);
+        const csYears = countrySpecificYears(
+          remainingTxns,
+          dividendRows,
+          remainingMovements,
+          viennaYearOfDate,
+        );
+        for (const year of csYears) {
+          if (year > minYear) affectedYears.add(year);
+        }
+      }
+    }
     if (affectedYears.size === 0) return [];
-
-    // Simulate the post-delete world: the row and its movements are gone.
-    const remainingTxns = allTxns.filter((t) => t.id !== transaction.id);
-    const remainingMovements = movements.filter((m) => m.transactionId !== transaction.id);
 
     const neededAssetIds = new Set<string>();
     for (const t of remainingTxns) {
-      if (
-        t.side === 'sell' &&
-        t.taxMode === 'country_specific' &&
-        affectedYears.has(viennaYearOfDate(t.executedAt))
-      ) {
+      if (t.side !== 'sell' || t.taxMode !== 'country_specific') continue;
+      if (affectedYears.has(viennaYearOfDate(t.executedAt)) || (involveDe && isDeSell(t))) {
         neededAssetIds.add(t.assetId);
       }
     }
 
     let realizations = new Map<string, SellRealizationEur>();
+    let deRealizations = new Map<string, SellRealizationEur>();
+    let assetsById = new Map<string, AssetRow>();
     if (neededAssetIds.size > 0) {
-      const assetsById = await loadAssets(remainingTxns.map((t) => t.assetId));
+      assetsById = await loadAssets(remainingTxns.map((t) => t.assetId));
       const taxables = await buildTaxables(
         remainingTxns,
         [],
@@ -807,19 +997,30 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         createTradeDateConverter(fxWriteError),
       );
       realizations = realizationsById(taxables);
+      if (involveDe) deRealizations = realizationsById(taxables, 'fifo');
     }
+    const deView = buildDeView(remainingTxns, dividendRows, deRealizations, assetsById);
+    const frozenDeEvents = involveDe ? deEventsByYear(deView) : new Map<number, DeTaxableEvent[]>();
 
+    // Each year settles append-only against its combined post-delete target
+    // (AT pool target + DE year target — the two components never mix).
     const corrections: NewCashMovement[] = [];
     for (const year of [...affectedYears].sort((a, b) => a - b)) {
-      const pool = existingAtPool(remainingTxns, dividendRows, realizations, year);
-      const settlement = settleAtYear({
-        ...pool,
-        heldEur: heldForYear(remainingTxns, dividendRows, remainingMovements, year),
-        newEvents: [],
-      });
-      const spec = taxMovementForDelta(settlement.correctionDeltaEur);
+      const targetEur = floorCents(
+        atTargetForYear(remainingTxns, dividendRows, realizations, year) +
+          (involveDe ? deTargetForYear(frozenDeEvents, year) : 0),
+      );
+      const heldEur = heldForYear(remainingTxns, dividendRows, remainingMovements, year);
+      const spec = taxMovementForDelta(floorCents(targetEur - heldEur));
       if (spec) {
-        corrections.push(correctionMovement(spec, await correctionSourceId(portfolioId), year));
+        corrections.push(
+          correctionMovement(
+            spec,
+            await correctionSourceId(portfolioId),
+            year,
+            correctionNote(deletedWasDe ? TAX_COUNTRY_DE : TAX_COUNTRY_AT),
+          ),
+        );
       }
     }
     return corrections;
@@ -905,25 +1106,27 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         rowSettlement = { kind: 'tax_withholding', amountEur: -taxAmountEur };
       }
     } else if (settings.mode === 'country_specific') {
-      taxCountry = TAX_COUNTRY_AT;
+      const country = effectiveCountry(settings);
+      taxCountry = country;
       const [allTxns, dividendRows, movements] = await Promise.all([
         transactionRepo.listForPortfolio(portfolioId),
         taxRepo.listForPortfolio(portfolioId),
         cashMovementRepo.listForPortfolio(portfolioId),
       ]);
+      const involveDe = country === TAX_COUNTRY_DE || portfolioHasDeRows(allTxns, dividendRows);
+
       const neededAssetIds = new Set<string>();
       for (const t of allTxns) {
-        if (
-          t.side === 'sell' &&
-          t.taxMode === 'country_specific' &&
-          viennaYearOfDate(t.executedAt) === year
-        ) {
+        if (t.side !== 'sell' || t.taxMode !== 'country_specific') continue;
+        if (viennaYearOfDate(t.executedAt) === year || (involveDe && isDeSell(t))) {
           neededAssetIds.add(t.assetId);
         }
       }
       let realizations = new Map<string, SellRealizationEur>();
+      let deRealizations = new Map<string, SellRealizationEur>();
+      let assetsById = new Map<string, AssetRow>();
       if (neededAssetIds.size > 0) {
-        const assetsById = await loadAssets(allTxns.map((t) => t.assetId));
+        assetsById = await loadAssets(allTxns.map((t) => t.assetId));
         const taxables = await buildTaxables(
           allTxns,
           [],
@@ -932,20 +1135,76 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           createTradeDateConverter(fxWriteError),
         );
         realizations = realizationsById(taxables);
+        if (involveDe) deRealizations = realizationsById(taxables, 'fifo');
       }
-      const pool = existingAtPool(allTxns, dividendRows, realizations, year);
-      const settlement = settleAtYear({
-        ...pool,
-        heldEur: heldForYear(allTxns, dividendRows, movements, year),
-        newEvents: [{ kind: 'dividend', amountEur: grossEur }],
-      });
-      const correctionSpec = taxMovementForDelta(settlement.correctionDeltaEur);
+      const deView = buildDeView(allTxns, dividendRows, deRealizations, assetsById);
+      const frozenDeEvents = involveDe
+        ? deEventsByYear(deView)
+        : new Map<number, DeTaxableEvent[]>();
+      const heldEur = heldForYear(allTxns, dividendRows, movements, year);
+
+      let correctionDeltaEur: number;
+      let deltaEur: number;
+      if (country === TAX_COUNTRY_AT) {
+        const deTarget = involveDe ? deTargetForYear(frozenDeEvents, year) : 0;
+        const pool = existingAtPool(allTxns, dividendRows, realizations, year);
+        const settlement = settleAtYear({
+          ...pool,
+          heldEur: floorCents(heldEur - deTarget),
+          newEvents: [{ kind: 'dividend', amountEur: grossEur }],
+        });
+        correctionDeltaEur = settlement.correctionDeltaEur;
+        deltaEur = settlement.newEventDeltasEur[0]!;
+      } else {
+        const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
+        const potIns = dePotsInForYear(frozenDeEvents, year);
+        const settlement = settleDeYear({
+          aktienPotInEur: potIns.aktienEur,
+          sonstigePotInEur: potIns.sonstigeEur,
+          existingEvents: frozenDeEvents.get(year) ?? [],
+          heldEur: floorCents(heldEur - atTarget),
+          newEvents: [{ kind: 'dividend', amountEur: grossEur }],
+        });
+        correctionDeltaEur = settlement.correctionDeltaEur;
+        deltaEur = settlement.newEventDeltasEur[0]!;
+      }
+      const correctionSpec = taxMovementForDelta(correctionDeltaEur);
       if (correctionSpec) {
         extras.push(
-          correctionMovement(correctionSpec, await correctionSourceId(portfolioId), year),
+          correctionMovement(
+            correctionSpec,
+            await correctionSourceId(portfolioId),
+            year,
+            correctionNote(country),
+          ),
         );
       }
-      const deltaEur = settlement.newEventDeltasEur[0]!;
+      // A backdated DE dividend can consume pot balances earlier years handed
+      // down — re-settle every LATER country-specific year against its new
+      // combined target (zero-delta years post nothing).
+      if (country === TAX_COUNTRY_DE) {
+        const newEvent: DeTaxableEvent = { kind: 'dividend', amountEur: grossEur };
+        const withNew = deEventsByYear(deView, new Map([[year, [newEvent]]]));
+        const csYears = countrySpecificYears(allTxns, dividendRows, movements, viennaYearOfDate);
+        for (const y of csYears) {
+          if (y <= year) continue;
+          const targetEur = floorCents(
+            atTargetForYear(allTxns, dividendRows, realizations, y) + deTargetForYear(withNew, y),
+          );
+          const heldY = heldForYear(allTxns, dividendRows, movements, y);
+          const spec = taxMovementForDelta(floorCents(targetEur - heldY));
+          if (spec) {
+            extras.push(
+              correctionMovement(
+                spec,
+                await correctionSourceId(portfolioId),
+                y,
+                NOTE_DE_CORRECTION,
+              ),
+            );
+          }
+        }
+      }
       taxAmountEur = deltaEur;
       rowSettlement = taxMovementForDelta(deltaEur);
     }
@@ -972,9 +1231,10 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         note:
           settings.mode === 'manual_per_trade'
             ? NOTE_MANUAL_WITHHELD
-            : rowSettlement.kind === 'tax_withholding'
-              ? NOTE_AT_WITHHELD
-              : NOTE_AT_REFUNDED,
+            : settlementNote(
+                taxCountry === TAX_COUNTRY_DE ? TAX_COUNTRY_DE : TAX_COUNTRY_AT,
+                rowSettlement.kind,
+              ),
         taxYear: year,
         linkDividend: true,
       });
@@ -1069,23 +1329,41 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const remainingDividends = dividendRows.filter((d) => d.id !== dividendId);
     const remainingMovements = movements.filter((m) => m.dividendId !== dividendId);
 
-    // An AT dividend's removal re-settles its year against the remaining rows.
+    // A country-specific dividend's removal re-settles its year against the
+    // remaining rows — and, for a DE dividend, every later CS year: the gross
+    // it contributed may have been consuming pot balances that now carry
+    // further (the combined AT+DE target catches both components).
     const corrections: NewCashMovement[] = [];
     if (dividend.taxMode === 'country_specific') {
       const year = viennaYearOfDate(dividend.executedAt);
+      const deletedWasDe = rowEngineCountry(dividend.taxCountry) === TAX_COUNTRY_DE;
+      const involveDe = deletedWasDe || portfolioHasDeRows(allTxns, remainingDividends);
+
+      const affectedYears = new Set<number>([year]);
+      if (involveDe) {
+        const csYears = countrySpecificYears(
+          allTxns,
+          remainingDividends,
+          remainingMovements,
+          viennaYearOfDate,
+        );
+        for (const y of csYears) {
+          if (y > year) affectedYears.add(y);
+        }
+      }
+
       const neededAssetIds = new Set<string>();
       for (const t of allTxns) {
-        if (
-          t.side === 'sell' &&
-          t.taxMode === 'country_specific' &&
-          viennaYearOfDate(t.executedAt) === year
-        ) {
+        if (t.side !== 'sell' || t.taxMode !== 'country_specific') continue;
+        if (affectedYears.has(viennaYearOfDate(t.executedAt)) || (involveDe && isDeSell(t))) {
           neededAssetIds.add(t.assetId);
         }
       }
       let realizations = new Map<string, SellRealizationEur>();
+      let deRealizations = new Map<string, SellRealizationEur>();
+      let assetsById = new Map<string, AssetRow>();
       if (neededAssetIds.size > 0) {
-        const assetsById = await loadAssets(allTxns.map((t) => t.assetId));
+        assetsById = await loadAssets(allTxns.map((t) => t.assetId));
         const taxables = await buildTaxables(
           allTxns,
           [],
@@ -1094,16 +1372,30 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           createTradeDateConverter(fxWriteError),
         );
         realizations = realizationsById(taxables);
+        if (involveDe) deRealizations = realizationsById(taxables, 'fifo');
       }
-      const pool = existingAtPool(allTxns, remainingDividends, realizations, year);
-      const settlement = settleAtYear({
-        ...pool,
-        heldEur: heldForYear(allTxns, remainingDividends, remainingMovements, year),
-        newEvents: [],
-      });
-      const spec = taxMovementForDelta(settlement.correctionDeltaEur);
-      if (spec) {
-        corrections.push(correctionMovement(spec, await correctionSourceId(portfolioId), year));
+      const deView = buildDeView(allTxns, remainingDividends, deRealizations, assetsById);
+      const frozenDeEvents = involveDe
+        ? deEventsByYear(deView)
+        : new Map<number, DeTaxableEvent[]>();
+
+      for (const y of [...affectedYears].sort((a, b) => a - b)) {
+        const targetEur = floorCents(
+          atTargetForYear(allTxns, remainingDividends, realizations, y) +
+            (involveDe ? deTargetForYear(frozenDeEvents, y) : 0),
+        );
+        const heldEur = heldForYear(allTxns, remainingDividends, remainingMovements, y);
+        const spec = taxMovementForDelta(floorCents(targetEur - heldEur));
+        if (spec) {
+          corrections.push(
+            correctionMovement(
+              spec,
+              await correctionSourceId(portfolioId),
+              y,
+              correctionNote(deletedWasDe ? TAX_COUNTRY_DE : TAX_COUNTRY_AT),
+            ),
+          );
+        }
       }
     }
 
@@ -1145,6 +1437,10 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     dividendRows: DividendRecord[];
     movements: CashMovementRecord[];
     realizations: Map<string, SellRealizationEur>;
+    /** FIFO realizations — populated exactly when the portfolio has DE rows. */
+    deRealizations: Map<string, SellRealizationEur>;
+    /** Per-year DE events of the frozen DE rows (empty without DE rows). */
+    frozenDeEvents: Map<number, DeTaxableEvent[]>;
     assetsById: Map<string, AssetRow>;
   }
 
@@ -1163,7 +1459,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       ...transactions.map((t) => t.assetId),
       ...dividendRows.map((d) => d.assetId),
     ]);
+    const involveDe = portfolioHasDeRows(transactions, dividendRows);
     let realizations = new Map<string, SellRealizationEur>();
+    let deRealizations = new Map<string, SellRealizationEur>();
     if (neededAssetIds.size > 0) {
       const taxables = await buildTaxables(
         transactions,
@@ -1173,15 +1471,63 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         createTradeDateConverter(fxReadError),
       );
       realizations = realizationsById(taxables);
+      if (involveDe) deRealizations = realizationsById(taxables, 'fifo');
     }
-    return { transactions, dividendRows, movements, realizations, assetsById };
+    const frozenDeEvents = involveDe
+      ? deEventsByYear(buildDeView(transactions, dividendRows, deRealizations, assetsById))
+      : new Map<number, DeTaxableEvent[]>();
+    return {
+      transactions,
+      dividendRows,
+      movements,
+      realizations,
+      deRealizations,
+      frozenDeEvents,
+      assetsById,
+    };
+  }
+
+  /**
+   * The realization of one sell as the report states it: a DE-frozen sell
+   * shows its FIFO realization (that IS the taxed truth next to its frozen
+   * tax); every other sell keeps the moving-average view — for AT rows that
+   * is the taxed truth, and for untaxed rows the pre-V5-P4 financial fact.
+   */
+  function reportRealization(
+    state: ReportState,
+    t: TransactionRecord,
+  ): SellRealizationEur | undefined {
+    return isDeSell(t) ? state.deRealizations.get(t.id) : state.realizations.get(t.id);
+  }
+
+  /**
+   * The DE year-end block — present exactly when the year has DE-taxed rows.
+   * Returns `undefined` (key omitted) otherwise, so a portfolio without DE
+   * rows keeps the exact pre-V5-P4 wire shape.
+   */
+  function deSummaryForYear(state: ReportState, year: number): TaxYearSummary['de'] {
+    const hasDeInYear =
+      state.transactions.some((t) => isDeSell(t) && viennaYearOfDate(t.executedAt) === year) ||
+      state.dividendRows.some((d) => isDeDividend(d) && viennaYearOfDate(d.executedAt) === year);
+    if (!hasDeInYear) return undefined;
+    const { potIns, outcome } = deYearStateForYear(state.frozenDeEvents, year);
+    return {
+      allowanceUsedEur: floorCents(outcome.allowanceUsedEur),
+      allowanceRemainingEur: floorCents(outcome.allowanceRemainingEur),
+      aktienPotInEur: floorCents(potIns.aktienEur),
+      aktienPotOutEur: floorCents(outcome.aktienPotOutEur),
+      sonstigePotInEur: floorCents(potIns.sonstigeEur),
+      sonstigePotOutEur: floorCents(outcome.sonstigePotOutEur),
+      kapestEur: outcome.kapestEur,
+      soliEur: outcome.soliEur,
+    };
   }
 
   function yearSummary(state: ReportState, year: number): TaxYearSummary {
     let realizedPnlEur = 0;
     for (const t of state.transactions) {
       if (t.side !== 'sell' || viennaYearOfDate(t.executedAt) !== year) continue;
-      realizedPnlEur += state.realizations.get(t.id)?.realizedPnlEur ?? 0;
+      realizedPnlEur += reportRealization(state, t)?.realizedPnlEur ?? 0;
     }
     let dividendsGrossEur = 0;
     for (const d of state.dividendRows) {
@@ -1196,6 +1542,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     }
     taxWithheldEur = floorCents(taxWithheldEur);
     taxRefundedEur = floorCents(taxRefundedEur);
+    const de = deSummaryForYear(state, year);
     return {
       year,
       realizedPnlEur,
@@ -1203,6 +1550,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       taxWithheldEur,
       taxRefundedEur,
       taxNetEur: floorCents(taxWithheldEur - taxRefundedEur),
+      // Omit the key entirely for non-DE years (exact pre-V5-P4 shape).
+      ...(de !== undefined ? { de } : {}),
     };
   }
 
@@ -1259,7 +1608,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       const sells = entry.sells
         .sort((a, b) => a.executedAt.getTime() - b.executedAt.getTime())
         .map((t) => {
-          const realization = state.realizations.get(t.id);
+          const realization = reportRealization(state, t);
           if (!realization) {
             throw new Error(`Realization missing for sell ${t.id} in the year report`);
           }
@@ -1309,7 +1658,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   function toSettingsResponse(record: UserTaxSettingsRecord): TaxSettingsResponse {
     return {
       mode: record.mode,
-      country: record.country === TAX_COUNTRY_AT ? TAX_COUNTRY_AT : null,
+      country: toContractCountry(record.country),
     };
   }
 

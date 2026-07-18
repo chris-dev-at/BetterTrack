@@ -1,8 +1,13 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
-import type { TaxYearPosition, TaxYearSell, TaxYearSummary } from '@bettertrack/contracts';
+import type {
+  TaxYearDeSummary,
+  TaxYearPosition,
+  TaxYearSell,
+  TaxYearSummary,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
@@ -117,6 +122,61 @@ function PositionBlock({ position, t }: { position: TaxYearPosition; t: Translat
   );
 }
 
+/** One label/value pair inside the compact DE year block. */
+function DeStat({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-[0.65rem] uppercase tracking-wide text-neutral-600">{label}</dt>
+      <dd className="tabular-nums text-neutral-300">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * The German year-end block (V5-P4): the Sparer-Pauschbetrag consumed, both
+ * loss pots entering → leaving the year, and the KapESt/Soli split — one
+ * compact grid, shown only on years that actually carry DE-taxed rows
+ * (anti-bloat: absent everywhere else).
+ */
+function DeYearBlock({ de, t }: { de: TaxYearDeSummary; t: TranslateFn }) {
+  const pot = (inEur: number, outEur: number) => (
+    <>
+      <MoneyText amount={inEur} currency="EUR" />
+      <span aria-hidden="true" className="text-neutral-600">
+        {' → '}
+      </span>
+      <MoneyText amount={outEur} currency="EUR" />
+    </>
+  );
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-neutral-800 bg-neutral-950/40 p-3">
+      <span className="text-xs font-semibold text-neutral-100">
+        {t('portfolio.taxReport.de.title')}
+      </span>
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+        <DeStat label={t('portfolio.taxReport.de.allowanceUsed')}>
+          <MoneyText amount={de.allowanceUsedEur} currency="EUR" />
+        </DeStat>
+        <DeStat label={t('portfolio.taxReport.de.allowanceRemaining')}>
+          <MoneyText amount={de.allowanceRemainingEur} currency="EUR" />
+        </DeStat>
+        <DeStat label={t('portfolio.taxReport.de.aktienPot')}>
+          {pot(de.aktienPotInEur, de.aktienPotOutEur)}
+        </DeStat>
+        <DeStat label={t('portfolio.taxReport.de.sonstigePot')}>
+          {pot(de.sonstigePotInEur, de.sonstigePotOutEur)}
+        </DeStat>
+        <DeStat label={t('portfolio.taxReport.de.kapest')}>
+          <MoneyText amount={de.kapestEur} currency="EUR" />
+        </DeStat>
+        <DeStat label={t('portfolio.taxReport.de.soli')}>
+          <MoneyText amount={de.soliEur} currency="EUR" />
+        </DeStat>
+      </dl>
+    </div>
+  );
+}
+
 /** Lazy-loaded per-year drill-down — fetched only once its row is expanded. */
 function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }) {
   const t = useT();
@@ -148,6 +208,7 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
   }
   return (
     <div className="flex flex-col gap-3 p-3">
+      {query.data.summary.de ? <DeYearBlock de={query.data.summary.de} t={t} /> : null}
       {query.data.positions.map((position) => (
         <PositionBlock key={position.asset.id} position={position} t={t} />
       ))}

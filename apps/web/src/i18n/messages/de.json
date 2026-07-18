@@ -898,6 +898,10 @@
         "country_specific": {
           "label": "Österreich (KESt)",
           "description": "27,5 % KESt auf realisierte Gewinne und Dividenden, mit gleitendem Durchschnittseinstand. Ein Verlust im selben Kalenderjahr verrechnet frühere Gewinne und erstattet die bereits einbehaltene Steuer. Alles wird am 1. Jänner zurückgesetzt — Verluste werden nicht ins nächste Jahr übertragen."
+        },
+        "country_specific_de": {
+          "label": "Deutschland (Abgeltungsteuer)",
+          "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen."
         }
       }
     },
@@ -1274,6 +1278,15 @@
         "title": "Steuererfassung ist aus",
         "description": "Aktiviere einen Steuermodus, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
         "link": "Steuermodus in Einstellungen → Steuern wählen →"
+      },
+      "de": {
+        "title": "Deutschland (Abgeltungsteuer)",
+        "allowanceUsed": "Genutzter Pauschbetrag",
+        "allowanceRemaining": "Verbleibender Pauschbetrag",
+        "aktienPot": "Aktien-Verlusttopf (ein → aus)",
+        "sonstigePot": "Sonstiger Verlusttopf (ein → aus)",
+        "kapest": "KapESt (25 %)",
+        "soli": "Soli (5,5 % der Steuer)"
       }
     },
     "section": {
