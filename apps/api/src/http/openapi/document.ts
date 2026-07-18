@@ -1715,6 +1715,16 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/portfolios/{portfolioId}/reports/tax-years/{year}/export.csv',
+    tag: 'Portfolios',
+    summary:
+      'Download one tax year as CSV (text/csv attachment); the same report numbers, ?locale= picks header language.',
+    params: contracts.taxYearParamsSchema,
+    query: contracts.taxYearExportQuerySchema,
+    status: 200,
+  },
+  {
+    method: 'get',
     path: '/portfolios/{portfolioId}/transactions',
     tag: 'Portfolios',
     summary: 'Cursor-paged transaction ledger.',

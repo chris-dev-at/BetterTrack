@@ -1224,3 +1224,114 @@ describe('uncovered sell — sell a stock you do not hold (issue #369)', () => {
     expect(res.body.error.code).toBeDefined();
   });
 });
+
+// ─── Tax-report CSV export (V5-P4b, #583) ─────────────────────────────────────
+
+describe('tax-report CSV export', () => {
+  /** Parse one CSV physical line into trimmed cells (RFC-4180 quotes). */
+  function cells(line: string): string[] {
+    const out: string[] = [];
+    let cur = '';
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') {
+            cur += '"';
+            i++;
+          } else q = false;
+        } else cur += ch;
+      } else if (ch === '"') q = true;
+      else if (ch === ',') {
+        out.push(cur);
+        cur = '';
+      } else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  async function taxed2026(): Promise<{ agent: Agent; pid: string }> {
+    const { agent, pid, asset } = await setup('country_specific');
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 19,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    return { agent, pid };
+  }
+
+  it('serves the year report as CSV whose numbers match the on-screen report', async () => {
+    const { agent, pid } = await taxed2026();
+    const report = await yearReport(agent, pid, 2026);
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/reports/tax-years/2026/export.csv`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['content-disposition']).toContain('tax-report-2026.csv');
+
+    const lines = (res.text as string).split('\r\n');
+    // The Summary data row (3rd line) carries the exact JSON summary numbers.
+    const summaryRow = cells(lines[2]!);
+    expect(summaryRow).toEqual([
+      '2026',
+      report.summary.realizedPnlEur.toFixed(2),
+      report.summary.dividendsGrossEur.toFixed(2),
+      report.summary.taxWithheldEur.toFixed(2),
+      report.summary.taxRefundedEur.toFixed(2),
+      report.summary.taxNetEur.toFixed(2),
+    ]);
+    // Every sell's realized P/L appears verbatim somewhere in the file.
+    for (const position of report.positions) {
+      for (const sell of position.sells) {
+        expect(res.text).toContain(sell.realizedPnlEur.toFixed(2));
+      }
+    }
+  });
+
+  it('localizes the headers to German on ?locale=de (numbers unchanged)', async () => {
+    const { agent, pid } = await taxed2026();
+    const res = await agent.get(
+      `/api/v1/portfolios/${pid}/reports/tax-years/2026/export.csv?locale=de`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Zusammenfassung');
+    expect(res.text).toContain('Realisierter G/V (EUR)');
+  });
+
+  it('exports a valid, labeled CSV for a year with no activity', async () => {
+    const { agent, pid } = await setup('country_specific');
+    const res = await agent.get(`/api/v1/portfolios/${pid}/reports/tax-years/2019/export.csv`);
+    expect(res.status).toBe(200);
+    const lines = (res.text as string).split('\r\n');
+    expect(cells(lines[0]!)[1]).toBe('Summary');
+    expect(cells(lines[2]!)).toEqual(['2019', '0.00', '0.00', '0.00', '0.00', '0.00']);
+  });
+
+  it('requires the owning session (anonymous → 401, non-owner → 404)', async () => {
+    const { pid } = await taxed2026();
+
+    const anon = request(harness.app);
+    const anonRes = await anon.get(`/api/v1/portfolios/${pid}/reports/tax-years/2026/export.csv`);
+    expect(anonRes.status).toBe(401);
+
+    const other = await harness.seedUser({ email: 'other-tax@bt.test', username: 'othertax' });
+    const otherAgent = await loginAgent(harness.app, other.email, other.password);
+    const otherRes = await otherAgent.get(
+      `/api/v1/portfolios/${pid}/reports/tax-years/2026/export.csv`,
+    );
+    expect(otherRes.status).toBe(404);
+  });
+});

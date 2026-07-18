@@ -40,6 +40,7 @@ import {
   type RecategorizationStatusResponse,
   type SetCashBalanceRequest,
   type SetCashBalanceResponse,
+  type TaxExportLocale,
   type TaxYearListResponse,
   type TaxYearReportResponse,
   type Transaction,
@@ -54,6 +55,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
+import { apiBaseUrl } from './runtimeConfig';
 
 /**
  * Typed client for the portfolio + custom-asset surface (PROJECTPLAN.md §6.8, §8).
@@ -254,6 +256,21 @@ export async function getTaxYearReport(
     { signal },
   );
   return taxYearReportResponseSchema.parse(data);
+}
+
+/**
+ * The absolute URL that streams one portfolio+year tax report as CSV (V5-P4b,
+ * #583). A same-site top-level navigation (an `<a download>`) sends the session
+ * cookie and the server returns `text/csv` with a `Content-Disposition`
+ * attachment; the endpoint is owner-scoped exactly like the report itself.
+ * `locale` picks header language only — the numbers match the on-screen report.
+ */
+export function taxYearReportCsvUrl(
+  portfolioId: string,
+  year: number,
+  locale: TaxExportLocale,
+): string {
+  return `${apiBaseUrl()}/portfolios/${encodeURIComponent(portfolioId)}/reports/tax-years/${encodeURIComponent(year)}/export.csv?locale=${encodeURIComponent(locale)}`;
 }
 
 // --- Cash ledger ("Bargeld") -------------------------------------------------

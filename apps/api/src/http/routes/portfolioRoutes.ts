@@ -18,6 +18,7 @@ import {
   portfolioListQuerySchema,
   portfolioTransactionParamsSchema,
   setCashBalanceRequestSchema,
+  taxYearExportQuerySchema,
   taxYearParamsSchema,
   transactionListQuerySchema,
   updateCashSourceRequestSchema,
@@ -38,6 +39,7 @@ import {
   type PortfolioListQuery,
   type PortfolioMutationResponse,
   type SetCashBalanceRequest,
+  type TaxExportLocale,
   type TransactionInput,
   type TransactionListQuery,
   type UpdateCashSourceRequest,
@@ -46,6 +48,7 @@ import {
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
+import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/tax/taxReportCsv';
 import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
 import { createIdempotency } from '../middleware/idempotency';
 import { requireUser } from '../middleware/session';
@@ -420,6 +423,27 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const { portfolioId, year } = req.valid?.params as { portfolioId: string; year: number };
       const report = await ctx.tax.getYearReport(req.authUser!.id, portfolioId, year);
       res.json(report);
+    },
+  );
+
+  // GET /portfolios/:portfolioId/reports/tax-years/:year/export.csv — the same
+  // year report serialized to CSV (V5-P4b, #583). One source of truth: the
+  // numbers are copied from the very response the on-screen report renders,
+  // never recomputed. Session-owner-scoped exactly like the report itself
+  // (`getYearReport` enforces ownership); `?locale=` picks header language only.
+  router.get(
+    '/:portfolioId/reports/tax-years/:year/export.csv',
+    validateParams(taxYearParamsSchema),
+    validateQuery(taxYearExportQuerySchema),
+    async (req, res) => {
+      const { portfolioId, year } = req.valid?.params as { portfolioId: string; year: number };
+      const { locale } = (req.valid?.query ?? {}) as { locale?: TaxExportLocale };
+      const report = await ctx.tax.getYearReport(req.authUser!.id, portfolioId, year);
+      const csv = serializeTaxYearReportCsv(report, locale ?? 'en');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${taxReportCsvFilename(year)}"`);
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(csv);
     },
   );
 
