@@ -36,6 +36,18 @@ export interface NotificationEmailCopy {
   chatMessage: { subject: string; heading: string; body: string; button: string };
   /** Alert body sentence is supplied by the caller (the same phrasing as the bell). */
   alertTriggered: { subject: string; heading: string; button: string };
+  /**
+   * Opt-in earnings reminder (§13.5 V5-P5). The body is built from copy here
+   * (not caller-supplied) so it localizes: `{name}`/`{symbol}`/`{date}` fill in,
+   * with a distinct sentence for a confirmed vs an estimated report date.
+   */
+  earningsReminder: {
+    subject: string;
+    heading: string;
+    bodyConfirmed: string;
+    bodyEstimated: string;
+    button: string;
+  };
   /** Friend-activity body sentence is supplied by the caller (same as the bell). */
   friendActivity: { subject: string; heading: string; button: string };
   /** Follow-published body sentence is supplied by the caller (same as the bell, #438). */
@@ -110,6 +122,13 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     alertTriggered: {
       subject: 'Price alert: {symbol}',
       heading: 'Price alert: {symbol}',
+      button: 'Open BetterTrack',
+    },
+    earningsReminder: {
+      subject: 'Earnings coming up: {symbol}',
+      heading: 'Upcoming earnings: {symbol}',
+      bodyConfirmed: '{name} ({symbol}) reports earnings on {date}.',
+      bodyEstimated: '{name} ({symbol}) is expected to report earnings around {date}.',
       button: 'Open BetterTrack',
     },
     friendActivity: {
@@ -203,6 +222,14 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
     alertTriggered: {
       subject: 'Preisalarm: {symbol}',
       heading: 'Preisalarm: {symbol}',
+      button: 'BetterTrack öffnen',
+    },
+    earningsReminder: {
+      subject: 'Bald Quartalszahlen: {symbol}',
+      heading: 'Anstehende Quartalszahlen: {symbol}',
+      bodyConfirmed: '{name} ({symbol}) legt am {date} Quartalszahlen vor.',
+      bodyEstimated:
+        '{name} ({symbol}) wird voraussichtlich um den {date} Quartalszahlen vorlegen.',
       button: 'BetterTrack öffnen',
     },
     friendActivity: {

@@ -78,7 +78,7 @@ describe('GET /api/v1/settings/notifications', () => {
     expect(Object.keys(settings!.matrix).sort()).toEqual([...NOTIFICATION_TYPES].sort());
     for (const type of NOTIFICATION_TYPES) {
       if (isOptInNotificationType(type)) {
-        // Opt-in types (V5-P5) default OFF on every channel.
+        // V5-P5 opt-in types default OFF on every channel until enabled.
         expect(settings!.matrix[type]).toEqual({
           inapp: false,
           email: false,

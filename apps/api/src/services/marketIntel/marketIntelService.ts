@@ -1,6 +1,8 @@
 import type {
   AssetRef,
   DividendsResponse,
+  EarningsCalendarEntry,
+  EarningsCalendarResponse,
   EarningsResponse,
   MarketIntelCapabilities,
   MarketIntelStatusResponse,
@@ -9,6 +11,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { AssetRepository } from '../../data/repositories/assetRepository';
+import type { MarketIntelRepository } from '../../data/repositories/marketIntelRepository';
 import { notFound } from '../../errors';
 import type { MarketDataService } from '../../providers';
 
@@ -32,11 +35,20 @@ export interface MarketIntelService {
   news(userId: string, id: string): Promise<NewsResponse>;
   /** Past + announced splits (arc d). */
   splits(userId: string, id: string): Promise<SplitsResponse>;
+  /**
+   * Upcoming-earnings calendar across the caller's held + watched assets,
+   * ascending by date (the Workboard panel, arc b). Unavailable/empty when the
+   * gate is off; an asset with no dated upcoming report (or a provider without
+   * the earnings capability, or one that errors) is simply dropped.
+   */
+  earningsCalendar(userId: string): Promise<EarningsCalendarResponse>;
 }
 
 export interface MarketIntelServiceDeps {
   marketData: MarketDataService;
   assetRepo: AssetRepository;
+  /** Held + watched asset aggregation for the earnings calendar (arc b). */
+  intelRepo: Pick<MarketIntelRepository, 'listUserWatchAndHoldAssets'>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ everything reports unconfigured. */
   enabled: boolean;
 }
@@ -62,7 +74,7 @@ const UNAVAILABLE_NEWS: NewsResponse = { available: false, headlines: [] };
 const UNAVAILABLE_SPLITS: SplitsResponse = { available: false, history: [], upcoming: [] };
 
 export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIntelService {
-  const { marketData, assetRepo, enabled } = deps;
+  const { marketData, assetRepo, intelRepo, enabled } = deps;
 
   /**
    * Resolve the asset to a provider ref, enforcing §10: a global asset or the
@@ -131,6 +143,43 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
       } catch {
         return UNAVAILABLE_SPLITS;
       }
+    },
+
+    async earningsCalendar(userId) {
+      // Invisible when unconfigured: the gate off ⇒ no book scan, no entries.
+      if (!enabled) return { available: false, entries: [] };
+
+      const assets = await intelRepo.listUserWatchAndHoldAssets(userId);
+      const entries: EarningsCalendarEntry[] = [];
+      for (const a of assets) {
+        const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
+        // Skip assets whose resolved provider can't serve earnings.
+        if (!marketData.intelCapabilities(ref).earnings) continue;
+        let next;
+        try {
+          const cached = await marketData.getEarningsEvents(ref);
+          next = cached.value.next;
+        } catch {
+          // A single bad upstream degrades that asset to no-entry — never a 5xx
+          // across the whole calendar (§13.5 V5-P5).
+          continue;
+        }
+        // Only dated upcoming reports make the panel; an undated/absent next drops.
+        if (!next || !next.date) continue;
+        entries.push({
+          assetId: a.assetId,
+          symbol: a.symbol,
+          name: a.name,
+          date: next.date,
+          epsEstimate: next.epsEstimate,
+          estimated: next.estimated,
+          held: a.held,
+          watched: a.watched,
+        });
+      }
+      // Ascending by date — the next report first (the panel reads chronologically).
+      entries.sort((x, y) => x.date.localeCompare(y.date));
+      return { available: true, entries };
     },
   };
 }

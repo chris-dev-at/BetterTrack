@@ -42,6 +42,7 @@ describe('notification taxonomy (#368)', () => {
       'account.temp_password',
       'account.data_export',
       'alert.triggered',
+      'earnings.reminder',
       'chat.message',
       'dividend.event',
     ]);
@@ -70,6 +71,7 @@ describe('lean email defaults (V4-P0c)', () => {
 
   it('email defaults ON only for account/security; other channels default ON for every non-opt-in type', () => {
     for (const type of NOTIFICATION_TYPES) {
+      // V5-P5 opt-in types default OFF on every channel — covered separately below.
       if (isOptInNotificationType(type)) continue;
       const accountSecurity = isAccountSecurityNotificationType(type);
       expect(notificationChannelDefaultEnabled('email', type)).toBe(accountSecurity);
@@ -83,11 +85,12 @@ describe('lean email defaults (V4-P0c)', () => {
   });
 });
 
-describe('opt-in notification types (V5-P5)', () => {
-  it('the market category is exactly the opt-in set', () => {
-    const marketCategory = NOTIFICATION_CATEGORIES.find((c) => c.key === 'market');
+describe('opt-in notification types (§13.5 V5-P5)', () => {
+  it('the markets category is exactly the opt-in set', () => {
+    expect([...OPT_IN_NOTIFICATION_TYPES].sort()).toEqual(['dividend.event', 'earnings.reminder']);
+    const marketsCategory = NOTIFICATION_CATEGORIES.find((c) => c.key === 'markets');
     expect([...OPT_IN_NOTIFICATION_TYPES].sort()).toEqual(
-      [...(marketCategory?.types ?? [])].sort(),
+      [...(marketsCategory?.types ?? [])].sort(),
     );
   });
 

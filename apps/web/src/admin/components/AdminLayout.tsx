@@ -38,6 +38,7 @@ const NAV_SECTIONS: Array<{ key: string; items: NavItem[] }> = [
     items: [
       { to: '/admin/health', labelKey: 'admin.nav.health' },
       { to: '/admin/problems', labelKey: 'admin.nav.problems' },
+      { to: '/admin/usage-analytics', labelKey: 'admin.nav.usageAnalytics' },
       { to: '/admin/email', label: 'Email' },
       { to: '/admin/audit', label: 'Audit log' },
       { to: '/admin/security', labelKey: 'admin.nav.security' },

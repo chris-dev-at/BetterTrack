@@ -9,10 +9,15 @@ import type {
   TaxYearSummary,
 } from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
+import { useI18n, useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EM_DASH, formatDate, formatQuantity } from '../../lib/format';
-import { getTaxYearReport, getTaxYearReports, listPortfolios } from '../../lib/portfolioApi';
+import {
+  getTaxYearReport,
+  getTaxYearReports,
+  listPortfolios,
+  taxYearReportCsvUrl,
+} from '../../lib/portfolioApi';
 import { getTaxSettings } from '../../lib/settingsApi';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Alert, cx } from '../components/ui';
@@ -177,6 +182,40 @@ function DeYearBlock({ de, t }: { de: TaxYearDeSummary; t: TranslateFn }) {
   );
 }
 
+/**
+ * Compact per-year export actions (V5-P4b, #583): a "CSV" download (the server
+ * serializes the same report data, header language following the active locale)
+ * and a "Print / PDF" link to the chrome-free print view. Both are scoped to
+ * this portfolio+year — anti-bloat: shown only inside an expanded year.
+ */
+function YearActions({ portfolioId, year }: { portfolioId: string; year: number }) {
+  const t = useT();
+  const { locale } = useI18n();
+  const csvLocale = locale === 'de' ? 'de' : 'en';
+  const printHref = `/portfolio/tax/print?${ACTIVE_PORTFOLIO_PARAM}=${encodeURIComponent(
+    portfolioId,
+  )}&year=${year}`;
+  return (
+    <div className="flex items-center justify-end gap-3 text-xs">
+      <a
+        href={taxYearReportCsvUrl(portfolioId, year, csvLocale)}
+        download
+        className="font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      >
+        {t('portfolio.taxReport.export.csv')}
+      </a>
+      <Link
+        to={printHref}
+        target="_blank"
+        rel="noopener"
+        className="font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      >
+        {t('portfolio.taxReport.export.print')}
+      </Link>
+    </div>
+  );
+}
+
 /** Lazy-loaded per-year drill-down — fetched only once its row is expanded. */
 function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }) {
   const t = useT();
@@ -203,11 +242,15 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
   }
   if (query.data.positions.length === 0) {
     return (
-      <p className="px-3 py-4 text-sm text-neutral-500">{t('portfolio.taxReport.detailEmpty')}</p>
+      <div className="flex flex-col gap-2 p-3">
+        <YearActions portfolioId={portfolioId} year={year} />
+        <p className="py-2 text-sm text-neutral-500">{t('portfolio.taxReport.detailEmpty')}</p>
+      </div>
     );
   }
   return (
     <div className="flex flex-col gap-3 p-3">
+      <YearActions portfolioId={portfolioId} year={year} />
       {query.data.summary.de ? <DeYearBlock de={query.data.summary.de} t={t} /> : null}
       {query.data.positions.map((position) => (
         <PositionBlock key={position.asset.id} position={position} t={t} />

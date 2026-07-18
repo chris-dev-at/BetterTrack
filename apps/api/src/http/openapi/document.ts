@@ -112,6 +112,8 @@ const componentSchemas = {
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement)
   Problem: contracts.problemSchema,
   ProblemListResponse: contracts.problemListResponseSchema,
+  // Admin usage analytics (§13.5 V5-P2 arc (b), first-party only)
+  UsageAnalyticsResponse: contracts.usageAnalyticsResponseSchema,
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c))
   FeatureFlagsResponse: contracts.featureFlagsResponseSchema,
@@ -143,6 +145,7 @@ const componentSchemas = {
   MarketIntelStatusResponse: contracts.marketIntelStatusResponseSchema,
   DividendsResponse: contracts.dividendsResponseSchema,
   EarningsResponse: contracts.earningsResponseSchema,
+  EarningsCalendarResponse: contracts.earningsCalendarResponseSchema,
   NewsResponse: contracts.newsResponseSchema,
   SplitsResponse: contracts.splitsResponseSchema,
   DividendCalendarResponse: contracts.dividendCalendarResponseSchema,
@@ -1245,6 +1248,14 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/admin/usage-analytics',
+    tag: 'Admin',
+    summary: 'First-party usage analytics: DAU/WAU/MAU, feature counters, top assets, funnel.',
+    status: 200,
+    response: R.UsageAnalyticsResponse,
+  },
+  {
+    method: 'get',
     path: '/admin/problems',
     tag: 'Admin',
     summary: 'Captured problems (errors/failed jobs/provider failures), filter by kind/status.',
@@ -1446,6 +1457,14 @@ const endpoints: EndpointDef[] = [
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.EarningsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/intel/earnings-calendar',
+    tag: 'Assets',
+    summary: 'Upcoming earnings across the caller’s held + watched assets (Workboard panel).',
+    status: 200,
+    response: R.EarningsCalendarResponse,
   },
   {
     method: 'get',
@@ -1711,6 +1730,16 @@ const endpoints: EndpointDef[] = [
     params: contracts.taxYearParamsSchema,
     status: 200,
     response: R.TaxYearReportResponse,
+  },
+  {
+    method: 'get',
+    path: '/portfolios/{portfolioId}/reports/tax-years/{year}/export.csv',
+    tag: 'Portfolios',
+    summary:
+      'Download one tax year as CSV (text/csv attachment); the same report numbers, ?locale= picks header language.',
+    params: contracts.taxYearParamsSchema,
+    query: contracts.taxYearExportQuerySchema,
+    status: 200,
   },
   {
     method: 'get',

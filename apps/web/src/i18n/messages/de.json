@@ -389,6 +389,10 @@
           "label": "Preisalarme",
           "description": "Wenn einer deiner Preisalarme auslöst."
         },
+        "earningsReminder": {
+          "label": "Erinnerungen an Quartalszahlen",
+          "description": "Vor einem Quartalsbericht für einen Wert, den du hältst oder beobachtest. Standardmäßig aus."
+        },
         "chatMessage": {
           "label": "Chat-Nachrichten",
           "description": "Wenn dir ein Freund eine Nachricht sendet."
@@ -480,8 +484,8 @@
         "sharing": "Teilen & Aktivität",
         "chat": "Chat",
         "alerts": "Preisalarme",
-        "account": "Konto",
-        "market": "Markt-Intelligenz"
+        "markets": "Märkte",
+        "account": "Konto"
       },
       "grid": {
         "categoryToggleAria": "Alle Benachrichtigungen in {{category}} umschalten",
@@ -1292,6 +1296,20 @@
         "sonstigePot": "Sonstiger Verlusttopf (ein → aus)",
         "kapest": "KapESt (25 %)",
         "soli": "Soli (5,5 % der Steuer)"
+      },
+      "dividend": {
+        "gross": "Brutto",
+        "tax": "Steuer"
+      },
+      "export": {
+        "csv": "CSV exportieren",
+        "print": "Drucken / PDF"
+      },
+      "print": {
+        "print": "Drucken",
+        "back": "Zurück zum Bericht",
+        "missingParams": "Wähle ein Portfolio und ein Jahr zum Drucken.",
+        "loadError": "Der Bericht konnte nicht zum Drucken geladen werden."
       }
     },
     "section": {
@@ -1665,6 +1683,17 @@
         "removeAriaLabel": "{{symbol}} von der Watchlist entfernen",
         "sparklineAriaLabel": "1-Monats-Trend für {{symbol}}"
       },
+      "earnings": {
+        "heading": "Anstehende Quartalszahlen",
+        "held": "Gehalten",
+        "watched": "Beobachtet",
+        "heldTitle": "Du hältst diesen Wert",
+        "watchedTitle": "Auf deiner Watchlist",
+        "estimated": "Geschätzt",
+        "confirmed": "Bestätigt",
+        "showMore": "{{count}} weitere anzeigen",
+        "showLess": "Weniger anzeigen"
+      },
       "alerts": {
         "heading": "Alarme",
         "emptyTitle": "Alarm-Panel folgt in Kürze",
@@ -1989,6 +2018,19 @@
         "nextPayDate": "Nächster Zahltag",
         "history": "Ausschüttungsverlauf",
         "historyAriaLabel": "Verlauf der Dividendenausschüttungen"
+      },
+      "earnings": {
+        "title": "Quartalszahlen",
+        "nextLabel": "Nächster Bericht",
+        "recentLabel": "Letzte Berichte",
+        "estimated": "Geschätzt",
+        "confirmed": "Bestätigt",
+        "epsEstimate": "Erw. EPS {{value}}",
+        "epsActual": "EPS {{value}}"
+      },
+      "splits": {
+        "title": "Aktiensplits",
+        "announced": "Angekündigt"
       },
       "watchlistAddError": "Konnte nicht zur Watchlist hinzugefügt werden. Bitte versuche es erneut.",
       "quickActions": "Schnellaktionen",
@@ -2462,7 +2504,8 @@
       "openMenu": "Admin-Menü öffnen",
       "closeMenu": "Admin-Menü schließen",
       "problems": "Probleme",
-      "featureFlags": "Feature-Flags"
+      "featureFlags": "Feature-Flags",
+      "usageAnalytics": "Nutzungsanalyse"
     },
     "security": {
       "title": "Sicherheit",
@@ -2674,6 +2717,40 @@
           "name": "KI",
           "description": "KI-Einblicke und Assistent (reserviert – noch nicht gebaut)."
         }
+      }
+    },
+    "usageAnalytics": {
+      "title": "Nutzungsanalyse",
+      "subtitle": "Nur eigene Nutzungsdaten — keine Drittanbieter-Tracker.",
+      "refresh": "Aktualisieren",
+      "loadError": "Nutzungsanalyse konnte nicht geladen werden.",
+      "noData": "Noch keine Daten.",
+      "dau": "Täglich aktive Nutzer",
+      "wau": "Wöchentlich aktive Nutzer",
+      "mau": "Monatlich aktive Nutzer",
+      "funnel": "Registrierungs-Funnel",
+      "features": "Funktionsnutzung",
+      "topAssets": "Top-Assets",
+      "activity": "Aktivität",
+      "windowHint": "Letzte {{days}} Tage",
+      "views": "{{count}} Aufrufe",
+      "eventsLabel": "Ereignisse",
+      "activeUsersLabel": "Aktive Nutzer",
+      "stage": {
+        "registered": "Registriert",
+        "activated": "Aktiviert",
+        "weeklyActive": "Aktiv (7 T.)",
+        "dailyActive": "Aktiv (1 T.)"
+      },
+      "feature": {
+        "portfolio": "Portfolio",
+        "workboard": "Workboard",
+        "assets": "Assets",
+        "social": "Sozial",
+        "alerts": "Benachrichtigungen",
+        "analytics": "Analyse",
+        "imports": "Importe",
+        "settings": "Einstellungen"
       }
     }
   }

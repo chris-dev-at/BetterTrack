@@ -32,6 +32,7 @@ export const NOTIFICATION_TYPES = [
   'account.temp_password',
   'account.data_export',
   'alert.triggered',
+  'earnings.reminder',
   'chat.message',
   // V5-P5 market intelligence: an upcoming ex-date for a held asset. Opt-in —
   // default OFF on every channel (see {@link OPT_IN_NOTIFICATION_TYPES}).
@@ -83,9 +84,11 @@ export const NOTIFICATION_CATEGORIES = [
   },
   { key: 'chat', types: ['chat.message'] },
   { key: 'alerts', types: ['alert.triggered'] },
+  // Market intelligence (§13.5 V5-P5): opt-in reminders (earnings reports,
+  // dividend ex-dates; more event families later). Default OFF on every channel
+  // — see {@link isOptInNotificationType} / {@link notificationChannelDefaultEnabled}.
+  { key: 'markets', types: ['earnings.reminder', 'dividend.event'] },
   { key: 'account', types: ['account.invite', 'account.temp_password', 'account.data_export'] },
-  // V5-P5 market intelligence (opt-in, default off): dividend ex-date reminders.
-  { key: 'market', types: ['dividend.event'] },
 ] as const satisfies readonly { key: string; types: readonly NotificationType[] }[];
 export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['key'];
 
@@ -107,18 +110,22 @@ export function isAccountSecurityNotificationType(type: string): boolean {
 }
 
 /**
- * **Opt-in** notification types (V5-P5): default OFF on EVERY channel — a user
- * must explicitly switch them on. Distinct from the lean-email set (which
- * defaults off on email only): an opt-in type stays fully silent until wanted,
- * so a niche market-intelligence reminder never adds noise to a fresh account
- * (the anti-bloat "invisible until wanted" rule). Currently the market-
- * intelligence dividend event (an upcoming ex-date for a held asset).
+ * The **opt-in notification types** (§13.5 V5-P5): types that default OFF on
+ * EVERY channel (unlike the rest, which default ON for the in-app bell / push).
+ * A user must explicitly enable one in the Settings → Notifications grid before
+ * it can deliver anywhere — the planner mandate for the market-intelligence
+ * reminders ("opt in, default off"). The single source of truth
+ * ({@link notificationChannelDefaultEnabled}) both the settings surface and the
+ * dispatcher's fan-out gate resolve through. Currently the earnings reminder
+ * (an upcoming earnings report) and the dividend event (an upcoming ex-date for
+ * a held asset).
  */
 export const OPT_IN_NOTIFICATION_TYPES = [
+  'earnings.reminder',
   'dividend.event',
 ] as const satisfies readonly NotificationType[];
 
-/** Whether a type is opt-in (default off on every channel, V5-P5). */
+/** Whether a type is opt-in (default OFF on every channel until enabled). */
 export function isOptInNotificationType(type: string): boolean {
   return (OPT_IN_NOTIFICATION_TYPES as readonly string[]).includes(type);
 }
@@ -230,7 +237,7 @@ export type QuietHoursUpdate = z.infer<typeof quietHoursUpdateSchema>;
  * and the delivery core cannot drift.
  */
 export function notificationChannelDefaultEnabled(channel: string, type: string): boolean {
-  // Opt-in types (V5-P5) are OFF on every channel until the user enables them.
+  // Opt-in types (§13.5 V5-P5) default OFF everywhere until the user enables them.
   if (isOptInNotificationType(type)) return false;
   if (channel === 'email') return isAccountSecurityNotificationType(type);
   return true;

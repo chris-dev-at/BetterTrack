@@ -22,6 +22,7 @@ export type {
   FollowAlertFiredEvent,
   AccountTempPasswordEvent,
   AccountDataExportEvent,
+  EarningsReminderEvent,
   ChatMessageEvent,
   DividendEventNotice,
 } from './types';

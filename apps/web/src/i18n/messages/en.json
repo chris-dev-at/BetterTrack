@@ -389,6 +389,10 @@
           "label": "Price alerts",
           "description": "When one of your price alerts fires."
         },
+        "earningsReminder": {
+          "label": "Earnings reminders",
+          "description": "Ahead of an earnings report for an asset you hold or watch. Off by default."
+        },
         "chatMessage": {
           "label": "Chat messages",
           "description": "When a friend sends you a message."
@@ -480,8 +484,8 @@
         "sharing": "Sharing & activity",
         "chat": "Chat",
         "alerts": "Price alerts",
-        "account": "Account",
-        "market": "Market intelligence"
+        "markets": "Markets",
+        "account": "Account"
       },
       "grid": {
         "categoryToggleAria": "Toggle all {{category}} notifications",
@@ -1292,6 +1296,20 @@
         "sonstigePot": "Other-loss pot (in → out)",
         "kapest": "KapESt (25 %)",
         "soli": "Soli (5.5 % of tax)"
+      },
+      "dividend": {
+        "gross": "Gross",
+        "tax": "Tax"
+      },
+      "export": {
+        "csv": "Export CSV",
+        "print": "Print / PDF"
+      },
+      "print": {
+        "print": "Print",
+        "back": "Back to report",
+        "missingParams": "Choose a portfolio and year to print.",
+        "loadError": "Couldn’t load the report for printing."
       }
     },
     "section": {
@@ -1665,6 +1683,17 @@
         "removeAriaLabel": "Remove {{symbol}} from watchlist",
         "sparklineAriaLabel": "1-month trend for {{symbol}}"
       },
+      "earnings": {
+        "heading": "Upcoming earnings",
+        "held": "Held",
+        "watched": "Watch",
+        "heldTitle": "You hold this asset",
+        "watchedTitle": "On your watchlist",
+        "estimated": "Estimated",
+        "confirmed": "Confirmed",
+        "showMore": "Show {{count}} more",
+        "showLess": "Show less"
+      },
       "alerts": {
         "heading": "Alerts",
         "emptyTitle": "Alerts panel coming soon",
@@ -1989,6 +2018,19 @@
         "nextPayDate": "Next pay date",
         "history": "Payout history",
         "historyAriaLabel": "Dividend payout history"
+      },
+      "earnings": {
+        "title": "Earnings",
+        "nextLabel": "Next report",
+        "recentLabel": "Recent reports",
+        "estimated": "Estimated",
+        "confirmed": "Confirmed",
+        "epsEstimate": "Est. EPS {{value}}",
+        "epsActual": "EPS {{value}}"
+      },
+      "splits": {
+        "title": "Stock splits",
+        "announced": "Announced"
       },
       "watchlistAddError": "Failed to add to Watchlist. Please try again.",
       "quickActions": "Quick actions",
@@ -2462,7 +2504,8 @@
       "openMenu": "Open admin menu",
       "closeMenu": "Close admin menu",
       "problems": "Problems",
-      "featureFlags": "Feature flags"
+      "featureFlags": "Feature flags",
+      "usageAnalytics": "Usage analytics"
     },
     "security": {
       "title": "Security",
@@ -2674,6 +2717,40 @@
           "name": "AI",
           "description": "AI insights and assistant (reserved — not yet built)."
         }
+      }
+    },
+    "usageAnalytics": {
+      "title": "Usage analytics",
+      "subtitle": "First-party usage only — no third-party trackers.",
+      "refresh": "Refresh",
+      "loadError": "Could not load usage analytics.",
+      "noData": "No data yet.",
+      "dau": "Daily active users",
+      "wau": "Weekly active users",
+      "mau": "Monthly active users",
+      "funnel": "Registration funnel",
+      "features": "Feature usage",
+      "topAssets": "Top assets",
+      "activity": "Activity",
+      "windowHint": "Last {{days}} days",
+      "views": "{{count}} views",
+      "eventsLabel": "Events",
+      "activeUsersLabel": "Active users",
+      "stage": {
+        "registered": "Registered",
+        "activated": "Activated",
+        "weeklyActive": "Active (7d)",
+        "dailyActive": "Active (1d)"
+      },
+      "feature": {
+        "portfolio": "Portfolio",
+        "workboard": "Workboard",
+        "assets": "Assets",
+        "social": "Social",
+        "alerts": "Alerts",
+        "analytics": "Analytics",
+        "imports": "Imports",
+        "settings": "Settings"
       }
     }
   }

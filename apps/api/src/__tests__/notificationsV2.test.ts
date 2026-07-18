@@ -272,7 +272,7 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
     for (const type of NOTIFICATION_TYPES) {
       const cell = settings.matrix[type];
       if (isOptInNotificationType(type)) {
-        // Opt-in types (V5-P5) default OFF on EVERY channel until switched on.
+        // V5-P5 opt-in types default OFF on every channel until the user enables them.
         expect(cell).toEqual({
           inapp: false,
           email: false,

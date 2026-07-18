@@ -20,10 +20,16 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
 
   router.use(requireUser);
 
-  // Portfolio-level dividend intelligence (§13.5 V5-P5, arc a). Registered
-  // BEFORE the `/:id/intel*` routes so their two-segment `/portfolio/*` paths
-  // never risk the `:id` capture. Both aggregate over the CALLER's own holdings
+  // Portfolio-level market-intelligence feeds (§13.5 V5-P5). Registered BEFORE
+  // the `/:id/intel*` routes so their literal first segment (`intel` / `portfolio`)
+  // is never captured as an `:id`. Each aggregates over the CALLER's own holdings
   // + watchlists, so they need no id param — just the authed user (§10).
+
+  // GET /assets/intel/earnings-calendar — the caller's upcoming-earnings feed
+  // across held + watched assets (the Workboard panel, arc b).
+  router.get('/intel/earnings-calendar', async (req, res) => {
+    res.json(await ctx.marketIntel.earningsCalendar(req.authUser!.id));
+  });
 
   // GET /assets/portfolio/dividend-calendar — upcoming ex/pay across held + watched.
   router.get('/portfolio/dividend-calendar', async (req, res) => {

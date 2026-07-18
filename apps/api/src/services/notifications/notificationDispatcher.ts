@@ -12,6 +12,7 @@ import type {
   ChatMessageEvent,
   ConglomerateSharedEvent,
   DividendEventNotice,
+  EarningsReminderEvent,
   FollowAlertCreatedEvent,
   FollowAlertFiredEvent,
   FollowPublishedEvent,
@@ -90,6 +91,7 @@ export type DispatchableEvent =
   | AccountTempPasswordEvent
   | AccountDataExportEvent
   | AlertTriggeredEvent
+  | EarningsReminderEvent
   | ChatMessageEvent
   | DividendEventNotice;
 
@@ -107,6 +109,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'account.temp_password',
   'account.data_export',
   'alert.triggered',
+  'earnings.reminder',
   'chat.message',
   'dividend.event',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
@@ -181,6 +184,11 @@ function eventKeyFor(event: DispatchableEvent): string {
       // Deduped per (alert, trigger window): the occurredAt minute folds in, so
       // a redelivered fire no-ops while a repeat alert's next window is fresh.
       return `alert.triggered:${event.alertId}:${event.occurredAt.slice(0, 16)}`;
+    case 'earnings.reminder':
+      // Deduped per (asset, report date): one reminder per upcoming report, so a
+      // daily re-scan across the multi-day lead window never re-notifies. The
+      // recipient userId (repo-side) keeps every holder/watcher's row distinct.
+      return `earnings.reminder:${event.assetId}:${event.earningsDate.slice(0, 10)}`;
     case 'chat.message':
       return `chat.message:${event.messageId}`;
     case 'dividend.event':
@@ -512,6 +520,26 @@ export function createNotificationDispatcher(
           alertSymbol: context.symbol,
         };
       }
+      case 'earnings.reminder': {
+        // Inbox strings are stored rendered (EN); the email localizes its own.
+        const dateLabel = event.earningsDate.slice(0, 10);
+        return {
+          eventKey,
+          title: `Earnings coming up: ${event.symbol}`,
+          body: event.estimated
+            ? `${event.name} (${event.symbol}) is expected to report earnings around ${dateLabel}.`
+            : `${event.name} (${event.symbol}) reports earnings on ${dateLabel}.`,
+          payload: {
+            eventKey,
+            assetId: event.assetId,
+            symbol: event.symbol,
+            earningsDate: event.earningsDate,
+            estimated: event.estimated,
+          },
+          // Deep-links to the asset page (its earnings block) on web + push.
+          data: { assetId: event.assetId },
+        };
+      }
       case 'chat.message':
         return {
           eventKey,
@@ -612,6 +640,17 @@ export function createNotificationDispatcher(
           userId,
           symbol: rendered.alertSymbol ?? '',
           body: rendered.body,
+          locale,
+        });
+        return;
+      case 'earnings.reminder':
+        await email.sendEarningsReminder({
+          to,
+          userId,
+          symbol: event.symbol,
+          name: event.name,
+          earningsDate: event.earningsDate,
+          estimated: event.estimated,
           locale,
         });
         return;

@@ -38,7 +38,7 @@ export interface PortfolioMarketIntelService {
 
 export interface PortfolioMarketIntelDeps {
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getDividendEvents'>;
-  repo: MarketIntelRepository;
+  repo: Pick<MarketIntelRepository, 'listHeldPositionsForUser' | 'listWatchlistAssetsForUser'>;
   currency: Pick<CurrencyService, 'convert'>;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ everything reports unavailable. */
   enabled: boolean;

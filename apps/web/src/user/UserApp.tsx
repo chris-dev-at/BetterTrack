@@ -23,6 +23,7 @@ import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
 import { ImportPage } from './portfolio/ImportPage';
 import { TaxReportPage } from './portfolio/TaxReportPage';
+import { TaxReportPrintPage } from './portfolio/TaxReportPrintPage';
 import { CustomAssetsPage, PortfolioLayout, TransactionsPage } from './portfolio/PortfolioSection';
 import { WorkboardPage } from './workboard/WorkboardPage';
 import {
@@ -130,6 +131,10 @@ function UserShell() {
             section. Both `/new` and `/:id/edit` render the same Builder. */}
         <Route path="workboard/conglomerates/new" element={<ConglomerateBuilderPage />} />
         <Route path="workboard/conglomerates/:id/edit" element={<ConglomerateBuilderPage />} />
+        {/* Print-to-PDF view of one portfolio+year tax report (§13.5 V5-P4b,
+            #583) — a chrome-free document outside the AppLayout, opened from the
+            Tax report's per-year "Print / PDF" action. */}
+        <Route path="portfolio/tax/print" element={<TaxReportPrintPage />} />
         <Route element={<AppLayout />}>
           {/* Home → Portfolio (§6.8, §7.2). */}
           <Route index element={<Navigate to="/portfolio" replace />} />

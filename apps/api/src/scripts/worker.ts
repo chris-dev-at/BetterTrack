@@ -34,6 +34,8 @@ import {
   createQueueRegistry,
   createSnapshotsBackfillJob,
   createSnapshotsRecomputeJob,
+  createUsageRollupJob,
+  createEarningsReminderJob,
   createDividendEventsScanJob,
   dividendNotifyGate,
   jobConnectionFactory,
@@ -47,6 +49,8 @@ import { createTransactionRepository } from '../data/repositories/transactionRep
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createPortfolioSnapshotService } from '../services/portfolio/portfolioSnapshots';
+import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
+import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
 import { initObservability } from '../services/observability/sentry';
@@ -232,6 +236,15 @@ const snapshots = createPortfolioSnapshotService({
   logger,
 });
 
+// V5-P2 usage analytics (#567): the worker owns a rollup-only instance (no
+// capture happens here — the API captures) that materializes the daily
+// aggregates the admin page serves. Timer off; the cron drives it.
+const usageAnalytics = createUsageAnalyticsService({
+  repo: createUsageAnalyticsRepository(db),
+  logger,
+  startTimer: false,
+});
+
 const definitions = [
   ...createJobDefinitions({
     db,
@@ -250,6 +263,16 @@ const definitions = [
   createExportCleanupJob({ exportService: dataExportService }),
   createSnapshotsRecomputeJob({ snapshots }),
   createSnapshotsBackfillJob({ snapshots }),
+  createUsageRollupJob({ usageAnalytics }),
+  // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
+  // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
+  // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
+  createEarningsReminderJob({
+    intelRepo: createMarketIntelRepository(db),
+    marketData,
+    notify,
+    enabled: config.marketIntel.enabled,
+  }),
   // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
   // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
   createDividendEventsScanJob({

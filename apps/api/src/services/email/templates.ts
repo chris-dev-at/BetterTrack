@@ -602,6 +602,47 @@ export function alertTriggeredEmail(params: {
 }
 
 /**
+ * Opt-in earnings-reminder email (§13.5 V5-P5 arc b). The body is built from the
+ * localized copy (confirmed vs estimated report date), never caller-supplied, so
+ * it renders in the recipient's language. Deep-links to the app (the asset's
+ * earnings block is reachable from there).
+ */
+export function earningsReminderEmail(params: {
+  symbol: string;
+  name: string;
+  earningsDate: string;
+  estimated: boolean;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { symbol, name, earningsDate, estimated, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const c = copy.earningsReminder;
+  const date = earningsDate.slice(0, 10);
+  const bodyTemplate = estimated ? c.bodyEstimated : c.bodyConfirmed;
+  const values = { name, symbol, date };
+  return {
+    subject: fillText(c.subject, { symbol }),
+    html: layout(
+      c.heading.replace('{symbol}', escapeHtml(symbol)),
+      [
+        `<p>${fillHtml(bodyTemplate, values)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, c.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [
+      fillText(c.subject, { symbol }),
+      '',
+      fillText(bodyTemplate, values),
+      '',
+      `${c.button}: ${appUrl}`,
+    ].join('\n'),
+  };
+}
+
+/**
  * Approval-queue decision emails (PROJECTPLAN.md §6.12, §13.4 V4-P4a). Sent when
  * an admin approves or rejects a pending registration in `approval` mode; both
  * render in the language the registrant used on the register form (EN fallback).

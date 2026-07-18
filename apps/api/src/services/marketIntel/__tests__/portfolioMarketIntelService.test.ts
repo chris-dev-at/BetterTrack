@@ -20,12 +20,15 @@ const currency = {
     from === 'USD' ? amount * 0.9 : amount,
 };
 
-/** A `MarketIntelRepository` returning fixed held + watched rows. */
+/** A repository stub returning fixed held + watched rows (the two reads the service uses). */
 function stubRepo(opts: {
   held?: HeldPositionRow[];
   watched?: WatchedAssetRow[];
   holders?: HeldAssetHolderRow[];
-}): MarketIntelRepository {
+}): Pick<
+  MarketIntelRepository,
+  'listHeldPositionsForUser' | 'listWatchlistAssetsForUser' | 'listHeldAssetHoldersAllUsers'
+> {
   return {
     listHeldPositionsForUser: async () => opts.held ?? [],
     listWatchlistAssetsForUser: async () => opts.watched ?? [],
