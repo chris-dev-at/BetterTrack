@@ -7,6 +7,7 @@ import {
   type AuditLogEntry,
   type EmailLogEntry,
   type MeResponse,
+  type Problem,
   type ProfileIconId,
   type RegistrationRequest,
   type RegistrationToken,
@@ -19,6 +20,7 @@ import type {
   AuditLogRow,
   EmailLogRow,
   InviteRow,
+  ProblemRow,
   RegistrationRequestRow,
   RegistrationTokenRow,
   UserRow,
@@ -216,5 +218,22 @@ export function toAuditEntry(row: AuditLogRow): AuditLogEntry {
     ip: row.ip,
     meta: row.meta ?? null,
     createdAt: toIsoRequired(row.createdAt),
+  };
+}
+
+export function toProblem(row: ProblemRow): Problem {
+  return {
+    id: row.id,
+    kind: row.kind,
+    fingerprint: row.fingerprint,
+    title: row.title,
+    message: row.message,
+    context: row.context ?? null,
+    status: row.status,
+    occurrenceCount: row.occurrenceCount,
+    firstSeenAt: toIsoRequired(row.firstSeenAt),
+    lastSeenAt: toIsoRequired(row.lastSeenAt),
+    resolvedAt: toIso(row.resolvedAt),
+    resolvedBy: row.resolvedBy,
   };
 }

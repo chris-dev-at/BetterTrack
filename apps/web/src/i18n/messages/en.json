@@ -2400,7 +2400,8 @@
       "health": "Health",
       "menu": "Admin menu",
       "openMenu": "Open admin menu",
-      "closeMenu": "Close admin menu"
+      "closeMenu": "Close admin menu",
+      "problems": "Problems"
     },
     "security": {
       "title": "Security",
@@ -2542,6 +2543,36 @@
         "disabled": "Disabled",
         "connections": "{{count}} connected"
       }
+    },
+    "problems": {
+      "title": "Problems",
+      "subtitle": "Captured errors, failed jobs and provider failures. No setup required.",
+      "refresh": "Refresh",
+      "loadError": "Could not load problems.",
+      "actionError": "Could not update the problem.",
+      "empty": "No problems — nothing to see here.",
+      "openCount": "{{count}} open",
+      "filters": {
+        "kind": "Kind",
+        "status": "Status",
+        "all": "All"
+      },
+      "kind": {
+        "error": "Error",
+        "job": "Job",
+        "provider": "Provider"
+      },
+      "status": {
+        "open": "Open",
+        "resolved": "Resolved"
+      },
+      "occurrencesLabel": "Occurrences",
+      "firstSeen": "First seen",
+      "lastSeen": "Last seen",
+      "fingerprint": "Fingerprint",
+      "context": "Context",
+      "resolve": "Resolve",
+      "reopen": "Reopen"
     }
   }
 }
