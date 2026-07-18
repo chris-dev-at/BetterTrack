@@ -79,6 +79,10 @@ import {
 import { createApiKeyService, type ApiKeyService } from '../services/apiKeys/apiKeyService';
 import { createOAuthService, type OAuthService } from '../services/oauth/oauthService';
 import { createAppSettingsService } from '../services/appSettings/appSettingsService';
+import {
+  createFeatureFlagService,
+  type FeatureFlagService,
+} from '../services/featureFlags/featureFlagService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
 import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
@@ -318,6 +322,13 @@ export interface AppContext {
    * `/admin/problems`.
    */
   problems: ProblemService;
+  /**
+   * Runtime feature kill-switches (§13.5 V5-P2 arc (c)): admin-toggled on/off for
+   * realtime/live-mode/chat/alerts/imports/AI, read per request. Backs the
+   * `requireFeature` route guard, the realtime gateway gate, the admin toggle
+   * router and the SPA-bootstrap advertisement.
+   */
+  featureFlags: FeatureFlagService;
 }
 
 export interface BuildContextDeps {
@@ -409,7 +420,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
   // read by the auth register guard and the admin settings API.
-  const appSettings = createAppSettingsService({ repo: createAppSettingsRepository(db) });
+  const appSettingsRepo = createAppSettingsRepository(db);
+  const appSettings = createAppSettingsService({ repo: appSettingsRepo });
+
+  // Runtime feature kill-switches (§13.5 V5-P2 arc (c)): admin-toggled, read per
+  // request off a cheap Redis snapshot, invalidated on write. Rides the same
+  // `app_settings` KV store (one boolean row per flag). Built early so the
+  // realtime gateway + the gated route guards below can consult it, and the
+  // admin router + SPA-bootstrap route can list/advertise it. Default: all ON.
+  const featureFlags = createFeatureFlagService({ repo: appSettingsRepo, redis, audit, logger });
 
   // Typed domain event bus (§9, §4.5) — EPHEMERAL fan-out only (#368): realtime
   // pushes (bell, quotes, chat threads, presence-adjacent signals). Anything
@@ -1047,6 +1066,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       return Boolean(await audience.authorizePortfolioRead(userId, portfolioId));
     },
     liveMode,
+    // Runtime kill-switches (§13.5 V5-P2 arc (c)): the handshake refuses new
+    // sockets when `realtime` is flipped OFF, and `live.watch` acks UNAVAILABLE
+    // when `liveMode` is OFF — both read per connection/op, no redeploy.
+    isFeatureEnabled: (key) => featureFlags.isEnabled(key),
     // Global asset or the caller's own custom asset (§10) → provider ref for
     // the shared loop; anything else is a NOT_FOUND-indistinguishable null.
     resolveWatchableAsset: async (userId, assetId) => {
@@ -1115,5 +1138,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     observability,
     health,
     problems,
+    featureFlags,
   };
 }
