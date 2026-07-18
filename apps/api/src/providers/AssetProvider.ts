@@ -31,6 +31,17 @@ export interface AssetProvider {
    */
   readonly local?: boolean;
 
+  /**
+   * Failover capability gate (§13.5 V5-P1c). A *secondary* provider returns
+   * false for a ref whose asset it cannot map into its own universe (e.g. Stooq
+   * for a crypto or an unlisted exchange), so the failover chain skips it
+   * instead of asking — which would surface a spurious "not found" and poison
+   * the (primary-keyed) negative cache. Omitted ⇒ the provider serves any ref
+   * routed to it (the primary's own assets always resolve, so the primary
+   * never needs this).
+   */
+  canServe?(ref: AssetRef): boolean;
+
   /** Symbol/name lookup across this provider's universe (§6.2). */
   search(query: string): Promise<AssetSearchResult[]>;
 

@@ -79,6 +79,8 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     async settled() {},
     // No upstream providers behind the stub, so no breakers to report.
     breakerStates: () => [],
+    // No failover chain behind the stub — empty attribution/switches.
+    failoverStatus: () => ({ chains: [], switches: [], attribution: [] }),
   };
 }
 

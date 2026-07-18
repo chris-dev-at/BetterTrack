@@ -68,6 +68,11 @@ const envSchema = z.object({
   // each service's env if a tighter combined budget is needed.
   PROVIDER_MAX_CONCURRENCY: z.coerce.number().int().positive().default(4),
   PROVIDER_MIN_SPACING_MS: z.coerce.number().int().nonnegative().default(250),
+  // Provider failover chain (§13.5 V5-P1c): opt into the keyless Stooq secondary
+  // with health-based failover + recovery. Default OFF so the shipped behaviour
+  // is byte-identical to a single-provider (Yahoo-only) setup; set to enable —
+  // no keys or accounts required. Which-provider-served-what shows in admin health.
+  MARKET_FAILOVER_ENABLED: z.string().optional(),
   // Short-window burst dimension of the general limiter (§10, owner report #202):
   // the 15-min steady-state allowance is generous enough that a rapid page-reload
   // flood never reaches it, so a second, short window catches the flood without
@@ -366,6 +371,11 @@ export interface AppConfig {
   providers: {
     maxConcurrency: number;
     minSpacingMs: number;
+    /** Provider failover chain (§13.5 V5-P1c): opt-in keyless Stooq secondary. */
+    failover: {
+      /** When true, register Stooq and apply the failover chains; default false. */
+      enabled: boolean;
+    };
   };
   /** Realtime gateway (§4.5, V3-P7a). */
   realtime: {
@@ -558,6 +568,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     providers: {
       maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,
       minSpacingMs: e.PROVIDER_MIN_SPACING_MS,
+      failover: {
+        enabled: boolFrom(e.MARKET_FAILOVER_ENABLED, false),
+      },
     },
     realtime: {
       enabled: boolFrom(e.REALTIME_ENABLED, true),

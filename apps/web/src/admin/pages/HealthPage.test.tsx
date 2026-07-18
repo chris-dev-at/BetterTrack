@@ -31,7 +31,28 @@ const health: AdminHealthResponse = {
   components: {
     database: { status: 'ok', latencyMs: 2 },
     redis: { status: 'down', detail: 'connection refused' },
-    providers: { status: 'ok', breakers: [{ providerId: 'yahoo', state: 'closed' }] },
+    providers: {
+      status: 'degraded',
+      breakers: [
+        { providerId: 'yahoo', state: 'open' },
+        { providerId: 'stooq', state: 'closed' },
+      ],
+      chains: [
+        {
+          primaryId: 'yahoo',
+          serving: 'stooq',
+          since: '2026-07-16T01:59:00.000Z',
+          providerIds: ['yahoo', 'stooq'],
+        },
+      ],
+      switches: [
+        { primaryId: 'yahoo', from: 'yahoo', to: 'stooq', at: '2026-07-16T01:59:00.000Z' },
+      ],
+      attribution: [
+        { providerId: 'yahoo', serves: 10, lastServedAt: '2026-07-16T01:00:00.000Z' },
+        { providerId: 'stooq', serves: 3, lastServedAt: '2026-07-16T02:00:00.000Z' },
+      ],
+    },
     queues: {
       status: 'ok',
       available: true,
@@ -80,6 +101,20 @@ test('renders every component status once loaded', async () => {
   // Version + gateway connection count render.
   expect(screen.getByText('0.1.0')).toBeInTheDocument();
   expect(screen.getByText('3 connected')).toBeInTheDocument();
+});
+
+test('renders the failover panel: the chain, currently-serving provider and a switch', async () => {
+  vi.mocked(api.getAdminHealth).mockResolvedValue(health);
+  renderPage();
+
+  await waitFor(() => expect(screen.getByText('Provider failover')).toBeInTheDocument());
+  // The chain and the currently-serving (failed-over) provider.
+  expect(screen.getByText('yahoo → stooq')).toBeInTheDocument();
+  expect(screen.getByText('Failover active')).toBeInTheDocument();
+  // Per-provider attribution + the recent-switches section.
+  expect(screen.getByText('10 served')).toBeInTheDocument();
+  expect(screen.getByText('3 served')).toBeInTheDocument();
+  expect(screen.getByText('Recent switches')).toBeInTheDocument();
 });
 
 test('shows an error state when the health fetch fails', async () => {

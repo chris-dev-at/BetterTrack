@@ -2524,6 +2524,14 @@
       "providers": {
         "none": "Keine externen Anbieter"
       },
+      "failover": {
+        "title": "Anbieter-Failover",
+        "viaFailover": "Failover aktiv",
+        "since": "seit {{time}}",
+        "served": "{{count}} bedient",
+        "switchesTitle": "Letzte Wechsel",
+        "noSwitches": "Keine Wechsel aufgezeichnet"
+      },
       "queues": {
         "unavailable": "Keine Job-Warteschlangen in diesem Prozess",
         "empty": "Keine Jobs",

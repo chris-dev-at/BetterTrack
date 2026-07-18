@@ -82,7 +82,32 @@ export function createHealthService(deps: HealthServiceDeps): HealthService {
     // An open (or half-open) breaker is a soft fault: the market-data layer
     // serves stale, so the surface still works but upstream is impaired (§5.3).
     const status: HealthStatus = breakers.some((b) => b.state !== 'closed') ? 'degraded' : 'ok';
-    return { status, breakers };
+    // Failover attribution (§13.5 V5-P1c): who is serving each chain, the recent
+    // switches, and per-provider serve counts. Epoch-ms → ISO at this boundary.
+    const failover = marketData.failoverStatus();
+    const iso = (ms: number | null): string | null =>
+      ms === null ? null : new Date(ms).toISOString();
+    return {
+      status,
+      breakers,
+      chains: failover.chains.map((c) => ({
+        primaryId: c.primaryId,
+        serving: c.serving,
+        since: iso(c.since),
+        providerIds: c.providerIds,
+      })),
+      switches: failover.switches.map((s) => ({
+        primaryId: s.primaryId,
+        from: s.from,
+        to: s.to,
+        at: new Date(s.at).toISOString(),
+      })),
+      attribution: failover.attribution.map((a) => ({
+        providerId: a.providerId,
+        serves: a.serves,
+        lastServedAt: iso(a.lastServedAt),
+      })),
+    };
   }
 
   async function checkHeartbeat(

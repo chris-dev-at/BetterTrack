@@ -76,6 +76,7 @@ function stubMarketData(
     pollQuote: unused('pollQuote'),
     settled: async () => {},
     breakerStates: () => [],
+    failoverStatus: () => ({ chains: [], switches: [], attribution: [] }),
   };
   return { service, getQuote, getHistory };
 }
