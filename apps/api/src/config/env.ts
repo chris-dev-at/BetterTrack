@@ -170,6 +170,14 @@ const envSchema = z.object({
   BT_METRICS_ENABLED: z.string().optional(),
   BT_METRICS_HOST: z.string().min(1).default('127.0.0.1'),
   BT_METRICS_PORT: z.coerce.number().int().positive().default(9464),
+
+  // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
+  // Global kill-switch for the dividend/earnings/news/splits intel surfaces.
+  // Default ON (Yahoo is keyless, so a stock deploy has the data): OFF ⇒ every
+  // capability reports unavailable and the per-asset intel endpoints return the
+  // "unconfigured" shape (`available: false`, empty), so the P5 UI stays
+  // invisible. Flips without touching provider wiring.
+  MARKET_INTEL_ENABLED: z.string().optional(),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -391,6 +399,14 @@ export interface AppConfig {
     /** Dedicated port for the `/metrics` listener (default 9464). */
     port: number;
   };
+  /**
+   * Market-intelligence surfaces (§13.5 V5-P5). `enabled` defaults to true;
+   * when false every intel capability reports unavailable and the per-asset
+   * endpoints return the "unconfigured" shape, hiding the whole arc.
+   */
+  marketIntel: {
+    enabled: boolean;
+  };
   /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
   sentry: {
     enabled: boolean;
@@ -579,6 +595,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: boolFrom(e.BT_METRICS_ENABLED, true),
       host: e.BT_METRICS_HOST,
       port: e.BT_METRICS_PORT,
+    },
+    // V5-P5 kill-switch: default ON (Yahoo is keyless). OFF hides every intel
+    // surface via the "unconfigured" endpoint shape without any provider change.
+    marketIntel: {
+      enabled: boolFrom(e.MARKET_INTEL_ENABLED, true),
     },
     sentry: {
       enabled: Boolean(e.BT_SENTRY_DSN),

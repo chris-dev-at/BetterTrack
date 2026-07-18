@@ -20,6 +20,11 @@ function stubClient(overrides: Partial<YahooClient> = {}): YahooClient {
     search: overrides.search ?? (() => Promise.resolve({ quotes: [] })),
     quote: overrides.quote ?? (() => Promise.resolve({})),
     chart: overrides.chart ?? (() => Promise.resolve({ meta: { currency: 'USD' }, quotes: [] })),
+    chartEvents:
+      overrides.chartEvents ??
+      (() => Promise.resolve({ meta: { currency: 'USD' }, dividends: [], splits: [] })),
+    quoteSummary: overrides.quoteSummary ?? (() => Promise.resolve({})),
+    searchNews: overrides.searchNews ?? (() => Promise.resolve({ news: [] })),
   };
 }
 

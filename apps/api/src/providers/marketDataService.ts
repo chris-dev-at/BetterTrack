@@ -3,25 +3,39 @@ import type {
   AssetRef,
   AssetSearchResult,
   CachedResult,
+  DividendEvents,
+  EarningsEvents,
   HistoryInterval,
   HistoryRange,
+  MarketIntelCapabilities,
+  NewsHeadline,
   PricePoint,
   Quote,
+  SplitEvents,
 } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
 import { cacheKey, createMarketCache, type MarketCache } from './cache';
 import { CircuitBreaker, type CircuitBreakerOptions, type CircuitState } from './circuitBreaker';
-import { isNotFoundError, isRateLimitError } from './errors';
+import { CapabilityUnavailableError, isNotFoundError, isRateLimitError } from './errors';
 import {
   createFailoverResolver,
   NO_FAILOVER,
   type FailoverChains,
   type FailoverStatus,
 } from './failoverChain';
-import type { ProviderRegistry } from './registry';
+import { providerCapabilities, type ProviderRegistry } from './registry';
 import { DEFAULT_TIMEOUT_MS, retryOnce, withTimeout } from './resilience';
-import { historyTtlSeconds, META_TTL_SECONDS, QUOTE_TTL_SECONDS, SEARCH_TTL_SECONDS } from './ttl';
+import {
+  DIVIDENDS_TTL_SECONDS,
+  EARNINGS_TTL_SECONDS,
+  historyTtlSeconds,
+  META_TTL_SECONDS,
+  NEWS_TTL_SECONDS,
+  QUOTE_TTL_SECONDS,
+  SEARCH_TTL_SECONDS,
+  SPLITS_TTL_SECONDS,
+} from './ttl';
 
 /**
  * The one place the rest of the app reaches market data (PROJECTPLAN.md §5.1).
@@ -58,6 +72,27 @@ export interface MarketDataService {
     interval?: HistoryInterval,
   ): Promise<CachedResult<PricePoint[]>>;
   getMeta(ref: AssetRef): Promise<CachedResult<AssetMeta>>;
+
+  // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
+  // Which optional intel capabilities the asset's own provider advertises, and
+  // the per-family reads. Capabilities are per provider and NOT assumed
+  // universal, so these do NOT go through the failover chain (a secondary that
+  // implements none must never mask the primary's capability); they call the
+  // asset's own provider through the same timeout → breaker → cache machinery as
+  // the quote/history paths. A capability the provider lacks rejects with
+  // {@link CapabilityUnavailableError}; the read layer degrades to "unconfigured".
+
+  /** The intel capabilities the asset's own provider advertises. */
+  intelCapabilities(ref: AssetRef): MarketIntelCapabilities;
+  /** Dividend history + upcoming ex/pay + forward yield (arc a), cached in hours. */
+  getDividendEvents(ref: AssetRef): Promise<CachedResult<DividendEvents>>;
+  /** Next + recent earnings (arc b), cached in hours. */
+  getEarningsEvents(ref: AssetRef): Promise<CachedResult<EarningsEvents>>;
+  /** Recent news headlines (arc c), cached in minutes (the volatile family). */
+  getNewsHeadlines(ref: AssetRef): Promise<CachedResult<NewsHeadline[]>>;
+  /** Past + announced splits (arc d), cached in hours. */
+  getSplitEvents(ref: AssetRef): Promise<CachedResult<SplitEvents>>;
+
   /**
    * Resolves once in-flight background cache revalidations have finished
    * (graceful shutdown, deterministic tests).
@@ -199,6 +234,33 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
   const revalidateGate = (providerId: string) => (): boolean =>
     breakerFor(providerId).getState() !== 'open';
 
+  /**
+   * Cache + coalesce + breaker-wrap one intel read against the asset's own
+   * provider (§13.5 V5-P5). Rejects with {@link CapabilityUnavailableError} when
+   * the provider does not implement the capability — the read layer treats that
+   * exactly like a provider error and degrades to the "unconfigured" shape.
+   */
+  const loadIntel = <T>(
+    ref: AssetRef,
+    capability: string,
+    ttlSeconds: number,
+    method: ((ref: AssetRef) => Promise<T>) | undefined,
+  ): Promise<CachedResult<T>> => {
+    const provider = registry.for(ref);
+    if (typeof method !== 'function') {
+      return Promise.reject(new CapabilityUnavailableError(provider.id, capability));
+    }
+    return cache.getOrLoad<T>({
+      key: cacheKey(ref.providerId, ref.providerRef, 'intel', capability),
+      ttlSeconds,
+      staleTtlSeconds,
+      negativeTtlSeconds,
+      isNotFound: isNotFoundError,
+      shouldRevalidate: revalidateGate(provider.id),
+      loader: () => callUpstream(provider.id, () => method(ref)),
+    });
+  };
+
   return {
     async search(query) {
       const normalized = normalizeSearchQuery(query);
@@ -313,6 +375,50 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
         shouldRevalidate: () => resolver.anyAvailable(ref),
         loader: () => resolver.run(ref, callUpstream, (p) => p.getMeta(ref), isNotFoundError),
       });
+    },
+
+    intelCapabilities(ref) {
+      return providerCapabilities(registry.for(ref));
+    },
+
+    getDividendEvents(ref) {
+      const provider = registry.for(ref);
+      return loadIntel<DividendEvents>(
+        ref,
+        'dividends',
+        DIVIDENDS_TTL_SECONDS,
+        provider.getDividendEvents?.bind(provider),
+      );
+    },
+
+    getEarningsEvents(ref) {
+      const provider = registry.for(ref);
+      return loadIntel<EarningsEvents>(
+        ref,
+        'earnings',
+        EARNINGS_TTL_SECONDS,
+        provider.getEarningsEvents?.bind(provider),
+      );
+    },
+
+    getNewsHeadlines(ref) {
+      const provider = registry.for(ref);
+      return loadIntel<NewsHeadline[]>(
+        ref,
+        'news',
+        NEWS_TTL_SECONDS,
+        provider.getNewsHeadlines?.bind(provider),
+      );
+    },
+
+    getSplitEvents(ref) {
+      const provider = registry.for(ref);
+      return loadIntel<SplitEvents>(
+        ref,
+        'splits',
+        SPLITS_TTL_SECONDS,
+        provider.getSplitEvents?.bind(provider),
+      );
     },
 
     settled: () => cache.settled(),

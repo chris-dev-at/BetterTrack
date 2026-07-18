@@ -43,3 +43,20 @@ export function isRateLimitError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null | undefined)?.code;
   return code === 429;
 }
+
+/**
+ * A market-intelligence capability (§13.5 V5-P5) was requested from a provider
+ * that does not implement it. Distinct from a not-found or a transient upstream
+ * error: the provider is healthy, it just does not advertise this capability, so
+ * the read service degrades to the "unconfigured" shape rather than retrying.
+ * Callers normally consult `providerCapabilities` first, so this is a guard.
+ */
+export class CapabilityUnavailableError extends Error {
+  constructor(
+    public readonly providerId: string,
+    public readonly capability: string,
+  ) {
+    super(`Provider "${providerId}" does not implement the "${capability}" capability`);
+    this.name = 'CapabilityUnavailableError';
+  }
+}

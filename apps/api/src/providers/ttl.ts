@@ -50,3 +50,15 @@ export const NEGATIVE_TTL_SECONDS = 15 * 60;
  * daily closes live in Postgres `price_history`, §5.3).
  */
 export const STALE_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * Market-intelligence freshness windows (§13.5 V5-P5). Corporate-actions and
+ * scheduled events move slowly, so dividends/earnings/splits cache for hours
+ * (one fetch serves every viewer of the asset for a working session); news is
+ * the volatile family and refreshes in minutes. Same serve-stale + coalescing
+ * machinery as the quote/history paths.
+ */
+export const DIVIDENDS_TTL_SECONDS = 12 * 60 * 60;
+export const EARNINGS_TTL_SECONDS = 6 * 60 * 60;
+export const SPLITS_TTL_SECONDS = 12 * 60 * 60;
+export const NEWS_TTL_SECONDS = 10 * 60;
