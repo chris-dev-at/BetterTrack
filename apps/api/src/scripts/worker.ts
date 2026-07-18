@@ -29,6 +29,7 @@ import {
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
+  createDeferredDeliveryJob,
   createQueueRegistry,
   createSnapshotsBackfillJob,
   createSnapshotsRecomputeJob,
@@ -152,6 +153,12 @@ const dispatcher = createNotificationDispatcher({
     cadenceFor: (userId, type) => notificationDigestRepo.cadenceFor(userId, type),
     enqueue: (item) => notificationDigestRepo.enqueue(item),
   },
+  // Quiet hours (V5-P3): an instant outbound notification fired inside the
+  // recipient's quiet window is deferred here; the deferred-delivery job below
+  // sends it at window end.
+  quietHours: {
+    enqueueDeferred: (item) => notificationDigestRepo.enqueueDeferred(item),
+  },
   logger,
 });
 
@@ -163,6 +170,9 @@ const digestService = createDigestService({
   email,
   fcm: fcmChannel,
   webPush: webPushChannel,
+  // Quiet hours (V5-P3): a digest whose delivery moment lands inside the user's
+  // window is deferred to window end via the deferral store.
+  quietHours: notificationDigestRepo,
   logger,
 });
 
@@ -232,6 +242,7 @@ const definitions = [
   createNotificationsDispatchJob({ dispatcher }),
   createDigestDailyJob({ digest: digestService }),
   createDigestWeeklyJob({ digest: digestService }),
+  createDeferredDeliveryJob({ digest: digestService }),
   createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob({ exportService: dataExportService }),
   createSnapshotsRecomputeJob({ snapshots }),

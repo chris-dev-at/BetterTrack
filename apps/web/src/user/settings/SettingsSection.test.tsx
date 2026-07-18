@@ -126,6 +126,7 @@ function makeSettings(
   return {
     matrix: makeMatrix(),
     cadence: makeCadence(),
+    quietHours: { enabled: false, startMinute: 22 * 60, endMinute: 7 * 60, timezone: null },
     muted: false,
     // Email is live, the push channels are not — their columns must be absent.
     // Telegram + Discord default to unavailable in unit tests (no bot token,

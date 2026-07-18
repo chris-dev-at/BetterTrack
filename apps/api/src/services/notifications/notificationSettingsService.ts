@@ -1,5 +1,6 @@
 import {
   DEFAULT_NOTIFICATION_CADENCE,
+  DEFAULT_QUIET_HOURS,
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
   type NotificationCadenceMap,
@@ -7,6 +8,7 @@ import {
   type NotificationMatrix,
   type NotificationSettingsResponse,
   type NotificationType,
+  type QuietHours,
   type UpdateNotificationSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -47,8 +49,11 @@ export interface NotificationSettingsServiceDeps {
    * `cadence` map (defaults filled in here) and written on PATCH.
    */
   cadence: Pick<NotificationDigestRepository, 'cadenceMapForUser' | 'setCadences'>;
-  /** Global-mute storage (users.notifications_muted, #368). */
-  users: Pick<UserRepository, 'findById' | 'setNotificationsMuted'>;
+  /**
+   * Global-mute storage (users.notifications_muted, #368) + quiet-hours window /
+   * timezone storage (§13.5 V5-P3), both on the users row.
+   */
+  users: Pick<UserRepository, 'findById' | 'setNotificationsMuted' | 'setQuietHours'>;
   /**
    * Which channels this deployment has configured. `email`/`push`/`webpush`
    * are deployment-scoped booleans (SMTP / FCM key / VAPID); `telegram` +
@@ -143,9 +148,21 @@ export function createNotificationSettingsService(
         cadenceOverrides[type] ?? DEFAULT_NOTIFICATION_CADENCE,
       ]),
     ) as NotificationCadenceMap;
+    // Quiet hours (V5-P3): the stored window/timezone, or the off-by-default
+    // fallback when the user has no row (never happens for a real user, but keeps
+    // the read total).
+    const quietHours: QuietHours = user
+      ? {
+          enabled: user.quietHoursEnabled,
+          startMinute: user.quietHoursStartMinute,
+          endMinute: user.quietHoursEndMinute,
+          timezone: user.timezone ?? null,
+        }
+      : DEFAULT_QUIET_HOURS;
     return {
       matrix,
       cadence: cadenceMap,
+      quietHours,
       muted: user?.notificationsMuted ?? false,
       channels: {
         inapp: true,
@@ -184,6 +201,10 @@ export function createNotificationSettingsService(
       // rest keep their stored (or default) cadence.
       if (body.cadence && Object.keys(body.cadence).length > 0) {
         await cadence.setCadences(userId, body.cadence);
+      }
+      // Quiet-hours changes (V5-P3): patch only the supplied fields.
+      if (body.quietHours && Object.keys(body.quietHours).length > 0) {
+        await users.setQuietHours(userId, body.quietHours);
       }
       if (body.muted !== undefined) {
         await users.setNotificationsMuted(userId, body.muted);

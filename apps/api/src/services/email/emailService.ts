@@ -5,6 +5,7 @@ import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   alertTriggeredEmail,
   chatMessageEmail,
+  deferredNotificationEmail,
   digestEmail,
   followAlertEmail,
   conglomerateSharedEmail,
@@ -197,6 +198,18 @@ export interface EmailService {
     userId: string;
     cadence: 'daily' | 'weekly';
     items: readonly { title: string; body: string }[];
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /**
+   * Quiet-hours deferred notification email (§13.5 V5-P3): the single held-back
+   * notification (or a quiet-blocked digest summary) delivered at window end.
+   * Best-effort like every send; localized chrome around the rendered title/body.
+   */
+  sendDeferred(params: {
+    to: string;
+    userId: string;
+    title: string;
+    body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
 }
@@ -471,5 +484,13 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
       deliver('digest', to, digestEmail({ cadence, items, appUrl: config.appOrigin, locale }), {
         userId,
       }),
+
+    sendDeferred: ({ to, userId, title, body, locale }) =>
+      deliver(
+        'digest',
+        to,
+        deferredNotificationEmail({ title, body, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
   };
 }

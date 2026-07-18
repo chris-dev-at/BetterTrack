@@ -5,6 +5,8 @@ import { localeSchema } from './i18n';
 import {
   NOTIFICATION_TYPES,
   notificationCadenceSchema,
+  quietHoursSchema,
+  quietHoursUpdateSchema,
   type NotificationType,
 } from './notifications';
 import { portfolioVisibilitySchema } from './portfolio';
@@ -136,6 +138,8 @@ export const notificationSettingsResponseSchema = z
     matrix: notificationMatrixSchema,
     /** Per-type outbound delivery cadence (V5-P3): instant / daily / weekly. */
     cadence: notificationCadenceMapSchema,
+    /** Quiet-hours window + timezone (V5-P3); off by default (defaults applied). */
+    quietHours: quietHoursSchema,
     muted: z.boolean(),
     channels: notificationChannelAvailabilitySchema,
     channelsConfigurable: notificationChannelsConfigurableSchema,
@@ -154,6 +158,8 @@ export const updateNotificationSettingsRequestSchema = z
     matrix: z.object(partialMatrixShape).strict().optional(),
     /** Partial per-type cadence changes (V5-P3); each supplied type is upserted. */
     cadence: z.object(partialCadenceShape).strict().optional(),
+    /** Partial quiet-hours changes (V5-P3); supplied fields are upserted. */
+    quietHours: quietHoursUpdateSchema.optional(),
     muted: z.boolean().optional(),
   })
   .strict()
@@ -161,9 +167,11 @@ export const updateNotificationSettingsRequestSchema = z
     (body) =>
       body.muted !== undefined ||
       Object.keys(body.matrix ?? {}).length > 0 ||
-      Object.keys(body.cadence ?? {}).length > 0,
+      Object.keys(body.cadence ?? {}).length > 0 ||
+      (body.quietHours !== undefined && Object.keys(body.quietHours).length > 0),
     {
-      message: 'At least one notification type, cadence, or the muted flag is required.',
+      message:
+        'At least one notification type, cadence, quiet-hours field, or the muted flag is required.',
     },
   );
 export type UpdateNotificationSettingsRequest = z.infer<

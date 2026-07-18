@@ -497,6 +497,16 @@
         "weekly": "Wöchentliche Zusammenfassung",
         "selectAria": "Zustellhäufigkeit für {{type}}"
       },
+      "quietHours": {
+        "title": "Ruhezeiten",
+        "description": "Halte E-Mail- und Push-Benachrichtigungen während eines täglichen Zeitfensters zurück. Dringende Konto- und Sicherheitshinweise kommen immer durch, und die Glocke in der App bleibt sofort.",
+        "enable": "Ruhezeiten aktivieren",
+        "start": "Von",
+        "end": "Bis",
+        "timezone": "Zeitzone",
+        "timezoneNone": "UTC (keine Zeitzone festgelegt)",
+        "useDetected": "Meine Zeitzone verwenden ({{zone}})"
+      },
       "webPush": {
         "title": "Browser-Push in diesem Browser",
         "description": "Erhalte Desktop-Benachrichtigungen auch bei geschlossenem Tab. Pro Browser aktivieren; die Spalte unten bestimmt, was gepusht wird.",

@@ -558,6 +558,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       cadenceFor: (userId, type) => notificationDigestRepo.cadenceFor(userId, type),
       enqueue: (item) => notificationDigestRepo.enqueue(item),
     },
+    // Quiet hours (V5-P3): an instant outbound notification fired inside the
+    // recipient's window is deferred here and delivered at window end by the
+    // deferred-delivery job.
+    quietHours: {
+      enqueueDeferred: (item) => notificationDigestRepo.enqueueDeferred(item),
+    },
     logger,
   });
 
@@ -569,6 +575,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     email,
     fcm: fcmChannel,
     webPush: webPushChannel,
+    // Quiet hours (V5-P3): defer a digest whose delivery lands inside the window.
+    quietHours: notificationDigestRepo,
     logger,
   });
 

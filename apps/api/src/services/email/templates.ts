@@ -349,6 +349,39 @@ export function digestEmail(params: {
   };
 }
 
+/**
+ * Quiet-hours deferred notification email (§13.5 V5-P3). Sent at the user's
+ * quiet-window end for a single instant notification (or a quiet-blocked digest
+ * summary) that was held back. The content is the already-rendered title + body
+ * — English like every inbox row and the digest list — wrapped in the localized
+ * chrome (footer + app button), mirroring how {@link digestEmail} presents its
+ * deferred items. Multi-line bodies (a deferred digest summary) keep their line
+ * breaks in both HTML and text.
+ */
+export function deferredNotificationEmail(params: {
+  title: string;
+  body: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { title, body, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const bodyHtml = escapeHtml(body).replace(/\n/g, '<br>');
+  return {
+    subject: title,
+    html: layout(
+      title,
+      [
+        `<p>${bodyHtml}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, copy.openApp)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [body, '', `${copy.openApp}: ${appUrl}`].join('\n'),
+  };
+}
+
 /** `watchlist.shared` notification email (#368) — mirrors the portfolio one. */
 export function watchlistSharedEmail(params: {
   actorUsername: string;

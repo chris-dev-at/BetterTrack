@@ -52,11 +52,14 @@ export {
 export {
   createDigestDailyJob,
   createDigestWeeklyJob,
+  createDeferredDeliveryJob,
   DIGEST_DAILY_SCHEDULER_ID,
   DIGEST_DAILY_CRON,
   DIGEST_WEEKLY_SCHEDULER_ID,
   DIGEST_WEEKLY_CRON,
   DIGEST_TZ,
+  DEFERRED_DELIVERY_SCHEDULER_ID,
+  DEFERRED_DELIVERY_INTERVAL_MS,
   type DigestJobDeps,
 } from './digestJobs';
 
