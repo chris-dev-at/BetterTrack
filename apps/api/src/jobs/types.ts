@@ -39,6 +39,9 @@ export const QUEUE_NAMES = {
   // V5-P5 market intelligence (#582): the daily scan that emits the opt-in
   // earnings reminder for held/watched assets with a report in the lead window.
   earningsRemind: 'notifications.earningsRemind',
+  // V5-P5 market intelligence (#581): the daily scan that fires opt-in dividend
+  // ex-date reminders for held assets (idempotent per user+asset+ex-date).
+  marketIntelDividendScan: 'marketIntel.dividendScan',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -67,6 +70,7 @@ export interface JobPayloads {
   'snapshots.backfill': Record<string, never>;
   'usage.rollup': Record<string, never>;
   'notifications.earningsRemind': Record<string, never>;
+  'marketIntel.dividendScan': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }
 

@@ -20,6 +20,12 @@ import {
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
+import {
+  PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
+  PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
+  getPortfolioDividendCalendar,
+  getPortfolioDividendProjection,
+} from '../../lib/marketIntelApi';
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
@@ -28,6 +34,7 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitc
 import {
   EM_DASH,
   formatDate,
+  formatMoney,
   formatPercent,
   formatQuantity,
   formatSignedPercent,
@@ -944,6 +951,137 @@ function RecategorizeBanner() {
   );
 }
 
+// ─── Dividend intelligence (§13.5 V5-P5, arc a) ─────────────────────────────────
+
+/**
+ * Projected dividend income (monthly/yearly EUR) + the upcoming ex/pay calendar
+ * across held + watchlist assets. Both read the same `MARKET_INTEL_ENABLED`
+ * gate: gate off (or nothing to show) ⇒ the whole block renders NOTHING, so the
+ * portfolio page is byte-identical when unconfigured (anti-bloat "invisible when
+ * unconfigured"). Compact: one income line with a monthly/yearly toggle and a
+ * calendar truncated to three rows with an expand toggle.
+ */
+function DividendIntelSection() {
+  const t = useT();
+  const [view, setView] = useState<'monthly' | 'yearly'>('monthly');
+  const [showAll, setShowAll] = useState(false);
+
+  const projection = useQuery({
+    queryKey: PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
+    queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
+    staleTime: 3_600_000,
+  });
+  const calendar = useQuery({
+    queryKey: PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
+    queryFn: ({ signal }) => getPortfolioDividendCalendar(signal),
+    staleTime: 3_600_000,
+  });
+
+  // Invisible when unconfigured: nothing rendered until we know the gate is on.
+  if (!projection.data?.available) return null;
+
+  const proj = projection.data;
+  const entries = calendar.data?.available ? calendar.data.entries : [];
+  const hasProjection = proj.holdings.length > 0;
+  // Nothing at all to surface → stay hidden (anti-bloat).
+  if (!hasProjection && entries.length === 0) return null;
+
+  const visibleEntries = showAll ? entries : entries.slice(0, 3);
+  const total = view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
+
+  return (
+    <section
+      aria-label={t('portfolio.dividends.ariaLabel')}
+      className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-base font-semibold text-neutral-200">
+          {t('portfolio.dividends.title')}
+        </h2>
+        <div
+          role="group"
+          aria-label={t('portfolio.dividends.viewGroupLabel')}
+          className="inline-flex gap-0.5 rounded-md bg-neutral-900 p-0.5 ring-1 ring-inset ring-neutral-800"
+        >
+          {(['monthly', 'yearly'] as const).map((token) => (
+            <button
+              key={token}
+              type="button"
+              aria-pressed={token === view}
+              onClick={() => setView(token)}
+              className={cx(
+                'rounded px-2.5 py-1 text-xs font-medium transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400',
+                token === view
+                  ? 'bg-sky-600 text-white'
+                  : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100',
+              )}
+            >
+              {t(`portfolio.dividends.view.${token}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {hasProjection ? (
+        <p className="flex items-baseline gap-2">
+          <span className="text-2xl font-semibold tabular-nums text-neutral-100">
+            {formatMoney(total, 'EUR')}
+          </span>
+          <span className="text-xs text-neutral-500">
+            {view === 'monthly'
+              ? t('portfolio.dividends.perMonth')
+              : t('portfolio.dividends.perYear')}
+          </span>
+        </p>
+      ) : null}
+
+      {entries.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          <h3 className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+            {t('portfolio.dividends.calendarTitle')}
+          </h3>
+          <ul className="flex flex-col divide-y divide-neutral-800/70">
+            {visibleEntries.map((entry) => (
+              <li
+                key={`${entry.assetId}:${entry.exDate ?? entry.payDate ?? ''}`}
+                className="flex items-center justify-between gap-3 py-1.5 text-sm"
+              >
+                <Link
+                  to={`/assets/${entry.assetId}`}
+                  className="truncate font-medium text-neutral-200 hover:text-sky-400"
+                  title={entry.name}
+                >
+                  {entry.symbol}
+                </Link>
+                <span className="flex items-center gap-2 text-xs tabular-nums text-neutral-400">
+                  {entry.amount != null ? (
+                    <span className="text-neutral-300">
+                      {formatMoney(entry.amount, entry.currency ?? undefined)}
+                    </span>
+                  ) : null}
+                  <span>{t('portfolio.dividends.exOn', { date: formatDate(entry.exDate) })}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          {entries.length > 3 ? (
+            <button
+              type="button"
+              onClick={() => setShowAll((v) => !v)}
+              className="self-start text-xs text-sky-400 hover:underline"
+            >
+              {showAll
+                ? t('portfolio.dividends.showLess')
+                : t('portfolio.dividends.showMore', { count: entries.length - 3 })}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -1284,6 +1422,8 @@ export function PortfolioPage() {
           </section>
 
           <WinnersLosersSection holdings={holdings} />
+
+          <DividendIntelSection />
 
           <RecentTransactionsSection transactions={transactionsQuery.data?.items ?? []} />
         </>

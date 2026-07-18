@@ -148,6 +148,8 @@ const componentSchemas = {
   EarningsCalendarResponse: contracts.earningsCalendarResponseSchema,
   NewsResponse: contracts.newsResponseSchema,
   SplitsResponse: contracts.splitsResponseSchema,
+  DividendCalendarResponse: contracts.dividendCalendarResponseSchema,
+  ProjectedDividendIncomeResponse: contracts.projectedDividendIncomeResponseSchema,
 
   // Portfolios (§6.8, §13.2 V2-P8)
   CreatePortfolioRequest: contracts.createPortfolioRequestSchema,
@@ -1481,6 +1483,22 @@ const endpoints: EndpointDef[] = [
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.SplitsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/portfolio/dividend-calendar',
+    tag: 'Assets',
+    summary: 'Upcoming dividend ex/pay dates across the caller’s held + watchlist assets.',
+    status: 200,
+    response: R.DividendCalendarResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/portfolio/dividend-projection',
+    tag: 'Assets',
+    summary: 'Projected dividend income for the whole portfolio (monthly + yearly, EUR).',
+    status: 200,
+    response: R.ProjectedDividendIncomeResponse,
   },
 
   // Portfolios (§6.8)

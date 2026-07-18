@@ -44,6 +44,7 @@ describe('notification taxonomy (#368)', () => {
       'alert.triggered',
       'earnings.reminder',
       'chat.message',
+      'dividend.event',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',
@@ -85,18 +86,27 @@ describe('lean email defaults (V4-P0c)', () => {
 });
 
 describe('opt-in notification types (§13.5 V5-P5)', () => {
-  it('earnings.reminder is the opt-in set and defaults OFF on every channel', () => {
-    expect([...OPT_IN_NOTIFICATION_TYPES]).toEqual(['earnings.reminder']);
+  it('the markets category is exactly the opt-in set', () => {
+    expect([...OPT_IN_NOTIFICATION_TYPES].sort()).toEqual(['dividend.event', 'earnings.reminder']);
+    const marketsCategory = NOTIFICATION_CATEGORIES.find((c) => c.key === 'markets');
+    expect([...OPT_IN_NOTIFICATION_TYPES].sort()).toEqual(
+      [...(marketsCategory?.types ?? [])].sort(),
+    );
+  });
+
+  it('an opt-in type defaults OFF on every channel', () => {
     for (const type of OPT_IN_NOTIFICATION_TYPES) {
       expect(isOptInNotificationType(type)).toBe(true);
-      for (const channel of ['inapp', 'email', 'telegram', 'discord', 'push', 'webpush']) {
+      for (const channel of NOTIFICATION_SETTING_CHANNELS) {
         expect(notificationChannelDefaultEnabled(channel, type)).toBe(false);
       }
     }
   });
 
-  it('opt-in types are not in the urgent-bypass class (quiet hours still applies)', () => {
-    expect(isUrgentNotification({ type: 'earnings.reminder' })).toBe(false);
+  it('an opt-in type is not urgent (never bypasses quiet hours)', () => {
+    for (const type of OPT_IN_NOTIFICATION_TYPES) {
+      expect(isUrgentNotification({ type })).toBe(false);
+    }
   });
 });
 

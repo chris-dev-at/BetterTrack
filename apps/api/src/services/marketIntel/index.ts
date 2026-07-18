@@ -13,3 +13,9 @@ export {
   type EarningsReminderScanDeps,
   type EarningsReminderScanResult,
 } from './earningsReminder';
+
+export {
+  createPortfolioMarketIntelService,
+  type PortfolioMarketIntelService,
+  type PortfolioMarketIntelDeps,
+} from './portfolioMarketIntelService';

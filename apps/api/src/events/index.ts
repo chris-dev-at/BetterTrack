@@ -24,6 +24,7 @@ export type {
   AccountDataExportEvent,
   EarningsReminderEvent,
   ChatMessageEvent,
+  DividendEventNotice,
 } from './types';
 export { DOMAIN_EVENT_TYPES } from './types';
 export {

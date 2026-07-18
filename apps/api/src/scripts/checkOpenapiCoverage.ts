@@ -101,6 +101,7 @@ function buildInertContext(): AppContext {
     marketData: inertService('marketData'),
     assets: inertService('assets'),
     marketIntel: inertService('marketIntel'),
+    portfolioMarketIntel: inertService('portfolioMarketIntel'),
     search: inertService('search'),
     portfolio: inertService('portfolio'),
     snapshots: inertService('snapshots'),

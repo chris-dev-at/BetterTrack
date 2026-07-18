@@ -420,6 +420,10 @@
         "followAlertFired": {
           "label": "Ausgelöste Alarme von Personen, denen du folgst",
           "description": "Wenn ein Preisalarm von jemandem, dem du folgst, auslöst (nur Personen, deren Alarm-Neuigkeiten du aktiviert hast)."
+        },
+        "dividendEvent": {
+          "label": "Dividenden-Erinnerungen",
+          "description": "Wenn eine Aktie, die du hältst, bald ex Dividende notiert. Standardmäßig aus."
         }
       },
       "routing": {
@@ -1543,6 +1547,21 @@
       "message": "Einige individuelle Anlagen brauchen eine Kategorie. Wir haben sie auf „Sonstiges“ verschoben — öffne eine und wähle eine passende Kategorie, damit sie korrekt gruppiert wird.",
       "dismiss": "Ausblenden"
     },
+    "dividends": {
+      "ariaLabel": "Dividendeneinkommen und Kalender",
+      "title": "Dividenden",
+      "viewGroupLabel": "Zeitraum der prognostizierten Erträge",
+      "view": {
+        "monthly": "Monatlich",
+        "yearly": "Jährlich"
+      },
+      "perMonth": "prognostiziert / Monat",
+      "perYear": "prognostiziert / Jahr",
+      "calendarTitle": "Bevorstehende Ex-Dividenden-Tage",
+      "exOn": "Ex {{date}}",
+      "showMore": "{{count}} weitere anzeigen",
+      "showLess": "Weniger anzeigen"
+    },
     "import": {
       "title": "Broker-CSV-Import",
       "intro": "Lade den CSV-Export deines Brokers hoch, um bestehende Trades, Dividenden und Cash-Bewegungen in dieses Portfolio zu übernehmen. Die Zeilen werden zuerst als Vorschau angezeigt — gebucht wird erst nach deiner Bestätigung. Broker-Konten werden nie direkt verbunden.",
@@ -1990,6 +2009,15 @@
         "title": "Enthalten in",
         "emptyTitle": "In keinem Konglomerat oder Portfolio",
         "emptyDescription": "Füge diese Anlage einem Konglomerat hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
+      },
+      "dividends": {
+        "title": "Dividenden",
+        "forwardYield": "Erwartete Rendite",
+        "trailing": "Letzte 12 Monate je Anteil",
+        "nextExDate": "Nächster Ex-Tag",
+        "nextPayDate": "Nächster Zahltag",
+        "history": "Ausschüttungsverlauf",
+        "historyAriaLabel": "Verlauf der Dividendenausschüttungen"
       },
       "earnings": {
         "title": "Quartalszahlen",

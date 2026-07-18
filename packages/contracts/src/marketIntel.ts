@@ -96,6 +96,88 @@ export const dividendsResponseSchema = dividendEventsSchema
   .strict();
 export type DividendsResponse = z.infer<typeof dividendsResponseSchema>;
 
+// ── Portfolio dividend intelligence (arc a, portfolio-level) ─────────────────
+// Aggregations over the caller's own holdings + watchlists, computed on read
+// from the same provider/cache keystone (NO storage). `available` mirrors the
+// per-asset shape: it is the global `MARKET_INTEL_ENABLED` gate, so the UI hides
+// the whole block when it is false (invisible when unconfigured).
+
+/** Whether a calendar entry's asset is currently held or only watchlisted. */
+export const DIVIDEND_CALENDAR_SOURCES = ['holding', 'watchlist'] as const;
+export const dividendCalendarSourceSchema = z.enum(DIVIDEND_CALENDAR_SOURCES);
+export type DividendCalendarSource = z.infer<typeof dividendCalendarSourceSchema>;
+
+/**
+ * One upcoming ex/pay event on the portfolio dividend calendar, carrying the
+ * asset identity so the UI renders a row without a second lookup. `source`
+ * distinguishes a held position from a watchlist-only asset (an asset that is
+ * both resolves to `holding`).
+ */
+export const dividendCalendarEntrySchema = z
+  .object({
+    assetId: z.string(),
+    symbol: z.string(),
+    name: z.string(),
+    source: dividendCalendarSourceSchema,
+    exDate: z.string().datetime().nullable(),
+    payDate: z.string().datetime().nullable(),
+    amount: z.number().nonnegative().nullable(),
+    currency: currencyCodeSchema.nullable(),
+  })
+  .strict();
+export type DividendCalendarEntry = z.infer<typeof dividendCalendarEntrySchema>;
+
+/**
+ * `GET /assets/portfolio/dividend-calendar` — the caller's upcoming ex/pay
+ * events across held + watchlist assets, ascending by the earliest of
+ * ex-date/pay-date. `available: false` (gate off) ⇒ empty and hidden.
+ */
+export const dividendCalendarResponseSchema = z
+  .object({
+    available: z.boolean(),
+    entries: z.array(dividendCalendarEntrySchema),
+  })
+  .strict();
+export type DividendCalendarResponse = z.infer<typeof dividendCalendarResponseSchema>;
+
+/**
+ * One holding's projected annual dividend income. `annualPerShare` is the
+ * forward estimate in the asset's dividend `currency` (the provider's trailing
+ * 12-month dividend per share, the standard "assume it continues" proxy);
+ * `annualIncomeEur` is `quantity × annualPerShare` converted to EUR at the
+ * current spot rate.
+ */
+export const projectedDividendHoldingSchema = z
+  .object({
+    assetId: z.string(),
+    symbol: z.string(),
+    name: z.string(),
+    quantity: z.number().nonnegative(),
+    annualPerShare: z.number().nonnegative(),
+    currency: currencyCodeSchema,
+    annualIncomeEur: z.number().nonnegative(),
+  })
+  .strict();
+export type ProjectedDividendHolding = z.infer<typeof projectedDividendHoldingSchema>;
+
+/**
+ * `GET /assets/portfolio/dividend-projection` — projected dividend income for
+ * the whole portfolio, monthly + yearly, EUR. `monthlyTotalEur` is
+ * `yearlyTotalEur / 12` (an even spread — the clean series shape the V5-P6b
+ * Forecast consumes). `currency` is always EUR. `available: false` (gate off) ⇒
+ * zeros/empty and hidden.
+ */
+export const projectedDividendIncomeResponseSchema = z
+  .object({
+    available: z.boolean(),
+    currency: currencyCodeSchema,
+    monthlyTotalEur: z.number().nonnegative(),
+    yearlyTotalEur: z.number().nonnegative(),
+    holdings: z.array(projectedDividendHoldingSchema),
+  })
+  .strict();
+export type ProjectedDividendIncomeResponse = z.infer<typeof projectedDividendIncomeResponseSchema>;
+
 // ── Earnings (arc b) ─────────────────────────────────────────────────────────
 
 /**

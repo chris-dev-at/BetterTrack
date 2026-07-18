@@ -87,7 +87,12 @@ import {
 } from '../services/featureFlags/featureFlagService';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
-import { createMarketIntelService, type MarketIntelService } from '../services/marketIntel';
+import {
+  createMarketIntelService,
+  createPortfolioMarketIntelService,
+  type MarketIntelService,
+  type PortfolioMarketIntelService,
+} from '../services/marketIntel';
 import { createBacktestService, type BacktestService } from '../services/backtest/backtestService';
 import {
   createAnalyticsService,
@@ -216,6 +221,12 @@ export interface AppContext {
    * than erroring; the follow-up P5 UI keys visibility off `available`.
    */
   marketIntel: MarketIntelService;
+  /**
+   * Portfolio-level dividend intelligence (§13.5 V5-P5, arc a): the upcoming
+   * ex/pay calendar + projected income (monthly/yearly EUR) over held +
+   * watchlist assets. Pure reads, gated by `MARKET_INTEL_ENABLED`.
+   */
+  portfolioMarketIntel: PortfolioMarketIntelService;
   /** Local-first catalog search + background provider enrichment (§6.2). */
   search: SearchService;
   /** Transactions, holdings/totals and the value-over-time series (§6.9). */
@@ -783,6 +794,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     enabled: config.marketIntel.enabled,
   });
 
+  // Portfolio-level dividend intelligence (§13.5 V5-P5, arc a): calendar +
+  // projected income over the caller's held + watchlist assets. Same gate as the
+  // per-asset reads; pure on-read computation, no storage.
+  const portfolioMarketIntel = createPortfolioMarketIntelService({
+    marketData,
+    repo: createMarketIntelRepository(db),
+    currency,
+    enabled: config.marketIntel.enabled,
+    logger,
+  });
+
   // First-reference history warming (§6.2/§9): the first workboard add or
   // transaction on a history-less asset enqueues its max-range backfill —
   // this is how seeded catalog rows (§6.2(c)) get price history at all.
@@ -1183,6 +1205,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     assets,
     marketIntel,
+    portfolioMarketIntel,
     search,
     portfolio,
     snapshots,

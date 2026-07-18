@@ -164,6 +164,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.chatMessage.label'),
       description: t('settings.notifications.types.chatMessage.description'),
     },
+    'dividend.event': {
+      label: t('settings.notifications.types.dividendEvent.label'),
+      description: t('settings.notifications.types.dividendEvent.description'),
+    },
   };
 }
 

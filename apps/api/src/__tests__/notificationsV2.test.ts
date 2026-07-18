@@ -284,7 +284,7 @@ describe('GET/PATCH /api/v1/settings/notifications — v2 surface (#368)', () =>
         continue;
       }
       // Bell + both push channels + telegram + discord default ON for EVERY
-      // type — unchanged/added by V4-P10.
+      // other type — unchanged/added by V4-P10.
       expect(cell).toMatchObject({
         inapp: true,
         push: true,

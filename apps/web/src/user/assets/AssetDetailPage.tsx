@@ -22,8 +22,10 @@ import { useT } from '../../i18n';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
 import {
+  ASSET_DIVIDENDS_QUERY_KEY,
   ASSET_EARNINGS_QUERY_KEY,
   ASSET_SPLITS_QUERY_KEY,
+  getAssetDividends,
   getAssetEarnings,
   getAssetSplits,
 } from '../../lib/marketIntelApi';
@@ -35,9 +37,15 @@ import {
   useWatchlistMembership,
 } from '../../lib/workboardApi';
 import { cx } from '../../lib/cx';
-import { formatDate, formatDateTime, formatSignedPercent } from '../../lib/format';
+import {
+  formatDate,
+  formatDateTime,
+  formatPercent,
+  formatSignedPercent,
+  formatUnitPrice,
+} from '../../lib/format';
 import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
-import { PriceChart } from '../../ui/charts';
+import { PriceChart, Sparkline } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
 import { CapabilityTags } from './capabilityTags';
 import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
@@ -282,6 +290,83 @@ function AlertsSection({
         />
       ) : null}
       {editing ? <AlertDialog existing={editing} onClose={() => setEditing(null)} /> : null}
+    </section>
+  );
+}
+
+/**
+ * Dividend intelligence block (§13.5 V5-P5, arc a): payout-history sparkline,
+ * forward yield, trailing per-share amount, and the next ex/pay dates. Fully
+ * absent — renders nothing — whenever the capability is unavailable (gate off,
+ * provider lacks it, or upstream errored) so the surface stays invisible when
+ * unconfigured (anti-bloat). Compact: a small stat row + a mini history chart.
+ */
+function DividendsSection({ assetId }: { assetId: string }) {
+  const t = useT();
+  const { data } = useQuery({
+    queryKey: ASSET_DIVIDENDS_QUERY_KEY(assetId),
+    queryFn: ({ signal }) => getAssetDividends(assetId, signal),
+    staleTime: 3_600_000,
+  });
+
+  // Invisible when unconfigured — the whole block disappears (regression-guarded).
+  if (!data?.available) return null;
+
+  const { history, upcoming, forwardYield, trailingAmount, currency } = data;
+  const next = upcoming[0] ?? null;
+  const nothingToShow =
+    forwardYield == null &&
+    trailingAmount == null &&
+    history.length === 0 &&
+    (!next || (!next.exDate && !next.payDate));
+  if (nothingToShow) return null;
+
+  const sparkData = history
+    .map((h) => h.amount)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+
+  return (
+    <section aria-labelledby="dividends-heading" className="flex flex-col gap-3">
+      <h2 id="dividends-heading" className="text-base font-semibold text-neutral-200">
+        {t('assets.detail.dividends.title')}
+      </h2>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {forwardYield != null ? (
+          <StatCard
+            label={t('assets.detail.dividends.forwardYield')}
+            value={formatPercent(forwardYield * 100)}
+          />
+        ) : null}
+        {trailingAmount != null ? (
+          <StatCard
+            label={t('assets.detail.dividends.trailing')}
+            value={formatUnitPrice(trailingAmount, currency ?? undefined)}
+          />
+        ) : null}
+        {next?.exDate ? (
+          <StatCard
+            label={t('assets.detail.dividends.nextExDate')}
+            value={formatDate(next.exDate)}
+          />
+        ) : null}
+        {next?.payDate ? (
+          <StatCard
+            label={t('assets.detail.dividends.nextPayDate')}
+            value={formatDate(next.payDate)}
+          />
+        ) : null}
+      </div>
+      {sparkData.length > 1 ? (
+        <div className="flex items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+          <span className="text-xs text-neutral-500">{t('assets.detail.dividends.history')}</span>
+          <Sparkline
+            data={sparkData}
+            width={140}
+            height={32}
+            ariaLabel={t('assets.detail.dividends.historyAriaLabel')}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -932,6 +1017,7 @@ export function AssetDetailPage() {
       <StatsRow detail={detail} liveQuote={quoteQuery.data} />
 
       {/* Sections */}
+      <DividendsSection assetId={id} />
       <AppearsInSection />
       {/* Market intelligence (§13.5 V5-P5) — each block self-hides when its
           capability is unavailable, so the page is byte-identical when the arc

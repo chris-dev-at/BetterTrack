@@ -99,6 +99,20 @@ export {
 } from './earningsReminderJob';
 
 export {
+  createDividendEventsScanJob,
+  runDividendEventsScan,
+  dividendNotifyGate,
+  DIVIDEND_SCAN_SCHEDULER_ID,
+  DIVIDEND_SCAN_CRON,
+  DIVIDEND_SCAN_TZ,
+  DIVIDEND_EVENT_HORIZON_DAYS,
+  type DividendEventsJobDeps,
+  type DividendEventsScanDeps,
+  type DividendScanResult,
+  type DividendNotifyGate,
+} from './dividendEventsJob';
+
+export {
   createPricesRefreshDailyJob,
   createPricesBackfillJob,
   createFxRefreshSpotJob,
