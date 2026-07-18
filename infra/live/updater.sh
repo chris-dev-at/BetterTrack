@@ -44,9 +44,34 @@ BASE="$APP/infra/docker-compose.yml"
 OVR="$CONTROL/compose.override.yml"
 PROJECT="bettertrack-live"
 DEPLOYED_SHA="$CONTROL/logs/deployed.sha"
+FAILCOUNT_FILE="$CONTROL/logs/consecutive-deploy-failures"
+STUCK_MARKER="$CONTROL/logs/DEPLOY_STUCK"
+FAIL_ESCALATE_AT="${FAIL_ESCALATE_AT:-3}"
 
 mkdir -p "$CONTROL/logs"
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"; }
+
+# Consecutive-failure escalation (#606). A rebase once rewrote the drizzle
+# journal so `db:migrate` failed on EVERY tick for ~2 days — 585 in a row —
+# while the site kept serving the last good build, so nothing ever surfaced the
+# stall. Rather than log the identical failure line forever, count consecutive
+# failed deploys and, once FAIL_ESCALATE_AT is reached, emit a distinct,
+# greppable line + drop a marker file the host can watch. Any good tick (a
+# successful deploy OR an up-to-date tick) clears the state.
+deploy_ok() { rm -f "$FAILCOUNT_FILE" "$STUCK_MARKER" 2>/dev/null || true; }
+
+deploy_failed() {
+  # $1 = the remote SHA this deploy was targeting
+  _fails=$(( $(cat "$FAILCOUNT_FILE" 2>/dev/null || echo 0) + 1 ))
+  printf '%s\n' "$_fails" >"$FAILCOUNT_FILE"
+  if [ "$_fails" -ge "$FAIL_ESCALATE_AT" ]; then
+    log "DEPLOY STUCK: ${_fails} consecutive failed deploys targeting ${1} — the site still serves the last good build, but new commits are NOT going live; investigate ${LOG} (marker: ${STUCK_MARKER})"
+    printf '%s %s consecutive failed deploys targeting %s — see %s\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_fails" "$1" "$LOG" >"$STUCK_MARKER"
+  else
+    log "update FAILED at ${1} — retrying next tick (failure ${_fails}/${FAIL_ESCALATE_AT}; see output above)"
+  fi
+}
 
 # Log WHY this deploy is firing: the commits between the last deployed SHA and the
 # new one (owner ask). Summary line + one line per non-merge commit; squash-merges
@@ -226,16 +251,18 @@ while true; do
           dc up -d db redis api web worker landing >>"$LOG" 2>&1; then
           printf '%s\n' "$REMOTE" >"$DEPLOYED_SHA"
           log "update complete -> ${REMOTE}"
+          deploy_ok
           # Post-deploy adoptions (#460 follow-up). Never fail the deploy;
           # self_update can restart this container, so it must stay LAST.
           sync_product_html
           adopt_edge_conf
           self_update
         else
-          log "update FAILED at ${REMOTE} — retrying next tick (see output above)"
+          deploy_failed "$REMOTE"
         fi
       else
         log "up-to-date (${REMOTE})"
+        deploy_ok
       fi
     else
       log "git fetch failed (offline?)"
