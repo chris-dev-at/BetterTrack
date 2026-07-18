@@ -112,6 +112,8 @@ const componentSchemas = {
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement)
   Problem: contracts.problemSchema,
   ProblemListResponse: contracts.problemListResponseSchema,
+  // Admin usage analytics (§13.5 V5-P2 arc (b), first-party only)
+  UsageAnalyticsResponse: contracts.usageAnalyticsResponseSchema,
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c))
   FeatureFlagsResponse: contracts.featureFlagsResponseSchema,
@@ -1240,6 +1242,14 @@ const endpoints: EndpointDef[] = [
     query: contracts.auditQuerySchema,
     status: 200,
     response: R.AuditLogListResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/usage-analytics',
+    tag: 'Admin',
+    summary: 'First-party usage analytics: DAU/WAU/MAU, feature counters, top assets, funnel.',
+    status: 200,
+    response: R.UsageAnalyticsResponse,
   },
   {
     method: 'get',

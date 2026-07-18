@@ -15,6 +15,7 @@ import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
 import { ProblemsPage } from './pages/ProblemsPage';
+import { UsageAnalyticsPage } from './pages/UsageAnalyticsPage';
 import { SecuritySettingsPage } from './pages/SecuritySettingsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TwoFactorChallengePage } from './pages/TwoFactorChallengePage';
@@ -48,6 +49,7 @@ function AdminShell() {
         <Route path="audit" element={<AuditPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="problems" element={<ProblemsPage />} />
+        <Route path="usage-analytics" element={<UsageAnalyticsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="feature-flags" element={<FeatureFlagsPage />} />
         <Route path="account-defaults" element={<AccountDefaultsPage />} />

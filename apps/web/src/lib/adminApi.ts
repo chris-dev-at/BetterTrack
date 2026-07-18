@@ -24,6 +24,7 @@ import {
   okResponseSchema,
   problemSchema,
   problemListResponseSchema,
+  usageAnalyticsResponseSchema,
   createRegistrationTokenResponseSchema,
   registrationRequestListResponseSchema,
   registrationTokenListResponseSchema,
@@ -63,6 +64,7 @@ import {
   type ProblemKind,
   type ProblemListResponse,
   type ProblemStatus,
+  type UsageAnalyticsResponse,
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
@@ -336,6 +338,13 @@ export async function resolveProblem(id: string): Promise<Problem> {
 export async function reopenProblem(id: string): Promise<Problem> {
   const data = await apiRequest<unknown>(`/admin/problems/${id}/reopen`, { method: 'POST' });
   return problemSchema.parse(data);
+}
+
+// --- Admin: Usage analytics (§13.5 V5-P2 arc (b), first-party only) --------
+
+export async function getUsageAnalytics(signal?: AbortSignal): Promise<UsageAnalyticsResponse> {
+  const data = await apiRequest<unknown>('/admin/usage-analytics', { signal });
+  return usageAnalyticsResponseSchema.parse(data);
 }
 
 // --- Admin: global settings -----------------------------------------------

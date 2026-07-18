@@ -11,6 +11,7 @@ import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth
 import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
 import { createMetricsMiddleware } from './http/middleware/metrics';
+import { createUsageCaptureMiddleware } from './http/middleware/usageCapture';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { requireFeature } from './http/middleware/featureFlag';
 import { enforcePasswordChange, loadSession, requireAdmin } from './http/middleware/session';
@@ -97,6 +98,11 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
   app.use('/api/v1', enforceApiKeyScope(ctx));
+
+  // First-party usage capture (§13.5 V5-P2 arc (b)): folds one in-memory signal
+  // per authenticated request on `finish` (no route, no third-party tracker).
+  // Mounted after the auth chain so `req.authUser` is resolved for the capture.
+  app.use('/api/v1', createUsageCaptureMiddleware(ctx.usageAnalytics));
 
   app.use('/api/v1', healthRouter);
   // SPA-bootstrap advertisement of the effective runtime feature flags (§13.5

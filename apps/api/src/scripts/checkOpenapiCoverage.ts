@@ -144,6 +144,7 @@ function buildInertContext(): AppContext {
     },
     health: inertService('health'),
     problems: inertService('problems'),
+    usageAnalytics: inertService('usageAnalytics'),
     featureFlags: inertService('featureFlags'),
   };
 }

@@ -33,6 +33,7 @@ import {
   createQueueRegistry,
   createSnapshotsBackfillJob,
   createSnapshotsRecomputeJob,
+  createUsageRollupJob,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
@@ -44,6 +45,8 @@ import { createTransactionRepository } from '../data/repositories/transactionRep
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createPortfolioSnapshotService } from '../services/portfolio/portfolioSnapshots';
+import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
+import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
 import { createMarketData } from '../providers';
 import { initObservability } from '../services/observability/sentry';
@@ -229,6 +232,15 @@ const snapshots = createPortfolioSnapshotService({
   logger,
 });
 
+// V5-P2 usage analytics (#567): the worker owns a rollup-only instance (no
+// capture happens here — the API captures) that materializes the daily
+// aggregates the admin page serves. Timer off; the cron drives it.
+const usageAnalytics = createUsageAnalyticsService({
+  repo: createUsageAnalyticsRepository(db),
+  logger,
+  startTimer: false,
+});
+
 const definitions = [
   ...createJobDefinitions({
     db,
@@ -247,6 +259,7 @@ const definitions = [
   createExportCleanupJob({ exportService: dataExportService }),
   createSnapshotsRecomputeJob({ snapshots }),
   createSnapshotsBackfillJob({ snapshots }),
+  createUsageRollupJob({ usageAnalytics }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

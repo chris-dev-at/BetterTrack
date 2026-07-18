@@ -2433,7 +2433,8 @@
       "openMenu": "Open admin menu",
       "closeMenu": "Close admin menu",
       "problems": "Problems",
-      "featureFlags": "Feature flags"
+      "featureFlags": "Feature flags",
+      "usageAnalytics": "Usage analytics"
     },
     "security": {
       "title": "Security",
@@ -2645,6 +2646,40 @@
           "name": "AI",
           "description": "AI insights and assistant (reserved — not yet built)."
         }
+      }
+    },
+    "usageAnalytics": {
+      "title": "Usage analytics",
+      "subtitle": "First-party usage only — no third-party trackers.",
+      "refresh": "Refresh",
+      "loadError": "Could not load usage analytics.",
+      "noData": "No data yet.",
+      "dau": "Daily active users",
+      "wau": "Weekly active users",
+      "mau": "Monthly active users",
+      "funnel": "Registration funnel",
+      "features": "Feature usage",
+      "topAssets": "Top assets",
+      "activity": "Activity",
+      "windowHint": "Last {{days}} days",
+      "views": "{{count}} views",
+      "eventsLabel": "Events",
+      "activeUsersLabel": "Active users",
+      "stage": {
+        "registered": "Registered",
+        "activated": "Activated",
+        "weeklyActive": "Active (7d)",
+        "dailyActive": "Active (1d)"
+      },
+      "feature": {
+        "portfolio": "Portfolio",
+        "workboard": "Workboard",
+        "assets": "Assets",
+        "social": "Social",
+        "alerts": "Alerts",
+        "analytics": "Analytics",
+        "imports": "Imports",
+        "settings": "Settings"
       }
     }
   }
