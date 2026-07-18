@@ -14,6 +14,7 @@ import {
   realtimePresenceRequestSchema,
   realtimeRoomRequestSchema,
   type AssetRef,
+  type FeatureFlagKey,
   type PresenceSurface,
   type RealtimeChatMessage,
   type RealtimeLiveWatchAck,
@@ -112,6 +113,12 @@ export interface RealtimeGatewayDeps {
    */
   liveMode: LiveModeService | null;
   /**
+   * Runtime feature kill-switch read (§13.5 V5-P2 arc (c)): consulted per
+   * connection (`realtime`) and per live-watch (`liveMode`). Omitted ⇒ always
+   * enabled, so a gateway built without it is byte-identical to before.
+   */
+  isFeatureEnabled?: (key: FeatureFlagKey) => Promise<boolean>;
+  /**
    * Resolve an asset the user may view (global or their own custom asset,
    * §10) to its provider ref for the poll loop; null when missing/foreign —
    * indistinguishable, exactly like the HTTP 404 (§10 no-leak rule).
@@ -156,6 +163,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
   type ResolvedUser = { id: string; role: 'user' | 'admin'; mustChangePassword: boolean };
   const BEARER_PREFIX = 'Bearer ';
+
+  /** Runtime kill-switch read — always-on when no evaluator was injected. */
+  const featureEnabled = (key: FeatureFlagKey): Promise<boolean> =>
+    deps.isFeatureEnabled ? deps.isFeatureEnabled(key) : Promise.resolve(true);
 
   /** Resolve the handshake's session cookie to a user-app account, or null. */
   async function resolveCookieUser(socket: Socket): Promise<ResolvedUser | null> {
@@ -312,6 +323,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     }
     const liveMode = deps.liveMode;
     if (!liveMode) {
+      respond({ ok: false, error: 'UNAVAILABLE' });
+      return;
+    }
+    // Runtime kill-switch (§13.5 V5-P2 arc (c)): `liveMode` flipped OFF stops new
+    // watches on the next op; the SPA falls back to its poll cadence.
+    if (!(await featureEnabled('liveMode'))) {
       respond({ ok: false, error: 'UNAVAILABLE' });
       return;
     }
@@ -485,14 +502,24 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       });
 
       io.use((socket, next) => {
-        authenticate(socket)
-          .then((userId) => {
-            if (!userId) {
-              next(new Error('UNAUTHORIZED'));
-              return;
+        // Runtime kill-switch (§13.5 V5-P2 arc (c)): with `realtime` flipped OFF
+        // the gateway refuses new sockets on the very next handshake — no
+        // redeploy. The SPA also stops dialing once it reads the advertised flag;
+        // this is the server-side backstop for a stale client or a direct dial.
+        featureEnabled('realtime')
+          .then((on) => {
+            if (!on) {
+              next(new Error('UNAVAILABLE'));
+              return undefined;
             }
-            socket.data.userId = userId;
-            next();
+            return authenticate(socket).then((userId) => {
+              if (!userId) {
+                next(new Error('UNAUTHORIZED'));
+                return;
+              }
+              socket.data.userId = userId;
+              next();
+            });
           })
           .catch((err) => {
             logger.warn({ err }, 'realtime handshake auth failed');

@@ -4,6 +4,7 @@ import helmet from 'helmet';
 
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
+import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
 import { healthRouter } from './http/healthRouter';
 import { versionRouter } from './http/versionRouter';
 import { loadBearerAuth, enforceApiKeyScope } from './http/middleware/bearerAuth';
@@ -11,6 +12,7 @@ import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
 import { createMetricsMiddleware } from './http/middleware/metrics';
 import { createRateLimiters } from './http/middleware/rateLimit';
+import { requireFeature } from './http/middleware/featureFlag';
 import { enforcePasswordChange, loadSession, requireAdmin } from './http/middleware/session';
 import { createOpenApiRouter } from './http/openapi';
 import { createAccountRouter } from './http/routes/accountRoutes';
@@ -96,6 +98,11 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', enforceApiKeyScope(ctx));
 
   app.use('/api/v1', healthRouter);
+  // SPA-bootstrap advertisement of the effective runtime feature flags (§13.5
+  // V5-P2 arc (c)): the client reads this to hide any killed surface. Read-only
+  // + non-sensitive (just the on/off map), so it needs no CSRF header and no
+  // special auth beyond the guarded chain above.
+  app.use('/api/v1/feature-flags', createFeatureFlagsRouter(ctx));
   app.use('/api/v1/auth', createAuthRouter(ctx, limiters));
   app.use('/api/v1/account', createAccountRouter(ctx, limiters));
   // bull-board queue inspector (§13.4 V4-P5a), mounted admin-only and BEFORE the
@@ -113,12 +120,15 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
   app.use('/api/v1/ideas', createIdeasRouter(ctx));
-  app.use('/api/v1/imports', createImportsRouter(ctx));
+  // Runtime kill-switches (§13.5 V5-P2 arc (c)): `requireFeature` refuses the
+  // whole router (clean 404) the moment an admin flips the flag OFF — evaluated
+  // per request, no redeploy.
+  app.use('/api/v1/imports', requireFeature(ctx, 'imports'), createImportsRouter(ctx));
   app.use('/api/v1/analytics', createAnalyticsRouter(ctx));
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
-  app.use('/api/v1/chat', createChatRouter(ctx));
+  app.use('/api/v1/chat', requireFeature(ctx, 'chat'), createChatRouter(ctx));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
-  app.use('/api/v1/alerts', createAlertsRouter(ctx));
+  app.use('/api/v1/alerts', requireFeature(ctx, 'alerts'), createAlertsRouter(ctx));
   app.use('/api/v1/settings', createSettingsRouter(ctx));
   // Session-authenticated OAuth consent endpoints (authorize + authorization-
   // details). The public /oauth/token router above already handled its path.

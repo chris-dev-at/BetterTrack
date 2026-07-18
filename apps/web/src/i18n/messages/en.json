@@ -2401,7 +2401,8 @@
       "menu": "Admin menu",
       "openMenu": "Open admin menu",
       "closeMenu": "Close admin menu",
-      "problems": "Problems"
+      "problems": "Problems",
+      "featureFlags": "Feature flags"
     },
     "security": {
       "title": "Security",
@@ -2573,6 +2574,47 @@
       "context": "Context",
       "resolve": "Resolve",
       "reopen": "Reopen"
+    },
+    "featureFlags": {
+      "title": "Feature flags",
+      "subtitle": "Runtime kill-switches. Flipping one takes effect on the next request — no redeploy.",
+      "refresh": "Refresh",
+      "loadError": "Could not load feature flags.",
+      "actionError": "Could not update the feature flag.",
+      "featureColumn": "Feature",
+      "stateColumn": "State",
+      "lastChangedColumn": "Last changed",
+      "on": "On",
+      "off": "Off",
+      "enable": "Enable",
+      "disable": "Disable",
+      "never": "Never changed",
+      "flag": {
+        "realtime": {
+          "name": "Realtime",
+          "description": "Live push updates over the realtime connection."
+        },
+        "liveMode": {
+          "name": "Live Mode",
+          "description": "Intraday live streaming of asset prices."
+        },
+        "chat": {
+          "name": "Chat",
+          "description": "Friend direct messages."
+        },
+        "alerts": {
+          "name": "Price alerts",
+          "description": "Price-alert rules and firing."
+        },
+        "imports": {
+          "name": "Imports",
+          "description": "Broker CSV imports."
+        },
+        "ai": {
+          "name": "AI",
+          "description": "AI insights and assistant (reserved — not yet built)."
+        }
+      }
     }
   }
 }

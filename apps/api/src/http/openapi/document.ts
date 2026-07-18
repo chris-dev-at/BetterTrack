@@ -113,6 +113,11 @@ const componentSchemas = {
   Problem: contracts.problemSchema,
   ProblemListResponse: contracts.problemListResponseSchema,
 
+  // Runtime feature kill-switches (§13.5 V5-P2 arc (c))
+  FeatureFlagsResponse: contracts.featureFlagsResponseSchema,
+  AdminFeatureFlagsResponse: contracts.adminFeatureFlagsResponseSchema,
+  UpdateFeatureFlagRequest: contracts.updateFeatureFlagRequestSchema,
+
   // Workboard (§6.4, §13.2 V2-P9)
   AddToWorkboardRequest: contracts.addToWorkboardRequestSchema,
   ReorderWorkboardRequest: contracts.reorderWorkboardRequestSchema,
@@ -391,6 +396,15 @@ const endpoints: EndpointDef[] = [
     public: true,
     status: 200,
     response: R.HealthResponse,
+  },
+  {
+    method: 'get',
+    path: '/feature-flags',
+    tag: 'Meta',
+    summary:
+      'Effective runtime feature flags advertised to the SPA (killed features hide client-side).',
+    status: 200,
+    response: R.FeatureFlagsResponse,
   },
   {
     method: 'get',
@@ -1128,6 +1142,25 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateAppSettingsRequest,
     status: 200,
     response: R.AppSettingsResponse,
+  },
+  {
+    method: 'get',
+    path: '/admin/feature-flags',
+    tag: 'Admin',
+    summary:
+      'Runtime feature kill-switches (realtime/live/chat/alerts/imports/AI) with change metadata.',
+    status: 200,
+    response: R.AdminFeatureFlagsResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/feature-flags/{key}',
+    tag: 'Admin',
+    summary: 'Flip one feature kill-switch (audit-logged; effective on the next request).',
+    params: contracts.featureFlagKeyParamSchema,
+    body: R.UpdateFeatureFlagRequest,
+    status: 200,
+    response: R.AdminFeatureFlagsResponse,
   },
   {
     method: 'get',

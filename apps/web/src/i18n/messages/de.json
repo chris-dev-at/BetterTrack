@@ -2401,7 +2401,8 @@
       "menu": "Admin-Menü",
       "openMenu": "Admin-Menü öffnen",
       "closeMenu": "Admin-Menü schließen",
-      "problems": "Probleme"
+      "problems": "Probleme",
+      "featureFlags": "Feature-Flags"
     },
     "security": {
       "title": "Sicherheit",
@@ -2573,6 +2574,47 @@
       "context": "Kontext",
       "resolve": "Erledigen",
       "reopen": "Wieder öffnen"
+    },
+    "featureFlags": {
+      "title": "Feature-Flags",
+      "subtitle": "Laufzeit-Schalter. Eine Änderung wirkt ab der nächsten Anfrage – kein Redeploy.",
+      "refresh": "Aktualisieren",
+      "loadError": "Feature-Flags konnten nicht geladen werden.",
+      "actionError": "Das Feature-Flag konnte nicht aktualisiert werden.",
+      "featureColumn": "Funktion",
+      "stateColumn": "Status",
+      "lastChangedColumn": "Zuletzt geändert",
+      "on": "An",
+      "off": "Aus",
+      "enable": "Aktivieren",
+      "disable": "Deaktivieren",
+      "never": "Nie geändert",
+      "flag": {
+        "realtime": {
+          "name": "Echtzeit",
+          "description": "Live-Push-Updates über die Echtzeitverbindung."
+        },
+        "liveMode": {
+          "name": "Live-Modus",
+          "description": "Intraday-Live-Streaming von Kursen."
+        },
+        "chat": {
+          "name": "Chat",
+          "description": "Direktnachrichten zwischen Freunden."
+        },
+        "alerts": {
+          "name": "Kurs-Alarme",
+          "description": "Kurs-Alarm-Regeln und deren Auslösung."
+        },
+        "imports": {
+          "name": "Importe",
+          "description": "Broker-CSV-Importe."
+        },
+        "ai": {
+          "name": "KI",
+          "description": "KI-Einblicke und Assistent (reserviert – noch nicht gebaut)."
+        }
+      }
     }
   }
 }
