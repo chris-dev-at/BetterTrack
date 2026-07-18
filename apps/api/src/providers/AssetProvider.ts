@@ -2,10 +2,14 @@ import type {
   AssetMeta,
   AssetRef,
   AssetSearchResult,
+  DividendEvents,
+  EarningsEvents,
   HistoryInterval,
   HistoryRange,
+  NewsHeadline,
   PricePoint,
   Quote,
+  SplitEvents,
 } from '@bettertrack/contracts';
 
 /**
@@ -53,4 +57,24 @@ export interface AssetProvider {
 
   /** Descriptive metadata: name, symbol, exchange, currency, type (§5.1). */
   getMeta(ref: AssetRef): Promise<AssetMeta>;
+
+  // ── Market-intelligence capabilities (§13.5 V5-P5) ─────────────────────────
+  // All four are OPTIONAL: a provider implements any subset, and the registry
+  // reports per-provider availability (a provider that lacks a capability simply
+  // does not advertise it — see `providerCapabilities`). A secondary/failover
+  // provider that carries none is fully valid. Freshness caching, coalescing and
+  // circuit breaking are layered on by the market-data service exactly like the
+  // quote/history paths, so these methods never touch Redis.
+
+  /** Dividend history + known upcoming ex/pay dates + forward yield (arc a). */
+  getDividendEvents?(ref: AssetRef): Promise<DividendEvents>;
+
+  /** Next + recent past earnings reports, with a confirmed/estimated flag (arc b). */
+  getEarningsEvents?(ref: AssetRef): Promise<EarningsEvents>;
+
+  /** Recent news headlines for the asset (arc c). */
+  getNewsHeadlines?(ref: AssetRef): Promise<NewsHeadline[]>;
+
+  /** Past + announced stock splits with ratios (arc d). */
+  getSplitEvents?(ref: AssetRef): Promise<SplitEvents>;
 }

@@ -27,6 +27,7 @@ import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
 import { createIdeasRouter } from './http/routes/ideasRoutes';
 import { createImportsRouter } from './http/routes/importsRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
+import { createMarketIntelRouter } from './http/routes/marketIntelRoutes';
 import { createNotificationsRouter } from './http/routes/notificationsRoutes';
 import { createOAuthPublicRouter, createOAuthRouter } from './http/routes/oauthRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
@@ -115,6 +116,13 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/workboard', createWorkboardRouter(ctx));
   app.use('/api/v1/search', createSearchRouter(ctx, limiters));
   app.use('/api/v1/assets', createAssetsRouter(ctx));
+  // Per-asset market intelligence (§13.5 V5-P5): mounted on the same base as the
+  // asset reads. Its `/:id/intel*` paths never collide with the asset router's
+  // exact `/:id`, `/:id/quote`, `/:id/history`, `/:id/daily-closes` routes, so
+  // it simply handles the fall-through. The MARKET_INTEL_ENABLED gate lives in
+  // the service (returns the "unconfigured" shape), so the router is always
+  // mounted — off ⇒ 200 with `available: false`, never a 404.
+  app.use('/api/v1/assets', createMarketIntelRouter(ctx));
   app.use('/api/v1/portfolios', createPortfolioRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));

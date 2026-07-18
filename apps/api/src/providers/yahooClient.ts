@@ -73,10 +73,109 @@ export interface YahooSearchResult {
   quotes: YahooSearchQuote[];
 }
 
+// ── Market-intelligence shapes (§13.5 V5-P5) ─────────────────────────────────
+// Yahoo carries dividends/splits as `chart` events, upcoming ex/pay + earnings
+// dates via `quoteSummary` modules, and headlines via `search`'s news array.
+// Kept loose/optional (Yahoo's unofficial API is best-effort); the pure mappers
+// in `yahooMapping.ts` turn whatever arrives into the strict contract shapes.
+
+/** A single dividend event from `chart(events: 'div')`. `date` is the ex-date. */
+export interface YahooChartDividend {
+  amount?: number;
+  date?: Date | number | string;
+}
+
+/** A single split event from `chart(events: 'split')`. */
+export interface YahooChartSplit {
+  date?: Date | number | string;
+  numerator?: number;
+  denominator?: number;
+  splitRatio?: string;
+}
+
+/** `chart(...)` narrowed to the corporate-action events (candles ignored here). */
+export interface YahooChartEventsResult {
+  meta: YahooChartMeta;
+  dividends: YahooChartDividend[];
+  splits: YahooChartSplit[];
+}
+
+export interface YahooChartEventsParams {
+  period1: Date | number | string;
+  interval?: YahooChartInterval;
+  /** Yahoo events filter, e.g. `'div'`, `'split'` or `'div|split'`. */
+  events: string;
+}
+
+/** `quoteSummary.calendarEvents.earnings` — upcoming earnings dates + estimate. */
+export interface YahooCalendarEarnings {
+  earningsDate?: Array<Date | number | string>;
+  isEarningsDateEstimate?: boolean;
+  earningsAverage?: number;
+}
+
+/** `quoteSummary.calendarEvents` — forward ex/pay dates + the earnings block. */
+export interface YahooCalendarEvents {
+  exDividendDate?: Date | number | string;
+  dividendDate?: Date | number | string;
+  earnings?: YahooCalendarEarnings;
+}
+
+/** `quoteSummary.summaryDetail` — currency + the forward/trailing dividend fields. */
+export interface YahooSummaryDetail {
+  currency?: string;
+  dividendYield?: number;
+  dividendRate?: number;
+  trailingAnnualDividendRate?: number;
+}
+
+/** One row of `quoteSummary.earningsHistory.history` — a past reported quarter. */
+export interface YahooEarningsHistoryRow {
+  epsActual?: number | null;
+  epsEstimate?: number | null;
+  quarter?: Date | number | string | null;
+}
+
+export interface YahooEarningsHistory {
+  history?: YahooEarningsHistoryRow[];
+}
+
+/** The `quoteSummary` modules the intel provider requests, narrowed. */
+export interface YahooQuoteSummaryResult {
+  calendarEvents?: YahooCalendarEvents;
+  summaryDetail?: YahooSummaryDetail;
+  earningsHistory?: YahooEarningsHistory;
+}
+
+/** The `quoteSummary` module names the intel provider asks for. */
+export type YahooQuoteSummaryModule = 'calendarEvents' | 'summaryDetail' | 'earningsHistory';
+
+/** One item of `search(...).news`. */
+export interface YahooNewsItem {
+  uuid?: string;
+  title?: string;
+  publisher?: string;
+  link?: string;
+  providerPublishTime?: Date | number | string;
+}
+
+export interface YahooNewsResult {
+  news: YahooNewsItem[];
+}
+
 export interface YahooClient {
   search(query: string): Promise<YahooSearchResult>;
   quote(symbol: string): Promise<YahooQuoteResult>;
   chart(symbol: string, params: YahooChartParams): Promise<YahooChartResult>;
+  /** Dividend/split events over a window (§13.5 V5-P5); candles are discarded. */
+  chartEvents(symbol: string, params: YahooChartEventsParams): Promise<YahooChartEventsResult>;
+  /** Fetch the given `quoteSummary` modules (calendar/earnings/detail). */
+  quoteSummary(
+    symbol: string,
+    modules: YahooQuoteSummaryModule[],
+  ): Promise<YahooQuoteSummaryResult>;
+  /** Recent news headlines for a symbol via `search`'s news array. */
+  searchNews(symbol: string, count: number): Promise<YahooNewsResult>;
 }
 
 /**
@@ -101,5 +200,26 @@ export function createYahooClient(): YahooClient {
         interval: params.interval,
         return: 'array',
       }),
+    chartEvents: (symbol, params): Promise<YahooChartEventsResult> =>
+      // `return: 'array'` gives events as parallel arrays; the candles are
+      // discarded here (the intel path only needs dividends/splits).
+      yf
+        .chart(symbol, {
+          period1: params.period1,
+          interval: params.interval,
+          events: params.events,
+          return: 'array',
+        })
+        .then((result) => ({
+          meta: result.meta ?? {},
+          dividends: result.events?.dividends ?? [],
+          splits: result.events?.splits ?? [],
+        })),
+    quoteSummary: (symbol, modules): Promise<YahooQuoteSummaryResult> =>
+      yf.quoteSummary(symbol, { modules }),
+    // We only consume the news array; keep quotes minimal but present (Yahoo
+    // rejects `quotesCount: 0` on some builds, so we leave it at the default).
+    searchNews: (symbol, count): Promise<YahooNewsResult> =>
+      yf.search(symbol, { newsCount: count }).then((result) => ({ news: result.news ?? [] })),
   };
 }

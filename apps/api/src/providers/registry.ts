@@ -1,8 +1,24 @@
-import type { AssetRef } from '@bettertrack/contracts';
+import type { AssetRef, MarketIntelCapabilities } from '@bettertrack/contracts';
 
 import { ApiError } from '../errors';
 
 import type { AssetProvider } from './AssetProvider';
+
+/**
+ * Which optional market-intelligence capabilities (§13.5 V5-P5) a provider
+ * advertises, derived purely from which methods it implements. Capabilities are
+ * per provider and NOT assumed universal: a secondary/failover source that
+ * implements none simply reports all `false`, and the read layer degrades to the
+ * "unconfigured" shape for it.
+ */
+export function providerCapabilities(provider: AssetProvider): MarketIntelCapabilities {
+  return {
+    dividends: typeof provider.getDividendEvents === 'function',
+    earnings: typeof provider.getEarningsEvents === 'function',
+    news: typeof provider.getNewsHeadlines === 'function',
+    splits: typeof provider.getSplitEvents === 'function',
+  };
+}
 
 /**
  * Central map of `providerId → AssetProvider` (PROJECTPLAN.md §5.1). The rest of
@@ -22,6 +38,12 @@ export interface ProviderRegistry {
   ids(): string[];
   /** All registered providers (for fan-out search). */
   all(): AssetProvider[];
+  /**
+   * Market-intelligence capabilities (§13.5 V5-P5) the given provider advertises.
+   * Throws `PROVIDER_NOT_FOUND` (500) if the id is absent — the same contract as
+   * {@link ProviderRegistry.get}.
+   */
+  capabilitiesFor(providerId: string): MarketIntelCapabilities;
 }
 
 const providerNotFound = (providerId: string) =>
@@ -61,6 +83,9 @@ export function createProviderRegistry(initial: AssetProvider[] = []): ProviderR
     },
     all() {
       return [...providers.values()];
+    },
+    capabilitiesFor(providerId) {
+      return providerCapabilities(registry.get(providerId));
     },
   };
 
