@@ -123,6 +123,7 @@ function buildInertContext(): AppContext {
     alerts: inertService('alerts'),
     announcements: inertService('announcements'),
     notificationDispatcher: inertService('notificationDispatcher'),
+    digestService: inertService('digestService'),
     notify: inertService('notify'),
     presence: inertService('presence'),
     realtime: inertService('realtime'),

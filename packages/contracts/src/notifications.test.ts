@@ -125,8 +125,11 @@ describe('settings response shape (#368)', () => {
     // V5-P0 kill-switch: the response also carries the deployment-level
     // "offered at all?" flags so the SPA hides the setup cards without probing.
     const channelsConfigurable = { telegram: false, discord: false };
+    // V5-P3: a full per-type cadence map ships alongside the matrix.
+    const cadence = Object.fromEntries(NOTIFICATION_TYPES.map((t) => [t, 'instant']));
     const parsed = notificationSettingsResponseSchema.safeParse({
       matrix,
+      cadence,
       muted: false,
       channels,
       channelsConfigurable,
@@ -138,6 +141,7 @@ describe('settings response shape (#368)', () => {
     expect(
       notificationSettingsResponseSchema.safeParse({
         matrix: incomplete,
+        cadence,
         muted: false,
         channels,
         channelsConfigurable,

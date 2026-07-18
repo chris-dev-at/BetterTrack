@@ -18,6 +18,10 @@ export const QUEUE_NAMES = {
   pricesBackfill: 'prices.backfill',
   fxRefreshSpot: 'fx.refreshSpot',
   notificationsDispatch: 'notifications.dispatch',
+  // V5-P3 digest mode (#575): repeatable jobs that render one grouped summary
+  // per user per period for the daily/weekly outbound cadences.
+  notificationsDigestDaily: 'notifications.digestDaily',
+  notificationsDigestWeekly: 'notifications.digestWeekly',
   // Account data export (§13.4 V4-P6a, #494): the build job assembles one user's
   // zip on demand; the cleanup job prunes expired exports on a daily schedule.
   dataExport: 'data.export',
@@ -45,6 +49,8 @@ export interface JobPayloads {
   'prices.backfill': { assetId: string };
   'fx.refreshSpot': Record<string, never>;
   'notifications.dispatch': { event: DomainEvent };
+  'notifications.digestDaily': Record<string, never>;
+  'notifications.digestWeekly': Record<string, never>;
   'data.export': { jobId: string };
   'data.exportCleanup': Record<string, never>;
   'snapshots.recompute': { portfolioId: string };

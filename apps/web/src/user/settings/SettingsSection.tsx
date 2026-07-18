@@ -3,12 +3,15 @@ import { useEffect, useState } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import {
+  NOTIFICATION_CADENCES,
   NOTIFICATION_CATEGORIES,
   NOTIFICATION_SETTING_CHANNELS,
+  NOTIFICATION_TYPES,
   NOTIFICATION_VIEWS,
   type DiscordSettingsResponse,
   type MarkReadRequest,
   type Notification,
+  type NotificationCadence,
   type NotificationCategoryKey,
   type NotificationSettingChannel,
   type NotificationSettingsResponse,
@@ -356,6 +359,68 @@ function NotificationMatrixGrid({
         ))}
       </table>
     </div>
+  );
+}
+
+/**
+ * Compact per-type digest cadence block (V5-P3). Anti-bloat: NOT another
+ * settings wall — a single collapsed `<details>` with a small instant/daily/
+ * weekly selector per type. Cadence governs the OUTBOUND channels only; the
+ * in-app bell always updates instantly, which the description states.
+ */
+function NotificationCadenceControls({
+  settings,
+  busy,
+  onUpdate,
+}: {
+  settings: NotificationSettingsResponse;
+  busy: boolean;
+  onUpdate: (patch: UpdateNotificationSettingsRequest) => void;
+}) {
+  const t = useT();
+  const typeMeta = notificationTypeMeta(t);
+  // account.invite has no per-user routing, so its cadence is meaningless.
+  const types = NOTIFICATION_TYPES.filter((type) => type !== 'account.invite');
+
+  return (
+    <details className="rounded-md border border-neutral-800 bg-neutral-900">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-neutral-100">
+        {t('settings.notifications.digest.title')}
+        <p className="mt-0.5 text-xs font-normal text-neutral-500">
+          {t('settings.notifications.digest.description')}
+        </p>
+      </summary>
+      <ul className="flex flex-col border-t border-neutral-800">
+        {types.map((type) => (
+          <li
+            key={type}
+            className="flex items-center justify-between gap-3 border-b border-neutral-800/60 px-4 py-2.5 last:border-b-0"
+          >
+            <span className="min-w-0 text-sm text-neutral-200">{typeMeta[type].label}</span>
+            <select
+              aria-label={t('settings.notifications.digest.selectAria', {
+                type: typeMeta[type].label,
+              })}
+              value={settings.cadence[type]}
+              disabled={busy}
+              onChange={(event) =>
+                onUpdate({ cadence: { [type]: event.target.value as NotificationCadence } })
+              }
+              className={cx(
+                'rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-100',
+                busy && 'cursor-not-allowed opacity-50',
+              )}
+            >
+              {NOTIFICATION_CADENCES.map((cadence) => (
+                <option key={cadence} value={cadence}>
+                  {t(`settings.notifications.digest.${cadence}`)}
+                </option>
+              ))}
+            </select>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -1155,6 +1220,11 @@ export function NotificationSettingsPage() {
           {query.data.channelsConfigurable.discord ? <DiscordSetupCard /> : null}
 
           <NotificationMatrixGrid
+            settings={query.data}
+            busy={mutation.isPending}
+            onUpdate={(patch) => mutation.mutate(patch)}
+          />
+          <NotificationCadenceControls
             settings={query.data}
             busy={mutation.isPending}
             onUpdate={(patch) => mutation.mutate(patch)}

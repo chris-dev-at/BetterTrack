@@ -1,3 +1,5 @@
+import type { DigestCadence, NotificationCadence } from '@bettertrack/contracts';
+
 import type { EventBus } from '../../events';
 import type {
   AccountDataExportEvent,
@@ -18,6 +20,7 @@ import type {
   NotificationRepository,
   TypeRouting,
 } from '../../data/repositories/notificationRepository';
+import type { EnqueueDigestItemInput } from '../../data/repositories/notificationDigestRepository';
 import type { AlertNotificationContext } from '../../data/repositories/alertRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { alertBody, alertRuleSummary, alertTitle } from '../alerts/alertMessages';
@@ -25,6 +28,7 @@ import type { EmailService } from '../email/emailService';
 import type { Logger } from '../../logger';
 
 import type { DiscordChannel } from './discordChannel';
+import { digestPeriodKey } from './digestService';
 import type { FcmChannel, PushMessage } from './fcm';
 import type { PresenceStore } from './presence';
 import type { TelegramChannel } from './telegramChannel';
@@ -225,6 +229,17 @@ export interface NotificationDispatcherDeps {
   discord?: DiscordChannel | null;
   /** Active-view presence (#368). Omit to disable suppression (never suppresses). */
   presence?: PresenceStore;
+  /**
+   * Digest cadence + queue (V5-P3). Governs the OUTBOUND channels only
+   * (email/push/webpush): a `daily`/`weekly` type is written to the in-app bell
+   * instantly as always, but its outbound copies are deferred into the digest
+   * queue instead of sent now. Omit/null ⇒ every type resolves to `instant` and
+   * the fan-out is byte-identical to the pre-digest behaviour.
+   */
+  digest?: {
+    cadenceFor(userId: string, type: string): Promise<NotificationCadence>;
+    enqueue(item: EnqueueDigestItemInput): Promise<void>;
+  } | null;
   logger?: Logger;
 }
 
@@ -252,6 +267,7 @@ export function createNotificationDispatcher(
     telegram,
     discord,
     presence,
+    digest,
     logger,
   } = deps;
 
@@ -610,19 +626,50 @@ export function createNotificationDispatcher(
 
     if (muted || suppressedByPresence) return;
 
+    // Outbound delivery cadence (V5-P3). `instant` (default, and always when no
+    // digest wiring is present) delivers now — byte-identical to the pre-digest
+    // fan-out below; `daily`/`weekly` defer the outbound channels into the
+    // digest queue instead. The in-app row above already landed instantly
+    // regardless: the bell is the record a digest summarizes.
+    const cadence: NotificationCadence = digest
+      ? await digest.cadenceFor(event.userId, event.type)
+      : 'instant';
+    // Non-null only when the outbound channels defer (daily/weekly) AND a digest
+    // sink is wired; a single UTC period stamp per dispatch keeps every channel's
+    // row in the same group (computed per user so quiet-hours can align later).
+    const deferredCadence: DigestCadence | null =
+      digest && (cadence === 'daily' || cadence === 'weekly') ? cadence : null;
+    const period = deferredCadence ? digestPeriodKey(deferredCadence, new Date()) : null;
+
     // Channel fan-out past the marker is best-effort: each channel isolates its
     // own failure (§6.10 email philosophy) so one bad transport never blocks
     // the others — and never re-throws into the queue (the marker exists; a
     // retry would no-op anyway).
     if (routing.email && email && recipient.email) {
-      try {
-        await sendEmail(event, rendered, {
-          id: recipient.id,
-          email: recipient.email,
-          locale: recipient.locale,
-        });
-      } catch (err) {
-        logger?.warn({ err, type: event.type }, 'notification email fan-out failed');
+      if (digest && deferredCadence && period) {
+        try {
+          await digest.enqueue({
+            userId: event.userId,
+            type: event.type,
+            channel: 'email',
+            cadence: deferredCadence,
+            period,
+            title: rendered.title,
+            body: rendered.body,
+          });
+        } catch (err) {
+          logger?.warn({ err, type: event.type }, 'digest email enqueue failed');
+        }
+      } else {
+        try {
+          await sendEmail(event, rendered, {
+            id: recipient.id,
+            email: recipient.email,
+            locale: recipient.locale,
+          });
+        } catch (err) {
+          logger?.warn({ err, type: event.type }, 'notification email fan-out failed');
+        }
       }
     }
 
@@ -633,19 +680,55 @@ export function createNotificationDispatcher(
       data: rendered.data,
     };
     if (routing.push && fcm) {
-      try {
-        await fcm.deliver(event.userId, pushMessage);
-      } catch (err) {
-        logger?.warn({ err, type: event.type }, 'FCM fan-out failed');
+      if (digest && deferredCadence && period) {
+        try {
+          await digest.enqueue({
+            userId: event.userId,
+            type: event.type,
+            channel: 'push',
+            cadence: deferredCadence,
+            period,
+            title: rendered.title,
+            body: rendered.body,
+            data: rendered.data,
+          });
+        } catch (err) {
+          logger?.warn({ err, type: event.type }, 'digest push enqueue failed');
+        }
+      } else {
+        try {
+          await fcm.deliver(event.userId, pushMessage);
+        } catch (err) {
+          logger?.warn({ err, type: event.type }, 'FCM fan-out failed');
+        }
       }
     }
     if (routing.webpush && webPush) {
-      try {
-        await webPush.deliver(event.userId, pushMessage);
-      } catch (err) {
-        logger?.warn({ err, type: event.type }, 'web-push fan-out failed');
+      if (digest && deferredCadence && period) {
+        try {
+          await digest.enqueue({
+            userId: event.userId,
+            type: event.type,
+            channel: 'webpush',
+            cadence: deferredCadence,
+            period,
+            title: rendered.title,
+            body: rendered.body,
+            data: rendered.data,
+          });
+        } catch (err) {
+          logger?.warn({ err, type: event.type }, 'digest web-push enqueue failed');
+        }
+      } else {
+        try {
+          await webPush.deliver(event.userId, pushMessage);
+        } catch (err) {
+          logger?.warn({ err, type: event.type }, 'web-push fan-out failed');
+        }
       }
     }
+    // Telegram/Discord (globally deactivated) stay on the instant path — cadence
+    // governs email/push/webpush only (V5-P3 scope).
     if (routing.telegram && telegram) {
       try {
         await telegram.deliver(event.userId, pushMessage);

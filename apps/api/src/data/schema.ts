@@ -684,6 +684,71 @@ export const notificationSettings = pgTable(
 );
 
 /**
+ * Per-user per-type OUTBOUND delivery cadence (V5-P3 digest mode). `instant`
+ * (the pre-digest behaviour) delivers each event immediately; `daily`/`weekly`
+ * defer the outbound channels (email/push/webpush) into ONE grouped digest per
+ * period. Absence of a row = `instant` — so the whole feature is additive and no
+ * existing user is migrated. Governs outbound channels only; the in-app bell is
+ * always instant (§13.5 V5-P3).
+ */
+export const notificationCadenceEnum = pgEnum('notification_cadence', [
+  'instant',
+  'daily',
+  'weekly',
+]);
+
+export const notificationCadences = pgTable(
+  'notification_cadences',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    cadence: notificationCadenceEnum('cadence').notNull(),
+  },
+  (t) => [primaryKey({ name: 'notification_cadences_user_type_pk', columns: [t.userId, t.type] })],
+);
+
+/**
+ * The digest queue (V5-P3). A deferred (daily/weekly) notification lands here as
+ * ONE row per outbound channel it routes to, carrying the already-rendered
+ * title/body (+ push deep-link `data`) and the `period` key the digest job
+ * groups by. The digest job claims a whole (user, period) group atomically —
+ * stamping `delivered_at` in the same UPDATE it reads the rows — so a re-run or
+ * a second worker never double-sends (idempotent per (user, period)). `channel`
+ * reuses the notification_channel enum but only ever holds email/push/webpush.
+ * The `period` is computed per user at enqueue (UTC for now) so the quiet-hours
+ * follow-up can align delivery to a user timezone with a small change.
+ */
+export const notificationDigestQueue = pgTable(
+  'notification_digest_queue',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    channel: notificationChannelEnum('channel').notNull(),
+    cadence: notificationCadenceEnum('cadence').notNull(),
+    period: text('period').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    data: jsonb('data'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  },
+  (t) => [
+    // The job scans pending rows by cadence and groups by (user, period); the
+    // claim UPDATE filters (user, period, cadence) WHERE delivered_at IS NULL.
+    // Partial on the pending set keeps the scan/claim off delivered history.
+    index('notification_digest_queue_pending_idx')
+      .on(t.cadence, t.userId, t.period)
+      .where(sql`${t.deliveredAt} is null`),
+    index('notification_digest_queue_user_idx').on(t.userId),
+  ],
+);
+
+/**
  * Email send log (PROJECTPLAN.md §6.10). One row per send *attempt* — never a
  * body or any secret, only a coarse `error_code` on failure. `user_id` is
  * nullable (pre-account sends like invites) and set null (not cascaded) on user
@@ -1731,6 +1796,9 @@ export type WorkboardItemRow = typeof workboardItems.$inferSelect;
 export type AlertRow = typeof alerts.$inferSelect;
 export type NotificationRow = typeof notifications.$inferSelect;
 export type NotificationSettingRow = typeof notificationSettings.$inferSelect;
+export type NotificationCadenceRow = typeof notificationCadences.$inferSelect;
+export type NotificationDigestQueueRow = typeof notificationDigestQueue.$inferSelect;
+export type NewNotificationDigestQueueRow = typeof notificationDigestQueue.$inferInsert;
 export type DeviceTokenRow = typeof deviceTokens.$inferSelect;
 export type NewDeviceTokenRow = typeof deviceTokens.$inferInsert;
 export type PushSubscriptionRow = typeof pushSubscriptions.$inferSelect;
@@ -2071,6 +2139,8 @@ export const schema = {
   alerts,
   notifications,
   notificationSettings,
+  notificationCadences,
+  notificationDigestQueue,
   deviceTokens,
   pushSubscriptions,
   emailLog,
@@ -2111,6 +2181,7 @@ export const schema = {
   alertKindEnum,
   alertStatusEnum,
   notificationChannelEnum,
+  notificationCadenceEnum,
   devicePlatformEnum,
   emailStatusEnum,
   conglomerateStatusEnum,
