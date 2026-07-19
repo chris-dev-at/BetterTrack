@@ -168,6 +168,30 @@ test('a 429 on login with retryAfterSeconds mentions the wait time', async () =>
   expect(screen.queryByText('Incorrect email/username or password.')).not.toBeInTheDocument();
 });
 
+test('a 429 on the bootstrap /auth/me holds the splash and retries — never mistakes rate-limit for signed-out', async () => {
+  // Regression: the bootstrap used to fall through 429 → anonymous, which
+  // bounced a session-carrying caller to /login after a burst-limit trip
+  // (e2e #625: compressed multi-navigation spec repeatedly hard-reloading
+  // `/social/friends`). A 429 must instead surface the toast and retry, so a
+  // transient rate-limit never signs the user out.
+  vi.mocked(api.getMe)
+    .mockRejectedValueOnce(new ApiError(429, 'RATE_LIMITED', 'Too many requests.', undefined, 1))
+    .mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+
+  renderAt('/portfolio');
+
+  // Held on splash (never bounced to /login) while the retry is pending.
+  expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
+  // The rate-limit toast is shown while waiting.
+  expect(await screen.findByText(/You're doing that too fast/i)).toBeInTheDocument();
+  // After the retry, the app admits the user — the shell renders (§7.4).
+  expect(
+    await screen.findByRole('button', { name: 'Account menu' }, { timeout: 3_000 }),
+  ).toBeInTheDocument();
+  await waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
+});
+
 test('a must-change session is trapped, then released by a successful change', async () => {
   // A fresh load of a forced-change account: /auth/me responds 403.
   vi.mocked(api.getMe).mockRejectedValue(

@@ -343,10 +343,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Bootstrap from the session cookie. 401 → anonymous; a forced-change session
-  // (403, or a stray must-change me) → the trap; anything else → anonymous.
+  // (403, or a stray must-change me) → the trap; 429 → hold the splash and retry
+  // after `Retry-After` rather than mistaking a transient rate-limit for a
+  // dropped session (the burst limiter can trip on a rapid multi-navigation
+  // flurry, e.g. an e2e spec that hard-reloads `/social/friends` several times
+  // in a few seconds — falling through to anonymous would bounce the caller to
+  // `/login`); anything else → anonymous.
   useEffect(() => {
     const controller = new AbortController();
-    void (async () => {
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const tryBootstrap = async () => {
       try {
         const me = await api.getMe(controller.signal);
         // An admin who still holds a session (e.g. arrived from the admin area)
@@ -363,13 +369,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (isPasswordChangeRequired(err)) {
           setUser(null);
           setStatus('password-change-required');
+        } else if (err instanceof ApiError && err.status === 429) {
+          const seconds = err.retryAfterSeconds;
+          const wait =
+            seconds && seconds > 0
+              ? ` Please wait ${seconds} second${seconds === 1 ? '' : 's'} and try again.`
+              : ' Please slow down.';
+          setRateLimitBanner(`You're doing that too fast.${wait}`);
+          const delayMs = Math.max(1_000, (seconds ?? 1) * 1_000);
+          retryTimer = setTimeout(() => {
+            void tryBootstrap();
+          }, delayMs);
         } else {
           setUser(null);
           setStatus('anonymous');
         }
       }
-    })();
-    return () => controller.abort();
+    };
+    void tryBootstrap();
+    return () => {
+      controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [applyUser]);
 
   // Idle-lock timing (§6.1, §13.2 V2-P2; owner directive #304). While a PIN
