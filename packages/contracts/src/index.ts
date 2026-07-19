@@ -22,6 +22,7 @@ export * from './apiKeys';
 export * from './oauth';
 export * from './realtime';
 export * from './problems';
+export * from './monitoring';
 export * from './usageAnalytics';
 export * from './featureFlags';
 export * from './standingOrders';

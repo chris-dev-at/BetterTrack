@@ -25,6 +25,7 @@ import {
   okResponseSchema,
   problemSchema,
   problemListResponseSchema,
+  monitoringStatusResponseSchema,
   usageAnalyticsResponseSchema,
   createRegistrationTokenResponseSchema,
   registrationRequestListResponseSchema,
@@ -66,6 +67,7 @@ import {
   type ProblemKind,
   type ProblemListResponse,
   type ProblemStatus,
+  type MonitoringStatusResponse,
   type UsageAnalyticsResponse,
   type LoginRequest,
   type LoginResponse,
@@ -348,6 +350,33 @@ export async function reopenProblem(id: string): Promise<Problem> {
 export async function getUsageAnalytics(signal?: AbortSignal): Promise<UsageAnalyticsResponse> {
   const data = await apiRequest<unknown>('/admin/usage-analytics', { signal });
   return usageAnalyticsResponseSchema.parse(data);
+}
+
+// --- Admin: Monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19) --
+
+/**
+ * Grafana/Prometheus reachability + the external-access posture that backs the
+ * Diagnostics panel. The probe fails soft server-side, so this always resolves
+ * even when the stack is down — the panel degrades to "not reachable".
+ */
+export async function getMonitoringStatus(signal?: AbortSignal): Promise<MonitoringStatusResponse> {
+  const data = await apiRequest<unknown>('/admin/monitoring/status', { signal });
+  return monitoringStatusResponseSchema.parse(data);
+}
+
+/**
+ * Flip the runtime kill-switch for the admin-proxied external reach. Off takes
+ * effect on the next proxy request; it can never widen exposure past the deploy
+ * + password gates. Returns the refreshed status.
+ */
+export async function setMonitoringExternalAccess(
+  enabled: boolean,
+): Promise<MonitoringStatusResponse> {
+  const data = await apiRequest<unknown>('/admin/monitoring/external-access', {
+    method: 'PATCH',
+    body: { enabled },
+  });
+  return monitoringStatusResponseSchema.parse(data);
 }
 
 // --- Admin: global settings -----------------------------------------------

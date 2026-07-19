@@ -13,6 +13,7 @@ import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { HealthPage } from './pages/HealthPage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
+import { MonitoringPage } from './pages/MonitoringPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
 import { ProblemsPage } from './pages/ProblemsPage';
 import { UsageAnalyticsPage } from './pages/UsageAnalyticsPage';
@@ -49,6 +50,7 @@ function AdminShell() {
         <Route path="audit" element={<AuditPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="problems" element={<ProblemsPage />} />
+        <Route path="monitoring" element={<MonitoringPage />} />
         <Route path="usage-analytics" element={<UsageAnalyticsPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="feature-flags" element={<FeatureFlagsPage />} />

@@ -31,3 +31,36 @@ scrape_configs:
       - targets: ['localhost:9090']
         labels:
           service: prometheus
+
+  # ── Infra exporters (§13.5 V5-P2 arc (a), owner 2026-07-19) ─────────────────
+  # Each is reachable only by service name on the internal docker network — the
+  # exporters publish no host port. If you rename a service in docker-compose.yml,
+  # update the matching target here.
+
+  # Host CPU / memory / disk / network.
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: node
+
+  # Per-container CPU / memory / IO.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels:
+          service: cadvisor
+
+  # DB connections, slow queries, table sizes.
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: postgres
+
+  # Cache hit rate, memory, evictions.
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: redis

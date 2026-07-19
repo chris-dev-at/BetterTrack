@@ -2785,7 +2785,44 @@
       "closeMenu": "Close admin menu",
       "problems": "Problems",
       "featureFlags": "Feature flags",
-      "usageAnalytics": "Usage analytics"
+      "usageAnalytics": "Usage analytics",
+      "monitoring": "Monitoring"
+    },
+    "monitoring": {
+      "title": "Monitoring",
+      "subtitle": "Self-hosted metrics dashboards (Prometheus + Grafana) and how they are reached.",
+      "refresh": "Refresh",
+      "loadError": "Could not load the monitoring status.",
+      "actionError": "Could not update external access.",
+      "status": {
+        "title": "Stack status",
+        "grafana": "Grafana",
+        "prometheus": "Prometheus",
+        "reachable": "Reachable",
+        "unreachable": "Not reachable"
+      },
+      "prometheusNote": "Prometheus is never exposed directly — Grafana reads it internally.",
+      "access": {
+        "title": "External access",
+        "description": "How the dashboards are reached from outside the LAN. Only ever through an authenticated path — never a raw-public endpoint.",
+        "effectiveOn": "Reachable from outside the LAN (authenticated)",
+        "effectiveOff": "Localhost / LAN only",
+        "deployEnabled": "Enabled in deploy config",
+        "passwordSet": "Grafana admin password set",
+        "killSwitchOn": "Runtime switch on",
+        "yes": "Yes",
+        "no": "No",
+        "enable": "Enable external access",
+        "disable": "Disable external access",
+        "needsDeploy": "External access needs the deploy to opt in (BT_OBS_EXTERNAL_ACCESS) and a Grafana admin password (BT_GRAFANA_ADMIN_PASSWORD). Until both are set, the dashboards stay localhost/LAN-only.",
+        "lastChanged": "Last changed",
+        "never": "Never changed"
+      },
+      "embed": {
+        "open": "Open in new tab",
+        "hidden": "Grafana is reachable over localhost/LAN only. Enable external access to embed it here.",
+        "frameTitle": "Grafana dashboards"
+      }
     },
     "security": {
       "title": "Security",
