@@ -17,6 +17,8 @@ import { createCustomAssetRepository } from '../data/repositories/customAssetRep
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
 import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
 import { createItemFollowsRepository } from '../data/repositories/itemFollowsRepository';
+import { createItemCommentRepository } from '../data/repositories/itemCommentRepository';
+import { createItemReactionRepository } from '../data/repositories/itemReactionRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
 import {
   createIdempotencyKeyRepository,
@@ -191,6 +193,7 @@ import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createSessionService } from '../services/sessions/sessionService';
 import { createSocialService, type SocialService } from '../services/social/socialService';
+import { createCommentService, type CommentService } from '../services/social/commentService';
 import { createTaxService, type TaxService } from '../services/tax/taxService';
 import {
   createWorkboardService,
@@ -261,6 +264,8 @@ export interface AppContext {
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
   social: SocialService;
+  /** Comments + reactions on shared items — audience-scoped threads (§13.5 V5-P8). */
+  comments: CommentService;
   /** 1:1 friend chat — conversations, threads, unread + share-in-chat (§13.3 V3-P8). */
   chat: ChatService;
   /** User-scoped notification read/mark-read — the bell + Settings list (§6.10). */
@@ -511,6 +516,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Public-profile settings + per-viewer activity-alert prefs (§6.9, §14, V3-P6).
   const profileRepo = createProfileRepository(db);
   const shareAudienceRepo = createShareAudienceRepository(db);
+  // Comments + reactions on shared items (§13.5 V5-P8) — polymorphic threads
+  // authorized entirely through the audience layer below.
+  const itemCommentRepo = createItemCommentRepository(db);
+  const itemReactionRepo = createItemReactionRepository(db);
 
   // Only open a real SMTP connection when the channel is configured (§11).
   const transport =
@@ -1002,6 +1011,17 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // Comments + reactions on shared items (§13.5 V5-P8): audience-scoped threads
+  // whose read/write authorization derives ENTIRELY from the same audience layer
+  // every social read uses (fail-closed). Public links stay read-only — these
+  // endpoints sit behind requireUser and the non-owner path needs a friendship.
+  const comments = createCommentService({
+    comments: itemCommentRepo,
+    reactions: itemReactionRepo,
+    audience,
+    userRepo,
+  });
+
   // Friend chat (§13.3 V3-P8): 1:1 DMs, unread, share-in-chat. Chip resolution
   // routes through the SAME audience-enforcement layer (#332) as every other
   // social read, and `asset` chips through the §10 asset-visibility rule, so a
@@ -1242,6 +1262,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     standingOrders,
     analytics,
     social,
+    comments,
     chat,
     notifications,
     notificationSettings,

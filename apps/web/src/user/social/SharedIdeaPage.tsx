@@ -7,6 +7,7 @@ import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Avatar } from '../components/Avatar';
 import { Alert, Button } from '../components/ui';
+import { CommentThread } from './CommentThread';
 
 /**
  * `/social/shared-with-me/ideas/:ideaId` — a friend's shared idea, READ-ONLY
@@ -114,6 +115,8 @@ export function SharedIdeaPage() {
           </Button>
         </div>
       </div>
+
+      <CommentThread kind="idea" subjectId={ideaId} />
     </div>
   );
 }

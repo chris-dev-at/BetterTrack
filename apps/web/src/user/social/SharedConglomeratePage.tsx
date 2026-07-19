@@ -5,6 +5,7 @@ import { useT } from '../../i18n';
 import { getSharedConglomerate } from '../../lib/socialApi';
 import { formatPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
+import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 
 const SHARED_STALE_MS = 30_000;
@@ -86,6 +87,8 @@ export function SharedConglomeratePage() {
           ))}
         </ul>
       )}
+
+      <CommentThread kind="conglomerate" subjectId={id} />
     </div>
   );
 }

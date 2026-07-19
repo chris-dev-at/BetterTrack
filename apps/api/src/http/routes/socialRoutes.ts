@@ -3,7 +3,9 @@ import { z } from 'zod';
 
 import {
   audienceParamSchema,
+  commentIdParamSchema,
   conglomerateIdParamSchema,
+  createCommentRequestSchema,
   createFriendRequestRequestSchema,
   followUserRequestSchema,
   idParamSchema,
@@ -13,11 +15,14 @@ import {
   profileUsernameParamSchema,
   setActivityAlertRequestSchema,
   setAudienceRequestSchema,
+  toggleReactionRequestSchema,
   tokenParamSchema,
   updateFollowRequestSchema,
   updateProfileSettingsRequestSchema,
   watchlistIdParamSchema,
   type AudienceParam,
+  type CommentIdParam,
+  type CreateCommentRequest,
   type CreateFriendRequestRequest,
   type FollowUserRequest,
   type ItemFollowRequest,
@@ -25,6 +30,7 @@ import {
   type ProfileUsernameParam,
   type SetActivityAlertRequest,
   type SetAudienceRequest,
+  type ToggleReactionRequest,
   type UpdateFollowRequest,
   type UpdateProfileSettingsRequest,
 } from '@bettertrack/contracts';
@@ -308,6 +314,80 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
       const { kind, subjectId } = req.valid?.params as AudienceParam;
       const { enabled } = req.valid?.body as SetActivityAlertRequest;
       const result = await ctx.social.setActivityAlert(req.authUser!.id, kind, subjectId, enabled);
+      res.json(result);
+    },
+  );
+
+  // --- Comments + reactions on shared items (§13.5 V5-P8) --------------------
+  // Every endpoint authorizes read AND write through the SAME audience layer
+  // every social read uses (fail-closed): the thread of an item you can't see
+  // 404s exactly like a non-existent one (no enumeration). All sit behind
+  // `requireUser`, and the non-owner path needs a friendship, so a public-link
+  // (logged-out) visitor never reaches them — public links stay read-only (§16).
+
+  // GET /social/items/:kind/:subjectId/thread — the item's comment thread +
+  // item-level reactions. 404 when the caller can't currently read the item.
+  router.get(
+    '/items/:kind/:subjectId/thread',
+    validateParams(audienceParamSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.params as AudienceParam;
+      const result = await ctx.comments.getThread(req.authUser!.id, kind, subjectId);
+      res.json(result);
+    },
+  );
+
+  // POST /social/items/:kind/:subjectId/comments — post one comment (audience-scoped).
+  router.post(
+    '/items/:kind/:subjectId/comments',
+    limiters.social,
+    validateParams(audienceParamSchema),
+    validateBody(createCommentRequestSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.params as AudienceParam;
+      const { body } = req.valid?.body as CreateCommentRequest;
+      const result = await ctx.comments.addComment(req.authUser!.id, kind, subjectId, body);
+      res.status(201).json(result);
+    },
+  );
+
+  // POST /social/items/:kind/:subjectId/reactions — toggle a curated emoji on the item.
+  router.post(
+    '/items/:kind/:subjectId/reactions',
+    limiters.social,
+    validateParams(audienceParamSchema),
+    validateBody(toggleReactionRequestSchema),
+    async (req, res) => {
+      const { kind, subjectId } = req.valid?.params as AudienceParam;
+      const { emoji } = req.valid?.body as ToggleReactionRequest;
+      const result = await ctx.comments.toggleItemReaction(
+        req.authUser!.id,
+        kind,
+        subjectId,
+        emoji,
+      );
+      res.json(result);
+    },
+  );
+
+  // DELETE /social/comments/:commentId — soft-delete a comment. The author, or
+  // the item owner moderating any comment; nobody else (404, never 403).
+  router.delete('/comments/:commentId', validateParams(commentIdParamSchema), async (req, res) => {
+    const { commentId } = req.valid?.params as CommentIdParam;
+    await ctx.comments.deleteComment(req.authUser!.id, commentId);
+    res.status(204).send();
+  });
+
+  // POST /social/comments/:commentId/reactions — toggle a curated emoji on a comment.
+  router.post(
+    '/comments/:commentId/reactions',
+    limiters.social,
+    validateParams(commentIdParamSchema),
+    validateBody(toggleReactionRequestSchema),
+    async (req, res) => {
+      const { commentId } = req.valid?.params as CommentIdParam;
+      const { emoji } = req.valid?.body as ToggleReactionRequest;
+      const result = await ctx.comments.toggleCommentReaction(req.authUser!.id, commentId, emoji);
       res.json(result);
     },
   );

@@ -142,6 +142,16 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   standing_order_runs: skipped(
     'Standing-order per-period exactly-once ledger — internal idempotency bookkeeping, not user data.',
   ),
+  // V5-P8 comments + reactions: social interaction content ON OTHER users' shared
+  // items, visible only through that item's audience — not the caller's own
+  // portfolio data. Definition export lands with a later export sweep (mirrors
+  // notification_cadences / standing_orders).
+  item_comments: skipped(
+    'Comments authored on shared items (social interaction content); export coverage lands with a later export sweep.',
+  ),
+  item_reactions: skipped(
+    'Emoji reactions on shared items and comments (social interaction content); export coverage lands with a later export sweep.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */

@@ -114,6 +114,7 @@ function buildInertContext(): AppContext {
     standingOrders: inertService('standingOrders'),
     analytics: inertService('analytics'),
     social: inertService('social'),
+    comments: inertService('comments'),
     chat: inertService('chat'),
     notifications: inertService('notifications'),
     notificationSettings: inertService('notificationSettings'),

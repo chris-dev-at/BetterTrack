@@ -1555,6 +1555,92 @@ export const itemFollows = pgTable(
   ],
 );
 
+// --- Comments + reactions on shared items (§13.5 V5-P8) ---------------------
+
+/**
+ * A comment on a shareable item (§13.5 V5-P8). `subject_id` is polymorphic
+ * (portfolio / conglomerate / watchlist / idea id, no FK), mirroring
+ * {@link shareAudiences}: the comment service authorizes read AND write through
+ * the ONE audience-enforcement layer, so a comment is visible to exactly the
+ * item's current audience — narrowing the audience narrows the thread on the
+ * next read, no denormalized copy to invalidate.
+ *
+ * **Soft delete.** A removed comment keeps its row with `deleted_at` set and
+ * `deleted_by` recording who removed it (its author, or the item owner who
+ * moderates every comment). Reads filter deleted rows out; the row is retained
+ * so a moderation action is auditable, and its reactions cascade away with it.
+ */
+export const itemComments = pgTable(
+  'item_comments',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    kind: shareKindEnum('kind').notNull(),
+    subjectId: uuid('subject_id').notNull(),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    // Soft-delete tombstone (§13.5 V5-P8): non-null → hidden from every read.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    // Who deleted it (author or item owner); set-null keeps the tombstone if
+    // that account is later deleted.
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+  },
+  (t) => [
+    // Thread read: every live comment on one item, oldest-first at read time.
+    index('item_comments_subject_idx').on(t.kind, t.subjectId),
+    index('item_comments_author_idx').on(t.authorId),
+  ],
+);
+
+/** A reaction targets either a shared item or a single comment. */
+export const reactionTargetEnum = pgEnum('reaction_target', ['item', 'comment']);
+
+/**
+ * A single emoji reaction (§13.5 V5-P8) on a shared item OR a comment — the ONE
+ * reaction table, discriminated by `target_type`. For an `item` target the
+ * (kind, subject_id) columns are set (polymorphic, no FK, like the audience
+ * model); for a `comment` target `comment_id` is set (FK → {@link itemComments},
+ * cascade). The curated emoji set is enforced by the contract, so only the
+ * fixed six ever land here. A user can hold at most one row per (target, emoji)
+ * — the two partial unique indexes make a repeat "react" a no-op the service
+ * turns into a toggle-off.
+ */
+export const itemReactions = pgTable(
+  'item_reactions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    targetType: reactionTargetEnum('target_type').notNull(),
+    // Item target (target_type = 'item'): polymorphic subject, no FK.
+    kind: shareKindEnum('kind'),
+    subjectId: uuid('subject_id'),
+    // Comment target (target_type = 'comment'): FK into item_comments.
+    commentId: uuid('comment_id').references(() => itemComments.id, { onDelete: 'cascade' }),
+    emoji: text('emoji').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One reaction per (user, item, emoji) — partial so the NULL comment_id of
+    // item rows doesn't defeat uniqueness.
+    uniqueIndex('item_reactions_item_unique')
+      .on(t.userId, t.kind, t.subjectId, t.emoji)
+      .where(sql`${t.targetType} = 'item'`),
+    // One reaction per (user, comment, emoji).
+    uniqueIndex('item_reactions_comment_unique')
+      .on(t.userId, t.commentId, t.emoji)
+      .where(sql`${t.targetType} = 'comment'`),
+    // Aggregate a whole item's reactions in one scan.
+    index('item_reactions_item_idx').on(t.kind, t.subjectId),
+    // Aggregate one comment's reactions.
+    index('item_reactions_comment_idx').on(t.commentId),
+  ],
+);
+
 // --- Friend chat (§13.3 V3-P8) ----------------------------------------------
 
 /**
@@ -2308,6 +2394,11 @@ export type NewStandingOrderRow = typeof standingOrders.$inferInsert;
 export type StandingOrderRunRow = typeof standingOrderRuns.$inferSelect;
 export type NewStandingOrderRunRow = typeof standingOrderRuns.$inferInsert;
 
+export type ItemCommentRow = typeof itemComments.$inferSelect;
+export type NewItemCommentRow = typeof itemComments.$inferInsert;
+export type ItemReactionRow = typeof itemReactions.$inferSelect;
+export type NewItemReactionRow = typeof itemReactions.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -2352,6 +2443,8 @@ export const schema = {
   shareAudienceMembers,
   shareAudienceLinks,
   sharedItemActivityPrefs,
+  itemComments,
+  itemReactions,
   appSettings,
   idempotencyKeys,
   exportJobs,
@@ -2386,6 +2479,7 @@ export const schema = {
   friendRequestStatusEnum,
   shareKindEnum,
   shareAudienceEnum,
+  reactionTargetEnum,
   importBatchStatusEnum,
   importRowKindEnum,
   importRowFlagEnum,

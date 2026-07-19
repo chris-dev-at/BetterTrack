@@ -12,6 +12,7 @@ import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
+import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 import type { AllocationSegment } from '../../ui/charts';
 import { Alert } from '../components/ui';
@@ -283,6 +284,8 @@ export function SharedPortfolioPage() {
           </section>
         </>
       )}
+
+      <CommentThread kind="portfolio" subjectId={query.data.portfolioId} />
     </div>
   );
 }

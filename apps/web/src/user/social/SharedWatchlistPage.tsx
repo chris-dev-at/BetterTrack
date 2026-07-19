@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useT } from '../../i18n';
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
+import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 
 const SHARED_STALE_MS = 30_000;
@@ -76,6 +77,8 @@ export function SharedWatchlistPage() {
           ))}
         </ul>
       )}
+
+      <CommentThread kind="watchlist" subjectId={data.watchlistId} />
     </div>
   );
 }

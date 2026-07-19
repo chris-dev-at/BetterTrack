@@ -742,3 +742,93 @@ export const profileItemParamSchema = z
   })
   .strict();
 export type ProfileItemParam = z.infer<typeof profileItemParamSchema>;
+
+// --- Comments + reactions on shared items (§13.5 V5-P8) ----------------------
+
+/**
+ * The curated reaction set (§13.5 V5-P8, planner decision 2026-07-17): a fixed
+ * six, no free emoji input. The contract rejects anything outside this set, so
+ * the server never persists an arbitrary code point — the same set applies to
+ * reactions on an item and on a comment.
+ */
+export const REACTION_EMOJIS = ['👍', '❤️', '🎉', '🤔', '😂', '🔥'] as const;
+export const reactionEmojiSchema = z.enum(REACTION_EMOJIS);
+export type ReactionEmoji = z.infer<typeof reactionEmojiSchema>;
+
+/** Max length of one comment body. */
+export const COMMENT_BODY_MAX = 2000;
+
+/**
+ * One emoji's aggregate on a target (an item or a comment): how many people
+ * reacted with it, and whether the viewer is one of them. Only emojis with a
+ * non-zero count appear; `reacted` drives the toggle affordance.
+ */
+export const reactionSummarySchema = z
+  .object({
+    emoji: reactionEmojiSchema,
+    count: z.number().int().nonnegative(),
+    reacted: z.boolean(),
+  })
+  .strict();
+export type ReactionSummary = z.infer<typeof reactionSummarySchema>;
+
+/**
+ * One comment in a shared item's thread. `author` is the public-safe user shape
+ * (never an email). `canDelete` is true when the viewer may remove it — its own
+ * author, or the item owner who moderates every comment (§13.5 V5-P8). A
+ * soft-deleted comment is never rendered, so it simply never appears here.
+ */
+export const itemCommentSchema = z
+  .object({
+    id: z.string().uuid(),
+    author: friendUserSchema,
+    body: z.string(),
+    createdAt: z.string().datetime(),
+    canDelete: z.boolean(),
+    reactions: z.array(reactionSummarySchema),
+  })
+  .strict();
+export type ItemComment = z.infer<typeof itemCommentSchema>;
+
+/**
+ * A shared item's full comment thread plus its item-level reaction aggregate.
+ * Returned ONLY to a viewer the item's current audience admits (a friend the
+ * owner shares with) or the owner — the exact same audience the read view uses,
+ * fail-closed. A public link stays read-only and never reaches this (§16). The
+ * SPA keeps the comment list collapsed to `commentCount` until expanded
+ * (anti-bloat), while the reaction chips stay compactly visible.
+ */
+export const commentThreadResponseSchema = z
+  .object({
+    kind: shareKindSchema,
+    subjectId: z.string().uuid(),
+    commentCount: z.number().int().nonnegative(),
+    comments: z.array(itemCommentSchema),
+    reactions: z.array(reactionSummarySchema),
+  })
+  .strict();
+export type CommentThreadResponse = z.infer<typeof commentThreadResponseSchema>;
+
+/** `POST …/comments` body — post one comment. Trimmed, non-empty, length-bounded. */
+export const createCommentRequestSchema = z
+  .object({ body: z.string().trim().min(1).max(COMMENT_BODY_MAX) })
+  .strict();
+export type CreateCommentRequest = z.infer<typeof createCommentRequestSchema>;
+
+/** Response of posting a comment — the created comment (with an empty reaction set). */
+export const createCommentResponseSchema = itemCommentSchema;
+export type CreateCommentResponse = z.infer<typeof createCommentResponseSchema>;
+
+/** `POST …/reactions` body — toggle one curated emoji on the target. */
+export const toggleReactionRequestSchema = z.object({ emoji: reactionEmojiSchema }).strict();
+export type ToggleReactionRequest = z.infer<typeof toggleReactionRequestSchema>;
+
+/** Response of a reaction toggle — the target's fresh aggregate. */
+export const reactionListResponseSchema = z
+  .object({ reactions: z.array(reactionSummarySchema) })
+  .strict();
+export type ReactionListResponse = z.infer<typeof reactionListResponseSchema>;
+
+/** Route params for a single comment (delete / react on it). */
+export const commentIdParamSchema = z.object({ commentId: z.string().uuid() }).strict();
+export type CommentIdParam = z.infer<typeof commentIdParamSchema>;
