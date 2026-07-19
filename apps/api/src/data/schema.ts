@@ -2206,6 +2206,108 @@ export type NewImportBatchRow = typeof importBatches.$inferInsert;
 export type ImportRowRow = typeof importRows.$inferSelect;
 export type NewImportRowRow = typeof importRows.$inferInsert;
 
+// --- Standing orders (V5-P6b arc a, issue #593) ----------------------------
+
+export const standingOrderKindEnum = pgEnum('standing_order_kind', [
+  'buy-asset',
+  'cash-add',
+  'cash-deduct',
+]);
+export const standingOrderCadenceEnum = pgEnum('standing_order_cadence', ['daily', 'monthly']);
+export const standingOrderStatusEnum = pgEnum('standing_order_status', ['active', 'paused']);
+
+/**
+ * Standing orders (PROJECTPLAN.md §13.5 V5-P6b arc (a), issue #593): scheduled
+ * recurring actions a daily job auto-records on their schedule. A `buy-asset`
+ * books a BUY of `amount` units at the current quote; `cash-add` / `cash-deduct`
+ * book a cash deposit / withdrawal of `amount` EUR (the sign is assigned by kind
+ * downstream, never stored here). `asset_id` is set exactly for `buy-asset`;
+ * `anchor_day` (1–31, clamped to month-end when the month is shorter) exactly
+ * for `monthly`. `last_run_at` / `last_period_key` are denormalized display
+ * bookkeeping of the newest booked occurrence — the authoritative exactly-once
+ * ledger is `standing_order_runs`. `currency` is descriptive (EUR for cash, the
+ * asset's native currency for a buy). Deleting the portfolio (or the referenced
+ * asset) cascades the order away.
+ */
+export const standingOrders = pgTable(
+  'standing_orders',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    kind: standingOrderKindEnum('kind').notNull(),
+    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 20, scale: 8 }).notNull(),
+    currency: char('currency', { length: 3 }).notNull().default('EUR'),
+    label: text('label'),
+    cadence: standingOrderCadenceEnum('cadence').notNull(),
+    anchorDay: integer('anchor_day'),
+    startDate: date('start_date').notNull(),
+    endDate: date('end_date'),
+    status: standingOrderStatusEnum('status').notNull().default('active'),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    lastPeriodKey: date('last_period_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('standing_orders_user_idx').on(t.userId),
+    index('standing_orders_portfolio_idx').on(t.portfolioId),
+    // The daily scan reads active orders; keep the sweep cheap.
+    index('standing_orders_status_idx').on(t.status),
+    check('standing_orders_amount_positive', sql`${t.amount} > 0`),
+    // A buy always names an asset; a cash kind never does.
+    check(
+      'standing_orders_asset_for_buy',
+      sql`(${t.kind} = 'buy-asset') = (${t.assetId} is not null)`,
+    ),
+    // A monthly order always carries a 1–31 anchor day; a daily order never does.
+    check(
+      'standing_orders_anchor_for_monthly',
+      sql`(${t.cadence} = 'monthly') = (${t.anchorDay} is not null)`,
+    ),
+    check(
+      'standing_orders_anchor_range',
+      sql`${t.anchorDay} is null or (${t.anchorDay} between 1 and 31)`,
+    ),
+    // The optional (inclusive) end date never precedes the start.
+    check(
+      'standing_orders_end_after_start',
+      sql`${t.endDate} is null or ${t.endDate} >= ${t.startDate}`,
+    ),
+  ],
+);
+
+/**
+ * Per-period exactly-once ledger for {@link standingOrders} (issue #593). One
+ * row records that a single occurrence (`period_key` = the occurrence's ISO
+ * `YYYY-MM-DD` day) has been claimed. The UNIQUE(order, period) index IS the
+ * idempotency key: the job claims a period with `INSERT … ON CONFLICT DO
+ * NOTHING` before booking, so a double-run — or a concurrent worker — books at
+ * most once. Deleting the order cascades its run history away.
+ */
+export const standingOrderRuns = pgTable(
+  'standing_order_runs',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    standingOrderId: uuid('standing_order_id')
+      .notNull()
+      .references(() => standingOrders.id, { onDelete: 'cascade' }),
+    periodKey: date('period_key').notNull(),
+    bookedAt: timestamp('booked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('standing_order_runs_period_unique').on(t.standingOrderId, t.periodKey)],
+);
+
+export type StandingOrderRow = typeof standingOrders.$inferSelect;
+export type NewStandingOrderRow = typeof standingOrders.$inferInsert;
+export type StandingOrderRunRow = typeof standingOrderRuns.$inferSelect;
+export type NewStandingOrderRunRow = typeof standingOrderRuns.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -2262,6 +2364,8 @@ export const schema = {
 
   importBatches,
   importRows,
+  standingOrders,
+  standingOrderRuns,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -2286,4 +2390,7 @@ export const schema = {
   importRowKindEnum,
   importRowFlagEnum,
   importRowResultEnum,
+  standingOrderKindEnum,
+  standingOrderCadenceEnum,
+  standingOrderStatusEnum,
 };
