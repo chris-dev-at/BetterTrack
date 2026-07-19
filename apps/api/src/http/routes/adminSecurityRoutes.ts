@@ -5,14 +5,17 @@ import {
   twoFactorConfirmRequestSchema,
   twoFactorDisableRequestSchema,
   twoFactorEmailConfirmRequestSchema,
+  updateAdminSessionPolicyRequestSchema,
   type AdminTwoFactorEmailStartRequest,
   type TwoFactorConfirmRequest,
   type TwoFactorDisableRequest,
   type TwoFactorEmailConfirmRequest,
+  type UpdateAdminSessionPolicyRequest,
 } from '@bettertrack/contracts';
 
 import type { AppContext } from '../context';
 import { validateBody } from '../middleware/validate';
+import { toAdminSessionPolicy } from '../serializers';
 
 /**
  * Admin 2FA management endpoints under `/admin/security/2fa` (§6.12, #400).
@@ -85,4 +88,34 @@ export function registerAdminSecurityRoutes(router: Router, ctx: AppContext): vo
   router.post('/security/2fa/recovery-codes', async (req, res) => {
     res.json(await ctx.adminTwoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
   });
+}
+
+/**
+ * Admin session policy endpoints under `/admin/security/session-policy` (§13.5
+ * V5-P13c, settles #430). Registered FLAT onto the admin router (like the 2FA
+ * routes) but AFTER the {@link requireAdminTwoFactor} setup gate — unlike the
+ * enroll/confirm set, changing the session lifetime is a normal admin action,
+ * so it stays behind the mandatory-2FA gate. `requireAdmin` on the parent router
+ * fences it to admin accounts (404 to everyone else).
+ *
+ * There is deliberately NO step-up 2FA re-challenge on the write (#430 rejected):
+ * the security guarantee is the early-expiring admin session, not a re-prompt.
+ */
+export function registerAdminSessionPolicyRoutes(router: Router, ctx: AppContext): void {
+  router.get('/security/session-policy', async (_req, res) => {
+    res.json(toAdminSessionPolicy(await ctx.admin.getSessionPolicy()));
+  });
+
+  router.patch(
+    '/security/session-policy',
+    validateBody(updateAdminSessionPolicyRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as UpdateAdminSessionPolicyRequest;
+      const policy = await ctx.admin.updateSessionPolicy(body, {
+        id: req.authUser!.id,
+        ip: req.ip,
+      });
+      res.json(toAdminSessionPolicy(policy));
+    },
+  );
 }

@@ -46,7 +46,10 @@ import type { AppContext } from '../context';
 import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { registerAdminProblemsRoutes } from './adminProblemsRoutes';
-import { registerAdminSecurityRoutes } from './adminSecurityRoutes';
+import {
+  registerAdminSecurityRoutes,
+  registerAdminSessionPolicyRoutes,
+} from './adminSecurityRoutes';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import {
   toAdminInvite,
@@ -78,6 +81,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // Mandatory admin-login 2FA: every admin endpoint below this line 403s with
   // ADMIN_2FA_SETUP_REQUIRED until the admin has a confirmed 2FA method.
   router.use(requireAdminTwoFactor(ctx));
+
+  // Admin session policy (§13.5 V5-P13c): read/set the early-expiring admin
+  // session lifetime. Behind the 2FA gate — a normal admin action, not part of
+  // the bootstrap enroll set.
+  registerAdminSessionPolicyRoutes(router, ctx);
 
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement): captured
   // errors/failed jobs/provider failures with a resolve flow. Registered flat.

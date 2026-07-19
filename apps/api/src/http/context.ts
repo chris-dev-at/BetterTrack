@@ -499,7 +499,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Global app settings (§6.12): registration-mode enforcement + beta toggle,
   // read by the auth register guard and the admin settings API.
   const appSettingsRepo = createAppSettingsRepository(db);
-  const appSettings = createAppSettingsService({ repo: appSettingsRepo });
+  const appSettings = createAppSettingsService({
+    repo: appSettingsRepo,
+    adminSessionLifetimeDefaultHours: config.admin.sessionLifetimeHours,
+  });
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c)): admin-toggled, read per
   // request off a cheap Redis snapshot, invalidated on write. Rides the same

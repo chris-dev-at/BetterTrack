@@ -97,6 +97,8 @@ const componentSchemas = {
   CreateInviteRequest: contracts.createInviteRequestSchema,
   TestEmailRequest: contracts.testEmailRequestSchema,
   UpdateAppSettingsRequest: contracts.updateAppSettingsRequestSchema,
+  AdminSessionPolicyResponse: contracts.adminSessionPolicyResponseSchema,
+  UpdateAdminSessionPolicyRequest: contracts.updateAdminSessionPolicyRequestSchema,
   AccountDefaultsResponse: contracts.accountDefaultsResponseSchema,
   UpdateAccountDefaultsRequest: contracts.updateAccountDefaultsRequestSchema,
   AdminUser: contracts.adminUserSchema,
@@ -1006,6 +1008,26 @@ const endpoints: EndpointDef[] = [
     summary: 'Regenerate the admin recovery codes (voids the old set).',
     status: 200,
     response: R.TwoFactorRecoveryCodesResponse,
+  },
+  // Admin session policy (§13.5 V5-P13c): the early-expiring admin session
+  // lifetime (6–24 h). No step-up 2FA re-challenge — the guarantee is the short
+  // session, not a re-prompt (#430 rejected).
+  {
+    method: 'get',
+    path: '/admin/security/session-policy',
+    tag: 'Admin',
+    summary: 'The admin session absolute lifetime (hours) + the allowed window.',
+    status: 200,
+    response: R.AdminSessionPolicyResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/security/session-policy',
+    tag: 'Admin',
+    summary: 'Set the admin session lifetime (6–24 h, audit-logged; live on next request).',
+    body: R.UpdateAdminSessionPolicyRequest,
+    status: 200,
+    response: R.AdminSessionPolicyResponse,
   },
   {
     method: 'get',

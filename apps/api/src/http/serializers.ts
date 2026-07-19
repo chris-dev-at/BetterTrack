@@ -1,6 +1,9 @@
 import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
   profileIconIdSchema,
   type AdminInvite,
+  type AdminSessionPolicyResponse,
   type AdminUser,
   type Alert,
   type AppSettingsResponse,
@@ -25,7 +28,7 @@ import type {
   RegistrationTokenRow,
   UserRow,
 } from '../data/schema';
-import type { AppSettings } from '../services/appSettings/appSettingsService';
+import type { AdminSessionPolicy, AppSettings } from '../services/appSettings/appSettingsService';
 import type { AuthUser } from './types';
 
 const toIso = (value: Date | string | null | undefined): string | null => {
@@ -205,6 +208,16 @@ export function toAppSettings(settings: AppSettings): AppSettingsResponse {
     betaMode: settings.betaMode,
     updatedAt: toIso(settings.updatedAt),
     updatedBy: settings.updatedBy,
+  };
+}
+
+export function toAdminSessionPolicy(policy: AdminSessionPolicy): AdminSessionPolicyResponse {
+  return {
+    sessionLifetimeHours: policy.sessionLifetimeHours,
+    minHours: ADMIN_SESSION_LIFETIME_MIN_HOURS,
+    maxHours: ADMIN_SESSION_LIFETIME_MAX_HOURS,
+    updatedAt: toIso(policy.updatedAt),
+    updatedBy: policy.updatedBy,
   };
 }
 

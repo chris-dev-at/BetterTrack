@@ -70,6 +70,8 @@ export const AuditAction = {
   SettingsUpdated: 'settings.updated',
   /** New-account defaults panel changed (§13.4 V4-P0d). */
   AccountDefaultsUpdated: 'account_defaults.updated',
+  /** Admin session lifetime changed (§13.5 V5-P13c). */
+  AdminSessionPolicyUpdated: 'admin_session_policy.updated',
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',

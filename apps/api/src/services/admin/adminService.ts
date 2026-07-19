@@ -10,6 +10,7 @@ import type {
   CreateRegistrationTokenRequest,
   CreateUserRequest,
   UpdateAccountDefaultsRequest,
+  UpdateAdminSessionPolicyRequest,
   UpdateAppSettingsRequest,
   UpdateUserRequest,
 } from '@bettertrack/contracts';
@@ -26,7 +27,11 @@ import type { UserRepository } from '../../data/repositories/userRepository';
 import type { InviteRow, RegistrationTokenRow, UserRow } from '../../data/schema';
 import { badRequest, conflict, notFound } from '../../errors';
 import { applyAccountDefaultsAtRegistration } from '../account/accountDefaults';
-import type { AppSettings, AppSettingsService } from '../appSettings/appSettingsService';
+import type {
+  AdminSessionPolicy,
+  AppSettings,
+  AppSettingsService,
+} from '../appSettings/appSettingsService';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
@@ -669,6 +674,33 @@ export function createAdminService(deps: AdminServiceDeps) {
         meta: { changed: input },
       });
       return settings;
+    },
+
+    /** Current admin session policy, env fallback filled in (§13.5 V5-P13c). */
+    getSessionPolicy: (): Promise<AdminSessionPolicy> => appSettings.getAdminSessionPolicy(),
+
+    /**
+     * Persist the admin session lifetime and audit it (§13.5 V5-P13c). The
+     * settings service clamps the value to the 6–24 h window; the change applies
+     * to session reads on the next request with no redeploy.
+     */
+    async updateSessionPolicy(
+      input: UpdateAdminSessionPolicyRequest,
+      actor: AdminActor,
+    ): Promise<AdminSessionPolicy> {
+      const policy = await appSettings.setAdminSessionLifetimeHours(
+        input.sessionLifetimeHours,
+        actor.id,
+      );
+      await audit.record({
+        actorId: actor.id,
+        action: AuditAction.AdminSessionPolicyUpdated,
+        targetType: 'app_settings',
+        targetId: null,
+        ip: actor.ip,
+        meta: { changed: input },
+      });
+      return policy;
     },
 
     /** Current new-account defaults, lean fallbacks filled in (§13.4 V4-P0d). */
