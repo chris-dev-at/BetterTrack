@@ -1988,6 +1988,27 @@
         "backtestHeading": "Backtest",
         "conglomerateGone": "The conglomerate this idea references is no longer available."
       }
+    },
+    "comparison": {
+      "title": "Compare conglomerates",
+      "description": "Overlay 2–6 of your conglomerates on one chart and compare returns and risk side by side.",
+      "selectHeading": "Choose conglomerates",
+      "selectHint": "Pick {{min}}–{{max}} conglomerates to compare.",
+      "selectionCount": "{{count}}/{{max}} selected",
+      "emptyPositions": "No positions",
+      "noConglomerates": "Not enough conglomerates yet",
+      "noConglomeratesHint": "Build at least two conglomerates with positions to compare them here.",
+      "needTwo": "Select at least {{min}} conglomerates to compare.",
+      "error": "The comparison could not be computed. Please try again.",
+      "windowError": "One of the selected conglomerates has too little price history to cover the comparison window. Try a shorter range or deselect it.",
+      "chartAriaLabel": "Conglomerate comparison chart",
+      "legendAriaLabel": "Compared conglomerates",
+      "baselineLabel": "Baseline",
+      "setBaseline": "Use {{name}} as the baseline",
+      "grid": {
+        "ariaLabel": "Conglomerate comparison statistics",
+        "metric": "Metric"
+      }
     }
   },
   "assets": {

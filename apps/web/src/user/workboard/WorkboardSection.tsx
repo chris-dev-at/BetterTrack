@@ -31,11 +31,7 @@ function workboardSubnav(t: TranslateFn, alertsEnabled: boolean): readonly SubNa
       label: t('workboard.section.subnav.calculators'),
       comingSoon: true,
     },
-    {
-      to: '/workboard/comparisons',
-      label: t('workboard.section.subnav.comparisons'),
-      comingSoon: true,
-    },
+    { to: '/workboard/comparisons', label: t('workboard.section.subnav.comparisons') },
     { to: '/workboard/ideas', label: t('workboard.section.subnav.savedIdeas') },
   ];
 }
@@ -74,16 +70,6 @@ export function CalculatorsPage() {
     <ComingSoon
       title={t('workboard.section.calculators.title')}
       description={t('workboard.section.calculators.description')}
-    />
-  );
-}
-
-export function ComparisonsPage() {
-  const t = useT();
-  return (
-    <ComingSoon
-      title={t('workboard.section.comparisons.title')}
-      description={t('workboard.section.comparisons.description')}
     />
   );
 }

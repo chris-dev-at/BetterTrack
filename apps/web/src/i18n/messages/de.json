@@ -1988,6 +1988,27 @@
         "backtestHeading": "Backtest",
         "conglomerateGone": "Das Konglomerat, auf das diese Idee verweist, ist nicht mehr verfügbar."
       }
+    },
+    "comparison": {
+      "title": "Konglomerate vergleichen",
+      "description": "Überlagere 2–6 deiner Konglomerate in einem Chart und vergleiche Rendite und Risiko nebeneinander.",
+      "selectHeading": "Konglomerate auswählen",
+      "selectHint": "Wähle {{min}}–{{max}} Konglomerate zum Vergleich.",
+      "selectionCount": "{{count}}/{{max}} ausgewählt",
+      "emptyPositions": "Keine Positionen",
+      "noConglomerates": "Noch nicht genug Konglomerate",
+      "noConglomeratesHint": "Erstelle mindestens zwei Konglomerate mit Positionen, um sie hier zu vergleichen.",
+      "needTwo": "Wähle mindestens {{min}} Konglomerate zum Vergleich.",
+      "error": "Der Vergleich konnte nicht berechnet werden. Bitte versuche es erneut.",
+      "windowError": "Eines der ausgewählten Konglomerate hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne es.",
+      "chartAriaLabel": "Vergleichschart der Konglomerate",
+      "legendAriaLabel": "Verglichene Konglomerate",
+      "baselineLabel": "Basis",
+      "setBaseline": "{{name}} als Basis verwenden",
+      "grid": {
+        "ariaLabel": "Vergleichsstatistiken der Konglomerate",
+        "metric": "Kennzahl"
+      }
     }
   },
   "assets": {

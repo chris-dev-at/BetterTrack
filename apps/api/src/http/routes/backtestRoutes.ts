@@ -1,6 +1,11 @@
 import { Router } from 'express';
 
-import { backtestPreviewRequestSchema, type BacktestPreviewRequest } from '@bettertrack/contracts';
+import {
+  backtestComparisonRequestSchema,
+  backtestPreviewRequestSchema,
+  type BacktestComparisonRequest,
+  type BacktestPreviewRequest,
+} from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
@@ -32,6 +37,26 @@ export function createBacktestRouter(ctx: AppContext): Router {
         benchmark: body.benchmark ?? null,
         mode: body.mode,
         rebalance: body.rebalance,
+      },
+      { baseCurrency: req.authUser!.baseCurrency },
+    );
+    res.json(result);
+  });
+
+  // POST /backtest/compare — overlay 2–6 of the caller's own conglomerates on
+  // one shared window (§13.5 V5-P6): {conglomerateIds, range, mode?, rebalance?,
+  // baselineId?} → per-series base-100 curve + full stats + per-metric deltas
+  // vs the baseline. N=7 is rejected by the contract before this runs.
+  router.post('/compare', validateBody(backtestComparisonRequestSchema), async (req, res) => {
+    const body = req.valid?.body as BacktestComparisonRequest;
+    const result = await ctx.backtest.runComparison(
+      req.authUser!.id,
+      {
+        conglomerateIds: body.conglomerateIds,
+        range: body.range,
+        mode: body.mode,
+        rebalance: body.rebalance,
+        baselineId: body.baselineId,
       },
       { baseCurrency: req.authUser!.baseCurrency },
     );

@@ -1,4 +1,4 @@
-import { backtestResponseSchema } from '@bettertrack/contracts';
+import { backtestComparisonResponseSchema, backtestResponseSchema } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
 
@@ -6,7 +6,11 @@ import type { AssetRepository } from '../../../data/repositories/assetRepository
 import type { ConglomerateRepository } from '../../../data/repositories/conglomerateRepository';
 import type { MarketDataService } from '../../../providers';
 import type { CurrencyService } from '../../currency/currencyService';
-import { backtestPreviewCacheKey, createBacktestService } from '../backtestService';
+import {
+  backtestComparisonCacheKey,
+  backtestPreviewCacheKey,
+  createBacktestService,
+} from '../backtestService';
 
 // ---------------------------------------------------------------------------
 // Cache-key identity (V4-P7 — the rebalance frequency is part of the memo key)
@@ -269,5 +273,194 @@ describe('backtestService.runPreview — custom benchmarks (V4-P7)', () => {
       backtestPreviewCacheKey('u1', { ...PREVIEW, benchmark: { conglomerateId: CONG_ID } }, 'EUR'),
     ]);
     expect(keys.size).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// N-way conglomerate comparison (V5-P6): the shared-window engine fan-out
+// ---------------------------------------------------------------------------
+
+/** Comparison-test conglomerates, all owned by u1 (positions over the CLOSES fixture). */
+const CA = '018f0000-0000-7000-8000-0000000000a1'; // 60/40 A/B (== the PREVIEW basket)
+const CB = '018f0000-0000-7000-8000-0000000000b1'; // 100 % B
+const CC = '018f0000-0000-7000-8000-0000000000c1'; // 100 % C — a late listing (starts 2026-01-02)
+const CD = '018f0000-0000-7000-8000-0000000000d1'; // 100 % A
+
+const COMPARISON_CONGLOMERATES: Record<
+  string,
+  { name: string; positions: Array<{ assetId: string; weightPct: number }> }
+> = {
+  [CA]: {
+    name: 'A/B Mix',
+    positions: [
+      { assetId: 'A', weightPct: 60 },
+      { assetId: 'B', weightPct: 40 },
+    ],
+  },
+  [CB]: { name: 'All B', positions: [{ assetId: 'B', weightPct: 100 }] },
+  [CC]: { name: 'Late C', positions: [{ assetId: 'C', weightPct: 100 }] },
+  [CD]: { name: 'All A', positions: [{ assetId: 'A', weightPct: 100 }] },
+};
+
+function createComparisonHarness() {
+  const store = new Map<string, string>();
+
+  const assetRepo = {
+    findByIdForUser: async (assetId: string) => ({
+      id: assetId,
+      symbol: assetId,
+      currency: 'EUR',
+      providerId: 'stub',
+      providerRef: assetId,
+    }),
+    findGlobal: async () => null,
+  } as unknown as AssetRepository;
+
+  const conglomerateRepo = {
+    findByIdForOwner: async (ownerId: string, id: string) =>
+      ownerId === 'u1' && COMPARISON_CONGLOMERATES[id]
+        ? {
+            id,
+            name: COMPARISON_CONGLOMERATES[id]!.name,
+            positions: COMPARISON_CONGLOMERATES[id]!.positions,
+          }
+        : null,
+  } as unknown as ConglomerateRepository;
+
+  const marketData = {
+    getHistory: async (ref: { providerRef: string }) => {
+      const closes = CLOSES[ref.providerRef] ?? [];
+      return { value: closes.map((c) => ({ time: `${c.date}T00:00:00Z`, close: c.close })) };
+    },
+  } as unknown as MarketDataService;
+
+  const currencyService = {
+    baseCurrency: 'EUR',
+    withBase() {
+      return this;
+    },
+    toBase: async (amount: number) => amount,
+  } as unknown as CurrencyService;
+
+  const redis = {
+    get: async (key: string) => store.get(key) ?? null,
+    set: async (key: string, value: string) => {
+      store.set(key, value);
+      return 'OK';
+    },
+  } as unknown as Redis;
+
+  const service = createBacktestService({
+    assetRepo,
+    conglomerateRepo,
+    marketData,
+    currencyService,
+    redis,
+    now: () => Date.parse('2026-01-05T12:00:00Z'),
+  });
+
+  return { service, store };
+}
+
+describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6)', () => {
+  it('for N=2 reproduces the V4-P7 benchmark run exactly (regression parity)', async () => {
+    const { service } = createComparisonHarness();
+
+    // Comparison [CA, CB]: CA is the primary (== the inline PREVIEW basket), CB
+    // the second series run over CA's window — the exact shape a V4-P7 preview
+    // of PREVIEW with a CB benchmark produces. Series AND stats must match.
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CA, CB], range: '1Y' });
+    const preview = await service.runPreview('u1', {
+      ...PREVIEW,
+      benchmark: { conglomerateId: CB },
+    });
+
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.series.map((s) => s.conglomerateId)).toEqual([CA, CB]);
+    // Primary (CA) === the preview's own basket.
+    expect(cmp.series[0]!.series).toEqual(preview.series);
+    expect(cmp.series[0]!.stats).toEqual(preview.stats);
+    // Second series (CB) === the preview's benchmark run.
+    expect(cmp.series[1]!.series).toEqual(preview.benchmark!.series);
+    expect(cmp.series[1]!.stats).toEqual(preview.benchmark!.stats);
+  });
+
+  it('overlays three conglomerates on one shared window, in request order', async () => {
+    const { service } = createComparisonHarness();
+    const cmp = await service.runComparison('u1', { conglomerateIds: [CA, CB, CD], range: '1Y' });
+
+    expect(() => backtestComparisonResponseSchema.parse(cmp)).not.toThrow();
+    expect(cmp.series.map((s) => s.conglomerateId)).toEqual([CA, CB, CD]);
+    expect(cmp.series.map((s) => s.name)).toEqual(['A/B Mix', 'All B', 'All A']);
+    // Every series shares the primary's window and opens at the base-100 index.
+    for (const s of cmp.series) {
+      expect(s.series[0]!.date).toBe(cmp.startDate);
+      expect(s.series.at(-1)!.date).toBe(cmp.endDate);
+      expect(s.series[0]!.value).toBeCloseTo(100, 10);
+    }
+    // Default baseline is the first id; its own deltas are all 0.
+    expect(cmp.baselineId).toBe(CA);
+    expect(cmp.series[0]!.deltas.totalReturnPct).toBe(0);
+    // CD is 100 % A (100→132 = +32 %); CA is the 60/40 mix. The delta is real.
+    expect(cmp.series[2]!.stats.totalReturnPct).toBeCloseTo(32, 10);
+    expect(cmp.series[2]!.deltas.totalReturnPct).toBeCloseTo(
+      cmp.series[2]!.stats.totalReturnPct - cmp.series[0]!.stats.totalReturnPct,
+      10,
+    );
+  });
+
+  it('re-picking the baseline recomputes the deltas without re-running the backtests', async () => {
+    const { service, store } = createComparisonHarness();
+
+    const vsCA = await service.runComparison('u1', { conglomerateIds: [CA, CB, CD], range: '1Y' });
+    const coreEntries = store.size; // the baseline-independent core is now cached
+
+    const vsCB = await service.runComparison('u1', {
+      conglomerateIds: [CA, CB, CD],
+      range: '1Y',
+      baselineId: CB,
+    });
+
+    // No new cache entry — the baseline is not part of the core memo key.
+    expect(store.size).toBe(coreEntries);
+    expect(vsCB.baselineId).toBe(CB);
+    // The per-series stats are identical (same window); only the deltas moved.
+    expect(vsCB.series.map((s) => s.stats)).toEqual(vsCA.series.map((s) => s.stats));
+    // vs CA: CA is the baseline → its own delta is 0. vs CB: CA's delta is now
+    // measured against CB, so it takes CB's stat as the reference — a different
+    // number. (CA total return 15.2 %, CB −10 %, CD 32 % over the fixture.)
+    const caReturn = vsCA.series[0]!.stats.totalReturnPct;
+    const cbReturn = vsCA.series[1]!.stats.totalReturnPct;
+    expect(vsCA.series[0]!.deltas.totalReturnPct).toBe(0);
+    expect(vsCB.series[1]!.deltas.totalReturnPct).toBe(0); // CB is now the baseline
+    expect(vsCB.series[0]!.deltas.totalReturnPct).toBeCloseTo(caReturn - cbReturn, 10);
+    expect(caReturn - cbReturn).not.toBeCloseTo(0, 6); // the two baselines really differ
+  });
+
+  it('rejects a non-primary series that does not cover the primary window (2-series alignment semantics)', async () => {
+    const { service } = createComparisonHarness();
+    // CA's window starts 2025-12-30; CC (100 % C) only lists from 2026-01-02, so
+    // it cannot cover the window — a 422, exactly as a short V4-P7 benchmark.
+    await expect(
+      service.runComparison('u1', { conglomerateIds: [CA, CC], range: '1Y' }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'BACKTEST_UNAVAILABLE' });
+  });
+
+  it("404s when a conglomerate is not the caller's", async () => {
+    const { service } = createComparisonHarness();
+    await expect(
+      service.runComparison('u2', { conglomerateIds: [CA, CB], range: '1Y' }),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'CONGLOMERATE_NOT_FOUND' });
+  });
+
+  it('the baseline is not part of the core memo key (same ids/params share the core)', () => {
+    const base = { conglomerateIds: [CA, CB], range: '1Y' as const };
+    expect(backtestComparisonCacheKey('u1', base, 'EUR')).toBe(
+      backtestComparisonCacheKey('u1', { ...base, baselineId: CB }, 'EUR'),
+    );
+    // Id ORDER is part of the key — the first id defines the window.
+    expect(backtestComparisonCacheKey('u1', base, 'EUR')).not.toBe(
+      backtestComparisonCacheKey('u1', { conglomerateIds: [CB, CA], range: '1Y' }, 'EUR'),
+    );
   });
 });
