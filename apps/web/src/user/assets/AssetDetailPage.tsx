@@ -24,9 +24,11 @@ import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
 import {
   ASSET_DIVIDENDS_QUERY_KEY,
   ASSET_EARNINGS_QUERY_KEY,
+  ASSET_NEWS_QUERY_KEY,
   ASSET_SPLITS_QUERY_KEY,
   getAssetDividends,
   getAssetEarnings,
+  getAssetNews,
   getAssetSplits,
 } from '../../lib/marketIntelApi';
 import { useLiveFrames } from '../../lib/realtime';
@@ -48,6 +50,7 @@ import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui'
 import { PriceChart, Sparkline } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
 import { CapabilityTags } from './capabilityTags';
+import { NewsHeadlineList } from './newsFeed';
 import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
 import { Alert, Button } from '../components/ui';
@@ -552,6 +555,35 @@ function SplitsSection({ assetId }: { assetId: string }) {
   );
 }
 
+/**
+ * News block (arc c): a compact, expandable feed of recent headlines. Hidden
+ * entirely when the capability is unavailable (gate off, provider lacks it, or
+ * upstream errored) or the provider has no headlines — so the surface stays
+ * invisible when unconfigured (anti-bloat, regression-guarded).
+ */
+function NewsSection({ assetId }: { assetId: string }) {
+  const t = useT();
+  const { data } = useQuery({
+    queryKey: ASSET_NEWS_QUERY_KEY(assetId),
+    queryFn: ({ signal }) => getAssetNews(assetId, signal),
+    staleTime: 15 * 60_000,
+  });
+
+  if (!data || !data.available) return null;
+  if (data.headlines.length === 0) return null;
+
+  return (
+    <section aria-labelledby="news-heading" className="flex flex-col gap-3">
+      <h2 id="news-heading" className="text-base font-semibold text-neutral-200">
+        {t('assets.detail.news.title')}
+      </h2>
+      <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+        <NewsHeadlineList headlines={data.headlines} />
+      </div>
+    </section>
+  );
+}
+
 const EM_DASH_TEXT = '—';
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -1024,6 +1056,7 @@ export function AssetDetailPage() {
           is unconfigured. */}
       <EarningsSection assetId={id} />
       <SplitsSection assetId={id} />
+      <NewsSection assetId={id} />
       <AlertsSection
         asset={{
           id,

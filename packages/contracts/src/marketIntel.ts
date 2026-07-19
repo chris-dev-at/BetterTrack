@@ -272,6 +272,43 @@ export const newsResponseSchema = z
   .strict();
 export type NewsResponse = z.infer<typeof newsResponseSchema>;
 
+// ── Portfolio news digest (arc c, portfolio-level) ───────────────────────────
+// Headlines aggregated across the caller's held + watchlist assets, grouped per
+// asset and computed on read from the provider/cache keystone (NO storage).
+// `available` mirrors the per-asset shape — the global `MARKET_INTEL_ENABLED`
+// gate — so the UI shows nothing when it is false (invisible when unconfigured).
+
+/**
+ * One asset's news group in the portfolio digest: the asset identity, whether it
+ * is held and/or watched (independent flags — an asset can be both), and its
+ * headlines newest-first. Only assets with at least one headline are included.
+ */
+export const newsDigestGroupSchema = z
+  .object({
+    assetId: z.string(),
+    symbol: z.string(),
+    name: z.string(),
+    held: z.boolean(),
+    watched: z.boolean(),
+    headlines: z.array(newsHeadlineSchema),
+  })
+  .strict();
+export type NewsDigestGroup = z.infer<typeof newsDigestGroupSchema>;
+
+/**
+ * `GET /assets/portfolio/news-digest` — the caller's recent headlines across
+ * held + watchlist assets, grouped per asset. Groups are ordered by their newest
+ * headline (newest-first), and each group's headlines are newest-first too.
+ * `available: false` (gate off) ⇒ empty and hidden.
+ */
+export const newsDigestResponseSchema = z
+  .object({
+    available: z.boolean(),
+    groups: z.array(newsDigestGroupSchema),
+  })
+  .strict();
+export type NewsDigestResponse = z.infer<typeof newsDigestResponseSchema>;
+
 // ── Splits (arc d) ───────────────────────────────────────────────────────────
 
 /**

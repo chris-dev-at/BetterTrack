@@ -14,6 +14,7 @@ export function AssetsLayout() {
   const subnav: readonly SubNavItem[] = [
     { to: '/assets', label: t('assets.nav.overview'), end: true },
     { to: '/assets/search', label: t('assets.nav.search') },
+    { to: '/assets/news', label: t('assets.nav.news') },
     { to: '/assets/stocks', label: t('assets.nav.stocks'), comingSoon: true },
     { to: '/assets/etfs', label: t('assets.nav.etfs'), comingSoon: true },
     { to: '/assets/crypto', label: t('assets.nav.crypto'), comingSoon: true },

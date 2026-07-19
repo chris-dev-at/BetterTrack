@@ -23,9 +23,11 @@ vi.mock('../../lib/marketIntelApi', () => ({
   ASSET_DIVIDENDS_QUERY_KEY: (id: string) => ['asset', id, 'intel', 'dividends'],
   ASSET_EARNINGS_QUERY_KEY: (id: string) => ['asset', id, 'intel', 'earnings'],
   ASSET_SPLITS_QUERY_KEY: (id: string) => ['asset', id, 'intel', 'splits'],
+  ASSET_NEWS_QUERY_KEY: (id: string) => ['asset', id, 'intel', 'news'],
   getAssetDividends: vi.fn(),
   getAssetEarnings: vi.fn(),
   getAssetSplits: vi.fn(),
+  getAssetNews: vi.fn(),
 }));
 
 // lightweight-charts uses a canvas API jsdom doesn't implement; mock it out
@@ -59,12 +61,18 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
-import { getAssetDividends, getAssetEarnings, getAssetSplits } from '../../lib/marketIntelApi';
+import {
+  getAssetDividends,
+  getAssetEarnings,
+  getAssetNews,
+  getAssetSplits,
+} from '../../lib/marketIntelApi';
 import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { AssetDetailPage } from './AssetDetailPage';
 
 const UNAVAILABLE_EARNINGS = { available: false as const, next: null, recent: [] };
 const UNAVAILABLE_SPLITS = { available: false as const, history: [], upcoming: [] };
+const UNAVAILABLE_NEWS = { available: false as const, headlines: [] };
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -175,6 +183,7 @@ beforeEach(() => {
   // Market-intel blocks hidden by default (unconfigured) — individual tests opt in.
   vi.mocked(getAssetEarnings).mockResolvedValue(UNAVAILABLE_EARNINGS);
   vi.mocked(getAssetSplits).mockResolvedValue(UNAVAILABLE_SPLITS);
+  vi.mocked(getAssetNews).mockResolvedValue(UNAVAILABLE_NEWS);
 });
 
 describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
@@ -221,6 +230,58 @@ describe('AssetDetailPage — market intelligence (§13.5 V5-P5)', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     expect(screen.queryByText('Stock splits')).not.toBeInTheDocument();
+  });
+
+  test('renders a compact, expandable news feed from fixture headlines', async () => {
+    vi.mocked(getAssetNews).mockResolvedValue({
+      available: true,
+      headlines: [
+        {
+          id: 'n1',
+          title: 'Headline one',
+          publisher: 'Reuters',
+          url: 'https://example.com/1',
+          publishedAt: '2026-06-20T08:00:00.000Z',
+        },
+        {
+          id: 'n2',
+          title: 'Headline two',
+          publisher: 'Bloomberg',
+          url: 'https://example.com/2',
+          publishedAt: '2026-06-19T08:00:00.000Z',
+        },
+        {
+          id: 'n3',
+          title: 'Headline three',
+          publisher: 'FT',
+          url: 'https://example.com/3',
+          publishedAt: '2026-06-18T08:00:00.000Z',
+        },
+        {
+          id: 'n4',
+          title: 'Headline four',
+          publisher: 'WSJ',
+          url: 'https://example.com/4',
+          publishedAt: '2026-06-17T08:00:00.000Z',
+        },
+      ],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('News')).toBeInTheDocument());
+    // Compact: the first three headlines show, the fourth is folded away.
+    expect(screen.getByText('Headline one')).toBeInTheDocument();
+    expect(screen.getByText('Headline three')).toBeInTheDocument();
+    expect(screen.queryByText('Headline four')).not.toBeInTheDocument();
+    // Expandable: the toggle reveals the rest.
+    await userEvent.click(screen.getByRole('button', { name: 'Show 1 more' }));
+    expect(screen.getByText('Headline four')).toBeInTheDocument();
+  });
+
+  test('hides the news block when the capability is unavailable', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    await waitFor(() => expect(getAssetNews).toHaveBeenCalled());
+    expect(screen.queryByText('News')).not.toBeInTheDocument();
   });
 });
 

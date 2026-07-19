@@ -2032,6 +2032,9 @@
         "title": "Aktiensplits",
         "announced": "Angekündigt"
       },
+      "news": {
+        "title": "Nachrichten"
+      },
       "watchlistAddError": "Konnte nicht zur Watchlist hinzugefügt werden. Bitte versuche es erneut.",
       "quickActions": "Schnellaktionen",
       "addToPortfolio": "+ Portfolio",
@@ -2054,11 +2057,24 @@
     "nav": {
       "overview": "Übersicht",
       "search": "Suche",
+      "news": "Nachrichten",
       "stocks": "Aktien",
       "etfs": "ETFs",
       "crypto": "Krypto",
       "commodities": "Rohstoffe",
       "customAssets": "Individuelle Anlagen"
+    },
+    "news": {
+      "title": "Nachrichten",
+      "subtitle": "Aktuelle Schlagzeilen zu den Anlagen, die du hältst und beobachtest.",
+      "held": "Gehalten",
+      "watched": "Beobachtet",
+      "groupAria": "Nachrichten für {{symbol}}",
+      "showMore": "{{count}} weitere anzeigen",
+      "showLess": "Weniger anzeigen",
+      "loadError": "Der Nachrichten-Überblick konnte nicht geladen werden. Bitte versuche es erneut.",
+      "emptyTitle": "Keine aktuellen Nachrichten",
+      "emptyDescription": "Nachrichten erscheinen hier, sobald es Schlagzeilen zu den Anlagen gibt, die du hältst oder beobachtest."
     },
     "comingSoon": {
       "overview": {
