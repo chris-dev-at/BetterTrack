@@ -113,6 +113,14 @@ export {
 } from './dividendEventsJob';
 
 export {
+  createStandingOrdersJob,
+  STANDING_ORDERS_SCHEDULER_ID,
+  STANDING_ORDERS_CRON,
+  STANDING_ORDERS_TZ,
+  type StandingOrdersJobDeps,
+} from './standingOrdersJob';
+
+export {
   createPricesRefreshDailyJob,
   createPricesBackfillJob,
   createFxRefreshSpotJob,

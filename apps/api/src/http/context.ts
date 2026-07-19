@@ -123,6 +123,11 @@ import { createTwoFactorService, type TwoFactorService } from '../services/auth/
 import { createChatService, type ChatService } from '../services/chat';
 import { createIdeasService, type IdeasService } from '../services/ideas/ideasService';
 import { createImportService, type ImportService } from '../services/imports/importService';
+import {
+  createStandingOrderService,
+  type StandingOrderService,
+} from '../services/standingOrders/standingOrderService';
+import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
 import { ALL_MAPPERS } from '../services/imports/mappers';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createAudienceService } from '../services/social/audienceService';
@@ -250,6 +255,8 @@ export interface AppContext {
   ideas: IdeasService;
   /** Broker CSV imports — staged upload/preview/apply framework + mappers (§13.4 V4-P8). */
   imports: ImportService;
+  /** Standing orders — scheduled recurring buys / cash movements, auto-recorded (§13.5 V5-P6b). */
+  standingOrders: StandingOrderService;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -960,6 +967,23 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
+  // movements auto-recorded by the daily `standingOrders.process` job. Books
+  // through the transaction/cash repositories tagged `standing-order`, exactly
+  // once per period via its own runs ledger; the API here drives CRUD +
+  // pause/resume and can also run the scan in-process under test.
+  const standingOrders = createStandingOrderService({
+    repo: createStandingOrderRepository(db),
+    portfolioRepo,
+    assetRepo,
+    transactionRepo,
+    cashMovementRepo,
+    cashSourceRepo,
+    marketData,
+    snapshots,
+    logger,
+  });
+
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Emits friend.request / friend.accepted through the notification center.
@@ -1215,6 +1239,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     backtest: backtestPreview,
     ideas,
     imports,
+    standingOrders,
     analytics,
     social,
     chat,

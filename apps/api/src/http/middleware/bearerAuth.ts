@@ -78,6 +78,9 @@ const ACCOUNT_SECURITY_SCOPE = 'account:security';
 const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[] = [
   { prefix: '/portfolios', read: 'portfolio:read', write: 'portfolio:write' },
   { prefix: '/custom-assets', read: 'portfolio:read', write: 'portfolio:write' },
+  // Standing orders (§13.5 V5-P6b) manage recurring portfolio writes — the same
+  // scope pair as /portfolios, declared so the module never default-denies.
+  { prefix: '/standing-orders', read: 'portfolio:read', write: 'portfolio:write' },
   // Broker CSV imports (§13.4 V4-P8) stage + apply portfolio data — the same
   // scope pair as /portfolios, declared here so the module never falls through
   // to the session-only default (the #396/#405 gap class).
