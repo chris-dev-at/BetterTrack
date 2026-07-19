@@ -236,3 +236,123 @@ export const backtestResponseSchema = z
   })
   .strict();
 export type BacktestResponse = z.infer<typeof backtestResponseSchema>;
+
+// --- N-way conglomerate comparison (§13.5 V5-P6 arc a) ---------------------
+
+/**
+ * The maximum number of conglomerates one comparison overlays at once (§13.5
+ * V5-P6). Two is the floor (a comparison needs a pair); six is the cap — past
+ * that the overlay chart and the stats grid stop being readable (anti-bloat),
+ * and it bounds the per-request backtest fan-out. `N=7` is rejected here at the
+ * contract, before the service ever runs.
+ */
+export const COMPARISON_MIN_SERIES = 2;
+export const COMPARISON_MAX_SERIES = 6;
+
+/**
+ * The stat metrics compared across series in the N-way comparison grid (V5-P6):
+ * a flat numeric projection of {@link backtestStatsSchema}. The two day-return
+ * blocks collapse to their `returnPct` (the grid compares the magnitude; the
+ * date stays on the per-series `stats`). Every field is nullable exactly where
+ * its `BacktestStats` source is (`cagrPct`/`volatilityPct` on a single-day
+ * window, best/worst day with no returns).
+ */
+export const COMPARISON_METRIC_KEYS = [
+  'totalReturnPct',
+  'cagrPct',
+  'maxDrawdownPct',
+  'volatilityPct',
+  'bestDayPct',
+  'worstDayPct',
+] as const;
+export const comparisonMetricKeySchema = z.enum(COMPARISON_METRIC_KEYS);
+export type ComparisonMetricKey = z.infer<typeof comparisonMetricKeySchema>;
+
+/** The comparable stat vector for one series (nullable where a stat is undefined). */
+export const comparisonMetricsSchema = z
+  .object({
+    totalReturnPct: z.number().nullable(),
+    cagrPct: z.number().nullable(),
+    maxDrawdownPct: z.number().nullable(),
+    volatilityPct: z.number().nullable(),
+    bestDayPct: z.number().nullable(),
+    worstDayPct: z.number().nullable(),
+  })
+  .strict();
+export type ComparisonMetrics = z.infer<typeof comparisonMetricsSchema>;
+
+/**
+ * `POST /backtest/compare` body (§13.5 V5-P6): a set of the caller's own
+ * conglomerate ids to overlay, plus the same window/late-listing/rebalance
+ * knobs a single backtest takes. Each id is run through the same engine over
+ * the FIRST id's effective window (its `stats` are therefore apples-to-apples,
+ * exactly as a V4-P7 benchmark is). `baselineId` (default: the first id) is the
+ * series every stat delta is measured against; it changes only the deltas, not
+ * the window or the per-series stats, so re-picking it is a cheap recompute.
+ */
+export const backtestComparisonRequestSchema = z
+  .object({
+    conglomerateIds: z
+      .array(z.string().uuid())
+      .min(COMPARISON_MIN_SERIES)
+      .max(COMPARISON_MAX_SERIES),
+    range: backtestPreviewRangeSchema,
+    mode: backtestModeSchema.default('clip'),
+    rebalance: rebalanceFrequencySchema.default('none'),
+    /** The delta baseline; must be one of `conglomerateIds`. Defaults to the first. */
+    baselineId: z.string().uuid().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    if (new Set(val.conglomerateIds).size !== val.conglomerateIds.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'conglomerateIds must be unique.',
+        path: ['conglomerateIds'],
+      });
+    }
+    if (val.baselineId !== undefined && !val.conglomerateIds.includes(val.baselineId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'baselineId must be one of conglomerateIds.',
+        path: ['baselineId'],
+      });
+    }
+  });
+export type BacktestComparisonRequest = z.infer<typeof backtestComparisonRequestSchema>;
+
+/**
+ * One overlaid series in a comparison: its own base-100 index `series` + full
+ * `stats` (both from a dedicated engine run over the shared window), and its
+ * per-metric `deltas` against the response `baselineId` (`stat − baselineStat`,
+ * `null` when either side is null). The baseline's own row is all-zero (null
+ * where its stat is null).
+ */
+export const comparisonSeriesSchema = z
+  .object({
+    conglomerateId: z.string().uuid(),
+    name: z.string(),
+    series: z.array(backtestSeriesPointSchema),
+    stats: backtestStatsSchema,
+    deltas: comparisonMetricsSchema,
+  })
+  .strict();
+export type ComparisonSeries = z.infer<typeof comparisonSeriesSchema>;
+
+/**
+ * `POST /backtest/compare` response — every requested conglomerate as an
+ * apples-to-apples series over one shared window, in request order. `startDate`
+ * /`endDate` are that shared window (the first id's effective window); every
+ * `series.deltas` is measured against `baselineId`.
+ */
+export const backtestComparisonResponseSchema = z
+  .object({
+    startDate: z.string(),
+    endDate: z.string(),
+    baselineId: z.string().uuid(),
+    mode: backtestModeSchema,
+    rebalance: rebalanceFrequencySchema,
+    series: z.array(comparisonSeriesSchema),
+  })
+  .strict();
+export type BacktestComparisonResponse = z.infer<typeof backtestComparisonResponseSchema>;

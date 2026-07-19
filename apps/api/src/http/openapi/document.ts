@@ -211,9 +211,11 @@ const componentSchemas = {
   ConglomerateDetail: contracts.conglomerateDetailSchema,
   AllocateResponse: contracts.allocateResponseSchema,
 
-  // Backtest (§6.6)
+  // Backtest (§6.6, §13.5 V5-P6)
   BacktestPreviewRequest: contracts.backtestPreviewRequestSchema,
   BacktestResponse: contracts.backtestResponseSchema,
+  BacktestComparisonRequest: contracts.backtestComparisonRequestSchema,
+  BacktestComparisonResponse: contracts.backtestComparisonResponseSchema,
 
   // Ideas (§13.4 V4-P9)
   IdeaListResponse: contracts.ideaListResponseSchema,
@@ -1954,6 +1956,15 @@ const endpoints: EndpointDef[] = [
     body: R.BacktestPreviewRequest,
     status: 200,
     response: R.BacktestResponse,
+  },
+  {
+    method: 'post',
+    path: '/backtest/compare',
+    tag: 'Backtest',
+    summary: 'Compare 2–6 of the caller’s conglomerates on one shared window (§13.5 V5-P6).',
+    body: R.BacktestComparisonRequest,
+    status: 200,
+    response: R.BacktestComparisonResponse,
   },
 
   // Ideas (§13.4 V4-P9) — saved & shareable Workboard analyses

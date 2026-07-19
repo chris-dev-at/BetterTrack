@@ -2,12 +2,23 @@ import { describe, expect, it } from 'vitest';
 
 import {
   backtestBenchmarkInputSchema,
+  backtestComparisonRequestSchema,
+  backtestComparisonResponseSchema,
   backtestPreviewRequestSchema,
   backtestResponseSchema,
+  COMPARISON_MAX_SERIES,
 } from './backtest';
 
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
 const UUID_B = '018f0000-0000-7000-8000-00000000000b';
+
+/** N distinct valid UUIDs for the comparison-size tests. */
+function uuids(n: number): string[] {
+  return Array.from(
+    { length: n },
+    (_, i) => `018f0000-0000-7000-8000-0000000000${(i + 16).toString(16)}`,
+  );
+}
 
 const BASE_REQUEST = {
   positions: [{ assetId: UUID_A, weight: 60 }],
@@ -110,5 +121,111 @@ describe('backtestResponseSchema — benchmark result block (V4-P7)', () => {
       idleCashAvgPct: null,
     };
     expect(backtestResponseSchema.safeParse(response).success).toBe(true);
+  });
+});
+
+describe('backtestComparisonRequestSchema — N-way comparison (V5-P6)', () => {
+  it('accepts 2…6 conglomerate ids and applies the mode/rebalance defaults', () => {
+    for (let n = 2; n <= COMPARISON_MAX_SERIES; n += 1) {
+      const parsed = backtestComparisonRequestSchema.safeParse({
+        conglomerateIds: uuids(n),
+        range: '5Y',
+      });
+      expect(parsed.success, `n=${n}`).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.mode).toBe('clip');
+        expect(parsed.data.rebalance).toBe('none');
+      }
+    }
+  });
+
+  it('rejects N=7 (over the cap) and N=1 (under the floor) at the contract', () => {
+    expect(
+      backtestComparisonRequestSchema.safeParse({ conglomerateIds: uuids(7), range: '5Y' }).success,
+    ).toBe(false);
+    expect(
+      backtestComparisonRequestSchema.safeParse({ conglomerateIds: uuids(1), range: '5Y' }).success,
+    ).toBe(false);
+  });
+
+  it('rejects duplicate ids', () => {
+    expect(
+      backtestComparisonRequestSchema.safeParse({ conglomerateIds: [UUID_A, UUID_A], range: '5Y' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('accepts a baselineId that is one of the ids, rejects one that is not', () => {
+    expect(
+      backtestComparisonRequestSchema.safeParse({
+        conglomerateIds: [UUID_A, UUID_B],
+        range: '5Y',
+        baselineId: UUID_B,
+      }).success,
+    ).toBe(true);
+    expect(
+      backtestComparisonRequestSchema.safeParse({
+        conglomerateIds: [UUID_A, UUID_B],
+        range: '5Y',
+        baselineId: '018f0000-0000-7000-8000-0000000000ff',
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('backtestComparisonResponseSchema — series + deltas (V5-P6)', () => {
+  it('accepts a two-series comparison with full stats and per-metric deltas', () => {
+    const response = {
+      startDate: '2021-01-04',
+      endDate: '2026-01-05',
+      baselineId: UUID_A,
+      mode: 'clip',
+      rebalance: 'none',
+      series: [
+        {
+          conglomerateId: UUID_A,
+          name: 'A/B Mix',
+          series: [{ date: '2021-01-04', value: 100 }],
+          stats: {
+            totalReturnPct: 12.5,
+            cagrPct: 2.4,
+            maxDrawdownPct: -8,
+            volatilityPct: 14,
+            bestDay: { date: '2022-03-01', returnPct: 3 },
+            worstDay: { date: '2022-03-02', returnPct: -3 },
+          },
+          deltas: {
+            totalReturnPct: 0,
+            cagrPct: 0,
+            maxDrawdownPct: 0,
+            volatilityPct: 0,
+            bestDayPct: 0,
+            worstDayPct: 0,
+          },
+        },
+        {
+          conglomerateId: UUID_B,
+          name: 'All B',
+          series: [{ date: '2021-01-04', value: 100 }],
+          stats: {
+            totalReturnPct: 10,
+            cagrPct: null,
+            maxDrawdownPct: -6,
+            volatilityPct: null,
+            bestDay: null,
+            worstDay: null,
+          },
+          deltas: {
+            totalReturnPct: -2.5,
+            cagrPct: null,
+            maxDrawdownPct: 2,
+            volatilityPct: null,
+            bestDayPct: null,
+            worstDayPct: null,
+          },
+        },
+      ],
+    };
+    expect(backtestComparisonResponseSchema.safeParse(response).success).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-export { PriceChart, type PriceChartProps } from './PriceChart';
+export { PriceChart, overlayColor, type PriceChartProps } from './PriceChart';
 export { Sparkline, type SparklineProps } from './Sparkline';
 export { AllocationDonut, type AllocationDonutProps } from './AllocationDonut';
 export {

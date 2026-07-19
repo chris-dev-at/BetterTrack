@@ -350,3 +350,108 @@ export function computeContributions(
       Math.abs(totalStart) > EPSILON ? ((input.endValue - input.startValue) / totalStart) * 100 : 0,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// N-series comparison (deltas vs a chosen baseline)
+// ---------------------------------------------------------------------------
+
+/**
+ * The stat metrics an N-series comparison ranks side by side (§13.5 V5-P6): a
+ * flat numeric projection of the backtest engine's `BacktestStats`. This
+ * generalises the V4-P7 two-series benchmark table (basket vs benchmark) to any
+ * number of aligned series — the same six metrics, now compared against one
+ * caller-chosen baseline instead of a fixed benchmark. The engine already runs
+ * every series over one shared window, so the vectors are apples-to-apples by
+ * construction; this module only computes the pairwise deltas.
+ */
+export const COMPARISON_METRICS = [
+  'totalReturnPct',
+  'cagrPct',
+  'maxDrawdownPct',
+  'volatilityPct',
+  'bestDayPct',
+  'worstDayPct',
+] as const;
+export type ComparisonMetric = (typeof COMPARISON_METRICS)[number];
+
+/**
+ * One series' comparable stat vector. A metric is `null` exactly where the
+ * underlying `BacktestStats` figure is undefined (CAGR / volatility on a
+ * single-day window, best/worst day with no returns) — the delta against it is
+ * then `null`, never a spurious `0`.
+ */
+export type ComparisonMetricVector = Readonly<Record<ComparisonMetric, number | null>>;
+
+/** One input series to {@link compareSeriesStats}: an id + its stat vector. */
+export interface ComparisonSeriesInput {
+  readonly id: string;
+  readonly metrics: ComparisonMetricVector;
+}
+
+/**
+ * Per-metric delta of a series against the baseline (`metric − baselineMetric`,
+ * in the metric's own units — percentage points). `null` when either side is
+ * `null` (an undefined stat has no meaningful delta).
+ */
+export type ComparisonMetricDeltas = Readonly<Record<ComparisonMetric, number | null>>;
+
+/** One series in the comparison result: its vector echoed back + deltas vs the baseline. */
+export interface ComparisonSeriesResult {
+  readonly id: string;
+  readonly metrics: ComparisonMetricVector;
+  readonly deltas: ComparisonMetricDeltas;
+}
+
+/** The comparison outcome: the chosen baseline id + one result per input (input order preserved). */
+export interface SeriesComparison {
+  readonly baselineId: string;
+  readonly series: ComparisonSeriesResult[];
+}
+
+/**
+ * Compare N aligned series' stat vectors against one baseline series (§13.5
+ * V5-P6, generalising the V4-P7 `basket − benchmark` delta to N series).
+ *
+ * For every input series and every {@link COMPARISON_METRICS} metric the result
+ * carries `metric − baselineMetric`, at full precision (no rounding, §5.4), with
+ * a `null` wherever either operand is `null`. The baseline series compares
+ * against itself, so its own deltas are `0` (or `null` where its metric is
+ * `null`). Input order is preserved so the caller can zip the result back onto
+ * its series list. The function is pure: it reads no clock, mutates nothing, and
+ * is deterministic given its arguments.
+ *
+ * Rejects (throws) on structurally invalid input — the caller must have already
+ * validated the request: no series, a `baselineId` absent from the set, or a
+ * duplicate id (which would make "the baseline" ambiguous).
+ */
+export function compareSeriesStats(
+  inputs: ReadonlyArray<ComparisonSeriesInput>,
+  baselineId: string,
+): SeriesComparison {
+  if (inputs.length === 0) {
+    throw new Error('compareSeriesStats requires at least one series');
+  }
+  const ids = new Set<string>();
+  for (const input of inputs) {
+    if (ids.has(input.id)) {
+      throw new Error(`compareSeriesStats: duplicate series id ${input.id}`);
+    }
+    ids.add(input.id);
+  }
+  const baseline = inputs.find((s) => s.id === baselineId);
+  if (baseline === undefined) {
+    throw new Error(`compareSeriesStats: baselineId ${baselineId} is not among the series`);
+  }
+
+  const series = inputs.map((input) => {
+    const deltas = {} as Record<ComparisonMetric, number | null>;
+    for (const metric of COMPARISON_METRICS) {
+      const value = input.metrics[metric];
+      const base = baseline.metrics[metric];
+      deltas[metric] = value === null || base === null ? null : value - base;
+    }
+    return { id: input.id, metrics: input.metrics, deltas };
+  });
+
+  return { baselineId, series };
+}
