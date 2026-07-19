@@ -9,12 +9,17 @@ import type { MeResponse } from '@bettertrack/contracts';
 // is instant and these tests exercise only the nav/subnav/placeholder shell.
 vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
+vi.mock('../lib/conglomerateApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  // The comparisons subnav now mounts the live ComparisonPage (V5-P6), which
+  // reads this query-key root and calls compareConglomerates on render.
+  CONGLOMERATE_COMPARE_QUERY_KEY: ['workboard', 'compare'],
   listWorkboard: vi.fn(),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
+  compareConglomerates: vi.fn(),
 }));
 vi.mock('../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),
@@ -153,7 +158,8 @@ test('the Assets section renders its subnav', async () => {
 // ─── Coming-Soon deep links resolve without a 404 (§7.2) ──────────────────────
 
 test.each([
-  ['/workboard/comparisons', 'Comparisons'],
+  // /workboard/comparisons is now the live N-way conglomerate comparison page
+  // (V5-P6), no longer Coming Soon — ComparisonPage.test.tsx covers it.
   ['/assets/stocks', 'Stocks'],
   ['/assets/etfs', 'ETFs'],
   ['/assets/crypto', 'Crypto'],
