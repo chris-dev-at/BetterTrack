@@ -131,6 +131,17 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   import_rows: skipped(
     'Broker-import staging bookkeeping — applied rows are exported as transactions/dividends/cash movements.',
   ),
+  // V5-P6b standing orders (#593): the rows an order books (transactions / cash
+  // movements) are exported above; the recurring-action DEFINITIONS are
+  // user-owned config whose own export coverage lands with a later export sweep
+  // (mirrors notification_cadences), and the per-period runs ledger is internal
+  // idempotency bookkeeping, not user data to carry out.
+  standing_orders: skipped(
+    'Standing-order definitions (user-owned recurring-action config); the rows they book are exported as transactions/cash movements, and definition export lands with a later export sweep.',
+  ),
+  standing_order_runs: skipped(
+    'Standing-order per-period exactly-once ledger — internal idempotency bookkeeping, not user data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */

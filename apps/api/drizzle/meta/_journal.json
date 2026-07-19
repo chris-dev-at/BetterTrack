@@ -393,6 +393,13 @@
       "when": 1784290060000,
       "tag": "0055_usage_analytics",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1784290120000,
+      "tag": "0056_standing_orders",
+      "breakpoints": true
     }
   ]
 }

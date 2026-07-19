@@ -227,6 +227,12 @@ const componentSchemas = {
   CreateIdeaRequest: contracts.createIdeaRequestSchema,
   UpdateIdeaRequest: contracts.updateIdeaRequestSchema,
 
+  // Standing orders (§13.5 V5-P6b)
+  StandingOrder: contracts.standingOrderSchema,
+  StandingOrderListResponse: contracts.standingOrderListResponseSchema,
+  CreateStandingOrderRequest: contracts.createStandingOrderRequestSchema,
+  UpdateStandingOrderRequest: contracts.updateStandingOrderRequestSchema,
+
   // Announcements (§13.4 V4-P5b)
   Announcement: contracts.announcementSchema,
   AnnouncementListResponse: contracts.announcementListResponseSchema,
@@ -2003,6 +2009,71 @@ const endpoints: EndpointDef[] = [
     params: contracts.ideaIdParamSchema,
     status: 201,
     response: R.IdeaResponse,
+  },
+
+  // Standing orders (§13.5 V5-P6b)
+  {
+    method: 'get',
+    path: '/standing-orders',
+    tag: 'Standing orders',
+    summary: 'The caller’s standing orders (optionally one portfolio), each with its next-run day.',
+    query: contracts.standingOrderListQuerySchema,
+    status: 200,
+    response: R.StandingOrderListResponse,
+  },
+  {
+    method: 'post',
+    path: '/standing-orders',
+    tag: 'Standing orders',
+    summary: 'Create a recurring buy / cash-add / cash-deduct that auto-records on its schedule.',
+    body: R.CreateStandingOrderRequest,
+    status: 201,
+    response: R.StandingOrder,
+  },
+  {
+    method: 'get',
+    path: '/standing-orders/{id}',
+    tag: 'Standing orders',
+    summary: 'One of the caller’s own standing orders.',
+    params: contracts.standingOrderIdParamSchema,
+    status: 200,
+    response: R.StandingOrder,
+  },
+  {
+    method: 'patch',
+    path: '/standing-orders/{id}',
+    tag: 'Standing orders',
+    summary: 'Edit a standing order’s amount, label, or end date.',
+    params: contracts.standingOrderIdParamSchema,
+    body: R.UpdateStandingOrderRequest,
+    status: 200,
+    response: R.StandingOrder,
+  },
+  {
+    method: 'post',
+    path: '/standing-orders/{id}/pause',
+    tag: 'Standing orders',
+    summary: 'Pause a standing order (stops firing; resuming never back-fills the paused periods).',
+    params: contracts.standingOrderIdParamSchema,
+    status: 200,
+    response: R.StandingOrder,
+  },
+  {
+    method: 'post',
+    path: '/standing-orders/{id}/resume',
+    tag: 'Standing orders',
+    summary: 'Resume a paused standing order (fires from the current period onward).',
+    params: contracts.standingOrderIdParamSchema,
+    status: 200,
+    response: R.StandingOrder,
+  },
+  {
+    method: 'delete',
+    path: '/standing-orders/{id}',
+    tag: 'Standing orders',
+    summary: 'Delete a standing order (its run history cascades).',
+    params: contracts.standingOrderIdParamSchema,
+    status: 204,
   },
 
   // Broker CSV imports (§13.4 V4-P8)

@@ -37,14 +37,19 @@ import {
   createUsageRollupJob,
   createEarningsReminderJob,
   createDividendEventsScanJob,
+  createStandingOrdersJob,
   dividendNotifyGate,
   jobConnectionFactory,
   registerSchedules,
   type JobContext,
 } from '../jobs';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
+import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
+import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
 import { createPortfolioSnapshotRepository } from '../data/repositories/portfolioSnapshotRepository';
+import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
+import { createStandingOrderService } from '../services/standingOrders/standingOrderService';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
@@ -236,6 +241,23 @@ const snapshots = createPortfolioSnapshotService({
   logger,
 });
 
+// V5-P6b standing orders (#593): the worker owns the engine that the daily
+// `standingOrders.process` job drives. It books recurring buys / cash movements
+// through the same transaction/cash repositories the API uses, tagged
+// `standing-order`, exactly once per period via its own runs ledger; a per-order
+// provider failure or insufficient cash defers that period, never aborting.
+const standingOrders = createStandingOrderService({
+  repo: createStandingOrderRepository(db),
+  portfolioRepo: createPortfolioRepository(db),
+  assetRepo: createAssetRepository(db),
+  transactionRepo: createTransactionRepository(db),
+  cashMovementRepo: createCashMovementRepository(db),
+  cashSourceRepo: createCashSourceRepository(db),
+  marketData,
+  snapshots,
+  logger,
+});
+
 // V5-P2 usage analytics (#567): the worker owns a rollup-only instance (no
 // capture happens here — the API captures) that materializes the daily
 // aggregates the admin page serves. Timer off; the cron drives it.
@@ -282,6 +304,9 @@ const definitions = [
     isEnabled: dividendNotifyGate(notificationRepo),
     enabled: config.marketIntel.enabled,
   }),
+  // V5-P6b standing orders (#593): the daily scan that books each active order's
+  // newest due occurrence exactly once.
+  createStandingOrdersJob({ standingOrders }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

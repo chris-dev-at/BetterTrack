@@ -111,6 +111,7 @@ function buildInertContext(): AppContext {
     backtest: inertService('backtest'),
     ideas: inertService('ideas'),
     imports: inertService('imports'),
+    standingOrders: inertService('standingOrders'),
     analytics: inertService('analytics'),
     social: inertService('social'),
     chat: inertService('chat'),

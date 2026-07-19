@@ -33,6 +33,7 @@ import { createNotificationsRouter } from './http/routes/notificationsRoutes';
 import { createOAuthPublicRouter, createOAuthRouter } from './http/routes/oauthRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
+import { createStandingOrdersRouter } from './http/routes/standingOrdersRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
 import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
@@ -130,6 +131,7 @@ export function createApp(ctx: AppContext) {
   // mounted — off ⇒ 200 with `available: false`, never a 404.
   app.use('/api/v1/assets', createMarketIntelRouter(ctx));
   app.use('/api/v1/portfolios', createPortfolioRouter(ctx));
+  app.use('/api/v1/standing-orders', createStandingOrdersRouter(ctx));
   app.use('/api/v1/custom-assets', createCustomAssetsRouter(ctx));
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
