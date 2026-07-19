@@ -65,6 +65,48 @@ export const updateAppSettingsRequestSchema = z
 export type UpdateAppSettingsRequest = z.infer<typeof updateAppSettingsRequestSchema>;
 
 /**
+ * Admin session policy (PROJECTPLAN.md §13.5 V5-P13c, settles #430). Admin
+ * sessions carry an ABSOLUTE lifetime measured from login and expire early —
+ * independent of the user-app session lifetime rules (#418): "log in with 2FA,
+ * then peace" — NO step-up / re-prompt 2FA on destructive actions (#430
+ * rejected), the session simply ends early instead. The lifetime is
+ * admin-configurable at runtime within a fixed 6–24 h window (default 12 h).
+ */
+export const ADMIN_SESSION_LIFETIME_MIN_HOURS = 6;
+export const ADMIN_SESSION_LIFETIME_MAX_HOURS = 24;
+export const DEFAULT_ADMIN_SESSION_LIFETIME_HOURS = 12;
+
+/** Admin session lifetime in whole hours, clamped to the plan's 6–24 h window. */
+export const adminSessionLifetimeHoursSchema = z
+  .number()
+  .int()
+  .min(ADMIN_SESSION_LIFETIME_MIN_HOURS)
+  .max(ADMIN_SESSION_LIFETIME_MAX_HOURS);
+
+/** `GET /admin/security/session-policy` — the current admin session lifetime. */
+export const adminSessionPolicyResponseSchema = z.object({
+  sessionLifetimeHours: adminSessionLifetimeHoursSchema,
+  /** The window bounds, so the admin UI renders the range without hardcoding. */
+  minHours: z.literal(ADMIN_SESSION_LIFETIME_MIN_HOURS),
+  maxHours: z.literal(ADMIN_SESSION_LIFETIME_MAX_HOURS),
+  /** When the lifetime was last written; null while it sits at the env default. */
+  updatedAt: z.string().datetime().nullable(),
+  /** The admin who last wrote it; null if unset or that account is gone. */
+  updatedBy: z.string().uuid().nullable(),
+});
+export type AdminSessionPolicyResponse = z.infer<typeof adminSessionPolicyResponseSchema>;
+
+/**
+ * `PATCH /admin/security/session-policy` — set the admin session lifetime. Values
+ * outside 6–24 h are rejected here; the change applies to session reads on the
+ * next request with no redeploy.
+ */
+export const updateAdminSessionPolicyRequestSchema = z
+  .object({ sessionLifetimeHours: adminSessionLifetimeHoursSchema })
+  .strict();
+export type UpdateAdminSessionPolicyRequest = z.infer<typeof updateAdminSessionPolicyRequestSchema>;
+
+/**
  * Account defaults (§13.4 V4-P0d) — what a NEW account starts with. The admin
  * configures these once; they are applied at REGISTRATION only and never touch
  * an existing account. Every field carries its own registration-time meaning:

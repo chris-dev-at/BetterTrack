@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 
+import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
+} from '@bettertrack/contracts';
+
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
@@ -312,6 +317,97 @@ function RecoveryCodesControl({
 }
 
 /**
+ * Admin session policy (§13.5 V5-P13c): one compact field for the early-expiring
+ * admin session lifetime (6–24 h). "Log in with 2FA, then peace" — there is no
+ * step-up 2FA re-prompt (#430 rejected); the short session IS the guarantee. The
+ * change applies to the next request with no redeploy. Independent of the
+ * user-app session rules (#418).
+ */
+function SessionPolicyCard() {
+  const t = useT();
+  const policy = useResource((signal) => api.getSessionPolicy(signal), []);
+  const [hours, setHours] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // Seed the editable field from the loaded value exactly once (keeps the input
+  // controlled without clobbering the admin's in-progress edit on re-render).
+  const [seeded, setSeeded] = useState(false);
+  if (!seeded && policy.data) {
+    setHours(String(policy.data.sessionLifetimeHours));
+    setSeeded(true);
+  }
+
+  const min = policy.data?.minHours ?? ADMIN_SESSION_LIFETIME_MIN_HOURS;
+  const max = policy.data?.maxHours ?? ADMIN_SESSION_LIFETIME_MAX_HOURS;
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setNotice(null);
+    setError(null);
+    const parsed = Number(hours);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+      setError(t('admin.security.sessionPolicy.rangeError', { min, max }));
+      return;
+    }
+    setSaving(true);
+    try {
+      const next = await api.updateSessionPolicy({ sessionLifetimeHours: parsed });
+      setHours(String(next.sessionLifetimeHours));
+      setNotice(t('admin.security.sessionPolicy.saved'));
+    } catch {
+      setError(t('admin.security.sessionPolicy.saveError'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <MethodCard
+      title={t('admin.security.sessionPolicy.cardTitle')}
+      description={t('admin.security.sessionPolicy.cardDescription')}
+    >
+      {policy.loading ? (
+        <Spinner label={t('common.loading')} />
+      ) : policy.error || !policy.data ? (
+        <Alert tone="error">
+          {policy.error ?? t('admin.security.sessionPolicy.loadError')}{' '}
+          <button className="underline" onClick={policy.reload}>
+            {t('common.retry')}
+          </button>
+        </Alert>
+      ) : (
+        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          {notice ? <Alert tone="success">{notice}</Alert> : null}
+          {error ? <Alert tone="error">{error}</Alert> : null}
+          <TextField
+            type="number"
+            min={min}
+            max={max}
+            step={1}
+            label={t('admin.security.sessionPolicy.hoursLabel')}
+            name="admin-session-hours"
+            value={hours}
+            onChange={(e) => setHours(e.target.value)}
+          />
+          <p className="text-xs text-neutral-500">
+            {t('admin.security.sessionPolicy.hint', { min, max })}
+          </p>
+          <div>
+            <Button type="submit" variant="secondary" disabled={saving}>
+              {saving
+                ? t('admin.security.sessionPolicy.saving')
+                : t('admin.security.sessionPolicy.save')}
+            </Button>
+          </div>
+        </form>
+      )}
+    </MethodCard>
+  );
+}
+
+/**
  * Admin Security settings (§6.12, #400). Shows the mandatory 2FA status and lets
  * the admin manage the authenticator method (re-enroll), the 2FA email (set/change
  * with a fresh proof), and recovery codes (regenerate, shown once). Driven by
@@ -362,6 +458,7 @@ export function SecuritySettingsPage() {
             remaining={status.data.recoveryCodesRemaining}
             onRegenerated={setRecoveryCodes}
           />
+          <SessionPolicyCard />
         </>
       )}
     </div>

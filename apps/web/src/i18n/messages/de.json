@@ -2791,7 +2791,19 @@
       "title": "Sicherheit",
       "subtitle": "Verwalte die Zwei-Faktor-Authentifizierung für dein Administratorkonto.",
       "loadError": "Dein Zwei-Faktor-Status konnte nicht geladen werden.",
-      "statusDescription": "Zwei-Faktor-Authentifizierung ist für jedes Administratorkonto erforderlich."
+      "statusDescription": "Zwei-Faktor-Authentifizierung ist für jedes Administratorkonto erforderlich.",
+      "sessionPolicy": {
+        "cardTitle": "Sitzungsdauer",
+        "cardDescription": "Admin-Sitzungen laufen früher ab – einmal mit 2FA anmelden und dann ohne wiederholte Abfragen arbeiten. Unabhängig von den Nutzersitzungen der App.",
+        "hoursLabel": "Sitzungsdauer (Stunden)",
+        "hint": "Wähle zwischen {{min}} und {{max}} Stunden. Änderungen gelten ab deiner nächsten Anfrage.",
+        "save": "Speichern",
+        "saving": "Wird gespeichert…",
+        "saved": "Sitzungsdauer aktualisiert.",
+        "saveError": "Die Sitzungsdauer konnte nicht aktualisiert werden.",
+        "loadError": "Die Sitzungsrichtlinie konnte nicht geladen werden.",
+        "rangeError": "Gib eine ganze Stundenzahl zwischen {{min}} und {{max}} ein."
+      }
     },
     "twoFactor": {
       "confirming": "Wird bestätigt…",

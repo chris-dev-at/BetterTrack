@@ -1,4 +1,6 @@
 import {
+  ADMIN_SESSION_LIFETIME_MAX_HOURS,
+  ADMIN_SESSION_LIFETIME_MIN_HOURS,
   NOTIFICATION_TYPES,
   notificationChannelDefaultEnabled,
   notificationMatrixSchema,
@@ -30,6 +32,9 @@ import { forbidden } from '../../errors';
 /** Keyed-store keys (§5.5). One row per setting; the value is jsonb. */
 export const REGISTRATION_MODE_KEY = 'registration_mode';
 export const BETA_MODE_KEY = 'beta_mode';
+
+/** Admin session absolute lifetime, in hours (§13.5 V5-P13c). */
+export const ADMIN_SESSION_LIFETIME_HOURS_KEY = 'admin_session_lifetime_hours';
 
 /** Account-defaults keys (§13.4 V4-P0d) — one row each; applied at registration. */
 export const ACCOUNT_DEFAULT_CHAT_ENABLED_KEY = 'account_default_chat_enabled';
@@ -92,6 +97,31 @@ export interface AppSettings {
 
 export interface AppSettingsServiceDeps {
   repo: AppSettingsRepository;
+  /**
+   * Env fallback for the admin session lifetime, in hours (§13.5 V5-P13c). Used
+   * when no runtime override is stored; itself clamped to the 6–24 h window on
+   * read, so a bad env value can never widen the window.
+   */
+  adminSessionLifetimeDefaultHours: number;
+}
+
+/** The resolved admin session policy, with the stored value (or env fallback). */
+export interface AdminSessionPolicy {
+  /** Absolute session lifetime in hours, clamped to the 6–24 h window. */
+  sessionLifetimeHours: number;
+  /** When the lifetime was last written; null while it sits at the env default. */
+  updatedAt: Date | null;
+  /** The admin who last wrote it; null when unset. */
+  updatedBy: string | null;
+}
+
+/** Clamp any candidate lifetime to the plan's 6–24 h window (whole hours). */
+function clampSessionLifetimeHours(value: number): number {
+  const rounded = Math.round(value);
+  return Math.min(
+    ADMIN_SESSION_LIFETIME_MAX_HOURS,
+    Math.max(ADMIN_SESSION_LIFETIME_MIN_HOURS, rounded),
+  );
 }
 
 function parseRegistrationMode(value: unknown): RegistrationMode {
@@ -162,10 +192,55 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
     };
   }
 
+  /**
+   * The admin session policy (§13.5 V5-P13c). Returns the stored runtime
+   * override when present (clamped defensively), else the env fallback — so the
+   * effective lifetime is always within the 6–24 h window. Read on every admin
+   * session resolve, so a write takes effect on the next request with no
+   * redeploy.
+   */
+  async function getAdminSessionPolicy(): Promise<AdminSessionPolicy> {
+    const row = await repo.get(ADMIN_SESSION_LIFETIME_HOURS_KEY);
+    const stored =
+      typeof row?.value === 'number' && Number.isFinite(row.value)
+        ? clampSessionLifetimeHours(row.value)
+        : null;
+    return {
+      sessionLifetimeHours:
+        stored ?? clampSessionLifetimeHours(deps.adminSessionLifetimeDefaultHours),
+      updatedAt: stored === null ? null : (row?.updatedAt ?? null),
+      updatedBy: stored === null ? null : (row?.updatedBy ?? null),
+    };
+  }
+
+  /** Just the effective lifetime in hours — the hot path for session resolve. */
+  async function getAdminSessionLifetimeHours(): Promise<number> {
+    return (await getAdminSessionPolicy()).sessionLifetimeHours;
+  }
+
   return {
     get,
     getRegistrationMode,
     getAccountDefaults,
+    getAdminSessionPolicy,
+    getAdminSessionLifetimeHours,
+
+    /**
+     * Persist the admin session lifetime (§13.5 V5-P13c). The value is clamped to
+     * the 6–24 h window before storing; the change applies to session reads on the
+     * next request with no redeploy. Returns the full resolved policy.
+     */
+    async setAdminSessionLifetimeHours(
+      hours: number,
+      updatedBy: string | null,
+    ): Promise<AdminSessionPolicy> {
+      await repo.upsert(
+        ADMIN_SESSION_LIFETIME_HOURS_KEY,
+        clampSessionLifetimeHours(hours),
+        updatedBy,
+      );
+      return getAdminSessionPolicy();
+    },
 
     /**
      * Persist a partial account-defaults change (§13.4 V4-P0d). Only the supplied

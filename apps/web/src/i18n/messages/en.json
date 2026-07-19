@@ -2791,7 +2791,19 @@
       "title": "Security",
       "subtitle": "Manage two-factor authentication for your administrator account.",
       "loadError": "Couldn't load your two-factor status.",
-      "statusDescription": "Two-factor authentication is required for every administrator account."
+      "statusDescription": "Two-factor authentication is required for every administrator account.",
+      "sessionPolicy": {
+        "cardTitle": "Session lifetime",
+        "cardDescription": "Admin sessions expire early — sign in with 2FA, then work without repeated prompts. This is independent of the app's user sessions.",
+        "hoursLabel": "Session lifetime (hours)",
+        "hint": "Choose between {{min}} and {{max}} hours. Changes apply on your next request.",
+        "save": "Save",
+        "saving": "Saving…",
+        "saved": "Session lifetime updated.",
+        "saveError": "Couldn't update the session lifetime.",
+        "loadError": "Couldn't load the session policy.",
+        "rangeError": "Enter a whole number of hours between {{min}} and {{max}}."
+      }
     },
     "twoFactor": {
       "confirming": "Confirming…",

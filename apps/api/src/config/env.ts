@@ -59,6 +59,11 @@ const envSchema = z.object({
   SMTP_FROM: z.string().optional(),
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD: z.string().optional(),
+  // Admin session policy (§13.5 V5-P13c): the ABSOLUTE lifetime of an admin
+  // session, clamped to the plan's 6–24 h window (default 12 h). This is the
+  // env fallback only — an admin can override it at runtime (audit-logged),
+  // which takes effect on the next request with no redeploy.
+  ADMIN_SESSION_LIFETIME_HOURS: z.coerce.number().int().min(6).max(24).default(12),
   // Per-provider request budget (§5.3): bounded concurrency + minimum spacing
   // between upstream call starts. Defaults match PROJECTPLAN §5.2/§5.3.
   // NOTE: the budget is per *process* — the API and the BullMQ worker each run
@@ -374,6 +379,11 @@ export interface AppConfig {
   admin: {
     email?: string;
     password?: string;
+    /**
+     * Env fallback for the admin session's absolute lifetime, in hours (§13.5
+     * V5-P13c). Clamped to 6–24 h; the runtime setting overrides it per request.
+     */
+    sessionLifetimeHours: number;
   };
   /** Per-provider upstream request budget (§5.3), enforced by the request queue. */
   providers: {
@@ -596,6 +606,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     admin: {
       email: e.ADMIN_EMAIL,
       password: e.ADMIN_PASSWORD,
+      sessionLifetimeHours: e.ADMIN_SESSION_LIFETIME_HOURS,
     },
     providers: {
       maxConcurrency: e.PROVIDER_MAX_CONCURRENCY,

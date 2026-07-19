@@ -7,6 +7,7 @@ import {
   adminUserSchema,
   accountDefaultsResponseSchema,
   adminFeatureFlagsResponseSchema,
+  adminSessionPolicyResponseSchema,
   announcementListResponseSchema,
   announcementSchema,
   appSettingsResponseSchema,
@@ -39,6 +40,7 @@ import {
   type AdminStats,
   type AdminTwoFactorEmailStartRequest,
   type AdminTwoFactorStatusResponse,
+  type AdminSessionPolicyResponse,
   type AdminUser,
   type AdminUserListResponse,
   type AccountDefaultsResponse,
@@ -86,6 +88,7 @@ import {
   type TwoFactorRecoveryCodesResponse,
   type TwoFactorVerifyRequest,
   type UpdateAccountDefaultsRequest,
+  type UpdateAdminSessionPolicyRequest,
   type UpdateAnnouncementRequest,
   type UpdateAppSettingsRequest,
   type UpdateOAuthClientRequest,
@@ -357,6 +360,25 @@ export async function getSettings(signal?: AbortSignal): Promise<AppSettingsResp
 export async function updateSettings(body: UpdateAppSettingsRequest): Promise<AppSettingsResponse> {
   const data = await apiRequest<unknown>('/admin/settings', { method: 'PATCH', body });
   return appSettingsResponseSchema.parse(data);
+}
+
+// --- Admin: session policy (§13.5 V5-P13c) --------------------------------
+
+/** The early-expiring admin session lifetime (hours) + the allowed 6–24 h window. */
+export async function getSessionPolicy(signal?: AbortSignal): Promise<AdminSessionPolicyResponse> {
+  const data = await apiRequest<unknown>('/admin/security/session-policy', { signal });
+  return adminSessionPolicyResponseSchema.parse(data);
+}
+
+/** Set the admin session lifetime (audit-logged; live on the next request). */
+export async function updateSessionPolicy(
+  body: UpdateAdminSessionPolicyRequest,
+): Promise<AdminSessionPolicyResponse> {
+  const data = await apiRequest<unknown>('/admin/security/session-policy', {
+    method: 'PATCH',
+    body,
+  });
+  return adminSessionPolicyResponseSchema.parse(data);
 }
 
 // --- Admin: runtime feature kill-switches (§13.5 V5-P2 arc (c)) ------------

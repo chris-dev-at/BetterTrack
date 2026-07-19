@@ -788,6 +788,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         await sessions.destroy(sessionId);
         return null;
       }
+      // Admin session policy (§13.5 V5-P13c): admin sessions carry an ABSOLUTE
+      // lifetime from login (`createdAt`) and expire early, independent of the
+      // user-app session rules (#418) — enforced here on read, so an expired
+      // admin session is rejected and destroyed regardless of any activity that
+      // slid the Redis TTL. The lifetime is read per resolve (admin-only path,
+      // so no cost to user requests), so a runtime change applies immediately.
+      if (user.role === 'admin') {
+        const lifetimeMs = (await appSettings.getAdminSessionLifetimeHours()) * 60 * 60 * 1000;
+        if (Date.now() - data.createdAt >= lifetimeMs) {
+          await sessions.destroy(sessionId);
+          return null;
+        }
+      }
       // Session manager bookkeeping (V3-P11a): stamp last-seen + capture the
       // device on first-seen. Throttled and written to a side key. For a
       // persistent session it never extends the fixed 30-day window (§6.1); for
