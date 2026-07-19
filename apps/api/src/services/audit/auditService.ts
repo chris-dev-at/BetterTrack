@@ -29,6 +29,15 @@ export const AuditAction = {
   TwoFactorVerifyFail: 'two_factor.verify_fail',
   /** Break-glass reset of an admin's 2FA enrollment via the shell-only script (#400). */
   AdminTwoFactorReset: 'admin.two_factor_reset',
+  // Passkeys / WebAuthn (§13.4 V4-P4). Registration + management on the account;
+  // a passkey login records the shared LoginSuccess with `meta.via = 'passkey'`.
+  PasskeyRegistered: 'passkey.registered',
+  PasskeyRenamed: 'passkey.renamed',
+  PasskeyDeleted: 'passkey.deleted',
+  /** A passkey login rejected (assertion failed or a cloned-authenticator counter regression). */
+  PasskeyLoginFail: 'passkey.login_fail',
+  /** A failed re-auth on passkey add/delete (per-account throttled like export/deletion). */
+  PasskeyManageReauthFail: 'passkey.manage_reauth_fail',
   UserCreated: 'user.created',
   UserDisabled: 'user.disabled',
   UserEnabled: 'user.enabled',

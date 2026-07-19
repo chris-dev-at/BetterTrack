@@ -20,7 +20,11 @@
       "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
       "staySignedIn": "Angemeldet bleiben",
       "newHere": "Neu bei BetterTrack?",
-      "signUp": "Konto erstellen"
+      "signUp": "Konto erstellen",
+      "passkeyButton": "Mit Passkey anmelden",
+      "passkeySigningIn": "Warte auf deinen Passkey …",
+      "passkeyError": "Die Passkey-Anmeldung hat nicht funktioniert. Bitte versuche es erneut oder verwende dein Passwort.",
+      "passkeyRateLimited": "Zu viele Versuche. Bitte warte und versuche es erneut."
     },
     "oauthStay": {
       "subtitle": "Anmeldung",
@@ -697,6 +701,36 @@
         "errorMismatch": "Die E-Mail dieses Google-Kontos stimmt nicht mit der E-Mail deines Kontos überein. Du kannst nur das Google-Konto mit derselben E-Mail wie dieses Konto verbinden.",
         "errorAlreadyLinked": "Dieses Google-Konto ist bereits mit einem anderen Benutzer verknüpft.",
         "errorAdmin": "Google ist für Administratorkonten nicht verfügbar."
+      },
+      "passkeys": {
+        "title": "Passkeys",
+        "description": "Melde dich ohne Passwort an – mit Face ID, Touch ID, Windows Hello oder einem Sicherheitsschlüssel.",
+        "loadError": "Deine Passkeys konnten nicht geladen werden.",
+        "empty": "Du hast noch keine Passkeys hinzugefügt.",
+        "unsupported": "Dieser Browser unterstützt keine Passkeys.",
+        "addButton": "Passkey hinzufügen",
+        "nameLabel": "Passkey-Name",
+        "namePlaceholder": "z. B. MacBook Touch ID",
+        "passwordLabel": "Aktuelles Passwort",
+        "reauthHint": "Bestätige dein Passwort, um einen Passkey hinzuzufügen.",
+        "addSubmit": "Passkey hinzufügen",
+        "adding": "Warte auf dein Gerät …",
+        "added": "Hinzugefügt am {{date}}",
+        "lastUsed": "zuletzt verwendet am {{date}}",
+        "neverUsed": "noch nicht verwendet",
+        "rename": "Umbenennen",
+        "renameSave": "Speichern",
+        "renaming": "Wird gespeichert …",
+        "delete": "Löschen",
+        "deleteConfirm": "Bestätige dein Passwort, um diesen Passkey zu entfernen.",
+        "deleteSubmit": "Passkey entfernen",
+        "deleting": "Wird entfernt …",
+        "lastWarning": "Das ist dein letzter Passkey. Du kannst dich weiterhin mit deinem Passwort anmelden. Bestätige dein Passwort, um ihn zu entfernen.",
+        "wrongPassword": "Das Passwort ist falsch.",
+        "alreadyRegistered": "Dieser Passkey ist bereits registriert.",
+        "rateLimited": "Zu viele Versuche. Bitte warte und versuche es erneut.",
+        "cancelled": "Die Passkey-Abfrage wurde abgebrochen.",
+        "genericError": "Mit diesem Passkey ist etwas schiefgelaufen. Bitte versuche es erneut."
       }
     },
     "api": {

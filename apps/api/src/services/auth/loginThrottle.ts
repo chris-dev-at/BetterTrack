@@ -50,6 +50,16 @@ export const ACCOUNT_DELETE_NAMESPACE = 'account_delete_account';
 export const ACCOUNT_EXPORT_NAMESPACE = 'account_export_account';
 
 /**
+ * Per-account brute-force throttle for the passkey add/delete re-auth (§13.4
+ * V4-P4). Registering or removing a passkey re-verifies a credential (password /
+ * TOTP / recovery code); wrong attempts accrue here — independent of the login/2FA
+ * counters and the per-IP limiter — so the passkey-management endpoints can never
+ * be a lighter-weight oracle for password or code brute-forcing. Reuses the
+ * `loginAccount` schedule like deletion and export.
+ */
+export const ACCOUNT_PASSKEY_NAMESPACE = 'account_passkey_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

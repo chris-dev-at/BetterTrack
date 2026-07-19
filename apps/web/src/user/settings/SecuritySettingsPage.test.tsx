@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type {
   MeResponse,
+  Passkey,
   SessionInfoResponse,
   SessionSummary,
   TwoFactorStatusResponse,
@@ -20,6 +21,15 @@ vi.mock('../../lib/userApi', () => ({
   setPin: vi.fn(),
   disablePin: vi.fn(),
   setPinLockIdleMinutes: vi.fn(),
+  listPasskeys: vi.fn(),
+  renamePasskey: vi.fn(),
+  deletePasskey: vi.fn(),
+}));
+
+vi.mock('../../lib/passkeys', () => ({
+  browserSupportsWebAuthn: vi.fn(() => true),
+  isPasskeyCancellation: vi.fn(() => false),
+  registerPasskey: vi.fn(),
 }));
 
 vi.mock('../../lib/twoFactorApi', () => ({
@@ -45,15 +55,19 @@ import {
   regenerateRecoveryCodes,
 } from '../../lib/twoFactorApi';
 import {
+  deletePasskey,
   disablePin,
   getMe,
   getSession,
+  listPasskeys,
   listSessions,
+  renamePasskey,
   revokeOtherSessions,
   revokeSession,
   setPin,
   setPinLockIdleMinutes,
 } from '../../lib/userApi';
+import { registerPasskey } from '../../lib/passkeys';
 import { SecuritySettingsPage } from './SecuritySettingsPage';
 
 const SESSION: SessionInfoResponse = {
@@ -134,6 +148,7 @@ beforeEach(() => {
   vi.mocked(getTwoFactorStatus).mockResolvedValue(makeTwoFactorStatus());
   vi.mocked(enrollEmailTwoFactor).mockResolvedValue(undefined);
   vi.mocked(disableEmailTwoFactor).mockResolvedValue(undefined);
+  vi.mocked(listPasskeys).mockResolvedValue([]);
 });
 
 describe('SecuritySettingsPage', () => {
@@ -432,5 +447,95 @@ describe('SecuritySettingsPage — two-factor authentication (#298)', () => {
 
     await waitFor(() => expect(regenerateRecoveryCodes).toHaveBeenCalled());
     expect(await screen.findByText('zzzz-yyyy-xxxx-wwww')).toBeInTheDocument();
+  });
+});
+
+function makePasskey(overrides: Partial<Passkey> = {}): Passkey {
+  return {
+    id: 'pk-1',
+    name: 'MacBook Touch ID',
+    createdAt: '2026-06-01T08:00:00.000Z',
+    lastUsedAt: '2026-07-01T08:00:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('SecuritySettingsPage — passkeys (§13.4 V4-P4)', () => {
+  test('lists passkeys with name, added, and last-used', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(listPasskeys).mockResolvedValue([
+      makePasskey({ id: 'pk-1', name: 'MacBook Touch ID' }),
+      makePasskey({ id: 'pk-2', name: 'YubiKey', lastUsedAt: null }),
+    ]);
+    renderPage();
+
+    expect(await screen.findByText('MacBook Touch ID')).toBeInTheDocument();
+    expect(screen.getByText('YubiKey')).toBeInTheDocument();
+    // One shows a last-used stamp; the never-used one reads "never used".
+    expect(screen.getAllByText(/last used/i).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/never used/i)).toBeInTheDocument();
+  });
+
+  test('renames a passkey', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(listPasskeys).mockResolvedValue([makePasskey()]);
+    vi.mocked(renamePasskey).mockResolvedValue(makePasskey({ name: 'Work laptop' }));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Rename' }));
+    const input = screen.getByLabelText('Passkey name');
+    await user.clear(input);
+    await user.type(input, 'Work laptop');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(renamePasskey).toHaveBeenCalledWith('pk-1', 'Work laptop'));
+  });
+
+  test('deletes a passkey after confirming the password', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(listPasskeys).mockResolvedValue([
+      makePasskey({ id: 'pk-1' }),
+      makePasskey({ id: 'pk-2', name: 'YubiKey' }),
+    ]);
+    vi.mocked(deletePasskey).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click((await screen.findAllByRole('button', { name: 'Delete' }))[0]!);
+    const pw = screen.getByLabelText('Current password');
+    await user.type(pw, 'my-password');
+    await user.click(screen.getByRole('button', { name: 'Remove passkey' }));
+
+    await waitFor(() =>
+      expect(deletePasskey).toHaveBeenCalledWith('pk-1', { password: 'my-password' }),
+    );
+  });
+
+  test('warns when removing the last passkey (password login remains)', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(listPasskeys).mockResolvedValue([makePasskey()]);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(screen.getByText(/last passkey/i)).toBeInTheDocument();
+  });
+
+  test('registers a passkey with a name + password re-auth', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe(false));
+    vi.mocked(listPasskeys).mockResolvedValue([]);
+    vi.mocked(registerPasskey).mockResolvedValue(makePasskey({ name: 'New key' }));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Add a passkey' }));
+    await user.type(screen.getByLabelText('Passkey name'), 'New key');
+    await user.type(screen.getByLabelText('Current password'), 'my-password');
+    await user.click(screen.getByRole('button', { name: 'Add passkey' }));
+
+    await waitFor(() =>
+      expect(registerPasskey).toHaveBeenCalledWith('New key', { password: 'my-password' }),
+    );
   });
 });

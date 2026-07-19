@@ -27,6 +27,7 @@ import type { MarketDataService } from '../providers';
 import type { MailTransport } from '../services/email/transport';
 import type { LiveModeServiceOptions } from '../services/liveMode';
 import type { GoogleTokenVerifier } from '../services/auth/googleVerifier';
+import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createPasswordHasher } from '../services/password/passwordHasher';
 
@@ -188,6 +189,12 @@ export interface CreateTestAppOptions {
    * network. Requires the Google env (BT_GOOGLE_CLIENT_ID/SECRET) to be set too.
    */
   googleVerifier?: GoogleTokenVerifier;
+  /**
+   * Stubbed passkey WebAuthn engine (§13.4 V4-P4) in place of the real
+   * `@simplewebauthn` primitives, so register/login ceremonies run on canned
+   * results with no authenticator, browser, or crypto.
+   */
+  passkeyEngine?: PasskeyWebAuthnEngine;
   /** Fast poll cadence / small ring for Live Mode tests (V3-P7b). */
   liveModeOptions?: LiveModeServiceOptions;
   /**
@@ -234,6 +241,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
     passwordHasher: testPasswordHasher,
+    passkeyEngine: options.passkeyEngine,
     liveModeOptions: options.liveModeOptions,
     notificationEnqueue: options.notificationEnqueue,
     notificationNow: options.notificationNow,

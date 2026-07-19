@@ -4,6 +4,10 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  passkeyListResponseSchema,
+  passkeyLoginOptionsResponseSchema,
+  passkeyRegisterOptionsResponseSchema,
+  passkeySchema,
   pinQuickAuthResponseSchema,
   publicRegistrationInfoResponseSchema,
   registerResponseSchema,
@@ -26,6 +30,12 @@ import {
   type LoginRequest,
   type LoginResponse,
   type MeResponse,
+  type Passkey,
+  type PasskeyDeleteRequest,
+  type PasskeyLoginOptionsResponse,
+  type PasskeyLoginVerifyRequest,
+  type PasskeyRegisterOptionsResponse,
+  type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
   type PublicRegistrationInfoResponse,
@@ -425,4 +435,83 @@ export async function getDataExportStatus(signal?: AbortSignal): Promise<ExportS
  */
 export function dataExportDownloadUrl(token: string): string {
   return `${apiBaseUrl()}/account/export/download?token=${encodeURIComponent(token)}`;
+}
+
+// ── Passkeys / WebAuthn (§13.4 V4-P4) ────────────────────────────────────────
+// The WebAuthn ceremony itself (the authenticator prompt) is orchestrated in
+// `lib/passkeys.ts`, which wraps these raw calls with `@simplewebauthn/browser`.
+
+/** `GET /auth/passkeys` — the caller's registered passkeys (newest first). */
+export async function listPasskeys(signal?: AbortSignal): Promise<Passkey[]> {
+  const data = await apiRequest<unknown>('/auth/passkeys', { signal });
+  return passkeyListResponseSchema.parse(data).passkeys;
+}
+
+/** `POST /auth/passkeys/register/options` — begin registration; mints a challenge. */
+export async function startPasskeyRegistration(): Promise<PasskeyRegisterOptionsResponse> {
+  const data = await apiRequest<unknown>('/auth/passkeys/register/options', { method: 'POST' });
+  return passkeyRegisterOptionsResponseSchema.parse(data);
+}
+
+/**
+ * `POST /auth/passkeys/register/verify` — finish registration with the authenticator
+ * response + a re-auth credential. `suppressAuthRedirect`: a wrong-credential 401 is
+ * an in-form error, not a global redirect.
+ */
+export async function finishPasskeyRegistration(
+  body: PasskeyRegisterVerifyRequest,
+): Promise<Passkey> {
+  const data = await apiRequest<unknown>('/auth/passkeys/register/verify', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return passkeySchema.parse(data);
+}
+
+/** `PATCH /auth/passkeys/:id` — rename a passkey. */
+export async function renamePasskey(id: string, name: string): Promise<Passkey> {
+  const data = await apiRequest<unknown>(`/auth/passkeys/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: { name },
+  });
+  return passkeySchema.parse(data);
+}
+
+/**
+ * `DELETE /auth/passkeys/:id` — delete a passkey after a re-auth. `suppressAuthRedirect`:
+ * a wrong-credential 401 is an in-form error.
+ */
+export async function deletePasskey(id: string, body: PasskeyDeleteRequest): Promise<void> {
+  await apiRequest<unknown>(`/auth/passkeys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    body,
+    suppressAuthRedirect: true,
+  });
+}
+
+/**
+ * `POST /auth/passkeys/login/options` — begin a usernameless passkey sign-in.
+ * `suppressAuthRedirect`: a public, unauthenticated call.
+ */
+export async function startPasskeyLogin(): Promise<PasskeyLoginOptionsResponse> {
+  const data = await apiRequest<unknown>('/auth/passkeys/login/options', {
+    method: 'POST',
+    suppressAuthRedirect: true,
+  });
+  return passkeyLoginOptionsResponseSchema.parse(data);
+}
+
+/**
+ * `POST /auth/passkeys/login/verify` — complete a passkey sign-in; on success the
+ * server sets the session cookie (no follow-up 2FA challenge) and returns the user.
+ * `suppressAuthRedirect`: a 401 here is an in-form error.
+ */
+export async function finishPasskeyLogin(body: PasskeyLoginVerifyRequest): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/passkeys/login/verify', {
+    method: 'POST',
+    body,
+    suppressAuthRedirect: true,
+  });
+  return meResponseSchema.parse(data);
 }

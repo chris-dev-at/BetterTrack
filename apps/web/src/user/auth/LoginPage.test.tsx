@@ -16,8 +16,21 @@ vi.mock('../../lib/workboardApi', () => ({
   reorderWorkboard: vi.fn(),
 }));
 
+// Passkey ceremony glue (§13.4 V4-P4). Default `browserSupportsWebAuthn` to false
+// (the real jsdom behavior) so the button is hidden unless a test opts in.
+vi.mock('../../lib/passkeys', () => ({
+  browserSupportsWebAuthn: vi.fn(() => false),
+  isPasskeyCancellation: vi.fn(() => false),
+  signInWithPasskey: vi.fn(),
+}));
+
 import { ApiError } from '../../lib/apiClient';
 import * as oauthApi from '../../lib/oauthApi';
+import {
+  browserSupportsWebAuthn,
+  isPasskeyCancellation,
+  signInWithPasskey,
+} from '../../lib/passkeys';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
 import { UserApp } from '../UserApp';
@@ -600,4 +613,55 @@ test('the Sign-up box (and its OR divider) stay hidden when registration is clos
   expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
   // No OR without a sign-up box to divide against the form.
   expect(screen.queryByText('or')).not.toBeInTheDocument();
+});
+
+// ── Passkey sign-in (§13.4 V4-P4) ────────────────────────────────────────────
+
+test('hides passkey sign-in when the browser does not support WebAuthn', async () => {
+  vi.mocked(browserSupportsWebAuthn).mockReturnValue(false);
+  renderApp();
+  await screen.findByText('Sign in to your account');
+  expect(screen.queryByRole('button', { name: 'Sign in with a passkey' })).not.toBeInTheDocument();
+});
+
+test('offers passkey sign-in when supported and lands in the app on success', async () => {
+  vi.mocked(browserSupportsWebAuthn).mockReturnValue(true);
+  vi.mocked(signInWithPasskey).mockResolvedValue(user);
+  const u = userEvent.setup();
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  await u.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
+
+  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(signInWithPasskey).toHaveBeenCalled();
+});
+
+test('a cancelled passkey prompt is graceful — no error surfaced', async () => {
+  vi.mocked(browserSupportsWebAuthn).mockReturnValue(true);
+  vi.mocked(isPasskeyCancellation).mockReturnValue(true);
+  vi.mocked(signInWithPasskey).mockRejectedValue(new Error('NotAllowedError'));
+  const u = userEvent.setup();
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  await u.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
+
+  await waitFor(() => expect(signInWithPasskey).toHaveBeenCalled());
+  // The prompt was dismissed — no error, and the sign-in option remains.
+  expect(screen.queryByText(/passkey sign-in didn't work/i)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Sign in with a passkey' })).toBeInTheDocument();
+});
+
+test('a failed passkey sign-in shows a graceful error', async () => {
+  vi.mocked(browserSupportsWebAuthn).mockReturnValue(true);
+  vi.mocked(isPasskeyCancellation).mockReturnValue(false);
+  vi.mocked(signInWithPasskey).mockRejectedValue(new Error('boom'));
+  const u = userEvent.setup();
+  renderApp();
+  await screen.findByText('Sign in to your account');
+
+  await u.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
+
+  expect(await screen.findByText(/passkey sign-in didn't work/i)).toBeInTheDocument();
 });

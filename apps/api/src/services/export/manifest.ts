@@ -90,6 +90,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // ── Secrets / transient credentials (nothing meaningful to export) ─────────
   password_reset_tokens: skipped('Single-use password-reset secrets (transient credentials).'),
   two_factor_recovery_codes: skipped('2FA recovery-code hashes (secrets).'),
+  passkeys: skipped(
+    'WebAuthn passkey credentials (§13.4 V4-P4) — device-bound public keys + counters, authentication material meaningless outside this server/authenticator, not exportable user data.',
+  ),
   device_tokens: skipped('Ephemeral FCM push-transport registrations (opaque device secrets).'),
   push_subscriptions: skipped('Ephemeral web-push transport subscriptions (opaque secrets).'),
   notification_digest_queue: skipped(

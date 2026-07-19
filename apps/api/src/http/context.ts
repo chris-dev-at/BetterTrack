@@ -32,6 +32,7 @@ import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createRegistrationRequestRepository } from '../data/repositories/registrationRequestRepository';
 import { createRegistrationTokenRepository } from '../data/repositories/registrationTokenRepository';
 import { createPasswordResetTokenRepository } from '../data/repositories/passwordResetTokenRepository';
+import { createPasskeyRepository } from '../data/repositories/passkeyRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
@@ -122,6 +123,11 @@ import {
   type GoogleAuthService,
 } from '../services/auth/googleAuthService';
 import { createGoogleVerifier, type GoogleTokenVerifier } from '../services/auth/googleVerifier';
+import {
+  createPasskeyService,
+  type PasskeyService,
+  type PasskeyWebAuthnEngine,
+} from '../services/auth/passkeyService';
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createChatService, type ChatService } from '../services/chat';
 import { createIdeasService, type IdeasService } from '../services/ideas/ideasService';
@@ -211,6 +217,8 @@ export interface AppContext {
   google: GoogleAuthService;
   /** TOTP enroll/confirm/disable + recovery codes — the Settings → Security 2FA core (§6.1). */
   twoFactor: TwoFactorService;
+  /** Passkeys / WebAuthn — register/manage + passwordless login (§13.4 V4-P4). */
+  passkeys: PasskeyService;
   /** Mandatory admin-login 2FA management — enrollment wizard + admin Security settings (§6.12, #400). */
   adminTwoFactor: AdminTwoFactorService;
   admin: AdminService;
@@ -399,6 +407,12 @@ export interface BuildContextDeps {
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
   passwordHasher?: PasswordHasher;
   /**
+   * Test seam (§13.4 V4-P4): the passkey WebAuthn engine. Injected so tests drive
+   * register/login ceremonies with canned `@simplewebauthn` results — no real
+   * authenticator, browser, or crypto. Defaults to the real library.
+   */
+  passkeyEngine?: PasskeyWebAuthnEngine;
+  /**
    * Test seam (§13.4 V4-P4b): the Google token/ID-token verifier. Injected so
    * tests exercise the whole sign-in flow with canned claims and no network.
    * Defaults to the real jose-based verifier when Google is configured, else a
@@ -445,6 +459,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const identityRepo = createIdentityRepository(db);
   const passwordResetRepo = createPasswordResetTokenRepository(db);
   const twoFactorRepo = createTwoFactorRepository(db);
+  const passkeyRepo = createPasskeyRepository(db);
   const auditRepo = createAuditRepository(db);
   // Shared by auth/admin (default-portfolio provisioning at account creation,
   // §5.5) and the portfolio service below.
@@ -675,6 +690,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     redis,
     email,
+  });
+
+  // Passkeys / WebAuthn (§13.4 V4-P4): register/manage from Settings → Security and
+  // passwordless login. Shares the session service (login mints a session the same
+  // way password login does) and the 2FA service (the add/delete re-auth accepts a
+  // TOTP/recovery factor). rpID/origin come from `config.webauthn`.
+  const passkeys = createPasskeyService({
+    config,
+    redis,
+    passkeyRepo,
+    userRepo,
+    sessions,
+    audit,
+    passwordHasher,
+    twoFactor,
+    engine: deps.passkeyEngine,
   });
 
   // Mandatory admin-login 2FA management (§6.12, #400): reuses the user 2FA core
@@ -1248,6 +1279,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     auth,
     google,
     twoFactor,
+    passkeys,
     adminTwoFactor,
     admin,
     apiKeys,

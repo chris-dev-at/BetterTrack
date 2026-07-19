@@ -10,6 +10,11 @@ import type {
 
 import { useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
+import {
+  browserSupportsWebAuthn,
+  isPasskeyCancellation,
+  signInWithPasskey,
+} from '../../lib/passkeys';
 import * as userApi from '../../lib/userApi';
 import { AdminAccountError, useAuth } from '../AuthContext';
 import { Alert, AuthCard, Button, Spinner, TextField, cx } from '../components/ui';
@@ -103,6 +108,11 @@ export function LoginPage() {
   // Ticked by default: a normal login is persistent (§399 §A). Not shown in the
   // OAuth flow — the choice is deferred to the PIN-gated step below.
   const [staySignedIn, setStaySignedIn] = useState(true);
+  // Passkey sign-in (§13.4 V4-P4): offered only when the browser supports WebAuthn.
+  // Detected once so the button appears/hides deterministically. Hidden in the
+  // OAuth-authorize flow, exactly like the Google button.
+  const [supportsPasskey] = useState(() => browserSupportsWebAuthn());
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   // Non-null once the password step returns a 2FA challenge: swaps the password
   // form for the second-factor step.
   const [challenge, setChallenge] = useState<TwoFactorChallengeResponse | null>(null);
@@ -214,6 +224,30 @@ export function LoginPage() {
     }
   }
 
+  // Passkey sign-in (§13.4 V4-P4). Runs the WebAuthn ceremony; on success the
+  // server has already set the session cookie (a user-verified passkey is strong
+  // auth — no 2FA step), so we just adopt the user and land. A user-cancelled
+  // prompt is silent; any real failure shows a graceful inline error.
+  async function onPasskeySignIn() {
+    setError(null);
+    setPasskeyBusy(true);
+    try {
+      const me = await signInWithPasskey(staySignedIn);
+      adoptUser(me);
+      navigate(from, { replace: true });
+    } catch (err) {
+      if (isPasskeyCancellation(err)) {
+        // The user dismissed the prompt — leave the form as-is to retry.
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError(t('auth.login.passkeyRateLimited'));
+      } else {
+        setError(t('auth.login.passkeyError'));
+      }
+    } finally {
+      setPasskeyBusy(false);
+    }
+  }
+
   // State-ladder step 2 (§399 §B): a remembered PIN user with no session gets
   // the "Log in as [name]? / Another account" chooser instead of a blank login.
   // Always interposed — never skipped — so switching accounts is one tap away.
@@ -306,6 +340,22 @@ export function LoginPage() {
       {googleEnabled && !oauthContext ? (
         <div className="mb-4">
           <GoogleButton />
+        </div>
+      ) : null}
+      {/* (1b) Passkey sign-in (§13.4 V4-P4). Feature-detected — shown only when
+          the browser supports WebAuthn — and, like Google, hidden in the
+          OAuth-authorize flow. A passwordless alternative to the form below. */}
+      {supportsPasskey && !oauthContext ? (
+        <div className="mb-4">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onPasskeySignIn}
+            disabled={passkeyBusy}
+            className="w-full"
+          >
+            {passkeyBusy ? t('auth.login.passkeySigningIn') : t('auth.login.passkeyButton')}
+          </Button>
         </div>
       ) : null}
       {/* (2) Password login form. */}
