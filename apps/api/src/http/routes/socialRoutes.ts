@@ -2,17 +2,22 @@ import { Router } from 'express';
 import { z } from 'zod';
 
 import {
+  addGroupMemberRequestSchema,
   audienceParamSchema,
   commentIdParamSchema,
   conglomerateIdParamSchema,
   createCommentRequestSchema,
+  createFriendGroupRequestSchema,
   createFriendRequestRequestSchema,
   followUserRequestSchema,
+  groupIdParamSchema,
+  groupMemberParamSchema,
   idParamSchema,
   itemFollowRequestSchema,
   portfolioIdParamSchema,
   profileItemParamSchema,
   profileUsernameParamSchema,
+  renameFriendGroupRequestSchema,
   setActivityAlertRequestSchema,
   setAudienceRequestSchema,
   toggleReactionRequestSchema,
@@ -20,14 +25,19 @@ import {
   updateFollowRequestSchema,
   updateProfileSettingsRequestSchema,
   watchlistIdParamSchema,
+  type AddGroupMemberRequest,
   type AudienceParam,
   type CommentIdParam,
   type CreateCommentRequest,
+  type CreateFriendGroupRequest,
   type CreateFriendRequestRequest,
   type FollowUserRequest,
+  type GroupIdParam,
+  type GroupMemberParam,
   type ItemFollowRequest,
   type ProfileItemParam,
   type ProfileUsernameParam,
+  type RenameFriendGroupRequest,
   type SetActivityAlertRequest,
   type SetAudienceRequest,
   type ToggleReactionRequest,
@@ -144,6 +154,76 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
     await ctx.social.removeFriend(req.authUser!.id, userId);
     res.status(204).send();
   });
+
+  // ── Friend groups (§13.5 V5-P8) ────────────────────────────────────────────
+  // Named circles usable as a `group` sharing audience. Every endpoint is
+  // owner-scoped: a group is private to its owner, so a foreign/unknown group
+  // 404s (no leak). Only accepted friends can be added.
+
+  // GET /social/groups — the caller's own groups, each with its live roster.
+  router.get('/groups', async (req, res) => {
+    const result = await ctx.social.listGroups(req.authUser!.id);
+    res.json(result);
+  });
+
+  // POST /social/groups — create an empty named group.
+  router.post(
+    '/groups',
+    limiters.social,
+    validateBody(createFriendGroupRequestSchema),
+    async (req, res) => {
+      const { name } = req.valid?.body as CreateFriendGroupRequest;
+      const result = await ctx.social.createGroup(req.authUser!.id, name);
+      res.status(201).json(result);
+    },
+  );
+
+  // PATCH /social/groups/:groupId — rename a group. 404 when not the caller's.
+  router.patch(
+    '/groups/:groupId',
+    validateParams(groupIdParamSchema),
+    validateBody(renameFriendGroupRequestSchema),
+    async (req, res) => {
+      const { groupId } = req.valid?.params as GroupIdParam;
+      const { name } = req.valid?.body as RenameFriendGroupRequest;
+      const result = await ctx.social.renameGroup(req.authUser!.id, groupId, name);
+      res.json(result);
+    },
+  );
+
+  // DELETE /social/groups/:groupId — delete a group. Shares referencing it then
+  // resolve to nobody (fail-closed, §6.9). 404 when not the caller's.
+  router.delete('/groups/:groupId', validateParams(groupIdParamSchema), async (req, res) => {
+    const { groupId } = req.valid?.params as GroupIdParam;
+    await ctx.social.deleteGroup(req.authUser!.id, groupId);
+    res.status(204).send();
+  });
+
+  // POST /social/groups/:groupId/members — add an accepted friend (idempotent).
+  // 404 when the group isn't the caller's; 400 when the user isn't their friend.
+  router.post(
+    '/groups/:groupId/members',
+    limiters.social,
+    validateParams(groupIdParamSchema),
+    validateBody(addGroupMemberRequestSchema),
+    async (req, res) => {
+      const { groupId } = req.valid?.params as GroupIdParam;
+      const { userId } = req.valid?.body as AddGroupMemberRequest;
+      const result = await ctx.social.addGroupMember(req.authUser!.id, groupId, userId);
+      res.json(result);
+    },
+  );
+
+  // DELETE /social/groups/:groupId/members/:userId — remove a member.
+  router.delete(
+    '/groups/:groupId/members/:userId',
+    validateParams(groupMemberParamSchema),
+    async (req, res) => {
+      const { groupId, userId } = req.valid?.params as GroupMemberParam;
+      const result = await ctx.social.removeGroupMember(req.authUser!.id, groupId, userId);
+      res.json(result);
+    },
+  );
 
   // POST /social/follows — follow a PERSON (#438). Idempotent; grants no access,
   // notifies nobody. Bearer `social:write` (the `/social` prefix maps the scope).

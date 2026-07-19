@@ -62,13 +62,19 @@ export type ShareKind = z.infer<typeof shareKindSchema>;
 /**
  * The audience ladder (V3-P5, §16 friction ladder): a single-select rung of
  * increasing exposure — `private` (default, owner only) → `specific_friends`
- * (multi-select) → `all_friends` → `public_link` (anyone holding the ≥128-bit
- * token URL). The server scopes every social read by an existing friendship AND
- * this value at query time (§6.9); revoking either instantly closes access.
+ * (multi-select) → `group` (a named friend circle, V5-P8) → `all_friends` →
+ * `public_link` (anyone holding the ≥128-bit token URL). The array order IS the
+ * ladder order the picker renders. The server scopes every social read by an
+ * existing friendship AND this value at query time (§6.9); revoking either — or
+ * removing the viewer from the referenced group — instantly closes access. A
+ * `group` audience resolves to the group's CURRENT members at read time, so
+ * editing the circle immediately changes who sees existing shares; a group that
+ * has been deleted resolves to nobody (fail-closed, §6.9).
  */
 export const SHARE_AUDIENCES = [
   'private',
   'specific_friends',
+  'group',
   'all_friends',
   'public_link',
 ] as const;

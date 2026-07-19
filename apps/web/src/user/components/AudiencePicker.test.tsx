@@ -6,10 +6,11 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('../../lib/socialApi', () => ({
   getAudience: vi.fn(),
   listFriends: vi.fn(),
+  listGroups: vi.fn(),
   setAudience: vi.fn(),
 }));
 
-import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
+import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { AudiencePicker } from './AudiencePicker';
 
 const SUBJECT = '00000000-0000-0000-0000-000000000001';
@@ -30,9 +31,11 @@ beforeEach(() => {
     subjectId: SUBJECT,
     audience: 'private',
     friendIds: [],
+    groupId: null,
     link: { active: false, createdAt: null },
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
 });
 
 describe('AudiencePicker — friction ladder (§16)', () => {
@@ -66,6 +69,7 @@ describe('AudiencePicker — friction ladder (§16)', () => {
         subjectId: SUBJECT,
         audience: 'public_link',
         friendIds: [],
+        groupId: null,
         link: { active: true, createdAt: new Date().toISOString() },
       },
       link: { token: 'tok_abc', url: '/api/v1/social/links/tok_abc' },
@@ -98,6 +102,59 @@ describe('AudiencePicker — friction ladder (§16)', () => {
   });
 });
 
+describe('AudiencePicker — friend groups (V5-P8)', () => {
+  const GROUP = '00000000-0000-0000-0000-0000000000f1';
+
+  test('orders the group rung between specific-friends and all-friends', async () => {
+    renderPicker();
+    await waitFor(() => expect(screen.getByRole('radio', { name: /friend group/i })).toBeEnabled());
+
+    const order = screen.getAllByRole('radio').map((r) => r.getAttribute('value'));
+    expect(order).toEqual(['private', 'specific_friends', 'group', 'all_friends', 'public_link']);
+  });
+
+  test('the group rung shows its confirm and cannot submit until a group is chosen', async () => {
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [{ id: GROUP, name: 'Family', memberCount: 3, members: [] }],
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'group',
+        friendIds: [],
+        groupId: GROUP,
+        link: { active: false, createdAt: null },
+      },
+    });
+    const user = userEvent.setup();
+    renderPicker();
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: /friend group/i })).toBeEnabled());
+    await user.click(screen.getByRole('radio', { name: /friend group/i }));
+
+    // The friction-ladder confirm note for the group tier is shown.
+    expect(screen.getByText(/everyone currently in this group will see/i)).toBeInTheDocument();
+
+    // Save is BLOCKED until a group is actually selected (the group tier's friction).
+    const save = screen.getByRole('button', { name: /^save$/i });
+    expect(save).toBeDisabled();
+
+    // Pick the group → Save unlocks and submits with its id.
+    await user.click(screen.getByRole('radio', { name: /family/i }));
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'group',
+      friendIds: undefined,
+      groupId: GROUP,
+      acknowledgePublic: undefined,
+    });
+  });
+});
+
 describe('AudiencePicker — specific-friends searchable multi-select (V3-P6)', () => {
   const ALICE = '00000000-0000-0000-0000-0000000000a1';
   const BOB = '00000000-0000-0000-0000-0000000000b2';
@@ -115,6 +172,7 @@ describe('AudiencePicker — specific-friends searchable multi-select (V3-P6)', 
         subjectId: SUBJECT,
         audience: 'specific_friends',
         friendIds: [ALICE],
+        groupId: null,
         link: { active: false, createdAt: null },
       },
     });

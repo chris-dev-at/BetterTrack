@@ -2327,6 +2327,10 @@
       "public_link": {
         "label": "Öffentlicher Link",
         "desc": "Jeder mit dem Link."
+      },
+      "group": {
+        "label": "Freundesgruppe",
+        "desc": "Alle in einer von dir gewählten Gruppe."
       }
     },
     "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
@@ -2348,12 +2352,16 @@
       "private": "Privat",
       "specific_friends": "Bestimmte Freunde",
       "all_friends": "Alle Freunde",
-      "public_link": "Öffentlicher Link"
+      "public_link": "Öffentlicher Link",
+      "group": "Freundesgruppe"
     },
     "friendsSearchPlaceholder": "Freunde suchen",
     "friendsSelectedCount": "{{count}} ausgewählt",
     "friendsNoMatch": "Keine Freunde passen zu „{{query}}“.",
-    "share": "Teilen…"
+    "share": "Teilen…",
+    "groupsNone": "Du hast noch keine Gruppen. Erstelle auf der Freunde-Seite eine, um mit einem Kreis zu teilen.",
+    "groupMemberCount": "{{count}} Mitglieder",
+    "groupConfirm": "Alle aktuell in dieser Gruppe sehen eine schreibgeschützte Ansicht. Änderst du die Gruppe später, ändert sich, wer sie sehen kann."
   },
   "watchlists": {
     "title": "Watchlists",
@@ -2625,6 +2633,32 @@
       "postError": "Kommentar konnte nicht gesendet werden.",
       "itemReactionsLabel": "Auf dieses Element reagieren",
       "commentReactionsLabel": "Auf diesen Kommentar reagieren"
+    },
+    "groups": {
+      "title": "Gruppen",
+      "subtitle": "Benannte Freundeskreise, mit denen du als eine Zielgruppe teilen kannst.",
+      "newLabel": "Name der neuen Gruppe",
+      "newPlaceholder": "z. B. Familie",
+      "create": "Erstellen",
+      "creating": "Wird erstellt…",
+      "createError": "Gruppe konnte nicht erstellt werden. Bitte versuche es erneut.",
+      "loadError": "Deine Gruppen konnten nicht geladen werden. Bitte versuche es erneut.",
+      "emptyTitle": "Noch keine Gruppen",
+      "emptyDescription": "Erstelle eine Gruppe, um mit einem bestimmten Freundeskreis zu teilen.",
+      "memberCount": "{{count}} Mitglieder",
+      "nameLabel": "Gruppenname",
+      "renameAction": "Umbenennen",
+      "membersHeading": "Mitglieder",
+      "membersEmpty": "Noch keine Mitglieder. Füge unten Freunde hinzu.",
+      "addMemberHeading": "Freund hinzufügen",
+      "addMemberNone": "Alle deine Freunde sind bereits in dieser Gruppe.",
+      "add": "Hinzufügen",
+      "mutateError": "Gruppe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "delete": "Gruppe löschen",
+      "deleteTitle": "„{{name}}“ löschen",
+      "deleteWarning": "Alles, was mit dieser Gruppe geteilt wird, ist für ihre Mitglieder nicht mehr sichtbar. Dies kann nicht rückgängig gemacht werden.",
+      "deleting": "Wird gelöscht…",
+      "deleteError": "Gruppe konnte nicht gelöscht werden. Bitte versuche es erneut."
     }
   },
   "profile": {

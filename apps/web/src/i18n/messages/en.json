@@ -2327,6 +2327,10 @@
       "public_link": {
         "label": "Public link",
         "desc": "Anyone with the link."
+      },
+      "group": {
+        "label": "Friend group",
+        "desc": "Everyone in a group you choose."
       }
     },
     "friendsNone": "You have no friends yet. Add friends to share with specific people.",
@@ -2348,12 +2352,16 @@
       "private": "Private",
       "specific_friends": "Specific friends",
       "all_friends": "All friends",
-      "public_link": "Public link"
+      "public_link": "Public link",
+      "group": "Friend group"
     },
     "friendsSearchPlaceholder": "Search friends",
     "friendsSelectedCount": "{{count}} selected",
     "friendsNoMatch": "No friends match “{{query}}”.",
-    "share": "Share…"
+    "share": "Share…",
+    "groupsNone": "You have no groups yet. Create one on the Friends page to share with a circle.",
+    "groupMemberCount": "{{count}} members",
+    "groupConfirm": "Everyone currently in this group will see a read-only view. Editing the group later changes who can see it."
   },
   "watchlists": {
     "title": "Watchlists",
@@ -2625,6 +2633,32 @@
       "postError": "Couldn’t post your comment.",
       "itemReactionsLabel": "React to this item",
       "commentReactionsLabel": "React to this comment"
+    },
+    "groups": {
+      "title": "Groups",
+      "subtitle": "Named circles of friends you can share with as one audience.",
+      "newLabel": "New group name",
+      "newPlaceholder": "e.g. Family",
+      "create": "Create",
+      "creating": "Creating…",
+      "createError": "Could not create the group. Please try again.",
+      "loadError": "Could not load your groups. Please try again.",
+      "emptyTitle": "No groups yet",
+      "emptyDescription": "Create a group to share with a specific circle of friends.",
+      "memberCount": "{{count}} members",
+      "nameLabel": "Group name",
+      "renameAction": "Rename",
+      "membersHeading": "Members",
+      "membersEmpty": "No members yet. Add friends below.",
+      "addMemberHeading": "Add a friend",
+      "addMemberNone": "All your friends are already in this group.",
+      "add": "Add",
+      "mutateError": "Could not update the group. Please try again.",
+      "delete": "Delete group",
+      "deleteTitle": "Delete “{{name}}”",
+      "deleteWarning": "Anything shared with this group will no longer be visible to its members. This cannot be undone.",
+      "deleting": "Deleting…",
+      "deleteError": "Could not delete the group. Please try again."
     }
   },
   "profile": {

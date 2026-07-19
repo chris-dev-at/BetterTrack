@@ -20,6 +20,7 @@ import { Alert, Button, TextField, cx } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
+import { FriendGroupsSection } from './FriendGroupsSection';
 import {
   ActivityAlertToggle,
   SharedItemRow,
@@ -629,6 +630,7 @@ export function FriendsPage() {
       </div>
       <AddFriendForm />
       <FriendsListSection />
+      <FriendGroupsSection />
       <RequestsSection />
     </div>
   );

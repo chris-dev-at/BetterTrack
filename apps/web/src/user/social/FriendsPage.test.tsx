@@ -13,6 +13,12 @@ vi.mock('../../lib/socialApi', () => ({
   listSharedWithMe: vi.fn(),
   removeFriend: vi.fn(),
   setActivityAlert: vi.fn(),
+  listGroups: vi.fn(),
+  createGroup: vi.fn(),
+  renameGroup: vi.fn(),
+  deleteGroup: vi.fn(),
+  addGroupMember: vi.fn(),
+  removeGroupMember: vi.fn(),
 }));
 
 import { MemoryRouter } from 'react-router-dom';
@@ -23,6 +29,7 @@ import {
   declineFriendRequest,
   listFriendRequests,
   listFriends,
+  listGroups,
   listSharedWithMe,
   removeFriend,
   sendFriendRequest,
@@ -53,6 +60,7 @@ beforeEach(() => {
   vi.mocked(listFriendRequests).mockResolvedValue(EMPTY_REQUESTS);
   vi.mocked(listFriends).mockResolvedValue(EMPTY_FRIENDS);
   vi.mocked(listSharedWithMe).mockResolvedValue(EMPTY_SHARED);
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
 });
 
 describe('FriendsPage', () => {

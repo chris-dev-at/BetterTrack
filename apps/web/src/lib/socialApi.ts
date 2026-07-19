@@ -7,6 +7,8 @@ import {
   commentThreadResponseSchema,
   createCommentResponseSchema,
   followingListResponseSchema,
+  friendGroupListResponseSchema,
+  friendGroupSchema,
   friendRequestListResponseSchema,
   itemFollowsListResponseSchema,
   friendsListResponseSchema,
@@ -31,6 +33,8 @@ import {
   type FollowersListResponse,
   type FollowingEntry,
   type FollowingListResponse,
+  type FriendGroup,
+  type FriendGroupListResponse,
   type FriendRequestListResponse,
   type ItemFollowsListResponse,
   type FriendsListResponse,
@@ -103,6 +107,52 @@ export async function listFriends(signal?: AbortSignal): Promise<FriendsListResp
 /** `DELETE /social/friends/:userId` — remove a friendship (either side may). */
 export async function removeFriend(userId: string): Promise<void> {
   await apiRequest<unknown>(`/social/friends/${encodeURIComponent(userId)}`, { method: 'DELETE' });
+}
+
+// ── Friend groups (V5-P8): named circles usable as a sharing audience ─────────
+
+/** `GET /social/groups` — the caller's own friend groups with live rosters. */
+export async function listGroups(signal?: AbortSignal): Promise<FriendGroupListResponse> {
+  const data = await apiRequest<unknown>('/social/groups', { signal });
+  return friendGroupListResponseSchema.parse(data);
+}
+
+/** `POST /social/groups` — create an empty named group. */
+export async function createGroup(name: string): Promise<FriendGroup> {
+  const data = await apiRequest<unknown>('/social/groups', { method: 'POST', body: { name } });
+  return friendGroupSchema.parse(data);
+}
+
+/** `PATCH /social/groups/:groupId` — rename a group. */
+export async function renameGroup(groupId: string, name: string): Promise<FriendGroup> {
+  const data = await apiRequest<unknown>(`/social/groups/${encodeURIComponent(groupId)}`, {
+    method: 'PATCH',
+    body: { name },
+  });
+  return friendGroupSchema.parse(data);
+}
+
+/** `DELETE /social/groups/:groupId` — delete a group (its shares go dark). */
+export async function deleteGroup(groupId: string): Promise<void> {
+  await apiRequest<unknown>(`/social/groups/${encodeURIComponent(groupId)}`, { method: 'DELETE' });
+}
+
+/** `POST /social/groups/:groupId/members` — add an accepted friend to a group. */
+export async function addGroupMember(groupId: string, userId: string): Promise<FriendGroup> {
+  const data = await apiRequest<unknown>(`/social/groups/${encodeURIComponent(groupId)}/members`, {
+    method: 'POST',
+    body: { userId },
+  });
+  return friendGroupSchema.parse(data);
+}
+
+/** `DELETE /social/groups/:groupId/members/:userId` — remove a member. */
+export async function removeGroupMember(groupId: string, userId: string): Promise<FriendGroup> {
+  const data = await apiRequest<unknown>(
+    `/social/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+  );
+  return friendGroupSchema.parse(data);
 }
 
 /**

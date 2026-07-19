@@ -47,6 +47,7 @@ beforeEach(() => {
     subjectId: PORTFOLIO_ID,
     audience: 'all_friends',
     friendIds: [],
+    groupId: null,
     link: { active: false, createdAt: null },
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
@@ -125,6 +126,7 @@ describe('MySharedItemsPage', () => {
       subjectId: CONGLOMERATE_ID,
       audience: 'private',
       friendIds: [],
+      groupId: null,
       link: { active: false, createdAt: null },
     });
     renderPage();
@@ -167,6 +169,7 @@ describe('MySharedItemsPage', () => {
       subjectId: SECONDARY_ID,
       audience: 'private',
       friendIds: [],
+      groupId: null,
       link: { active: false, createdAt: null },
     });
     renderPage();
@@ -206,6 +209,7 @@ describe('MySharedItemsPage', () => {
       subjectId: IDEA_ID,
       audience: 'private',
       friendIds: [],
+      groupId: null,
       link: { active: false, createdAt: null },
     });
     renderPage();

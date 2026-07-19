@@ -1367,6 +1367,52 @@ export const friendships = pgTable(
 );
 
 /**
+ * `friend_groups` — a named friend circle owned by one user (§13.5 V5-P8),
+ * usable as a sharing audience between `specific_friends` and `all_friends`. The
+ * group is private to its owner; nobody else can see or use it. Deleting a group
+ * cascades its membership rows away and SET-NULLs any `share_audiences.group_id`
+ * that referenced it, so a share pointing at a deleted group resolves to nobody
+ * (fail-closed, §6.9) rather than widening.
+ */
+export const friendGroups = pgTable(
+  'friend_groups',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    ownerId: uuid('owner_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('friend_groups_owner_idx').on(t.ownerId)],
+);
+
+/**
+ * `friend_group_members` — the roster of one {@link friendGroups} circle. Every
+ * member must be an accepted friend of the group's owner (enforced by the
+ * service on add); unfriending removes the ex-friend from all of the owner's
+ * groups (and vice-versa). One row per (group, member); both sides cascade on
+ * user/group deletion.
+ */
+export const friendGroupMembers = pgTable(
+  'friend_group_members',
+  {
+    groupId: uuid('group_id')
+      .notNull()
+      .references(() => friendGroups.id, { onDelete: 'cascade' }),
+    memberId: uuid('member_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'friend_group_members_pk', columns: [t.groupId, t.memberId] }),
+    index('friend_group_members_member_idx').on(t.memberId),
+  ],
+);
+
+/**
  * `user_follows` — one-directional PERSON follow (#438). The follower opts into
  * `follow.published` news about a followed user's items that become newly visible
  * to them. Unlike {@link friendships} this is asymmetric with NO accept step, and
@@ -1440,6 +1486,7 @@ export const shareKindEnum = pgEnum('share_kind', [
 export const shareAudienceEnum = pgEnum('share_audience', [
   'private',
   'specific_friends',
+  'group',
   'all_friends',
   'public_link',
 ]);
@@ -1454,6 +1501,13 @@ export const shareAudiences = pgTable(
     kind: shareKindEnum('kind').notNull(),
     subjectId: uuid('subject_id').notNull(),
     audience: shareAudienceEnum('audience').notNull().default('private'),
+    /**
+     * The referenced friend circle when audience = `group` (V5-P8), else NULL.
+     * `ON DELETE SET NULL`: deleting the group leaves the audience row at
+     * `group` with a null reference, which resolves to NOBODY (fail-closed) —
+     * the share goes dark rather than widening (§6.9, §16 planner decision).
+     */
+    groupId: uuid('group_id').references(() => friendGroups.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2002,6 +2056,10 @@ export type ItemFollowRow = typeof itemFollows.$inferSelect;
 export type NewItemFollowRow = typeof itemFollows.$inferInsert;
 export type WatchlistRow = typeof watchlists.$inferSelect;
 export type NewWatchlistRow = typeof watchlists.$inferInsert;
+export type FriendGroupRow = typeof friendGroups.$inferSelect;
+export type NewFriendGroupRow = typeof friendGroups.$inferInsert;
+export type FriendGroupMemberRow = typeof friendGroupMembers.$inferSelect;
+export type NewFriendGroupMemberRow = typeof friendGroupMembers.$inferInsert;
 export type ShareAudienceRow = typeof shareAudiences.$inferSelect;
 export type NewShareAudienceRow = typeof shareAudiences.$inferInsert;
 export type ShareAudienceMemberRow = typeof shareAudienceMembers.$inferSelect;
@@ -2437,6 +2495,8 @@ export const schema = {
   userTaxSettings,
   friendRequests,
   friendships,
+  friendGroups,
+  friendGroupMembers,
   userFollows,
   itemFollows,
   shareAudiences,

@@ -8,6 +8,8 @@ import type {
   FollowUser,
   ItemFollowsListResponse,
   UpdateFollowRequest,
+  FriendGroup,
+  FriendGroupListResponse,
   FriendRequest,
   FriendRequestListResponse,
   Friendship,
@@ -33,6 +35,7 @@ import type {
   FriendRow,
   PendingRequestRow,
 } from '../../data/repositories/friendshipRepository';
+import type { FriendGroupRepository } from '../../data/repositories/friendGroupRepository';
 import type {
   ItemFollowsRepository,
   ItemFollowListRow,
@@ -67,6 +70,8 @@ import type { AudienceMutationResult, AudienceService } from './audienceService'
 
 export interface SocialServiceDeps {
   repo: FriendshipRepository;
+  /** Friend groups (V5-P8) — named circles usable as a `group` sharing audience. */
+  groups: FriendGroupRepository;
   /** Person-follow graph (#438) — follow/unfollow + the following/followers lists. */
   follows: UserFollowsRepository;
   /** Item bookmarks (#439) — follow/unfollow/list; visibility is re-derived per read. */
@@ -98,6 +103,25 @@ export interface SocialService {
   cancel(userId: string, requestId: string): Promise<void>;
   listFriends(userId: string): Promise<FriendsListResponse>;
   removeFriend(userId: string, otherUserId: string): Promise<void>;
+  // ── Friend groups (V5-P8): named circles usable as a sharing audience ──────
+  /** The caller's own friend groups, each with its live roster. */
+  listGroups(userId: string): Promise<FriendGroupListResponse>;
+  /** Create an empty named group for the caller. */
+  createGroup(userId: string, name: string): Promise<FriendGroup>;
+  /** Rename one of the caller's groups. 404 when not theirs. */
+  renameGroup(userId: string, groupId: string, name: string): Promise<FriendGroup>;
+  /**
+   * Delete one of the caller's groups. Shares referencing it resolve to nobody
+   * afterwards (fail-closed, §6.9). 404 when not theirs.
+   */
+  deleteGroup(userId: string, groupId: string): Promise<void>;
+  /**
+   * Add an accepted friend to one of the caller's groups (idempotent). 404 when
+   * the group isn't theirs; 400 when the user isn't currently their friend.
+   */
+  addGroupMember(userId: string, groupId: string, memberId: string): Promise<FriendGroup>;
+  /** Remove a member from one of the caller's groups. 404 when not theirs. */
+  removeGroupMember(userId: string, groupId: string, memberId: string): Promise<FriendGroup>;
   /**
    * Follow a person (#438). Idempotent; 404 when the target isn't a valid follow
    * target. All per-follow prefs (#439 auto-follow, #455 alert triggers) are
@@ -184,6 +208,9 @@ export const DECLINE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 
 const REQUEST_NOT_FOUND = () => notFound('Friend request not found.', 'FRIEND_REQUEST_NOT_FOUND');
 const FRIEND_NOT_FOUND = () => notFound('Friend not found.', 'FRIENDSHIP_NOT_FOUND');
+const GROUP_NOT_FOUND = () => notFound('Group not found.', 'FRIEND_GROUP_NOT_FOUND');
+const NOT_A_FRIEND = () =>
+  badRequest('Only your accepted friends can be added to a group.', 'GROUP_MEMBER_NOT_FRIEND');
 const FOLLOW_TARGET_NOT_FOUND = () => notFound('User not found.', 'USER_NOT_FOUND');
 const NOT_FOLLOWING = () => notFound('You are not following this user.', 'FOLLOW_NOT_FOUND');
 const CANNOT_FOLLOW_SELF = () => badRequest('You cannot follow yourself.', 'CANNOT_FOLLOW_SELF');
@@ -232,6 +259,23 @@ function toFriendship(row: FriendRow): Friendship {
   };
 }
 
+function toFriendGroup(row: {
+  id: string;
+  name: string;
+  members: { id: string; username: string; profileIcon: string | null }[];
+}): FriendGroup {
+  return {
+    id: row.id,
+    name: row.name,
+    memberCount: row.members.length,
+    members: row.members.map((m) => ({
+      id: m.id,
+      username: m.username,
+      profileIcon: coerceProfileIcon(m.profileIcon),
+    })),
+  };
+}
+
 function toFollowUser(row: FollowUserRow): FollowUser {
   return {
     user: {
@@ -256,6 +300,7 @@ function toFollowingEntry(row: FollowingUserRow): FollowingEntry {
 export function createSocialService(deps: SocialServiceDeps): SocialService {
   const {
     repo,
+    groups,
     follows,
     itemFollows,
     profile,
@@ -271,6 +316,14 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
   // Friend events enter the ONE durable notification pipeline (#368) — the
   // center is fire-and-forget: a queue failure logs and never fails the action.
   const emit = notify.emit.bind(notify);
+
+  /** Re-read one owned group after a mutation, or 404 if it vanished mid-flight. */
+  async function groupOrThrow(userId: string, groupId: string): Promise<FriendGroup> {
+    const all = await groups.listGroups(userId);
+    const found = all.find((g) => g.id === groupId);
+    if (!found) throw GROUP_NOT_FOUND();
+    return toFriendGroup(found);
+  }
 
   // Owner-scoped read-view builders, reused by both the friend endpoints and the
   // public-link resolver so the two never diverge (authorization differs; the
@@ -464,6 +517,49 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
     async removeFriend(userId, otherUserId) {
       const removed = await repo.deleteFriendship(userId, otherUserId);
       if (!removed) throw FRIEND_NOT_FOUND();
+      // Unfriending drops the pair from each other's groups too (V5-P8), keeping
+      // the invariant that a group's members are the owner's current friends — so
+      // a `group` share can never reach a now-non-friend (§6.9).
+      await groups.removeMutualMemberships(userId, otherUserId);
+    },
+
+    // ── Friend groups (V5-P8) ──────────────────────────────────────────────
+
+    async listGroups(userId) {
+      const rows = await groups.listGroups(userId);
+      return { groups: rows.map(toFriendGroup) };
+    },
+
+    async createGroup(userId, name) {
+      const groupId = await groups.createGroup(userId, name);
+      return { id: groupId, name, memberCount: 0, members: [] };
+    },
+
+    async renameGroup(userId, groupId, name) {
+      const ok = await groups.renameGroup(userId, groupId, name);
+      if (!ok) throw GROUP_NOT_FOUND();
+      return groupOrThrow(userId, groupId);
+    },
+
+    async deleteGroup(userId, groupId) {
+      const ok = await groups.deleteGroup(userId, groupId);
+      if (!ok) throw GROUP_NOT_FOUND();
+    },
+
+    async addGroupMember(userId, groupId, memberId) {
+      // Ownership first (404 for a foreign/unknown group), THEN the friendship
+      // gate — only an accepted friend can join, so a `group` audience never
+      // reaches a non-friend (§6.9). Idempotent: re-adding is a no-op.
+      if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
+      if (!(await groups.isFriend(userId, memberId))) throw NOT_A_FRIEND();
+      await groups.addMember(groupId, memberId);
+      return groupOrThrow(userId, groupId);
+    },
+
+    async removeGroupMember(userId, groupId, memberId) {
+      if (!(await groups.ownsGroup(userId, groupId))) throw GROUP_NOT_FOUND();
+      await groups.removeMember(groupId, memberId);
+      return groupOrThrow(userId, groupId);
     },
 
     async followUser(userId, targetId, opts) {

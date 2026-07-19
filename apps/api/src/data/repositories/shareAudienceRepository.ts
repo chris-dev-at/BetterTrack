@@ -6,6 +6,7 @@ import type { ShareAudience, ShareKind } from '@bettertrack/contracts';
 import type { Database } from '../db';
 import {
   conglomerates,
+  friendGroupMembers,
   friendships,
   ideas,
   portfolios,
@@ -77,6 +78,8 @@ export interface FriendIdeaRow extends OwnerRef {
 export interface OwnedAudienceState {
   audience: ShareAudience;
   friendIds: string[];
+  /** The referenced friend group (V5-P8) — set only for the `group` audience. */
+  groupId: string | null;
   link: { active: boolean; createdAt: Date | null };
 }
 
@@ -91,9 +94,15 @@ export function createShareAudienceRepository(db: Database) {
    * The audience-grant predicate — the heart of the enforcement layer, written
    * once and reused by every friend-mode query. A viewer is granted by audience
    * when it is `all_friends`, `public_link` (public is strictly broader than
-   * friends), or `specific_friends` with the viewer in the membership set. It is
+   * friends), `specific_friends` with the viewer in the membership set, or
+   * `group` with the viewer in the referenced circle's CURRENT roster. It is
    * ALWAYS combined with a friendship join by the caller, so `private` — and any
    * audience the viewer isn't named in — grants nothing.
+   *
+   * The `group` branch reads the live membership, so editing a circle instantly
+   * changes who sees existing shares; a `group` share whose group was deleted
+   * carries `group_id IS NULL`, the EXISTS finds no member, and it resolves to
+   * nobody (fail-closed, §6.9).
    */
   function audienceGrants(viewerId: string) {
     return sql`(
@@ -104,6 +113,14 @@ export function createShareAudienceRepository(db: Database) {
           select 1 from ${shareAudienceMembers}
           where ${shareAudienceMembers.audienceId} = ${shareAudiences.id}
             and ${shareAudienceMembers.friendId} = ${viewerId}
+        )
+      )
+      or (
+        ${shareAudiences.audience} = 'group'
+        and exists (
+          select 1 from ${friendGroupMembers}
+          where ${friendGroupMembers.groupId} = ${shareAudiences.groupId}
+            and ${friendGroupMembers.memberId} = ${viewerId}
         )
       )
     )`;
@@ -717,12 +734,21 @@ export function createShareAudienceRepository(db: Database) {
     /** The current owner-facing audience state for one subject (missing row = private). */
     async getOwnedState(kind: ShareKind, subjectId: string): Promise<OwnedAudienceState> {
       const [row] = await db
-        .select({ id: shareAudiences.id, audience: shareAudiences.audience })
+        .select({
+          id: shareAudiences.id,
+          audience: shareAudiences.audience,
+          groupId: shareAudiences.groupId,
+        })
         .from(shareAudiences)
         .where(and(eq(shareAudiences.kind, kind), eq(shareAudiences.subjectId, subjectId)))
         .limit(1);
       if (!row)
-        return { audience: 'private', friendIds: [], link: { active: false, createdAt: null } };
+        return {
+          audience: 'private',
+          friendIds: [],
+          groupId: null,
+          link: { active: false, createdAt: null },
+        };
 
       const members = await db
         .select({ friendId: shareAudienceMembers.friendId })
@@ -739,6 +765,8 @@ export function createShareAudienceRepository(db: Database) {
       return {
         audience: row.audience,
         friendIds: members.map((m) => m.friendId),
+        // A `group` audience carries its live reference; every other rung is null.
+        groupId: row.audience === 'group' ? row.groupId : null,
         link: { active: link !== undefined, createdAt: link?.createdAt ?? null },
       };
     },
@@ -770,7 +798,11 @@ export function createShareAudienceRepository(db: Database) {
       subjectId: string,
       audience: ShareAudience,
       memberFriendIds: readonly string[],
+      groupId: string | null = null,
     ): Promise<string> {
+      // The `group` reference is stored only when the audience is `group`; every
+      // other rung clears it, so a later widen/narrow can't leave a stale link.
+      const groupRef = audience === 'group' ? groupId : null;
       return db.transaction(async (tx) => {
         const [existing] = await tx
           .select({ id: shareAudiences.id })
@@ -783,12 +815,12 @@ export function createShareAudienceRepository(db: Database) {
           audienceId = existing.id;
           await tx
             .update(shareAudiences)
-            .set({ audience, updatedAt: new Date() })
+            .set({ audience, groupId: groupRef, updatedAt: new Date() })
             .where(eq(shareAudiences.id, audienceId));
         } else {
           const [inserted] = await tx
             .insert(shareAudiences)
-            .values({ ownerId, kind, subjectId, audience })
+            .values({ ownerId, kind, subjectId, audience, groupId: groupRef })
             .returning({ id: shareAudiences.id });
           audienceId = inserted!.id;
         }

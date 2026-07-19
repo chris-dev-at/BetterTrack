@@ -65,6 +65,7 @@ beforeEach(() => {
     subjectId: IDEA_ID,
     audience: 'private',
     friendIds: [],
+    groupId: null,
     link: { active: false, createdAt: null },
   });
 });
