@@ -2614,6 +2614,17 @@
       "clone": "In meine Ideen klonen",
       "cloning": "Wird geklont…",
       "cloneError": "Diese Idee konnte nicht geklont werden."
+    },
+    "comments": {
+      "count": "{{count}} Kommentare",
+      "empty": "Noch keine Kommentare.",
+      "placeholder": "Kommentar hinzufügen…",
+      "post": "Senden",
+      "posting": "Wird gesendet…",
+      "delete": "Löschen",
+      "postError": "Kommentar konnte nicht gesendet werden.",
+      "itemReactionsLabel": "Auf dieses Element reagieren",
+      "commentReactionsLabel": "Auf diesen Kommentar reagieren"
     }
   },
   "profile": {

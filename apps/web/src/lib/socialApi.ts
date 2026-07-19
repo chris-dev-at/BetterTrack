@@ -4,12 +4,15 @@ import {
   audienceStateSchema,
   followersListResponseSchema,
   followingEntrySchema,
+  commentThreadResponseSchema,
+  createCommentResponseSchema,
   followingListResponseSchema,
   friendRequestListResponseSchema,
   itemFollowsListResponseSchema,
   friendsListResponseSchema,
   mySharedResponseSchema,
   okResponseSchema,
+  reactionListResponseSchema,
   profileSettingsResponseSchema,
   publicProfileResponseSchema,
   sharedConglomerateDetailResponseSchema,
@@ -20,7 +23,11 @@ import {
   type ActivityAlertState,
   type AudienceMutationResponse,
   type AudienceState,
+  type CommentThreadResponse,
+  type CreateCommentResponse,
   type CreateFriendRequestRequest,
+  type ReactionEmoji,
+  type ReactionListResponse,
   type FollowersListResponse,
   type FollowingEntry,
   type FollowingListResponse,
@@ -346,4 +353,69 @@ export async function getPublicProfileItem(
     { signal },
   );
   return sharedLinkResponseSchema.parse(data);
+}
+
+// --- Comments + reactions on shared items (§13.5 V5-P8) ----------------------
+
+const itemPath = (kind: ShareKind, subjectId: string): string =>
+  `/social/items/${encodeURIComponent(kind)}/${encodeURIComponent(subjectId)}`;
+
+/**
+ * `GET /social/items/:kind/:subjectId/thread` — the item's comment thread +
+ * item-level reactions. Only the item's current audience (a friend the owner
+ * shares with) or the owner can read it; anything else 404s. A public link is
+ * read-only and never reaches this.
+ */
+export async function getCommentThread(
+  kind: ShareKind,
+  subjectId: string,
+  signal?: AbortSignal,
+): Promise<CommentThreadResponse> {
+  const data = await apiRequest<unknown>(`${itemPath(kind, subjectId)}/thread`, { signal });
+  return commentThreadResponseSchema.parse(data);
+}
+
+/** `POST /social/items/:kind/:subjectId/comments` — post one comment. */
+export async function postComment(
+  kind: ShareKind,
+  subjectId: string,
+  body: string,
+): Promise<CreateCommentResponse> {
+  const data = await apiRequest<unknown>(`${itemPath(kind, subjectId)}/comments`, {
+    method: 'POST',
+    body: { body },
+  });
+  return createCommentResponseSchema.parse(data);
+}
+
+/** `DELETE /social/comments/:commentId` — author or item owner soft-deletes it. */
+export async function deleteComment(commentId: string): Promise<void> {
+  await apiRequest<unknown>(`/social/comments/${encodeURIComponent(commentId)}`, {
+    method: 'DELETE',
+  });
+}
+
+/** `POST /social/items/:kind/:subjectId/reactions` — toggle one curated emoji on the item. */
+export async function toggleItemReaction(
+  kind: ShareKind,
+  subjectId: string,
+  emoji: ReactionEmoji,
+): Promise<ReactionListResponse> {
+  const data = await apiRequest<unknown>(`${itemPath(kind, subjectId)}/reactions`, {
+    method: 'POST',
+    body: { emoji },
+  });
+  return reactionListResponseSchema.parse(data);
+}
+
+/** `POST /social/comments/:commentId/reactions` — toggle one curated emoji on a comment. */
+export async function toggleCommentReaction(
+  commentId: string,
+  emoji: ReactionEmoji,
+): Promise<ReactionListResponse> {
+  const data = await apiRequest<unknown>(
+    `/social/comments/${encodeURIComponent(commentId)}/reactions`,
+    { method: 'POST', body: { emoji } },
+  );
+  return reactionListResponseSchema.parse(data);
 }

@@ -272,6 +272,13 @@ const componentSchemas = {
   UpdateProfileSettingsRequest: contracts.updateProfileSettingsRequestSchema,
   PublicProfileResponse: contracts.publicProfileResponseSchema,
 
+  // Comments + reactions on shared items (§13.5 V5-P8)
+  CommentThreadResponse: contracts.commentThreadResponseSchema,
+  CreateCommentRequest: contracts.createCommentRequestSchema,
+  CreateCommentResponse: contracts.createCommentResponseSchema,
+  ToggleReactionRequest: contracts.toggleReactionRequestSchema,
+  ReactionListResponse: contracts.reactionListResponseSchema,
+
   // Friend chat (§13.3 V3-P8)
   ChatConversationListResponse: contracts.chatConversationListResponseSchema,
   OpenConversationRequest: contracts.openConversationRequestSchema,
@@ -2409,6 +2416,56 @@ const endpoints: EndpointDef[] = [
     params: contracts.profileItemParamSchema,
     status: 200,
     response: R.SharedLinkResponse,
+  },
+
+  // Comments + reactions on shared items (§13.5 V5-P8)
+  {
+    method: 'get',
+    path: '/social/items/{kind}/{subjectId}/thread',
+    tag: 'Social',
+    summary:
+      'A shared item’s comment thread + item-level reactions (audience-scoped; 404 when unauthorized).',
+    params: contracts.audienceParamSchema,
+    status: 200,
+    response: R.CommentThreadResponse,
+  },
+  {
+    method: 'post',
+    path: '/social/items/{kind}/{subjectId}/comments',
+    tag: 'Social',
+    summary: 'Post one comment on a shared item (visible to exactly the item’s audience).',
+    params: contracts.audienceParamSchema,
+    body: R.CreateCommentRequest,
+    status: 201,
+    response: R.CreateCommentResponse,
+  },
+  {
+    method: 'post',
+    path: '/social/items/{kind}/{subjectId}/reactions',
+    tag: 'Social',
+    summary: 'Toggle one curated emoji reaction on a shared item; returns the fresh aggregate.',
+    params: contracts.audienceParamSchema,
+    body: R.ToggleReactionRequest,
+    status: 200,
+    response: R.ReactionListResponse,
+  },
+  {
+    method: 'delete',
+    path: '/social/comments/{commentId}',
+    tag: 'Social',
+    summary: 'Soft-delete a comment — its author, or the item owner moderating any comment.',
+    params: contracts.commentIdParamSchema,
+    status: 204,
+  },
+  {
+    method: 'post',
+    path: '/social/comments/{commentId}/reactions',
+    tag: 'Social',
+    summary: 'Toggle one curated emoji reaction on a comment; returns the fresh aggregate.',
+    params: contracts.commentIdParamSchema,
+    body: R.ToggleReactionRequest,
+    status: 200,
+    response: R.ReactionListResponse,
   },
 
   // Friend chat (§13.3 V3-P8)

@@ -2614,6 +2614,17 @@
       "clone": "Clone to my ideas",
       "cloning": "Cloning…",
       "cloneError": "Couldn't clone this idea."
+    },
+    "comments": {
+      "count": "{{count}} comments",
+      "empty": "No comments yet.",
+      "placeholder": "Add a comment…",
+      "post": "Post",
+      "posting": "Posting…",
+      "delete": "Delete",
+      "postError": "Couldn’t post your comment.",
+      "itemReactionsLabel": "React to this item",
+      "commentReactionsLabel": "React to this comment"
     }
   },
   "profile": {
