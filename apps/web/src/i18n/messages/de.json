@@ -2785,7 +2785,44 @@
       "closeMenu": "Admin-Menü schließen",
       "problems": "Probleme",
       "featureFlags": "Feature-Flags",
-      "usageAnalytics": "Nutzungsanalyse"
+      "usageAnalytics": "Nutzungsanalyse",
+      "monitoring": "Monitoring"
+    },
+    "monitoring": {
+      "title": "Monitoring",
+      "subtitle": "Selbst-gehostete Metrik-Dashboards (Prometheus + Grafana) und wie sie erreichbar sind.",
+      "refresh": "Aktualisieren",
+      "loadError": "Der Monitoring-Status konnte nicht geladen werden.",
+      "actionError": "Der externe Zugriff konnte nicht geändert werden.",
+      "status": {
+        "title": "Stack-Status",
+        "grafana": "Grafana",
+        "prometheus": "Prometheus",
+        "reachable": "Erreichbar",
+        "unreachable": "Nicht erreichbar"
+      },
+      "prometheusNote": "Prometheus wird nie direkt exponiert — Grafana liest es intern.",
+      "access": {
+        "title": "Externer Zugriff",
+        "description": "Wie die Dashboards von außerhalb des LAN erreicht werden. Ausschließlich über einen authentifizierten Pfad — nie über einen offen zugänglichen Endpunkt.",
+        "effectiveOn": "Von außerhalb des LAN erreichbar (authentifiziert)",
+        "effectiveOff": "Nur localhost / LAN",
+        "deployEnabled": "In der Deploy-Konfiguration aktiviert",
+        "passwordSet": "Grafana-Admin-Passwort gesetzt",
+        "killSwitchOn": "Laufzeit-Schalter an",
+        "yes": "Ja",
+        "no": "Nein",
+        "enable": "Externen Zugriff aktivieren",
+        "disable": "Externen Zugriff deaktivieren",
+        "needsDeploy": "Externer Zugriff erfordert das Opt-in der Deploy-Konfiguration (BT_OBS_EXTERNAL_ACCESS) und ein Grafana-Admin-Passwort (BT_GRAFANA_ADMIN_PASSWORD). Bis beide gesetzt sind, bleiben die Dashboards nur über localhost/LAN erreichbar.",
+        "lastChanged": "Zuletzt geändert",
+        "never": "Nie geändert"
+      },
+      "embed": {
+        "open": "In neuem Tab öffnen",
+        "hidden": "Grafana ist nur über localhost/LAN erreichbar. Aktiviere den externen Zugriff, um es hier einzubetten.",
+        "frameTitle": "Grafana-Dashboards"
+      }
     },
     "security": {
       "title": "Sicherheit",

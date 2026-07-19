@@ -72,6 +72,8 @@ export const AuditAction = {
   AccountDefaultsUpdated: 'account_defaults.updated',
   /** Admin session lifetime changed (§13.5 V5-P13c). */
   AdminSessionPolicyUpdated: 'admin_session_policy.updated',
+  /** Monitoring external-access runtime kill-switch flipped (§13.5 V5-P2 arc (a)). */
+  MonitoringExternalAccessChanged: 'monitoring.external_access_changed',
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',

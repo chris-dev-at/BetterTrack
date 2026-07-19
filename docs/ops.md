@@ -274,7 +274,10 @@ artifact is a superset of that dump; once decrypted it's a normal
 Full monitoring ships **inside the deploy stack** — PROJECTPLAN.md §13.5 V5-P2
 arc (a), §16 (2026-07-17). **There is nothing to set up.** No external account,
 no SaaS console, no manual dashboard import: `docker compose up -d` in `infra/`
-starts two extra services that provision themselves.
+starts Prometheus, Grafana and the infra exporters (node / cAdvisor / postgres /
+redis), all self-provisioning. For the full picture — the exporters, the admin
+**Diagnostics** panel, and how to reach Grafana from **outside the LAN** through
+an authenticated path (owner directive 2026-07-19) — see **`docs/monitoring.md`**.
 
 ```
 ┌──────────────┐   scrape api:9464/metrics   ┌──────────────┐   query   ┌──────────┐
@@ -300,11 +303,14 @@ starts two extra services that provision themselves.
   BullMQ queue depth + job outcomes, provider calls, market cache hit rate, and
   websocket connections. Data persists in the `grafanadata` volume.
 
-### Exposure guarantee (localhost/LAN only)
+### Exposure guarantee (localhost/LAN by default)
 
-Neither service is ever reachable from a public origin. The owner decision
-(§16, 2026-07-17) is **localhost/LAN-only** — the admin panel is the only public
-management surface.
+By default neither service is reachable from a public origin — the §16
+(2026-07-17) posture is **localhost/LAN-only**. The owner later opted in
+(2026-07-19) to **also** reach Grafana from outside the LAN, but **only through
+an authenticated path** (admin-app proxy or an auth-gated subdomain), and never
+Prometheus. That opt-in is off by default and password-gated; see
+`docs/monitoring.md`. Everything below describes the default (unexposed) state.
 
 - The API metrics listener binds `0.0.0.0` **inside** the api container so
   Prometheus can scrape it, but its port is **never** published to a host port,

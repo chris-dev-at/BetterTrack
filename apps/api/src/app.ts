@@ -14,7 +14,13 @@ import { createMetricsMiddleware } from './http/middleware/metrics';
 import { createUsageCaptureMiddleware } from './http/middleware/usageCapture';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { requireFeature } from './http/middleware/featureFlag';
-import { enforcePasswordChange, loadSession, requireAdmin } from './http/middleware/session';
+import {
+  enforcePasswordChange,
+  loadSession,
+  requireAdmin,
+  requireAdminTwoFactor,
+} from './http/middleware/session';
+import { createGrafanaProxyMiddleware } from './http/grafanaProxy';
 import { createOpenApiRouter } from './http/openapi';
 import { createAccountRouter } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
@@ -89,6 +95,22 @@ export function createApp(ctx: AppContext) {
   // resolved principal and covers every /api/v1 router by default (§6.13).
   app.use('/api/v1', loadBearerAuth(ctx));
   app.use('/api/v1', loadSession(ctx));
+
+  // Admin-authenticated Grafana reverse proxy (§13.5 V5-P2 arc (a), owner
+  // 2026-07-19): the PRIMARY external-access path to the localhost/LAN-bound
+  // Grafana. Mounted here — after the session load, BEFORE the CSRF guard and
+  // general limiter — because Grafana's own POSTs carry no X-Requested-With and
+  // one embedded dashboard bursts many requests, so neither guard can sit in
+  // front. `requireAdmin` (404 to everyone else — no leak) + mandatory-2FA are
+  // the boundary; the per-request exposure gate (deploy + password + runtime
+  // kill-switch) lives inside the middleware. Prometheus is never proxied.
+  app.use(
+    '/api/v1/admin/monitoring/grafana',
+    requireAdmin,
+    requireAdminTwoFactor(ctx),
+    createGrafanaProxyMiddleware(ctx),
+  );
+
   app.use('/api/v1', limiters.general);
   app.use('/api/v1', limiters.apiKey);
   // The OAuth token endpoint is machine-to-machine (a partner backend, no cookie

@@ -107,6 +107,51 @@ describe('live deploy loop covers the whole app stack (guard 1)', () => {
   });
 });
 
+/**
+ * Observability stack boots on deploy (§13.5 V5-P2 arc (a), owner 2026-07-19).
+ *
+ * The compose already carried prometheus + grafana, but the live updater's fixed
+ * `up -d` list excluded them, so they never booted on the live box (#611). This
+ * guard pins the fix: prometheus, grafana and the infra exporters are PULLED
+ * images (no app code), so they belong in the final `up -d` list — so monitoring
+ * comes up on every deploy — but never in `dc build`. Adding a monitoring service
+ * to the compose without adding it to the up-list fails here.
+ */
+describe('live deploy loop boots the observability stack (guard 3)', () => {
+  const compose = parseComposeServices(read('infra/docker-compose.yml'));
+  const updater = read('infra/live/updater.sh');
+  const built = updaterServices(updater, /\bdc build ([a-z][\w -]*?)\s*>>/g);
+  const upped = updaterServices(updater, /\bdc up -d ([a-z][\w -]*?)\s*>>/g);
+
+  const MONITORING_SERVICES = [
+    'prometheus',
+    'grafana',
+    'node-exporter',
+    'cadvisor',
+    'postgres-exporter',
+    'redis-exporter',
+  ];
+
+  it('declares every monitoring service in the compose as a pulled (non-buildable) image', () => {
+    for (const service of MONITORING_SERVICES) {
+      expect(compose.all, `'${service}' must be a compose service`).toContain(service);
+      expect(
+        compose.buildable,
+        `'${service}' is a pulled image — it must NOT have a build block`,
+      ).not.toContain(service);
+    }
+  });
+
+  it('brings every monitoring service up on deploy, and never builds them', () => {
+    for (const service of MONITORING_SERVICES) {
+      expect(upped, `updater.sh must "dc up -d" the '${service}' service`).toContain(service);
+      expect(built, `updater.sh must NOT "dc build" the pulled '${service}' image`).not.toContain(
+        service,
+      );
+    }
+  });
+});
+
 describe('worker entry registers the durable notification consumer + bridge (guard 2)', () => {
   const workerEntry = read('apps/api/src/scripts/worker.ts');
 

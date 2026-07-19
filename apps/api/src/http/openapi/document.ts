@@ -125,6 +125,9 @@ const componentSchemas = {
   ProblemListResponse: contracts.problemListResponseSchema,
   // Admin usage analytics (§13.5 V5-P2 arc (b), first-party only)
   UsageAnalyticsResponse: contracts.usageAnalyticsResponseSchema,
+  // Admin monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19)
+  MonitoringStatusResponse: contracts.monitoringStatusResponseSchema,
+  UpdateMonitoringExternalAccessRequest: contracts.updateMonitoringExternalAccessRequestSchema,
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c))
   FeatureFlagsResponse: contracts.featureFlagsResponseSchema,
@@ -1406,6 +1409,23 @@ const endpoints: EndpointDef[] = [
     params: contracts.idParamSchema,
     status: 200,
     response: R.Problem,
+  },
+  {
+    method: 'get',
+    path: '/admin/monitoring/status',
+    tag: 'Admin',
+    summary: 'Grafana/Prometheus reachability + the external-access posture (Diagnostics panel).',
+    status: 200,
+    response: R.MonitoringStatusResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/monitoring/external-access',
+    tag: 'Admin',
+    summary: 'Flip the runtime kill-switch for admin-proxied external Grafana access.',
+    body: R.UpdateMonitoringExternalAccessRequest,
+    status: 200,
+    response: R.MonitoringStatusResponse,
   },
 
   // Workboard (§6.4, §13.3 V3-P5)

@@ -176,6 +176,30 @@ const envSchema = z.object({
   BT_METRICS_HOST: z.string().min(1).default('127.0.0.1'),
   BT_METRICS_PORT: z.coerce.number().int().positive().default(9464),
 
+  // ── Observability external access (§13.5 V5-P2 arc (a), owner 2026-07-19) ───
+  // The owner asked to reach Grafana from OUTSIDE the LAN too — but only through
+  // an authenticated path, never a raw-public endpoint. These drive the admin-
+  // proxied Grafana reverse proxy (`/api/v1/admin/monitoring/grafana`) and the
+  // admin Diagnostics status probe. Prometheus is NEVER proxied. Defaults are
+  // SAFE: external access is off and the surfaces stay localhost/LAN-only.
+  //
+  // The api reaches Grafana/Prometheus over the internal docker network by
+  // service name for the reachability probe (both) and the proxy upstream (Grafana).
+  BT_GRAFANA_INTERNAL_URL: z.string().url().default('http://grafana:3000'),
+  BT_PROMETHEUS_INTERNAL_URL: z.string().url().default('http://prometheus:9090'),
+  // Deploy-level external-access toggle. OFF (default) ⇒ the proxy refuses and
+  // the surfaces stay localhost/LAN-only exactly as before this arc.
+  BT_OBS_EXTERNAL_ACCESS: z.string().optional(),
+  // The Grafana admin password. The api reads it ONLY to gate external exposure
+  // (never retained on the resolved config, never logged, never sent to a
+  // client): exposure is refused while it is unset or left at a known
+  // placeholder, so the app never puts `admin/admin` on a public door.
+  BT_GRAFANA_ADMIN_PASSWORD: z.string().optional(),
+  // Optional explicit public Grafana URL for the auth-gated-subdomain path
+  // (e.g. https://grafana.bettertrack.at). When set the Diagnostics panel embeds
+  // it; when unset (the admin-proxy path) the client embeds the proxy path.
+  BT_GRAFANA_PUBLIC_URL: z.string().url().optional(),
+
   // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
   // Global kill-switch for the dividend/earnings/news/splits intel surfaces.
   // Default ON (Yahoo is keyless, so a stock deploy has the data): OFF ⇒ every
@@ -227,6 +251,21 @@ function boolFrom(value: string | undefined, dflt: boolean): boolean {
   if (value === undefined || value.trim() === '') return dflt;
   const v = value.trim().toLowerCase();
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Known-unsafe Grafana admin passwords that must NEVER count as "set" for the
+ * external-exposure gate: the image default and the `.env.*.example` placeholder.
+ * Treating these as unset keeps `admin/admin` (and an un-edited placeholder) off
+ * any public door (owner directive 2026-07-19).
+ */
+const UNSAFE_GRAFANA_PASSWORDS = new Set(['admin', 'change_me_before_first_boot']);
+
+function isUsableGrafanaPassword(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const trimmed = value.trim();
+  if (trimmed === '') return false;
+  return !UNSAFE_GRAFANA_PASSWORDS.has(trimmed.toLowerCase());
 }
 
 function stripTrailingSlash(origin: string): string {
@@ -408,6 +447,29 @@ export interface AppConfig {
     host: string;
     /** Dedicated port for the `/metrics` listener (default 9464). */
     port: number;
+  };
+  /**
+   * Observability external access (§13.5 V5-P2 arc (a), owner 2026-07-19). The
+   * self-provisioned Prometheus/Grafana stack stays localhost/LAN-only by
+   * default; these gate the admin-authenticated path that lets the owner reach
+   * Grafana from OUTSIDE the LAN — never a raw-public endpoint. Prometheus is
+   * never exposed.
+   */
+  observability: {
+    /** Internal URL the api reaches Grafana at (reachability probe + proxy upstream). */
+    grafanaInternalUrl: string;
+    /** Internal URL the api reaches Prometheus at (probe only — never proxied). */
+    prometheusInternalUrl: string;
+    /** Deploy-level external-access toggle; default false (safe, localhost/LAN-only). */
+    externalAccessEnabled: boolean;
+    /**
+     * Whether a USABLE Grafana admin password is set. Derived from
+     * `BT_GRAFANA_ADMIN_PASSWORD` presence (blank + the known placeholders count
+     * as unset); the raw value is intentionally NOT retained on the config.
+     */
+    grafanaPasswordSet: boolean;
+    /** Explicit public Grafana URL (auth-gated-subdomain path), else undefined. */
+    grafanaPublicUrl?: string;
   };
   /**
    * Market-intelligence surfaces (§13.5 V5-P5). `enabled` defaults to true;
@@ -622,6 +684,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       enabled: boolFrom(e.BT_METRICS_ENABLED, true),
       host: e.BT_METRICS_HOST,
       port: e.BT_METRICS_PORT,
+    },
+    observability: {
+      grafanaInternalUrl: stripTrailingSlash(e.BT_GRAFANA_INTERNAL_URL),
+      prometheusInternalUrl: stripTrailingSlash(e.BT_PROMETHEUS_INTERNAL_URL),
+      externalAccessEnabled: boolFrom(e.BT_OBS_EXTERNAL_ACCESS, false),
+      grafanaPasswordSet: isUsableGrafanaPassword(e.BT_GRAFANA_ADMIN_PASSWORD),
+      grafanaPublicUrl: e.BT_GRAFANA_PUBLIC_URL
+        ? stripTrailingSlash(e.BT_GRAFANA_PUBLIC_URL)
+        : undefined,
     },
     // V5-P5 kill-switch: default ON (Yahoo is keyless). OFF hides every intel
     // surface via the "unconfigured" endpoint shape without any provider change.

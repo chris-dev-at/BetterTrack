@@ -240,6 +240,14 @@ while true; do
         # build is near-free: same Dockerfile as api, so its layers come out of
         # the build cache. Guarded by
         # apps/api/src/__tests__/liveDeployTopology.test.ts.
+        #
+        # The observability stack (prometheus, grafana + the node/cadvisor/
+        # postgres/redis exporters, §13.5 V5-P2 arc (a)) is in the final `up -d`
+        # list too so monitoring boots on every deploy — but NOT in `dc build`:
+        # they are PULLED images, not app code, so there is nothing to build.
+        # Prometheus/Grafana bind to BT_OBS_BIND_HOST only; the exporters publish
+        # no host port at all (scraped over the internal network). Guarded by the
+        # same liveDeployTopology test.
         if git -C "$APP" reset --hard "$REMOTE" >>"$LOG" 2>&1 &&
           GIT_SHA="$(git -C "$APP" rev-parse HEAD 2>/dev/null || echo unknown)" &&
           GIT_BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" &&
@@ -248,7 +256,7 @@ while true; do
           dc up -d db redis >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/migrate.js >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/seed.js >>"$LOG" 2>&1 &&
-          dc up -d db redis api web worker landing >>"$LOG" 2>&1; then
+          dc up -d db redis api web worker landing prometheus grafana node-exporter cadvisor postgres-exporter redis-exporter >>"$LOG" 2>&1; then
           printf '%s\n' "$REMOTE" >"$DEPLOYED_SHA"
           log "update complete -> ${REMOTE}"
           deploy_ok

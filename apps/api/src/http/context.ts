@@ -114,6 +114,10 @@ import {
   type ProblemService,
 } from '../services/observability/problemService';
 import {
+  createMonitoringService,
+  type MonitoringService,
+} from '../services/observability/monitoringService';
+import {
   createConglomerateService,
   type ConglomerateService,
 } from '../services/conglomerate/conglomerateService';
@@ -378,6 +382,14 @@ export interface AppContext {
    */
   problems: ProblemService;
   /**
+   * Admin monitoring / diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19):
+   * Grafana + Prometheus reachability probe behind `/admin/monitoring/status`
+   * and the external-exposure gate the admin-proxied Grafana reverse proxy
+   * enforces. Prometheus is never proxied; the surfaces stay localhost/LAN-only
+   * unless the deploy + password + runtime kill-switch all permit external reach.
+   */
+  monitoring: MonitoringService;
+  /**
    * First-party admin usage analytics (§13.5 V5-P2 arc (b)): captures usage
    * signals off the request stream (no third-party trackers) and serves
    * DAU/WAU/MAU, feature counters, top assets and the registration funnel behind
@@ -510,6 +522,12 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // realtime gateway + the gated route guards below can consult it, and the
   // admin router + SPA-bootstrap route can list/advertise it. Default: all ON.
   const featureFlags = createFeatureFlagService({ repo: appSettingsRepo, redis, audit, logger });
+
+  // Admin monitoring / diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19):
+  // Grafana/Prometheus reachability probe + the external-exposure gate the
+  // admin-proxied Grafana reverse proxy enforces per request. Rides the same
+  // `app_settings` KV store for its runtime kill-switch (default on).
+  const monitoring = createMonitoringService({ config, repo: appSettingsRepo, audit, logger });
 
   // Typed domain event bus (§9, §4.5) — EPHEMERAL fan-out only (#368): realtime
   // pushes (bell, quotes, chat threads, presence-adjacent signals). Anything
@@ -1327,6 +1345,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     observability,
     health,
     problems,
+    monitoring,
     usageAnalytics,
     featureFlags,
   };
