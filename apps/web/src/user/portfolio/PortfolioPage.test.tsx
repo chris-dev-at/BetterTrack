@@ -850,3 +850,55 @@ describe('PortfolioPage — intraday 1D/1W dense curve (#556)', () => {
     );
   });
 });
+
+// ─── Recent-transactions source filter (V5-P0c + V5-P6b) ─────────────────────
+
+describe('PortfolioPage — recent-transactions source filter', () => {
+  beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('no filter when every row is manual (anti-bloat — chip does not earn its place)', async () => {
+    // The default TXNS fixture is all-manual; the chip must not appear.
+    renderPage();
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    expect(within(recent).queryByLabelText('Source')).not.toBeInTheDocument();
+  });
+
+  test('surfaces the standing-order badge and filters rows by source when the ledger mixes tags', async () => {
+    const standingOrderTxn = {
+      id: 't-so',
+      assetId: 'a1',
+      side: 'buy' as const,
+      quantity: 1,
+      price: 175,
+      fee: 0,
+      executedAt: '2024-06-15T00:00:00.000Z',
+      note: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
+      source: 'standing-order',
+      asset: STOCK.asset,
+    };
+    vi.mocked(listTransactions).mockResolvedValue({
+      items: [...TXNS.items, standingOrderTxn],
+      nextCursor: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    // Both the badge (auto-rendered on the row) and the select option surface
+    // "Standing order" — the pair is proof both the badge and the filter chip
+    // are on-screen.
+    expect(within(recent).getAllByText('Standing order').length).toBeGreaterThanOrEqual(2);
+    const filter = within(recent).getByLabelText('Source');
+
+    // Default "all sources" → both manual and standing-order rows visible.
+    expect(within(recent).getAllByText('AAPL')).toHaveLength(2);
+
+    await user.selectOptions(filter, 'standing-order');
+    // Only the standing-order row remains → one AAPL row.
+    await waitFor(() => expect(within(recent).getAllByText('AAPL')).toHaveLength(1));
+    // The manual-only HOUSE row is gone.
+    expect(within(recent).queryByText('HOUSE')).not.toBeInTheDocument();
+  });
+});

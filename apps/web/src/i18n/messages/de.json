@@ -2075,6 +2075,70 @@
       "sustainable": "Wird bei dieser Rate nie aufgebraucht.",
       "notComputable": "Mit diesen Werten nicht berechenbar.",
       "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)"
+    },
+    "standingOrders": {
+      "title": "Daueraufträge",
+      "subtitle": "Wiederkehrende Käufe und Cash-Bewegungen, die sich nach ihrem eigenen Zeitplan selbst buchen.",
+      "newOrder": "Neuer Dauerauftrag",
+      "loadError": "Deine Daueraufträge konnten nicht geladen werden. Bitte erneut versuchen.",
+      "emptyTitle": "Noch keine Daueraufträge",
+      "emptyDescription": "Richte einen wiederkehrenden Kauf oder ein monatliches Gehalt bzw. eine monatliche Abbuchung ein, damit alles automatisch verbucht wird.",
+      "emptyCta": "Ersten Dauerauftrag anlegen",
+      "kind": {
+        "buy-asset": "Asset kaufen",
+        "cash-add": "Cash hinzufügen",
+        "cash-deduct": "Cash abziehen"
+      },
+      "cadence": {
+        "daily": "Täglich",
+        "monthly": "Monatlich"
+      },
+      "status": {
+        "active": "Aktiv",
+        "paused": "Pausiert"
+      },
+      "list": {
+        "buyAmount": "Kaufe {{quantity}} × {{symbol}}",
+        "cashAdd": "Hinzufügen {{amount}}",
+        "cashDeduct": "Abziehen {{amount}}",
+        "cadenceDaily": "Täglich",
+        "cadenceMonthly": "Monatlich am {{day}}.",
+        "nextRun": "Nächste Ausführung: {{date}}",
+        "noNextRun": "Keine nächste Ausführung geplant.",
+        "endsOn": "Endet am {{date}}",
+        "pause": "Pausieren",
+        "pausing": "Pausiere…",
+        "resume": "Fortsetzen",
+        "resuming": "Setze fort…",
+        "deleteConfirm": "Löschen?",
+        "updateError": "Der Auftrag konnte nicht aktualisiert werden. Bitte erneut versuchen."
+      },
+      "dialog": {
+        "createTitle": "Neuer Dauerauftrag",
+        "editTitle": "Dauerauftrag bearbeiten",
+        "description": "Wähle, was gebucht werden soll und wie oft. Der tägliche Job verbucht das nächste fällige Ereignis automatisch.",
+        "kindGroupAria": "Auftragsart",
+        "portfolioLabel": "Portfolio",
+        "portfolioRequired": "Wähle zuerst ein Portfolio.",
+        "assetLabel": "Asset",
+        "assetPlaceholder": "Aktien, ETFs, Indizes suchen…",
+        "assetRequired": "Suche das zu kaufende Asset.",
+        "changeAsset": "Asset wechseln",
+        "amountLabelShares": "Menge (Stück)",
+        "amountLabelEur": "Betrag (€)",
+        "amountRequired": "Gib einen Betrag größer als null ein.",
+        "labelLabel": "Bezeichnung (optional)",
+        "labelPlaceholder": "Gehalt, Netflix, …",
+        "cadenceLabel": "Rhythmus",
+        "anchorDayLabel": "Tag im Monat",
+        "anchorDayInvalid": "Der Tag im Monat muss zwischen 1 und 31 liegen.",
+        "startDateLabel": "Startdatum",
+        "endDateLabel": "Enddatum (optional)",
+        "endBeforeStart": "Das Enddatum muss am oder nach dem Startdatum liegen.",
+        "scheduleImmutable": "Art, Asset und Zeitplan sind nach dem Anlegen fixiert. Zum Ändern bitte löschen und neu anlegen.",
+        "createSubmit": "Anlegen",
+        "saveError": "Der Dauerauftrag konnte nicht gespeichert werden. Bitte erneut versuchen."
+      }
     }
   },
   "assets": {
