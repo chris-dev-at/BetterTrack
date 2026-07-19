@@ -4,11 +4,29 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
+import { cloneElement, isValidElement } from 'react';
+
 import type {
   AnalyticsSeriesResponse,
   PortfolioListResponse,
   PortfolioResponse,
 } from '@bettertrack/contracts';
+
+// Recharts' ResponsiveContainer measures the DOM (0×0 under jsdom); hand its
+// child fixed dimensions so the projection chart renders without warnings.
+vi.mock('recharts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('recharts')>();
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: React.ReactNode }) =>
+      isValidElement(children)
+        ? cloneElement(children as React.ReactElement<Record<string, unknown>>, {
+            width: 600,
+            height: 320,
+          })
+        : children,
+  };
+});
 
 vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
@@ -19,8 +37,21 @@ vi.mock('../../lib/analyticsApi', () => ({
   getAnalyticsSeries: vi.fn(),
 }));
 
+// Preserve query keys + other exports the standing-orders surfaces import.
+vi.mock('../../lib/standingOrdersApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/standingOrdersApi')>()),
+  listStandingOrders: vi.fn(),
+}));
+
+vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/marketIntelApi')>()),
+  getPortfolioDividendProjection: vi.fn(),
+}));
+
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
+import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { ForecastPage } from './ForecastPage';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -97,15 +128,24 @@ beforeEach(() => {
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
   vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
+  vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
+  vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
+    available: false,
+    currency: 'EUR',
+    monthlyTotalEur: 0,
+    yearlyTotalEur: 0,
+    holdings: [],
+  });
 });
 
-test('the projection view slot renders with a clearly-marked empty state', async () => {
+test('the projection engine fills the net-worth projection slot', async () => {
   renderForecast();
   const heading = await screen.findByRole('heading', { name: 'Net-worth projection' });
   const section = heading.closest('section');
   expect(section).not.toBeNull();
-  // The slot carries the placeholder copy the projection engine will replace.
-  expect(within(section!).getByText(/lands here/i)).toBeInTheDocument();
+  // The engine (not a placeholder) fills the slot: its base series legend + stat.
+  expect(await within(section!).findByTestId('projection-series-base')).toBeInTheDocument();
+  expect(within(section!).getByText('Starting net worth')).toBeInTheDocument();
 });
 
 test('all four calculator cards render collapsed by default (anti-bloat)', async () => {

@@ -7,7 +7,7 @@ import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent } from '../../lib/format';
 import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import type { PortfolioSummary } from '@bettertrack/contracts';
-import { EmptyState, StatCard } from '../../ui';
+import { StatCard } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
 import {
@@ -20,14 +20,15 @@ import {
   type SavingsContributionInput,
   type WithdrawalHorizonInput,
 } from './calc';
+import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
 
 /**
  * Forecast tab (PROJECTPLAN.md §13.5 V5-P6b arc (c)). Two zones live in the
  * page:
- *   1. A clearly-marked slot where the projection view (dependent sibling
- *      issue) will land — rendered today as a designed empty state so deep
- *      links never 404 before that engine lands.
+ *   1. The net-worth projection view (arc (b), issue #596): a deterministic
+ *      client-side projection with per-factor toggles and local what-if
+ *      overlays ({@link ProjectionSection}).
  *   2. A compact calculator suite: compound-interest, savings-plan,
  *      dividend/yield, withdrawal-plan — each collapsed by default per the
  *      anti-bloat rule, each standalone AND pre-fillable from the current
@@ -499,18 +500,14 @@ export function ForecastPage() {
 
       <section
         aria-labelledby="forecast-projection-heading"
-        className="rounded-lg border border-dashed border-neutral-700 bg-neutral-900/30"
+        className="rounded-lg border border-neutral-800 bg-neutral-900/30"
       >
         <div className="border-b border-neutral-800 px-4 py-3">
           <h2 id="forecast-projection-heading" className="text-sm font-semibold text-neutral-200">
             {t('forecast.projection.title')}
           </h2>
         </div>
-        <EmptyState
-          icon="📈"
-          title={t('forecast.projection.placeholderTitle')}
-          description={t('forecast.projection.placeholderDescription')}
-        />
+        <ProjectionSection portfolios={portfolios} />
       </section>
 
       <StandingOrdersSection portfolios={portfolios} />

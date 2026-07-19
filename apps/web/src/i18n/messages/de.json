@@ -2018,8 +2018,42 @@
     "prefillFromPortfolio": "Aus meinem Portfolio übernehmen",
     "projection": {
       "title": "Vermögensprognose",
-      "placeholderTitle": "Die Prognoseansicht kommt hier hin.",
-      "placeholderDescription": "Netto-Vermögensverlauf mit Was-wäre-wenn-Plänen und fortgeführten Daueraufträgen — folgt in einem separaten Update."
+      "description": "Projizieren Sie Ihr Vermögen aus dem Portfoliowert, seiner historischen Rendite und Ihren Daueraufträgen — und legen Sie Was-wäre-wenn-Pläne darüber.",
+      "noPortfolioTitle": "Noch kein Portfolio für die Prognose",
+      "noPortfolioDescription": "Portfolio anlegen oder öffnen, um sein Vermögen fortzuschreiben.",
+      "horizonLabel": "Zeithorizont (Jahre)",
+      "horizonHint": "Zwischen 1 und 30 Jahren.",
+      "factorsLegend": "Faktoren",
+      "factor": {
+        "return": "Durchschnittliche Rendite",
+        "standingOrders": "Daueraufträge",
+        "dividends": "Erwartete Dividenden"
+      },
+      "returnWindowLabel": "Stichprobenzeitraum",
+      "returnPctLabel": "Renditesatz (%)",
+      "returnPctHint": "Aus Ihrer Historie ermittelt; zum Ausprobieren anpassbar.",
+      "window": {
+        "1Y": "1 J",
+        "3Y": "3 J",
+        "5Y": "5 J",
+        "Max": "Max"
+      },
+      "baseLabel": "Prognose",
+      "chartAria": "Prognostiziertes Vermögen im Zeitverlauf",
+      "startingLabel": "Aktuelles Vermögen",
+      "projectedLabel": "Prognose in {{years}} Jahren",
+      "whatIf": {
+        "title": "Was-wäre-wenn-Pläne",
+        "description": "Legen Sie eine hypothetische monatliche Investition darüber. Nur lokal — wird nie gespeichert.",
+        "add": "Was-wäre-wenn-Plan hinzufügen",
+        "empty": "Noch keine Was-wäre-wenn-Pläne. Fügen Sie einen hinzu, um ihn über die Prognose zu legen.",
+        "labelLabel": "Bezeichnung",
+        "defaultLabel": "Was-wäre-wenn {{n}}",
+        "monthlyLabel": "Monatlich (€)",
+        "returnLabel": "Rendite (%)",
+        "returnPlaceholder": "Basis",
+        "remove": "Entfernen"
+      }
     },
     "calculators": {
       "title": "Rechner",
