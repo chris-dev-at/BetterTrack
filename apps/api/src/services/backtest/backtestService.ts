@@ -5,11 +5,13 @@ import type {
   BacktestBenchmarkInput,
   BacktestBenchmarkKind,
   BacktestBenchmarkResult,
+  BacktestComparisonResponse,
   BacktestMode,
   BacktestPreviewPosition,
   BacktestPreviewRange,
   BacktestResponse,
   BacktestStats as BacktestStatsDto,
+  ComparisonMetrics,
   HistoryRange,
   PricePoint as ProviderPricePoint,
   RebalanceFrequency,
@@ -25,6 +27,7 @@ import {
   type BacktestResult,
   type BacktestStats,
 } from '../../domain/backtest';
+import { compareSeriesStats } from '../../domain/seriesStats';
 import { notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
@@ -107,6 +110,22 @@ export interface BacktestPreviewInput {
   rebalance?: RebalanceFrequency;
 }
 
+/**
+ * N-way conglomerate comparison input (§13.5 V5-P6): a set of the caller's own
+ * conglomerate ids (2–6, contract-capped) plus the same window/late-listing/
+ * rebalance knobs a single backtest takes. The FIRST id is the primary — its
+ * effective window is the shared axis every other series runs over (exactly as
+ * a V4-P7 benchmark runs over the primary basket's window). `baselineId`
+ * (default: the first id) chooses the delta reference only.
+ */
+export interface BacktestComparisonInput {
+  conglomerateIds: string[];
+  range: BacktestPreviewRange;
+  mode?: BacktestMode;
+  rebalance?: RebalanceFrequency;
+  baselineId?: string;
+}
+
 export interface BacktestServiceDeps {
   assetRepo: AssetRepository;
   conglomerateRepo: ConglomerateRepository;
@@ -126,6 +145,14 @@ interface ResolvedBenchmark {
   assets: BacktestAsset[];
 }
 
+/** One of the caller's conglomerates resolved to a runnable basket (V4-P7 / V5-P6). */
+interface ResolvedConglomerateBasket {
+  id: string;
+  name: string;
+  positions: Array<{ assetId: string; weight: number }>;
+  assets: BacktestAsset[];
+}
+
 export interface BacktestService {
   /**
    * Backtest an inline draft basket for the Builder live preview (§6.5),
@@ -138,6 +165,20 @@ export interface BacktestService {
     input: BacktestPreviewInput,
     opts?: { baseCurrency?: string },
   ): Promise<BacktestResponse>;
+
+  /**
+   * Compare 2–6 of the caller's own conglomerates on one shared window (§13.5
+   * V5-P6): each is run through the same engine as the primary (the first id),
+   * so every series' stats are apples-to-apples, and the response carries each
+   * series' base-100 curve, full stats and per-metric deltas vs `baselineId`.
+   * A conglomerate whose history does not cover the primary's window is a 422,
+   * the same outcome the V4-P7 overlay produced for a short benchmark.
+   */
+  runComparison(
+    userId: string,
+    input: BacktestComparisonInput,
+    opts?: { baseCurrency?: string },
+  ): Promise<BacktestComparisonResponse>;
 }
 
 /**
@@ -165,6 +206,30 @@ export function backtestPreviewCacheKey(
   });
   const hash = createHash('sha256').update(canonical).digest('hex');
   return `backtest:preview:${userId}:${hash}`;
+}
+
+/**
+ * Redis memo key for a comparison's **baseline-independent core** (the per-series
+ * backtests) — hash(orderedIds+range+mode+rebalance+base), namespaced by user id
+ * (§10). `baselineId` is deliberately NOT part of the key: it only selects the
+ * delta reference, so re-picking it hits the same cached backtests and just
+ * re-runs the cheap delta math. The id order IS part of the key — the first id
+ * defines the shared window, so `[A,B]` and `[B,A]` are different comparisons.
+ */
+export function backtestComparisonCacheKey(
+  userId: string,
+  input: BacktestComparisonInput,
+  baseCurrency: string,
+): string {
+  const canonical = JSON.stringify({
+    conglomerateIds: input.conglomerateIds,
+    range: input.range,
+    mode: input.mode ?? 'clip',
+    rebalance: input.rebalance ?? 'none',
+    baseCurrency,
+  });
+  const hash = createHash('sha256').update(canonical).digest('hex');
+  return `backtest:compare:${userId}:${hash}`;
 }
 
 export function createBacktestService(deps: BacktestServiceDeps): BacktestService {
@@ -223,6 +288,38 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
   }
 
   /**
+   * Resolve one of the caller's own conglomerates into a runnable basket
+   * (ownership enforced at query time → 404, no existence leak §10; an empty or
+   * unpriced basket is a 422). Shared by the V4-P7 benchmark path and the V5-P6
+   * N-way comparison so a conglomerate runs through the exact same pipeline in
+   * both — the "generalise, don't fork" mandate.
+   */
+  async function resolveConglomerateBasket(
+    userId: string,
+    conglomerateId: string,
+    providerRange: HistoryRange,
+  ): Promise<ResolvedConglomerateBasket> {
+    const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId);
+    if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+    if (detail.positions.length === 0) {
+      throw unprocessable(
+        `Conglomerate ${detail.name} has no positions to backtest.`,
+        'BACKTEST_UNAVAILABLE',
+      );
+    }
+    const assets: BacktestAsset[] = [];
+    for (const pos of detail.positions) {
+      assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
+    }
+    return {
+      id: detail.id,
+      name: detail.name,
+      positions: detail.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+      assets,
+    };
+  }
+
+  /**
    * Resolve the benchmark choice (V4-P7) into a runnable basket:
    *
    *  - `conglomerateId` — one of the CALLER's own conglomerates (ownership
@@ -239,24 +336,13 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     providerRange: HistoryRange,
   ): Promise<ResolvedBenchmark> {
     if ('conglomerateId' in choice) {
-      const detail = await conglomerateRepo.findByIdForOwner(userId, choice.conglomerateId);
-      if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
-      if (detail.positions.length === 0) {
-        throw unprocessable(
-          `Conglomerate ${detail.name} has no positions to backtest as a benchmark.`,
-          'BACKTEST_UNAVAILABLE',
-        );
-      }
-      const assets: BacktestAsset[] = [];
-      for (const pos of detail.positions) {
-        assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
-      }
+      const basket = await resolveConglomerateBasket(userId, choice.conglomerateId, providerRange);
       return {
         kind: 'conglomerate',
-        refId: detail.id,
-        label: detail.name,
-        positions: detail.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
-        assets,
+        refId: basket.id,
+        label: basket.name,
+        positions: basket.positions,
+        assets: basket.assets,
       };
     }
 
@@ -410,6 +496,194 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
       await redis.set(key, JSON.stringify(response), 'EX', PREVIEW_TTL_SECONDS);
       return response;
     },
+
+    async runComparison(userId, input, opts) {
+      const fx =
+        opts?.baseCurrency === undefined
+          ? currencyService
+          : currencyService.withBase(opts.baseCurrency);
+      const mode = input.mode ?? 'clip';
+      const rebalance = input.rebalance ?? 'none';
+      // The delta baseline is contract-guaranteed to be one of the ids (or the
+      // first when omitted); it steers only the deltas, never the window.
+      const baselineId = input.baselineId ?? input.conglomerateIds[0]!;
+
+      // The per-series backtests are baseline-independent, so they memoise under
+      // a key WITHOUT the baseline: re-picking the baseline hits this core and
+      // only the cheap delta math re-runs.
+      const key = backtestComparisonCacheKey(userId, input, fx.baseCurrency);
+      let core: ComparisonCore | null = null;
+      const cached = await redis.get(key);
+      if (cached) {
+        try {
+          core = JSON.parse(cached) as ComparisonCore;
+        } catch {
+          // Corrupt entry — fall through and recompute.
+        }
+      }
+      if (core === null) {
+        core = await computeComparisonCore(userId, input, fx, mode, rebalance);
+        await redis.set(key, JSON.stringify(core), 'EX', PREVIEW_TTL_SECONDS);
+      }
+
+      // Deltas vs the chosen baseline — pure domain math over the shared-window
+      // stats (compareSeriesStats preserves input order, so index i lines up
+      // with core.series[i]).
+      const comparison = compareSeriesStats(
+        core.series.map((s) => ({ id: s.conglomerateId, metrics: metricsFor(s.stats) })),
+        baselineId,
+      );
+
+      return {
+        startDate: core.startDate,
+        endDate: core.endDate,
+        baselineId,
+        mode: core.mode,
+        rebalance: core.rebalance,
+        series: core.series.map((s, i) => {
+          const d = comparison.series[i]!.deltas;
+          return {
+            conglomerateId: s.conglomerateId,
+            name: s.name,
+            series: s.series,
+            stats: s.stats,
+            deltas: {
+              totalReturnPct: d.totalReturnPct,
+              cagrPct: d.cagrPct,
+              maxDrawdownPct: d.maxDrawdownPct,
+              volatilityPct: d.volatilityPct,
+              bestDayPct: d.bestDayPct,
+              worstDayPct: d.worstDayPct,
+            },
+          };
+        }),
+      };
+    },
+  };
+
+  /**
+   * Run the baseline-independent core of a comparison: resolve every
+   * conglomerate (ownership-scoped, in request order), run the FIRST as the
+   * primary to fix the shared window, then run every other over that exact
+   * window with identical settings. A non-primary that can't cover the window
+   * is a 422 (the V4-P7 short-benchmark outcome). The primary's own clip notice
+   * is expected and never an error — it just means the window is shorter than
+   * requested.
+   */
+  async function computeComparisonCore(
+    userId: string,
+    input: BacktestComparisonInput,
+    fx: CurrencyService,
+    mode: BacktestMode,
+    rebalance: RebalanceFrequency,
+  ): Promise<ComparisonCore> {
+    const providerRange = PROVIDER_RANGE[input.range];
+
+    const baskets: ResolvedConglomerateBasket[] = [];
+    for (const id of input.conglomerateIds) {
+      baskets.push(await resolveConglomerateBasket(userId, id, providerRange));
+    }
+
+    const end = todayIso();
+    const primary = baskets[0]!;
+    const primaryStart =
+      input.range === 'MAX'
+        ? mode === 'clip'
+          ? commonStart(primary.assets)
+          : earliestStart(primary.assets)
+        : yearsBefore(end, RANGE_YEARS[input.range]);
+
+    let primaryResult: BacktestResult;
+    try {
+      primaryResult = await backtest({
+        positions: primary.positions,
+        assets: primary.assets,
+        range: { start: primaryStart, end },
+        converter: fx,
+        baseCurrency: fx.baseCurrency,
+        mode,
+        rebalance,
+      });
+    } catch (err) {
+      throw mapEngineError(err);
+    }
+
+    const window = { start: primaryResult.startDate, end: primaryResult.endDate };
+    const series: ComparisonCore['series'] = [
+      {
+        conglomerateId: primary.id,
+        name: primary.name,
+        series: primaryResult.series.map((p) => ({ date: p.date, value: p.value })),
+        stats: toStats(primaryResult.stats),
+      },
+    ];
+
+    for (let i = 1; i < baskets.length; i += 1) {
+      const basket = baskets[i]!;
+      let result: BacktestResult;
+      try {
+        result = await backtest({
+          positions: basket.positions,
+          assets: basket.assets,
+          range: window,
+          converter: fx,
+          baseCurrency: fx.baseCurrency,
+          mode,
+          rebalance,
+        });
+      } catch (err) {
+        throw mapEngineError(err);
+      }
+      if (result.notice !== null) {
+        throw unprocessable(
+          `Conglomerate ${basket.name} does not cover the comparison window — ${result.notice}.`,
+          'BACKTEST_UNAVAILABLE',
+        );
+      }
+      series.push({
+        conglomerateId: basket.id,
+        name: basket.name,
+        series: result.series.map((p) => ({ date: p.date, value: p.value })),
+        stats: toStats(result.stats),
+      });
+    }
+
+    return { startDate: window.start, endDate: window.end, mode, rebalance, series };
+  }
+}
+
+/**
+ * The baseline-independent core of a comparison (Redis-cached): the shared
+ * window + each conglomerate's base-100 series and full stats. Deltas are
+ * layered on per request against the caller's chosen baseline, so a baseline
+ * switch reuses this core.
+ */
+interface ComparisonCore {
+  startDate: string;
+  endDate: string;
+  mode: BacktestMode;
+  rebalance: RebalanceFrequency;
+  series: Array<{
+    conglomerateId: string;
+    name: string;
+    series: Array<{ date: string; value: number }>;
+    stats: BacktestStatsDto;
+  }>;
+}
+
+/**
+ * Flatten a wire `BacktestStats` to the comparison's numeric metric vector: the
+ * best/worst-day blocks collapse to their `returnPct` (the grid compares the
+ * magnitude; the date stays on the per-series `stats`).
+ */
+function metricsFor(stats: BacktestStatsDto): ComparisonMetrics {
+  return {
+    totalReturnPct: stats.totalReturnPct,
+    cagrPct: stats.cagrPct,
+    maxDrawdownPct: stats.maxDrawdownPct,
+    volatilityPct: stats.volatilityPct,
+    bestDayPct: stats.bestDay?.returnPct ?? null,
+    worstDayPct: stats.worstDay?.returnPct ?? null,
   };
 }
 

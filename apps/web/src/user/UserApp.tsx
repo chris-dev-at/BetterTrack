@@ -29,10 +29,10 @@ import { WorkboardPage } from './workboard/WorkboardPage';
 import {
   BacktestsPage,
   CalculatorsPage,
-  ComparisonsPage,
   WatchlistPage,
   WorkboardLayout,
 } from './workboard/WorkboardSection';
+import { ComparisonPage } from './workboard/ComparisonPage';
 import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
 import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
@@ -161,7 +161,7 @@ function UserShell() {
             <Route path="conglomerates/:id" element={<ConglomerateDetailPage />} />
             <Route path="backtests" element={<BacktestsPage />} />
             <Route path="calculators" element={<CalculatorsPage />} />
-            <Route path="comparisons" element={<ComparisonsPage />} />
+            <Route path="comparisons" element={<ComparisonPage />} />
             <Route path="ideas" element={<IdeasListPage />} />
             <Route path="ideas/:ideaId" element={<IdeaWorkboardPage />} />
           </Route>

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  compareSeriesStats,
   computeContributions,
   computeSeriesStats,
   deflateSeries,
   indexAveragePctPerYear,
   toPerformanceSeries,
+  COMPARISON_METRICS,
+  type ComparisonMetricVector,
+  type ComparisonSeriesInput,
   type ContributionInput,
   type SeriesStats,
   type StatSeriesPoint,
@@ -396,5 +400,123 @@ describe('computeContributions', () => {
 
     expect(rows.map((r) => r.contributionPct)).toEqual([0, 0]);
     expect(rows.map((r) => r.weight)).toEqual([0.5, 0.5]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compareSeriesStats — N-series deltas vs a chosen baseline (V5-P6)
+// ---------------------------------------------------------------------------
+
+/** A full stat vector; every metric non-null unless overridden. */
+function vec(over: Partial<ComparisonMetricVector> = {}): ComparisonMetricVector {
+  return Object.freeze({
+    totalReturnPct: 10,
+    cagrPct: 8,
+    maxDrawdownPct: -5,
+    volatilityPct: 12,
+    bestDayPct: 3,
+    worstDayPct: -4,
+    ...over,
+  });
+}
+
+function input(id: string, over: Partial<ComparisonMetricVector> = {}): ComparisonSeriesInput {
+  return Object.freeze({ id, metrics: vec(over) });
+}
+
+describe('compareSeriesStats — N-series deltas vs a chosen baseline (V5-P6)', () => {
+  it('for N=2 reproduces the V4-P7 basket−benchmark delta exactly (regression parity)', () => {
+    // The V4-P7 stats table renders `delta = basket − benchmark` per metric
+    // (BacktestPanel.statRows). The generalised math must produce the same
+    // numbers for two series with the first as the baseline.
+    const basket = input('basket', {
+      totalReturnPct: 15,
+      cagrPct: 11,
+      maxDrawdownPct: -8,
+      volatilityPct: 14,
+      bestDayPct: 4,
+      worstDayPct: -6,
+    });
+    const bench = input('bench', {
+      totalReturnPct: 9,
+      cagrPct: 7,
+      maxDrawdownPct: -5,
+      volatilityPct: 10,
+      bestDayPct: 3,
+      worstDayPct: -4,
+    });
+
+    const result = compareSeriesStats([basket, bench], 'basket');
+    const benchDeltas = result.series.find((s) => s.id === 'bench')!.deltas;
+
+    for (const metric of COMPARISON_METRICS) {
+      // basket − bench (equivalently bench − basket negated): the V4-P7 table
+      // shows basket's delta vs bench; here every series is delta'd vs the
+      // baseline, so bench's delta vs basket is the exact negation.
+      expect(benchDeltas[metric]).toBeCloseTo(bench.metrics[metric]! - basket.metrics[metric]!, 12);
+    }
+    // Concretely: total return 9 − 15 = −6.
+    expect(benchDeltas.totalReturnPct).toBeCloseTo(-6, 12);
+  });
+
+  it('the baseline series deltas against itself: every metric is 0', () => {
+    const result = compareSeriesStats([input('a'), input('b', { totalReturnPct: 20 })], 'a');
+    const baseline = result.series.find((s) => s.id === 'a')!;
+    expect(result.baselineId).toBe('a');
+    for (const metric of COMPARISON_METRICS) {
+      expect(baseline.deltas[metric]).toBe(0);
+    }
+  });
+
+  it('compares three series in one call, preserving input order', () => {
+    const result = compareSeriesStats(
+      [
+        input('x', { totalReturnPct: 10 }),
+        input('y', { totalReturnPct: 25 }),
+        input('z', { totalReturnPct: 5 }),
+      ],
+      'x',
+    );
+    expect(result.series.map((s) => s.id)).toEqual(['x', 'y', 'z']);
+    expect(result.series[1]!.deltas.totalReturnPct).toBeCloseTo(15, 12); // 25 − 10
+    expect(result.series[2]!.deltas.totalReturnPct).toBeCloseTo(-5, 12); // 5 − 10
+    // The stat vectors are echoed back untouched.
+    expect(result.series[1]!.metrics.totalReturnPct).toBe(25);
+  });
+
+  it('re-picking the baseline recomputes every delta against the new reference', () => {
+    const series = [
+      input('a', { totalReturnPct: 10 }),
+      input('b', { totalReturnPct: 25 }),
+      input('c', { totalReturnPct: 5 }),
+    ];
+    const vsA = compareSeriesStats(series, 'a');
+    const vsB = compareSeriesStats(series, 'b');
+
+    expect(vsA.series.find((s) => s.id === 'c')!.deltas.totalReturnPct).toBeCloseTo(-5, 12); // 5 − 10
+    expect(vsB.series.find((s) => s.id === 'c')!.deltas.totalReturnPct).toBeCloseTo(-20, 12); // 5 − 25
+    expect(vsB.series.find((s) => s.id === 'a')!.deltas.totalReturnPct).toBeCloseTo(-15, 12); // 10 − 25
+    expect(vsB.baselineId).toBe('b');
+  });
+
+  it('a null metric on either side yields a null delta (never a spurious 0)', () => {
+    const result = compareSeriesStats(
+      [input('base', { cagrPct: null }), input('other', { cagrPct: 8, volatilityPct: null })],
+      'base',
+    );
+    const other = result.series.find((s) => s.id === 'other')!.deltas;
+    expect(other.cagrPct).toBeNull(); // baseline side null
+    expect(other.volatilityPct).toBeNull(); // this side null
+    expect(other.totalReturnPct).toBe(0); // both present, equal → 0
+    // The baseline's own null metric stays null (null − null).
+    expect(result.series.find((s) => s.id === 'base')!.deltas.cagrPct).toBeNull();
+  });
+
+  it('rejects an empty set, an unknown baseline, and duplicate ids', () => {
+    expect(() => compareSeriesStats([], 'a')).toThrow(/at least one series/);
+    expect(() => compareSeriesStats([input('a'), input('b')], 'zzz')).toThrow(
+      /not among the series/,
+    );
+    expect(() => compareSeriesStats([input('a'), input('a')], 'a')).toThrow(/duplicate series id/);
   });
 });

@@ -2,10 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 
 import {
+  backtestComparisonResponseSchema,
   watchlistListResponseSchema,
   watchlistSharingResponseSchema,
   watchlistSummarySchema,
   workboardListResponseSchema,
+  type BacktestComparisonRequest,
+  type BacktestComparisonResponse,
   type WatchlistListResponse,
   type WatchlistSharingResponse,
   type WatchlistSummary,
@@ -17,6 +20,24 @@ import { ApiError, apiRequest } from './apiClient';
 
 /** Shared TanStack Query key for watchlist membership — one source of truth for invalidation. */
 export const WORKBOARD_QUERY_KEY = ['workboard'] as const;
+
+/** Query-key root for the N-way conglomerate comparison (§13.5 V5-P6). */
+export const CONGLOMERATE_COMPARE_QUERY_KEY = ['workboard', 'compare'] as const;
+
+/**
+ * `POST /backtest/compare` — overlay 2–6 of the caller's own conglomerates on
+ * one shared window (§13.5 V5-P6), returning each series' base-100 curve, full
+ * stats and per-metric deltas vs `baselineId`. The per-series backtests are
+ * memoised server-side independently of the baseline, so re-picking the
+ * baseline is a cheap recompute.
+ */
+export async function compareConglomerates(
+  body: BacktestComparisonRequest,
+  signal?: AbortSignal,
+): Promise<BacktestComparisonResponse> {
+  const data = await apiRequest<unknown>('/backtest/compare', { method: 'POST', body, signal });
+  return backtestComparisonResponseSchema.parse(data);
+}
 
 /** Query key for the caller's named watchlists (V3-P5). */
 export const WATCHLISTS_QUERY_KEY = ['workboard', 'watchlists'] as const;

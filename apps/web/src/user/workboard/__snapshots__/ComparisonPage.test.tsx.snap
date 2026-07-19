@@ -1,0 +1,354 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ComparisonPage > three conglomerates compare on one chart with a full stats grid (snapshot) 1`] = `
+<table
+  aria-label="Conglomerate comparison statistics"
+  class="w-full min-w-[36rem] text-sm"
+>
+  <thead>
+    <tr
+      class="border-b border-neutral-800 text-xs uppercase tracking-wide text-neutral-500"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium"
+        scope="col"
+      >
+        Metric
+      </th>
+      <th
+        class="px-3 py-2 text-right font-medium bg-sky-950/40"
+        scope="col"
+      >
+        <span
+          class="inline-flex items-center justify-end gap-1.5"
+        >
+          <span
+            aria-hidden="true"
+            class="inline-block size-2 rounded-full"
+            style="background-color: rgb(56, 189, 248);"
+          />
+          <span
+            class="normal-case text-neutral-200"
+          >
+            Alpha
+          </span>
+        </span>
+        <label
+          class="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400"
+        >
+          <input
+            aria-label="Use Alpha as the baseline"
+            checked=""
+            class="size-3 accent-sky-600"
+            name="comparison-baseline"
+            type="radio"
+          />
+          Baseline
+        </label>
+      </th>
+      <th
+        class="px-3 py-2 text-right font-medium"
+        scope="col"
+      >
+        <span
+          class="inline-flex items-center justify-end gap-1.5"
+        >
+          <span
+            aria-hidden="true"
+            class="inline-block size-2 rounded-full"
+            style="background-color: rgb(251, 191, 36);"
+          />
+          <span
+            class="normal-case text-neutral-200"
+          >
+            Beta
+          </span>
+        </span>
+        <label
+          class="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400"
+        >
+          <input
+            aria-label="Use Beta as the baseline"
+            class="size-3 accent-sky-600"
+            name="comparison-baseline"
+            type="radio"
+          />
+          Baseline
+        </label>
+      </th>
+      <th
+        class="px-3 py-2 text-right font-medium"
+        scope="col"
+      >
+        <span
+          class="inline-flex items-center justify-end gap-1.5"
+        >
+          <span
+            aria-hidden="true"
+            class="inline-block size-2 rounded-full"
+            style="background-color: rgb(52, 211, 153);"
+          />
+          <span
+            class="normal-case text-neutral-200"
+          >
+            Gamma
+          </span>
+        </span>
+        <label
+          class="mt-1 flex items-center justify-end gap-1 text-[0.65rem] font-normal normal-case text-neutral-400"
+        >
+          <input
+            aria-label="Use Gamma as the baseline"
+            class="size-3 accent-sky-600"
+            name="comparison-baseline"
+            type="radio"
+          />
+          Baseline
+        </label>
+      </th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Total return
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+      >
+        +10,00 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +25,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          +15,00 %
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +5,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          -5,00 %
+        </span>
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        CAGR
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+      >
+        +8,00 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +15,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          +7,00 %
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +4,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          -4,00 %
+        </span>
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Max drawdown
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+      >
+        -5,00 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -9,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          -4,00 %
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -3,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          +2,00 %
+        </span>
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Volatility (ann.)
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+      >
+        12,00 %
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        18,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          +6,00 %
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        9,00 %
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          -3,00 %
+        </span>
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Best day
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+      >
+        +3,00 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          01.03.2022
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +5,00 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          01.03.2022
+        </span>
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          +2,00 %
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        +2,00 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          01.03.2022
+        </span>
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          -1,00 %
+        </span>
+      </td>
+    </tr>
+    <tr
+      class="border-b border-neutral-800/60 last:border-b-0"
+    >
+      <th
+        class="px-3 py-2 text-left font-medium text-neutral-400"
+        scope="row"
+      >
+        Worst day
+      </th>
+      <td
+        class="px-3 py-2 text-right text-neutral-100 bg-sky-950/40"
+      >
+        -4,00 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          02.03.2022
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -7,00 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          02.03.2022
+        </span>
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          -3,00 %
+        </span>
+      </td>
+      <td
+        class="px-3 py-2 text-right text-neutral-100"
+      >
+        -2,00 %
+        <span
+          class="block text-xs text-neutral-500"
+        >
+          02.03.2022
+        </span>
+        <span
+          class="block text-xs text-neutral-400"
+        >
+          +2,00 %
+        </span>
+      </td>
+    </tr>
+  </tbody>
+</table>
+`;
