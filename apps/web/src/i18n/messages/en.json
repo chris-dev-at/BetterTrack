@@ -2018,8 +2018,42 @@
     "prefillFromPortfolio": "Prefill from my portfolio",
     "projection": {
       "title": "Net-worth projection",
-      "placeholderTitle": "The projection view lands here.",
-      "placeholderDescription": "Net-worth over time, with what-if plans and standing-orders continued — arrives in a follow-up."
+      "description": "Project your net worth forward from your portfolio value, its historical return and your standing orders — then overlay what-if plans.",
+      "noPortfolioTitle": "No portfolio to project yet",
+      "noPortfolioDescription": "Add or open a portfolio to project its net worth forward.",
+      "horizonLabel": "Horizon (years)",
+      "horizonHint": "Between 1 and 30 years.",
+      "factorsLegend": "Factors",
+      "factor": {
+        "return": "Average return",
+        "standingOrders": "Standing orders",
+        "dividends": "Projected dividends"
+      },
+      "returnWindowLabel": "Sampling window",
+      "returnPctLabel": "Return rate (%)",
+      "returnPctHint": "Sampled from your history; edit to explore.",
+      "window": {
+        "1Y": "1Y",
+        "3Y": "3Y",
+        "5Y": "5Y",
+        "Max": "Max"
+      },
+      "baseLabel": "Projection",
+      "chartAria": "Projected net worth over time",
+      "startingLabel": "Starting net worth",
+      "projectedLabel": "Projected in {{years}} years",
+      "whatIf": {
+        "title": "What-if plans",
+        "description": "Overlay a hypothetical monthly investment. Local only — never saved.",
+        "add": "Add what-if plan",
+        "empty": "No what-if plans yet. Add one to overlay it on the projection.",
+        "labelLabel": "Label",
+        "defaultLabel": "What-if {{n}}",
+        "monthlyLabel": "Monthly (€)",
+        "returnLabel": "Return (%)",
+        "returnPlaceholder": "Base",
+        "remove": "Remove"
+      }
     },
     "calculators": {
       "title": "Calculators",
