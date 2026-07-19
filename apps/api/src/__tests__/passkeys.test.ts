@@ -4,8 +4,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { eq } from 'drizzle-orm';
 
+import { twoFactorEnrollResponseSchema } from '@bettertrack/contracts';
+
 import * as schema from '../data/schema';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
+import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -282,6 +285,69 @@ describe('passkeys — re-auth gating on add + delete', () => {
     const res = await anon.get('/api/v1/auth/passkeys');
     expect(res.status).toBe(401);
   });
+
+  it('a fresh TOTP code is valid re-auth for a passkey mutation (2FA-enrolled account)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const created = await registerPasskey(agent, 'Laptop', 'cred-a', user.password);
+    expect(created.status).toBe(201);
+
+    // Enroll TOTP so the account has a second factor to re-auth with.
+    const enroll = await agent.post('/api/v1/auth/2fa/enroll').set(...XRW);
+    const { secret } = twoFactorEnrollResponseSchema.parse(enroll.body);
+    const confirm = await agent
+      .post('/api/v1/auth/2fa/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirm.status).toBe(200);
+
+    // A wrong code is rejected and deletes nothing.
+    const bad = await agent
+      .delete(`/api/v1/auth/passkeys/${created.body.id}`)
+      .set(...XRW)
+      .send({ code: '000000' });
+    expect(bad.status).toBe(401);
+    expect(bad.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+    expect((await agent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(1);
+
+    // A fresh TOTP code satisfies the same re-auth gate and deletes the passkey.
+    const ok = await agent
+      .delete(`/api/v1/auth/passkeys/${created.body.id}`)
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(ok.status).toBe(200);
+    expect((await agent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(0);
+  });
+
+  it("a passkey is owner-scoped: user B cannot rename or delete user A's passkey", async () => {
+    const alice = await harness.seedUser({ email: 'alice@bettertrack.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bettertrack.test', username: 'bob' });
+
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    const created = await registerPasskey(aliceAgent, 'Alice laptop', 'cred-alice', alice.password);
+    expect(created.status).toBe(201);
+
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    // Bob re-auths with HIS OWN (correct) password but targets Alice's passkey id.
+    // deleteForUser is userId-scoped, so it finds nothing for Bob → 404, never a
+    // cross-user delete.
+    const del = await bobAgent
+      .delete(`/api/v1/auth/passkeys/${created.body.id}`)
+      .set(...XRW)
+      .send({ password: bob.password });
+    expect(del.status).toBe(404);
+    expect(del.body.error.code).toBe('PASSKEY_NOT_FOUND');
+
+    // The same owner scoping guards rename (findByIdForUser is userId-scoped too).
+    const rename = await bobAgent
+      .patch(`/api/v1/auth/passkeys/${created.body.id}`)
+      .set(...XRW)
+      .send({ name: 'hijacked' });
+    expect(rename.status).toBe(404);
+
+    // Alice's passkey is untouched and still logs in.
+    expect((await loginWithPasskey(harness.app, 'cred-alice')).res.status).toBe(200);
+  });
 });
 
 describe('passkeys — login', () => {
@@ -400,6 +466,37 @@ describe('passkeys — login', () => {
 
     // …and is dead afterwards.
     expect((await loginWithPasskey(harness.app, 'cred-a')).res.status).toBe(401);
+  });
+
+  it('refuses a passkey login once the account is promoted to admin (user-kind only)', async () => {
+    const user = await harness.seedUser();
+    const setup = await loginAgent(harness.app, user.email, user.password);
+    expect((await registerPasskey(setup, 'Laptop', 'cred-a', user.password)).status).toBe(201);
+
+    // The credential logs in fine while the account is user-kind.
+    expect((await loginWithPasskey(harness.app, 'cred-a')).res.status).toBe(200);
+
+    // An admin promotes the account; the passkey rows survive the role change.
+    await harness.db
+      .update(schema.users)
+      .set({ role: 'admin' })
+      .where(eq(schema.users.id, user.id));
+
+    // Passkeys are user-kind end to end: the public endpoint must NOT mint an
+    // admin session with no 2FA presented (which would defeat the mandatory
+    // admin-2FA-at-login gate). It refuses like an unavailable account + audits it.
+    const { res } = await loginWithPasskey(harness.app, 'cred-a');
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('PASSKEY_VERIFICATION_FAILED');
+
+    const audits = await harness.db.select().from(schema.auditLog);
+    const refusal = audits.find(
+      (a) =>
+        a.action === 'passkey.login_fail' &&
+        a.targetId === user.id &&
+        (a.meta as { reason?: string } | null)?.reason === 'role_not_user',
+    );
+    expect(refusal).toBeTruthy();
   });
 });
 

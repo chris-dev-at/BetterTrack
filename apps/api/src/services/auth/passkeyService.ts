@@ -112,6 +112,8 @@ export interface PasskeyService {
    * Finish a passkey login: verify the assertion against the single-use challenge,
    * reject a cloned-authenticator counter regression, and — treating a
    * user-verified assertion as strong auth — issue a session with no 2FA step (§16).
+   * User-kind only: a non-`user` role is refused like an unavailable account, so
+   * this path never mints an admin session outside the mandatory admin-2FA gate.
    */
   finishLogin(body: PasskeyLoginVerifyRequest, ip?: string | null): Promise<PasskeyLoginResult>;
 }
@@ -391,6 +393,23 @@ export function createPasskeyService(deps: PasskeyServiceDeps): PasskeyService {
           targetId: passkey.userId,
           ip,
           meta: { reason: 'account_unavailable' },
+        });
+        throw invalidPasskey();
+      }
+
+      // Passkeys are user-kind end to end (§16): management is requireUser-gated
+      // and admin-app passkeys are out of scope. If an account was promoted to
+      // admin after enrolling a passkey, its surviving credential must NOT mint a
+      // session here — a passkey login raises no 2FA challenge, so that would hand
+      // out an admin session with no factor presented and defeat the mandatory
+      // admin-2FA-at-login gate (#400). Refuse it like an unavailable account.
+      if (user.role !== 'user') {
+        await audit.record({
+          action: AuditAction.PasskeyLoginFail,
+          targetType: 'user',
+          targetId: user.id,
+          ip,
+          meta: { reason: 'role_not_user' },
         });
         throw invalidPasskey();
       }
