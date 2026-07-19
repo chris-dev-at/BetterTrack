@@ -18,6 +18,7 @@ import { LoginPage } from './auth/LoginPage';
 import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
+import { ForecastPage } from './forecast/ForecastPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
@@ -165,6 +166,9 @@ function UserShell() {
             <Route path="ideas" element={<IdeasListPage />} />
             <Route path="ideas/:ideaId" element={<IdeaWorkboardPage />} />
           </Route>
+
+          {/* ── Forecast (§13.5 V5-P6b arc (c)) ── */}
+          <Route path="forecast" element={<ForecastPage />} />
 
           {/* ── Assets ── */}
           <Route path="assets" element={<AssetsLayout />}>

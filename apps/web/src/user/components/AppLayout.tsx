@@ -20,6 +20,7 @@ import { cx } from './ui';
 const NAV_ITEMS = [
   { to: '/portfolio', labelKey: 'nav.portfolio' },
   { to: '/workboard', labelKey: 'nav.workboard' },
+  { to: '/forecast', labelKey: 'nav.forecast' },
   { to: '/assets', labelKey: 'nav.assets' },
   { to: '/social', labelKey: 'nav.social' },
 ] as const;

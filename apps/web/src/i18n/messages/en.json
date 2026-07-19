@@ -286,6 +286,7 @@
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workboard",
+    "forecast": "Forecast",
     "assets": "Assets",
     "social": "Social",
     "primary": "Primary",
@@ -2009,6 +2010,71 @@
         "ariaLabel": "Conglomerate comparison statistics",
         "metric": "Metric"
       }
+    }
+  },
+  "forecast": {
+    "title": "Forecast",
+    "subtitle": "Project your portfolio forward and run the number quickly.",
+    "prefillFromPortfolio": "Prefill from my portfolio",
+    "projection": {
+      "title": "Net-worth projection",
+      "placeholderTitle": "The projection view lands here.",
+      "placeholderDescription": "Net-worth over time, with what-if plans and standing-orders continued — arrives in a follow-up."
+    },
+    "calculators": {
+      "title": "Calculators",
+      "description": "Standalone tools, each pre-fillable from your portfolio.",
+      "prefillUnavailable": "Add or open a portfolio to enable prefill. The calculators still run with the fields you type."
+    },
+    "compound": {
+      "title": "Compound interest",
+      "summary": "Grow a lump sum with recurring contributions.",
+      "principal": "Starting principal (€)",
+      "monthlyContribution": "Monthly contribution (€)",
+      "ratePct": "Annual return (%)",
+      "years": "Years",
+      "compoundingPerYear": "Compounding steps per year",
+      "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily.",
+      "finalBalance": "Final balance",
+      "totalContributions": "Total contributions",
+      "totalInterest": "Total interest"
+    },
+    "savings": {
+      "title": "Savings plan",
+      "summary": "What monthly contribution reaches your target.",
+      "target": "Target (€)",
+      "principal": "Starting principal (€)",
+      "ratePct": "Annual return (%)",
+      "years": "Years",
+      "compoundingPerYear": "Compounding steps per year",
+      "compoundingHint": "1 = yearly, 12 = monthly, 365 = daily.",
+      "monthlyContribution": "Required monthly contribution",
+      "feasible": "Reachable"
+    },
+    "dividend": {
+      "title": "Dividend / yield projection",
+      "summary": "Project a payout stream from today's yield.",
+      "positionValue": "Position value (€)",
+      "yieldPct": "Current dividend yield (%)",
+      "growthPct": "Annual dividend growth (%)",
+      "years": "Years",
+      "totalDividends": "Total dividends",
+      "firstYear": "Year 1 dividend",
+      "yieldOnCostFinal": "Yield on cost, final year"
+    },
+    "withdrawal": {
+      "title": "Withdrawal plan",
+      "summary": "How long a balance lasts at a given monthly draw.",
+      "balance": "Starting balance (€)",
+      "monthlyWithdrawal": "Monthly withdrawal (€)",
+      "annualReturnPct": "Expected annual return (%)",
+      "horizonLabel": "Depletion horizon",
+      "statusLabel": "Status",
+      "statusSustainable": "Sustainable",
+      "statusDepletes": "Depletes",
+      "sustainable": "Never depletes at this rate.",
+      "notComputable": "Not computable with these inputs.",
+      "monthsValue": "≈ {{months}} months (≈ {{years}} years)"
     }
   },
   "assets": {

@@ -286,6 +286,7 @@
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workboard",
+    "forecast": "Prognose",
     "assets": "Anlagen",
     "social": "Sozial",
     "primary": "Primär",
@@ -2009,6 +2010,71 @@
         "ariaLabel": "Vergleichsstatistiken der Konglomerate",
         "metric": "Kennzahl"
       }
+    }
+  },
+  "forecast": {
+    "title": "Prognose",
+    "subtitle": "Projizieren Sie Ihr Portfolio in die Zukunft und rechnen Sie schnell nach.",
+    "prefillFromPortfolio": "Aus meinem Portfolio übernehmen",
+    "projection": {
+      "title": "Vermögensprognose",
+      "placeholderTitle": "Die Prognoseansicht kommt hier hin.",
+      "placeholderDescription": "Netto-Vermögensverlauf mit Was-wäre-wenn-Plänen und fortgeführten Daueraufträgen — folgt in einem separaten Update."
+    },
+    "calculators": {
+      "title": "Rechner",
+      "description": "Eigenständige Werkzeuge, jeweils aus dem Portfolio vorbefüllbar.",
+      "prefillUnavailable": "Portfolio anlegen oder öffnen, um das Vorbefüllen zu aktivieren. Die Rechner laufen weiterhin mit den eingegebenen Werten."
+    },
+    "compound": {
+      "title": "Zinseszins",
+      "summary": "Einen Grundbetrag mit regelmäßigen Einzahlungen wachsen lassen.",
+      "principal": "Startkapital (€)",
+      "monthlyContribution": "Monatlicher Sparbetrag (€)",
+      "ratePct": "Jährliche Rendite (%)",
+      "years": "Jahre",
+      "compoundingPerYear": "Verzinsungsschritte pro Jahr",
+      "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich.",
+      "finalBalance": "Endwert",
+      "totalContributions": "Gesamte Einzahlungen",
+      "totalInterest": "Gesamte Zinsen"
+    },
+    "savings": {
+      "title": "Sparplan",
+      "summary": "Welcher Monatsbetrag erreicht Ihr Ziel?",
+      "target": "Ziel (€)",
+      "principal": "Startkapital (€)",
+      "ratePct": "Jährliche Rendite (%)",
+      "years": "Jahre",
+      "compoundingPerYear": "Verzinsungsschritte pro Jahr",
+      "compoundingHint": "1 = jährlich, 12 = monatlich, 365 = täglich.",
+      "monthlyContribution": "Benötigter Monatsbetrag",
+      "feasible": "Erreichbar"
+    },
+    "dividend": {
+      "title": "Dividenden / Rendite",
+      "summary": "Ausschüttungsstrom aus der heutigen Rendite projizieren.",
+      "positionValue": "Positionswert (€)",
+      "yieldPct": "Aktuelle Dividendenrendite (%)",
+      "growthPct": "Jährliches Dividendenwachstum (%)",
+      "years": "Jahre",
+      "totalDividends": "Gesamte Dividenden",
+      "firstYear": "Dividende im 1. Jahr",
+      "yieldOnCostFinal": "Rendite auf Einstandskurs, Endjahr"
+    },
+    "withdrawal": {
+      "title": "Entnahmeplan",
+      "summary": "Wie lange reicht ein Kapitalstock bei fester Monatsentnahme.",
+      "balance": "Startkapital (€)",
+      "monthlyWithdrawal": "Monatliche Entnahme (€)",
+      "annualReturnPct": "Erwartete Jahresrendite (%)",
+      "horizonLabel": "Reichweite bis zur Erschöpfung",
+      "statusLabel": "Status",
+      "statusSustainable": "Tragfähig",
+      "statusDepletes": "Wird aufgebraucht",
+      "sustainable": "Wird bei dieser Rate nie aufgebraucht.",
+      "notComputable": "Mit diesen Werten nicht berechenbar.",
+      "monthsValue": "≈ {{months}} Monate (≈ {{years}} Jahre)"
     }
   },
   "assets": {
