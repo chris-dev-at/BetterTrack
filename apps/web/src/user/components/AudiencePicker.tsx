@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { SHARE_AUDIENCES, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
 
-import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
+import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { Avatar } from './Avatar';
 import { Dialog } from './Dialog';
@@ -66,6 +66,15 @@ function TierIcon({ audience, className }: { audience: ShareAudience; className?
           <path d="M17 20a5.5 5.5 0 0 0-2.5-4.6" />
         </svg>
       );
+    case 'group':
+      return (
+        <svg {...common}>
+          <circle cx="8" cy="9" r="2.6" />
+          <circle cx="16" cy="9" r="2.6" />
+          <path d="M3.5 19a4.5 4.5 0 0 1 9 0" />
+          <path d="M11.5 19a4.5 4.5 0 0 1 9 0" />
+        </svg>
+      );
     case 'all_friends':
       return (
         <svg {...common}>
@@ -119,9 +128,14 @@ export function AudiencePicker({
     queryKey: ['social', 'friends'],
     queryFn: ({ signal }) => listFriends(signal),
   });
+  const groupsQuery = useQuery({
+    queryKey: ['social', 'groups'],
+    queryFn: ({ signal }) => listGroups(signal),
+  });
 
   const [selected, setSelected] = useState<ShareAudience | null>(null);
   const [friendIds, setFriendIds] = useState<Set<string>>(new Set());
+  const [groupId, setGroupId] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [mintedUrl, setMintedUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -133,12 +147,16 @@ export function AudiencePicker({
   if (selected === null && loaded && friendIds.size === 0 && loaded.friendIds.length > 0) {
     setFriendIds(new Set(loaded.friendIds));
   }
+  if (selected === null && groupId === null && loaded?.groupId) {
+    setGroupId(loaded.groupId);
+  }
 
   const mutation = useMutation({
     mutationFn: () =>
       setAudience(kind, subjectId, {
         audience,
         friendIds: audience === 'specific_friends' ? [...friendIds] : undefined,
+        groupId: audience === 'group' ? (groupId ?? undefined) : undefined,
         acknowledgePublic: audience === 'public_link' ? acknowledged : undefined,
       }),
     onSuccess: (result) => {
@@ -188,7 +206,12 @@ export function AudiencePicker({
     }
   }
 
-  const canSubmit = !mutation.isPending && !(audience === 'public_link' && !acknowledged);
+  const groups = groupsQuery.data?.groups ?? [];
+  const canSubmit =
+    !mutation.isPending &&
+    !(audience === 'public_link' && !acknowledged) &&
+    // The group tier's friction: a group must actually be chosen to share.
+    !(audience === 'group' && !groupId);
 
   // Once a link is minted we show it (hash-only storage → shown exactly once).
   if (mintedUrl) {
@@ -351,6 +374,57 @@ export function AudiencePicker({
                     })}
                   </ul>
                 )}
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {audience === 'group' ? (
+          <div className="flex flex-col gap-2">
+            {groups.length === 0 ? (
+              <p className="text-sm text-neutral-500">{t('sharing.groupsNone')}</p>
+            ) : (
+              <>
+                <ul className="flex max-h-56 flex-col gap-1 overflow-y-auto pr-1">
+                  {groups.map((g) => {
+                    const checked = groupId === g.id;
+                    return (
+                      <li key={g.id}>
+                        <label
+                          className={cx(
+                            'flex cursor-pointer items-center gap-3 rounded-lg border p-2 transition-colors',
+                            checked
+                              ? 'border-sky-500/60 bg-sky-500/10'
+                              : 'border-transparent hover:bg-neutral-800',
+                          )}
+                        >
+                          <input
+                            type="radio"
+                            name="group"
+                            className="sr-only"
+                            checked={checked}
+                            onChange={() => setGroupId(g.id)}
+                          />
+                          <span className="flex-1 truncate text-sm text-neutral-200">{g.name}</span>
+                          <span className="shrink-0 text-xs text-neutral-500">
+                            {t('sharing.groupMemberCount', { count: g.memberCount })}
+                          </span>
+                          <span
+                            className={cx(
+                              'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border',
+                              checked
+                                ? 'border-sky-400 bg-sky-500 text-white'
+                                : 'border-neutral-600 text-transparent',
+                            )}
+                          >
+                            <CheckIcon className="h-3 w-3" />
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <Alert tone="info">{t('sharing.groupConfirm')}</Alert>
               </>
             )}
           </div>

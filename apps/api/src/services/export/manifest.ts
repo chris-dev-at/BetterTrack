@@ -152,6 +152,17 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   item_reactions: skipped(
     'Emoji reactions on shared items and comments (social interaction content); export coverage lands with a later export sweep.',
   ),
+  // V5-P8 friend groups: user-owned named circles + their rosters, used only as a
+  // sharing audience. Whom a share reaches is already exported via share_audiences
+  // (the group_id reference); the circle DEFINITIONS are owner-owned config whose
+  // own export coverage lands with a later export sweep (mirrors item_comments /
+  // standing_orders).
+  friend_groups: skipped(
+    'Friend-group definitions (user-owned circle config used as a sharing audience); export coverage lands with a later export sweep.',
+  ),
+  friend_group_members: skipped(
+    'Friend-group rosters (membership of a user-owned circle); export coverage lands with a later export sweep.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */

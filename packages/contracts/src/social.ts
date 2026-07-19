@@ -537,6 +537,12 @@ export const audienceStateSchema = z
     subjectId: z.string().uuid(),
     audience: shareAudienceSchema,
     friendIds: z.array(z.string().uuid()),
+    /**
+     * The referenced friend group's id — populated only for the `group`
+     * audience, and `null` for every other rung (and for a `group` share whose
+     * group has since been deleted, which resolves to nobody, §6.9).
+     */
+    groupId: z.string().uuid().nullable(),
     link: shareLinkStateSchema,
   })
   .strict();
@@ -553,6 +559,13 @@ export const setAudienceRequestSchema = z
   .object({
     audience: shareAudienceSchema,
     friendIds: z.array(z.string().uuid()).max(1000).optional(),
+    /**
+     * The friend group to share with — REQUIRED (and honoured) only for the
+     * `group` audience; the server 404s a group the caller does not own. The
+     * share tracks the group's live membership, so editing the circle later
+     * changes who sees this item (§13.5 V5-P8).
+     */
+    groupId: z.string().uuid().optional(),
     acknowledgePublic: z.boolean().optional(),
   })
   .strict();
@@ -577,6 +590,57 @@ export const audienceParamSchema = z
   .object({ kind: shareKindSchema, subjectId: z.string().uuid() })
   .strict();
 export type AudienceParam = z.infer<typeof audienceParamSchema>;
+
+// --- Friend groups (V5-P8): named circles usable as a sharing audience --------
+
+/** A friend group's display name — short, single-line (owner-facing only). */
+export const FRIEND_GROUP_NAME_MAX = 60;
+export const friendGroupNameSchema = z.string().trim().min(1).max(FRIEND_GROUP_NAME_MAX);
+
+/**
+ * One of the caller's friend groups (§13.5 V5-P8). A group is owned by exactly
+ * one user, its members are a subset of the owner's accepted friends, and it is
+ * private to the owner — nobody else can see or use it. `members` is the current
+ * roster (the same live set a `group` audience resolves against); `memberCount`
+ * is a convenience for the picker's preview.
+ */
+export const friendGroupSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    memberCount: z.number().int().nonnegative(),
+    members: z.array(friendUserSchema),
+  })
+  .strict();
+export type FriendGroup = z.infer<typeof friendGroupSchema>;
+
+/** `GET /social/groups` response — the caller's own friend groups. */
+export const friendGroupListResponseSchema = z
+  .object({ groups: z.array(friendGroupSchema) })
+  .strict();
+export type FriendGroupListResponse = z.infer<typeof friendGroupListResponseSchema>;
+
+/** `POST /social/groups` body — create a named group (empty roster). */
+export const createFriendGroupRequestSchema = z.object({ name: friendGroupNameSchema }).strict();
+export type CreateFriendGroupRequest = z.infer<typeof createFriendGroupRequestSchema>;
+
+/** `PATCH /social/groups/:groupId` body — rename a group. */
+export const renameFriendGroupRequestSchema = z.object({ name: friendGroupNameSchema }).strict();
+export type RenameFriendGroupRequest = z.infer<typeof renameFriendGroupRequestSchema>;
+
+/** `POST /social/groups/:groupId/members` body — add one accepted friend. */
+export const addGroupMemberRequestSchema = z.object({ userId: z.string().uuid() }).strict();
+export type AddGroupMemberRequest = z.infer<typeof addGroupMemberRequestSchema>;
+
+/** Route param for a single group. */
+export const groupIdParamSchema = z.object({ groupId: z.string().uuid() }).strict();
+export type GroupIdParam = z.infer<typeof groupIdParamSchema>;
+
+/** Route params for a single group member. */
+export const groupMemberParamSchema = z
+  .object({ groupId: z.string().uuid(), userId: z.string().uuid() })
+  .strict();
+export type GroupMemberParam = z.infer<typeof groupMemberParamSchema>;
 
 /**
  * `GET /social/links/:token` — the UNAUTHENTICATED public-link read view (§14).

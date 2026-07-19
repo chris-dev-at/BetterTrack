@@ -26,6 +26,7 @@ import {
 } from '../data/repositories/idempotencyKeyRepository';
 import { createProfileRepository } from '../data/repositories/profileRepository';
 import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
+import { createFriendGroupRepository } from '../data/repositories/friendGroupRepository';
 import { createIdentityRepository } from '../data/repositories/identityRepository';
 import { createInviteRepository } from '../data/repositories/inviteRepository';
 import { createRegistrationRequestRepository } from '../data/repositories/registrationRequestRepository';
@@ -516,6 +517,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Public-profile settings + per-viewer activity-alert prefs (§6.9, §14, V3-P6).
   const profileRepo = createProfileRepository(db);
   const shareAudienceRepo = createShareAudienceRepository(db);
+  // Friend groups (§13.5 V5-P8): named circles usable as a `group` sharing
+  // audience. Shared by the social service (group CRUD + unfriend cleanup) and
+  // the audience layer (ownership validation + live-roster resolution).
+  const friendGroupRepo = createFriendGroupRepository(db);
   // Comments + reactions on shared items (§13.5 V5-P8) — polymorphic threads
   // authorized entirely through the audience layer below.
   const itemCommentRepo = createItemCommentRepository(db);
@@ -650,6 +655,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const audience = createAudienceService({
     repo: shareAudienceRepo,
     friendship: friendshipRepo,
+    groups: friendGroupRepo,
     follows: userFollowsRepo,
     itemFollows: itemFollowsRepo,
     // Gates `follow.published` on a live public profile — the deep link's target (#438).
@@ -998,6 +1004,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Emits friend.request / friend.accepted through the notification center.
   const social = createSocialService({
     repo: friendshipRepo,
+    groups: friendGroupRepo,
     follows: userFollowsRepo,
     itemFollows: itemFollowsRepo,
     profile: profileRepo,

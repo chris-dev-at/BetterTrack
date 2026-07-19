@@ -16,6 +16,7 @@ import type {
   PublicLinkTarget,
   ShareAudienceRepository,
 } from '../../data/repositories/shareAudienceRepository';
+import type { FriendGroupRepository } from '../../data/repositories/friendGroupRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { ItemFollowsRepository } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
@@ -63,6 +64,8 @@ export interface AudienceServiceDeps {
   repo: ShareAudienceRepository;
   /** Resolves friend recipients + the actor's username for share events (#368). */
   friendship?: Pick<FriendshipRepository, 'getUsername' | 'listFriends'>;
+  /** Friend groups (V5-P8) — validate ownership + resolve a `group` audience's live roster. */
+  groups?: Pick<FriendGroupRepository, 'ownsGroup' | 'listMemberIds'>;
   /** Resolves the owner's followers (+ their auto-follow prefs) for `follow.published` fan-out (#438/#439). */
   follows?: Pick<UserFollowsRepository, 'listFollowerPrefs'>;
   /** Item bookmarks (#439) — auto-added on publish for opted-in followers, purged with the subject. */
@@ -174,21 +177,29 @@ export const PUBLIC_ACK_REQUIRED = () =>
     'PUBLIC_LINK_ACK_REQUIRED',
   );
 
+/** A `group` audience must name a friend group the caller owns (V5-P8). */
+export const GROUP_AUDIENCE_INVALID = () =>
+  badRequest(
+    'Sharing to a group requires one of your own friend groups.',
+    'GROUP_AUDIENCE_INVALID',
+  );
+
 /** Relative resolution path the SPA turns into a shareable absolute URL. */
 function linkPath(token: string): string {
   return `/api/v1/social/links/${token}`;
 }
 
 export function createAudienceService(deps: AudienceServiceDeps): AudienceService {
-  const { repo, friendship, follows, itemFollows, profile, notify, logger } = deps;
+  const { repo, friendship, groups, follows, itemFollows, profile, notify, logger } = deps;
 
   /**
    * Tell each friend the picker just admitted that the item is shared with them
    * (#368): all-friends → every current friend, specific-friends → the validated
-   * member set; private/public-link → nobody (a link is pull, not push). One
-   * event per (item, owner) per recipient — the dispatcher's eventKey dedupes
-   * repeat transitions, so widening back and forth never re-notifies. Emits
-   * ride the durable center and are best-effort for the mutation.
+   * member set, group → the group's current roster; private/public-link → nobody
+   * (a link is pull, not push). One event per (item, owner) per recipient — the
+   * dispatcher's eventKey dedupes repeat transitions, so widening back and forth
+   * never re-notifies. Emits ride the durable center and are best-effort for the
+   * mutation.
    */
   async function emitShared(
     ownerId: string,
@@ -198,7 +209,12 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     memberIds: readonly string[],
   ): Promise<void> {
     if (!notify || !friendship) return;
-    if (audienceValue !== 'all_friends' && audienceValue !== 'specific_friends') return;
+    if (
+      audienceValue !== 'all_friends' &&
+      audienceValue !== 'specific_friends' &&
+      audienceValue !== 'group'
+    )
+      return;
     try {
       const recipients =
         audienceValue === 'all_friends'
@@ -252,7 +268,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     ownerId: string,
     kind: ShareKind,
     subjectId: string,
-    prior: { audience: ShareAudience; memberIds: readonly string[] },
+    prior: { audience: ShareAudience; memberIds: readonly string[]; groupId: string | null },
     nextAudience: ShareAudience,
   ): Promise<void> {
     if (!notify || !follows || !friendship || !profile) return;
@@ -264,6 +280,12 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       if (followerPrefs.length === 0) return;
       const friendSet = new Set((await friendship.listFriends(ownerId)).map((f) => f.id));
       const priorMembers = new Set(prior.memberIds);
+      // A prior `group` audience: whoever was in that circle could already see it,
+      // so widening group→public must not re-notify them (the anti-double rule).
+      const priorGroupMembers =
+        prior.audience === 'group' && prior.groupId && groups
+          ? new Set(await groups.listMemberIds(prior.groupId))
+          : new Set<string>();
       const couldSeeBefore = (followerId: string): boolean => {
         switch (prior.audience) {
           case 'public_link':
@@ -272,6 +294,8 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
             return friendSet.has(followerId);
           case 'specific_friends':
             return priorMembers.has(followerId);
+          case 'group':
+            return priorGroupMembers.has(followerId);
           case 'private':
             return false;
         }
@@ -316,6 +340,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
     owned: {
       audience: ShareAudience;
       friendIds: string[];
+      groupId: string | null;
       link: { active: boolean; createdAt: Date | null };
     },
   ): AudienceState {
@@ -324,6 +349,7 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       subjectId,
       audience: owned.audience,
       friendIds: owned.friendIds,
+      groupId: owned.groupId,
       link: { active: owned.link.active, createdAt: owned.link.createdAt?.toISOString() ?? null },
     };
   }
@@ -366,6 +392,16 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         throw PUBLIC_ACK_REQUIRED();
       }
 
+      // A `group` audience must name a friend group the caller owns; validate
+      // before touching state so an unowned/unknown group is a clean 400 (§8).
+      let groupId: string | null = null;
+      if (input.audience === 'group') {
+        if (!input.groupId || !groups || !(await groups.ownsGroup(ownerId, input.groupId))) {
+          throw GROUP_AUDIENCE_INVALID();
+        }
+        groupId = input.groupId;
+      }
+
       // Snapshot the audience BEFORE mutating: the follow-published delta needs to
       // know who could already see the item, so a follower who already had access
       // isn't re-notified when it widens to public (#438).
@@ -382,7 +418,15 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         subjectId,
         input.audience,
         memberIds,
+        groupId,
       );
+
+      // The recipients to notify (#368): the validated friend set for
+      // specific-friends, or the group's live roster for a group share.
+      const directRecipientIds =
+        input.audience === 'group' && groupId && groups
+          ? await groups.listMemberIds(groupId)
+          : memberIds;
 
       let link: ShareLinkSecret | undefined;
       if (input.audience === 'public_link' && !(await repo.hasActiveLink(audienceId))) {
@@ -394,13 +438,13 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
 
       // Notify the newly admitted friends (#368) — after the audience committed,
       // so a recipient acting on the bell is already authorized.
-      await emitShared(ownerId, kind, subjectId, input.audience, memberIds);
+      await emitShared(ownerId, kind, subjectId, input.audience, directRecipientIds);
       // Notify the owner's followers if the item just became public (#438).
       await emitFollowPublished(
         ownerId,
         kind,
         subjectId,
-        { audience: prior.audience, memberIds: prior.friendIds },
+        { audience: prior.audience, memberIds: prior.friendIds, groupId: prior.groupId },
         input.audience,
       );
 

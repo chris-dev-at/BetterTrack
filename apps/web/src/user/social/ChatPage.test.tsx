@@ -236,6 +236,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
       subjectId: 'p1',
       audience: 'private',
       friendIds: [],
+      groupId: null,
       link: { active: false, createdAt: null },
     });
     vi.mocked(setAudience).mockResolvedValue({
@@ -244,6 +245,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
         subjectId: 'p1',
         audience: 'specific_friends',
         friendIds: ['u2'],
+        groupId: null,
         link: { active: false, createdAt: null },
       },
     });
@@ -271,6 +273,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
       subjectId: 'p1',
       audience: 'specific_friends',
       friendIds: ['u9'],
+      groupId: null,
       link: { active: false, createdAt: null },
     });
     vi.mocked(setAudience).mockResolvedValue({
@@ -279,6 +282,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
         subjectId: 'p1',
         audience: 'specific_friends',
         friendIds: ['u9', 'u2'],
+        groupId: null,
         link: { active: false, createdAt: null },
       },
     });
@@ -303,6 +307,7 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
       subjectId: 'p1',
       audience: 'all_friends',
       friendIds: [],
+      groupId: null,
       link: { active: false, createdAt: null },
     });
 
