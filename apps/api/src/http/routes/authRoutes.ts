@@ -6,6 +6,11 @@ import {
   googleRegisterRequestSchema,
   googleUnlinkRequestSchema,
   loginRequestSchema,
+  passkeyDeleteRequestSchema,
+  passkeyIdParamSchema,
+  passkeyLoginVerifyRequestSchema,
+  passkeyRegisterVerifyRequestSchema,
+  passkeyRenameRequestSchema,
   passwordResetCompleteSchema,
   passwordResetRequestSchema,
   pinQuickAuthRequestSchema,
@@ -25,6 +30,10 @@ import {
   type GoogleRegisterRequest,
   type GoogleUnlinkRequest,
   type LoginRequest,
+  type PasskeyDeleteRequest,
+  type PasskeyLoginVerifyRequest,
+  type PasskeyRegisterVerifyRequest,
+  type PasskeyRenameRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
   type PinQuickAuthRequest,
@@ -405,6 +414,75 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.post('/2fa/recovery-codes', requireUser, async (req, res) => {
     res.json(await ctx.twoFactor.regenerateRecoveryCodes(req.authUser!.id, req.ip));
   });
+
+  // ── Passkeys / WebAuthn (§13.4 V4-P4) ───────────────────────────────────────
+  // Management is user-kind session only (`requireUser`), alongside 2FA. Adding
+  // (register/verify) and deleting are re-auth-gated in the service — a fresh
+  // password or a 2FA factor — exactly like disabling 2FA; listing and renaming
+  // ride the session alone. Options are always minted server-side from
+  // `config.webauthn` and carry a single-use, short-TTL challenge.
+  router.get('/passkeys', requireUser, async (req, res) => {
+    res.json(await ctx.passkeys.list(req.authUser!.id));
+  });
+
+  router.post('/passkeys/register/options', requireUser, async (req, res) => {
+    res.json(await ctx.passkeys.startRegistration(req.authUser!.id));
+  });
+
+  router.post(
+    '/passkeys/register/verify',
+    requireUser,
+    validateBody(passkeyRegisterVerifyRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as PasskeyRegisterVerifyRequest;
+      res.status(201).json(await ctx.passkeys.finishRegistration(req.authUser!.id, body, req.ip));
+    },
+  );
+
+  router.patch(
+    '/passkeys/:id',
+    requireUser,
+    validateParams(passkeyIdParamSchema),
+    validateBody(passkeyRenameRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const body = req.valid?.body as PasskeyRenameRequest;
+      res.json(await ctx.passkeys.rename(req.authUser!.id, id, body.name, req.ip));
+    },
+  );
+
+  router.delete(
+    '/passkeys/:id',
+    requireUser,
+    validateParams(passkeyIdParamSchema),
+    validateBody(passkeyDeleteRequestSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const body = req.valid?.body as PasskeyDeleteRequest;
+      await ctx.passkeys.delete(req.authUser!.id, id, body, req.ip);
+      res.json({ ok: true });
+    },
+  );
+
+  // Public passkey sign-in (§13.4 V4-P4). Per-IP rate-limited on the login
+  // schedule like /login. `options` mints a usernameless challenge; `verify`
+  // presents the assertion, and a user-verified passkey issues a session through
+  // the same path as password login with NO follow-up 2FA challenge (§16).
+  router.post('/passkeys/login/options', limiters.login, async (_req, res) => {
+    res.json(await ctx.passkeys.startLogin());
+  });
+
+  router.post(
+    '/passkeys/login/verify',
+    limiters.login,
+    validateBody(passkeyLoginVerifyRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as PasskeyLoginVerifyRequest;
+      const { user, sessionId, persistent } = await ctx.passkeys.finishLogin(body, req.ip);
+      setSessionCookie(res, ctx.config, sessionId, persistent);
+      res.json(toMeResponseFromRow(user));
+    },
+  );
 
   router.get('/invite/:token', validateParams(tokenParamSchema), async (req, res) => {
     const { token } = req.valid?.params as { token: string };

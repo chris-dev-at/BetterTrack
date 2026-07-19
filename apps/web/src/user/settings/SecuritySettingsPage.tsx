@@ -6,8 +6,10 @@ import { QRCodeSVG } from 'qrcode.react';
 
 import {
   DEFAULT_PIN_WINDOW_MINUTES,
+  PASSKEY_NAME_MAX,
   PIN_LENGTH,
   TOTP_CODE_LENGTH,
+  type Passkey,
   type SetPinRequest,
   type TwoFactorStatusResponse,
 } from '@bettertrack/contracts';
@@ -16,6 +18,11 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { formatDateTime } from '../../lib/format';
+import {
+  browserSupportsWebAuthn,
+  isPasskeyCancellation,
+  registerPasskey,
+} from '../../lib/passkeys';
 import {
   confirmEmailTwoFactor,
   confirmTwoFactor,
@@ -27,10 +34,13 @@ import {
   regenerateRecoveryCodes,
 } from '../../lib/twoFactorApi';
 import {
+  deletePasskey,
   disablePin,
   getMe,
   getSession,
+  listPasskeys,
   listSessions,
+  renamePasskey,
   revokeOtherSessions,
   revokeSession,
   setPin,
@@ -44,6 +54,7 @@ const ME_KEY = ['auth', 'me'] as const;
 const SESSION_KEY = ['auth', 'session'] as const;
 const SESSIONS_KEY = ['auth', 'sessions'] as const;
 const TWO_FACTOR_KEY = ['auth', '2fa', 'status'] as const;
+const PASSKEYS_KEY = ['auth', 'passkeys'] as const;
 
 function pinErrorMessage(t: TranslateFn, err: unknown): string {
   if (err instanceof ApiError) {
@@ -1030,10 +1041,298 @@ function TwoFactorSection() {
   );
 }
 
+/** Map a passkey add/manage failure to a localized message. */
+function passkeyErrorMessage(t: TranslateFn, err: unknown): string {
+  if (isPasskeyCancellation(err)) return t('settings.security.passkeys.cancelled');
+  if (err instanceof ApiError) {
+    if (err.status === 429) return t('settings.security.passkeys.rateLimited');
+    if (err.code === 'PASSKEY_ALREADY_REGISTERED')
+      return t('settings.security.passkeys.alreadyRegistered');
+    if (err.status === 401) return t('settings.security.passkeys.wrongPassword');
+    if (err.status >= 500) return t('common.genericError');
+  }
+  return t('settings.security.passkeys.genericError');
+}
+
+/** Add-a-passkey form: name + password re-auth, then the authenticator prompt. */
+function AddPasskeyForm({ onAdded, onCancel }: { onAdded: () => void; onCancel: () => void }) {
+  const t = useT();
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const add = useMutation({
+    mutationFn: () => registerPasskey(name.trim(), { password }),
+    onSuccess: onAdded,
+    onError: (err) => setError(passkeyErrorMessage(t, err)),
+  });
+
+  function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    add.mutate();
+  }
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-4"
+    >
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+        {t('settings.security.passkeys.nameLabel')}
+        <input
+          type="text"
+          autoComplete="off"
+          maxLength={PASSKEY_NAME_MAX}
+          value={name}
+          placeholder={t('settings.security.passkeys.namePlaceholder')}
+          onChange={(e) => setName(e.target.value)}
+          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+        />
+      </label>
+      <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+        {t('settings.security.passkeys.passwordLabel')}
+        <input
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+        />
+      </label>
+      <p className="text-xs text-neutral-500">{t('settings.security.passkeys.reauthHint')}</p>
+      <div className="flex flex-wrap gap-3">
+        <Button
+          type="submit"
+          disabled={add.isPending || name.trim().length === 0 || password.length === 0}
+        >
+          {add.isPending
+            ? t('settings.security.passkeys.adding')
+            : t('settings.security.passkeys.addSubmit')}
+        </Button>
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          {t('common.cancel')}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** One passkey row with inline rename + (re-auth-gated) delete. */
+function PasskeyRow({
+  passkey,
+  isLast,
+  refresh,
+}: {
+  passkey: Passkey;
+  isLast: boolean;
+  refresh: () => void;
+}) {
+  const t = useT();
+  const [mode, setMode] = useState<'view' | 'rename' | 'delete'>('view');
+  const [name, setName] = useState(passkey.name);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const rename = useMutation({
+    mutationFn: () => renamePasskey(passkey.id, name.trim()),
+    onSuccess: () => {
+      setMode('view');
+      refresh();
+    },
+    onError: (err) => setError(passkeyErrorMessage(t, err)),
+  });
+
+  const remove = useMutation({
+    mutationFn: () => deletePasskey(passkey.id, { password }),
+    onSuccess: refresh,
+    onError: (err) => setError(passkeyErrorMessage(t, err)),
+  });
+
+  function reset() {
+    setMode('view');
+    setName(passkey.name);
+    setPassword('');
+    setError(null);
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-950 p-4">
+      {error ? <Alert tone="error">{error}</Alert> : null}
+      {mode === 'rename' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setError(null);
+            rename.mutate();
+          }}
+          className="flex flex-col gap-3"
+        >
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+            {t('settings.security.passkeys.nameLabel')}
+            <input
+              type="text"
+              autoComplete="off"
+              maxLength={PASSKEY_NAME_MAX}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+          </label>
+          <div className="flex flex-wrap gap-3">
+            <Button type="submit" disabled={rename.isPending || name.trim().length === 0}>
+              {rename.isPending
+                ? t('settings.security.passkeys.renaming')
+                : t('settings.security.passkeys.renameSave')}
+            </Button>
+            <Button type="button" variant="ghost" onClick={reset}>
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </form>
+      ) : mode === 'delete' ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            setError(null);
+            remove.mutate();
+          }}
+          className="flex flex-col gap-3"
+        >
+          <Alert tone="info">
+            {isLast
+              ? t('settings.security.passkeys.lastWarning')
+              : t('settings.security.passkeys.deleteConfirm')}
+          </Alert>
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-neutral-300">
+            {t('settings.security.passkeys.passwordLabel')}
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+          </label>
+          <div className="flex flex-wrap gap-3">
+            <Button
+              type="submit"
+              variant="secondary"
+              disabled={remove.isPending || password.length === 0}
+            >
+              {remove.isPending
+                ? t('settings.security.passkeys.deleting')
+                : t('settings.security.passkeys.deleteSubmit')}
+            </Button>
+            <Button type="button" variant="ghost" onClick={reset}>
+              {t('common.cancel')}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-neutral-100">{passkey.name}</span>
+            <span className="text-xs text-neutral-500">
+              {t('settings.security.passkeys.added', { date: formatDateTime(passkey.createdAt) })}
+              {' · '}
+              {passkey.lastUsedAt
+                ? t('settings.security.passkeys.lastUsed', {
+                    date: formatDateTime(passkey.lastUsedAt),
+                  })
+                : t('settings.security.passkeys.neverUsed')}
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <Button type="button" variant="ghost" onClick={() => setMode('rename')}>
+              {t('settings.security.passkeys.rename')}
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setMode('delete')}>
+              {t('settings.security.passkeys.delete')}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Passkeys / WebAuthn manager (§13.4 V4-P4), alongside 2FA in Settings → Security. */
+function PasskeysSection() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [supported] = useState(() => browserSupportsWebAuthn());
+  const [adding, setAdding] = useState(false);
+  const query = useQuery({
+    queryKey: PASSKEYS_KEY,
+    queryFn: ({ signal }) => listPasskeys(signal),
+    staleTime: 10_000,
+  });
+
+  function refresh() {
+    void queryClient.invalidateQueries({ queryKey: PASSKEYS_KEY });
+  }
+
+  return (
+    <section className="flex flex-col gap-4 rounded-md border border-neutral-800 bg-neutral-900 p-5">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-sm font-semibold text-neutral-100">
+          {t('settings.security.passkeys.title')}
+        </h3>
+        <p className="text-xs text-neutral-500">{t('settings.security.passkeys.description')}</p>
+      </div>
+
+      {query.isPending ? (
+        <Skeleton height="h-16" />
+      ) : query.isError ? (
+        <EmptyState
+          title={t('settings.security.passkeys.loadError')}
+          description={t('settings.retryHint')}
+        />
+      ) : (
+        <div className="flex flex-col gap-3">
+          {query.data.length === 0 ? (
+            <p className="text-sm text-neutral-400">{t('settings.security.passkeys.empty')}</p>
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {query.data.map((p) => (
+                <li key={p.id}>
+                  <PasskeyRow passkey={p} isLast={query.data.length === 1} refresh={refresh} />
+                </li>
+              ))}
+            </ul>
+          )}
+          {!supported ? (
+            <p className="text-xs text-neutral-500">
+              {t('settings.security.passkeys.unsupported')}
+            </p>
+          ) : adding ? (
+            <AddPasskeyForm
+              onAdded={() => {
+                setAdding(false);
+                refresh();
+              }}
+              onCancel={() => setAdding(false)}
+            />
+          ) : (
+            <div>
+              <Button type="button" variant="secondary" onClick={() => setAdding(true)}>
+                {t('settings.security.passkeys.addButton')}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /**
  * Settings → Security (PROJECTPLAN.md §6.11). Session info, PIN
- * enable/change/disable (§6.1), and two-factor auth (§13.2 V2-P5). All shapes
- * derive from `@bettertrack/contracts` via the web api-client.
+ * enable/change/disable (§6.1), two-factor auth (§13.2 V2-P5), and passkeys
+ * (§13.4 V4-P4). All shapes derive from `@bettertrack/contracts` via the web
+ * api-client.
  */
 export function SecuritySettingsPage() {
   const t = useT();
@@ -1066,6 +1365,8 @@ export function SecuritySettingsPage() {
       )}
 
       <TwoFactorSection />
+
+      <PasskeysSection />
     </div>
   );
 }

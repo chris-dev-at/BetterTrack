@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import {
+  bigint,
   boolean,
   char,
   check,
@@ -382,6 +383,46 @@ export const twoFactorRecoveryCodes = pgTable(
   (t) => [
     uniqueIndex('two_factor_recovery_codes_hash_unique').on(t.codeHash),
     index('two_factor_recovery_codes_user_idx').on(t.userId),
+  ],
+);
+
+/**
+ * Passkeys / WebAuthn credentials (PROJECTPLAN.md §13.4 V4-P4). Each row is one
+ * passwordless sign-in credential registered to an existing account. The public
+ * key + signature counter + transports come from the authenticator at registration
+ * and are used to verify (and clone-detect) every later assertion:
+ *
+ *  - `credentialId` — the authenticator's opaque credential id (base64url), globally
+ *    unique; it is what a login assertion is looked up by.
+ *  - `publicKey` — the credential's COSE public key (base64url-encoded bytes). No
+ *    private key ever reaches the server — that stays on the authenticator.
+ *  - `counter` — the signature counter last seen. A later assertion whose counter is
+ *    not strictly greater is a cloned-authenticator signal and is rejected. Stored as
+ *    `bigint` because the WebAuthn counter is a full 32-bit unsigned value.
+ *  - `transports` — the browser-reported transport hints (`internal`, `usb`, …), fed
+ *    back into future `allowCredentials` for a smoother prompt.
+ *
+ * Cascades away with the owning user. Never a second factor for password login and
+ * never a registration path — a passkey only ever attaches to an existing account.
+ */
+export const passkeys = pgTable(
+  'passkeys',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    credentialId: text('credential_id').notNull(),
+    publicKey: text('public_key').notNull(),
+    counter: bigint('counter', { mode: 'number' }).notNull().default(0),
+    transports: jsonb('transports').$type<string[]>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('passkeys_credential_id_unique').on(t.credentialId),
+    index('passkeys_user_idx').on(t.userId),
   ],
 );
 
@@ -2010,6 +2051,8 @@ export type RegistrationTokenRow = typeof registrationTokens.$inferSelect;
 export type RegistrationRequestRow = typeof registrationRequests.$inferSelect;
 export type ExternalIdentityRow = typeof externalIdentities.$inferSelect;
 export type TwoFactorRecoveryCodeRow = typeof twoFactorRecoveryCodes.$inferSelect;
+export type PasskeyRow = typeof passkeys.$inferSelect;
+export type NewPasskeyRow = typeof passkeys.$inferInsert;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type ProblemRow = typeof problems.$inferSelect;
 export type NewProblemRow = typeof problems.$inferInsert;
@@ -2468,6 +2511,7 @@ export const schema = {
   invites,
   passwordResetTokens,
   twoFactorRecoveryCodes,
+  passkeys,
   auditLog,
   problems,
   assets,

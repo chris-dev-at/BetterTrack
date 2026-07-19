@@ -441,6 +441,22 @@ export interface AppConfig {
     encryptionKey: Buffer;
   };
   /**
+   * Passkeys / WebAuthn relying-party identity (§13.4 V4-P4). All three fields are
+   * DERIVED from the user web origin (the browser runs the ceremony there), never
+   * hand-configured: `rpId` is that origin's host (the credential is bound to it),
+   * `origin` is the full web origin a ceremony must have occurred on, and `rpName`
+   * reuses the product/issuer label. No dedicated env var is needed — the deploy
+   * already pins its origins via the topology scheme (§11).
+   */
+  webauthn: {
+    /** Relying-party id — the web origin's hostname (no scheme/port). */
+    rpId: string;
+    /** Human-friendly relying-party name shown by some authenticators. */
+    rpName: string;
+    /** The full web origin a register/login ceremony must have been performed on. */
+    origin: string;
+  };
+  /**
    * Google sign-in (§13.4 V4-P4b). `enabled` is true iff BOTH the client id and
    * secret are set; everything else keys off it — the routes 404 and the auth
    * surfaces render no button when it is false.
@@ -624,6 +640,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     twoFactor: {
       issuer: e.TOTP_ISSUER,
       encryptionKey: twoFactorEncryptionKey,
+    },
+    webauthn: {
+      // The RP id is the effective domain of the web origin — parse its host so a
+      // ports layout (host:port) still yields the bare hostname WebAuthn expects.
+      rpId: new URL(topology.webOrigin).hostname,
+      rpName: e.TOTP_ISSUER,
+      origin: topology.webOrigin,
     },
     google: {
       enabled: Boolean(e.BT_GOOGLE_CLIENT_ID && e.BT_GOOGLE_CLIENT_SECRET),

@@ -632,3 +632,138 @@ export const deleteAccountRequestSchema = z
     message: 'Re-authentication is required: send your password or a two-factor code.',
   });
 export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;
+
+/**
+ * Passkeys / WebAuthn (PROJECTPLAN.md §13.4 V4-P4). A passkey is an additional,
+ * passwordless sign-in credential attached to an EXISTING account and managed in
+ * Settings → Security alongside 2FA — never a second factor for password login,
+ * and never a registration path (an account already exists). A single account may
+ * hold several named passkeys.
+ *
+ * The WebAuthn ceremony payloads (the `PublicKeyCredential{Creation,Request}OptionsJSON`
+ * the server mints, and the `{Registration,Authentication}ResponseJSON` the browser
+ * returns) are produced and consumed end-to-end by `@simplewebauthn` — that library
+ * owns their (large, spec-defined) shape, so they ride these contracts as opaque
+ * JSON objects rather than being re-validated field by field. We validate only the
+ * fields WE add: a user-chosen name, a single-use challenge handle, the re-auth
+ * credential. Options are never accepted from the client; they are always minted by
+ * the API from `config.webauthn` and echoed back to the browser.
+ */
+export const PASSKEY_NAME_MAX = 64;
+/** A user-chosen passkey label ("MacBook Touch ID", "YubiKey"). */
+export const passkeyNameSchema = z.string().trim().min(1).max(PASSKEY_NAME_MAX);
+
+/** An opaque WebAuthn ceremony payload, passed through to/from `@simplewebauthn`. */
+export const webauthnCeremonyJsonSchema = z.record(z.unknown());
+export type WebAuthnCeremonyJson = z.infer<typeof webauthnCeremonyJsonSchema>;
+
+/** One registered passkey as shown in the Settings → Security manager. */
+export const passkeySchema = z
+  .object({
+    id: z.string().uuid(),
+    /** The user-chosen label. */
+    name: z.string(),
+    /** When the passkey was registered (ISO). */
+    createdAt: z.string().datetime(),
+    /** When it last completed a login (ISO), or `null` if never used since registration. */
+    lastUsedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+export type Passkey = z.infer<typeof passkeySchema>;
+
+/** `GET /auth/passkeys` — the caller's registered passkeys (newest first). */
+export const passkeyListResponseSchema = z.object({ passkeys: z.array(passkeySchema) }).strict();
+export type PasskeyListResponse = z.infer<typeof passkeyListResponseSchema>;
+
+/**
+ * `POST /auth/passkeys/register/options` — the creation options the browser feeds
+ * to `startRegistration({ optionsJSON })`. Session-authed; carries a fresh,
+ * single-use challenge stored server-side (short Redis TTL) that only the matching
+ * verify call accepts. No request body.
+ */
+export const passkeyRegisterOptionsResponseSchema = z
+  .object({ options: webauthnCeremonyJsonSchema })
+  .strict();
+export type PasskeyRegisterOptionsResponse = z.infer<typeof passkeyRegisterOptionsResponseSchema>;
+
+/**
+ * `POST /auth/passkeys/register/verify` — finish registering a passkey. Carries the
+ * user-chosen `name`, the browser's `response` (the `RegistrationResponseJSON`), and
+ * a **re-auth** credential: the current `password`, or — for a 2FA-enrolled account —
+ * a fresh authenticator `code` or an unused `recoveryCode` (matching the account-
+ * deletion / export re-auth convention). At least one re-auth field must be present.
+ */
+export const passkeyRegisterVerifyRequestSchema = z
+  .object({
+    name: passkeyNameSchema,
+    response: webauthnCeremonyJsonSchema,
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
+    code: z.string().trim().min(4).max(16).optional(),
+    /** An unused recovery code — consumed on success AND on a failed match. */
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .refine((b) => b.password !== undefined || b.code !== undefined || b.recoveryCode !== undefined, {
+    message: 'Re-authentication is required: send your password or a two-factor code.',
+  });
+export type PasskeyRegisterVerifyRequest = z.infer<typeof passkeyRegisterVerifyRequestSchema>;
+
+/** `:id` path param for a passkey — its opaque row id. */
+export const passkeyIdParamSchema = z.object({ id: z.string().uuid() }).strict();
+export type PasskeyIdParam = z.infer<typeof passkeyIdParamSchema>;
+
+/** `PATCH /auth/passkeys/:id` — rename a passkey (session-authed; no re-auth needed). */
+export const passkeyRenameRequestSchema = z.object({ name: passkeyNameSchema }).strict();
+export type PasskeyRenameRequest = z.infer<typeof passkeyRenameRequestSchema>;
+
+/**
+ * `DELETE /auth/passkeys/:id` — remove a passkey. Re-auth-gated exactly like adding
+ * one: the current `password`, or a 2FA `code` / `recoveryCode`. Deleting the last
+ * passkey is allowed — password sign-in always remains — so no minimum is enforced.
+ */
+export const passkeyDeleteRequestSchema = z
+  .object({
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    code: z.string().trim().min(4).max(16).optional(),
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .refine((b) => b.password !== undefined || b.code !== undefined || b.recoveryCode !== undefined, {
+    message: 'Re-authentication is required: send your password or a two-factor code.',
+  });
+export type PasskeyDeleteRequest = z.infer<typeof passkeyDeleteRequestSchema>;
+
+/**
+ * `POST /auth/passkeys/login/options` — public. Mints usernameless (discoverable-
+ * credential) authentication options plus a `challengeId` handle: the challenge is
+ * held server-side under that handle (short Redis TTL, single-use) and the browser
+ * echoes the handle back at verify. No request body — the authenticator chooses the
+ * discoverable credential; the account is identified from the returned credential.
+ */
+export const passkeyLoginOptionsResponseSchema = z
+  .object({
+    /** Opaque single-use handle keying the server-side challenge for the verify call. */
+    challengeId: z.string(),
+    /** The request options the browser feeds to `startAuthentication({ optionsJSON })`. */
+    options: webauthnCeremonyJsonSchema,
+  })
+  .strict();
+export type PasskeyLoginOptionsResponse = z.infer<typeof passkeyLoginOptionsResponseSchema>;
+
+/**
+ * `POST /auth/passkeys/login/verify` — public. Presents the authenticator's
+ * `response` (the `AuthenticationResponseJSON`) together with the `challengeId` from
+ * the options call. A verified assertion **with user verification** is strong auth on
+ * its own, so it issues a session through the same path as password login and does
+ * NOT raise a follow-up 2FA challenge (§16). `staySignedIn` mirrors password login
+ * (default persistent).
+ */
+export const passkeyLoginVerifyRequestSchema = z
+  .object({
+    challengeId: z.string().min(1).max(256),
+    response: webauthnCeremonyJsonSchema,
+    staySignedIn: z.boolean().optional(),
+  })
+  .strict();
+export type PasskeyLoginVerifyRequest = z.infer<typeof passkeyLoginVerifyRequestSchema>;

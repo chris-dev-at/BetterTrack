@@ -20,7 +20,11 @@
       "invalidCredentials": "Incorrect email/username or password.",
       "staySignedIn": "Stay signed in",
       "newHere": "New to BetterTrack?",
-      "signUp": "Sign up"
+      "signUp": "Sign up",
+      "passkeyButton": "Sign in with a passkey",
+      "passkeySigningIn": "Waiting for your passkey…",
+      "passkeyError": "Passkey sign-in didn't work. Please try again or use your password.",
+      "passkeyRateLimited": "Too many attempts. Please wait and try again."
     },
     "oauthStay": {
       "subtitle": "Signing in",
@@ -697,6 +701,36 @@
         "errorMismatch": "That Google account's email doesn't match your account email. You can only connect the Google account that shares this account's email.",
         "errorAlreadyLinked": "That Google account is already linked to another user.",
         "errorAdmin": "Google isn't available for administrator accounts."
+      },
+      "passkeys": {
+        "title": "Passkeys",
+        "description": "Sign in without a password using Face ID, Touch ID, Windows Hello, or a security key.",
+        "loadError": "We couldn't load your passkeys.",
+        "empty": "You haven't added any passkeys yet.",
+        "unsupported": "This browser doesn't support passkeys.",
+        "addButton": "Add a passkey",
+        "nameLabel": "Passkey name",
+        "namePlaceholder": "e.g. MacBook Touch ID",
+        "passwordLabel": "Current password",
+        "reauthHint": "Confirm your password to add a passkey.",
+        "addSubmit": "Add passkey",
+        "adding": "Waiting for your device…",
+        "added": "Added {{date}}",
+        "lastUsed": "last used {{date}}",
+        "neverUsed": "never used",
+        "rename": "Rename",
+        "renameSave": "Save",
+        "renaming": "Saving…",
+        "delete": "Delete",
+        "deleteConfirm": "Confirm your password to remove this passkey.",
+        "deleteSubmit": "Remove passkey",
+        "deleting": "Removing…",
+        "lastWarning": "This is your last passkey. You can still sign in with your password. Confirm your password to remove it.",
+        "wrongPassword": "That password is incorrect.",
+        "alreadyRegistered": "That passkey is already registered.",
+        "rateLimited": "Too many attempts. Please wait and try again.",
+        "cancelled": "The passkey prompt was cancelled.",
+        "genericError": "Something went wrong with that passkey. Please try again."
       }
     },
     "api": {
