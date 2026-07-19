@@ -2075,6 +2075,70 @@
       "sustainable": "Never depletes at this rate.",
       "notComputable": "Not computable with these inputs.",
       "monthsValue": "≈ {{months}} months (≈ {{years}} years)"
+    },
+    "standingOrders": {
+      "title": "Standing orders",
+      "subtitle": "Recurring buys and cash movements that book themselves on their own schedule.",
+      "newOrder": "New standing order",
+      "loadError": "Could not load your standing orders. Please try again.",
+      "emptyTitle": "No standing orders yet",
+      "emptyDescription": "Set up a recurring buy or a monthly salary / bill to have it recorded automatically.",
+      "emptyCta": "Create your first standing order",
+      "kind": {
+        "buy-asset": "Buy asset",
+        "cash-add": "Add cash",
+        "cash-deduct": "Deduct cash"
+      },
+      "cadence": {
+        "daily": "Daily",
+        "monthly": "Monthly"
+      },
+      "status": {
+        "active": "Active",
+        "paused": "Paused"
+      },
+      "list": {
+        "buyAmount": "Buy {{quantity}} × {{symbol}}",
+        "cashAdd": "Add {{amount}}",
+        "cashDeduct": "Deduct {{amount}}",
+        "cadenceDaily": "Every day",
+        "cadenceMonthly": "Monthly on day {{day}}",
+        "nextRun": "Next run: {{date}}",
+        "noNextRun": "No next run scheduled.",
+        "endsOn": "Ends {{date}}",
+        "pause": "Pause",
+        "pausing": "Pausing…",
+        "resume": "Resume",
+        "resuming": "Resuming…",
+        "deleteConfirm": "Delete?",
+        "updateError": "Could not update this order. Please try again."
+      },
+      "dialog": {
+        "createTitle": "New standing order",
+        "editTitle": "Edit standing order",
+        "description": "Pick what to book and how often. The daily job records the next due occurrence automatically.",
+        "kindGroupAria": "Standing-order kind",
+        "portfolioLabel": "Portfolio",
+        "portfolioRequired": "Pick a portfolio first.",
+        "assetLabel": "Asset",
+        "assetPlaceholder": "Search stocks, ETFs, indices…",
+        "assetRequired": "Search for the asset you want to buy.",
+        "changeAsset": "Change asset",
+        "amountLabelShares": "Quantity (shares)",
+        "amountLabelEur": "Amount (€)",
+        "amountRequired": "Enter an amount greater than zero.",
+        "labelLabel": "Label (optional)",
+        "labelPlaceholder": "salary, Netflix, …",
+        "cadenceLabel": "Cadence",
+        "anchorDayLabel": "Day of month",
+        "anchorDayInvalid": "Day of month must be between 1 and 31.",
+        "startDateLabel": "Start date",
+        "endDateLabel": "End date (optional)",
+        "endBeforeStart": "End date must be on or after the start date.",
+        "scheduleImmutable": "Kind, asset and schedule are locked once created. Delete and recreate to change them.",
+        "createSubmit": "Create",
+        "saveError": "Could not save the standing order. Please try again."
+      }
     }
   },
   "assets": {

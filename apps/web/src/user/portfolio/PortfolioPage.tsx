@@ -44,7 +44,7 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
-import { SourceBadge } from './SourceBadge';
+import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
@@ -458,8 +458,21 @@ const RECENT_TRANSACTIONS_LIMIT = 8;
 /** §6.8 recent transactions — flat, newest-first ledger across all holdings. */
 function RecentTransactionsSection({ transactions }: { transactions: Transaction[] }) {
   const t = useT();
+  // Source-tag filter (V5-P0c + V5-P6b): mirrors the cash-history chip on
+  // CashSourcesPage. Only earns its place when the ledger actually mixes
+  // sources (anti-bloat — a pure-manual ledger never sees it).
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
+  const sourceTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const txn of transactions) tags.add(txn.source);
+    return [...tags].sort();
+  }, [transactions]);
+  const showFilter = sourceTags.length > 1;
+
   if (transactions.length === 0) return null;
+
   const recent = [...transactions]
+    .filter((txn) => sourceFilter === 'all' || txn.source === sourceFilter)
     .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())
     .slice(0, RECENT_TRANSACTIONS_LIMIT);
 
@@ -468,9 +481,28 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
       aria-label={t('portfolio.overview.recentTransactions.ariaLabel')}
       className="flex flex-col gap-3"
     >
-      <h2 className="text-lg font-semibold text-neutral-200">
-        {t('portfolio.overview.recentTransactions.heading')}
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold text-neutral-200">
+          {t('portfolio.overview.recentTransactions.heading')}
+        </h2>
+        {showFilter ? (
+          <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+            {t('portfolio.sourceTag.filterLabel')}
+            <select
+              value={sourceFilter}
+              onChange={(e) => setSourceFilter(e.target.value)}
+              className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-xs text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            >
+              <option value="all">{t('portfolio.sourceTag.filterAll')}</option>
+              {sourceTags.map((tag) => (
+                <option key={tag} value={tag}>
+                  {sourceTagLabel(t, tag) ?? t('portfolio.sourceTag.manual')}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
       <div className="overflow-x-auto rounded-lg border border-neutral-800">
         <table className="w-full text-left text-sm">
           <thead>

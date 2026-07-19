@@ -6,6 +6,7 @@ import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent } from '../../lib/format';
 import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import type { PortfolioSummary } from '@bettertrack/contracts';
 import { EmptyState, StatCard } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
@@ -19,6 +20,7 @@ import {
   type SavingsContributionInput,
   type WithdrawalHorizonInput,
 } from './calc';
+import { StandingOrdersSection } from './StandingOrdersSection';
 
 /**
  * Forecast tab (PROJECTPLAN.md §13.5 V5-P6b arc (c)). Two zones live in the
@@ -48,16 +50,20 @@ interface Prefill {
  * degrade to their standalone inputs when the fetch is missing or a field is
  * `null`.
  */
-function usePortfolioPrefill(): { prefill: Prefill; isLoading: boolean } {
+function usePortfolioPrefill(): {
+  prefill: Prefill;
+  isLoading: boolean;
+  portfolios: PortfolioSummary[];
+} {
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
     staleTime: 60_000,
   });
+  const portfolios = portfoliosQuery.data?.portfolios ?? [];
   const portfolioId = useMemo(() => {
-    const list = portfoliosQuery.data?.portfolios ?? [];
-    return (list.find((p) => p.isDefault) ?? list[0])?.id ?? null;
-  }, [portfoliosQuery.data]);
+    return (portfolios.find((p) => p.isDefault) ?? portfolios[0])?.id ?? null;
+  }, [portfolios]);
 
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
@@ -79,6 +85,7 @@ function usePortfolioPrefill(): { prefill: Prefill; isLoading: boolean } {
       averageReturnPctPerYear: analyticsQuery.data?.primary.stats.cagrPct ?? null,
     },
     isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || analyticsQuery.isLoading,
+    portfolios,
   };
 }
 
@@ -481,7 +488,7 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
  */
 export function ForecastPage() {
   const t = useT();
-  const { prefill } = usePortfolioPrefill();
+  const { prefill, portfolios } = usePortfolioPrefill();
 
   return (
     <div className="flex flex-col gap-8">
@@ -505,6 +512,8 @@ export function ForecastPage() {
           description={t('forecast.projection.placeholderDescription')}
         />
       </section>
+
+      <StandingOrdersSection portfolios={portfolios} />
 
       <section aria-labelledby="forecast-calculators-heading" className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
