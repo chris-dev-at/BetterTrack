@@ -41,6 +41,12 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
     res.json(await ctx.portfolioMarketIntel.projectedIncome(req.authUser!.id));
   });
 
+  // GET /assets/portfolio/news-digest — recent headlines across held + watched,
+  // grouped per asset, newest-first (arc c).
+  router.get('/portfolio/news-digest', async (req, res) => {
+    res.json(await ctx.marketIntel.newsDigest(req.authUser!.id));
+  });
+
   // GET /assets/:id/intel — capability descriptor (gate + per-capability map).
   router.get('/:id/intel', validateParams(assetIdParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };

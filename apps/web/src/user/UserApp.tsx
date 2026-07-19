@@ -43,6 +43,7 @@ import { ConsentPage } from './oauth/ConsentPage';
 import { DeleteAccountPage } from './settings/DeleteAccountPage';
 import { SearchPage } from './assets/SearchPage';
 import { AssetDetailPage } from './assets/AssetDetailPage';
+import { NewsDigestPage } from './assets/NewsDigestPage';
 import {
   AssetsLayout,
   AssetsOverviewPage,
@@ -169,6 +170,7 @@ function UserShell() {
           <Route path="assets" element={<AssetsLayout />}>
             <Route index element={<AssetsOverviewPage />} />
             <Route path="search" element={<SearchPage />} />
+            <Route path="news" element={<NewsDigestPage />} />
             <Route path="stocks" element={<StocksPage />} />
             <Route path="etfs" element={<EtfsPage />} />
             <Route path="crypto" element={<CryptoPage />} />

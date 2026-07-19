@@ -147,6 +147,7 @@ const componentSchemas = {
   EarningsResponse: contracts.earningsResponseSchema,
   EarningsCalendarResponse: contracts.earningsCalendarResponseSchema,
   NewsResponse: contracts.newsResponseSchema,
+  NewsDigestResponse: contracts.newsDigestResponseSchema,
   SplitsResponse: contracts.splitsResponseSchema,
   DividendCalendarResponse: contracts.dividendCalendarResponseSchema,
   ProjectedDividendIncomeResponse: contracts.projectedDividendIncomeResponseSchema,
@@ -1499,6 +1500,14 @@ const endpoints: EndpointDef[] = [
     summary: 'Projected dividend income for the whole portfolio (monthly + yearly, EUR).',
     status: 200,
     response: R.ProjectedDividendIncomeResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/portfolio/news-digest',
+    tag: 'Assets',
+    summary: 'Recent news across the caller’s held + watchlist assets, grouped per asset.',
+    status: 200,
+    response: R.NewsDigestResponse,
   },
 
   // Portfolios (§6.8)

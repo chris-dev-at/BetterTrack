@@ -6,6 +6,8 @@ import type {
   EarningsResponse,
   MarketIntelCapabilities,
   MarketIntelStatusResponse,
+  NewsDigestGroup,
+  NewsDigestResponse,
   NewsResponse,
   SplitsResponse,
 } from '@bettertrack/contracts';
@@ -42,6 +44,14 @@ export interface MarketIntelService {
    * the earnings capability, or one that errors) is simply dropped.
    */
   earningsCalendar(userId: string): Promise<EarningsCalendarResponse>;
+  /**
+   * Recent news headlines across the caller's held + watched assets, grouped per
+   * asset (arc c). Groups are ordered by their newest headline and each group's
+   * headlines are newest-first. Unavailable/empty when the gate is off; an asset
+   * whose provider lacks the news capability (or errors, or has no headlines) is
+   * simply dropped.
+   */
+  newsDigest(userId: string): Promise<NewsDigestResponse>;
 }
 
 export interface MarketIntelServiceDeps {
@@ -180,6 +190,52 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
       // Ascending by date — the next report first (the panel reads chronologically).
       entries.sort((x, y) => x.date.localeCompare(y.date));
       return { available: true, entries };
+    },
+
+    async newsDigest(userId) {
+      // Invisible when unconfigured: the gate off ⇒ no book scan, no groups.
+      if (!enabled) return { available: false, groups: [] };
+
+      const assets = await intelRepo.listUserWatchAndHoldAssets(userId);
+      const groups: NewsDigestGroup[] = [];
+      await Promise.all(
+        assets.map(async (a) => {
+          const ref: AssetRef = { providerId: a.providerId, providerRef: a.providerRef };
+          // Skip assets whose resolved provider can't serve news.
+          if (!marketData.intelCapabilities(ref).news) return;
+          let headlines;
+          try {
+            headlines = (await marketData.getNewsHeadlines(ref)).value;
+          } catch {
+            // A single bad upstream degrades that asset to no-group — never a 5xx
+            // across the whole digest (§13.5 V5-P5).
+            return;
+          }
+          if (headlines.length === 0) return;
+          // Newest-first within the group; a missing date sorts last.
+          const sorted = [...headlines].sort((x, y) =>
+            (y.publishedAt ?? '').localeCompare(x.publishedAt ?? ''),
+          );
+          groups.push({
+            assetId: a.assetId,
+            symbol: a.symbol,
+            name: a.name,
+            held: a.held,
+            watched: a.watched,
+            headlines: sorted,
+          });
+        }),
+      );
+
+      // Groups newest-first by their most recent headline; ties break on symbol
+      // so the order is deterministic regardless of the fan-out resolution order.
+      groups.sort((x, y) => {
+        const cmp = (y.headlines[0]?.publishedAt ?? '').localeCompare(
+          x.headlines[0]?.publishedAt ?? '',
+        );
+        return cmp !== 0 ? cmp : x.symbol.localeCompare(y.symbol);
+      });
+      return { available: true, groups };
     },
   };
 }

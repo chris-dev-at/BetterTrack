@@ -3,12 +3,16 @@ import {
   dividendsResponseSchema,
   earningsCalendarResponseSchema,
   earningsResponseSchema,
+  newsDigestResponseSchema,
+  newsResponseSchema,
   projectedDividendIncomeResponseSchema,
   splitsResponseSchema,
   type DividendCalendarResponse,
   type DividendsResponse,
   type EarningsCalendarResponse,
   type EarningsResponse,
+  type NewsDigestResponse,
+  type NewsResponse,
   type ProjectedDividendIncomeResponse,
   type SplitsResponse,
 } from '@bettertrack/contracts';
@@ -30,6 +34,10 @@ export const ASSET_DIVIDENDS_QUERY_KEY = (id: string) =>
 export const ASSET_EARNINGS_QUERY_KEY = (id: string) => ['asset', id, 'intel', 'earnings'] as const;
 /** Query key for one asset's splits block (arc d). */
 export const ASSET_SPLITS_QUERY_KEY = (id: string) => ['asset', id, 'intel', 'splits'] as const;
+/** Query key for one asset's news feed (arc c). */
+export const ASSET_NEWS_QUERY_KEY = (id: string) => ['asset', id, 'intel', 'news'] as const;
+/** Query key for the portfolio-level news digest (arc c). */
+export const PORTFOLIO_NEWS_DIGEST_QUERY_KEY = ['portfolio', 'news-digest'] as const;
 /** Query key for the portfolio-level upcoming-earnings calendar (Workboard panel). */
 export const EARNINGS_CALENDAR_QUERY_KEY = ['intel', 'earnings-calendar'] as const;
 /** Query key for the portfolio-level dividend calendar (arc a). */
@@ -68,6 +76,23 @@ export async function getAssetSplits(id: string, signal?: AbortSignal): Promise<
     signal,
   });
   return splitsResponseSchema.parse(data);
+}
+
+/** `GET /assets/:id/intel/news` — recent headlines for one asset (arc c). */
+export async function getAssetNews(id: string, signal?: AbortSignal): Promise<NewsResponse> {
+  const data = await apiRequest<unknown>(`/assets/${encodeURIComponent(id)}/intel/news`, {
+    signal,
+  });
+  return newsResponseSchema.parse(data);
+}
+
+/**
+ * `GET /assets/portfolio/news-digest` — recent headlines across the caller's
+ * held + watchlist assets, grouped per asset, newest-first (arc c).
+ */
+export async function getNewsDigest(signal?: AbortSignal): Promise<NewsDigestResponse> {
+  const data = await apiRequest<unknown>('/assets/portfolio/news-digest', { signal });
+  return newsDigestResponseSchema.parse(data);
 }
 
 /**

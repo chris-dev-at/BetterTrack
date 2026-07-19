@@ -2032,6 +2032,9 @@
         "title": "Stock splits",
         "announced": "Announced"
       },
+      "news": {
+        "title": "News"
+      },
       "watchlistAddError": "Failed to add to Watchlist. Please try again.",
       "quickActions": "Quick actions",
       "addToPortfolio": "+ Portfolio",
@@ -2054,11 +2057,24 @@
     "nav": {
       "overview": "Overview",
       "search": "Search",
+      "news": "News",
       "stocks": "Stocks",
       "etfs": "ETFs",
       "crypto": "Crypto",
       "commodities": "Commodities",
       "customAssets": "Custom Assets"
+    },
+    "news": {
+      "title": "News",
+      "subtitle": "Recent headlines across the assets you hold and watch.",
+      "held": "Held",
+      "watched": "Watched",
+      "groupAria": "News for {{symbol}}",
+      "showMore": "Show {{count}} more",
+      "showLess": "Show less",
+      "loadError": "Could not load the news digest. Please try again.",
+      "emptyTitle": "No recent news",
+      "emptyDescription": "News appears here once there are headlines for the assets you hold or watch."
     },
     "comingSoon": {
       "overview": {
