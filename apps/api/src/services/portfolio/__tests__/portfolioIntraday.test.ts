@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest';
 import type { FlowPoint, ValuePoint } from '../../../domain/holdings';
 import {
   buildIntradayEurValuePoints,
-  intradayIntervalFor,
+  densifiedFetchRange,
+  densifiedIntervalFor,
+  densifiedStepMs,
   intradayPerformancePoints,
-  intradayStepMs,
-  isIntradayRange,
+  isDensifiedRange,
   type IntradayCandle,
   type IntradayValuePoint,
 } from '../portfolioIntraday';
@@ -35,20 +36,37 @@ function candlesForDay(
   return Array.from({ length: count }, (_, i) => ({ atMs: base + i * stepMs, price: price(i) }));
 }
 
-describe('intraday range config', () => {
-  it('classifies only 1D/1W as intraday', () => {
-    expect(isIntradayRange('1D')).toBe(true);
-    expect(isIntradayRange('1W')).toBe(true);
-    for (const r of ['1M', '6M', '1Y', '5Y', 'MAX'] as const) {
-      expect(isIntradayRange(r)).toBe(false);
+describe('densified range config', () => {
+  it('classifies every range but MAX as densified', () => {
+    for (const r of ['1D', '1W', '1M', '6M', '1Y', '5Y'] as const) {
+      expect(isDensifiedRange(r)).toBe(true);
     }
+    expect(isDensifiedRange('MAX')).toBe(false);
   });
 
-  it('picks the planner granularity: 15-minute for 1D, hourly grid for 1W', () => {
-    expect(intradayIntervalFor('1D')).toBe('15m');
-    expect(intradayStepMs('1D')).toBe(15 * MIN);
-    expect(intradayIntervalFor('1W')).toBe('30m');
-    expect(intradayStepMs('1W')).toBe(60 * MIN);
+  it('picks a grid that coarsens as the span grows, off a provider-safe fetch window', () => {
+    // 1D/1W unchanged; 1M/6M/1Y/5Y reuse the recent 1M@30m candles on a
+    // progressively coarser grid (hourly → 2-hour → 4-hour).
+    expect(densifiedIntervalFor('1D')).toBe('15m');
+    expect(densifiedStepMs('1D')).toBe(15 * MIN);
+    expect(densifiedFetchRange('1D')).toBe('1D');
+
+    expect(densifiedIntervalFor('1W')).toBe('30m');
+    expect(densifiedStepMs('1W')).toBe(60 * MIN);
+    expect(densifiedFetchRange('1W')).toBe('1W');
+
+    expect(densifiedIntervalFor('1M')).toBe('30m');
+    expect(densifiedStepMs('1M')).toBe(60 * MIN);
+    expect(densifiedFetchRange('1M')).toBe('1M');
+
+    expect(densifiedStepMs('6M')).toBe(120 * MIN);
+    expect(densifiedStepMs('1Y')).toBe(240 * MIN);
+    expect(densifiedStepMs('5Y')).toBe(240 * MIN);
+    // The long ranges all source sub-daily candles from the recent 1M window.
+    for (const r of ['6M', '1Y', '5Y'] as const) {
+      expect(densifiedIntervalFor(r)).toBe('30m');
+      expect(densifiedFetchRange(r)).toBe('1M');
+    }
   });
 });
 
@@ -144,6 +162,60 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
       [Y, 1000],
       [T, 1080],
     ]);
+  });
+
+  it('densifies a 1M window: recent day onto the hourly grid, older days stay daily', () => {
+    // 1M only carries candles for the recent window (`fetchRange` = 1M): the
+    // day the provider covered densifies to the hourly grid, older in-window
+    // days keep their single daily point, and the tail stitches to the fresh
+    // daily "today" value.
+    const D1 = '2026-06-13';
+    const D2 = '2026-06-14';
+    const candles = candlesForDay(T, 5, 30 * MIN, (i) => 100 + i); // 100..104, refClose 104
+    const points = buildIntradayEurValuePoints({
+      range: '1M',
+      cutoffDay: D1,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [D1, 100],
+        [D2, 102],
+        [Y, 103],
+        [T, 104],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [D1, 100],
+            [D2, 102],
+            [Y, 103],
+            [T, 104],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map([['a', candles]]),
+    });
+
+    // Older days (no candles) contribute exactly their daily value, one point each.
+    const older = points.filter((p) => p.date !== T);
+    expect(older.map((p) => [p.date, p.valueEur])).toEqual([
+      [D1, 100],
+      [D2, 102],
+      [Y, 103],
+    ]);
+    // The covered day densifies to hourly buckets (09/10/11), last = daily close.
+    const todayPts = points.filter((p) => p.date === T);
+    expect(todayPts.length).toBe(3);
+    expect(todayPts.map((p) => p.valueEur.toFixed(4))).toEqual([
+      (101).toFixed(4),
+      (103).toFixed(4),
+      (104).toFixed(4),
+    ]);
+    // Whole curve is time-ordered and finite.
+    for (let i = 1; i < points.length; i += 1) {
+      expect(points[i]!.timeMs).toBeGreaterThan(points[i - 1]!.timeMs);
+      expect(Number.isFinite(points[i]!.valueEur)).toBe(true);
+    }
   });
 
   it('quantizes 1W 30-minute candles onto an hourly grid', () => {

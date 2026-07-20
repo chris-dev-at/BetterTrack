@@ -1,4 +1,4 @@
-import type { HistoryInterval, PortfolioHistoryRange } from '@bettertrack/contracts';
+import type { HistoryInterval, HistoryRange, PortfolioHistoryRange } from '@bettertrack/contracts';
 
 import {
   timeWeightedReturn,
@@ -12,9 +12,12 @@ import {
  *
  * The daily snapshot layer (issue #553) serves one close per calendar day, so a
  * 1D range collapsed to ~2 points ("yesterday close → today"). This module
- * densifies the **1D and 1W** ranges into a real intraday curve without a second
+ * densifies **every non-MAX range** into a sub-daily curve without a second
  * value engine: it reuses the daily series as the anchor and scales each held
- * asset by its own **intraday price ratio**.
+ * asset by its own **intraday price ratio**. 1D/1W get a full intraday curve;
+ * 1M/6M/1Y/5Y get a sub-daily grid over the recent window the provider still
+ * serves at an intraday interval, degrading to the daily slice for older days
+ * (2026-07-20 resolution bump).
  *
  * ## The anchoring identity
  *
@@ -45,45 +48,77 @@ import {
  * the whole window the output degrades precisely to the daily slice (one point
  * per in-window day), i.e. the pre-#556 behaviour.
  *
- * ## Granularity (planner-picked, §13.5 arc d)
+ * ## Granularity (planner-picked, §13.5 arc d; 2026-07-20 resolution bump)
  *
- * 1D renders **15-minute** points, 1W **hourly** points. Provider candles are
+ * The grid step coarsens as the span grows, so every range reads as a smooth
+ * curve without an unbounded point count: 1D → **15-minute**, 1W → **hourly**,
+ * 1M → **hourly**, 6M → **2-hour**, 1Y/5Y → **4-hour**. Provider candles are
  * quantized onto that fixed step so every asset lands on the same grid marks
  * (aligned, never jagged) while grid points exist only where intraday data does
  * (no dead overnight/weekend flats).
+ *
+ * A provider only serves sub-daily candles for a recent window (§5.3: 30-minute
+ * bars reach ~60 days back), so the 1M/6M/1Y/5Y ranges fetch their candles over
+ * the recent **`fetchRange`** (`1M`) rather than the whole span. The recent
+ * portion therefore densifies to the grid while older days keep their single
+ * daily point (the built-in degrade-to-daily-slice path) — the long ranges get
+ * a smoother recent curve at a bounded cost, and 1M densifies end to end. All
+ * four share the one `1M@30m` §5.3 cache entry, so a burst of reads across them
+ * costs at most one upstream fetch per asset.
  */
 
-/** The ranges that render an intraday curve rather than a daily slice (#556). */
-export const INTRADAY_PORTFOLIO_RANGES = ['1D', '1W'] as const;
-export type IntradayPortfolioRange = (typeof INTRADAY_PORTFOLIO_RANGES)[number];
+/**
+ * The ranges that render a densified (sub-daily) curve rather than a plain daily
+ * slice — every range except MAX (#556; 2026-07-20 resolution bump extends the
+ * original 1D/1W set to 1M/6M/1Y/5Y).
+ */
+export const DENSIFIED_PORTFOLIO_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y'] as const;
+export type DensifiedPortfolioRange = (typeof DENSIFIED_PORTFOLIO_RANGES)[number];
 
-export function isIntradayRange(range: PortfolioHistoryRange): range is IntradayPortfolioRange {
-  return range === '1D' || range === '1W';
+export function isDensifiedRange(range: PortfolioHistoryRange): range is DensifiedPortfolioRange {
+  return (DENSIFIED_PORTFOLIO_RANGES as readonly string[]).includes(range);
 }
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 /**
- * Per-range provider interval + grid step. 1D pulls 15-minute candles onto a
- * 15-minute grid; 1W pulls 30-minute candles thinned onto an hourly grid (there
- * is no native 1-hour provider interval, and 30-minute bars quantized to the
- * hour give one clean point per market hour). Both intervals are already short-
- * TTL cached by the §5.3 keystone (1D = 60 s, 1W = 5 min), so a burst of series
- * reads costs at most one upstream fetch per asset/interval.
+ * Per-range candle `fetchRange` + provider `interval` + grid `stepMs`. 1D pulls
+ * 15-minute candles onto a 15-minute grid; 1W pulls 30-minute candles thinned
+ * onto an hourly grid (there is no native 1-hour provider interval, and
+ * 30-minute bars quantized to the hour give one clean point per market hour).
+ *
+ * 1M/6M/1Y/5Y reuse the same 30-minute candles but fetch them over the recent
+ * `1M` window (all a provider reliably serves sub-daily) and quantize onto a
+ * progressively coarser grid, so the recent portion is smooth while the point
+ * count stays bounded; older days fall back to the daily slice. Every interval
+ * is short-TTL cached by the §5.3 keystone (1D = 60 s, 1W = 5 min, the shared
+ * `1M@30m` entry = 15 min), so a burst of series reads costs at most one
+ * upstream fetch per asset/interval.
  */
-const RANGE_CONFIG: Record<IntradayPortfolioRange, { interval: HistoryInterval; stepMs: number }> =
-  {
-    '1D': { interval: '15m', stepMs: 15 * MINUTE_MS },
-    '1W': { interval: '30m', stepMs: 60 * MINUTE_MS },
-  };
+const RANGE_CONFIG: Record<
+  DensifiedPortfolioRange,
+  { fetchRange: HistoryRange; interval: HistoryInterval; stepMs: number }
+> = {
+  '1D': { fetchRange: '1D', interval: '15m', stepMs: 15 * MINUTE_MS },
+  '1W': { fetchRange: '1W', interval: '30m', stepMs: 60 * MINUTE_MS },
+  '1M': { fetchRange: '1M', interval: '30m', stepMs: 60 * MINUTE_MS },
+  '6M': { fetchRange: '1M', interval: '30m', stepMs: 120 * MINUTE_MS },
+  '1Y': { fetchRange: '1M', interval: '30m', stepMs: 240 * MINUTE_MS },
+  '5Y': { fetchRange: '1M', interval: '30m', stepMs: 240 * MINUTE_MS },
+};
 
-export function intradayIntervalFor(range: IntradayPortfolioRange): HistoryInterval {
+export function densifiedIntervalFor(range: DensifiedPortfolioRange): HistoryInterval {
   return RANGE_CONFIG[range].interval;
 }
 
-export function intradayStepMs(range: IntradayPortfolioRange): number {
+export function densifiedStepMs(range: DensifiedPortfolioRange): number {
   return RANGE_CONFIG[range].stepMs;
+}
+
+/** The recent §5.3 range window whose sub-daily candles densify `range`. */
+export function densifiedFetchRange(range: DensifiedPortfolioRange): HistoryRange {
+  return RANGE_CONFIG[range].fetchRange;
 }
 
 /** One native-currency intraday price observation for an asset. */
@@ -105,7 +140,7 @@ export interface IntradayValuePoint {
 }
 
 export interface BuildIntradayEurInput {
-  range: IntradayPortfolioRange;
+  range: DensifiedPortfolioRange;
   /** Inclusive window start day (ISO), i.e. `rangeCutoffIso(range, today)`. */
   cutoffDay: string;
   /** Current wall-clock (epoch-ms) — bounds the "today" fallback stamp. */

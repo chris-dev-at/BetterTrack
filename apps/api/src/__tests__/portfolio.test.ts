@@ -1280,12 +1280,16 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
     expect((five.body.points as unknown[]).length).toBeGreaterThanOrEqual(
       (year.body.points as unknown[]).length,
     );
-    // Silent-drop safety: 5Y is never longer than MAX.
+    // Silent-drop safety: 5Y never reaches back further than MAX. Point counts
+    // are no longer comparable — non-MAX ranges densify their recent window to a
+    // sub-daily grid (2026-07-20) while MAX stays daily, so 5Y can carry MORE
+    // points than MAX. Compare date coverage, the invariant that actually holds.
     const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(max.status).toBe(200);
-    expect((max.body.points as unknown[]).length).toBeGreaterThanOrEqual(
-      (five.body.points as unknown[]).length,
-    );
+    const maxPts = max.body.points as Array<{ date: string }>;
+    const fivePts = five.body.points as Array<{ date: string }>;
+    expect(fivePts[0]!.date >= maxPts[0]!.date).toBe(true);
+    expect(fivePts[fivePts.length - 1]!.date <= maxPts[maxPts.length - 1]!.date).toBe(true);
   });
 
   it('graceful when history is shorter than the selected range (5Y over a 3-day portfolio → whole history)', async () => {
