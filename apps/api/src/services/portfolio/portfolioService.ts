@@ -88,9 +88,11 @@ import type { AudienceService } from '../social/audienceService';
 import type { TaxService } from '../tax/taxService';
 import {
   buildIntradayEurValuePoints,
-  intradayIntervalFor,
+  densifiedFetchRange,
+  densifiedIntervalFor,
   intradayPerformancePoints,
-  isIntradayRange,
+  isDensifiedRange,
+  type DensifiedPortfolioRange,
   type IntradayCandle,
   type IntradayValuePoint,
 } from './portfolioIntraday';
@@ -391,9 +393,10 @@ interface SeriesIngredients {
  * Non-MAX ranges (§6.9 + V4-P0: 1D / 1W / 1M / 6M / 1Y / 5Y / MAX) resolve to
  * a cutoff via {@link rangeCutoffIso}: day-spans by ISO-day arithmetic, month
  * spans through {@link monthsBefore} (so a month-boundary edge case like "Mar
- * 31 − 1M" cannot silently shorten a window, issue #218). The stored series
- * is daily-resolution; sub-week windows slice fewer points off the same
- * series (no intraday sourcing — that stays Live Mode's job, §7).
+ * 31 − 1M" cannot silently shorten a window, issue #218). The stored snapshot
+ * series is daily-resolution; the read path densifies every non-MAX range with
+ * a sub-daily curve on top of it (see {@link buildIntradayHistory}) — the same
+ * cutoff bounds both the daily slice and the densified window.
  */
 const RANGE_MONTHS: Record<'1M' | '6M' | '1Y' | '5Y', number> = {
   '1M': 1,
@@ -928,13 +931,21 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    */
   async function loadIntradayCandles(
     asset: { id: string; providerId: string; providerRef: string },
-    range: '1D' | '1W',
+    range: DensifiedPortfolioRange,
     cutoffMs: number,
   ): Promise<IntradayCandle[]> {
     const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
     const byMs = new Map<number, number>();
     try {
-      const history = await marketData.getHistory(ref, range, intradayIntervalFor(range));
+      // 1M/6M/1Y/5Y fetch their sub-daily candles over the recent `fetchRange`
+      // (all a provider serves at an intraday interval), sharing one §5.3 cache
+      // entry; 1D/1W fetch over their own range. The builder densifies the days
+      // candles cover and daily-fills the rest.
+      const history = await marketData.getHistory(
+        ref,
+        densifiedFetchRange(range),
+        densifiedIntervalFor(range),
+      );
       for (const point of history.value) {
         const atMs = Date.parse(point.time);
         if (!Number.isNaN(atMs) && Number.isFinite(point.close)) byMs.set(atMs, point.close);
@@ -957,16 +968,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /**
-   * The dense intraday history for a 1D/1W range (issue #556): the daily
-   * snapshot series scaled by each held asset's intraday price ratio (see
-   * {@link buildIntradayEurValuePoints}). Returns `null` for a portfolio with no
-   * history at all (the caller falls through to the daily path's empty result).
-   * With no intraday candles for any asset the builder degrades to one point per
-   * in-window day — exactly the pre-#556 daily slice.
+   * The densified (sub-daily) history for a non-MAX range (issue #556;
+   * 2026-07-20 resolution bump): the daily snapshot series scaled by each held
+   * asset's intraday price ratio (see {@link buildIntradayEurValuePoints}).
+   * Returns `null` for a portfolio with no history at all (the caller falls
+   * through to the daily path's empty result). With no intraday candles for any
+   * asset the builder degrades to one point per in-window day — exactly the
+   * pre-#556 daily slice — which is also what the older, beyond-`fetchRange`
+   * days of a 1M+ span get.
    */
   async function buildIntradayHistory(
     portfolioId: string,
-    range: '1D' | '1W',
+    range: DensifiedPortfolioRange,
     fx: CurrencyService,
     today: string,
   ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
@@ -2001,11 +2014,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
       const today = todayIso();
 
-      // 1D / 1W render a dense intraday curve rather than a ~2-point daily slice
-      // (V5-P1 arc d, issue #556). The intraday builder degrades to the daily
-      // slice when no intraday data exists, and returns null only for a
-      // history-less portfolio — which falls through to the empty daily result.
-      if (isIntradayRange(range)) {
+      // Every non-MAX range renders a densified (sub-daily) curve rather than a
+      // plain daily slice (V5-P1 arc d, issue #556; 2026-07-20 resolution bump).
+      // 1D/1W are full intraday curves; 1M/6M/1Y/5Y densify their recent window
+      // and daily-fill older days. The builder degrades to the daily slice when
+      // no intraday data exists, and returns null only for a history-less
+      // portfolio — which falls through to the empty daily result. MAX keeps its
+      // since-inception daily curve.
+      if (isDensifiedRange(range)) {
         const intraday = await buildIntradayHistory(portfolioId, range, fx, today);
         if (intraday) {
           if (!overlay) {

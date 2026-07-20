@@ -9,11 +9,13 @@ import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
- * V5-P1 intraday portfolio series (issue #556): the 1D/1W ranges render a dense
- * intraday curve instead of ~2 daily closes. End-to-end over the real snapshot
- * layer + provider stub: density, the timestamped shape, seamless stitching to
- * the fresh "today" value, custom-asset carry-forward, per-asset provider
- * discipline, and the #555 conditional-request round-trip.
+ * V5-P1 intraday portfolio series (issue #556): every non-MAX range renders a
+ * densified curve instead of ~2 daily closes — 1D/1W a full intraday curve,
+ * 1M/6M/1Y/5Y a sub-daily grid over their recent window (2026-07-20 resolution
+ * bump). End-to-end over the real snapshot layer + provider stub: density, the
+ * timestamped shape, seamless stitching to the fresh "today" value, custom-asset
+ * carry-forward, per-asset provider discipline, and the #555 conditional-request
+ * round-trip.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -242,5 +244,50 @@ describe('intraday portfolio series (#556)', () => {
     // several points, never the old two-close 1W slice.
     expect(points.length).toBeGreaterThan(2);
     for (const p of points) expect(typeof p.time).toBe('string');
+  });
+
+  it('densifies the 1M curve via a shared 30-minute fetch, stitching to today', async () => {
+    const { agent, pid, stub } = await setup();
+
+    // Warm the snapshot state so the measured read runs the settled path.
+    await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    stub.calls.length = 0;
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    expect(res.status).toBe(200);
+    const points = res.body.points as Array<{ date: string; time?: string; valueEur: number }>;
+    const performance = res.body.performance as Array<{ time?: string; pct: number }>;
+
+    // Denser than the ~few-daily-point slice, and every point is timestamped and
+    // time-ordered (the recent day is sub-daily; older days are daily fallbacks).
+    expect(points.length).toBeGreaterThan(2);
+    for (let i = 0; i < points.length; i += 1) {
+      expect(typeof points[i]!.time).toBe('string');
+      if (i > 0) {
+        expect(Date.parse(points[i]!.time!)).toBeGreaterThan(Date.parse(points[i - 1]!.time!));
+      }
+    }
+    // The recent window is genuinely sub-daily: at least one calendar day carries
+    // more than one point.
+    const perDay = new Map<string, number>();
+    for (const p of points) perDay.set(p.date, (perDay.get(p.date) ?? 0) + 1);
+    expect([...perDay.values()].some((n) => n > 1)).toBe(true);
+
+    // Performance stays aligned 1:1 and opens the window at 0 %.
+    expect(performance.length).toBe(points.length);
+    expect(performance[0]!.pct).toBeCloseTo(0, 9);
+
+    // Stitching: the last point equals the fresh daily "today" value (MAX tail).
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    const maxPoints = max.body.points as Array<{ valueEur: number }>;
+    expect(points[points.length - 1]!.valueEur).toBeCloseTo(
+      maxPoints[maxPoints.length - 1]!.valueEur,
+      6,
+    );
+
+    // Provider discipline: exactly one 30-minute fetch per MARKET asset, shared
+    // across the densified ranges; the manual custom asset is never fetched.
+    const thirtyMinFetches = stub.calls.filter((c) => c.interval === '30m');
+    expect(thirtyMinFetches.map((c) => c.ref).sort()).toEqual(['AAPL', 'BAYN.DE']);
   });
 });
