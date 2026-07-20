@@ -9,13 +9,13 @@ import { createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
- * V5-P1 intraday portfolio series (issue #556): every non-MAX range renders a
- * densified curve instead of ~2 daily closes — 1D/1W a full intraday curve,
- * 1M/6M/1Y/5Y a sub-daily grid over their recent window (2026-07-20 resolution
- * bump). End-to-end over the real snapshot layer + provider stub: density, the
- * timestamped shape, seamless stitching to the fresh "today" value, custom-asset
- * carry-forward, per-asset provider discipline, and the #555 conditional-request
- * round-trip.
+ * V5-P1 intraday portfolio series (issue #556): the short ranges 1D/1W/1M render
+ * a sub-daily curve instead of ~2 daily closes (2026-07-20 point-budget rework —
+ * longer 6M/1Y/5Y ranges downsample the daily series instead, covered in
+ * portfolio.test.ts). End-to-end over the real snapshot layer + provider stub:
+ * density, the timestamped shape, seamless stitching to the fresh "today" value,
+ * custom-asset carry-forward, per-asset provider discipline, and the #555
+ * conditional-request round-trip.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -246,7 +246,7 @@ describe('intraday portfolio series (#556)', () => {
     for (const p of points) expect(typeof p.time).toBe('string');
   });
 
-  it('densifies the 1M curve via a shared 30-minute fetch, stitching to today', async () => {
+  it('renders a sub-daily 1M curve via a 30-minute fetch, stitching to today', async () => {
     const { agent, pid, stub } = await setup();
 
     // Warm the snapshot state so the measured read runs the settled path.
@@ -285,8 +285,8 @@ describe('intraday portfolio series (#556)', () => {
       6,
     );
 
-    // Provider discipline: exactly one 30-minute fetch per MARKET asset, shared
-    // across the densified ranges; the manual custom asset is never fetched.
+    // Provider discipline: exactly one 30-minute fetch per MARKET asset; the
+    // manual custom asset is never fetched intraday.
     const thirtyMinFetches = stub.calls.filter((c) => c.interval === '30m');
     expect(thirtyMinFetches.map((c) => c.ref).sort()).toEqual(['AAPL', 'BAYN.DE']);
   });

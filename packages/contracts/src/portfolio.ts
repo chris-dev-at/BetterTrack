@@ -531,11 +531,13 @@ export type PortfolioResponse = z.infer<typeof portfolioResponseSchema>;
 
 /**
  * Portfolio history ranges (§6.9 + V4-P0): 1D / 1W / 1M / 6M / 1Y / 5Y / MAX.
- * 1M+ window the daily-resolution snapshot series; **1D / 1W render a dense
- * intraday curve** (V5-P1 arc d, issue #556) — each point additionally carries
- * an ISO `time` timestamp (see {@link portfolioHistoryPointSchema}). Portfolios
- * younger than the selected span degrade to whatever exists, never a broken
- * empty chart.
+ * Every range aims at a shared point budget (~300 points) so a chart is smooth
+ * yet cheap at any zoom: **1D / 1W / 1M render a sub-daily intraday curve**
+ * (V5-P1 arc d, issue #556) — those points additionally carry an ISO `time`
+ * timestamp (see {@link portfolioHistoryPointSchema}); **6M / 1Y / 5Y downsample
+ * the daily snapshot series** to the budget (every k-th day); MAX is the full
+ * daily since-inception curve. Portfolios younger than the selected span degrade
+ * to whatever exists, never a broken empty chart.
  */
 export const PORTFOLIO_HISTORY_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y', 'MAX'] as const;
 export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
@@ -565,11 +567,11 @@ export const portfolioHistoryPointSchema = z
     /** The calendar day the point falls on (ISO `YYYY-MM-DD`), UTC. */
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     /**
-     * Exact instant of an **intraday** point (ISO-8601), present only on the
-     * 1D/1W dense curves (V5-P1 arc d, issue #556). Absent on the daily-grid
-     * ranges (1M+), where `date` alone locates the point. Multiple intraday
-     * points share a `date` and are disambiguated by `time`; the client keys
-     * the chart on `time ?? date`.
+     * Exact instant of an **intraday** point (ISO-8601), present on the
+     * sub-daily curves 1D/1W/1M (V5-P1 arc d, issue #556). Absent on the
+     * daily-grid ranges (6M/1Y/5Y/MAX), where `date` alone locates the point.
+     * Multiple intraday points share a `date` and are disambiguated by `time`;
+     * the client keys the chart on `time ?? date`.
      */
     time: z.string().datetime().optional(),
     valueEur: z.number(),
@@ -613,9 +615,9 @@ export const portfolioPerformancePointSchema = z
   .object({
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     /**
-     * Exact instant of an intraday performance point (ISO-8601), present only
-     * on the 1D/1W dense curves (issue #556) and aligned 1:1 with `points`.
-     * Absent on the daily-grid ranges.
+     * Exact instant of an intraday performance point (ISO-8601), present on the
+     * sub-daily curves 1D/1W/1M (issue #556) and aligned 1:1 with `points`.
+     * Absent on the daily-grid ranges (6M/1Y/5Y/MAX).
      */
     time: z.string().datetime().optional(),
     pct: z.number(),
@@ -630,7 +632,8 @@ export const portfolioHistoryResponseSchema = z
     baseCurrency: currencyCodeSchema,
     points: z.array(portfolioHistoryPointSchema),
     /** Performance-% display mode data (issue #125), aligned 1:1 with `points`
-     * (daily grid on 1M+, the intraday grid on 1D/1W — issue #556). */
+     * (the intraday grid on 1D/1W/1M, the downsampled daily grid on 6M/1Y/5Y,
+     * full daily on MAX — issue #556). */
     performance: z.array(portfolioPerformancePointSchema),
     assets: z.array(portfolioHistoryOverlaySchema).optional(),
   })

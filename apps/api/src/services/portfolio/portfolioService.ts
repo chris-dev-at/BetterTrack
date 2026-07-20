@@ -88,12 +88,15 @@ import type { AudienceService } from '../social/audienceService';
 import type { TaxService } from '../tax/taxService';
 import {
   buildIntradayEurValuePoints,
-  densifiedFetchRange,
-  densifiedIntervalFor,
+  downsampledIndices,
+  intradayFetchRange,
+  intradayIntervalFor,
   intradayPerformancePoints,
-  isDensifiedRange,
-  type DensifiedPortfolioRange,
+  isDownsampledRange,
+  isIntradayRange,
+  TARGET_POINTS,
   type IntradayCandle,
+  type IntradayPortfolioRange,
   type IntradayValuePoint,
 } from './portfolioIntraday';
 import type { PortfolioSnapshotService } from './portfolioSnapshots';
@@ -394,9 +397,10 @@ interface SeriesIngredients {
  * a cutoff via {@link rangeCutoffIso}: day-spans by ISO-day arithmetic, month
  * spans through {@link monthsBefore} (so a month-boundary edge case like "Mar
  * 31 − 1M" cannot silently shorten a window, issue #218). The stored snapshot
- * series is daily-resolution; the read path densifies every non-MAX range with
- * a sub-daily curve on top of it (see {@link buildIntradayHistory}) — the same
- * cutoff bounds both the daily slice and the densified window.
+ * series is daily-resolution; the read path then renders each range to the point
+ * budget — a sub-daily curve for 1D/1W/1M ({@link buildIntradayHistory}) and a
+ * downsample of the daily slice for 6M/1Y/5Y ({@link downsampledIndices}) — with
+ * this same cutoff bounding the window either way.
  */
 const RANGE_MONTHS: Record<'1M' | '6M' | '1Y' | '5Y', number> = {
   '1M': 1,
@@ -931,20 +935,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    */
   async function loadIntradayCandles(
     asset: { id: string; providerId: string; providerRef: string },
-    range: DensifiedPortfolioRange,
+    range: IntradayPortfolioRange,
     cutoffMs: number,
   ): Promise<IntradayCandle[]> {
     const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
     const byMs = new Map<number, number>();
     try {
-      // 1M/6M/1Y/5Y fetch their sub-daily candles over the recent `fetchRange`
-      // (all a provider serves at an intraday interval), sharing one §5.3 cache
-      // entry; 1D/1W fetch over their own range. The builder densifies the days
-      // candles cover and daily-fills the rest.
+      // 1D/1W fetch over their own range; 1M over the recent month `fetchRange`.
       const history = await marketData.getHistory(
         ref,
-        densifiedFetchRange(range),
-        densifiedIntervalFor(range),
+        intradayFetchRange(range),
+        intradayIntervalFor(range),
       );
       for (const point of history.value) {
         const atMs = Date.parse(point.time);
@@ -968,18 +969,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   }
 
   /**
-   * The densified (sub-daily) history for a non-MAX range (issue #556;
-   * 2026-07-20 resolution bump): the daily snapshot series scaled by each held
-   * asset's intraday price ratio (see {@link buildIntradayEurValuePoints}).
+   * The intraday (sub-daily) history for a short range — 1D/1W/1M (issue #556;
+   * 2026-07-20 point-budget rework): the daily snapshot series scaled by each
+   * held asset's intraday price ratio (see {@link buildIntradayEurValuePoints}).
    * Returns `null` for a portfolio with no history at all (the caller falls
    * through to the daily path's empty result). With no intraday candles for any
    * asset the builder degrades to one point per in-window day — exactly the
-   * pre-#556 daily slice — which is also what the older, beyond-`fetchRange`
-   * days of a 1M+ span get.
+   * pre-#556 daily slice.
    */
   async function buildIntradayHistory(
     portfolioId: string,
-    range: DensifiedPortfolioRange,
+    range: IntradayPortfolioRange,
     fx: CurrencyService,
     today: string,
   ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
@@ -2014,14 +2014,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
       const today = todayIso();
 
-      // Every non-MAX range renders a densified (sub-daily) curve rather than a
-      // plain daily slice (V5-P1 arc d, issue #556; 2026-07-20 resolution bump).
-      // 1D/1W are full intraday curves; 1M/6M/1Y/5Y densify their recent window
-      // and daily-fill older days. The builder degrades to the daily slice when
-      // no intraday data exists, and returns null only for a history-less
-      // portfolio — which falls through to the empty daily result. MAX keeps its
-      // since-inception daily curve.
-      if (isDensifiedRange(range)) {
+      // Short ranges (1D/1W/1M) render a sub-daily intraday curve rather than a
+      // ~2-point daily slice (V5-P1 arc d, issue #556; 2026-07-20 point-budget
+      // rework). The builder degrades to the daily slice when no intraday data
+      // exists, and returns null only for a history-less portfolio — which falls
+      // through to the empty daily result. 6M/1Y/5Y take the daily path below and
+      // downsample it to the point budget; MAX keeps its full since-inception
+      // daily curve.
+      if (isIntradayRange(range)) {
         const intraday = await buildIntradayHistory(portfolioId, range, fx, today);
         if (intraday) {
           if (!overlay) {
@@ -2053,16 +2053,27 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // USD user's performance includes the FX leg of holding EUR-priced
       // assets, exactly as their real USD-terms return does (V3-P10d).
       const series = await seriesInBase(payload, fx);
-      const points = sliceRange(series.points, range, today);
+      let points = sliceRange(series.points, range, today);
       // The performance curve is cumulative since inception. MAX serves it
       // unchanged: the domain index is anchored at 1 (0 %) *before* day one,
       // so day one's execution→close move (and its fee drag) is genuine
       // since-inception return — re-basing to the first plotted point would
-      // divide it out of every response. A range slice (1M/6M/1Y/5Y) IS
-      // re-based to 0 % at the window start (#125): it shows the TWR of that
-      // window, not an arbitrary offset. Compounding, not subtraction.
+      // divide it out of every response. A range slice (6M/1Y/5Y) IS re-based
+      // to 0 % at the window start (#125): it shows the TWR of that window, not
+      // an arbitrary offset. Compounding, not subtraction.
       const perfSlice = sliceRange(timeWeightedReturn(series.points, series.flows), range, today);
-      const performance = range === 'MAX' ? perfSlice : rebasePerformance(perfSlice);
+      let performance = range === 'MAX' ? perfSlice : rebasePerformance(perfSlice);
+
+      // 6M/1Y/5Y thin the daily series to the shared point budget (2026-07-20):
+      // every k-th day, endpoints kept, so a long chart is ~TARGET_POINTS points
+      // spanning more time rather than one-per-day. points ↔ performance stay
+      // aligned 1:1 (same indices); each kept point is a real snapshot value, so
+      // the window still opens at 0 % and ends at the fresh "today" value.
+      if (isDownsampledRange(range)) {
+        const keep = downsampledIndices(points.length, TARGET_POINTS);
+        points = keep.map((i) => points[i]!);
+        performance = keep.map((i) => performance[i]!);
+      }
       if (!overlay) return { range, baseCurrency: fx.baseCurrency, points, performance };
 
       // Overlays share the curve's daily grid, so the same range slice keeps
@@ -2070,8 +2081,19 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // the window is dropped rather than sent as an empty series. Overlays are
       // per-asset PRICE curves — not snapshot material — assembled on demand
       // from the §5.3-cached provider histories + stored `price_history` rows.
+      const keptDates = new Set(points.map((p) => p.date));
       const assets = (await snapshots.getOverlays(portfolioId))
-        .map((a) => ({ ...a, points: sliceRange(a.points, range, today) }))
+        .map((a) => {
+          const sliced = sliceRange(a.points, range, today);
+          // Thin overlays to the same days the portfolio curve kept, so a
+          // downsampled range stays aligned and light (no denser overlay lines).
+          return {
+            ...a,
+            points: isDownsampledRange(range)
+              ? sliced.filter((p) => keptDates.has(p.date))
+              : sliced,
+          };
+        })
         .filter((a) => a.points.length > 0);
       return { range, baseCurrency: fx.baseCurrency, points, performance, assets };
     },

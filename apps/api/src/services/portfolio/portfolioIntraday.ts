@@ -12,12 +12,28 @@ import {
  *
  * The daily snapshot layer (issue #553) serves one close per calendar day, so a
  * 1D range collapsed to ~2 points ("yesterday close → today"). This module
- * densifies **every non-MAX range** into a sub-daily curve without a second
- * value engine: it reuses the daily series as the anchor and scales each held
- * asset by its own **intraday price ratio**. 1D/1W get a full intraday curve;
- * 1M/6M/1Y/5Y get a sub-daily grid over the recent window the provider still
- * serves at an intraday interval, degrading to the daily slice for older days
- * (2026-07-20 resolution bump).
+ * densifies the short ranges into a sub-daily curve without a second value
+ * engine: it reuses the daily series as the anchor and scales each held asset by
+ * its own **intraday price ratio**.
+ *
+ * ## Point budget, not fixed density (2026-07-20 rework)
+ *
+ * Every chart aims at roughly the SAME modest number of plotted points
+ * ({@link TARGET_POINTS}) so it is light on the server and loads fast — density
+ * therefore DECREASES as the span grows, never the reverse. Two mechanisms serve
+ * it, split by whether sub-daily market data even exists for the span:
+ *
+ *  - **1D / 1W / 1M — the intraday curve here.** A provider serves sub-daily
+ *    candles only for a recent window (§5.3: 30-minute bars reach ~60 days), and
+ *    1M fits inside it. 1D/1W keep their fine per-day resolution (a single day
+ *    is *meant* to be the highest per-time detail); 1M coarsens its grid to the
+ *    budget — a smooth month, not an every-30-minutes wall.
+ *  - **6M / 1Y / 5Y — daily downsample (see {@link downsampledIndices}).** No
+ *    sub-daily fetch and no reuse of the 1M candles: the already-computed daily
+ *    snapshot series is thinned to ≤ {@link TARGET_POINTS} by taking every k-th
+ *    day (k = ⌈days / TARGET_POINTS⌉), so a 5-year chart is ~TARGET points across
+ *    five years rather than ~1250 daily points — cheap, adds no upstream fetch.
+ *  - **MAX** keeps its full daily since-inception curve (unchanged).
  *
  * ## The anchoring identity
  *
@@ -48,77 +64,113 @@ import {
  * the whole window the output degrades precisely to the daily slice (one point
  * per in-window day), i.e. the pre-#556 behaviour.
  *
- * ## Granularity (planner-picked, §13.5 arc d; 2026-07-20 resolution bump)
+ * ## Grid granularity
  *
- * The grid step coarsens as the span grows, so every range reads as a smooth
- * curve without an unbounded point count: 1D → **15-minute**, 1W → **hourly**,
- * 1M → **hourly**, 6M → **2-hour**, 1Y/5Y → **4-hour**. Provider candles are
- * quantized onto that fixed step so every asset lands on the same grid marks
- * (aligned, never jagged) while grid points exist only where intraday data does
- * (no dead overnight/weekend flats).
- *
- * A provider only serves sub-daily candles for a recent window (§5.3: 30-minute
- * bars reach ~60 days back), so the 1M/6M/1Y/5Y ranges fetch their candles over
- * the recent **`fetchRange`** (`1M`) rather than the whole span. The recent
- * portion therefore densifies to the grid while older days keep their single
- * daily point (the built-in degrade-to-daily-slice path) — the long ranges get
- * a smoother recent curve at a bounded cost, and 1M densifies end to end. All
- * four share the one `1M@30m` §5.3 cache entry, so a burst of reads across them
- * costs at most one upstream fetch per asset.
+ * Provider candles are quantized onto a fixed per-range step so every asset
+ * lands on the same grid marks (aligned, never jagged) while grid points exist
+ * only where intraday data does (no dead overnight/weekend flats). 1D keeps a
+ * 15-minute grid and 1W an hourly one; 1M coarsens to ~`span / TARGET_POINTS`
+ * (a few hours) so a 24/7 asset lands near the budget and an equity — trading
+ * only market hours — comfortably below it.
  */
 
 /**
- * The ranges that render a densified (sub-daily) curve rather than a plain daily
- * slice — every range except MAX (#556; 2026-07-20 resolution bump extends the
- * original 1D/1W set to 1M/6M/1Y/5Y).
+ * Target number of plotted points per chart — the one knob (2026-07-20 rework).
+ * Each range picks its resolution so it renders roughly this many points: a
+ * smooth line that is cheap to compute, transfer and draw at every zoom. Kept in
+ * the 250–350 band; the value is presentational, so tuning it never touches a
+ * money number.
  */
-export const DENSIFIED_PORTFOLIO_RANGES = ['1D', '1W', '1M', '6M', '1Y', '5Y'] as const;
-export type DensifiedPortfolioRange = (typeof DENSIFIED_PORTFOLIO_RANGES)[number];
-
-export function isDensifiedRange(range: PortfolioHistoryRange): range is DensifiedPortfolioRange {
-  return (DENSIFIED_PORTFOLIO_RANGES as readonly string[]).includes(range);
-}
+export const TARGET_POINTS = 300;
 
 const MINUTE_MS = 60_000;
 const DAY_MS = 86_400_000;
 
 /**
- * Per-range candle `fetchRange` + provider `interval` + grid `stepMs`. 1D pulls
- * 15-minute candles onto a 15-minute grid; 1W pulls 30-minute candles thinned
- * onto an hourly grid (there is no native 1-hour provider interval, and
- * 30-minute bars quantized to the hour give one clean point per market hour).
- *
- * 1M/6M/1Y/5Y reuse the same 30-minute candles but fetch them over the recent
- * `1M` window (all a provider reliably serves sub-daily) and quantize onto a
- * progressively coarser grid, so the recent portion is smooth while the point
- * count stays bounded; older days fall back to the daily slice. Every interval
- * is short-TTL cached by the §5.3 keystone (1D = 60 s, 1W = 5 min, the shared
- * `1M@30m` entry = 15 min), so a burst of series reads costs at most one
+ * The ranges rendered by the intraday curve here: 1D/1W/1M. Sub-daily market
+ * data exists for all three (1M sits inside the provider's ~60-day intraday
+ * window), so they anchor a sub-daily curve to the daily snapshot. Longer spans
+ * (6M/1Y/5Y) have no sub-daily data that far back and instead downsample the
+ * daily series ({@link isDownsampledRange}); MAX stays full daily.
+ */
+export const INTRADAY_PORTFOLIO_RANGES = ['1D', '1W', '1M'] as const;
+export type IntradayPortfolioRange = (typeof INTRADAY_PORTFOLIO_RANGES)[number];
+
+export function isIntradayRange(range: PortfolioHistoryRange): range is IntradayPortfolioRange {
+  return (INTRADAY_PORTFOLIO_RANGES as readonly string[]).includes(range);
+}
+
+/**
+ * The ranges served by downsampling the already-computed daily snapshot series
+ * to {@link TARGET_POINTS} (no upstream fetch): 6M/1Y/5Y.
+ */
+export const DOWNSAMPLED_PORTFOLIO_RANGES = ['6M', '1Y', '5Y'] as const;
+export type DownsampledPortfolioRange = (typeof DOWNSAMPLED_PORTFOLIO_RANGES)[number];
+
+export function isDownsampledRange(
+  range: PortfolioHistoryRange,
+): range is DownsampledPortfolioRange {
+  return (DOWNSAMPLED_PORTFOLIO_RANGES as readonly string[]).includes(range);
+}
+
+/**
+ * 1M keeps sub-daily candles (it is inside the provider's ~60-day intraday
+ * window) but coarsens to the point budget instead of the 30-minute fetch
+ * granularity: the grid step is the 1-month span divided by {@link TARGET_POINTS}
+ * (~2.5 h). A "nice month curve", not an every-30-minutes wall.
+ */
+const INTRADAY_MONTH_STEP_MS =
+  Math.max(1, Math.round((31 * DAY_MS) / TARGET_POINTS / MINUTE_MS)) * MINUTE_MS;
+
+/**
+ * Per-range candle `fetchRange` + provider `interval` + grid `stepMs` for the
+ * intraday ranges. 1D pulls 15-minute candles onto a 15-minute grid; 1W pulls
+ * 30-minute candles thinned onto an hourly grid (there is no native 1-hour
+ * provider interval, and 30-minute bars quantized to the hour give one clean
+ * point per market hour); 1M reuses the 30-minute candles on the budget-sized
+ * grid. Every interval is short-TTL cached by the §5.3 keystone (1D = 60 s,
+ * 1W = 5 min, 1M = 15 min), so a burst of series reads costs at most one
  * upstream fetch per asset/interval.
  */
 const RANGE_CONFIG: Record<
-  DensifiedPortfolioRange,
+  IntradayPortfolioRange,
   { fetchRange: HistoryRange; interval: HistoryInterval; stepMs: number }
 > = {
   '1D': { fetchRange: '1D', interval: '15m', stepMs: 15 * MINUTE_MS },
   '1W': { fetchRange: '1W', interval: '30m', stepMs: 60 * MINUTE_MS },
-  '1M': { fetchRange: '1M', interval: '30m', stepMs: 60 * MINUTE_MS },
-  '6M': { fetchRange: '1M', interval: '30m', stepMs: 120 * MINUTE_MS },
-  '1Y': { fetchRange: '1M', interval: '30m', stepMs: 240 * MINUTE_MS },
-  '5Y': { fetchRange: '1M', interval: '30m', stepMs: 240 * MINUTE_MS },
+  '1M': { fetchRange: '1M', interval: '30m', stepMs: INTRADAY_MONTH_STEP_MS },
 };
 
-export function densifiedIntervalFor(range: DensifiedPortfolioRange): HistoryInterval {
+export function intradayIntervalFor(range: IntradayPortfolioRange): HistoryInterval {
   return RANGE_CONFIG[range].interval;
 }
 
-export function densifiedStepMs(range: DensifiedPortfolioRange): number {
+export function intradayStepMs(range: IntradayPortfolioRange): number {
   return RANGE_CONFIG[range].stepMs;
 }
 
-/** The recent §5.3 range window whose sub-daily candles densify `range`. */
-export function densifiedFetchRange(range: DensifiedPortfolioRange): HistoryRange {
+/** The §5.3 range window whose candles feed `range` (1D/1W self; 1M the month). */
+export function intradayFetchRange(range: IntradayPortfolioRange): HistoryRange {
   return RANGE_CONFIG[range].fetchRange;
+}
+
+/**
+ * Indices of an `n`-point series thinned to ≤ `target` points by keeping every
+ * k-th (k = ⌈n / target⌉) plus the first and last — the presentation-only day
+ * sampling the 6M/1Y/5Y charts apply to the daily snapshot series. The endpoints
+ * are always kept so the window still opens at its start (0 % after re-basing)
+ * and ends at the fresh "today" value; each kept index is a real snapshot day,
+ * so every plotted value stays exactly correct. `n ≤ target` returns every index
+ * unchanged (short spans are never thinned).
+ */
+export function downsampledIndices(n: number, target: number): number[] {
+  if (n <= 0) return [];
+  if (n <= target) return Array.from({ length: n }, (_, i) => i);
+  const k = Math.ceil(n / target);
+  const indices: number[] = [];
+  for (let i = 0; i < n; i += k) indices.push(i);
+  if (indices[indices.length - 1] !== n - 1) indices.push(n - 1);
+  return indices;
 }
 
 /** One native-currency intraday price observation for an asset. */
@@ -140,7 +192,7 @@ export interface IntradayValuePoint {
 }
 
 export interface BuildIntradayEurInput {
-  range: DensifiedPortfolioRange;
+  range: IntradayPortfolioRange;
   /** Inclusive window start day (ISO), i.e. `rangeCutoffIso(range, today)`. */
   cutoffDay: string;
   /** Current wall-clock (epoch-ms) — bounds the "today" fallback stamp. */
