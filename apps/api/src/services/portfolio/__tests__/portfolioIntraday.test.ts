@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest';
 import type { FlowPoint, ValuePoint } from '../../../domain/holdings';
 import {
   buildIntradayEurValuePoints,
-  densifiedFetchRange,
-  densifiedIntervalFor,
-  densifiedStepMs,
+  downsampledIndices,
+  intradayFetchRange,
+  intradayIntervalFor,
   intradayPerformancePoints,
-  isDensifiedRange,
+  intradayStepMs,
+  isDownsampledRange,
+  isIntradayRange,
+  TARGET_POINTS,
   type IntradayCandle,
   type IntradayValuePoint,
 } from '../portfolioIntraday';
@@ -36,37 +39,62 @@ function candlesForDay(
   return Array.from({ length: count }, (_, i) => ({ atMs: base + i * stepMs, price: price(i) }));
 }
 
-describe('densified range config', () => {
-  it('classifies every range but MAX as densified', () => {
-    for (const r of ['1D', '1W', '1M', '6M', '1Y', '5Y'] as const) {
-      expect(isDensifiedRange(r)).toBe(true);
+describe('point-budget range routing + config', () => {
+  it('routes 1D/1W/1M through the intraday curve and 6M/1Y/5Y through the daily downsample', () => {
+    for (const r of ['1D', '1W', '1M'] as const) {
+      expect(isIntradayRange(r)).toBe(true);
+      expect(isDownsampledRange(r)).toBe(false);
     }
-    expect(isDensifiedRange('MAX')).toBe(false);
+    for (const r of ['6M', '1Y', '5Y'] as const) {
+      expect(isDownsampledRange(r)).toBe(true);
+      expect(isIntradayRange(r)).toBe(false);
+    }
+    // MAX is neither: full daily since-inception curve.
+    expect(isIntradayRange('MAX')).toBe(false);
+    expect(isDownsampledRange('MAX')).toBe(false);
   });
 
-  it('picks a grid that coarsens as the span grows, off a provider-safe fetch window', () => {
-    // 1D/1W unchanged; 1M/6M/1Y/5Y reuse the recent 1M@30m candles on a
-    // progressively coarser grid (hourly → 2-hour → 4-hour).
-    expect(densifiedIntervalFor('1D')).toBe('15m');
-    expect(densifiedStepMs('1D')).toBe(15 * MIN);
-    expect(densifiedFetchRange('1D')).toBe('1D');
+  it('keeps 1D/1W fine (owner-approved) and coarsens 1M to the point budget', () => {
+    expect(intradayIntervalFor('1D')).toBe('15m');
+    expect(intradayStepMs('1D')).toBe(15 * MIN);
+    expect(intradayFetchRange('1D')).toBe('1D');
 
-    expect(densifiedIntervalFor('1W')).toBe('30m');
-    expect(densifiedStepMs('1W')).toBe(60 * MIN);
-    expect(densifiedFetchRange('1W')).toBe('1W');
+    expect(intradayIntervalFor('1W')).toBe('30m');
+    expect(intradayStepMs('1W')).toBe(60 * MIN);
+    expect(intradayFetchRange('1W')).toBe('1W');
 
-    expect(densifiedIntervalFor('1M')).toBe('30m');
-    expect(densifiedStepMs('1M')).toBe(60 * MIN);
-    expect(densifiedFetchRange('1M')).toBe('1M');
+    // 1M keeps 30-minute candles but a budget-sized grid ≈ 31-day span / TARGET
+    // (a few hours) — NOT the 30-minute fetch granularity.
+    expect(intradayIntervalFor('1M')).toBe('30m');
+    expect(intradayFetchRange('1M')).toBe('1M');
+    const expected1MStep = Math.round((31 * 24 * 60) / TARGET_POINTS) * MIN;
+    expect(intradayStepMs('1M')).toBe(expected1MStep);
+    // Coarser than the hourly 1W grid and the 30-minute fetch, finer than a day.
+    expect(intradayStepMs('1M')).toBeGreaterThan(intradayStepMs('1W'));
+    expect(intradayStepMs('1M')).toBeGreaterThan(30 * MIN);
+    expect(intradayStepMs('1M')).toBeLessThan(24 * 60 * MIN);
+  });
+});
 
-    expect(densifiedStepMs('6M')).toBe(120 * MIN);
-    expect(densifiedStepMs('1Y')).toBe(240 * MIN);
-    expect(densifiedStepMs('5Y')).toBe(240 * MIN);
-    // The long ranges all source sub-daily candles from the recent 1M window.
-    for (const r of ['6M', '1Y', '5Y'] as const) {
-      expect(densifiedIntervalFor(r)).toBe('30m');
-      expect(densifiedFetchRange(r)).toBe('1M');
-    }
+describe('downsampledIndices — daily thinning to the point budget', () => {
+  it('returns every index unchanged when the series is already within budget', () => {
+    expect(downsampledIndices(0, TARGET_POINTS)).toEqual([]);
+    expect(downsampledIndices(5, TARGET_POINTS)).toEqual([0, 1, 2, 3, 4]);
+    expect(downsampledIndices(TARGET_POINTS, TARGET_POINTS)).toHaveLength(TARGET_POINTS);
+  });
+
+  it('thins a long series to ≤ target: every k-th index, endpoints kept, ascending', () => {
+    const n = 1830; // ~5 years of daily points
+    const idx = downsampledIndices(n, TARGET_POINTS);
+    expect(idx.length).toBeLessThanOrEqual(TARGET_POINTS + 1);
+    expect(idx[0]).toBe(0); // window start kept (re-bases to 0 %)
+    expect(idx[idx.length - 1]).toBe(n - 1); // today kept (fresh value)
+    const k = Math.ceil(n / TARGET_POINTS);
+    for (let i = 1; i < idx.length; i += 1) expect(idx[i]!).toBeGreaterThan(idx[i - 1]!);
+    // Interior stride is exactly k (only the forced-last step may be shorter).
+    for (let i = 1; i < idx.length - 1; i += 1) expect(idx[i]! - idx[i - 1]!).toBe(k);
+    // A 5-year daily chart no longer plots ~1830 points.
+    expect(idx.length).toBeLessThan(n / 5);
   });
 });
 
@@ -164,14 +192,15 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     ]);
   });
 
-  it('densifies a 1M window: recent day onto the hourly grid, older days stay daily', () => {
-    // 1M only carries candles for the recent window (`fetchRange` = 1M): the
-    // day the provider covered densifies to the hourly grid, older in-window
-    // days keep their single daily point, and the tail stitches to the fresh
-    // daily "today" value.
+  it('densifies a 1M window sub-daily on the covered day; older days stay daily', () => {
+    // 1M carries candles only inside the recent window: the covered day gets a
+    // sub-daily curve on the budget grid (a few points, NOT one per 30-minute
+    // candle), older in-window days keep their single daily point, and the tail
+    // stitches to the fresh daily "today" value.
     const D1 = '2026-06-13';
     const D2 = '2026-06-14';
-    const candles = candlesForDay(T, 5, 30 * MIN, (i) => 100 + i); // 100..104, refClose 104
+    // A full trading day of 30-minute candles on T (09:00–18:30), refClose 103.8.
+    const candles = candlesForDay(T, 20, 30 * MIN, (i) => 100 + i * 0.2);
     const points = buildIntradayEurValuePoints({
       range: '1M',
       cutoffDay: D1,
@@ -180,7 +209,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
         [D1, 100],
         [D2, 102],
         [Y, 103],
-        [T, 104],
+        [T, 103.8],
       ]),
       perAssetEurByDay: new Map([
         [
@@ -189,7 +218,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
             [D1, 100],
             [D2, 102],
             [Y, 103],
-            [T, 104],
+            [T, 103.8],
           ]),
         ],
       ]),
@@ -203,15 +232,13 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
       [D2, 102],
       [Y, 103],
     ]);
-    // The covered day densifies to hourly buckets (09/10/11), last = daily close.
+    // The covered day is genuinely sub-daily but coarsened to the budget grid —
+    // more than one point, far fewer than the 20 raw candles.
     const todayPts = points.filter((p) => p.date === T);
-    expect(todayPts.length).toBe(3);
-    expect(todayPts.map((p) => p.valueEur.toFixed(4))).toEqual([
-      (101).toFixed(4),
-      (103).toFixed(4),
-      (104).toFixed(4),
-    ]);
-    // Whole curve is time-ordered and finite.
+    expect(todayPts.length).toBeGreaterThan(1);
+    expect(todayPts.length).toBeLessThan(candles.length);
+    // Tail stitches to the fresh daily "today" value; curve is ordered & finite.
+    expect(points[points.length - 1]!.valueEur).toBeCloseTo(103.8, 9);
     for (let i = 1; i < points.length; i += 1) {
       expect(points[i]!.timeMs).toBeGreaterThan(points[i - 1]!.timeMs);
       expect(Number.isFinite(points[i]!.valueEur)).toBe(true);

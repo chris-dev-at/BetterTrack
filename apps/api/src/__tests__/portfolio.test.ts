@@ -16,6 +16,7 @@ import {
 
 import * as schema from '../data/schema';
 import { cashBalance, externalCashFlowsForTwr } from '../domain/cashLedger';
+import { TARGET_POINTS } from '../services/portfolio/portfolioIntraday';
 import { createRecordingBackfill, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -1280,16 +1281,45 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
     expect((five.body.points as unknown[]).length).toBeGreaterThanOrEqual(
       (year.body.points as unknown[]).length,
     );
-    // Silent-drop safety: 5Y never reaches back further than MAX. Point counts
-    // are no longer comparable — non-MAX ranges densify their recent window to a
-    // sub-daily grid (2026-07-20) while MAX stays daily, so 5Y can carry MORE
-    // points than MAX. Compare date coverage, the invariant that actually holds.
+    // Silent-drop safety + point budget (2026-07-20): 5Y is downsampled to the
+    // shared budget (a few hundred points, not one-per-day) while MAX keeps the
+    // full daily curve — so MAX now carries MANY more points than 5Y, and 5Y
+    // still never reaches back further than MAX (compare date coverage).
     const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
     expect(max.status).toBe(200);
     const maxPts = max.body.points as Array<{ date: string }>;
     const fivePts = five.body.points as Array<{ date: string }>;
+    expect(fivePts.length).toBeLessThanOrEqual(TARGET_POINTS + 1);
+    expect(maxPts.length).toBeGreaterThan(fivePts.length);
     expect(fivePts[0]!.date >= maxPts[0]!.date).toBe(true);
     expect(fivePts[fivePts.length - 1]!.date <= maxPts[maxPts.length - 1]!.date).toBe(true);
+  });
+
+  it('bounds every long-range chart to the point budget by downsampling the daily series', async () => {
+    const { agent, pid } = await seed30DayLadder(harness);
+
+    const max = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX`);
+    expect(max.status).toBe(200);
+    const maxLen = (max.body.points as unknown[]).length;
+
+    for (const range of ['6M', '1Y', '5Y'] as const) {
+      const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=${range}`);
+      expect(res.status).toBe(200);
+      expect(portfolioHistoryResponseSchema.safeParse(res.body).success).toBe(true);
+      const pts = res.body.points as Array<{ date: string; time?: string }>;
+      // Bounded to the shared budget — a few hundred points, never one-per-day.
+      expect(pts.length).toBeLessThanOrEqual(TARGET_POINTS + 1);
+      // Downsampled daily points carry no intraday timestamp; performance aligns.
+      for (const p of pts) expect(p.time).toBeUndefined();
+      expect((res.body.performance as unknown[]).length).toBe(pts.length);
+      // Strictly ascending distinct days.
+      for (let i = 1; i < pts.length; i += 1) expect(pts[i]!.date > pts[i - 1]!.date).toBe(true);
+    }
+
+    // A 5-year chart is dramatically thinner than the full daily MAX (no longer
+    // ~1800 points), the whole point of the budget.
+    const five = await agent.get(`/api/v1/portfolios/${pid}/history?range=5Y`);
+    expect((five.body.points as unknown[]).length).toBeLessThan(maxLen / 3);
   });
 
   it('graceful when history is shorter than the selected range (5Y over a 3-day portfolio → whole history)', async () => {
