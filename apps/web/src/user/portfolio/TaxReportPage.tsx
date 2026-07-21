@@ -23,7 +23,7 @@ import {
   setPortfolioTaxOverride,
   taxYearReportCsvUrl,
 } from '../../lib/portfolioApi';
-import { EmptyState, MoneyText, Skeleton } from '../../ui';
+import { Disclaimer, EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Alert, cx } from '../components/ui';
 import { TaxModePicker } from '../settings/taxModePicker';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
@@ -495,6 +495,8 @@ export function TaxReportPage() {
     <div className="flex flex-col gap-1">
       <h1 className="text-lg font-semibold text-neutral-100">{t('portfolio.taxReport.title')}</h1>
       <p className="text-sm text-neutral-500">{t('portfolio.taxReport.subtitle')}</p>
+      {/* Owner-mandated liability framing (#635): keep the wording as decided. */}
+      <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
     </div>
   );
 

@@ -932,6 +932,7 @@
     "taxes": {
       "title": "Taxes",
       "subtitle": "How BetterTrack records tax on your sells and dividends.",
+      "disclaimer": "Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document.",
       "groupAria": "Tax mode",
       "loadError": {
         "title": "Couldn’t load your tax settings"

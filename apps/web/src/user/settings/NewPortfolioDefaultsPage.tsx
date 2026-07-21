@@ -7,7 +7,7 @@ import type { TaxSettingsResponse, UpdateTaxSettingsRequest } from '@bettertrack
 
 import { useT } from '../../i18n';
 import { getTaxSettings, updateTaxSettings } from '../../lib/settingsApi';
-import { EmptyState, Skeleton } from '../../ui';
+import { Disclaimer, EmptyState, Skeleton } from '../../ui';
 import { Alert } from '../components/ui';
 import { TaxModePicker } from './taxModePicker';
 
@@ -95,6 +95,8 @@ export function NewPortfolioDefaultsPage() {
               {t('settings.taxes.reportLink')}
             </Link>
           ) : null}
+          {/* Owner-mandated liability framing (#635): keep the wording as decided. */}
+          <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
         </section>
       )}
     </div>

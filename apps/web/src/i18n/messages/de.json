@@ -932,6 +932,7 @@
     "taxes": {
       "title": "Steuern",
       "subtitle": "Wie BetterTrack Steuern auf deine Verkäufe und Dividenden erfasst.",
+      "disclaimer": "Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung.",
       "groupAria": "Steuermodus",
       "loadError": {
         "title": "Deine Steuereinstellungen konnten nicht geladen werden"
