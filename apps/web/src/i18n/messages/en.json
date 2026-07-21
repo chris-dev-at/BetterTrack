@@ -921,6 +921,14 @@
         "GBP": "GBP — British Pound (£)"
       }
     },
+    "newPortfolioDefaults": {
+      "navLabel": "New portfolio defaults",
+      "title": "Defaults for new portfolios",
+      "subtitle": "What a newly-created portfolio inherits. Existing portfolios keep tracking these unless you override them individually.",
+      "tax": {
+        "hint": "Applied to new portfolios and to any portfolio that hasn’t set its own. Override or reset it per portfolio on that portfolio’s tax report."
+      }
+    },
     "taxes": {
       "title": "Taxes",
       "subtitle": "How BetterTrack records tax on your sells and dividends.",
@@ -1320,8 +1328,16 @@
       },
       "disabled": {
         "title": "Tax tracking is off",
-        "description": "Turn on a tax mode to see realized gains and tax by year.",
+        "description": "Turn on a tax mode for this portfolio above to see realized gains and tax by year.",
         "link": "Choose a tax mode in Settings → Taxes →"
+      },
+      "treatment": {
+        "title": "Tax treatment · {{name}}",
+        "description": "How this portfolio is taxed. It inherits your new-portfolio default until you set one here.",
+        "inheriting": "Inheriting default",
+        "overridden": "Overridden",
+        "reset": "Reset to default",
+        "editDefault": "Edit the default in Settings →"
       },
       "de": {
         "title": "Germany (Abgeltungsteuer)",

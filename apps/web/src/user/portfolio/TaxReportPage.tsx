@@ -1,29 +1,36 @@
 import { useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type {
+  PortfolioTaxSettingsResponse,
   TaxYearDeSummary,
   TaxYearPosition,
   TaxYearSell,
   TaxYearSummary,
+  UpdateTaxSettingsRequest,
 } from '@bettertrack/contracts';
 
 import { useI18n, useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EM_DASH, formatDate, formatQuantity } from '../../lib/format';
 import {
+  clearPortfolioTaxOverride,
+  getPortfolioTaxSettings,
   getTaxYearReport,
   getTaxYearReports,
   listPortfolios,
+  setPortfolioTaxOverride,
   taxYearReportCsvUrl,
 } from '../../lib/portfolioApi';
-import { getTaxSettings } from '../../lib/settingsApi';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Alert, cx } from '../components/ui';
+import { TaxModePicker } from '../settings/taxModePicker';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 
-const TAX_SETTINGS_KEY = ['settings', 'taxes'] as const;
+/** Query key for one portfolio's resolved tax treatment (issue #636). */
+const portfolioTaxSettingsKey = (portfolioId: string) =>
+  ['portfolio', 'taxSettings', portfolioId] as const;
 
 /** Green for a gain, red for a loss, neutral for exactly zero — the P/L convention. */
 function pnlToneClass(value: number): string {
@@ -324,6 +331,116 @@ function YearRow({
 }
 
 /**
+ * Per-portfolio tax-treatment control (issue #636): resolves and edits ONE
+ * portfolio's tax mode/country through the scoping cascade
+ * (`effective = override ?? user default ?? system('none')`). Shows whether the
+ * portfolio is inheriting the user's new-portfolio default or has its own
+ * override, lets the user pick an override, and — when overridden — reset back
+ * to the default. Always rendered while a portfolio is active so the user can
+ * turn tax on for THIS portfolio even when the default is `none`.
+ */
+function PortfolioTaxTreatment({
+  portfolioId,
+  portfolioName,
+}: {
+  portfolioId: string;
+  portfolioName: string;
+}) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [error, setError] = useState(false);
+
+  const query = useQuery({
+    queryKey: portfolioTaxSettingsKey(portfolioId),
+    queryFn: ({ signal }) => getPortfolioTaxSettings(portfolioId, signal),
+    staleTime: 30_000,
+  });
+
+  const applyResult = (res: PortfolioTaxSettingsResponse) => {
+    queryClient.setQueryData(portfolioTaxSettingsKey(portfolioId), res);
+    // The effective mode gates the report + drives freezing of new rows.
+    void queryClient.invalidateQueries({ queryKey: ['portfolio', 'taxYears', portfolioId] });
+    setError(false);
+  };
+  const overrideMutation = useMutation({
+    mutationFn: (body: UpdateTaxSettingsRequest) => setPortfolioTaxOverride(portfolioId, body),
+    onSuccess: applyResult,
+    onError: () => setError(true),
+  });
+  const resetMutation = useMutation({
+    mutationFn: () => clearPortfolioTaxOverride(portfolioId),
+    onSuccess: applyResult,
+    onError: () => setError(true),
+  });
+  const busy = overrideMutation.isPending || resetMutation.isPending;
+
+  const overridden = query.data?.source === 'portfolio';
+
+  return (
+    <details className="rounded-md border border-neutral-800 bg-neutral-900" open={overridden}>
+      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2 px-4 py-3">
+        <span className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium text-neutral-100">
+            {t('portfolio.taxReport.treatment.title', { name: portfolioName })}
+          </span>
+          <span className="text-xs text-neutral-500">
+            {t('portfolio.taxReport.treatment.description')}
+          </span>
+        </span>
+        <span
+          className={cx(
+            'rounded-full px-2 py-0.5 text-xs font-medium',
+            overridden ? 'bg-sky-500/10 text-sky-300' : 'bg-neutral-800 text-neutral-400',
+          )}
+        >
+          {overridden
+            ? t('portfolio.taxReport.treatment.overridden')
+            : t('portfolio.taxReport.treatment.inheriting')}
+        </span>
+      </summary>
+      <div className="flex flex-col gap-3 border-t border-neutral-800 px-4 py-3">
+        {query.isPending ? (
+          <Skeleton height="h-16" />
+        ) : query.isError || !query.data ? (
+          <EmptyState
+            title={t('portfolio.taxReport.loadError.title')}
+            description={t('settings.retryHint')}
+          />
+        ) : (
+          <>
+            <TaxModePicker
+              value={query.data.effective}
+              name={`portfolio-tax-${portfolioId}`}
+              busy={busy}
+              ariaLabel={t('portfolio.taxReport.treatment.title', { name: portfolioName })}
+              onSelect={(body) => overrideMutation.mutate(body)}
+            />
+            {overridden ? (
+              <button
+                type="button"
+                onClick={() => resetMutation.mutate()}
+                disabled={busy}
+                className="w-fit text-sm font-medium text-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {t('portfolio.taxReport.treatment.reset')}
+              </button>
+            ) : (
+              <Link
+                to="/settings/taxes"
+                className="w-fit text-xs font-medium text-neutral-400 hover:text-neutral-200"
+              >
+                {t('portfolio.taxReport.treatment.editDefault')}
+              </Link>
+            )}
+            {error ? <Alert tone="error">{t('settings.taxes.saveError')}</Alert> : null}
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+/**
  * Portfolio → Tax report (PROJECTPLAN.md §13.3 V3-P4). Per Europe/Vienna calendar
  * year (newest first): realized P/L, gross dividends, tax withheld, the same-year
  * loss-offset **refund** line, and the **net** tax the year holds — each year
@@ -331,19 +448,15 @@ function YearRow({
  * uncovered sell, #369, never fabricates gain on the portion you didn't hold).
  *
  * Portfolio-scoped: reads the active portfolio from the `?portfolio=` param like
- * the rest of the section. Only meaningful with a tax mode active — with `none`
- * it points the user to Settings → Taxes instead of querying the report.
+ * the rest of the section. The active portfolio's tax treatment resolves per
+ * portfolio (issue #636): the treatment control lets the user override/reset it,
+ * and the report below is gated on that portfolio's EFFECTIVE mode.
  */
 export function TaxReportPage() {
   const t = useT();
   const [searchParams] = useSearchParams();
   const [expandedYear, setExpandedYear] = useState<number | null>(null);
 
-  const settingsQuery = useQuery({
-    queryKey: TAX_SETTINGS_KEY,
-    queryFn: ({ signal }) => getTaxSettings(signal),
-    staleTime: 30_000,
-  });
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
@@ -353,7 +466,14 @@ export function TaxReportPage() {
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
-  const mode = settingsQuery.data?.mode ?? 'none';
+
+  const settingsQuery = useQuery({
+    queryKey: active ? portfolioTaxSettingsKey(active.id) : ['portfolio', 'taxSettings', 'none'],
+    queryFn: ({ signal }) => getPortfolioTaxSettings(active!.id, signal),
+    enabled: Boolean(active),
+    staleTime: 30_000,
+  });
+  const mode = settingsQuery.data?.effective.mode ?? 'none';
   const taxActive = mode !== 'none';
 
   const reportQuery = useQuery({
@@ -370,8 +490,9 @@ export function TaxReportPage() {
     </div>
   );
 
-  // Loading skeleton first, while either query is still pending.
-  if (settingsQuery.isPending || portfoliosQuery.isPending) {
+  // Loading / error gate on the portfolio list — it resolves the active id that
+  // drives everything below (the per-portfolio tax settings + the report).
+  if (portfoliosQuery.isPending) {
     return (
       <div className="flex flex-col gap-4">
         {header}
@@ -380,12 +501,7 @@ export function TaxReportPage() {
     );
   }
 
-  // Surface a failed settings/portfolios query as an error *before* the tax-mode
-  // gate below. On a settings failure `mode` falls back to 'none', so without
-  // this ordering the page would read as "tax reporting disabled" and send the
-  // user to Settings for no reason. It also avoids an eternal skeleton when the
-  // portfolio list fails (the report query never runs without a resolved one).
-  if (portfoliosQuery.isError || settingsQuery.isError) {
+  if (portfoliosQuery.isError) {
     return (
       <div className="flex flex-col gap-4">
         {header}
@@ -393,26 +509,6 @@ export function TaxReportPage() {
           title={t('portfolio.taxReport.loadError.title')}
           description={t('settings.retryHint')}
         />
-      </div>
-    );
-  }
-
-  // Gate on the tax mode: the report is only meaningful with one active.
-  if (!taxActive) {
-    return (
-      <div className="flex flex-col gap-4">
-        {header}
-        <EmptyState
-          icon="🧾"
-          title={t('portfolio.taxReport.disabled.title')}
-          description={t('portfolio.taxReport.disabled.description')}
-        />
-        <Link
-          to="/settings/taxes"
-          className="w-fit text-sm font-medium text-sky-400 hover:text-sky-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-        >
-          {t('portfolio.taxReport.disabled.link')}
-        </Link>
       </div>
     );
   }
@@ -436,7 +532,25 @@ export function TaxReportPage() {
     <div className="flex flex-col gap-4">
       {header}
 
-      {reportQuery.isPending ? (
+      {/* Per-portfolio tax treatment (issue #636): inherit / override / reset. */}
+      <PortfolioTaxTreatment portfolioId={active.id} portfolioName={active.name} />
+
+      {settingsQuery.isPending ? (
+        <Skeleton height="h-24" />
+      ) : settingsQuery.isError ? (
+        <EmptyState
+          title={t('portfolio.taxReport.loadError.title')}
+          description={t('settings.retryHint')}
+        />
+      ) : !taxActive ? (
+        // The report is only meaningful with a tax mode active for THIS
+        // portfolio; the treatment control above turns one on.
+        <EmptyState
+          icon="🧾"
+          title={t('portfolio.taxReport.disabled.title')}
+          description={t('portfolio.taxReport.disabled.description')}
+        />
+      ) : reportQuery.isPending ? (
         <Skeleton height="h-24" />
       ) : reportQuery.isError ? (
         <EmptyState

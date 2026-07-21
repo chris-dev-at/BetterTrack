@@ -4,6 +4,7 @@ import type {
   CreateDividendResponse,
   Dividend as DividendDto,
   DividendListResponse,
+  PortfolioTaxSettingsResponse,
   TaxSettingsResponse,
   TaxYearListResponse,
   TaxYearPosition,
@@ -14,6 +15,8 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
+import { resolvePortfolioSetting } from '../../domain/settingsScope';
+import type { PortfolioSettingsRepository } from '../../data/repositories/portfolioSettingsRepository';
 import type {
   CashMovementRecord,
   CashMovementRepository,
@@ -106,6 +109,8 @@ import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 
 export interface TaxServiceDeps {
   taxRepo: TaxRepository;
+  /** Per-portfolio setting overrides (issue #636): the override layer of the scoping cascade. */
+  portfolioSettingsRepo: PortfolioSettingsRepository;
   transactionRepo: TransactionRepository;
   cashMovementRepo: CashMovementRepository;
   cashSourceRepo: CashSourceRepository;
@@ -154,12 +159,40 @@ export interface TransactionTaxPlanInput {
 }
 
 export interface TaxService {
-  /** Settings → Taxes: the caller's mode (+ country); `none` when never set. */
+  /**
+   * Settings → Taxes: the caller's USER-LEVEL default (+ country); `none` when
+   * never set. Since #636 this is the "default for new portfolios" — the middle
+   * layer of the per-portfolio scoping cascade, not a portfolio's own value.
+   */
   getSettings(userId: string): Promise<TaxSettingsResponse>;
-  /** Update the mode; `country` exactly with `country_specific` (AT | DE). */
+  /** Update the user-level default; `country` exactly with `country_specific` (AT | DE). */
   updateSettings(userId: string, input: UpdateTaxSettingsRequest): Promise<TaxSettingsResponse>;
-  /** The effective settings as a record (missing row = `none`). */
-  getEffectiveSettings(userId: string): Promise<UserTaxSettingsRecord>;
+  /**
+   * The settings that ACTUALLY apply to a portfolio (issue #636), resolved
+   * through the scoping cascade `override ?? user default ?? system('none')`.
+   * `portfolioId` omitted resolves the user default only (no override layer).
+   */
+  getEffectiveSettings(userId: string, portfolioId?: string): Promise<UserTaxSettingsRecord>;
+  /**
+   * `GET /portfolios/:id/settings/tax` (issue #636): the portfolio's tax
+   * treatment resolved through the cascade, plus its own override (or null when
+   * inheriting), the user default, and which layer `effective` came from.
+   */
+  getPortfolioTaxSettings(
+    userId: string,
+    portfolioId: string,
+  ): Promise<PortfolioTaxSettingsResponse>;
+  /** `PUT /portfolios/:id/settings/tax`: pin a per-portfolio override; returns the resolved view. */
+  setPortfolioTaxOverride(
+    userId: string,
+    portfolioId: string,
+    input: UpdateTaxSettingsRequest,
+  ): Promise<PortfolioTaxSettingsResponse>;
+  /** `DELETE /portfolios/:id/settings/tax`: drop the override (reset-to-default); returns the resolved view. */
+  clearPortfolioTaxOverride(
+    userId: string,
+    portfolioId: string,
+  ): Promise<PortfolioTaxSettingsResponse>;
   /**
    * Plan the tax side of a transaction batch (called by the portfolio service
    * after oversell validation, before insert): per-row frozen tax facts +
@@ -229,9 +262,31 @@ const correctionNote = (country: EngineCountry): string =>
 const isTaxMovementKind = (kind: CashMovementRecord['kind']): boolean =>
   kind === 'tax_withholding' || kind === 'tax_refund';
 
+/** The setting key the tax override lives under in `portfolio_settings` (#636). */
+const PORTFOLIO_SETTING_KEY_TAX = 'tax';
+/** The system default — the bottom of the scoping cascade (pre-tax-engine behaviour). */
+const TAX_SYSTEM_DEFAULT: UserTaxSettingsRecord = { mode: 'none', country: null };
+
+/**
+ * Narrow a raw `portfolio_settings` value (jsonb) into a tax record, normalising
+ * the mode↔country pair exactly as writes do (country iff `country_specific`).
+ * A shape we did not write reads as "no override" rather than throwing — the
+ * cascade then falls through to the user default.
+ */
+function parseTaxOverride(raw: unknown): UserTaxSettingsRecord | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const mode = (raw as { mode?: unknown }).mode;
+  if (mode !== 'none' && mode !== 'manual_per_trade' && mode !== 'country_specific') return null;
+  const rawCountry = (raw as { country?: unknown }).country;
+  const country =
+    rawCountry === TAX_COUNTRY_AT || rawCountry === TAX_COUNTRY_DE ? rawCountry : null;
+  return { mode, country: mode === 'country_specific' ? (country ?? TAX_COUNTRY_AT) : null };
+}
+
 export function createTaxService(deps: TaxServiceDeps): TaxService {
-  const { taxRepo, transactionRepo, cashMovementRepo, cashSourceRepo, portfolioRepo } = deps;
-  const { currencyService, snapshots } = deps;
+  const { taxRepo, portfolioSettingsRepo, transactionRepo, cashMovementRepo, cashSourceRepo } =
+    deps;
+  const { portfolioRepo, currencyService, snapshots } = deps;
   const now = deps.now ?? Date.now;
 
   // ── Shared plumbing ────────────────────────────────────────────────────────
@@ -241,8 +296,47 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     if (!portfolio) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
   }
 
-  async function effectiveSettings(userId: string): Promise<UserTaxSettingsRecord> {
-    return (await taxRepo.getUserTaxSettings(userId)) ?? { mode: 'none', country: null };
+  /** A portfolio's own tax override, or null when it inherits (issue #636). */
+  async function readTaxOverride(portfolioId: string): Promise<UserTaxSettingsRecord | null> {
+    return parseTaxOverride(
+      await portfolioSettingsRepo.getSetting(portfolioId, PORTFOLIO_SETTING_KEY_TAX),
+    );
+  }
+
+  /**
+   * The settings that apply to a portfolio (issue #636): the scoping cascade
+   * `override ?? user default ?? system('none')`, resolved live so a portfolio
+   * with no override tracks the user's current default. With no `portfolioId`
+   * (legacy callers) only the user default and system layers apply.
+   */
+  async function effectiveSettings(
+    userId: string,
+    portfolioId?: string,
+  ): Promise<UserTaxSettingsRecord> {
+    const [userDefault, override] = await Promise.all([
+      taxRepo.getUserTaxSettings(userId),
+      portfolioId ? readTaxOverride(portfolioId) : Promise.resolve(null),
+    ]);
+    return resolvePortfolioSetting(override, userDefault, TAX_SYSTEM_DEFAULT).value;
+  }
+
+  /** The resolved per-portfolio tax view for the HTTP layer (issue #636). */
+  async function getPortfolioTaxSettings(
+    userId: string,
+    portfolioId: string,
+  ): Promise<PortfolioTaxSettingsResponse> {
+    await requireOwnedPortfolio(userId, portfolioId);
+    const [userDefault, override] = await Promise.all([
+      taxRepo.getUserTaxSettings(userId),
+      readTaxOverride(portfolioId),
+    ]);
+    const resolved = resolvePortfolioSetting(override, userDefault, TAX_SYSTEM_DEFAULT);
+    return {
+      effective: toSettingsResponse(resolved.value),
+      override: override ? toSettingsResponse(override) : null,
+      userDefault: toSettingsResponse(userDefault ?? TAX_SYSTEM_DEFAULT),
+      source: resolved.source,
+    };
   }
 
   const viennaYearOfDate = (at: Date): number => viennaYearOf(at.toISOString());
@@ -636,7 +730,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     planInput: TransactionTaxPlanInput,
   ): Promise<TransactionTaxPlan> {
     const { userId, portfolioId, inputs, assetsById, resolveSourceId } = planInput;
-    const settings = await effectiveSettings(userId);
+    // Issue #636: resolve the mode that applies to THIS portfolio (override ??
+    // user default ?? none). It still freezes onto each row at recording time.
+    const settings = await effectiveSettings(userId, portfolioId);
 
     const rows: PlannedRowTax[] = inputs.map((input) => ({
       tax:
@@ -1078,7 +1174,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       );
     }
 
-    const settings = await effectiveSettings(userId);
+    // Issue #636: the mode that applies to THIS portfolio (override ?? default).
+    const settings = await effectiveSettings(userId, portfolioId);
     assertManualEntryAllowed(settings, input, 'dividend');
 
     const source = await resolveFlowSource(portfolioId, input.cashSourceId);
@@ -1687,6 +1784,26 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     },
 
     getEffectiveSettings: effectiveSettings,
+    getPortfolioTaxSettings,
+
+    async setPortfolioTaxOverride(userId, portfolioId, input) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      // Normalise the mode↔country pair exactly as the user-default write does,
+      // so the stored override can never carry a stray/absent country.
+      const value: UserTaxSettingsRecord = {
+        mode: input.mode,
+        country: input.mode === 'country_specific' ? (input.country ?? TAX_COUNTRY_AT) : null,
+      };
+      await portfolioSettingsRepo.setSetting(portfolioId, PORTFOLIO_SETTING_KEY_TAX, value);
+      return getPortfolioTaxSettings(userId, portfolioId);
+    },
+
+    async clearPortfolioTaxOverride(userId, portfolioId) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      await portfolioSettingsRepo.deleteSetting(portfolioId, PORTFOLIO_SETTING_KEY_TAX);
+      return getPortfolioTaxSettings(userId, portfolioId);
+    },
+
     planTransactionTaxes,
     planTransactionDeleteCorrections,
     recordDividend,

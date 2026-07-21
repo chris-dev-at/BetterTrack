@@ -51,6 +51,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   dividends: exported('dividends'),
   // Explicitly covered by the "done-when" completeness requirement:
   portfolio_cash_movements: exported('cashMovements'),
+  // Per-portfolio setting overrides (issue #636) — the user's own per-portfolio
+  // tax choices, exported alongside the user-level default.
+  portfolio_settings: exported('portfolioSettings'),
   user_tax_settings: exported('taxSettings'),
   friend_requests: exported('friendRequests'),
   friendships: exported('friendships'),

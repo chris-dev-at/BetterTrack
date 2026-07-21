@@ -218,6 +218,38 @@ export const updateTaxSettingsRequestSchema = z
 export type UpdateTaxSettingsRequest = z.infer<typeof updateTaxSettingsRequestSchema>;
 
 /**
+ * Which scope a resolved per-portfolio setting came from (issue #636): the
+ * portfolio's own override, the user-level default, or the built-in system
+ * default. Drives the "inheriting default / overridden" state in the UI.
+ */
+export const SETTING_SOURCES = ['portfolio', 'user', 'system'] as const;
+export const settingSourceSchema = z.enum(SETTING_SOURCES);
+export type SettingSource = z.infer<typeof settingSourceSchema>;
+
+/**
+ * `GET/PUT/DELETE /portfolios/:id/settings/tax` response — one portfolio's tax
+ * treatment resolved through the per-portfolio scoping cascade (issue #636):
+ * `effective = override ?? userDefault ?? system('none')`.
+ *
+ *  - `effective` — the mode/country actually applied to this portfolio's new
+ *    sells & dividends (recorded rows keep the mode frozen at their time, §16).
+ *  - `override` — the portfolio's own pinned value, or `null` when it inherits.
+ *  - `userDefault` — the caller's new-portfolio default (`GET /settings/taxes`),
+ *    shown as the "inheriting …" hint and the reset target.
+ *  - `source` — which layer supplied `effective` (`portfolio` = overridden,
+ *    `user`/`system` = inheriting).
+ */
+export const portfolioTaxSettingsResponseSchema = z
+  .object({
+    effective: taxSettingsResponseSchema,
+    override: taxSettingsResponseSchema.nullable(),
+    userDefault: taxSettingsResponseSchema,
+    source: settingSourceSchema,
+  })
+  .strict();
+export type PortfolioTaxSettingsResponse = z.infer<typeof portfolioTaxSettingsResponseSchema>;
+
+/**
  * Reject a manual tax entry that states both an absolute amount and a rate —
  * shared by the sell (transaction) and dividend inputs. Whether a manual entry
  * is allowed at all depends on the caller's tax mode, which the service

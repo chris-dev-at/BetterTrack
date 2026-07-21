@@ -1350,6 +1350,31 @@ export const userTaxSettings = pgTable(
 );
 
 /**
+ * Per-portfolio setting overrides (issue #636). The override layer of the
+ * scoping cascade `effective = portfolio override ?? user default ?? system
+ * default`: one row per (portfolio, setting key) that pins a value for THAT
+ * portfolio, shadowing the user-level default. A generic key/jsonb store so any
+ * scopeable setting opts in without a migration — the first key is `'tax'`
+ * (value `{ mode, country }`, validated by the tax contract at the service
+ * edge). A missing row means "inheriting the default"; deleting a row is the
+ * reset-to-default affordance. The user-level default itself keeps its typed
+ * home per setting (tax → {@link userTaxSettings}). Cascades away with the
+ * portfolio, and `updated_at` records when the override last moved.
+ */
+export const portfolioSettings = pgTable(
+  'portfolio_settings',
+  {
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    value: jsonb('value').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.portfolioId, t.key] })],
+);
+
+/**
  * Social graph (PROJECTPLAN.md §5.5, §6.9). Two tables:
  *
  * `friend_requests` — a directed request from one user to another. A pair may
@@ -2089,6 +2114,7 @@ export type NewCashSourceRow = typeof portfolioCashSources.$inferInsert;
 export type DividendRow = typeof dividends.$inferSelect;
 export type NewDividendRow = typeof dividends.$inferInsert;
 export type UserTaxSettingsRow = typeof userTaxSettings.$inferSelect;
+export type PortfolioSettingsRow = typeof portfolioSettings.$inferSelect;
 export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
@@ -2537,6 +2563,7 @@ export const schema = {
   portfolioDailySnapshots,
   portfolioSnapshotState,
   userTaxSettings,
+  portfolioSettings,
   friendRequests,
   friendships,
   friendGroups,

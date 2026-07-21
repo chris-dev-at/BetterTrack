@@ -71,10 +71,10 @@ import {
   BackupsPage,
   ConnectionsPage,
   ImportsExportsPage,
+  NewPortfolioDefaultsPage,
   NotificationSettingsPage,
   SecuritySettingsPage,
   SettingsLayout,
-  TaxSettingsPage,
 } from './settings/SettingsSection';
 
 const queryClient = new QueryClient();
@@ -222,7 +222,7 @@ function UserShell() {
             <Route path="account" element={<AccountSettingsPage />} />
             <Route path="notifications" element={<NotificationSettingsPage />} />
             <Route path="security" element={<SecuritySettingsPage />} />
-            <Route path="taxes" element={<TaxSettingsPage />} />
+            <Route path="taxes" element={<NewPortfolioDefaultsPage />} />
             <Route path="imports" element={<ImportsExportsPage />} />
             <Route path="connections" element={<ConnectionsPage />} />
             <Route path="backups" element={<BackupsPage />} />

@@ -59,8 +59,8 @@ import { SubNav, type SubNavItem } from '../components/SubNav';
 export { AccountSettingsPage } from './AccountSettingsPage';
 export { ApiAccessPage } from './ApiAccessPage';
 export { ConnectionsPage } from './ConnectionsPage';
+export { NewPortfolioDefaultsPage } from './NewPortfolioDefaultsPage';
 export { SecuritySettingsPage } from './SecuritySettingsPage';
-export { TaxSettingsPage } from './TaxSettingsPage';
 
 /**
  * Settings section shell (PROJECTPLAN.md §6.11, §7.2), reached from the profile
@@ -74,7 +74,7 @@ export function SettingsLayout() {
     { to: '/settings/account', label: t('settings.account.title') },
     { to: '/settings/notifications', label: t('settings.notifications.title') },
     { to: '/settings/security', label: t('settings.security.title') },
-    { to: '/settings/taxes', label: t('settings.taxes.title') },
+    { to: '/settings/taxes', label: t('settings.newPortfolioDefaults.navLabel') },
     { to: '/settings/imports', label: t('settings.section.importsExports'), comingSoon: true },
     { to: '/settings/connections', label: t('settings.section.connections') },
     { to: '/settings/backups', label: t('settings.section.backups'), comingSoon: true },

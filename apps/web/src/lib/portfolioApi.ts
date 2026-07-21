@@ -11,6 +11,7 @@ import {
   portfolioListResponseSchema,
   portfolioMutationResponseSchema,
   portfolioResponseSchema,
+  portfolioTaxSettingsResponseSchema,
   recategorizationStatusResponseSchema,
   setCashBalanceResponseSchema,
   taxYearListResponseSchema,
@@ -37,6 +38,7 @@ import {
   type PortfolioListResponse,
   type PortfolioResponse,
   type PortfolioSummary,
+  type PortfolioTaxSettingsResponse,
   type RecategorizationStatusResponse,
   type SetCashBalanceRequest,
   type SetCashBalanceResponse,
@@ -49,6 +51,7 @@ import {
   type UpdateCashSourceRequest,
   type UpdateCustomAssetRequest,
   type UpdatePortfolioRequest,
+  type UpdateTaxSettingsRequest,
   type UpdateTransactionRequest,
   type ValuePoint,
   type ValuePointsResponse,
@@ -271,6 +274,48 @@ export function taxYearReportCsvUrl(
   locale: TaxExportLocale,
 ): string {
   return `${apiBaseUrl()}/portfolios/${encodeURIComponent(portfolioId)}/reports/tax-years/${encodeURIComponent(year)}/export.csv?locale=${encodeURIComponent(locale)}`;
+}
+
+// --- Per-portfolio tax treatment (issue #636) ------------------------------
+
+/**
+ * `GET /portfolios/:id/settings/tax` — the portfolio's tax treatment resolved
+ * through the per-portfolio scoping cascade (`effective = override ?? user
+ * default ?? none`): the effective mode/country, this portfolio's own override
+ * (or null when inheriting), the user-level default, and which layer won.
+ */
+export async function getPortfolioTaxSettings(
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<PortfolioTaxSettingsResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/settings/tax`,
+    { signal },
+  );
+  return portfolioTaxSettingsResponseSchema.parse(data);
+}
+
+/** `PUT /portfolios/:id/settings/tax` — pin this portfolio's tax override (#636). */
+export async function setPortfolioTaxOverride(
+  portfolioId: string,
+  body: UpdateTaxSettingsRequest,
+): Promise<PortfolioTaxSettingsResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/settings/tax`,
+    { method: 'PUT', body },
+  );
+  return portfolioTaxSettingsResponseSchema.parse(data);
+}
+
+/** `DELETE /portfolios/:id/settings/tax` — reset to the user default (inherit) (#636). */
+export async function clearPortfolioTaxOverride(
+  portfolioId: string,
+): Promise<PortfolioTaxSettingsResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/settings/tax`,
+    { method: 'DELETE' },
+  );
+  return portfolioTaxSettingsResponseSchema.parse(data);
 }
 
 // --- Cash ledger ("Bargeld") -------------------------------------------------

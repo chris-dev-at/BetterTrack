@@ -421,6 +421,13 @@
       "when": 1784489580290,
       "tag": "0059_passkeys",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1784489640290,
+      "tag": "0060_portfolio_settings",
+      "breakpoints": true
     }
   ]
 }

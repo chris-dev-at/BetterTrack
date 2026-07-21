@@ -8,13 +8,11 @@ import type { Transaction, TransactionInput } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/assetApi');
-vi.mock('../../lib/settingsApi');
 import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
-import * as settingsApi from '../../lib/settingsApi';
 import {
   DERIVED_QUANTITY_DECIMALS,
   deriveQuantityFromAmount,
@@ -82,9 +80,16 @@ beforeEach(() => {
     defaultPayFromCash: false,
     archivedAt: null,
   });
-  // Default: no tax mode → the manual per-trade tax field stays hidden, so the
-  // existing specs behave exactly as before. Manual-tax specs override this.
-  vi.mocked(settingsApi.getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
+  // Default: this portfolio's effective tax mode is `none` → the manual per-trade
+  // tax field stays hidden, so the existing specs behave exactly as before.
+  // Manual-tax specs override this (issue #636: the dialog reads the portfolio's
+  // resolved tax view, not the user-level default).
+  vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+    effective: { mode: 'none', country: null },
+    override: null,
+    userDefault: { mode: 'none', country: null },
+    source: 'system',
+  });
 });
 
 // --- Pure derivation --------------------------------------------------------
@@ -873,9 +878,11 @@ describe('TransactionDialog — uncovered sell', () => {
 
 describe('TransactionDialog — manual per-trade tax', () => {
   function useManualMode() {
-    vi.mocked(settingsApi.getTaxSettings).mockResolvedValue({
-      mode: 'manual_per_trade',
-      country: null,
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+      effective: { mode: 'manual_per_trade', country: null },
+      override: { mode: 'manual_per_trade', country: null },
+      userDefault: { mode: 'none', country: null },
+      source: 'portfolio',
     });
   }
 
@@ -945,7 +952,7 @@ describe('TransactionDialog — manual per-trade tax', () => {
     renderDialog();
 
     // The default side is BUY: even after the tax mode resolves, no field shows.
-    await waitFor(() => expect(settingsApi.getTaxSettings).toHaveBeenCalled());
+    await waitFor(() => expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalled());
     expect(screen.queryByLabelText(/manual tax for this sale/i)).toBeNull();
 
     // Switching to Sell reveals it (the gate is side-based, not just mode-based).
@@ -958,7 +965,7 @@ describe('TransactionDialog — manual per-trade tax', () => {
     renderDialog();
 
     await user.click(screen.getByRole('button', { name: 'Sell' }));
-    await waitFor(() => expect(settingsApi.getTaxSettings).toHaveBeenCalled());
+    await waitFor(() => expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalled());
     expect(screen.queryByLabelText(/manual tax for this sale/i)).toBeNull();
   });
 });

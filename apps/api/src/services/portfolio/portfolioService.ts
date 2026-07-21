@@ -1258,7 +1258,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // The mode active at this recording moment (V3-P4, §16 cutover
       // semantics): it decides both the tax plan below and whether a bare
       // cash source id is meaningful (it names the tax source of a sell).
-      const taxSettings = await taxService.getEffectiveSettings(userId);
+      const taxSettings = await taxService.getEffectiveSettings(userId, portfolioId);
 
       // Cash-ledger linkage (§14, #220; V3-P3): resolve each cash-flagged
       // buy/sell into a linked EUR movement against its cash source — the

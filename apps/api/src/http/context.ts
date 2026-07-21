@@ -44,6 +44,7 @@ import { createChatRepository } from '../data/repositories/chatRepository';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
+import { createPortfolioSettingsRepository } from '../data/repositories/portfolioSettingsRepository';
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -476,6 +477,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Shared by auth/admin (default-portfolio provisioning at account creation,
   // §5.5) and the portfolio service below.
   const portfolioRepo = createPortfolioRepository(db);
+  // Per-portfolio setting overrides (issue #636): the override layer feeding the
+  // tax service's scoping cascade.
+  const portfolioSettingsRepo = createPortfolioSettingsRepository(db);
 
   const sessions = createSessionService(redis, Math.floor(config.cookie.maxAgeMs / 1000), {
     ephemeralIdleMs: config.cookie.ephemeralIdleMs,
@@ -933,6 +937,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const taxRepo = createTaxRepository(db);
   const tax = createTaxService({
     taxRepo,
+    portfolioSettingsRepo,
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
