@@ -328,3 +328,85 @@ describe('MarketCache — cross-process coalescing (§5.3 Redis lock)', () => {
     expect(calls).toBe(1); // progress guaranteed despite the stuck lock
   });
 });
+
+describe('MarketCache — corrupt payload resilience (degrades, never a 5xx)', () => {
+  it('treats a non-JSON fresh entry as a miss, reloads, and never throws', async () => {
+    const cache = createMarketCache(redis);
+    // A truncated/garbage Redis value must not surface as a server error.
+    await redis.set(freshCacheKey(KEY), 'not-json{');
+
+    let calls = 0;
+    const result = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        calls += 1;
+        return Promise.resolve({ price: 5 });
+      },
+    });
+    expect(result).toMatchObject({ value: { price: 5 }, stale: false });
+    expect(calls).toBe(1);
+
+    // The fresh load overwrote the corrupt entry: the next read is a clean hit.
+    const after = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        calls += 1;
+        return Promise.resolve({ price: 9 });
+      },
+    });
+    expect(after.value).toEqual({ price: 5 });
+    expect(calls).toBe(1);
+  });
+
+  it('treats a JSON entry missing the required fields as a miss', async () => {
+    const cache = createMarketCache(redis);
+    // Valid JSON but not a StoredEntry (no `asOf`) — must not be served.
+    await redis.set(freshCacheKey(KEY), JSON.stringify({ value: { price: 1 } }));
+
+    let calls = 0;
+    const result = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        calls += 1;
+        return Promise.resolve({ price: 7 });
+      },
+    });
+    expect(result.value).toEqual({ price: 7 });
+    expect(calls).toBe(1);
+  });
+});
+
+describe('MarketCache.prime (Live Mode, §6.3 V3-P7b)', () => {
+  it('writes fresh + stale and clears any pre-existing negative entry', async () => {
+    const cache = createMarketCache(redis);
+    // A stale negative window from an earlier miss.
+    await redis.set(negativeCacheKey(KEY), JSON.stringify({ message: 'gone', asOf: 1 }), 'EX', 900);
+
+    const primed = await cache.prime({ key: KEY, ttlSeconds: 60 }, { price: 3 });
+    expect(primed).toMatchObject({ value: { price: 3 }, stale: false });
+    expect(typeof primed.asOf).toBe('number');
+
+    // The negative answer is superseded by the primed value.
+    expect(await redis.exists(negativeCacheKey(KEY))).toBe(0);
+    const freshTtl = await redis.ttl(freshCacheKey(KEY));
+    const staleTtl = await redis.ttl(staleCacheKey(KEY));
+    expect(freshTtl).toBeGreaterThan(0);
+    expect(staleTtl).toBeGreaterThan(freshTtl);
+
+    // A subsequent read rides the primed entry — no loader call at all.
+    let calls = 0;
+    const hit = await cache.getOrLoad({
+      key: KEY,
+      ttlSeconds: 60,
+      loader: () => {
+        calls += 1;
+        return Promise.resolve({ price: 99 });
+      },
+    });
+    expect(hit).toMatchObject({ value: { price: 3 }, stale: false });
+    expect(calls).toBe(0);
+  });
+});
