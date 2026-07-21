@@ -919,6 +919,18 @@ export const conglomerates = pgTable('conglomerates', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * One constituent of a conglomerate: an asset position OR — since V5-P6 — a
+ * nested conglomerate (`child_conglomerate_id`), discriminated by which of the
+ * two nullable FKs is set (exactly one, enforced by the CHECK). The child FK
+ * deliberately has NO delete cascade: deleting a conglomerate that is a
+ * constituent of another is blocked (fail-safe, no silent detach) — the
+ * service 409s with the parent names and Postgres' NO ACTION backstops it.
+ * NO ACTION (not RESTRICT) so an account deletion, which removes parent and
+ * child in one cascading statement, validates after the cascade instead of
+ * failing mid-flight. Cycle/depth rules are enforced at write time in the
+ * service (owner-local graph; only own conglomerates are nestable).
+ */
 export const conglomeratePositions = pgTable(
   'conglomerate_positions',
   {
@@ -926,13 +938,23 @@ export const conglomeratePositions = pgTable(
     conglomerateId: uuid('conglomerate_id')
       .notNull()
       .references(() => conglomerates.id, { onDelete: 'cascade' }),
-    assetId: uuid('asset_id')
-      .notNull()
-      .references(() => assets.id, { onDelete: 'cascade' }),
+    assetId: uuid('asset_id').references(() => assets.id, { onDelete: 'cascade' }),
+    childConglomerateId: uuid('child_conglomerate_id').references(() => conglomerates.id),
     weightPct: numeric('weight_pct', { precision: 6, scale: 3 }).notNull(),
     sortOrder: integer('sort_order').notNull(),
   },
-  (t) => [uniqueIndex('conglomerate_positions_cong_asset_unique').on(t.conglomerateId, t.assetId)],
+  (t) => [
+    uniqueIndex('conglomerate_positions_cong_asset_unique').on(t.conglomerateId, t.assetId),
+    uniqueIndex('conglomerate_positions_cong_child_unique').on(
+      t.conglomerateId,
+      t.childConglomerateId,
+    ),
+    index('conglomerate_positions_child_idx').on(t.childConglomerateId),
+    check(
+      'conglomerate_positions_exactly_one_ref',
+      sql`(${t.assetId} is null) <> (${t.childConglomerateId} is null)`,
+    ),
+  ],
 );
 
 export const shareLinks = pgTable(

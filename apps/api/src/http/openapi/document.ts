@@ -224,6 +224,7 @@ const componentSchemas = {
   AllocateRequest: contracts.allocateRequestSchema,
   ConglomerateListResponse: contracts.conglomerateListResponseSchema,
   ConglomerateDetail: contracts.conglomerateDetailSchema,
+  ConglomerateResolvedResponse: contracts.conglomerateResolvedResponseSchema,
   AllocateResponse: contracts.allocateResponseSchema,
 
   // Backtest (§6.6, §13.5 V5-P6)
@@ -2055,6 +2056,15 @@ const endpoints: EndpointDef[] = [
     params: contracts.conglomerateIdParamSchema,
     status: 200,
     response: R.ConglomerateDetail,
+  },
+  {
+    method: 'get',
+    path: '/conglomerates/{conglomerateId}/resolved',
+    tag: 'Conglomerates',
+    summary: 'Flattened effective asset weights of a (nested) Conglomerate (V5-P6).',
+    params: contracts.conglomerateIdParamSchema,
+    status: 200,
+    response: R.ConglomerateResolvedResponse,
   },
   {
     method: 'patch',

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { shareAudienceSchema, shareKindSchema } from './common';
-import { conglomeratePositionWithAssetSchema, conglomerateStatusSchema } from './conglomerate';
+import { conglomerateConstituentSchema, conglomerateStatusSchema } from './conglomerate';
 import { currencyCodeSchema } from './market';
 import {
   holdingSchema,
@@ -385,7 +385,7 @@ export const sharedConglomerateDetailResponseSchema = z
     description: z.string().nullable(),
     status: conglomerateStatusSchema,
     owner: friendUserSchema,
-    positions: z.array(conglomeratePositionWithAssetSchema),
+    positions: z.array(conglomerateConstituentSchema),
   })
   .strict();
 export type SharedConglomerateDetailResponse = z.infer<

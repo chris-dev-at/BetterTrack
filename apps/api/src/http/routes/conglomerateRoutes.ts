@@ -49,6 +49,17 @@ export function createConglomerateRouter(ctx: AppContext): Router {
     res.json(detail);
   });
 
+  // GET /conglomerates/:id/resolved — flattened effective asset weights (V5-P6).
+  router.get(
+    '/:conglomerateId/resolved',
+    validateParams(conglomerateIdParamSchema),
+    async (req, res) => {
+      const { conglomerateId } = req.valid?.params as { conglomerateId: string };
+      const resolved = await ctx.conglomerate.resolved(req.authUser!.id, conglomerateId);
+      res.json(resolved);
+    },
+  );
+
   // PATCH /conglomerates/:id — rename / edit description (409 on a name clash).
   router.patch(
     '/:conglomerateId',

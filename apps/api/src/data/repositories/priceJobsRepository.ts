@@ -63,8 +63,15 @@ export function createPriceJobsRepository(db: Database) {
         db.select({ id: conglomeratePositions.assetId }).from(conglomeratePositions),
         db.select({ id: transactions.assetId }).from(transactions),
       ]);
+      // Conglomerate rows may be nested-conglomerate constituents (V5-P6,
+      // `asset_id IS NULL`) — their leaf assets appear via the child's own
+      // rows in the same scan, so nulls are simply dropped here.
       const ids = [
-        ...new Set([...fromWorkboards, ...fromConglomerates, ...fromTransactions].map((r) => r.id)),
+        ...new Set(
+          [...fromWorkboards, ...fromConglomerates, ...fromTransactions].flatMap((r) =>
+            r.id !== null ? [r.id] : [],
+          ),
+        ),
       ];
       if (ids.length === 0) return [];
       return db.select(ASSET_COLUMNS).from(assets).where(inArray(assets.id, ids));

@@ -5,6 +5,7 @@ import { useT } from '../../i18n';
 import { getSharedConglomerate } from '../../lib/socialApi';
 import { formatPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
+import { NestedBadge } from '../workboard/ConglomeratesListPage';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 
@@ -75,11 +76,21 @@ export function SharedConglomeratePage() {
       ) : (
         <ul className="divide-y divide-neutral-800">
           {data.positions.map((p) => (
-            <li key={p.assetId} className="flex items-center justify-between gap-3 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-neutral-100">{p.asset.symbol}</p>
-                <p className="truncate text-xs text-neutral-500">{p.asset.name}</p>
-              </div>
+            <li
+              key={p.kind === 'asset' ? p.assetId : p.childId}
+              className="flex items-center justify-between gap-3 py-3"
+            >
+              {p.kind === 'asset' ? (
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-neutral-100">{p.asset.symbol}</p>
+                  <p className="truncate text-xs text-neutral-500">{p.asset.name}</p>
+                </div>
+              ) : (
+                <div className="flex min-w-0 items-center gap-2">
+                  <p className="truncate text-sm font-medium text-neutral-100">{p.child.name}</p>
+                  <NestedBadge />
+                </div>
+              )}
               <span className="shrink-0 text-sm font-medium tabular-nums text-neutral-200">
                 {formatPercent(p.weightPct)}
               </span>

@@ -2,13 +2,20 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import type { ConglomerateStatus, SearchResultItem } from '@bettertrack/contracts';
+import {
+  MAX_NESTING_DEPTH,
+  type ConglomerateStatus,
+  type ConglomerateSummary,
+  type ReplacePositionInput,
+  type SearchResultItem,
+} from '@bettertrack/contracts';
 
 import { ApiError } from '../../lib/apiClient';
 import {
   activateConglomerate,
   createConglomerate,
   getConglomerate,
+  listConglomerates,
   replaceConglomeratePositions,
   updateConglomerate,
 } from '../../lib/conglomerateApi';
@@ -19,7 +26,7 @@ import { AllocationDonut } from '../../ui/charts';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Alert, Button, Spinner } from '../components/ui';
 import { useDebounce } from '../hooks/useDebounce';
-import { StatusBadge } from './ConglomeratesListPage';
+import { NestedBadge, StatusBadge } from './ConglomeratesListPage';
 import { SaveIdeaDialog } from './SaveIdeaDialog';
 import {
   ACTIVE_SUM,
@@ -31,6 +38,7 @@ import {
   MAX_POSITIONS,
   normalize,
   persistablePositions,
+  positionFromConglomerate,
   positionFromSearchResult,
   roundWeight,
   sumWeights,
@@ -97,15 +105,28 @@ function EditBuilderLoader({ id }: { id: string }) {
         id: data.id,
         name: data.name,
         status: data.status,
-        positions: data.positions.map((p) => ({
-          assetId: p.assetId,
-          symbol: p.asset.symbol,
-          name: p.asset.name,
-          currency: p.asset.currency,
-          type: p.asset.type,
-          weightPct: p.weightPct,
-          locked: false,
-        })),
+        positions: data.positions.map((p): BuilderPosition => {
+          if (p.kind === 'conglomerate') {
+            return {
+              kind: 'conglomerate',
+              refId: p.childId,
+              symbol: p.child.name,
+              name: p.child.name,
+              weightPct: p.weightPct,
+              locked: false,
+            };
+          }
+          return {
+            kind: 'asset',
+            refId: p.assetId,
+            symbol: p.asset.symbol,
+            name: p.asset.name,
+            currency: p.asset.currency,
+            type: p.asset.type,
+            weightPct: p.weightPct,
+            locked: false,
+          };
+        }),
       }}
     />
   );
@@ -120,16 +141,12 @@ interface BuilderInitial {
 
 // ─── Snapshot helpers (autosave diffing) ─────────────────────────────────────
 
-interface PayloadPosition {
-  assetId: string;
-  weightPct: number;
-}
-
-function positionsPayload(positions: readonly BuilderPosition[]): PayloadPosition[] {
-  return persistablePositions(positions).map((p) => ({
-    assetId: p.assetId,
-    weightPct: roundWeight(p.weightPct),
-  }));
+function positionsPayload(positions: readonly BuilderPosition[]): ReplacePositionInput[] {
+  return persistablePositions(positions).map((p) =>
+    p.kind === 'conglomerate'
+      ? { childId: p.refId, weightPct: roundWeight(p.weightPct) }
+      : { assetId: p.refId, weightPct: roundWeight(p.weightPct) },
+  );
 }
 
 function positionsKey(positions: readonly BuilderPosition[]): string {
@@ -155,6 +172,9 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [positions, setPositions] = useState<BuilderPosition[]>(initial?.positions ?? []);
   const [status, setStatus] = useState<ConglomerateStatus>(initial?.status ?? 'draft');
+  // This basket's own id once it exists (immediately when editing, after the
+  // first autosave when new) — the nest picker excludes it (self-nest, V5-P6).
+  const [ownId, setOwnId] = useState<string | null>(initial?.id ?? null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -188,6 +208,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
         const created = await createConglomerate({ name: trimmed || defaultName });
         id = created.id;
         idRef.current = id;
+        setOwnId(id);
         savedNameRef.current = created.name;
         savedPositionsKeyRef.current = JSON.stringify([]);
         setStatus(created.status);
@@ -231,6 +252,8 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
   const debouncedKey = useDebounce(currentKey, AUTOSAVE_DEBOUNCE_MS);
 
   // Autosave whenever the debounced snapshot diverges from what's stored.
+  // A server-side nesting rejection (transitive cycle / depth cap, V5-P6) is
+  // surfaced as a localized notice — the graph checks can only run server-side.
   useEffect(() => {
     if (debouncedKey === lastSavedKeyRef.current) return;
     setSaveState('saving');
@@ -239,37 +262,64 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
       .then(() => setSaveState('saved'))
       .catch((err: unknown) => {
         setSaveState('error');
-        setSaveError(err instanceof ApiError ? err.message : null);
+        if (err instanceof ApiError) {
+          if (err.code === 'NESTING_CYCLE') {
+            setNotice(t('workboard.builder.errors.nestingCycle'));
+          } else if (err.code === 'NESTING_TOO_DEEP') {
+            setNotice(t('workboard.builder.errors.nestingTooDeep', { max: MAX_NESTING_DEPTH }));
+          }
+          setSaveError(err.message);
+        } else {
+          setSaveError(null);
+        }
       });
-  }, [debouncedKey, scheduleSave]);
+  }, [debouncedKey, scheduleSave, t]);
 
   // ── Position editing ──
 
-  const handleAddAsset = useCallback((item: SearchResultItem) => {
-    const check = canAddPosition(positionsRef.current, item.id);
-    if (!check.ok) {
-      setNotice(check.reason);
-      return;
-    }
-    setNotice(null);
-    setPositions((prev) => [...prev, positionFromSearchResult(item)]);
-  }, []);
+  const handleAddAsset = useCallback(
+    (item: SearchResultItem) => {
+      const check = canAddPosition(positionsRef.current, { kind: 'asset', refId: item.id });
+      if (!check.ok) {
+        setNotice(t(check.reason.key, check.reason.params));
+        return;
+      }
+      setNotice(null);
+      setPositions((prev) => [...prev, positionFromSearchResult(item)]);
+    },
+    [t],
+  );
 
-  const setWeight = useCallback((assetId: string, weightPct: number) => {
+  const handleAddConglomerate = useCallback(
+    (summary: ConglomerateSummary) => {
+      const check = canAddPosition(
+        positionsRef.current,
+        { kind: 'conglomerate', refId: summary.id },
+        idRef.current,
+      );
+      if (!check.ok) {
+        setNotice(t(check.reason.key, check.reason.params));
+        return;
+      }
+      setNotice(null);
+      setPositions((prev) => [...prev, positionFromConglomerate(summary)]);
+    },
+    [t],
+  );
+
+  const setWeight = useCallback((refId: string, weightPct: number) => {
     setPositions((prev) =>
-      prev.map((p) => (p.assetId === assetId ? { ...p, weightPct: clampWeight(weightPct) } : p)),
+      prev.map((p) => (p.refId === refId ? { ...p, weightPct: clampWeight(weightPct) } : p)),
     );
   }, []);
 
-  const toggleLock = useCallback((assetId: string) => {
-    setPositions((prev) =>
-      prev.map((p) => (p.assetId === assetId ? { ...p, locked: !p.locked } : p)),
-    );
+  const toggleLock = useCallback((refId: string) => {
+    setPositions((prev) => prev.map((p) => (p.refId === refId ? { ...p, locked: !p.locked } : p)));
   }, []);
 
-  const removePosition = useCallback((assetId: string) => {
+  const removePosition = useCallback((refId: string) => {
     setNotice(null);
-    setPositions((prev) => prev.filter((p) => p.assetId !== assetId));
+    setPositions((prev) => prev.filter((p) => p.refId !== refId));
   }, []);
 
   const handleAutoBalance = useCallback(() => {
@@ -340,7 +390,13 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
       ) : null}
 
       <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-6 px-4 py-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)_minmax(0,22rem)]">
-        <AddAssetsPanel notice={notice} onSelect={handleAddAsset} />
+        <AddAssetsPanel
+          notice={notice}
+          onSelect={handleAddAsset}
+          onSelectConglomerate={handleAddConglomerate}
+          ownId={ownId}
+          positions={positions}
+        />
         <PositionsPanel
           positions={positions}
           onWeight={setWeight}
@@ -466,9 +522,15 @@ function SavePill({ state, error }: { state: SaveState; error: string | null }) 
 function AddAssetsPanel({
   notice,
   onSelect,
+  onSelectConglomerate,
+  ownId,
+  positions,
 }: {
   notice: string | null;
   onSelect: (item: SearchResultItem) => void;
+  onSelectConglomerate: (summary: ConglomerateSummary) => void;
+  ownId: string | null;
+  positions: BuilderPosition[];
 }) {
   const t = useT();
   return (
@@ -482,7 +544,80 @@ function AddAssetsPanel({
       <p className="text-xs text-neutral-500">{t('workboard.builder.addAssetsHint')}</p>
       {notice ? <Alert tone="error">{notice}</Alert> : null}
       <AssetSearchBox onSelect={onSelect} placeholder={t('workboard.builder.searchPlaceholder')} />
+      <NestConglomeratePanel onSelect={onSelectConglomerate} ownId={ownId} positions={positions} />
     </section>
+  );
+}
+
+/**
+ * Nest one of the user's own conglomerates as a constituent (V5-P6). Folded
+ * away by default (anti-bloat): a compact disclosure listing the other
+ * baskets; already-added ones and the basket itself are excluded. Transitive
+ * cycle / depth-cap rejections come from the server on save.
+ */
+function NestConglomeratePanel({
+  onSelect,
+  ownId,
+  positions,
+}: {
+  onSelect: (summary: ConglomerateSummary) => void;
+  ownId: string | null;
+  positions: BuilderPosition[];
+}) {
+  const t = useT();
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['conglomerates'],
+    queryFn: ({ signal }) => listConglomerates(signal),
+  });
+
+  const nested = new Set(positions.filter((p) => p.kind === 'conglomerate').map((p) => p.refId));
+  const candidates = (data?.conglomerates ?? []).filter((c) => c.id !== ownId && !nested.has(c.id));
+
+  return (
+    <details className="rounded-lg border border-neutral-800 bg-neutral-900/30">
+      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-neutral-300 hover:text-neutral-100">
+        {t('workboard.builder.nestConglomerateHeading')}
+      </summary>
+      <div className="flex flex-col gap-2 border-t border-neutral-800 p-3">
+        <p className="text-xs text-neutral-500">{t('workboard.builder.nestConglomerateHint')}</p>
+        {isLoading ? (
+          <Spinner label={t('workboard.builder.loading')} />
+        ) : isError ? (
+          <Alert tone="error">{t('workboard.builder.nestConglomerateLoadError')}</Alert>
+        ) : candidates.length === 0 ? (
+          <p className="text-xs text-neutral-500">{t('workboard.builder.nestConglomerateEmpty')}</p>
+        ) : (
+          <ul
+            className="flex flex-col gap-1"
+            aria-label={t('workboard.builder.nestConglomerateListAriaLabel')}
+          >
+            {candidates.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => onSelect(c)}
+                  aria-label={t('workboard.builder.nestConglomerateAddAriaLabel', {
+                    name: c.name,
+                  })}
+                  className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm text-neutral-200 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                >
+                  <span className="min-w-0 truncate" title={c.name}>
+                    {c.name}
+                  </span>
+                  <span className="shrink-0 text-xs text-neutral-500">
+                    {c.positionCount === 1
+                      ? t('workboard.conglomerates.positionCountOne', { count: c.positionCount })
+                      : t('workboard.conglomerates.positionCountOther', {
+                          count: c.positionCount,
+                        })}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -497,9 +632,9 @@ function PositionsPanel({
   onNormalize,
 }: {
   positions: BuilderPosition[];
-  onWeight: (assetId: string, weightPct: number) => void;
-  onToggleLock: (assetId: string) => void;
-  onRemove: (assetId: string) => void;
+  onWeight: (refId: string, weightPct: number) => void;
+  onToggleLock: (refId: string) => void;
+  onRemove: (refId: string) => void;
   onAutoBalance: () => void;
   onNormalize: () => void;
 }) {
@@ -534,11 +669,11 @@ function PositionsPanel({
         >
           {positions.map((position) => (
             <WeightRow
-              key={position.assetId}
+              key={`${position.kind}:${position.refId}`}
               position={position}
-              onWeight={(w) => onWeight(position.assetId, w)}
-              onToggleLock={() => onToggleLock(position.assetId)}
-              onRemove={() => onRemove(position.assetId)}
+              onWeight={(w) => onWeight(position.refId, w)}
+              onToggleLock={() => onToggleLock(position.refId)}
+              onRemove={() => onRemove(position.refId)}
             />
           ))}
         </ul>
@@ -579,7 +714,12 @@ export function WeightRow({
   return (
     <li className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3 sm:flex-row sm:items-center sm:gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
-        <span className="font-mono text-sm font-semibold text-neutral-100">{symbol}</span>
+        <span className="flex items-center gap-2">
+          <span className="truncate font-mono text-sm font-semibold text-neutral-100">
+            {symbol}
+          </span>
+          {position.kind === 'conglomerate' ? <NestedBadge /> : null}
+        </span>
         <span className="truncate text-xs text-neutral-500" title={name}>
           {name}
         </span>
@@ -705,6 +845,7 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
   const t = useT();
   const [saveIdeaOpen, setSaveIdeaOpen] = useState(false);
   const live = persistablePositions(positions);
+  const hasNested = live.some((p) => p.kind === 'conglomerate');
   const donutData = live.map((p) => ({ label: p.symbol, value: p.weightPct }));
   const total = sumWeights(positions);
   const largest = live.reduce<BuilderPosition | null>(
@@ -747,11 +888,15 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
       {/* Save the (unsaved) ad-hoc basket as an idea (V4-P9): an idea keeps the
           weighted set verbatim, so a basket can be parked without persisting a
-          conglomerate. Default backtest params; tune them after reopening. */}
+          conglomerate. Default backtest params; tune them after reopening.
+          An ad-hoc idea holds asset weights only, so a basket with nested
+          conglomerates (V5-P6) can't be parked this way — save the basket
+          itself instead. */}
       <Button
         variant="secondary"
         onClick={() => setSaveIdeaOpen(true)}
-        disabled={live.length === 0}
+        disabled={live.length === 0 || hasNested}
+        title={hasNested ? t('workboard.builder.saveIdeaNestedHint') : undefined}
       >
         {t('workboard.ideas.save.action')}
       </Button>
@@ -761,7 +906,9 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
           state={{
             source: {
               kind: 'adhoc',
-              positions: live.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+              positions: live
+                .filter((p) => p.kind === 'asset')
+                .map((p) => ({ assetId: p.refId, weight: p.weightPct })),
             },
             range: '5Y',
             benchmark: null,

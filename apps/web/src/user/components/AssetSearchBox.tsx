@@ -192,20 +192,33 @@ export function AssetSearchBox({
     setConglomerateAddState((s) => ({ ...s, [item.id]: { status: 'pending' } }));
     try {
       const detail = await getConglomerate(target.id);
-      const positions: BuilderPosition[] = detail.positions.map((p) => ({
-        assetId: p.assetId,
-        symbol: p.asset.symbol,
-        name: p.asset.name,
-        currency: p.asset.currency,
-        type: p.asset.type,
-        weightPct: p.weightPct,
-        locked: false,
-      }));
-      const check = canAddPosition(positions, item.id);
+      const positions: BuilderPosition[] = detail.positions.map(
+        (p): BuilderPosition =>
+          p.kind === 'conglomerate'
+            ? {
+                kind: 'conglomerate',
+                refId: p.childId,
+                symbol: p.child.name,
+                name: p.child.name,
+                weightPct: p.weightPct,
+                locked: false,
+              }
+            : {
+                kind: 'asset',
+                refId: p.assetId,
+                symbol: p.asset.symbol,
+                name: p.asset.name,
+                currency: p.asset.currency,
+                type: p.asset.type,
+                weightPct: p.weightPct,
+                locked: false,
+              },
+      );
+      const check = canAddPosition(positions, { kind: 'asset', refId: item.id });
       if (!check.ok) {
         setConglomerateAddState((s) => ({
           ...s,
-          [item.id]: { status: 'error', message: check.reason },
+          [item.id]: { status: 'error', message: t(check.reason.key, check.reason.params) },
         }));
         return;
       }
@@ -226,7 +239,11 @@ export function AssetSearchBox({
       }
       await replaceConglomeratePositions(
         target.id,
-        persistablePositions(balanced).map((p) => ({ assetId: p.assetId, weightPct: p.weightPct })),
+        persistablePositions(balanced).map((p) =>
+          p.kind === 'conglomerate'
+            ? { childId: p.refId, weightPct: p.weightPct }
+            : { assetId: p.refId, weightPct: p.weightPct },
+        ),
       );
       setConglomerateAddState((s) => ({
         ...s,

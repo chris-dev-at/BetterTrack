@@ -1,4 +1,9 @@
-import type { AssetType, CurrencyCode, SearchResultItem } from '@bettertrack/contracts';
+import type {
+  AssetType,
+  ConglomerateSummary,
+  CurrencyCode,
+  SearchResultItem,
+} from '@bettertrack/contracts';
 
 /**
  * Pure state helpers for the Conglomerate Builder (PROJECTPLAN.md §6.5).
@@ -21,16 +26,21 @@ export const WEIGHT_SLIDER_STEP = 0.5;
 export const WEIGHT_INPUT_STEP = 0.001;
 
 /**
- * One editable row in the Builder. `locked` and the embedded asset identity are
- * client-only; only `assetId` + `weightPct` are persisted (§6.5). A freshly
- * added position starts at weight 0 until the user gives it a share.
+ * One editable row in the Builder — an asset or, since V5-P6, one of the
+ * user's own conglomerates nested as a constituent. `locked` and the embedded
+ * identity are client-only; only the ref id + `weightPct` are persisted
+ * (§6.5). A freshly added position starts at weight 0 until the user gives it
+ * a share.
  */
 export interface BuilderPosition {
-  assetId: string;
+  kind: 'asset' | 'conglomerate';
+  /** The constituent's id: an asset id, or the nested conglomerate's id (V5-P6). */
+  refId: string;
+  /** Display lead: the asset symbol, or the nested conglomerate's name. */
   symbol: string;
   name: string;
-  currency: CurrencyCode;
-  type: AssetType;
+  currency?: CurrencyCode;
+  type?: AssetType;
   weightPct: number;
   locked: boolean;
 }
@@ -75,16 +85,42 @@ export function canActivate(positions: readonly BuilderPosition[]): boolean {
   return everyWeightOk && isSumValid(live);
 }
 
-/** Would adding `item` be rejected? (duplicate asset, or the 1–50 cap is full). */
+/** A rejection reason as an i18n key + params — the page translates it (EN+DE). */
+export interface AddPositionRejection {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+/**
+ * Would adding this constituent be rejected? (the 1–50 cap, a duplicate
+ * constituent, or — for a nested conglomerate — nesting the basket into
+ * itself, V5-P6). Transitive cycles and the depth cap are server-enforced;
+ * the Builder surfaces those errors on save.
+ */
 export function canAddPosition(
   positions: readonly BuilderPosition[],
-  assetId: string,
-): { ok: true } | { ok: false; reason: string } {
+  candidate: { kind: BuilderPosition['kind']; refId: string },
+  selfId?: string | null,
+): { ok: true } | { ok: false; reason: AddPositionRejection } {
   if (positions.length >= MAX_POSITIONS) {
-    return { ok: false, reason: `A conglomerate may have at most ${MAX_POSITIONS} positions.` };
+    return {
+      ok: false,
+      reason: { key: 'workboard.builder.errors.maxPositions', params: { max: MAX_POSITIONS } },
+    };
   }
-  if (positions.some((p) => p.assetId === assetId)) {
-    return { ok: false, reason: 'That asset is already in this conglomerate.' };
+  if (candidate.kind === 'conglomerate' && selfId != null && candidate.refId === selfId) {
+    return { ok: false, reason: { key: 'workboard.builder.errors.selfNest' } };
+  }
+  if (positions.some((p) => p.kind === candidate.kind && p.refId === candidate.refId)) {
+    return {
+      ok: false,
+      reason: {
+        key:
+          candidate.kind === 'asset'
+            ? 'workboard.builder.errors.duplicateAsset'
+            : 'workboard.builder.errors.duplicateConglomerate',
+      },
+    };
   }
   return { ok: true };
 }
@@ -92,11 +128,24 @@ export function canAddPosition(
 /** Build a new weight-0 position from a search result (§6.5 "click adds at weight 0"). */
 export function positionFromSearchResult(item: SearchResultItem): BuilderPosition {
   return {
-    assetId: item.id,
+    kind: 'asset',
+    refId: item.id,
     symbol: item.symbol,
     name: item.name,
     currency: item.currency,
     type: item.type,
+    weightPct: 0,
+    locked: false,
+  };
+}
+
+/** Build a weight-0 nested-conglomerate constituent from one of the user's own baskets (V5-P6). */
+export function positionFromConglomerate(summary: ConglomerateSummary): BuilderPosition {
+  return {
+    kind: 'conglomerate',
+    refId: summary.id,
+    symbol: summary.name,
+    name: summary.name,
     weightPct: 0,
     locked: false,
   };

@@ -147,10 +147,17 @@ function ProfileItemCard({
           ) : detail.data.kind === 'conglomerate' ? (
             <ul className="divide-y divide-neutral-800">
               {detail.data.conglomerate.positions.map((p) => (
-                <li key={p.assetId} className="flex items-center justify-between gap-3 py-2">
+                <li
+                  key={p.kind === 'asset' ? p.assetId : p.childId}
+                  className="flex items-center justify-between gap-3 py-2"
+                >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{p.asset.symbol}</p>
-                    <p className="truncate text-xs text-neutral-500">{p.asset.name}</p>
+                    <p className="truncate text-sm font-medium">
+                      {p.kind === 'asset' ? p.asset.symbol : p.child.name}
+                    </p>
+                    <p className="truncate text-xs text-neutral-500">
+                      {p.kind === 'asset' ? p.asset.name : t('workboard.conglomerates.nestedBadge')}
+                    </p>
                   </div>
                   <span className="shrink-0 text-sm text-neutral-300">
                     {formatPercent(p.weightPct)}

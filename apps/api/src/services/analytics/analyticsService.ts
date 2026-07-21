@@ -232,11 +232,14 @@ export function createAnalyticsService(deps: AnalyticsServiceDeps): AnalyticsSer
     to: string,
   ): Promise<{ label: string; series: StatSeriesPoint[] }> {
     const detail = await conglomerate.get(userId, conglomerateId);
-    if (detail.positions.length === 0) {
+    // A nested conglomerate (V5-P6) compares over its flattened effective
+    // asset weights — the same shared resolution backtest/allocation use.
+    const resolved = await conglomerate.resolved(userId, conglomerateId);
+    if (resolved.positions.length === 0) {
       throw badRequest('Conglomerate has no positions to compare.', 'VALIDATION_ERROR');
     }
     const preview = await backtest.runPreview(userId, {
-      positions: detail.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+      positions: resolved.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
       range: 'MAX',
       mode: 'clip',
     });
