@@ -4,6 +4,7 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  backtestResponseSchema,
   mySharedResponseSchema,
   sharedConglomerateDetailResponseSchema,
   sharedPortfolioDetailResponseSchema,
@@ -25,6 +26,11 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const MISSING_ID = '00000000-0000-0000-7000-000000000000';
 
+/** ISO `YYYY-MM-DD` for `n` days before today (UTC) — spans the sandbox window. */
+function daysAgoIso(n: number): string {
+  return new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** A deterministic EUR quote so a bought share is worth exactly 120 EUR. */
 function stubMarketData() {
   return createStubMarketData({
@@ -36,6 +42,16 @@ function stubMarketData() {
         dayChangePct: 20,
         asOf: new Date().toISOString(),
       },
+      stale: false,
+      asOf: Date.now(),
+    }),
+    // A rising two-point daily series (any ref) so the arc-c what-if sandbox has
+    // real history to backtest over. Unused by the non-backtest sharing tests.
+    history: () => ({
+      value: [
+        { time: `${daysAgoIso(400)}T00:00:00.000Z`, close: 100 },
+        { time: `${daysAgoIso(1)}T00:00:00.000Z`, close: 130 },
+      ],
       stale: false,
       asOf: Date.now(),
     }),
@@ -538,6 +554,143 @@ describe('conglomerate friend-sharing', () => {
       .set(...XRW)
       .send({ name: 'hijacked' });
     expect(patch.status).toBe(404);
+  });
+});
+
+// --- Shared-conglomerate what-if sandbox (§13.5 V5-P6 arc c) ----------------
+
+describe('shared conglomerate what-if sandbox', () => {
+  /** Seed a second global asset so the sandbox basket has two constituents. */
+  async function seedSapAsset(): Promise<string> {
+    const [asset] = await harness.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'SAP.DE',
+        type: 'stock',
+        symbol: 'SAP.DE',
+        name: 'SAP SE',
+        currency: 'EUR',
+        exchange: 'XETRA',
+      })
+      .returning();
+    return asset!.id;
+  }
+
+  /** Alice owns a friends-shared 60/40 two-asset basket; returns its id + assets. */
+  async function sharedBasket() {
+    const base = await scenario();
+    const assetB = await seedSapAsset();
+    const create = await base.aliceAgent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Duo' });
+    const cid = create.body.id as string;
+    await base.aliceAgent
+      .put(`/api/v1/conglomerates/${cid}/positions`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: base.assetId, weightPct: 60 },
+          { assetId: assetB, weightPct: 40 },
+        ],
+      });
+    await setConglomerateVisibility(base.aliceAgent, cid, 'friends');
+    return { ...base, cid, assetB };
+  }
+
+  it('requires authentication', async () => {
+    const res = await request(harness.app)
+      .post(`/api/v1/backtest/shared/${MISSING_ID}/preview`)
+      .set(...XRW)
+      .send({ positions: [{ id: MISSING_ID, weight: 100 }], range: '1Y' });
+    expect(res.status).toBe(401);
+  });
+
+  it('a friend can backtest local weight tweaks; the curve carries no benchmark', async () => {
+    const { bobAgent, cid, assetId, assetB } = await sharedBasket();
+
+    const res = await bobAgent
+      .post(`/api/v1/backtest/shared/${cid}/preview`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { id: assetId, weight: 80 },
+          { id: assetB, weight: 20 },
+        ],
+        range: '1Y',
+      });
+
+    expect(res.status).toBe(200);
+    expect(backtestResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.benchmark).toBeNull();
+    expect(res.body.series.length).toBeGreaterThan(0);
+  });
+
+  it('a sandbox tweak never mutates the shared object — owner state is unchanged', async () => {
+    const { aliceAgent, bobAgent, cid, assetId, assetB } = await sharedBasket();
+
+    const before = await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`);
+    await bobAgent
+      .post(`/api/v1/backtest/shared/${cid}/preview`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { id: assetId, weight: 10 },
+          { id: assetB, weight: 90 },
+        ],
+        range: '1Y',
+      });
+
+    // The owner's basket is byte-identical: no write path was exercised.
+    const owner = await aliceAgent.get(`/api/v1/conglomerates/${cid}`);
+    const weights = owner.body.positions.map((p: { weightPct: number }) => p.weightPct);
+    expect(weights).toEqual([60, 40]);
+
+    // And the read-only shared view still reads exactly as it did before.
+    const after = await bobAgent.get(`/api/v1/social/shared/conglomerates/${cid}`);
+    expect(after.body).toEqual(before.body);
+  });
+
+  it('404s a non-friend and an unknown basket — the same guard as the shared view', async () => {
+    const { carolAgent, bobAgent, cid, assetId, assetB } = await sharedBasket();
+    const body = {
+      positions: [
+        { id: assetId, weight: 60 },
+        { id: assetB, weight: 40 },
+      ],
+      range: '1Y' as const,
+    };
+
+    // Non-friend: never authorized to see the basket → 404 (not 403).
+    const carol = await carolAgent
+      .post(`/api/v1/backtest/shared/${cid}/preview`)
+      .set(...XRW)
+      .send(body);
+    expect(carol.status).toBe(404);
+
+    // A friend, but an unknown conglomerate id → 404.
+    const missing = await bobAgent
+      .post(`/api/v1/backtest/shared/${MISSING_ID}/preview`)
+      .set(...XRW)
+      .send({ positions: [{ id: assetId, weight: 100 }], range: '1Y' });
+    expect(missing.status).toBe(404);
+  });
+
+  it('refuses a tweak that names a constituent the share never exposed (422)', async () => {
+    const { bobAgent, cid, assetId } = await sharedBasket();
+    const res = await bobAgent
+      .post(`/api/v1/backtest/shared/${cid}/preview`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { id: assetId, weight: 60 },
+          { id: MISSING_ID, weight: 40 },
+        ],
+        range: '1Y',
+      });
+    expect(res.status).toBe(422);
+    expect(res.body.error.code).toBe('SANDBOX_POSITIONS_MISMATCH');
   });
 });
 

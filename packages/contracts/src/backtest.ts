@@ -237,6 +237,48 @@ export const backtestResponseSchema = z
   .strict();
 export type BacktestResponse = z.infer<typeof backtestResponseSchema>;
 
+// --- Shared-conglomerate what-if sandbox (§13.5 V5-P6 arc c) ---------------
+
+/**
+ * One re-weighted constituent in a shared-conglomerate what-if sandbox (§13.5
+ * V5-P6 arc c): the constituent's own id — an asset's `assetId`, exactly as the
+ * read-only shared view surfaces it — plus the viewer's locally-tweaked relative
+ * weight (normalised by the engine, so any positive number is valid, as in the
+ * Builder). The server pins the id SET to the shared basket's real constituents,
+ * so the sandbox can only re-weight what the share already exposes — never inject
+ * a foreign asset id (the §6.9 privacy boundary).
+ */
+export const sharedSandboxPositionSchema = z
+  .object({
+    id: z.string().uuid(),
+    weight: z.number().finite().gt(0, 'Weight must be greater than 0.'),
+  })
+  .strict();
+export type SharedSandboxPosition = z.infer<typeof sharedSandboxPositionSchema>;
+
+/**
+ * `POST /backtest/shared/:conglomerateId/preview` body (§13.5 V5-P6 arc c): a
+ * viewer's local weight tweaks over a FRIEND-SHARED conglomerate, run through the
+ * exact same engine as the Builder preview. Only the top-level weights travel;
+ * the constituent identities and prices are resolved server-side from the shared
+ * basket (owner-scoped, catalog-assets only), so nothing beyond the share's
+ * existing exposure is reachable and no write is ever issued. Deliberately has no
+ * benchmark axis — a viewer must not overlay their own baskets on someone else's
+ * share. Nested constituents are out of arc-c scope (recursive re-weighting is
+ * #592): a basket containing one is not sandboxable and the server refuses it.
+ */
+export const sharedSandboxPreviewRequestSchema = z
+  .object({
+    positions: z.array(sharedSandboxPositionSchema).min(1).max(50),
+    range: backtestPreviewRangeSchema,
+    /** Late-listing mode (§14); omitting it keeps the pre-§14 clip behavior. */
+    mode: backtestModeSchema.default('clip'),
+    /** Rebalance schedule (V4-P7); omitting it keeps buy-and-hold. */
+    rebalance: rebalanceFrequencySchema.default('none'),
+  })
+  .strict();
+export type SharedSandboxPreviewRequest = z.infer<typeof sharedSandboxPreviewRequestSchema>;
+
 // --- N-way conglomerate comparison (§13.5 V5-P6 arc a) ---------------------
 
 /**
