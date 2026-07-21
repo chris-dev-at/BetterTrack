@@ -957,7 +957,7 @@
         },
         "country_specific_fi": {
           "label": "Finland (capital income tax)",
-          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year."
+          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year. The €30,000 bracket applies per portfolio, not across all your accounts combined."
         },
         "custom": {
           "label": "Custom rules",

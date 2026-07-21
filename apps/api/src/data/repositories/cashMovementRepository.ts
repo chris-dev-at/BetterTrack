@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { portfolioCashMovements } from '../schema';
@@ -111,6 +111,36 @@ export function createCashMovementRepository(db: Database) {
         .returning();
       if (!row) throw new Error('Cash movement insert returned no row');
       return toRecord(row);
+    },
+
+    /**
+     * Insert movements a reconciler derived from a *stale* read, guarded
+     * against a concurrent reconciler (#635 review): one transaction takes a
+     * per-portfolio advisory lock, re-reads the portfolio's movements fresh,
+     * and inserts only what `plan` still confirms against that read — so two
+     * concurrent report reads can never both post the same tax correction.
+     * `plan` must be pure over its argument (it may be skipped entirely when
+     * it returns nothing).
+     */
+    async insertReconciled(
+      portfolioId: string,
+      plan: (fresh: CashMovementRecord[]) => NewCashMovement[],
+    ): Promise<CashMovementRecord[]> {
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+        const fresh = await tx
+          .select()
+          .from(portfolioCashMovements)
+          .where(eq(portfolioCashMovements.portfolioId, portfolioId))
+          .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
+        const movements = plan(fresh.map(toRecord));
+        if (movements.length === 0) return [];
+        const rows = await tx
+          .insert(portfolioCashMovements)
+          .values(movements.map((m) => toInsertValues(portfolioId, m)))
+          .returning();
+        return rows.map(toRecord);
+      });
     },
 
     /**

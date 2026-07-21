@@ -957,7 +957,7 @@
         },
         "country_specific_fi": {
           "label": "Finnland (Kapitalertragsteuer)",
-          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen."
+          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen. Die 30.000-€-Grenze gilt pro Portfolio, nicht über alle Konten hinweg."
         },
         "custom": {
           "label": "Eigene Regeln",

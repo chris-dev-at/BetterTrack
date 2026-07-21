@@ -248,7 +248,7 @@ describe('FI mode: progressive capital-income tax (#635)', () => {
       kind: 'tax_withholding',
       amountEur: -11.25,
       taxYear: 2026,
-      note: 'Tax year correction (FI)',
+      note: 'Live tax correction (FI)',
     });
   });
 });

@@ -452,6 +452,12 @@ export interface BuildContextDeps {
    * real time.
    */
   notificationNow?: () => Date;
+  /**
+   * Test seam (#635): the tax engine's clock — the open/closed Vienna-year
+   * boundary derives from it, so rollover semantics are provable by advancing
+   * a controlled clock across Jan 1. Defaults to the real time.
+   */
+  taxNow?: () => number;
 }
 
 /** Composition root: repositories → services → context. */
@@ -945,6 +951,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     currencyService: currency,
     snapshots,
     logger,
+    now: deps.taxNow,
   });
   // A read-only view onto the Live-Mode per-asset ring buffer (§6.3): the same
   // `live:ring:*` Redis keys the poll loop writes. The intraday 1D/1W series

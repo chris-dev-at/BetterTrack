@@ -619,7 +619,7 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       amountEur: -10,
       taxYear: 2026,
       transactionId: null,
-      note: 'Tax year correction (custom rules)',
+      note: 'Live tax correction (custom rules)',
     });
 
     // Re-add the same sell: the year re-settles against its corrected held —
@@ -780,7 +780,7 @@ describe('refund-off reshape reconciliation stays signed on every path (V5-P4c)'
       amountEur: 100,
       taxYear: 2026,
       transactionId: null,
-      note: 'Tax year correction (custom rules)',
+      note: 'Live tax correction (custom rules)',
     });
     // Append-only: the sell keeps its frozen 200 — the claw-back is a
     // correction movement, never an edit.
