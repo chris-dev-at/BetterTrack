@@ -11,6 +11,16 @@ import { API_SERVICE_NAME, API_VERSION } from '../version';
  * Environment schema (PROJECTPLAN.md §11). Validated once at boot so a
  * misconfigured deployment fails fast and loudly instead of at first request.
  */
+// An optional URL that also tolerates an empty string as "unset". `.optional()`
+// alone only accepts `undefined`, but docker-compose materializes an unset
+// `${VAR:-}` into an empty string, which would fall straight into `.url()` and
+// crash config validation at boot (#632). Coerce blank ⇒ undefined first so the
+// var is robust regardless of how it arrives.
+const optionalUrl = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().url().optional(),
+);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -198,7 +208,7 @@ const envSchema = z.object({
   // Optional explicit public Grafana URL for the auth-gated-subdomain path
   // (e.g. https://grafana.bettertrack.at). When set the Diagnostics panel embeds
   // it; when unset (the admin-proxy path) the client embeds the proxy path.
-  BT_GRAFANA_PUBLIC_URL: z.string().url().optional(),
+  BT_GRAFANA_PUBLIC_URL: optionalUrl,
 
   // ── Market intelligence (§13.5 V5-P5) ──────────────────────────────────────
   // Global kill-switch for the dividend/earnings/news/splits intel surfaces.

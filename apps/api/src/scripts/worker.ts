@@ -57,6 +57,7 @@ import { createPortfolioSnapshotService } from '../services/portfolio/portfolioS
 import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
 import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
+import { createMetricsServer } from '../metrics';
 import { createMarketData } from '../providers';
 import { initObservability } from '../services/observability/sentry';
 import { createProblemService } from '../services/observability/problemService';
@@ -324,6 +325,14 @@ const running = createJobWorkers({
   },
 });
 
+// Prometheus scrape listener for the worker (#632): the `bettertrack_job_outcomes_total`
+// counter is only ever incremented in THIS process, so without a metrics endpoint
+// here Prometheus can never scrape it and the dashboard's "Job outcomes" panel
+// stays empty. Bound localhost/LAN-only exactly like the API's, on the same
+// BT_METRICS_PORT (a separate container, so no port clash); Prometheus adds a
+// `worker:9464` scrape target alongside `api:9464`.
+const metricsServer = createMetricsServer(config, logger);
+
 const scheduled = await registerSchedules(registry, definitions);
 logger.info({ queues: definitions.map((d) => d.name), scheduled }, 'BetterTrack worker started');
 
@@ -334,6 +343,11 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'worker shutting down');
   try {
     await running.close();
+    // Close the metrics scrape listener alongside the workers.
+    if (metricsServer) {
+      metricsServer.closeIdleConnections();
+      await new Promise<void>((resolve) => metricsServer.close(() => resolve()));
+    }
     // Persist any in-flight problem captures before the DB connection closes.
     await problems.flush();
     // Let in-flight background cache revalidations write their results before

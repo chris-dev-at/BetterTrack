@@ -219,6 +219,29 @@ describe('market-intelligence gate (§13.5 V5-P5)', () => {
   });
 });
 
+describe('observability grafana public URL (#632)', () => {
+  it('an EMPTY BT_GRAFANA_PUBLIC_URL (the compose default for an unset var) reads as unset, not a crash', () => {
+    // infra/docker-compose.yml injects BT_GRAFANA_PUBLIC_URL='' when the var is
+    // unset; `.optional()` alone would push that empty string into `.url()` and
+    // crash boot — the whole api container failed to start on the live box.
+    const c = config({ BT_GRAFANA_PUBLIC_URL: '' });
+    expect(c.observability.grafanaPublicUrl).toBeUndefined();
+  });
+
+  it('whitespace-only reads as unset too', () => {
+    expect(config({ BT_GRAFANA_PUBLIC_URL: '   ' }).observability.grafanaPublicUrl).toBeUndefined();
+  });
+
+  it('a real URL is accepted and trailing-slash-stripped', () => {
+    const c = config({ BT_GRAFANA_PUBLIC_URL: 'https://grafana.bettertrack.at/' });
+    expect(c.observability.grafanaPublicUrl).toBe('https://grafana.bettertrack.at');
+  });
+
+  it('a non-empty but invalid URL still fails loudly', () => {
+    expect(() => config({ BT_GRAFANA_PUBLIC_URL: 'not-a-url' })).toThrow();
+  });
+});
+
 describe('web-push VAPID config (#368)', () => {
   it('keys-only config enables the channel with the mailto subject derived from BT_DOMAIN', () => {
     const c = config({

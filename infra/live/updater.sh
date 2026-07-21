@@ -51,6 +51,19 @@ FAIL_ESCALATE_AT="${FAIL_ESCALATE_AT:-3}"
 mkdir -p "$CONTROL/logs"
 log() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG"; }
 
+# Event-level notifier (#632): tees a line to the container's stdout AS WELL AS
+# the log file, so `docker logs bettertrack-live-updater-1` (and Docker Desktop)
+# shows version changes — plain log() writes only to the file, leaving that
+# console empty. Reserved for the deploy-lifecycle events (deploy start, update
+# complete, update FAILED, DEPLOY STUCK); idle `up-to-date` ticks stay file-only
+# (288/day would drown the console) and verbose build output already bypasses
+# log() entirely, so the console stays clean.
+notify() {
+  _now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf '%s %s\n' "$_now" "$*" >>"$LOG"
+  printf '%s %s\n' "$_now" "$*"
+}
+
 # Consecutive-failure escalation (#606). A rebase once rewrote the drizzle
 # journal so `db:migrate` failed on EVERY tick for ~2 days — 585 in a row —
 # while the site kept serving the last good build, so nothing ever surfaced the
@@ -65,11 +78,11 @@ deploy_failed() {
   _fails=$(( $(cat "$FAILCOUNT_FILE" 2>/dev/null || echo 0) + 1 ))
   printf '%s\n' "$_fails" >"$FAILCOUNT_FILE"
   if [ "$_fails" -ge "$FAIL_ESCALATE_AT" ]; then
-    log "DEPLOY STUCK: ${_fails} consecutive failed deploys targeting ${1} — the site still serves the last good build, but new commits are NOT going live; investigate ${LOG} (marker: ${STUCK_MARKER})"
+    notify "DEPLOY STUCK: ${_fails} consecutive failed deploys targeting ${1} — the site still serves the last good build, but new commits are NOT going live; investigate ${LOG} (marker: ${STUCK_MARKER})"
     printf '%s %s consecutive failed deploys targeting %s — see %s\n' \
       "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_fails" "$1" "$LOG" >"$STUCK_MARKER"
   else
-    log "update FAILED at ${1} — retrying next tick (failure ${_fails}/${FAIL_ESCALATE_AT}; see output above)"
+    notify "update FAILED at ${1} — retrying next tick (failure ${_fails}/${FAIL_ESCALATE_AT}; see output above)"
   fi
 }
 
@@ -85,14 +98,14 @@ log_deploy_reason() {
   _short="$(git -C "$APP" rev-parse --short "$_new" 2>/dev/null || echo "$_new")"
   if [ "$_prev" != "none" ] && git -C "$APP" rev-parse --quiet --verify "${_prev}^{commit}" >/dev/null 2>&1; then
     _count="$(git -C "$APP" rev-list --no-merges --count "${_prev}..${_new}" 2>/dev/null || echo '?')"
-    log "deploying ${_short}, ${_count} new commit(s) (last deployed: ${_prev})"
+    notify "deploying ${_short}, ${_count} new commit(s) (last deployed: ${_prev})"
     git -C "$APP" log --no-merges --oneline "${_prev}..${_new}" 2>/dev/null | while IFS= read -r _line; do
       log "  ${_line}"
     done
   else
     # No usable previous SHA on record (first deploy, wiped log, or a history
     # rewrite where the old SHA is gone) — deploy anyway, just can't list a range.
-    log "deploying ${_short} (no previous deployed SHA on record — first deploy or reset)"
+    notify "deploying ${_short} (no previous deployed SHA on record — first deploy or reset)"
   fi
 }
 
@@ -258,7 +271,7 @@ while true; do
           dc run --rm api node dist/scripts/seed.js >>"$LOG" 2>&1 &&
           dc up -d db redis api web worker landing prometheus grafana node-exporter cadvisor postgres-exporter redis-exporter >>"$LOG" 2>&1; then
           printf '%s\n' "$REMOTE" >"$DEPLOYED_SHA"
-          log "update complete -> ${REMOTE}"
+          notify "update complete -> ${REMOTE}"
           deploy_ok
           # Post-deploy adoptions (#460 follow-up). Never fail the deploy;
           # self_update can restart this container, so it must stay LAST.

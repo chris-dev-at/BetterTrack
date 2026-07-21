@@ -203,6 +203,14 @@ services:
       BT_VAPID_PUBLIC_KEY: '${BT_VAPID_PUBLIC_KEY:-}'
       BT_VAPID_PRIVATE_KEY: '${BT_VAPID_PRIVATE_KEY:-}'
       BT_VAPID_SUBJECT: '${BT_VAPID_SUBJECT:-}'
+      # Prometheus metrics listener (#632). The worker owns the ONLY process that
+      # emits bettertrack_job_outcomes_total, so it binds its own scrape endpoint
+      # (localhost/LAN-only mandate — bound to 0.0.0.0 inside the container for the
+      # prometheus sidecar, never published to a host port). Prometheus adds a
+      # `worker:9464` target alongside `api:9464`.
+      BT_METRICS_ENABLED: '${BT_METRICS_ENABLED:-true}'
+      BT_METRICS_HOST: '${BT_METRICS_HOST:-0.0.0.0}'
+      BT_METRICS_PORT: '${BT_METRICS_PORT:-9464}'
     depends_on:
       db:
         condition: service_healthy

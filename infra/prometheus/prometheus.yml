@@ -25,6 +25,18 @@ scrape_configs:
         labels:
           service: api
 
+  # The BetterTrack worker metrics listener (#632). BullMQ job outcomes
+  # (`bettertrack_job_outcomes_total`) are only ever emitted in the worker
+  # process, so its own metrics endpoint must be scraped for the dashboard's
+  # "Job outcomes" panel to populate. Same BT_METRICS_PORT as the api (a separate
+  # container, so no clash); resolvable by service name on the internal network.
+  - job_name: bettertrack-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['worker:9464']
+        labels:
+          service: worker
+
   # Prometheus scrapes itself so the dashboards can show scrape health.
   - job_name: prometheus
     static_configs:
