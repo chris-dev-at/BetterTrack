@@ -26,6 +26,11 @@ type TaxMode = UserTaxSettingsRow['mode'];
 export interface UserTaxSettingsRecord {
   mode: TaxMode;
   country: string | null;
+  /** Manual mode's default (V5-P4c): amount OR rate, never both; null = none. */
+  manualDefaultAmountEur: number | null;
+  manualDefaultRatePct: number | null;
+  /** The custom engine's parameter set (V5-P4c); present exactly in `custom` mode. */
+  customParams: unknown;
 }
 
 /** A dividend with its money columns parsed to `number` (DB stores `numeric`). */
@@ -41,6 +46,8 @@ export interface DividendRecord {
   taxMode: TaxMode;
   taxCountry: string | null;
   taxAmountEur: number | null;
+  /** Custom-mode parameter snapshot (V5-P4c); null on non-custom rows. */
+  taxParams: unknown;
   /** Source tag (V5-P0c): how this dividend entered the ledger; `manual` for hand entry. */
   source: string;
   createdAt: Date;
@@ -56,6 +63,8 @@ export interface NewDividend {
   taxMode: TaxMode;
   taxCountry: string | null;
   taxAmountEur: number | null;
+  /** Custom-mode parameter snapshot (V5-P4c); omit/null on non-custom rows. */
+  taxParams?: unknown;
   /** Source tag (V5-P0c); defaults to `manual`. Its cash movements inherit it. */
   source?: string;
 }
@@ -72,8 +81,22 @@ function toRecord(row: DividendRow): DividendRecord {
     taxMode: row.taxMode,
     taxCountry: row.taxCountry ?? null,
     taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+    taxParams: row.taxParams ?? null,
     source: row.source,
     createdAt: row.createdAt,
+  };
+}
+
+/** Row → record for the settings table (numeric columns parsed to `number`). */
+function toSettingsRecord(row: UserTaxSettingsRow): UserTaxSettingsRecord {
+  return {
+    mode: row.mode,
+    country: row.country ?? null,
+    manualDefaultAmountEur:
+      row.manualDefaultAmountEur === null ? null : Number(row.manualDefaultAmountEur),
+    manualDefaultRatePct:
+      row.manualDefaultRatePct === null ? null : Number(row.manualDefaultRatePct),
+    customParams: row.customParams ?? null,
   };
 }
 
@@ -87,29 +110,31 @@ export function createTaxRepository(db: Database) {
         .where(eq(userTaxSettings.userId, userId))
         .limit(1);
       const row = rows[0];
-      return row ? { mode: row.mode, country: row.country ?? null } : null;
+      return row ? toSettingsRecord(row) : null;
     },
 
-    /** Upsert the user's tax setting (mode + country move together, CHECK-enforced). */
+    /** Upsert the user's tax setting (mode-dependent fields move together, CHECK-enforced). */
     async setUserTaxSettings(
       userId: string,
       settings: UserTaxSettingsRecord,
     ): Promise<UserTaxSettingsRecord> {
+      const values = {
+        mode: settings.mode,
+        country: settings.country,
+        manualDefaultAmountEur:
+          settings.manualDefaultAmountEur === null ? null : String(settings.manualDefaultAmountEur),
+        manualDefaultRatePct:
+          settings.manualDefaultRatePct === null ? null : String(settings.manualDefaultRatePct),
+        customParams: settings.customParams ?? null,
+        updatedAt: new Date(),
+      };
       const [row] = await db
         .insert(userTaxSettings)
-        .values({
-          userId,
-          mode: settings.mode,
-          country: settings.country,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: userTaxSettings.userId,
-          set: { mode: settings.mode, country: settings.country, updatedAt: new Date() },
-        })
+        .values({ userId, ...values })
+        .onConflictDoUpdate({ target: userTaxSettings.userId, set: values })
         .returning();
       if (!row) throw new Error('Tax settings upsert returned no row');
-      return { mode: row.mode, country: row.country ?? null };
+      return toSettingsRecord(row);
     },
 
     /**
@@ -141,6 +166,7 @@ export function createTaxRepository(db: Database) {
             taxMode: dividend.taxMode,
             taxCountry: dividend.taxCountry,
             taxAmountEur: dividend.taxAmountEur === null ? null : String(dividend.taxAmountEur),
+            taxParams: dividend.taxParams ?? null,
             source: dividend.source ?? 'manual',
           })
           .returning();

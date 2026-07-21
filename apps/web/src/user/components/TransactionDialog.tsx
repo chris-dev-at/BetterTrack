@@ -158,6 +158,12 @@ interface Row {
   taxUnit: 'amount' | 'rate';
   /** Raw manual-tax value (EUR amount or percent, per {@link taxUnit}); empty = none. */
   taxValue: string;
+  /**
+   * Whether the user edited the tax value themselves (V5-P4c): a pristine field
+   * gets the configurable manual default seeded in once settings arrive; a
+   * touched one is never overwritten — the default stays editable per trade.
+   */
+  taxTouched: boolean;
 }
 
 /**
@@ -255,6 +261,7 @@ function makeRow(
     uncoveredEntryPrice: '',
     taxUnit: 'amount',
     taxValue: '',
+    taxTouched: false,
     ...seed,
   };
 }
@@ -286,6 +293,7 @@ function rowsFromProps(props: TransactionDialogProps, today: string): Row[] {
         uncoveredEntryPrice: '',
         taxUnit: 'amount',
         taxValue: '',
+        taxTouched: false,
       },
     ];
   }
@@ -480,6 +488,11 @@ export function TransactionDialog(props: TransactionDialogProps) {
     enabled: !isEdit,
   });
   const manualTaxActive = !isEdit && taxSettingsQuery.data?.effective.mode === 'manual_per_trade';
+  // The manual mode's configurable default (V5-P4c) — undefined when none set.
+  const manualDefaultAmount = taxSettingsQuery.data?.effective.manualDefaultAmountEur;
+  const manualDefaultRate = taxSettingsQuery.data?.effective.manualDefaultRatePct;
+  const manualDefaultActive =
+    manualTaxActive && (manualDefaultAmount !== undefined || manualDefaultRate !== undefined);
 
   // Web funds/receives cash from the portfolio's Main source — no source picker
   // (#378). The API still accepts `cashSourceId`, so send the resolved Main id
@@ -490,6 +503,28 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const [picking, setPicking] = useState<boolean>(rows.length === 0);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Manual-default prefill (V5-P4c): seed the configurable default into every
+  // still-pristine tax field once the portfolio's settings arrive (and into
+  // rows created after, e.g. via the asset picker). A field the user edited —
+  // including one they cleared — is never overwritten: the default prefills,
+  // the per-trade entry stays editable.
+  useEffect(() => {
+    if (!manualDefaultActive) return;
+    setRows((current) => {
+      let changed = false;
+      const next = current.map((row) => {
+        if (row.taxTouched || row.taxValue !== '') return row;
+        changed = true;
+        return {
+          ...row,
+          taxUnit: manualDefaultRate !== undefined ? ('rate' as const) : ('amount' as const),
+          taxValue: String(manualDefaultRate ?? manualDefaultAmount),
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [manualDefaultActive, manualDefaultAmount, manualDefaultRate, rows]);
 
   // --- Linked date ↔ price fields (#226) ------------------------------------
   // The assist applies only to a single-asset *create* flow: bulk prefill prices
@@ -1053,6 +1088,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
                 cash={cash}
                 uncovered={uncovered}
                 showTax={manualTaxActive && row.side === 'sell'}
+                taxDefaultActive={manualDefaultActive}
               />
             );
           })}
@@ -1522,10 +1558,13 @@ function TaxCard({
   row,
   onChange,
   t,
+  defaultActive,
 }: {
   row: Row;
   onChange: (patch: Partial<Row>) => void;
   t: TranslateFn;
+  /** A configurable manual default is set (V5-P4c) — the field came prefilled. */
+  defaultActive?: boolean;
 }) {
   const isRate = row.taxUnit === 'rate';
   const unitBtn = (unit: 'amount' | 'rate') =>
@@ -1543,7 +1582,9 @@ function TaxCard({
           {t('portfolio.transaction.tax.title')}
         </span>
         <span className="text-xs text-neutral-500">
-          {t('portfolio.transaction.tax.description')}
+          {defaultActive
+            ? t('portfolio.transaction.tax.defaultHint')
+            : t('portfolio.transaction.tax.description')}
         </span>
       </div>
       <div className="flex items-stretch gap-2">
@@ -1577,7 +1618,7 @@ function TaxCard({
             min="0"
             max={isRate ? '100' : undefined}
             value={row.taxValue}
-            onChange={(e) => onChange({ taxValue: e.target.value })}
+            onChange={(e) => onChange({ taxValue: e.target.value, taxTouched: true })}
             aria-label={t('portfolio.transaction.tax.valueAria')}
             placeholder={t('portfolio.transaction.tax.placeholder')}
             className={cx(inputClass, 'pr-8')}
@@ -1603,6 +1644,7 @@ function RowFields({
   cash,
   uncovered,
   showTax,
+  taxDefaultActive,
 }: {
   row: Row;
   t: TranslateFn;
@@ -1616,6 +1658,8 @@ function RowFields({
   uncovered?: RowUncovered;
   /** Offer the manual per-trade tax field (a SELL in `manual_per_trade` mode, #431). */
   showTax?: boolean;
+  /** A configurable manual default is set (V5-P4c) — the tax field came prefilled. */
+  taxDefaultActive?: boolean;
 }) {
   const symbol = row.asset.symbol;
   const isAmountMode = row.entryMode === 'amount';
@@ -1847,7 +1891,9 @@ function RowFields({
       {uncovered ? <UncoveredCard row={row} uncovered={uncovered} t={t} /> : null}
 
       {/* Manual per-trade tax field — a SELL in manual_per_trade mode (#431). */}
-      {showTax ? <TaxCard row={row} onChange={onChange} t={t} /> : null}
+      {showTax ? (
+        <TaxCard row={row} onChange={onChange} t={t} defaultActive={taxDefaultActive} />
+      ) : null}
 
       {/* Note. */}
       <label className="group flex flex-col gap-1.5">

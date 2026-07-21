@@ -1014,7 +1014,12 @@ export const transactionSideEnum = pgEnum('transaction_side', ['buy', 'sell']);
  * and — frozen at recording time (§16 2026-07-08 cutover semantics) — on each
  * sell/dividend row.
  */
-export const taxModeEnum = pgEnum('tax_mode', ['none', 'manual_per_trade', 'country_specific']);
+export const taxModeEnum = pgEnum('tax_mode', [
+  'none',
+  'manual_per_trade',
+  'country_specific',
+  'custom',
+]);
 
 export const transactions = pgTable(
   'transactions',
@@ -1042,6 +1047,10 @@ export const transactions = pgTable(
     taxMode: taxModeEnum('tax_mode'),
     taxCountry: char('tax_country', { length: 2 }),
     taxAmountEur: numeric('tax_amount_eur', { precision: 20, scale: 6 }),
+    // Custom-mode parameter snapshot (V5-P4c, #584): the exact rule set this
+    // row was taxed under, frozen like the mode itself (§16 cutover — a
+    // parameter change is a mode switch, forward-only). NULL on non-custom rows.
+    taxParams: jsonb('tax_params'),
     // Uncovered sell (issue #369): a SELL recorded against an insufficient/zero
     // holding behind the explicit acknowledgment closes the position at 0 (no
     // shorts). `allow_uncovered` is the persisted acknowledgment — it also keeps
@@ -1173,6 +1182,9 @@ export const dividends = pgTable(
     taxMode: taxModeEnum('tax_mode').notNull(),
     taxCountry: char('tax_country', { length: 2 }),
     taxAmountEur: numeric('tax_amount_eur', { precision: 20, scale: 6 }),
+    // Custom-mode parameter snapshot (V5-P4c) — same freezing semantics as the
+    // transaction column. NULL on non-custom rows.
+    taxParams: jsonb('tax_params'),
     // Source tag (V5-P0c): `manual` / `import:<broker>` / `sync:<provider>`.
     // Server-assigned only; validated in contracts (sourceTagSchema).
     source: text('source').notNull().default('manual'),
@@ -1339,12 +1351,32 @@ export const userTaxSettings = pgTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     mode: taxModeEnum('mode').notNull().default('none'),
     country: char('country', { length: 2 }),
+    // Manual mode's configurable default (V5-P4c, #584): prefilled into every
+    // entry-less sell/dividend, editable per trade. Amount OR rate, never both;
+    // both NULL = no default (exact pre-V5-P4 behavior).
+    manualDefaultAmountEur: numeric('manual_default_amount_eur', { precision: 20, scale: 6 }),
+    manualDefaultRatePct: numeric('manual_default_rate_pct', { precision: 9, scale: 6 }),
+    // The custom engine's parameter set (V5-P4c); present exactly in 'custom'
+    // mode (CHECK below), validated by the contract at the service edge.
+    customParams: jsonb('custom_params'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check(
       'user_tax_settings_country',
       sql`(${t.mode} = 'country_specific') = (${t.country} is not null)`,
+    ),
+    check(
+      'user_tax_settings_custom_params',
+      sql`(${t.mode} = 'custom') = (${t.customParams} is not null)`,
+    ),
+    check(
+      'user_tax_settings_manual_default',
+      sql`(${t.mode} = 'manual_per_trade') or (${t.manualDefaultAmountEur} is null and ${t.manualDefaultRatePct} is null)`,
+    ),
+    check(
+      'user_tax_settings_manual_default_single',
+      sql`${t.manualDefaultAmountEur} is null or ${t.manualDefaultRatePct} is null`,
     ),
   ],
 );

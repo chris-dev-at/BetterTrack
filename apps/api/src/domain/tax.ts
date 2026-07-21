@@ -51,12 +51,13 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Tax modes (§13.3 V3-P4b). `none` = exact pre-V3-P4 behavior; `manual_per_trade`
- * = optional user-entered tax per sell/dividend, zero automation;
- * `country_specific` = automated computation for `TAX_COUNTRY_AT` (the only
- * shipped country). Mirrored (not imported) by `@bettertrack/contracts`.
+ * Tax modes (§13.3 V3-P4b; §13.5 V5-P4c). `none` = exact pre-V3-P4 behavior;
+ * `manual_per_trade` = optional user-entered tax per sell/dividend, zero
+ * automation; `country_specific` = automated computation for AT/DE; `custom` =
+ * the user-parameterized rule-built engine ({@link settleCustomYear}).
+ * Mirrored (not imported) by `@bettertrack/contracts`.
  */
-export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific'] as const;
+export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific', 'custom'] as const;
 export type TaxMode = (typeof TAX_MODES)[number];
 
 /** The first shipped country of `country_specific` mode (§13.3 V3-P4b). */
@@ -858,6 +859,338 @@ export function settleDeYear(input: DeYearSettlementInput): DeYearSettlementResu
     newEventDeltasEur,
     heldAfterEur: heldEur,
     yearEnd: deYearOutcome(agg),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Custom rule-built engine (V5-P4c, #584): the parameterized generalization
+// of the AT settlement — "if we don't support your tax system, you can enter
+// how it works".
+// ---------------------------------------------------------------------------
+
+/**
+ * The custom engine's parameter set (V5-P4c): exactly the spec's list. Two
+ * regimes fall out of `yearReset`:
+ *
+ *  - **reset on** (the AT shape): each Vienna year has its own pool;
+ *    `carryForward` decides whether a year-end net LOSS survives Jan 1 as a
+ *    pot that offsets later years (DE-pot-style) or is forfeited (AT).
+ *  - **reset off**: ONE cumulative pool spans all years — the year boundary
+ *    never clears it, so a loss inherently crosses Jan 1; `carryForward` off
+ *    additionally forfeits a *negative* cumulative balance at each year end
+ *    (gains always carry — they are already-taxed income the target function
+ *    must keep seeing).
+ *
+ * `lossOffset` off drops losses from the pool entirely (they neither refund
+ * nor accrue carry); `refund` off turns the held tax into a ratchet (a
+ * shrinking pool never posts a refund — later gains only withhold past the
+ * high-water mark). Mirrored (not imported) by `@bettertrack/contracts`.
+ */
+export interface CustomTaxParams {
+  /** Flat rate on the positive taxable pool, percent (0–100). */
+  ratePct: number;
+  lossOffset: boolean;
+  refund: boolean;
+  yearReset: boolean;
+  carryForward: boolean;
+  costBasis: CostBasisStrategy;
+}
+
+/**
+ * Austria expressed as a custom parameter set (§13.5 V5-P4c — the required
+ * expressibility example): flat 27.5 % with same-year loss offset and refund,
+ * a hard Jan-1 reset, no carry, moving-average basis. Pinned by test to
+ * reproduce the AT fixtures exactly. (Germany is NOT fully expressible — the
+ * dual loss pots and the Sparer-Pauschbetrag are outside the spec's parameter
+ * list; its core rate approximates as 26.375 % = 25 % × 1.055. §16-logged.)
+ */
+export const AT_AS_CUSTOM_PARAMS: CustomTaxParams = {
+  ratePct: 27.5,
+  lossOffset: true,
+  refund: true,
+  yearReset: true,
+  carryForward: false,
+  costBasis: 'moving-average',
+};
+
+/** One taxable event of the custom engine — same shape as {@link NewAtEvent}. */
+export interface CustomTaxableEvent {
+  /**
+   * `sell_gain` contributes a **signed** realized gain/loss (under the
+   * parameter set's own {@link CustomTaxParams.costBasis}); `dividend` a
+   * strictly positive gross amount. Both in EUR.
+   */
+  kind: 'sell_gain' | 'dividend';
+  amountEur: number;
+}
+
+/**
+ * The state one custom parameter set hands across a year boundary. Which
+ * fields are live depends on the regime: `potEur` (≥ 0) is the reset-on
+ * loss pot ({@link CustomTaxParams.carryForward}); the `cumulative*` pair is
+ * the reset-off ledger — the signed all-years pool and the tax already
+ * attributed to prior years (so a year's own component is the cumulative
+ * target minus what earlier years hold). Unused fields stay 0.
+ */
+export interface CustomCarry {
+  potEur: number;
+  cumulativePoolEur: number;
+  cumulativeHeldEur: number;
+}
+
+/** The empty carry — the state before a parameter set's first year. */
+export function initialCustomCarry(): CustomCarry {
+  return { potEur: 0, cumulativePoolEur: 0, cumulativeHeldEur: 0 };
+}
+
+function assertCustomParams(params: CustomTaxParams): void {
+  if (!Number.isFinite(params.ratePct) || params.ratePct < 0 || params.ratePct > 100) {
+    throw new TaxComputationError(
+      `Custom tax rate must be between 0 and 100, got ${params.ratePct}.`,
+    );
+  }
+  for (const flag of ['lossOffset', 'refund', 'yearReset', 'carryForward'] as const) {
+    if (typeof params[flag] !== 'boolean') {
+      throw new TaxComputationError(`Custom tax flag ${flag} must be a boolean.`);
+    }
+  }
+  if (!COST_BASIS_STRATEGIES.includes(params.costBasis)) {
+    throw new TaxComputationError(`Unknown cost-basis strategy ${String(params.costBasis)}.`);
+  }
+}
+
+function assertCustomCarry(carry: CustomCarry): void {
+  for (const [label, value] of [
+    ['Carry pot', carry.potEur],
+    ['Cumulative pool', carry.cumulativePoolEur],
+    ['Cumulative held', carry.cumulativeHeldEur],
+  ] as const) {
+    assertFiniteAmount(value, label);
+  }
+  if (carry.potEur < 0) {
+    throw new TaxComputationError(`Carry pot must be non-negative, got ${carry.potEur}.`);
+  }
+}
+
+/**
+ * The pool contribution of one event: a dividend's gross (validated strictly
+ * positive), a sell's signed gain — or 0 for a loss when `lossOffset` is off
+ * (the loss is ignored entirely: no refund, no pot accrual).
+ */
+function customEventAmount(params: CustomTaxParams, event: CustomTaxableEvent): number {
+  assertFiniteAmount(event.amountEur, 'Custom event amount');
+  if (event.kind === 'dividend') {
+    if (event.amountEur <= 0) {
+      throw new TaxComputationError(
+        `Dividend gross amounts must be strictly positive, got ${event.amountEur}.`,
+      );
+    }
+    return event.amountEur;
+  }
+  if (event.kind !== 'sell_gain') {
+    throw new TaxComputationError(`Unknown custom event kind ${String(event.kind)}.`);
+  }
+  return params.lossOffset ? event.amountEur : Math.max(0, event.amountEur);
+}
+
+/**
+ * One year of one parameter set as a sequential replay. Events fold in
+ * CHRONOLOGICAL order because with `refund` off the year's held target is
+ * path-dependent (a taxed gain followed by a loss ratchets; the aggregate
+ * would not) — with refund on the fold lands on the aggregate target, so the
+ * order is then irrelevant, matching {@link settleAtYear} exactly.
+ */
+interface CustomYearFold {
+  /** The year's running pool (reset-on: this year only; reset-off: cumulative). */
+  poolEur: number;
+  /** What the year should hold after the folded events (its own component, signed). */
+  heldTargetEur: number;
+}
+
+/** Fold `events` into the year, continuing from `fold` (mutates and returns it). */
+function foldCustomEvents(
+  params: CustomTaxParams,
+  carry: CustomCarry,
+  fold: CustomYearFold,
+  events: readonly CustomTaxableEvent[],
+): CustomYearFold {
+  const rate = params.ratePct / 100;
+  const potIn = params.yearReset && params.carryForward ? carry.potEur : 0;
+  for (const event of events) {
+    fold.poolEur += customEventAmount(params, event);
+    // The target the year's held steers to after this event: reset-on years
+    // tax their own pool net of the pot; reset-off years own the cumulative
+    // target minus what prior years already hold (signed — a shrunk cumulative
+    // pool can demand a refund of prior years' tax).
+    const targetEur = params.yearReset
+      ? floorCents(rate * Math.max(0, fold.poolEur - potIn))
+      : floorCents(floorCents(rate * Math.max(0, fold.poolEur)) - carry.cumulativeHeldEur);
+    let deltaEur = floorCents(targetEur - fold.heldTargetEur);
+    // Refund off: held only ever ratchets up — a negative delta posts nothing.
+    if (!params.refund && deltaEur < 0) deltaEur = 0;
+    fold.heldTargetEur = floorCents(fold.heldTargetEur + deltaEur);
+  }
+  return fold;
+}
+
+/** The fold at a year's start: the carried-in pool, nothing held yet. */
+function startCustomFold(params: CustomTaxParams, carry: CustomCarry): CustomYearFold {
+  return { poolEur: params.yearReset ? 0 : carry.cumulativePoolEur, heldTargetEur: 0 };
+}
+
+/** The carry a finished year hands to the next (from its final fold state). */
+function customCarryOut(
+  params: CustomTaxParams,
+  carry: CustomCarry,
+  fold: CustomYearFold,
+): CustomCarry {
+  if (params.yearReset) {
+    const potIn = params.carryForward ? carry.potEur : 0;
+    // A net-negative remainder becomes (or passes through as) the pot.
+    const potOut = params.carryForward ? Math.max(0, potIn - fold.poolEur) : 0;
+    return { potEur: potOut, cumulativePoolEur: 0, cumulativeHeldEur: 0 };
+  }
+  return {
+    potEur: 0,
+    // Carry-forward off forfeits a NEGATIVE cumulative balance at the year
+    // boundary; a positive pool always carries (it is already-taxed income).
+    cumulativePoolEur: params.carryForward ? fold.poolEur : Math.max(0, fold.poolEur),
+    cumulativeHeldEur: floorCents(carry.cumulativeHeldEur + fold.heldTargetEur),
+  };
+}
+
+/** The outcome of one closed year of one parameter set. */
+export interface CustomYearOutcome {
+  /**
+   * What the year should hold after all its events (signed: a reset-off year
+   * whose loss shrank the cumulative pool holds a NET REFUND of prior years'
+   * tax). This is the year's component of a portfolio-year's held target.
+   */
+  targetEur: number;
+  /** The state handed to the next year. */
+  carryOut: CustomCarry;
+}
+
+/**
+ * Derive one year's outcome (held target + carry-out) from its chronological
+ * events under one parameter set — the custom analog of {@link atYearTargetEur}
+ * / {@link deYearOutcome}, path-dependent when `refund` is off.
+ */
+export function customYearOutcome(
+  params: CustomTaxParams,
+  carry: CustomCarry,
+  events: readonly CustomTaxableEvent[],
+): CustomYearOutcome {
+  assertCustomParams(params);
+  assertCustomCarry(carry);
+  const fold = foldCustomEvents(params, carry, startCustomFold(params, carry), events);
+  return { targetEur: fold.heldTargetEur, carryOut: customCarryOut(params, carry, fold) };
+}
+
+/**
+ * Chain the carry state across consecutive prior years (ascending; gap years
+ * may be omitted — an event-less year passes the pot/pool through unchanged).
+ * The custom analog of {@link deCarryPots}.
+ */
+export function customCarryForYears(
+  params: CustomTaxParams,
+  priorYearEvents: ReadonlyArray<readonly CustomTaxableEvent[]>,
+): CustomCarry {
+  let carry = initialCustomCarry();
+  for (const events of priorYearEvents) {
+    carry = customYearOutcome(params, carry, events).carryOut;
+  }
+  return carry;
+}
+
+/** Input of {@link settleCustomYear} — one Vienna year of one parameter set. */
+export interface CustomYearSettlementInput {
+  params: CustomTaxParams;
+  /** The state entering this year ({@link customCarryForYears} over prior years). */
+  carry: CustomCarry;
+  /**
+   * The year's already-persisted events of THIS parameter set, chronological,
+   * gains recomputed against the *current* transaction log under the set's own
+   * cost basis (§16: append-only re-derivation).
+   */
+  existingEvents: readonly CustomTaxableEvent[];
+  /**
+   * Tax currently held for this year's component of THIS parameter set, EUR
+   * (cent-exact): the caller separates coexisting regimes — the year's total
+   * held minus every other regime's target (§16 cutover, as for AT/DE).
+   */
+  heldEur: number;
+  /** New events being recorded now, in recording order (possibly empty). */
+  newEvents: readonly CustomTaxableEvent[];
+}
+
+/** Output of {@link settleCustomYear} — same movement semantics as AT/DE. */
+export interface CustomYearSettlementResult {
+  /**
+   * Delta (EUR, signed: positive = withhold, negative = refund) that brings
+   * the already-persisted events' target in line with `heldEur` *before* any
+   * new event applies. With `refund` off it never claws back (clamped ≥ 0).
+   */
+  correctionDeltaEur: number;
+  /** Marginal delta per new event, in input order (same sign convention). */
+  newEventDeltasEur: number[];
+  /** Held after all deltas — the year's final component target. */
+  heldAfterEur: number;
+  /** The state handed to the next year after every event (existing + new). */
+  carryOut: CustomCarry;
+}
+
+/**
+ * Settle one Vienna year of one parameter set: the cent-exact deltas that
+ * keep the year's held component equal to the parameter set's target after
+ * every event — {@link settleAtYear}'s delta-steering generalized to the
+ * custom rulebook. With {@link AT_AS_CUSTOM_PARAMS} this reproduces the AT
+ * engine output for output (pinned by test — the issue's required
+ * expressibility proof).
+ */
+export function settleCustomYear(input: CustomYearSettlementInput): CustomYearSettlementResult {
+  assertCustomParams(input.params);
+  assertCustomCarry(input.carry);
+  assertFiniteAmount(input.heldEur, 'heldEur');
+
+  // Replay the persisted events to the year's pre-batch target, then
+  // reconcile drift (history reshaped by a backdated buy / a deletion)
+  // against what is actually held — the ratchet also gates this correction.
+  const fold = foldCustomEvents(
+    input.params,
+    input.carry,
+    startCustomFold(input.params, input.carry),
+    input.existingEvents,
+  );
+  let correctionDeltaEur = floorCents(fold.heldTargetEur - input.heldEur);
+  if (!input.params.refund && correctionDeltaEur < 0) correctionDeltaEur = 0;
+  let heldEur = floorCents(input.heldEur + correctionDeltaEur);
+
+  // New events continue the same fold, but the deltas steer the ACTUAL held
+  // (which after the clamp above may sit beyond the replay target).
+  const rate = input.params.ratePct / 100;
+  const potIn = input.params.yearReset && input.params.carryForward ? input.carry.potEur : 0;
+  const newEventDeltasEur: number[] = [];
+  for (const event of input.newEvents) {
+    fold.poolEur += customEventAmount(input.params, event);
+    const targetEur = input.params.yearReset
+      ? floorCents(rate * Math.max(0, fold.poolEur - potIn))
+      : floorCents(floorCents(rate * Math.max(0, fold.poolEur)) - input.carry.cumulativeHeldEur);
+    let deltaEur = floorCents(targetEur - heldEur);
+    if (!input.params.refund && deltaEur < 0) deltaEur = 0;
+    newEventDeltasEur.push(deltaEur);
+    heldEur = floorCents(heldEur + deltaEur);
+  }
+
+  // The carry-out derives from the full fold with the year's FINAL held as its
+  // component (the ratchet-aware value, so a reset-off chain attributes what
+  // this year actually holds).
+  fold.heldTargetEur = heldEur;
+  return {
+    correctionDeltaEur,
+    newEventDeltasEur,
+    heldAfterEur: heldEur,
+    carryOut: customCarryOut(input.params, input.carry, fold),
   };
 }
 

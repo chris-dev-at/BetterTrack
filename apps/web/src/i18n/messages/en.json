@@ -954,7 +954,45 @@
         "country_specific_de": {
           "label": "Germany (Abgeltungsteuer)",
           "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years."
+        },
+        "custom": {
+          "label": "Custom rules",
+          "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis."
         }
+      },
+      "custom": {
+        "rateLabel": "Tax rate (%)",
+        "rateAria": "Custom tax rate in percent",
+        "rateInfo": "Applied to the positive taxable pool of realized gains and dividends.",
+        "costBasisLabel": "Cost basis",
+        "costBasisAria": "Custom cost-basis method",
+        "costBasisInfo": "How sell gains are computed: a moving average across all buys, or FIFO — the oldest lot sells first.",
+        "costBasis": {
+          "movingAverage": "Moving average",
+          "fifo": "FIFO"
+        },
+        "lossOffsetLabel": "Losses offset gains",
+        "lossOffsetInfo": "A realized loss shrinks the taxable pool. Off: losses are ignored entirely.",
+        "refundLabel": "Refund overpaid tax",
+        "refundInfo": "When the pool shrinks below what you already paid, the difference is refunded. Off: tax only ever accumulates.",
+        "yearResetLabel": "Reset every January 1",
+        "yearResetInfo": "Each calendar year is taxed on its own. Off: one pool accumulates across the years.",
+        "carryForwardLabel": "Carry losses forward",
+        "carryForwardInfo": "A year-end net loss carries into later years instead of being forfeited.",
+        "apply": "Apply rules",
+        "invalid": "Enter a rate between 0 and 100."
+      },
+      "manualDefault": {
+        "title": "Default tax entry",
+        "info": "Prefilled into every sell and dividend, still editable per trade. Leave blank for no default.",
+        "unitAria": "Default tax unit",
+        "unitAmount": "Amount (€)",
+        "unitRate": "% of gain",
+        "valueAria": "Default manual tax",
+        "placeholder": "No default",
+        "apply": "Save default",
+        "clear": "Clear",
+        "invalid": "Enter a valid amount, or a rate between 0 and 100 %."
       }
     },
     "password": {
@@ -1079,7 +1117,8 @@
         "unitRate": "% of gain",
         "valueAria": "Manual tax for this sale",
         "placeholder": "0",
-        "invalid": "Enter a valid tax amount, or a rate between 0 and 100 %."
+        "invalid": "Enter a valid tax amount, or a rate between 0 and 100 %.",
+        "defaultHint": "Prefilled from your default — edit it per trade."
       },
       "autoHint": "auto",
       "derivedRecords": "· records",
