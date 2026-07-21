@@ -311,7 +311,15 @@ export function PriceChart({
       if (isTailAppend) {
         // Re-update from the last drawn point: update() with an existing time
         // replaces it in place, so this is safe and covers value corrections.
-        for (let i = drawn.length - 1; i < series.length; i++) main.update(series[i]!);
+        // A non-monotonic time still slipping through (a late/out-of-order
+        // frame) makes update() throw "Cannot update oldest data"; fall back to
+        // a full re-draw so the error never bubbles to the React boundary and
+        // blanks the page.
+        try {
+          for (let i = drawn.length - 1; i < series.length; i++) main.update(series[i]!);
+        } catch {
+          main.setData(series);
+        }
       } else {
         main.setData(series);
       }

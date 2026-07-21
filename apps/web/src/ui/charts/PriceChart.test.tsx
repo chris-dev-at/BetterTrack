@@ -222,6 +222,23 @@ describe('PriceChart — live-append mode (§6.3, V3-P7b)', () => {
     expect(mocks.update.mock.calls.map((c) => c[0])).toEqual([grown[1], grown[2]]);
   });
 
+  test('a non-monotonic tail update recovers with a full setData instead of crashing', () => {
+    const { rerender } = render(<PriceChart series={base} live showRangeToggle={false} />);
+    expect(mocks.setData).toHaveBeenCalledTimes(1); // initial draw
+
+    // lightweight-charts throws ("Cannot update oldest data") when update()
+    // gets a time older than the last drawn point — the wrapper must swallow it
+    // and re-draw rather than let the error blank the page.
+    mocks.update.mockImplementationOnce(() => {
+      throw new Error('Cannot update oldest data');
+    });
+    const grown = [...base, { time: 1_700_000_020 as never, value: 102 }];
+    rerender(<PriceChart series={grown} live showRangeToggle={false} />);
+
+    expect(mocks.setData).toHaveBeenCalledTimes(2); // fell back to a full re-draw
+    expect(mocks.setData).toHaveBeenLastCalledWith(grown);
+  });
+
   test('a replaced series (window/asset switch) falls back to setData', () => {
     const { rerender } = render(<PriceChart series={base} live showRangeToggle={false} />);
     const replaced = [{ time: 1_700_000_005 as never, value: 99 }, ...base.slice(1)];
