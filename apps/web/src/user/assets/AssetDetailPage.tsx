@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import {
@@ -105,8 +105,13 @@ function toChartPoints(points: PricePoint[], interval: HistoryInterval | undefin
  * charts requires strictly ascending unique times).
  */
 function toLiveChartPoints(frames: RealtimeLiveFrame[]): ChartPoint[] {
+  // Frames can arrive out of order (late poll-fallback samples, a stream
+  // reconnect replaying the ring buffer). lightweight-charts requires strictly
+  // ascending unique times, so sort by the ISO `at` timestamp before coalescing
+  // — otherwise a non-monotonic push crashes the live chart with "Cannot update
+  // oldest data". `at` is an ISO-8601 string, so lexical order is chronological.
   const bySecond = new Map<number, number>();
-  for (const frame of frames) {
+  for (const frame of [...frames].sort((a, b) => a.at.localeCompare(b.at))) {
     bySecond.set(Math.floor(Date.parse(frame.at) / 1000), frame.price);
   }
   return [...bySecond.entries()].map(([time, value]) => ({ time: time as Time, value }));
@@ -954,6 +959,20 @@ export function AssetDetailPage() {
   const { frames: streamedFrames, streaming } = useLiveFrames(id, liveWindow, liveRate, liveActive);
   const fallbackFrames = usePollFallbackFrames(id ?? '', quoteQuery.data, liveActive && !streaming);
 
+  // Derived chart series, memoized on their true inputs. Without this, unrelated
+  // query settles (earnings/splits/news, #605/#610) re-render the page and hand
+  // PriceChart fresh array references every time, re-firing its data-push effect
+  // and — in live mode — replaying update() into a non-monotonic crash.
+  const chartPoints = useMemo(
+    () => toChartPoints(historyQuery.data?.points ?? [], historyQuery.data?.interval),
+    [historyQuery.data?.points, historyQuery.data?.interval],
+  );
+  const liveFrames = useMemo(
+    () => trimToWindow(streaming ? streamedFrames : fallbackFrames, liveWindow),
+    [streaming, streamedFrames, fallbackFrames, liveWindow],
+  );
+  const livePoints = useMemo(() => toLiveChartPoints(liveFrames), [liveFrames]);
+
   if (!id) return null;
 
   // Full-page loading state (first load only).
@@ -983,10 +1002,6 @@ export function AssetDetailPage() {
   const detail = detailQuery.data!;
   const { asset } = detail;
   const chartMode = asset.isCustom ? 'step' : 'area';
-
-  const chartPoints = toChartPoints(historyQuery.data?.points ?? [], historyQuery.data?.interval);
-  const liveFrames = trimToWindow(streaming ? streamedFrames : fallbackFrames, liveWindow);
-  const livePoints = toLiveChartPoints(liveFrames);
 
   return (
     <div className="flex flex-col gap-8">
