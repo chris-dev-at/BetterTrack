@@ -1308,6 +1308,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         portfolioId,
         inputs,
         assetsById,
+        // The manual-default gate (V5-P4c): imported rows never take the default.
+        source,
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
       });
 

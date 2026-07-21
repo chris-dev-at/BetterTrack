@@ -1595,7 +1595,7 @@ function TaxCard({
         >
           <button
             type="button"
-            onClick={() => onChange({ taxUnit: 'amount' })}
+            onClick={() => onChange({ taxUnit: 'amount', taxTouched: true })}
             aria-pressed={!isRate}
             className={unitBtn('amount')}
           >
@@ -1603,7 +1603,7 @@ function TaxCard({
           </button>
           <button
             type="button"
-            onClick={() => onChange({ taxUnit: 'rate' })}
+            onClick={() => onChange({ taxUnit: 'rate', taxTouched: true })}
             aria-pressed={isRate}
             className={unitBtn('rate')}
           >

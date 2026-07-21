@@ -169,6 +169,14 @@ export interface TransactionTaxPlanInput {
   /** Asset rows for every batch asset (already visibility-checked). */
   assetsById: ReadonlyMap<string, AssetRow>;
   /**
+   * The batch's V5-P0c source tag (`manual` | `import:<broker>` | …). The
+   * configurable manual default applies to `manual` rows only — imported
+   * broker history already settled its taxes at the broker, so an entry-less
+   * imported row must not have today's default frozen onto it. Absent = manual
+   * (every non-import caller records by hand).
+   */
+  source?: string;
+  /**
    * Resolves a cash source for a settlement: the explicit id (must be an
    * active source of this portfolio) or the portfolio's Main. Supplied by the
    * portfolio service so both share one resolution (and its caching).
@@ -915,17 +923,23 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     // ── Manual per trade: literal recording, zero automation. The V5-P4c
     // configurable default fills in where no explicit entry arrived — an
     // explicit entry (including an explicit 0) always wins, and with no
-    // default configured the behavior is byte-identical pre-V5-P4. ──────────
+    // default configured the behavior is byte-identical pre-V5-P4. Manually
+    // recorded rows only: imported broker history settled its taxes at the
+    // broker, so a non-`manual` batch never receives the default. ───────────
     if (settings.mode === 'manual_per_trade') {
+      const defaultApplies = (planInput.source ?? 'manual') === 'manual';
       /** The amount/rate that applies to one sell: explicit entry, else the default. */
       const effectiveEntry = (input: TransactionInput) => {
         const hasExplicit = input.taxAmountEur !== undefined || input.taxRatePct !== undefined;
-        return hasExplicit
-          ? { taxAmountEur: input.taxAmountEur ?? null, taxRatePct: input.taxRatePct ?? null }
-          : {
+        if (hasExplicit) {
+          return { taxAmountEur: input.taxAmountEur ?? null, taxRatePct: input.taxRatePct ?? null };
+        }
+        return defaultApplies
+          ? {
               taxAmountEur: settings.manualDefaultAmountEur,
               taxRatePct: settings.manualDefaultRatePct,
-            };
+            }
+          : { taxAmountEur: null, taxRatePct: null };
       };
       // Realized gains are needed only as the base of a RATE entry; convert
       // only those assets so an amount-only entry never depends on FX.
@@ -1331,8 +1345,28 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       ? customGroups(buildCustomView(remainingTxns, dividendRows, realizations, fifoRealizations))
       : new Map<string, CustomGroup>();
 
+    // The regime the corrections are labeled with: an engine-taxed deleted row
+    // names its own; a deleted BUY has none — it reshapes its asset's
+    // engine-taxed sells, so label by theirs (custom over DE over AT when
+    // mixed; the amount is the combined reconciliation either way).
+    let noteRegime: SettleRegime = deletedWasCustom
+      ? 'custom'
+      : deletedWasDe
+        ? TAX_COUNTRY_DE
+        : TAX_COUNTRY_AT;
+    if (transaction.side === 'buy') {
+      const reshaped = remainingTxns.filter(
+        (t) => t.assetId === transaction.assetId && t.side === 'sell' && isEngineTaxed(t.taxMode),
+      );
+      if (reshaped.some(isCustomSell)) noteRegime = 'custom';
+      else if (reshaped.some(isDeSell)) noteRegime = TAX_COUNTRY_DE;
+    }
+
     // Each year settles append-only against its combined post-delete target
     // (AT pool + DE year + per-custom-group targets — components never mix).
+    // The signed delta includes refund-off custom groups (§16): a reshape is a
+    // data correction, exempt from the ratchet, so held lands exactly on the
+    // combined replay target here just as on the write path.
     const corrections: NewCashMovement[] = [];
     for (const year of [...affectedYears].sort((a, b) => a - b)) {
       const targetEur = floorCents(
@@ -1348,9 +1382,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             spec,
             await correctionSourceId(portfolioId),
             year,
-            correctionNote(
-              deletedWasCustom ? 'custom' : deletedWasDe ? TAX_COUNTRY_DE : TAX_COUNTRY_AT,
-            ),
+            correctionNote(noteRegime),
           ),
         );
       }
@@ -1433,11 +1465,22 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     if (settings.mode === 'manual_per_trade') {
       // The V5-P4c configurable default applies where no explicit entry
       // arrived; an explicit entry (including 0) wins, blank default = today's
-      // behavior byte-identically.
+      // behavior byte-identically. Manually recorded dividends only: an
+      // imported broker dividend settled its tax at the broker, so a
+      // non-`manual` source tag never receives the default.
       const hasExplicit = input.taxAmountEur !== undefined || input.taxRatePct !== undefined;
+      const defaultApplies = sourceTag === 'manual';
       taxAmountEur = manualTaxEur({
-        taxAmountEur: hasExplicit ? (input.taxAmountEur ?? null) : settings.manualDefaultAmountEur,
-        taxRatePct: hasExplicit ? (input.taxRatePct ?? null) : settings.manualDefaultRatePct,
+        taxAmountEur: hasExplicit
+          ? (input.taxAmountEur ?? null)
+          : defaultApplies
+            ? settings.manualDefaultAmountEur
+            : null,
+        taxRatePct: hasExplicit
+          ? (input.taxRatePct ?? null)
+          : defaultApplies
+            ? settings.manualDefaultRatePct
+            : null,
         baseEur: grossEur,
       });
       if (taxAmountEur !== null && taxAmountEur > 0) {

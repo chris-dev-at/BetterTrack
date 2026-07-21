@@ -974,7 +974,7 @@
         "lossOffsetLabel": "Verluste verrechnen Gewinne",
         "lossOffsetInfo": "Ein realisierter Verlust verkleinert den steuerpflichtigen Topf. Aus: Verluste werden komplett ignoriert.",
         "refundLabel": "Zu viel gezahlte Steuer erstatten",
-        "refundInfo": "Schrumpft der Topf unter das bereits Gezahlte, wird die Differenz erstattet. Aus: Die Steuer wächst nur.",
+        "refundInfo": "Schrumpft der Topf unter das bereits Gezahlte, wird die Differenz erstattet. Aus: Verluste erstatten nie — das Bearbeiten oder Löschen erfasster Trades korrigiert die Steuer aber weiterhin in beide Richtungen.",
         "yearResetLabel": "Jedes Jahr am 1. Jänner zurücksetzen",
         "yearResetInfo": "Jedes Kalenderjahr wird für sich besteuert. Aus: Ein Topf läuft über die Jahre weiter.",
         "carryForwardLabel": "Verluste vortragen",

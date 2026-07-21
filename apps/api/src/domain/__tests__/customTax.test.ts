@@ -244,9 +244,14 @@ describe('refund off: tax held only ever ratchets up', () => {
     expect(result.heldAfterEur).toBe(151.25);
   });
 
-  it('a history-reshape correction never claws tax back', () => {
-    // Recomputed history demands less than is held — with refund off the
-    // correction clamps to zero instead of refunding (append-only ratchet).
+  it('a history-reshape correction stays signed: the ratchet gates events, not data corrections', () => {
+    // Recomputed history demands less than is held (a buy was deleted or
+    // backdated). The ratchet is the regime's ECONOMIC rule — a loss event
+    // never refunds — but a reshape is a data correction (§16): the signed
+    // delta steers held exactly onto the replay target. Clamping here would
+    // strand an excess no row represents, which every other settlement path
+    // (delete reconciliation, coexisting regimes) would absorb as a
+    // mislabeled refund.
     const result = settleCustomYear({
       params: params({ refund: false }),
       carry: initialCustomCarry(),
@@ -254,8 +259,29 @@ describe('refund off: tax held only ever ratchets up', () => {
       heldEur: 123.75,
       newEvents: [],
     });
-    expect(result.correctionDeltaEur).toBe(0);
-    expect(result.heldAfterEur).toBe(123.75);
+    expect(result.correctionDeltaEur).toBe(-41.25); // 27.5 % × 300 − 123.75
+    expect(result.heldAfterEur).toBe(82.5);
+  });
+
+  it('after a reshape correction, new events ratchet from the corrected base', () => {
+    // Same reshape, then a loss and a gain arrive: the loss still posts
+    // nothing (the economic ratchet), the gain withholds past the high-water
+    // mark of the CORRECTED held — reconciliation and event flow compose.
+    const result = settleCustomYear({
+      params: params({ refund: false }),
+      carry: initialCustomCarry(),
+      existingEvents: [{ kind: 'sell_gain', amountEur: 300 }],
+      heldEur: 123.75,
+      newEvents: [
+        { kind: 'sell_gain', amountEur: -100 },
+        { kind: 'sell_gain', amountEur: 200 },
+      ],
+    });
+    expect(result.correctionDeltaEur).toBe(-41.25);
+    // Pool 300 → 200 (target 55, below held 82.50: clamped) → 400 (target
+    // 110, delta 110 − 82.50).
+    expect(result.newEventDeltasEur).toEqual([0, 27.5]);
+    expect(result.heldAfterEur).toBe(110);
   });
 });
 

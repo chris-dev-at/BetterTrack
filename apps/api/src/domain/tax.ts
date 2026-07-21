@@ -884,7 +884,10 @@ export function settleDeYear(input: DeYearSettlementInput): DeYearSettlementResu
  * `lossOffset` off drops losses from the pool entirely (they neither refund
  * nor accrue carry); `refund` off turns the held tax into a ratchet (a
  * shrinking pool never posts a refund — later gains only withhold past the
- * high-water mark). Mirrored (not imported) by `@bettertrack/contracts`.
+ * high-water mark). The ratchet gates taxable EVENTS only: history-reshape
+ * reconciliation in {@link settleCustomYear} stays signed (a data correction,
+ * not an economic refund — §16). Mirrored (not imported) by
+ * `@bettertrack/contracts`.
  */
 export interface CustomTaxParams {
   /** Flat rate on the positive taxable pool, percent (0–100). */
@@ -1129,7 +1132,11 @@ export interface CustomYearSettlementResult {
   /**
    * Delta (EUR, signed: positive = withhold, negative = refund) that brings
    * the already-persisted events' target in line with `heldEur` *before* any
-   * new event applies. With `refund` off it never claws back (clamped ≥ 0).
+   * new event applies. The `refund` ratchet does NOT gate this delta (§16): a
+   * history reshape (backdated buy, deletion) is a data correction, not an
+   * economic refund — it steers held exactly onto the replay target, the same
+   * contract the delete paths and coexisting regimes settle by, so every
+   * regime's held component stays derivable from rows alone.
    */
   correctionDeltaEur: number;
   /** Marginal delta per new event, in input order (same sign convention). */
@@ -1155,19 +1162,24 @@ export function settleCustomYear(input: CustomYearSettlementInput): CustomYearSe
 
   // Replay the persisted events to the year's pre-batch target, then
   // reconcile drift (history reshaped by a backdated buy / a deletion)
-  // against what is actually held — the ratchet also gates this correction.
+  // against what is actually held. The `refund` ratchet deliberately does NOT
+  // gate this reconciliation (§16): the ratchet is the regime's economic rule
+  // for the chronological event flow (a loss never triggers a refund), while
+  // a reshape is a data correction — clamping here would strand an excess no
+  // row represents, which the delete paths and coexisting regimes (all of
+  // which settle by `target − held`) would then absorb as a mislabeled refund.
   const fold = foldCustomEvents(
     input.params,
     input.carry,
     startCustomFold(input.params, input.carry),
     input.existingEvents,
   );
-  let correctionDeltaEur = floorCents(fold.heldTargetEur - input.heldEur);
-  if (!input.params.refund && correctionDeltaEur < 0) correctionDeltaEur = 0;
+  const correctionDeltaEur = floorCents(fold.heldTargetEur - input.heldEur);
   let heldEur = floorCents(input.heldEur + correctionDeltaEur);
 
-  // New events continue the same fold, but the deltas steer the ACTUAL held
-  // (which after the clamp above may sit beyond the replay target).
+  // New events continue the same fold; held now sits exactly on the replay
+  // target, so these deltas replicate {@link foldCustomEvents}' recursion
+  // (per-event ratchet included) while attributing a marginal delta to each.
   const rate = input.params.ratePct / 100;
   const potIn = input.params.yearReset && input.params.carryForward ? input.carry.potEur : 0;
   const newEventDeltasEur: number[] = [];

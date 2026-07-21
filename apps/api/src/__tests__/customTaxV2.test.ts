@@ -340,6 +340,52 @@ describe('manual default applies where no explicit entry arrives (V5-P4c)', () =
     expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-25]);
     expect(cash.balanceEur).toBe(75);
   });
+
+  it('import-sourced rows never take the default (broker history settled its taxes)', async () => {
+    const { user, agent, pid, asset } = await setup({
+      mode: 'manual_per_trade',
+      manualDefaultAmountEur: 5,
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+    // The CSV apply path (V4-P8) routes through the same services with its
+    // broker source tag — an entry-less imported sell/dividend records NO tax
+    // rather than freezing today's default onto already-settled history.
+    const [tx] = await harness.ctx.portfolio.createTransactions(
+      user.id,
+      pid,
+      [
+        {
+          assetId: asset.id,
+          side: 'sell',
+          quantity: 10,
+          price: 19,
+          fee: 0,
+          executedAt: '2026-02-10T10:00:00.000Z',
+          addProceedsToCash: true,
+        },
+      ],
+      { source: 'import:george' },
+    );
+    expect(await frozenRow(tx!.id)).toMatchObject({
+      taxMode: 'manual_per_trade',
+      taxAmountEur: null,
+    });
+    const recorded = await harness.ctx.tax.recordDividend(
+      user.id,
+      pid,
+      { assetId: asset.id, grossAmountEur: 100, executedAt: '2026-03-01T10:00:00.000Z' },
+      { source: 'import:george' },
+    );
+    expect(recorded.dividend.taxAmountEur).toBeNull();
+    const cash = await cashState(agent, pid);
+    expect(taxMovements(cash.movements)).toHaveLength(0);
+  });
 });
 
 // ─── Custom mode: the rule-built engine end-to-end ───────────────────────────
@@ -674,5 +720,119 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       400,
     );
     expect(res.body.error?.code).toBe('TAX_ENTRY_NOT_ALLOWED');
+  });
+});
+
+// ─── Refund off vs history reshapes: the ratchet gates events, not data
+// corrections (§16) ──────────────────────────────────────────────────────────
+
+describe('refund-off reshape reconciliation stays signed on every path (V5-P4c)', () => {
+  const RATCHET10: CustomTaxParams = { ...RATE10, refund: false };
+
+  /** Buy 100@10 + 100@30, sell 100@40: avg basis 20 → gain 2000 → 10 % = 200. */
+  async function seedRatchetYear() {
+    const { agent, pid, asset } = await setup({ mode: 'custom', custom: RATCHET10 });
+    const cheapBuy = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 30,
+      executedAt: '2026-01-20T10:00:00.000Z',
+    });
+    const sell = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 100,
+      price: 40,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    const cash = await cashState(agent, pid);
+    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-200]);
+    return {
+      agent,
+      pid,
+      asset,
+      cheapBuyId: cheapBuy.body.transactions[0].id as string,
+      sellId: sell.body.transactions[0].id as string,
+    };
+  }
+
+  /** The claw-back both reshape paths must land on: held 200 → replay target 100. */
+  async function expectClawBackTo100(agent: Agent, pid: string, sellId: string) {
+    const cash = await cashState(agent, pid);
+    const after = taxMovements(cash.movements);
+    expect(after.map((m) => m.amountEur)).toEqual([-200, 100]);
+    expect(after.find((m) => m.kind === 'tax_refund')).toMatchObject({
+      amountEur: 100,
+      taxYear: 2026,
+      transactionId: null,
+      note: 'Tax year correction (custom rules)',
+    });
+    // Append-only: the sell keeps its frozen 200 — the claw-back is a
+    // correction movement, never an edit.
+    expect(await frozenRow(sellId)).toMatchObject({ taxMode: 'custom', taxAmountEur: 200 });
+    const years = await yearSummaries(agent, pid);
+    expect(years[0]).toMatchObject({
+      year: 2026,
+      realizedPnlEur: 1000,
+      taxWithheldEur: 200,
+      taxRefundedEur: 100,
+      taxNetEur: 100,
+    });
+  }
+
+  it('deleting a buy that reshapes a refund-off gain claws the excess back (data correction)', async () => {
+    const { agent, pid, cheapBuyId, sellId } = await seedRatchetYear();
+    // Removing the 10-EUR buy lifts the moving-average basis to 30: the
+    // group's replay target drops to 10 % × 1000 = 100. The ratchet does NOT
+    // gate reconciliation — the year corrects down to the replay target.
+    const del = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${cheapBuyId}`)
+      .set(...XRW);
+    expect(del.status, JSON.stringify(del.body)).toBe(204);
+    await expectClawBackTo100(agent, pid, sellId);
+  });
+
+  it('a backdated buy reshaping a refund-off gain posts the same signed correction (write path)', async () => {
+    const { agent, pid, asset, sellId } = await seedRatchetYear();
+    // A backdated 100@50 buy before the sell lifts the moving-average basis
+    // to 30 → the same replay target 100 as the delete repro. The write path
+    // must post the SAME −100 correction the delete path does — the same
+    // economic reshape yields one outcome regardless of which path settles it.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 50,
+      executedAt: '2026-01-25T10:00:00.000Z',
+    });
+    await expectClawBackTo100(agent, pid, sellId);
+  });
+
+  it('a loss event still never refunds: the economic ratchet holds inside the flow', async () => {
+    const { agent, pid, asset } = await seedRatchetYear();
+    // A loss sell (50 × (10 − 20) = −500) shrinks the pool 2000 → 1500, but
+    // with refund off the EVENT posts nothing — held stays at the 200
+    // high-water mark. This is the rule the reshape exemption does not touch.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 10,
+      executedAt: '2026-03-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    const cash = await cashState(agent, pid);
+    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-200]);
+    const years = await yearSummaries(agent, pid);
+    expect(years[0]).toMatchObject({ year: 2026, taxWithheldEur: 200, taxNetEur: 200 });
   });
 });
