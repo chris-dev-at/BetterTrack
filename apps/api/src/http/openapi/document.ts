@@ -232,6 +232,7 @@ const componentSchemas = {
   BacktestResponse: contracts.backtestResponseSchema,
   BacktestComparisonRequest: contracts.backtestComparisonRequestSchema,
   BacktestComparisonResponse: contracts.backtestComparisonResponseSchema,
+  SharedSandboxPreviewRequest: contracts.sharedSandboxPreviewRequestSchema,
 
   // Ideas (§13.4 V4-P9)
   IdeaListResponse: contracts.ideaListResponseSchema,
@@ -2132,6 +2133,17 @@ const endpoints: EndpointDef[] = [
     body: R.BacktestComparisonRequest,
     status: 200,
     response: R.BacktestComparisonResponse,
+  },
+  {
+    method: 'post',
+    path: '/backtest/shared/{conglomerateId}/preview',
+    tag: 'Backtest',
+    summary:
+      'What-if sandbox: backtest a friend-shared basket with local weight tweaks (§13.5 V5-P6).',
+    params: contracts.conglomerateIdParamSchema,
+    body: R.SharedSandboxPreviewRequest,
+    status: 200,
+    response: R.BacktestResponse,
   },
 
   // Ideas (§13.4 V4-P9) — saved & shareable Workboard analyses

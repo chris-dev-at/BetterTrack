@@ -88,18 +88,26 @@ const CONG_ID = '018f0000-0000-7000-8000-000000000001';
  * A/B) + 50 % direct A — hand-flattened equivalent: 80 % A / 20 % B.
  */
 const NESTED_ID = '018f0000-0000-7000-8000-000000000002';
+/** A u1-owned conglomerate holding a PRIVATE custom asset (arc-c sandbox tests). */
+const CUSTOM_CONG_ID = '018f0000-0000-7000-8000-000000000003';
+/** The friend viewing u1's shared baskets in the arc-c sandbox tests. */
+const VIEWER_ID = 'v1';
 
 function createHarness() {
   const store = new Map<string, string>();
   let historyCalls = 0;
 
   const assetRepo = {
-    findByIdForUser: async (assetId: string) => ({
+    // Global catalog asset by default (ownerId null). The arc-c sandbox tests use
+    // the `CUSTOM` id to model a private custom asset (ownerId set → not globally
+    // backtestable in a viewer's sandbox).
+    findByIdForUser: async (assetId: string, userId: string) => ({
       id: assetId,
       symbol: assetId,
       currency: 'EUR',
       providerId: 'stub',
       providerRef: assetId,
+      ownerId: assetId === 'CUSTOM' ? userId : null,
     }),
     // Unseeded catalog: presets fall back to the static provider spec.
     findGlobal: async () => null,
@@ -125,6 +133,16 @@ function createHarness() {
           positions: [
             { kind: 'conglomerate', childId: CONG_ID, weightPct: 50 },
             { kind: 'asset', assetId: 'A', weightPct: 50 },
+          ],
+        };
+      }
+      if (id === CUSTOM_CONG_ID) {
+        return {
+          id: CUSTOM_CONG_ID,
+          name: 'Has Custom',
+          positions: [
+            { kind: 'asset', assetId: 'A', weightPct: 50 },
+            { kind: 'asset', assetId: 'CUSTOM', weightPct: 50 },
           ],
         };
       }
@@ -162,6 +180,12 @@ function createHarness() {
     marketData,
     currencyService,
     redis,
+    // Model the §6.9 share guard for the arc-c sandbox: viewer `v1` may read
+    // u1's shared baskets; everyone/everything else is a 404.
+    authorizeConglomerateRead: async (viewerId: string, conglomerateId: string) =>
+      viewerId === VIEWER_ID && [CONG_ID, NESTED_ID, CUSTOM_CONG_ID].includes(conglomerateId)
+        ? { ownerId: 'u1' }
+        : undefined,
     // Fixed clock: the 1Y window ends 2026-01-05 and the engine clips to the
     // fixture's common start, so the axis spans the year boundary.
     now: () => Date.parse('2026-01-05T12:00:00Z'),
@@ -506,5 +530,111 @@ describe('backtestService.runComparison — N-way conglomerate comparison (V5-P6
     expect(backtestComparisonCacheKey('u1', base, 'EUR')).not.toBe(
       backtestComparisonCacheKey('u1', { conglomerateIds: [CB, CA], range: '1Y' }, 'EUR'),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shared-conglomerate what-if sandbox (§13.5 V5-P6 arc c)
+// ---------------------------------------------------------------------------
+
+describe('backtestService.runSharedSandboxPreview', () => {
+  /** The shared basket at its original 60/40 A/B weights. */
+  const ORIGINAL = {
+    conglomerateId: CONG_ID,
+    positions: [
+      { id: 'A', weight: 60 },
+      { id: 'B', weight: 40 },
+    ],
+    range: '1Y' as const,
+  };
+
+  it('at the shared weights it reproduces the owner’s own backtest exactly (reset-to-shared curve)', async () => {
+    const { service } = createHarness();
+    const sandbox = await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
+    // The owner backtesting the same 60/40 A/B basket inline is the ground-truth
+    // shared curve; the viewer's sandbox at the shared weights must equal it.
+    const ownerPreview = await service.runPreview('u1', PREVIEW);
+    expect(() => backtestResponseSchema.parse(sandbox)).not.toThrow();
+    expect(sandbox.benchmark).toBeNull();
+    expect(sandbox.series).toEqual(ownerPreview.series);
+    expect(sandbox.stats).toEqual(ownerPreview.stats);
+  });
+
+  it('a weight tweak changes the curve; re-running at the original weights restores it exactly', async () => {
+    const { service } = createHarness();
+    const shared = await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
+    const tweaked = await service.runSharedSandboxPreview(VIEWER_ID, {
+      ...ORIGINAL,
+      positions: [
+        { id: 'A', weight: 80 },
+        { id: 'B', weight: 20 },
+      ],
+    });
+    expect(tweaked.series).not.toEqual(shared.series);
+
+    // "Reset to shared" is just the same call at the original weights — the
+    // curve comes back byte-for-byte.
+    const reset = await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
+    expect(reset.series).toEqual(shared.series);
+    expect(reset.stats).toEqual(shared.stats);
+  });
+
+  it('404s an unauthorized viewer — same outcome as the read-only shared view', async () => {
+    const { service } = createHarness();
+    await expect(service.runSharedSandboxPreview('stranger', ORIGINAL)).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'CONGLOMERATE_NOT_FOUND',
+    });
+  });
+
+  it('rejects a tweak whose id set does not match the shared basket (no foreign-id injection)', async () => {
+    const { service } = createHarness();
+    await expect(
+      service.runSharedSandboxPreview(VIEWER_ID, {
+        ...ORIGINAL,
+        positions: [
+          { id: 'A', weight: 60 },
+          // A foreign id the share never exposed — pinned out.
+          { id: 'Z', weight: 40 },
+        ],
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_POSITIONS_MISMATCH' });
+  });
+
+  it('refuses a nested basket (recursive re-weighting is out of arc-c scope)', async () => {
+    const { service } = createHarness();
+    await expect(
+      service.runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: NESTED_ID,
+        positions: [
+          { id: CONG_ID, weight: 50 },
+          { id: 'A', weight: 50 },
+        ],
+        range: '1Y',
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_NESTED_UNSUPPORTED' });
+  });
+
+  it('refuses a basket with a private custom asset — a viewer never sees the owner’s manual valuations', async () => {
+    const { service } = createHarness();
+    await expect(
+      service.runSharedSandboxPreview(VIEWER_ID, {
+        conglomerateId: CUSTOM_CONG_ID,
+        positions: [
+          { id: 'A', weight: 50 },
+          { id: 'CUSTOM', weight: 50 },
+        ],
+        range: '1Y',
+      }),
+    ).rejects.toMatchObject({ statusCode: 422, code: 'SANDBOX_PRIVATE_ASSET' });
+  });
+
+  it('never memoises or writes: each sandbox run recomputes off the warm provider history', async () => {
+    const { service, store, historyCalls } = createHarness();
+    await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
+    expect(store.size).toBe(0); // no Redis memo for the sandbox
+    const before = historyCalls();
+    await service.runSharedSandboxPreview(VIEWER_ID, ORIGINAL);
+    expect(historyCalls()).toBe(before + 2); // fresh compute, one load per asset
   });
 });

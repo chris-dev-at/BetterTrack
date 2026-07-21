@@ -2,6 +2,7 @@ import {
   activityAlertStateSchema,
   audienceMutationResponseSchema,
   audienceStateSchema,
+  backtestResponseSchema,
   followersListResponseSchema,
   followingEntrySchema,
   commentThreadResponseSchema,
@@ -25,6 +26,9 @@ import {
   type ActivityAlertState,
   type AudienceMutationResponse,
   type AudienceState,
+  type BacktestMode,
+  type BacktestPreviewRange,
+  type BacktestResponse,
   type CommentThreadResponse,
   type CreateCommentResponse,
   type CreateFriendRequestRequest,
@@ -41,9 +45,11 @@ import {
   type MySharedResponse,
   type ProfileSettingsResponse,
   type PublicProfileResponse,
+  type RebalanceFrequency,
   type SetAudienceRequest,
   type ShareKind,
   type SharedConglomerateDetailResponse,
+  type SharedSandboxPosition,
   type SharedLinkResponse,
   type SharedPortfolioDetailResponse,
   type SharedWatchlistDetailResponse,
@@ -265,6 +271,44 @@ export async function getSharedConglomerate(
     { signal },
   );
   return sharedConglomerateDetailResponseSchema.parse(data);
+}
+
+/** Local weight tweaks for the what-if sandbox (§13.5 V5-P6 arc c). */
+export interface SharedSandboxPreviewParams {
+  positions: SharedSandboxPosition[];
+  range: BacktestPreviewRange;
+  mode?: BacktestMode;
+  rebalance?: RebalanceFrequency;
+}
+
+/**
+ * `POST /backtest/shared/:conglomerateId/preview` — the V5-P6 arc-c what-if
+ * sandbox: backtest a friend-shared conglomerate with the viewer's LOCAL weight
+ * tweaks, through the same engine as the Builder preview. Guarded server-side by
+ * the same share authorization as {@link getSharedConglomerate} (an unauthorized
+ * viewer 404s), and it persists nothing — "reset to shared" is simply this call
+ * with the original weights. Only the assets the share already exposes are
+ * priced, so nothing leaks beyond the shared view.
+ */
+export async function previewSharedConglomerateSandbox(
+  conglomerateId: string,
+  params: SharedSandboxPreviewParams,
+  signal?: AbortSignal,
+): Promise<BacktestResponse> {
+  const data = await apiRequest<unknown>(
+    `/backtest/shared/${encodeURIComponent(conglomerateId)}/preview`,
+    {
+      method: 'POST',
+      body: {
+        positions: params.positions,
+        range: params.range,
+        mode: params.mode ?? 'clip',
+        rebalance: params.rebalance ?? 'none',
+      },
+      signal,
+    },
+  );
+  return backtestResponseSchema.parse(data);
 }
 
 /**

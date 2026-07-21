@@ -3,12 +3,15 @@ import { Router } from 'express';
 import {
   backtestComparisonRequestSchema,
   backtestPreviewRequestSchema,
+  conglomerateIdParamSchema,
+  sharedSandboxPreviewRequestSchema,
   type BacktestComparisonRequest,
   type BacktestPreviewRequest,
+  type SharedSandboxPreviewRequest,
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
-import { validateBody } from '../middleware/validate';
+import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
@@ -62,6 +65,34 @@ export function createBacktestRouter(ctx: AppContext): Router {
     );
     res.json(result);
   });
+
+  // POST /backtest/shared/:conglomerateId/preview — the V5-P6 arc-c what-if
+  // sandbox: backtest a FRIEND-SHARED conglomerate with the viewer's local weight
+  // tweaks. Guarded by the SAME share authorization the shared view uses (inside
+  // the service), so an unauthorized viewer gets a 404; the tweak set is pinned
+  // to the shared basket's constituents and only public catalog assets are
+  // priced, so nothing beyond the share leaks. A pure read — no writes.
+  router.post(
+    '/shared/:conglomerateId/preview',
+    validateParams(conglomerateIdParamSchema),
+    validateBody(sharedSandboxPreviewRequestSchema),
+    async (req, res) => {
+      const { conglomerateId } = req.valid?.params as { conglomerateId: string };
+      const body = req.valid?.body as SharedSandboxPreviewRequest;
+      const result = await ctx.backtest.runSharedSandboxPreview(
+        req.authUser!.id,
+        {
+          conglomerateId,
+          positions: body.positions,
+          range: body.range,
+          mode: body.mode,
+          rebalance: body.rebalance,
+        },
+        { baseCurrency: req.authUser!.baseCurrency },
+      );
+      res.json(result);
+    },
+  );
 
   return router;
 }

@@ -998,6 +998,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     currencyService: currency,
     redis,
+    // V5-P6 arc c: the shared-conglomerate what-if sandbox authorizes through the
+    // exact same audience guard the read-only shared view uses (§6.9), and only
+    // exposes what that share already does.
+    authorizeConglomerateRead: async (viewerId, conglomerateId) => {
+      const owner = await audience.authorizeConglomerateRead(viewerId, conglomerateId);
+      return owner ? { ownerId: owner.ownerId } : undefined;
+    },
   });
 
   // Analytics deep-dive (§13.3 V3-P9): assembles the configurable graph +
