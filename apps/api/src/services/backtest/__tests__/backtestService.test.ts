@@ -83,6 +83,11 @@ const CLOSES: Record<string, Array<{ date: string; close: number }>> = {
 
 /** The u1-owned conglomerate the benchmark tests reference: the same 60/40 A/B basket. */
 const CONG_ID = '018f0000-0000-7000-8000-000000000001';
+/**
+ * A NESTED u1-owned conglomerate (V5-P6): 50 % of the CONG_ID basket (60/40
+ * A/B) + 50 % direct A — hand-flattened equivalent: 80 % A / 20 % B.
+ */
+const NESTED_ID = '018f0000-0000-7000-8000-000000000002';
 
 function createHarness() {
   const store = new Map<string, string>();
@@ -101,17 +106,30 @@ function createHarness() {
   } as unknown as AssetRepository;
 
   const conglomerateRepo = {
-    findByIdForOwner: async (ownerId: string, id: string) =>
-      ownerId === 'u1' && id === CONG_ID
-        ? {
-            id: CONG_ID,
-            name: 'My Mix',
-            positions: [
-              { assetId: 'A', weightPct: 60 },
-              { assetId: 'B', weightPct: 40 },
-            ],
-          }
-        : null,
+    findByIdForOwner: async (ownerId: string, id: string) => {
+      if (ownerId !== 'u1') return null;
+      if (id === CONG_ID) {
+        return {
+          id: CONG_ID,
+          name: 'My Mix',
+          positions: [
+            { kind: 'asset', assetId: 'A', weightPct: 60 },
+            { kind: 'asset', assetId: 'B', weightPct: 40 },
+          ],
+        };
+      }
+      if (id === NESTED_ID) {
+        return {
+          id: NESTED_ID,
+          name: 'Nested Mix',
+          positions: [
+            { kind: 'conglomerate', childId: CONG_ID, weightPct: 50 },
+            { kind: 'asset', assetId: 'A', weightPct: 50 },
+          ],
+        };
+      }
+      return null;
+    },
   } as unknown as ConglomerateRepository;
 
   const marketData = {
@@ -258,6 +276,32 @@ describe('backtestService.runPreview — custom benchmarks (V4-P7)', () => {
     ).rejects.toMatchObject({ statusCode: 404, code: 'CONGLOMERATE_NOT_FOUND' });
   });
 
+  it('a NESTED conglomerate backtests exactly like its hand-flattened equivalent (V5-P6)', async () => {
+    const { service } = createHarness();
+
+    // Primary = the hand-flattened equivalent of NESTED_ID (50 % of the 60/40
+    // CONG_ID basket + 50 % direct A ⇒ 80/20 A/B); benchmark = the nested
+    // basket itself, run through resolveConglomerateBasket over the SAME
+    // window. Equal series ⇔ the recursion resolves to exactly those weights.
+    const res = await service.runPreview('u1', {
+      positions: [
+        { assetId: 'A', weight: 80 },
+        { assetId: 'B', weight: 20 },
+      ],
+      range: '1Y',
+      benchmark: { conglomerateId: NESTED_ID },
+    });
+
+    expect(res.benchmark?.kind).toBe('conglomerate');
+    expect(res.benchmark?.label).toBe('Nested Mix');
+    expect(res.benchmark?.series.length).toBe(res.series.length);
+    for (let i = 0; i < res.series.length; i += 1) {
+      expect(res.benchmark!.series[i]!.date).toBe(res.series[i]!.date);
+      expect(res.benchmark!.series[i]!.value).toBeCloseTo(res.series[i]!.value, 10);
+    }
+    expect(res.benchmark!.stats.totalReturnPct).toBeCloseTo(res.stats.totalReturnPct, 10);
+  });
+
   it("422s a benchmark whose history starts after the basket's t₀ instead of comparing a shorter window", async () => {
     const { service } = createHarness();
     await expect(
@@ -288,18 +332,18 @@ const CD = '018f0000-0000-7000-8000-0000000000d1'; // 100 % A
 
 const COMPARISON_CONGLOMERATES: Record<
   string,
-  { name: string; positions: Array<{ assetId: string; weightPct: number }> }
+  { name: string; positions: Array<{ kind: 'asset'; assetId: string; weightPct: number }> }
 > = {
   [CA]: {
     name: 'A/B Mix',
     positions: [
-      { assetId: 'A', weightPct: 60 },
-      { assetId: 'B', weightPct: 40 },
+      { kind: 'asset', assetId: 'A', weightPct: 60 },
+      { kind: 'asset', assetId: 'B', weightPct: 40 },
     ],
   },
-  [CB]: { name: 'All B', positions: [{ assetId: 'B', weightPct: 100 }] },
-  [CC]: { name: 'Late C', positions: [{ assetId: 'C', weightPct: 100 }] },
-  [CD]: { name: 'All A', positions: [{ assetId: 'A', weightPct: 100 }] },
+  [CB]: { name: 'All B', positions: [{ kind: 'asset', assetId: 'B', weightPct: 100 }] },
+  [CC]: { name: 'Late C', positions: [{ kind: 'asset', assetId: 'C', weightPct: 100 }] },
+  [CD]: { name: 'All A', positions: [{ kind: 'asset', assetId: 'A', weightPct: 100 }] },
 };
 
 function createComparisonHarness() {

@@ -340,3 +340,61 @@ describe('POST /api/v1/conglomerates/:id/allocate', () => {
     expect(badMode.body.error.code).toBe('VALIDATION_ERROR');
   });
 });
+
+// ─── Nested conglomerates (§13.5 V5-P6, issue #592) ─────────────────────────
+
+describe('POST /api/v1/conglomerates/:id/allocate — nested baskets', () => {
+  it('allocates over the FLATTENED effective weights of a nested conglomerate', async () => {
+    // Parent: 50 % direct X @ 50 € + 50 % child; child: 40/60 Y @ 20 € / Z @ 30 €.
+    // Effective weights 50/20/30 ⇒ with a 1000 € budget in fractional mode the
+    // targets are exactly 500/200/300 €.
+    const prices: Record<string, number> = { XXX: 50, YYY: 20, ZZZ: 30 };
+    const { h, agent } = await harnessWith((ref) => cachedQuote(prices[ref.providerRef]!));
+
+    const x = await seedAsset(h, { symbol: 'XXX', providerRef: 'XXX' });
+    const y = await seedAsset(h, { symbol: 'YYY', providerRef: 'YYY' });
+    const z = await seedAsset(h, { symbol: 'ZZZ', providerRef: 'ZZZ' });
+
+    const childId = await seedConglomerate(agent, 'Split Child', [
+      { assetId: y.id, weightPct: 40 },
+      { assetId: z.id, weightPct: 60 },
+    ]);
+    const created = await agent
+      .post('/api/v1/conglomerates')
+      .set(...XRW)
+      .send({ name: 'Nested Parent' });
+    expect(created.status).toBe(201);
+    const parentId = created.body.id as string;
+    const put = await agent
+      .put(`/api/v1/conglomerates/${parentId}/positions`)
+      .set(...XRW)
+      .send({
+        positions: [
+          { assetId: x.id, weightPct: 50 },
+          { childId, weightPct: 50 },
+        ],
+      });
+    expect(put.status).toBe(200);
+
+    const res = await agent
+      .post(`/api/v1/conglomerates/${parentId}/allocate`)
+      .set(...XRW)
+      .send({ budgetEur: 1000, mode: 'fractional', step: 0.0001 });
+
+    expect(res.status).toBe(200);
+    const parsed = allocateResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    const body = res.body as AllocateResponse;
+
+    // The buy list is the flattened ASSET set — the child never appears as a row.
+    expect(body.positions).toHaveLength(3);
+    const byId = new Map(body.positions.map((p) => [p.assetId, p]));
+    expect(byId.get(x.id)!.targetPct).toBeCloseTo(50, 9);
+    expect(byId.get(y.id)!.targetPct).toBeCloseTo(20, 9);
+    expect(byId.get(z.id)!.targetPct).toBeCloseTo(30, 9);
+    expect(byId.get(x.id)!.costEur).toBeCloseTo(500, 6);
+    expect(byId.get(y.id)!.costEur).toBeCloseTo(200, 6);
+    expect(byId.get(z.id)!.costEur).toBeCloseTo(300, 6);
+    expect(body.totalCostEur).toBeLessThanOrEqual(1000);
+  });
+});

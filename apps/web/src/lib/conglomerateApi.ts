@@ -2,10 +2,12 @@ import {
   allocateResponseSchema,
   conglomerateDetailSchema,
   conglomerateListResponseSchema,
+  conglomerateResolvedResponseSchema,
   type AllocateRequest,
   type AllocateResponse,
   type ConglomerateDetail,
   type ConglomerateListResponse,
+  type ConglomerateResolvedResponse,
   type CreateConglomerateRequest,
   type ReplacePositionInput,
   type UpdateConglomerateRequest,
@@ -32,6 +34,21 @@ export async function getConglomerate(
 ): Promise<ConglomerateDetail> {
   const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}`, { signal });
   return conglomerateDetailSchema.parse(data);
+}
+
+/**
+ * `GET /conglomerates/:id/resolved` — flattened effective asset weights of a
+ * (possibly nested) conglomerate (V5-P6). Drives the detail page's resolved
+ * view and the backtest panel's preview positions.
+ */
+export async function getResolvedConglomerate(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ConglomerateResolvedResponse> {
+  const data = await apiRequest<unknown>(`/conglomerates/${encodeURIComponent(id)}/resolved`, {
+    signal,
+  });
+  return conglomerateResolvedResponseSchema.parse(data);
 }
 
 /** `POST /conglomerates` — create a new `draft` (empty positions). */

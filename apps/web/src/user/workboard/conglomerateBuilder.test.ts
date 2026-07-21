@@ -7,21 +7,34 @@ import {
   clampWeight,
   isSumValid,
   normalize,
+  positionFromConglomerate,
   positionFromSearchResult,
   roundWeight,
   sumWeights,
   type BuilderPosition,
 } from './conglomerateBuilder';
 
-function pos(assetId: string, weightPct: number, locked = false): BuilderPosition {
+function pos(refId: string, weightPct: number, locked = false): BuilderPosition {
   return {
-    assetId,
-    symbol: assetId.toUpperCase(),
-    name: `${assetId} name`,
+    kind: 'asset',
+    refId,
+    symbol: refId.toUpperCase(),
+    name: `${refId} name`,
     currency: 'USD',
     type: 'stock',
     weightPct,
     locked,
+  };
+}
+
+function nestedPos(refId: string, weightPct: number): BuilderPosition {
+  return {
+    kind: 'conglomerate',
+    refId,
+    symbol: `${refId} basket`,
+    name: `${refId} basket`,
+    weightPct,
+    locked: false,
   };
 }
 
@@ -54,16 +67,63 @@ describe('conglomerateBuilder helpers', () => {
       currency: 'USD',
       isCustom: false,
     });
-    expect(built).toMatchObject({ assetId: 'id-1', symbol: 'AAPL', weightPct: 0, locked: false });
+    expect(built).toMatchObject({
+      kind: 'asset',
+      refId: 'id-1',
+      symbol: 'AAPL',
+      weightPct: 0,
+      locked: false,
+    });
+  });
+
+  test('positionFromConglomerate builds a weight-0 nested constituent (V5-P6)', () => {
+    const built = positionFromConglomerate({
+      id: 'c-1',
+      name: 'Tech Mix',
+      description: null,
+      status: 'active',
+      visibility: 'private',
+      positionCount: 3,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(built).toMatchObject({
+      kind: 'conglomerate',
+      refId: 'c-1',
+      symbol: 'Tech Mix',
+      weightPct: 0,
+      locked: false,
+    });
   });
 
   test('canAddPosition rejects duplicates and enforces the 50-position cap', () => {
     const existing = [pos('a', 10)];
-    expect(canAddPosition(existing, 'b')).toEqual({ ok: true });
-    expect(canAddPosition(existing, 'a').ok).toBe(false);
+    expect(canAddPosition(existing, { kind: 'asset', refId: 'b' })).toEqual({ ok: true });
+    expect(canAddPosition(existing, { kind: 'asset', refId: 'a' }).ok).toBe(false);
 
     const full = Array.from({ length: 50 }, (_, i) => pos(`a${i}`, 1));
-    expect(canAddPosition(full, 'new').ok).toBe(false);
+    expect(canAddPosition(full, { kind: 'asset', refId: 'new' }).ok).toBe(false);
+  });
+
+  test('canAddPosition rejects self-nesting and duplicate nested constituents (V5-P6)', () => {
+    const existing = [pos('a', 40), nestedPos('c-child', 10)];
+
+    // Another own conglomerate is addable…
+    expect(canAddPosition(existing, { kind: 'conglomerate', refId: 'c-other' }, 'c-self')).toEqual({
+      ok: true,
+    });
+    // …but the basket itself is not (direct self-nest),
+    const self = canAddPosition(existing, { kind: 'conglomerate', refId: 'c-self' }, 'c-self');
+    expect(self.ok).toBe(false);
+    if (!self.ok) expect(self.reason.key).toBe('workboard.builder.errors.selfNest');
+    // …nor an already-nested child,
+    const dup = canAddPosition(existing, { kind: 'conglomerate', refId: 'c-child' }, 'c-self');
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.reason.key).toBe('workboard.builder.errors.duplicateConglomerate');
+    // …while an asset with the same id as a nested child does not collide.
+    expect(canAddPosition(existing, { kind: 'asset', refId: 'c-child' }, 'c-self')).toEqual({
+      ok: true,
+    });
   });
 
   test('auto-balance distributes 100 − Σ(locked) equally and Σ lands on 100', () => {

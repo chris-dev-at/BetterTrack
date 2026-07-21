@@ -37,8 +37,9 @@ export interface ConglomerateSummaryRow {
   updatedAt: Date;
 }
 
-/** One position with the identity of its asset embedded for display (§6.5). */
+/** One asset position with the identity of its asset embedded for display (§6.5). */
 export interface ConglomeratePositionWithAssetRow {
+  kind: 'asset';
   assetId: string;
   weightPct: number;
   sortOrder: number;
@@ -50,16 +51,34 @@ export interface ConglomeratePositionWithAssetRow {
   };
 }
 
-/** A single Conglomerate with its ordered positions. */
-export interface ConglomerateDetailRow extends ConglomerateSummaryRow {
-  positions: ConglomeratePositionWithAssetRow[];
+/** One nested-conglomerate constituent with the child's identity embedded (V5-P6). */
+export interface ConglomerateChildPositionRow {
+  kind: 'conglomerate';
+  childId: string;
+  weightPct: number;
+  sortOrder: number;
+  child: {
+    id: string;
+    name: string;
+    status: ConglomerateStatus;
+    positionCount: number;
+  };
 }
 
-/** A position to persist — `sortOrder` is derived from array index by the caller. */
-export interface PositionInput {
-  assetId: string;
-  weightPct: number;
+/** One constituent row — an asset position or a nested conglomerate (V5-P6). */
+export type ConglomerateConstituentRow =
+  | ConglomeratePositionWithAssetRow
+  | ConglomerateChildPositionRow;
+
+/** A single Conglomerate with its ordered constituents. */
+export interface ConglomerateDetailRow extends ConglomerateSummaryRow {
+  positions: ConglomerateConstituentRow[];
 }
+
+/** A constituent to persist — `sortOrder` is derived from array index by the caller. */
+export type PositionInput =
+  | { kind: 'asset'; assetId: string; weightPct: number }
+  | { kind: 'conglomerate'; childId: string; weightPct: number };
 
 export function createConglomerateRepository(db: Database) {
   /**
@@ -126,6 +145,7 @@ export function createConglomerateRepository(db: Database) {
       const posRows = await db
         .select({
           assetId: conglomeratePositions.assetId,
+          childId: conglomeratePositions.childConglomerateId,
           weightPct: conglomeratePositions.weightPct,
           sortOrder: conglomeratePositions.sortOrder,
           symbol: assets.symbol,
@@ -134,21 +154,63 @@ export function createConglomerateRepository(db: Database) {
           type: assets.type,
         })
         .from(conglomeratePositions)
-        .innerJoin(assets, eq(conglomeratePositions.assetId, assets.id))
+        .leftJoin(assets, eq(conglomeratePositions.assetId, assets.id))
         .where(eq(conglomeratePositions.conglomerateId, id))
         .orderBy(asc(conglomeratePositions.sortOrder));
 
-      const positions: ConglomeratePositionWithAssetRow[] = posRows.map((r) => ({
-        assetId: r.assetId,
-        weightPct: Number(r.weightPct),
-        sortOrder: r.sortOrder,
-        asset: {
-          symbol: r.symbol,
-          name: r.name,
-          currency: r.currency,
-          type: r.type,
-        },
-      }));
+      // Child (nested-conglomerate) identity for the V5-P6 rows: name/status +
+      // own position count, fetched in one grouped query. Children are always
+      // the same owner's (write-time rule), so no extra owner filter is needed.
+      const childIds = posRows.flatMap((r) => (r.childId !== null ? [r.childId] : []));
+      const childById = new Map<
+        string,
+        { id: string; name: string; status: ConglomerateStatus; positionCount: number }
+      >();
+      if (childIds.length > 0) {
+        const childRows = await db
+          .select({
+            id: conglomerates.id,
+            name: conglomerates.name,
+            status: conglomerates.status,
+            positionCount: sql<number>`count(${conglomeratePositions.id})`.mapWith(Number),
+          })
+          .from(conglomerates)
+          .leftJoin(
+            conglomeratePositions,
+            eq(conglomeratePositions.conglomerateId, conglomerates.id),
+          )
+          .where(inArray(conglomerates.id, childIds))
+          .groupBy(conglomerates.id);
+        for (const c of childRows) childById.set(c.id, c);
+      }
+
+      const positions: ConglomerateConstituentRow[] = [];
+      for (const r of posRows) {
+        if (r.childId !== null) {
+          const child = childById.get(r.childId);
+          if (!child) continue; // FK-guaranteed; defensive only.
+          positions.push({
+            kind: 'conglomerate',
+            childId: r.childId,
+            weightPct: Number(r.weightPct),
+            sortOrder: r.sortOrder,
+            child,
+          });
+        } else if (r.assetId !== null && r.symbol !== null) {
+          positions.push({
+            kind: 'asset',
+            assetId: r.assetId,
+            weightPct: Number(r.weightPct),
+            sortOrder: r.sortOrder,
+            asset: {
+              symbol: r.symbol,
+              name: r.name ?? r.symbol,
+              currency: r.currency ?? 'EUR',
+              type: r.type ?? 'stock',
+            },
+          });
+        }
+      }
 
       return { ...head, positionCount: positions.length, positions };
     },
@@ -246,6 +308,64 @@ export function createConglomerateRepository(db: Database) {
     },
 
     /**
+     * The subset of the given conglomerate ids OWNED by `ownerId` — only own
+     * conglomerates are nestable (V5-P6), so a foreign/unknown id is simply
+     * absent from the result and the service 404s without leaking existence.
+     */
+    async ownedConglomerateIds(ownerId: string, ids: readonly string[]): Promise<Set<string>> {
+      if (ids.length === 0) return new Set();
+      const rows = await db
+        .select({ id: conglomerates.id })
+        .from(conglomerates)
+        .where(and(inArray(conglomerates.id, [...ids]), eq(conglomerates.ownerId, ownerId)));
+      return new Set(rows.map((r) => r.id));
+    },
+
+    /**
+     * The owner's conglomerates that embed `id` as a nested constituent —
+     * the delete-blocking lookup (V5-P6): a conglomerate in use as a
+     * constituent may not be deleted, and the error names these parents.
+     * Ordered by name for a stable message.
+     */
+    async parentsOf(ownerId: string, id: string): Promise<Array<{ id: string; name: string }>> {
+      return db
+        .select({ id: conglomerates.id, name: conglomerates.name })
+        .from(conglomeratePositions)
+        .innerJoin(conglomerates, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+        .where(
+          and(
+            eq(conglomeratePositions.childConglomerateId, id),
+            eq(conglomerates.ownerId, ownerId),
+          ),
+        )
+        .orderBy(asc(conglomerates.name), asc(conglomerates.id));
+    },
+
+    /**
+     * Every nesting edge (parent → child) across the owner's conglomerates —
+     * the write-time cycle/depth validation graph (V5-P6). Owner-local by
+     * construction: only own conglomerates are nestable.
+     */
+    async nestingEdges(ownerId: string): Promise<Array<{ parentId: string; childId: string }>> {
+      const rows = await db
+        .select({
+          parentId: conglomeratePositions.conglomerateId,
+          childId: conglomeratePositions.childConglomerateId,
+        })
+        .from(conglomeratePositions)
+        .innerJoin(conglomerates, eq(conglomeratePositions.conglomerateId, conglomerates.id))
+        .where(
+          and(
+            eq(conglomerates.ownerId, ownerId),
+            sql`${conglomeratePositions.childConglomerateId} is not null`,
+          ),
+        );
+      return rows.flatMap((r) =>
+        r.childId !== null ? [{ parentId: r.parentId, childId: r.childId }] : [],
+      );
+    },
+
+    /**
      * Replace *all* of a Conglomerate's positions in one transaction (the
      * Builder autosave, §6.5): delete the old set, insert the new one with
      * `sortOrder` from array index. Ownership is verified inside the transaction,
@@ -270,7 +390,8 @@ export function createConglomerateRepository(db: Database) {
           await tx.insert(conglomeratePositions).values(
             positions.map((p, index) => ({
               conglomerateId: id,
-              assetId: p.assetId,
+              assetId: p.kind === 'asset' ? p.assetId : null,
+              childConglomerateId: p.kind === 'conglomerate' ? p.childId : null,
               weightPct: String(p.weightPct),
               sortOrder: index,
             })),

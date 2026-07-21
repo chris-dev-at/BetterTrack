@@ -3,7 +3,11 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { conglomerateDetailSchema, conglomerateListResponseSchema } from '@bettertrack/contracts';
+import {
+  conglomerateDetailSchema,
+  conglomerateListResponseSchema,
+  conglomerateResolvedResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -158,11 +162,13 @@ describe('GET /api/v1/conglomerates/:id', () => {
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
     expect(parsed.data.positions).toHaveLength(2);
-    expect(parsed.data.positions[0]!.sortOrder).toBe(0);
-    expect(parsed.data.positions[0]!.asset.symbol).toBe('AAA');
-    expect(parsed.data.positions[0]!.weightPct).toBe(60);
-    expect(parsed.data.positions[1]!.sortOrder).toBe(1);
-    expect(parsed.data.positions[1]!.asset.symbol).toBe('BBB');
+    const [p0, p1] = parsed.data.positions;
+    expect(p0!.sortOrder).toBe(0);
+    expect(p0!.kind).toBe('asset');
+    if (p0!.kind === 'asset') expect(p0!.asset.symbol).toBe('AAA');
+    expect(p0!.weightPct).toBe(60);
+    expect(p1!.sortOrder).toBe(1);
+    if (p1!.kind === 'asset') expect(p1!.asset.symbol).toBe('BBB');
   });
 
   it('returns 404 for a missing id', async () => {
@@ -260,7 +266,9 @@ describe('PUT /api/v1/conglomerates/:id/positions', () => {
     const parsed = conglomerateDetailSchema.safeParse(res.body);
     expect(parsed.success).toBe(true);
     if (!parsed.success) return;
-    expect(parsed.data.positions.map((p) => p.asset.symbol)).toEqual(['CCC', 'AAA']);
+    expect(
+      parsed.data.positions.map((p) => (p.kind === 'asset' ? p.asset.symbol : p.child.name)),
+    ).toEqual(['CCC', 'AAA']);
     expect(parsed.data.positions.map((p) => p.sortOrder)).toEqual([0, 1]);
   });
 
@@ -596,5 +604,227 @@ describe('Ownership isolation (§8) — another owner is always 404, never 403',
 
     const res = await otherAgent.get('/api/v1/conglomerates');
     expect(res.body.conglomerates).toHaveLength(0);
+  });
+});
+
+// ─── Nested conglomerates (§13.5 V5-P6, issue #592) ─────────────────────────
+
+describe('nested conglomerates', () => {
+  type Harness = { agent: Agent };
+
+  async function login(): Promise<Harness> {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    return { agent };
+  }
+
+  /** Create a conglomerate via the API and return its id. */
+  async function createId(agent: Agent, name: string): Promise<string> {
+    const res = await createConglomerate(agent, name);
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  async function putPositions(
+    agent: Agent,
+    id: string,
+    positions: Array<
+      { assetId: string; weightPct: number } | { childId: string; weightPct: number }
+    >,
+  ) {
+    return agent
+      .put(`/api/v1/conglomerates/${id}/positions`)
+      .set(...XRW)
+      .send({ positions });
+  }
+
+  it('stores a nested constituent and returns it with the child summary', async () => {
+    const { agent } = await login();
+    const child = await createId(agent, 'Child');
+    const parent = await createId(agent, 'Parent');
+    const a1 = await seedAsset(harness);
+    await putPositions(agent, child, [{ assetId: a1.id, weightPct: 100 }]);
+
+    const res = await putPositions(agent, parent, [
+      { assetId: a1.id, weightPct: 50 },
+      { childId: child, weightPct: 50 },
+    ]);
+    expect(res.status).toBe(200);
+    const parsed = conglomerateDetailSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.positionCount).toBe(2);
+    const nested = parsed.data.positions[1]!;
+    expect(nested.kind).toBe('conglomerate');
+    if (nested.kind !== 'conglomerate') return;
+    expect(nested.childId).toBe(child);
+    expect(nested.child).toMatchObject({ name: 'Child', status: 'draft', positionCount: 1 });
+  });
+
+  it('rejects a DIRECT self-reference with NESTING_CYCLE (the plan gate criterion)', async () => {
+    const { agent } = await login();
+    const id = await createId(agent, 'Self');
+    const res = await putPositions(agent, id, [{ childId: id, weightPct: 100 }]);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('NESTING_CYCLE');
+  });
+
+  it('rejects a TRANSITIVE cycle (A contains B, then B tries to contain A)', async () => {
+    const { agent } = await login();
+    const a = await createId(agent, 'A');
+    const b = await createId(agent, 'B');
+    expect((await putPositions(agent, a, [{ childId: b, weightPct: 100 }])).status).toBe(200);
+
+    const res = await putPositions(agent, b, [{ childId: a, weightPct: 100 }]);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('NESTING_CYCLE');
+  });
+
+  it('accepts a 3-level chain but rejects the 4th level at write time (depth cap 3)', async () => {
+    const { agent } = await login();
+    const a = await createId(agent, 'L1');
+    const b = await createId(agent, 'L2');
+    const c = await createId(agent, 'L3');
+    const d = await createId(agent, 'L4');
+
+    // A → B → C is valid (three conglomerates in the chain).
+    expect((await putPositions(agent, b, [{ childId: c, weightPct: 100 }])).status).toBe(200);
+    expect((await putPositions(agent, a, [{ childId: b, weightPct: 100 }])).status).toBe(200);
+
+    // C adding D would make the chain A → B → C → D — level 4 — and rejects,
+    // even though C itself only nests one level.
+    const res = await putPositions(agent, c, [{ childId: d, weightPct: 100 }]);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('NESTING_TOO_DEEP');
+
+    // A sibling at an existing level stays fine: B may also nest D (A→B→D = 3).
+    const sibling = await putPositions(agent, b, [
+      { childId: c, weightPct: 50 },
+      { childId: d, weightPct: 50 },
+    ]);
+    expect(sibling.status).toBe(200);
+  });
+
+  it("404s when nesting another user's conglomerate (own baskets only, no leak)", async () => {
+    const owner = await harness.seedUser({ email: 'own@nest.test', username: 'nestowner' });
+    const other = await harness.seedUser({ email: 'oth@nest.test', username: 'nestother' });
+    const ownerAgent = await loginAgent(harness.app, owner.email, owner.password);
+    const otherAgent = await loginAgent(harness.app, other.email, other.password);
+
+    const foreign = await createId(otherAgent, 'Foreign');
+    const mine = await createId(ownerAgent, 'Mine');
+
+    const res = await putPositions(ownerAgent, mine, [{ childId: foreign, weightPct: 100 }]);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('CONGLOMERATE_NOT_FOUND');
+  });
+
+  it('rejects the same child twice in one basket', async () => {
+    const { agent } = await login();
+    const child = await createId(agent, 'Twice');
+    const parent = await createId(agent, 'Parent');
+    const res = await putPositions(agent, parent, [
+      { childId: child, weightPct: 50 },
+      { childId: child, weightPct: 50 },
+    ]);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('DUPLICATE_CHILD');
+  });
+
+  it('blocks deleting a conglomerate that is a constituent, naming the parents; deletable after detach', async () => {
+    const { agent } = await login();
+    const child = await createId(agent, 'Building Block');
+    const p1 = await createId(agent, 'Parent One');
+    const p2 = await createId(agent, 'Parent Two');
+    await putPositions(agent, p1, [{ childId: child, weightPct: 100 }]);
+    await putPositions(agent, p2, [{ childId: child, weightPct: 100 }]);
+
+    const blocked = await agent.delete(`/api/v1/conglomerates/${child}`).set(...XRW);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('CONGLOMERATE_IN_USE');
+    expect(blocked.body.error.message).toContain('Parent One');
+    expect(blocked.body.error.message).toContain('Parent Two');
+    expect(blocked.body.error.details.parents.map((p: { name: string }) => p.name)).toEqual([
+      'Parent One',
+      'Parent Two',
+    ]);
+
+    // Still present.
+    expect((await agent.get(`/api/v1/conglomerates/${child}`)).status).toBe(200);
+
+    // Detach from both parents → the delete goes through.
+    await putPositions(agent, p1, []);
+    await putPositions(agent, p2, []);
+    const del = await agent.delete(`/api/v1/conglomerates/${child}`).set(...XRW);
+    expect(del.status).toBe(204);
+  });
+
+  it('GET /:id/resolved flattens the canonical fixture: 50% child (40/60) ⇒ 20/30, plus the direct 50', async () => {
+    const { agent } = await login();
+    const aX = await seedAsset(harness, { symbol: 'XXX' });
+    const aY = await seedAsset(harness, { symbol: 'YYY' });
+    const aZ = await seedAsset(harness, { symbol: 'ZZZ' });
+
+    const child = await createId(agent, 'Split Child');
+    await putPositions(agent, child, [
+      { assetId: aY.id, weightPct: 40 },
+      { assetId: aZ.id, weightPct: 60 },
+    ]);
+    const parent = await createId(agent, 'Nested Parent');
+    await putPositions(agent, parent, [
+      { assetId: aX.id, weightPct: 50 },
+      { childId: child, weightPct: 50 },
+    ]);
+
+    const res = await agent.get(`/api/v1/conglomerates/${parent}/resolved`);
+    expect(res.status).toBe(200);
+    const parsed = conglomerateResolvedResponseSchema.safeParse(res.body);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.nested).toBe(true);
+    const byId = new Map(parsed.data.positions.map((p) => [p.assetId, p]));
+    expect(byId.get(aX.id)?.weightPct).toBeCloseTo(50, 9);
+    expect(byId.get(aY.id)?.weightPct).toBeCloseTo(20, 9);
+    expect(byId.get(aZ.id)?.weightPct).toBeCloseTo(30, 9);
+    expect(byId.get(aY.id)?.asset.symbol).toBe('YYY');
+  });
+
+  it('GET /:id/resolved normalizes a flat draft basket by its own weight sum (nested=false)', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    const a2 = await seedAsset(harness);
+    const id = await createId(agent, 'Flat Draft');
+    await putPositions(agent, id, [
+      { assetId: a1.id, weightPct: 30 },
+      { assetId: a2.id, weightPct: 10 },
+    ]);
+
+    const res = await agent.get(`/api/v1/conglomerates/${id}/resolved`);
+    expect(res.status).toBe(200);
+    expect(res.body.nested).toBe(false);
+    const byId = new Map(
+      (res.body.positions as Array<{ assetId: string; weightPct: number }>).map((p) => [
+        p.assetId,
+        p.weightPct,
+      ]),
+    );
+    expect(byId.get(a1.id)).toBeCloseTo(75, 9);
+    expect(byId.get(a2.id)).toBeCloseTo(25, 9);
+  });
+
+  it('activation counts a nested slice like any weight (Σ = 100 across kinds)', async () => {
+    const { agent } = await login();
+    const a1 = await seedAsset(harness);
+    const child = await createId(agent, 'Half');
+    await putPositions(agent, child, [{ assetId: a1.id, weightPct: 100 }]);
+    const parent = await createId(agent, 'Activatable');
+    await putPositions(agent, parent, [
+      { assetId: a1.id, weightPct: 60 },
+      { childId: child, weightPct: 40 },
+    ]);
+
+    const res = await agent.post(`/api/v1/conglomerates/${parent}/activate`).set(...XRW);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('active');
   });
 });

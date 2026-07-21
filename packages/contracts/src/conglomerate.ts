@@ -31,6 +31,16 @@ export type ConglomerateStatus = z.infer<typeof conglomerateStatusSchema>;
 export const conglomerateVisibilitySchema = z.enum(['private', 'friends']);
 export type ConglomerateVisibility = z.infer<typeof conglomerateVisibilitySchema>;
 
+// --- Nesting (§13.5 V5-P6) -------------------------------------------------
+
+/**
+ * Maximum nesting depth (planner-set, issue #592): a chain of three
+ * conglomerates (root → child → grandchild) is valid; introducing a fourth
+ * level is rejected at write time. Cycles — direct or transitive — are always
+ * rejected regardless of depth.
+ */
+export const MAX_NESTING_DEPTH = 3;
+
 // --- Positions -------------------------------------------------------------
 
 /**
@@ -57,21 +67,59 @@ export const conglomerateAssetSchema = z
   .strict();
 export type ConglomerateAsset = z.infer<typeof conglomerateAssetSchema>;
 
-/** One stored position — asset id, weight, and its `sortOrder` (§6.5). */
-export const conglomeratePositionSchema = z
+/**
+ * Identity of a nested (child) conglomerate embedded in a constituent row for
+ * display (§13.5 V5-P6): name/status plus its own position count, so the
+ * Builder and detail page can badge the row without a second fetch.
+ */
+export const conglomerateChildSummarySchema = z
   .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    status: conglomerateStatusSchema,
+    positionCount: z.number().int(),
+  })
+  .strict();
+export type ConglomerateChildSummary = z.infer<typeof conglomerateChildSummarySchema>;
+
+/**
+ * An asset constituent enriched with its asset identity for the detail
+ * response (§6.5). Since V5-P6 every constituent row carries a `kind`
+ * discriminator — `asset` here, `conglomerate` for a nested basket.
+ */
+export const conglomeratePositionWithAssetSchema = z
+  .object({
+    kind: z.literal('asset'),
     assetId: z.string().uuid(),
     weightPct: weightPctSchema,
     sortOrder: z.number().int(),
+    asset: conglomerateAssetSchema,
   })
   .strict();
-export type ConglomeratePosition = z.infer<typeof conglomeratePositionSchema>;
-
-/** A position enriched with its asset identity for the detail response (§6.5). */
-export const conglomeratePositionWithAssetSchema = conglomeratePositionSchema
-  .extend({ asset: conglomerateAssetSchema })
-  .strict();
 export type ConglomeratePositionWithAsset = z.infer<typeof conglomeratePositionWithAssetSchema>;
+
+/**
+ * A nested-conglomerate constituent (§13.5 V5-P6): one of the OWNER's other
+ * conglomerates embedded as a weighted slice of this basket. Weights resolve
+ * recursively at backtest/valuation time (see the resolved view below).
+ */
+export const conglomerateChildPositionSchema = z
+  .object({
+    kind: z.literal('conglomerate'),
+    childId: z.string().uuid(),
+    weightPct: weightPctSchema,
+    sortOrder: z.number().int(),
+    child: conglomerateChildSummarySchema,
+  })
+  .strict();
+export type ConglomerateChildPosition = z.infer<typeof conglomerateChildPositionSchema>;
+
+/** One stored constituent — an asset position or a nested conglomerate (V5-P6). */
+export const conglomerateConstituentSchema = z.discriminatedUnion('kind', [
+  conglomeratePositionWithAssetSchema,
+  conglomerateChildPositionSchema,
+]);
+export type ConglomerateConstituent = z.infer<typeof conglomerateConstituentSchema>;
 
 // --- Conglomerates (list + detail) -----------------------------------------
 
@@ -91,11 +139,44 @@ export const conglomerateSummarySchema = z
   .strict();
 export type ConglomerateSummary = z.infer<typeof conglomerateSummarySchema>;
 
-/** A single Conglomerate with its positions (ordered by `sortOrder`) (§6.5). */
+/** A single Conglomerate with its constituents (ordered by `sortOrder`) (§6.5). */
 export const conglomerateDetailSchema = conglomerateSummarySchema
-  .extend({ positions: z.array(conglomeratePositionWithAssetSchema) })
+  .extend({ positions: z.array(conglomerateConstituentSchema) })
   .strict();
 export type ConglomerateDetail = z.infer<typeof conglomerateDetailSchema>;
+
+// --- Resolved view (§13.5 V5-P6) -------------------------------------------
+
+/**
+ * One row of the resolved (flattened) view: a nested conglomerate reduced to
+ * effective asset weights. The effective weight of an asset is the product of
+ * the weight fractions along each path from the root to it (each level
+ * normalized by its basket's own weight sum), summed over all paths, scaled so
+ * the vector sums to 100. Full precision — the client rounds for display.
+ */
+export const resolvedConglomeratePositionSchema = z
+  .object({
+    assetId: z.string().uuid(),
+    weightPct: z.number(),
+    asset: conglomerateAssetSchema,
+  })
+  .strict();
+export type ResolvedConglomeratePosition = z.infer<typeof resolvedConglomeratePositionSchema>;
+
+/**
+ * `GET /conglomerates/:id/resolved` response — the flattened effective asset
+ * weights (V5-P6). `nested` is true when the basket has at least one
+ * conglomerate constituent (drives the detail page's resolved-view toggle);
+ * for a flat basket the resolved positions are its own weights normalized.
+ */
+export const conglomerateResolvedResponseSchema = z
+  .object({
+    conglomerateId: z.string().uuid(),
+    nested: z.boolean(),
+    positions: z.array(resolvedConglomeratePositionSchema),
+  })
+  .strict();
+export type ConglomerateResolvedResponse = z.infer<typeof conglomerateResolvedResponseSchema>;
 
 /** `GET /conglomerates` response — the caller's Conglomerates. */
 export const conglomerateListResponseSchema = z
@@ -128,13 +209,33 @@ export const updateConglomerateRequestSchema = z
   .strict();
 export type UpdateConglomerateRequest = z.infer<typeof updateConglomerateRequestSchema>;
 
-/** One position as submitted by the client — `sortOrder` is derived server-side. */
-export const replacePositionInputSchema = z
+/** An asset position as submitted by the client — `sortOrder` is derived server-side. */
+export const replaceAssetPositionInputSchema = z
   .object({
     assetId: z.string().uuid(),
     weightPct: weightPctSchema,
   })
   .strict();
+export type ReplaceAssetPositionInput = z.infer<typeof replaceAssetPositionInputSchema>;
+
+/**
+ * A nested-conglomerate constituent as submitted by the client (V5-P6). Only
+ * the caller's OWN conglomerates are nestable; cycles and a nesting depth
+ * beyond {@link MAX_NESTING_DEPTH} are rejected at write time.
+ */
+export const replaceChildPositionInputSchema = z
+  .object({
+    childId: z.string().uuid(),
+    weightPct: weightPctSchema,
+  })
+  .strict();
+export type ReplaceChildPositionInput = z.infer<typeof replaceChildPositionInputSchema>;
+
+/** One submitted constituent — an asset (`assetId`) or a nested conglomerate (`childId`). */
+export const replacePositionInputSchema = z.union([
+  replaceAssetPositionInputSchema,
+  replaceChildPositionInputSchema,
+]);
 export type ReplacePositionInput = z.infer<typeof replacePositionInputSchema>;
 
 /**

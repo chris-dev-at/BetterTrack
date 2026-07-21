@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import type { BacktestPreviewPosition } from '@bettertrack/contracts';
 
-import { getConglomerate } from '../../lib/conglomerateApi';
+import { getResolvedConglomerate } from '../../lib/conglomerateApi';
 import { getIdea } from '../../lib/ideasApi';
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
@@ -32,11 +32,13 @@ export function IdeaWorkboardPage() {
   const source = idea?.state.source;
 
   // A conglomerate-sourced idea resolves its basket from the referenced
-  // conglomerate; an ad-hoc idea carries the positions inline.
+  // conglomerate — via the resolved view, so a NESTED conglomerate (V5-P6)
+  // backtests over its flattened effective asset weights; an ad-hoc idea
+  // carries the positions inline.
   const conglomerateId = source?.kind === 'conglomerate' ? source.conglomerateId : undefined;
   const conglomerateQuery = useQuery({
-    queryKey: ['conglomerate', conglomerateId],
-    queryFn: ({ signal }) => getConglomerate(conglomerateId!, signal),
+    queryKey: ['conglomerate', conglomerateId, 'resolved'],
+    queryFn: ({ signal }) => getResolvedConglomerate(conglomerateId!, signal),
     enabled: !!conglomerateId,
   });
 
@@ -82,9 +84,10 @@ export function IdeaWorkboardPage() {
   if (source.kind === 'adhoc') {
     positions = source.positions.map((p) => ({ assetId: p.assetId, weight: p.weight }));
   } else if (conglomerateQuery.data) {
-    positions = conglomerateQuery.data.positions
-      .filter((p) => p.weightPct > 0)
-      .map((p) => ({ assetId: p.assetId, weight: p.weightPct }));
+    positions = conglomerateQuery.data.positions.map((p) => ({
+      assetId: p.assetId,
+      weight: p.weightPct,
+    }));
   }
 
   return (

@@ -435,6 +435,13 @@
       "when": 1784489700290,
       "tag": "0061_custom_tax_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1784489760290,
+      "tag": "0062_nested_conglomerates",
+      "breakpoints": true
     }
   ]
 }

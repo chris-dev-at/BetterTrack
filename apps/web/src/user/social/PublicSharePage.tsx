@@ -125,10 +125,19 @@ export function PublicSharePage() {
             </h2>
             <ul className="divide-y divide-neutral-800">
               {c.positions.map((pos) => (
-                <li key={pos.assetId} className="flex items-center justify-between gap-3 py-2">
+                <li
+                  key={pos.kind === 'asset' ? pos.assetId : pos.childId}
+                  className="flex items-center justify-between gap-3 py-2"
+                >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{pos.asset.symbol}</p>
-                    <p className="truncate text-xs text-neutral-500">{pos.asset.name}</p>
+                    <p className="truncate text-sm font-medium">
+                      {pos.kind === 'asset' ? pos.asset.symbol : pos.child.name}
+                    </p>
+                    <p className="truncate text-xs text-neutral-500">
+                      {pos.kind === 'asset'
+                        ? pos.asset.name
+                        : t('workboard.conglomerates.nestedBadge')}
+                    </p>
                   </div>
                   <span className="shrink-0 text-sm text-neutral-300">
                     {formatPercent(pos.weightPct)}

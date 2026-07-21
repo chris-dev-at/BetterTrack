@@ -1980,7 +1980,8 @@
       "statusExplainer": {
         "draft": "Entwurf — wird vom Rechner noch nicht verwendet. Aktiviere ihn, sobald die Gewichte 100 % ergeben.",
         "active": "Aktiv — dein validierter Live-Korb, den der Rechner verwendet. Die Gewichte ergeben 100 %."
-      }
+      },
+      "nestedBadge": "Verschachtelt"
     },
     "detail": {
       "noPositionsTitle": "Noch keine Positionen",
@@ -2001,7 +2002,13 @@
       "allocationHeading": "Aufteilung",
       "allocationChartTitle": "Konglomerat-Aufteilung",
       "backtestHeading": "Backtest",
-      "calculatorHeading": "Rechner"
+      "calculatorHeading": "Rechner",
+      "viewToggleAriaLabel": "Positionsansicht",
+      "viewStored": "Wie gebaut",
+      "viewResolved": "Aufgelöst",
+      "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Konglomerate.",
+      "resolvedLoadError": "Die aufgelöste Ansicht konnte nicht geladen werden.",
+      "deleteInUseError": "Dieses Konglomerat ist Bestandteil von {{parents}} — entferne es zuerst dort."
     },
     "builder": {
       "loading": "Builder wird geladen…",
@@ -2042,7 +2049,22 @@
       "statTotalWeight": "Gesamtgewicht",
       "statLargest": "Größte",
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
-      "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel."
+      "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel.",
+      "nestConglomerateHeading": "Konglomerat verschachteln",
+      "nestConglomerateHint": "Füge eines deiner eigenen Konglomerate als gewichteten Anteil hinzu — seine Gewichte werden bei Backtest und Aufteilung rekursiv aufgelöst.",
+      "nestConglomerateEmpty": "Noch keine anderen Konglomerate zum Verschachteln.",
+      "nestConglomerateLoadError": "Deine Konglomerate konnten nicht geladen werden.",
+      "nestConglomerateListAriaLabel": "Deine Konglomerate",
+      "nestConglomerateAddAriaLabel": "{{name}} als Bestandteil hinzufügen",
+      "saveIdeaNestedHint": "Ideen enthalten nur Asset-Gewichte — ein Korb mit verschachtelten Konglomeraten kann nicht als Idee gespeichert werden.",
+      "errors": {
+        "maxPositions": "Ein Konglomerat darf höchstens {{max}} Positionen haben.",
+        "duplicateAsset": "Dieses Asset ist bereits in diesem Konglomerat.",
+        "duplicateConglomerate": "Dieses Konglomerat ist bereits ein Bestandteil.",
+        "selfNest": "Ein Konglomerat kann sich nicht selbst enthalten.",
+        "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Konglomerat kann sich nicht selbst enthalten, auch nicht über ein anderes Konglomerat.",
+        "nestingTooDeep": "Konglomerate können höchstens {{max}} Ebenen tief verschachtelt werden."
+      }
     },
     "ideas": {
       "list": {

@@ -30,6 +30,7 @@ import {
 import { compareSeriesStats } from '../../domain/seriesStats';
 import { notFound, unprocessable } from '../../errors';
 import type { MarketDataService } from '../../providers';
+import { flattenConglomerate } from '../conglomerate/nesting';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 
 /**
@@ -292,7 +293,11 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
    * (ownership enforced at query time → 404, no existence leak §10; an empty or
    * unpriced basket is a 422). Shared by the V4-P7 benchmark path and the V5-P6
    * N-way comparison so a conglomerate runs through the exact same pipeline in
-   * both — the "generalise, don't fork" mandate.
+   * both — the "generalise, don't fork" mandate. A NESTED conglomerate (V5-P6)
+   * is flattened to its effective asset weights through the one shared
+   * resolution function first, so its backtest equals the backtest of its
+   * hand-flattened equivalent by construction; a basket that flattens to
+   * nothing (empty, or only empty children) is a 422.
    */
   async function resolveConglomerateBasket(
     userId: string,
@@ -301,20 +306,28 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
   ): Promise<ResolvedConglomerateBasket> {
     const detail = await conglomerateRepo.findByIdForOwner(userId, conglomerateId);
     if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
-    if (detail.positions.length === 0) {
+    const flat = await flattenConglomerate(
+      // The root is already loaded — reuse it; children load owner-scoped.
+      (id) =>
+        id === conglomerateId
+          ? Promise.resolve(detail)
+          : conglomerateRepo.findByIdForOwner(userId, id),
+      conglomerateId,
+    );
+    if (!flat || flat.positions.length === 0) {
       throw unprocessable(
         `Conglomerate ${detail.name} has no positions to backtest.`,
         'BACKTEST_UNAVAILABLE',
       );
     }
     const assets: BacktestAsset[] = [];
-    for (const pos of detail.positions) {
+    for (const pos of flat.positions) {
       assets.push(await loadBasketAsset(userId, pos.assetId, providerRange));
     }
     return {
       id: detail.id,
       name: detail.name,
-      positions: detail.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
+      positions: flat.positions.map((p) => ({ assetId: p.assetId, weight: p.weightPct })),
       assets,
     };
   }

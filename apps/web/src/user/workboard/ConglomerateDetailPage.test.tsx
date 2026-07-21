@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/conglomerateApi', () => ({
   getConglomerate: vi.fn(),
+  getResolvedConglomerate: vi.fn(),
   deleteConglomerate: vi.fn(),
   allocateConglomerate: vi.fn(),
   updateConglomerate: vi.fn(),
@@ -53,12 +54,31 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
+import { ApiError } from '../../lib/apiClient';
 import { previewBacktest } from '../../lib/backtestApi';
-import { deleteConglomerate, getConglomerate, updateConglomerate } from '../../lib/conglomerateApi';
+import {
+  deleteConglomerate,
+  getConglomerate,
+  getResolvedConglomerate,
+  updateConglomerate,
+} from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { ConglomerateDetailPage } from './ConglomerateDetailPage';
 
 const CONGLOMERATE_ID = 'c1';
+
+const AAPL = {
+  symbol: 'AAPL',
+  name: 'Apple Inc.',
+  currency: 'USD' as const,
+  type: 'stock' as const,
+};
+const MSFT = {
+  symbol: 'MSFT',
+  name: 'Microsoft Corp.',
+  currency: 'USD' as const,
+  type: 'stock' as const,
+};
 
 const DETAIL = {
   id: CONGLOMERATE_ID,
@@ -70,24 +90,48 @@ const DETAIL = {
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
   positions: [
+    { kind: 'asset' as const, assetId: 'a1', weightPct: 60, sortOrder: 0, asset: AAPL },
+    { kind: 'asset' as const, assetId: 'a2', weightPct: 40, sortOrder: 1, asset: MSFT },
+  ],
+};
+
+/** The flat basket's resolved view: its own weights, no nesting. */
+const RESOLVED = {
+  conglomerateId: CONGLOMERATE_ID,
+  nested: false,
+  positions: [
+    { assetId: 'a1', weightPct: 60, asset: AAPL },
+    { assetId: 'a2', weightPct: 40, asset: MSFT },
+  ],
+};
+
+/** A nested basket (V5-P6): 50% child "Tech Mix" + 50% AAPL, resolved to 20/30/50. */
+const NESTED_DETAIL = {
+  ...DETAIL,
+  positions: [
+    { kind: 'asset' as const, assetId: 'a1', weightPct: 50, sortOrder: 0, asset: AAPL },
     {
-      assetId: 'a1',
-      weightPct: 60,
-      sortOrder: 0,
-      asset: {
-        symbol: 'AAPL',
-        name: 'Apple Inc.',
-        currency: 'USD' as const,
-        type: 'stock' as const,
-      },
-    },
-    {
-      assetId: 'a2',
-      weightPct: 40,
+      kind: 'conglomerate' as const,
+      childId: 'c2',
+      weightPct: 50,
       sortOrder: 1,
+      child: { id: 'c2', name: 'Tech Mix', status: 'active' as const, positionCount: 2 },
+    },
+  ],
+};
+
+const NESTED_RESOLVED = {
+  conglomerateId: CONGLOMERATE_ID,
+  nested: true,
+  positions: [
+    { assetId: 'a1', weightPct: 50, asset: AAPL },
+    { assetId: 'a2', weightPct: 20, asset: MSFT },
+    {
+      assetId: 'a3',
+      weightPct: 30,
       asset: {
-        symbol: 'MSFT',
-        name: 'Microsoft Corp.',
+        symbol: 'NVDA',
+        name: 'NVIDIA Corp.',
         currency: 'USD' as const,
         type: 'stock' as const,
       },
@@ -114,6 +158,7 @@ function renderPage(id = CONGLOMERATE_ID) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getResolvedConglomerate).mockResolvedValue(RESOLVED);
   vi.mocked(listPortfolios).mockResolvedValue({
     portfolios: [
       {
@@ -212,6 +257,68 @@ describe('ConglomerateDetailPage', () => {
 
     await waitFor(() => expect(deleteConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID));
     await waitFor(() => expect(screen.getByText('Conglomerates list')).toBeInTheDocument());
+  });
+
+  test('a nested basket shows the badge and the resolved-view toggle flips to effective weights (V5-P6)', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
+    vi.mocked(getResolvedConglomerate).mockResolvedValue(NESTED_RESOLVED);
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+
+    // Stored view: the child row renders with its name + the nesting badge.
+    const table = screen.getByRole('table');
+    expect(within(table).getByText('Tech Mix')).toBeInTheDocument();
+    expect(within(table).getByText('Nested')).toBeInTheDocument();
+
+    // Toggle to the resolved view: flattened effective asset weights.
+    await user.click(screen.getByRole('button', { name: 'Resolved' }));
+    const resolvedTable = screen.getByRole('table');
+    expect(within(resolvedTable).getByText('NVDA')).toBeInTheDocument();
+    expect(within(resolvedTable).getByText('20,00 %')).toBeInTheDocument();
+    expect(within(resolvedTable).getByText('30,00 %')).toBeInTheDocument();
+    expect(within(resolvedTable).queryByText('Tech Mix')).not.toBeInTheDocument();
+  });
+
+  test('the backtest panel consumes the RESOLVED weights of a nested basket', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
+    vi.mocked(getResolvedConglomerate).mockResolvedValue(NESTED_RESOLVED);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(previewBacktest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          positions: [
+            { assetId: 'a1', weight: 50 },
+            { assetId: 'a2', weight: 20 },
+            { assetId: 'a3', weight: 30 },
+          ],
+        }),
+        expect.anything(),
+      ),
+    );
+  });
+
+  test('a delete blocked by parents (409 CONGLOMERATE_IN_USE) names them in the dialog', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(DETAIL);
+    vi.mocked(deleteConglomerate).mockRejectedValue(
+      new ApiError(409, 'CONGLOMERATE_IN_USE', 'This conglomerate is a constituent of World Mix.', {
+        parents: [{ id: 'c9', name: 'World Mix' }],
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog', { name: /delete conglomerate/i });
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByText(/constituent of World Mix/i)).toBeInTheDocument(),
+    );
   });
 
   test('shows an error message when the Conglomerate fails to load', async () => {

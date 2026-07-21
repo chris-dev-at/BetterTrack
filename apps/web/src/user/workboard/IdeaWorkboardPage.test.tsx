@@ -4,10 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { ConglomerateDetail, Idea, IdeaResponse } from '@bettertrack/contracts';
+import type { ConglomerateResolvedResponse, Idea, IdeaResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/ideasApi', () => ({ getIdea: vi.fn() }));
-vi.mock('../../lib/conglomerateApi', () => ({ getConglomerate: vi.fn() }));
+vi.mock('../../lib/conglomerateApi', () => ({ getResolvedConglomerate: vi.fn() }));
 
 // Capture what the panel is seeded with — the "exact reopen" is exactly these props.
 const panelProps = vi.hoisted(() => ({ current: null as unknown }));
@@ -18,7 +18,7 @@ vi.mock('./BacktestPanel', () => ({
   },
 }));
 
-import { getConglomerate } from '../../lib/conglomerateApi';
+import { getResolvedConglomerate } from '../../lib/conglomerateApi';
 import { getIdea } from '../../lib/ideasApi';
 import { IdeaWorkboardPage } from './IdeaWorkboardPage';
 
@@ -81,7 +81,7 @@ describe('IdeaWorkboardPage', () => {
       },
     });
     // The ad-hoc set resolves inline — no conglomerate lookup.
-    expect(getConglomerate).not.toHaveBeenCalled();
+    expect(getResolvedConglomerate).not.toHaveBeenCalled();
   });
 
   test('reopens a conglomerate-sourced idea by resolving the referenced basket', async () => {
@@ -97,20 +97,19 @@ describe('IdeaWorkboardPage', () => {
       },
     };
     vi.mocked(getIdea).mockResolvedValue({ idea });
-    const detail = {
-      id: CONGLOMERATE_ID,
-      name: 'Core',
-      positions: [
-        { assetId: ASSET_ID, weightPct: 70, asset: { symbol: 'A', name: 'A' } },
-        { assetId: 'zero', weightPct: 0, asset: { symbol: 'Z', name: 'Z' } },
-      ],
-    } as unknown as ConglomerateDetail;
-    vi.mocked(getConglomerate).mockResolvedValue(detail);
+    // The resolved view (V5-P6): effective asset weights — nested baskets and
+    // weight-0 rows are already flattened away server-side.
+    const resolved = {
+      conglomerateId: CONGLOMERATE_ID,
+      nested: false,
+      positions: [{ assetId: ASSET_ID, weightPct: 70, asset: { symbol: 'A', name: 'A' } }],
+    } as unknown as ConglomerateResolvedResponse;
+    vi.mocked(getResolvedConglomerate).mockResolvedValue(resolved);
     renderPage();
 
     await screen.findByTestId('backtest-panel');
-    expect(getConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID, expect.anything());
-    // Weight-0 rows are dropped; the source pointer is preserved verbatim.
+    expect(getResolvedConglomerate).toHaveBeenCalledWith(CONGLOMERATE_ID, expect.anything());
+    // The source pointer is preserved verbatim.
     expect(panelProps.current).toMatchObject({
       positions: [{ assetId: ASSET_ID, weight: 70 }],
       source: { kind: 'conglomerate', conglomerateId: CONGLOMERATE_ID },

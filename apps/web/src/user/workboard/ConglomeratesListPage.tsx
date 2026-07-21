@@ -51,6 +51,20 @@ export function StatusBadge({ status }: { status: ConglomerateStatus }) {
   );
 }
 
+/**
+ * The V5-P6 nesting badge — marks a constituent row that is itself a
+ * conglomerate. Shared by the Builder, the detail page and the shared
+ * (friend) view.
+ */
+export function NestedBadge() {
+  const t = useT();
+  return (
+    <span className="inline-flex shrink-0 items-center rounded bg-violet-950/60 px-1.5 py-0.5 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-800">
+      {t('workboard.conglomerates.nestedBadge')}
+    </span>
+  );
+}
+
 function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary }) {
   const t = useT();
   return (

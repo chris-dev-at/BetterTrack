@@ -11,6 +11,7 @@ vi.mock('../../lib/conglomerateApi', () => ({
   updateConglomerate: vi.fn(),
   replaceConglomeratePositions: vi.fn(),
   activateConglomerate: vi.fn(),
+  listConglomerates: vi.fn(),
 }));
 
 vi.mock('../../lib/searchApi', () => ({
@@ -36,6 +37,7 @@ import {
   activateConglomerate,
   createConglomerate,
   getConglomerate,
+  listConglomerates,
   replaceConglomeratePositions,
   updateConglomerate,
 } from '../../lib/conglomerateApi';
@@ -55,6 +57,7 @@ function detail(positions: Array<{ id: string; symbol: string; weightPct: number
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
     positions: positions.map((p, i) => ({
+      kind: 'asset' as const,
       assetId: p.id,
       weightPct: p.weightPct,
       sortOrder: i,
@@ -65,6 +68,20 @@ function detail(positions: Array<{ id: string; symbol: string; weightPct: number
         type: 'stock' as const,
       },
     })),
+  };
+}
+
+/** One of the user's other conglomerates, offered by the nest picker (V5-P6). */
+function summary(id: string, name: string, positionCount = 2) {
+  return {
+    id,
+    name,
+    description: null,
+    status: 'active' as const,
+    visibility: 'private' as const,
+    positionCount,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
   };
 }
 
@@ -112,6 +129,7 @@ async function renderEdit(positions: Array<{ id: string; symbol: string; weightP
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listConglomerates).mockResolvedValue({ conglomerates: [] });
 });
 
 describe('ConglomerateBuilderPage', () => {
@@ -138,6 +156,41 @@ describe('ConglomerateBuilderPage', () => {
     const weightInput = await screen.findByLabelText('Weight for AAPL');
     expect(weightInput).toHaveValue(0);
     expect(screen.getByLabelText('Weight slider for AAPL')).toHaveValue('0');
+  });
+
+  test('the nest picker lists other own conglomerates (never itself) and adds one as a constituent (V5-P6)', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [summary(CONGLOMERATE_ID, 'My Basket'), summary('c2', 'Tech Mix')],
+    });
+    await renderEdit([{ id: 'a1', symbol: 'AAPL', weightPct: 60 }]);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByText('Nest a conglomerate'));
+    // The basket being edited is excluded from the picker.
+    const addTechMix = await screen.findByRole('button', {
+      name: 'Add Tech Mix as a constituent',
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Add My Basket as a constituent' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(addTechMix);
+
+    // The nested row appears at weight 0 with the badge…
+    const weightInput = await screen.findByLabelText('Weight for Tech Mix');
+    expect(weightInput).toHaveValue(0);
+    expect(screen.getByText('Nested')).toBeInTheDocument();
+
+    // …and once given weight, the autosave payload carries a childId row.
+    fireEvent.change(weightInput, { target: { value: '40' } });
+    await waitFor(
+      () =>
+        expect(replaceConglomeratePositions).toHaveBeenCalledWith(CONGLOMERATE_ID, [
+          { assetId: 'a1', weightPct: 60 },
+          { childId: 'c2', weightPct: 40 },
+        ]),
+      { timeout: 3000 },
+    );
   });
 
   test('the slider and number input stay in sync', async () => {

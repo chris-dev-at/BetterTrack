@@ -143,12 +143,14 @@ function twoPositionConglomerateDetail(id: string, name: string): ConglomerateDe
     updatedAt: '2026-01-01T00:00:00.000Z',
     positions: [
       {
+        kind: 'asset' as const,
         assetId: 'asset-spy',
         weightPct: 70,
         sortOrder: 0,
         asset: { symbol: 'SPY', name: 'SPDR S&P 500 ETF', currency: 'USD', type: 'etf' },
       },
       {
+        kind: 'asset' as const,
         assetId: 'asset-bnd',
         weightPct: 30,
         sortOrder: 1,
