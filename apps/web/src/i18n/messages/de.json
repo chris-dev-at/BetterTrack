@@ -921,6 +921,14 @@
         "GBP": "GBP — Britisches Pfund (£)"
       }
     },
+    "newPortfolioDefaults": {
+      "navLabel": "Standardwerte für neue Portfolios",
+      "title": "Standardwerte für neue Portfolios",
+      "subtitle": "Was ein neu erstelltes Portfolio übernimmt. Bestehende Portfolios folgen diesen Werten weiter, sofern du sie nicht einzeln überschreibst.",
+      "tax": {
+        "hint": "Gilt für neue Portfolios und für jedes Portfolio ohne eigene Einstellung. Pro Portfolio kannst du sie im Steuerbericht des Portfolios überschreiben oder zurücksetzen."
+      }
+    },
     "taxes": {
       "title": "Steuern",
       "subtitle": "Wie BetterTrack Steuern auf deine Verkäufe und Dividenden erfasst.",
@@ -1320,8 +1328,16 @@
       },
       "disabled": {
         "title": "Steuererfassung ist aus",
-        "description": "Aktiviere einen Steuermodus, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
+        "description": "Aktiviere oben einen Steuermodus für dieses Portfolio, um realisierte Gewinne und Steuer nach Jahr zu sehen.",
         "link": "Steuermodus in Einstellungen → Steuern wählen →"
+      },
+      "treatment": {
+        "title": "Steuerliche Behandlung · {{name}}",
+        "description": "Wie dieses Portfolio besteuert wird. Es übernimmt deinen Standard für neue Portfolios, bis du hier einen festlegst.",
+        "inheriting": "Übernimmt Standard",
+        "overridden": "Überschrieben",
+        "reset": "Auf Standard zurücksetzen",
+        "editDefault": "Standard in Einstellungen bearbeiten →"
       },
       "de": {
         "title": "Deutschland (Abgeltungsteuer)",

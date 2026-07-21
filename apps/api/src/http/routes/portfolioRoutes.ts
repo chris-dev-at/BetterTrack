@@ -23,6 +23,7 @@ import {
   transactionListQuerySchema,
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
+  updateTaxSettingsRequestSchema,
   updateTransactionRequestSchema,
   type CashEntryRequest,
   type CashMovementsQuery,
@@ -45,6 +46,7 @@ import {
   type UpdateCashSourceRequest,
   type UpdatePortfolioRequest,
   type UpdatePortfolioResponse,
+  type UpdateTaxSettingsRequest,
   type UpdateTransactionRequest,
 } from '@bettertrack/contracts';
 
@@ -399,6 +401,48 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       };
       await ctx.tax.deleteDividend(req.authUser!.id, portfolioId, dividendId);
       res.status(204).send();
+    },
+  );
+
+  // ── Per-portfolio tax treatment (issue #636) ───────────────────────────────
+  // The tax slice of the per-portfolio settings scoping cascade
+  // (`effective = override ?? user default ?? system('none')`). GET resolves the
+  // view; PUT pins this portfolio's override; DELETE resets it to inheriting.
+
+  // GET /portfolios/:portfolioId/settings/tax — the resolved tax view.
+  router.get(
+    '/:portfolioId/settings/tax',
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const settings = await ctx.tax.getPortfolioTaxSettings(req.authUser!.id, portfolioId);
+      res.json(settings);
+    },
+  );
+
+  // PUT /portfolios/:portfolioId/settings/tax — override this portfolio's tax
+  // treatment (applies forward only, like the user-level default; §16).
+  router.put(
+    '/:portfolioId/settings/tax',
+    validateParams(portfolioIdParamSchema),
+    validateBody(updateTaxSettingsRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as UpdateTaxSettingsRequest;
+      const settings = await ctx.tax.setPortfolioTaxOverride(req.authUser!.id, portfolioId, body);
+      res.json(settings);
+    },
+  );
+
+  // DELETE /portfolios/:portfolioId/settings/tax — drop the override; the
+  // portfolio inherits the user-level default again (reset-to-default).
+  router.delete(
+    '/:portfolioId/settings/tax',
+    validateParams(portfolioIdParamSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const settings = await ctx.tax.clearPortfolioTaxOverride(req.authUser!.id, portfolioId);
+      res.json(settings);
     },
   );
 

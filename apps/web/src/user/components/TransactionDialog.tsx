@@ -18,12 +18,12 @@ import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
 import {
   createTransactions,
+  getPortfolioTaxSettings,
   previewCash,
   updatePortfolio,
   updateTransaction,
 } from '../../lib/portfolioApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
-import { getTaxSettings } from '../../lib/settingsApi';
 import { formatMoney, formatQuantity } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
 import { MoneyText } from '../../ui';
@@ -469,16 +469,17 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const today = isoToday(props.today);
   const headingId = useId();
 
-  // The caller's tax mode (V3-P4). The manual per-trade tax field is offered only
-  // while recording a SELL in `manual_per_trade` mode; an edit never re-taxes (the
-  // tax is frozen at recording time, §16), so this is fetched for create only.
+  // THIS portfolio's effective tax mode (issue #636: override ?? user default ??
+  // none). The manual per-trade tax field is offered only while recording a SELL
+  // in `manual_per_trade` mode; an edit never re-taxes (the tax is frozen at
+  // recording time, §16), so this is fetched for create only.
   const taxSettingsQuery = useQuery({
-    queryKey: ['settings', 'taxes'],
-    queryFn: ({ signal }) => getTaxSettings(signal),
+    queryKey: ['portfolio', 'taxSettings', portfolioId],
+    queryFn: ({ signal }) => getPortfolioTaxSettings(portfolioId, signal),
     staleTime: 30_000,
     enabled: !isEdit,
   });
-  const manualTaxActive = !isEdit && taxSettingsQuery.data?.mode === 'manual_per_trade';
+  const manualTaxActive = !isEdit && taxSettingsQuery.data?.effective.mode === 'manual_per_trade';
 
   // Web funds/receives cash from the portfolio's Main source — no source picker
   // (#378). The API still accepts `cashSourceId`, so send the resolved Main id

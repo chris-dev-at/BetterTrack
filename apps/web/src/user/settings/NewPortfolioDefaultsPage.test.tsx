@@ -10,14 +10,14 @@ vi.mock('../../lib/settingsApi', () => ({
 }));
 
 import { getTaxSettings, updateTaxSettings } from '../../lib/settingsApi';
-import { TaxSettingsPage } from './TaxSettingsPage';
+import { NewPortfolioDefaultsPage } from './NewPortfolioDefaultsPage';
 
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <TaxSettingsPage />
+        <NewPortfolioDefaultsPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -28,23 +28,24 @@ beforeEach(() => {
   vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
 });
 
-describe('TaxSettingsPage', () => {
-  test('offers all three modes with `none` selected, and the Austria option explains the model', async () => {
+describe('NewPortfolioDefaultsPage (issue #636)', () => {
+  test('frames the tax control as the default for new portfolios', async () => {
     renderPage();
-
-    expect(await screen.findByRole('radio', { name: /No tax tracking/i })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /Manual — enter tax per trade/i })).not.toBeChecked();
-
-    const austria = screen.getByRole('radio', { name: /Austria \(KESt\)/i });
-    expect(austria).not.toBeChecked();
-    // The AT option spells out the model per the locked v3 spec (§13.3 item 34).
-    expect(austria).toHaveAccessibleName(/27\.5 % KESt/);
-    expect(austria).toHaveAccessibleName(/moving-average cost basis/i);
-    expect(austria).toHaveAccessibleName(/1 January/i);
-    expect(austria).toHaveAccessibleName(/no losses carry/i);
+    // The hint only renders once the default has loaded — telling the user each
+    // portfolio can override it.
+    expect(await screen.findByText(/override or reset it per portfolio/i)).toBeInTheDocument();
+    expect(screen.getByText(/Defaults for new portfolios/i)).toBeInTheDocument();
   });
 
-  test('choosing Austria persists country_specific with country AT and reveals the report link', async () => {
+  test('offers all modes with `none` selected, editing the user-level default', async () => {
+    renderPage();
+    expect(await screen.findByRole('radio', { name: /No tax tracking/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /Manual — enter tax per trade/i })).not.toBeChecked();
+    const austria = screen.getByRole('radio', { name: /Austria \(KESt\)/i });
+    expect(austria).toHaveAccessibleName(/27\.5 % KESt/);
+  });
+
+  test('choosing Austria persists country_specific/AT and reveals the report link', async () => {
     vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
     const user = userEvent.setup();
     renderPage();
@@ -72,10 +73,17 @@ describe('TaxSettingsPage', () => {
     );
   });
 
-  test('no report signpost while tax tracking is off', async () => {
+  test('offers Germany and persists country_specific with country DE', async () => {
+    vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
+    const user = userEvent.setup();
     renderPage();
-    await screen.findByRole('radio', { name: /No tax tracking/i });
-    expect(screen.queryByRole('link', { name: /per-year tax report/i })).toBeNull();
+
+    const germany = await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
+    expect(germany).toHaveAccessibleName(/Sparer-Pauschbetrag/i);
+    await user.click(germany);
+    await waitFor(() =>
+      expect(updateTaxSettings).toHaveBeenCalledWith({ mode: 'country_specific', country: 'DE' }),
+    );
   });
 
   test('surfaces a load error without crashing', async () => {
@@ -84,42 +92,12 @@ describe('TaxSettingsPage', () => {
     expect(await screen.findByText(/Couldn’t load your tax settings/i)).toBeInTheDocument();
   });
 
-  test('offers Germany, explains its model, and persists country_specific with country DE', async () => {
-    vi.mocked(updateTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
-    const user = userEvent.setup();
-    renderPage();
-
-    const germany = await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
-    expect(germany).not.toBeChecked();
-    // The DE option spells out the researched model (V5-P4, #576).
-    expect(germany).toHaveAccessibleName(/25 % flat tax/i);
-    expect(germany).toHaveAccessibleName(/FIFO cost basis/i);
-    expect(germany).toHaveAccessibleName(/Sparer-Pauschbetrag/i);
-    expect(germany).toHaveAccessibleName(/carry forward/i);
-
-    await user.click(germany);
-    await waitFor(() =>
-      expect(updateTaxSettings).toHaveBeenCalledWith({ mode: 'country_specific', country: 'DE' }),
-    );
-    expect(await screen.findByRole('link', { name: /per-year tax report/i })).toHaveAttribute(
-      'href',
-      '/portfolio/tax',
-    );
-  });
-
-  test('saved DE settings mark Germany selected — not Austria', async () => {
+  test('saved DE default marks Germany selected — not Austria', async () => {
     vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'DE' });
     renderPage();
     expect(
       await screen.findByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i }),
     ).toBeChecked();
     expect(screen.getByRole('radio', { name: /Austria \(KESt\)/i })).not.toBeChecked();
-  });
-
-  test('saved AT settings mark Austria selected — not Germany', async () => {
-    vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
-    renderPage();
-    expect(await screen.findByRole('radio', { name: /Austria \(KESt\)/i })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i })).not.toBeChecked();
   });
 });

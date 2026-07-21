@@ -7,11 +7,18 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
-vi.mock('../../lib/settingsApi', () => ({ getTaxSettings: vi.fn() }));
 
 import * as portfolioApi from '../../lib/portfolioApi';
-import { getTaxSettings } from '../../lib/settingsApi';
 import { TaxReportPage } from './TaxReportPage';
+
+// This portfolio's effective tax view (issue #636): the report reads the mode
+// per portfolio, not the user-level default. AT is the default fixture.
+const AT_TAX_VIEW = {
+  effective: { mode: 'country_specific' as const, country: 'AT' as const },
+  override: null,
+  userDefault: { mode: 'country_specific' as const, country: 'AT' as const },
+  source: 'user' as const,
+};
 
 const PORTFOLIO_LIST = {
   portfolios: [
@@ -62,7 +69,7 @@ function renderPage() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
-  vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'country_specific', country: 'AT' });
+  vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue(AT_TAX_VIEW);
   vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
   vi.mocked(portfolioApi.taxYearReportCsvUrl).mockImplementation(
     (pid, year, locale) =>
@@ -71,17 +78,23 @@ beforeEach(() => {
 });
 
 describe('TaxReportPage', () => {
-  test('with tax tracking off, points to Settings → Taxes and never queries the report', async () => {
-    vi.mocked(getTaxSettings).mockResolvedValue({ mode: 'none', country: null });
+  test('with this portfolio inheriting `none`, shows the off state + a default editor link, never queries the report', async () => {
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+      effective: { mode: 'none', country: null },
+      override: null,
+      userDefault: { mode: 'none', country: null },
+      source: 'system',
+    });
     renderPage();
 
     expect(await screen.findByText(/Tax tracking is off/i)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Choose a tax mode/i })).toHaveAttribute(
+    // The per-portfolio treatment control offers a link to edit the user default.
+    expect(screen.getByRole('link', { name: /Edit the default/i })).toHaveAttribute(
       'href',
       '/settings/taxes',
     );
     // Wait a tick to be sure the (disabled) report query truly never fired.
-    await waitFor(() => expect(getTaxSettings).toHaveBeenCalled());
+    await waitFor(() => expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalled());
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 
@@ -118,12 +131,15 @@ describe('TaxReportPage', () => {
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 
-  test('a failing settings query shows the error state, not the "tax tracking off" state', async () => {
+  test('a failing tax-settings query shows the error state, not the "tax tracking off" state', async () => {
     // On a settings failure `mode` falls back to 'none'; the error must win over
-    // the disabled gate so the user is not wrongly sent to Settings → Taxes.
-    vi.mocked(getTaxSettings).mockRejectedValue(new Error('boom'));
+    // the disabled gate so the user is not wrongly told tax is simply off.
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
     renderPage();
-    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+    // The error surfaces in both the treatment control and the report area.
+    expect((await screen.findAllByText(/Couldn’t load your tax report/i)).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.queryByText(/Tax tracking is off/i)).not.toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
@@ -222,8 +238,9 @@ describe('TaxReportPage', () => {
     renderPage();
 
     await user.click(await screen.findByRole('button', { name: /Show 2025 details/i }));
-    expect(await screen.findByText('Germany (Abgeltungsteuer)')).toBeInTheDocument();
-    expect(screen.getByText(/Allowance used/i)).toBeInTheDocument();
+    // "Germany (Abgeltungsteuer)" now also labels the per-portfolio tax picker, so
+    // assert on DE-block-unique copy (issue #636).
+    expect(await screen.findByText(/Allowance used/i)).toBeInTheDocument();
     expect(screen.getByText('1.000,00 €')).toBeInTheDocument(); // allowance used
     expect(screen.getByText('62,50 €')).toBeInTheDocument(); // KapESt
     expect(screen.getByText('3,43 €')).toBeInTheDocument(); // Soli (floored, statutory)
@@ -251,7 +268,9 @@ describe('TaxReportPage', () => {
 
     await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
     await screen.findByText('AAPL');
-    expect(screen.queryByText('Germany (Abgeltungsteuer)')).not.toBeInTheDocument();
+    // DE-block-unique copy (the "Germany (Abgeltungsteuer)" string also labels the
+    // per-portfolio tax picker now, #636); the DE report block must be absent.
+    expect(screen.queryByText(/Allowance used/i)).not.toBeInTheDocument();
   });
 
   test('an expanded year offers CSV export and a print/PDF link scoped to that year', async () => {

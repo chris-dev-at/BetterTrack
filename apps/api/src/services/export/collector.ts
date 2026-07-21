@@ -22,6 +22,7 @@ import {
   oauthGrants,
   portfolioCashMovements,
   portfolioCashSources,
+  portfolioSettings,
   portfolios,
   priceHistory,
   shareAudienceLinks,
@@ -165,6 +166,7 @@ export async function collectUserExport(db: Database, userId: string): Promise<C
     cashSourceRows,
     dividendRows,
     cashMovementRows,
+    portfolioSettingRows,
     conglomerateFull,
     conglomeratePositionRows,
     conglomerateShareLinkRows,
@@ -223,6 +225,9 @@ export async function collectUserExport(db: Database, userId: string): Promise<C
         .from(portfolioCashMovements)
         .where(inArray(portfolioCashMovements.portfolioId, ids)),
     ),
+    inIds(portfolioIds, (ids) =>
+      db.select().from(portfolioSettings).where(inArray(portfolioSettings.portfolioId, ids)),
+    ),
     db.select().from(conglomerates).where(eq(conglomerates.ownerId, userId)),
     inIds(conglomerateIds, (ids) =>
       db
@@ -266,6 +271,7 @@ export async function collectUserExport(db: Database, userId: string): Promise<C
     cashSources: sanitize(cashSourceRows),
     dividends: sanitize(dividendRows),
     cashMovements: sanitize(cashMovementRows),
+    portfolioSettings: sanitize(portfolioSettingRows),
     taxSettings: sanitize(taxSettingRows),
     friendRequests: sanitize(friendRequestRows),
     friendships: sanitize(friendshipRows),
