@@ -4,9 +4,10 @@ import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { ApiError } from '../../errors';
 import { CircuitOpenError } from '../circuitBreaker';
-import { CapabilityUnavailableError } from '../errors';
-import { createMarketDataService } from '../marketDataService';
+import { AssetNotFoundError, CapabilityUnavailableError } from '../errors';
+import { createMarketDataService, type MarketDataService } from '../marketDataService';
 import { createProviderRegistry, providerCapabilities } from '../registry';
 
 import { createDeferred, sampleHistory, sampleMeta, sampleQuote } from './fakeProvider';
@@ -155,4 +156,74 @@ describe('MarketDataService intel caching/coalescing/breaker', () => {
     await expect(service.getDividendEvents(REF)).rejects.toBeInstanceOf(CircuitOpenError);
     expect(provider.calls.dividends).toBe(afterTrip);
   });
+});
+
+describe('MarketDataService intel — per-family graceful degradation (dividends/earnings/news/splits)', () => {
+  type Family = {
+    name: string;
+    method: 'getDividendEvents' | 'getEarningsEvents' | 'getNewsHeadlines' | 'getSplitEvents';
+    call: (s: MarketDataService) => Promise<unknown>;
+  };
+
+  const families: Family[] = [
+    { name: 'dividends', method: 'getDividendEvents', call: (s) => s.getDividendEvents(REF) },
+    { name: 'earnings', method: 'getEarningsEvents', call: (s) => s.getEarningsEvents(REF) },
+    { name: 'news', method: 'getNewsHeadlines', call: (s) => s.getNewsHeadlines(REF) },
+    { name: 'splits', method: 'getSplitEvents', call: (s) => s.getSplitEvents(REF) },
+  ];
+
+  it.each(families)(
+    '$name: a capability-less provider rejects with CapabilityUnavailableError — never an ApiError 5xx',
+    async ({ call }) => {
+      const { service } = serviceWith(makeProvider({ withIntel: false }));
+      try {
+        await call(service);
+        expect.unreachable('should have rejected');
+      } catch (err) {
+        // The read layer catches this and degrades to `available: false`; it is
+        // deliberately NOT an ApiError, so it can never become a 500.
+        expect(err).toBeInstanceOf(CapabilityUnavailableError);
+        expect(err).not.toBeInstanceOf(ApiError);
+      }
+    },
+  );
+
+  it.each(families)(
+    '$name: a provider error trips the shared breaker; the next read fails fast (degrade, no 5xx)',
+    async ({ method, call }) => {
+      const base = makeProvider({ withIntel: true });
+      const provider = {
+        ...base,
+        [method]: () => Promise.reject(new Error('upstream down')),
+      } as typeof base;
+      const { service } = serviceWith(provider, { failureThreshold: 1 });
+
+      // First read exhausts the breaker (one execute-level failure at threshold 1).
+      await expect(call(service)).rejects.toThrow();
+      // Breaker open, nothing cached → fast-fail with CircuitOpenError, no ApiError.
+      await expect(call(service)).rejects.toBeInstanceOf(CircuitOpenError);
+    },
+  );
+
+  it.each(families)(
+    '$name: a not-found upstream is negative-cached and never retried within the window',
+    async ({ method, call }) => {
+      const base = makeProvider({ withIntel: true });
+      let calls = 0;
+      const provider = {
+        ...base,
+        [method]: () => {
+          calls += 1;
+          return Promise.reject(new AssetNotFoundError('unknown symbol'));
+        },
+      } as typeof base;
+      const { service } = serviceWith(provider);
+
+      await expect(call(service)).rejects.toBeInstanceOf(AssetNotFoundError);
+      expect(calls).toBe(1); // definitive not-found — never retried
+
+      await expect(call(service)).rejects.toMatchObject({ fromNegativeCache: true });
+      expect(calls).toBe(1); // answered from the negative cache, no upstream call
+    },
+  );
 });
