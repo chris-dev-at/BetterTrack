@@ -37,6 +37,11 @@ export interface TransactionRecord {
   taxCountry: string | null;
   taxAmountEur: number | null;
   /**
+   * Custom-mode parameter snapshot (V5-P4c, #584): the exact rule set this row
+   * was taxed under, frozen at recording time. Null on non-custom rows.
+   */
+  taxParams: unknown;
+  /**
    * Uncovered sell (issue #369). `allowUncovered` is true when this SELL was
    * recorded against an insufficient/zero holding behind the explicit
    * acknowledgment — persisted so replays (holdings, tax, oversell re-checks on
@@ -112,6 +117,8 @@ export interface NewTransactionTax {
   mode: NonNullable<TaxMode>;
   country: string | null;
   amountEur: number | null;
+  /** Custom-mode parameter snapshot (V5-P4c); absent on every other mode. */
+  params?: unknown;
 }
 
 /** Fields for a single insert; money values arrive as `number`s. */
@@ -156,6 +163,7 @@ function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
     taxMode: row.taxMode ?? null,
     taxCountry: row.taxCountry ?? null,
     taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+    taxParams: row.taxParams ?? null,
     allowUncovered: row.allowUncovered,
     uncoveredEntryPrice: row.uncoveredEntryPrice === null ? null : Number(row.uncoveredEntryPrice),
     source: row.source,
@@ -200,6 +208,7 @@ export function createTransactionRepository(db: Database) {
                 r.tax?.amountEur === undefined || r.tax?.amountEur === null
                   ? null
                   : String(r.tax.amountEur),
+              taxParams: r.tax?.params ?? null,
               allowUncovered: r.allowUncovered ?? false,
               uncoveredEntryPrice:
                 r.uncoveredEntryPrice === undefined || r.uncoveredEntryPrice === null
@@ -292,6 +301,7 @@ export function createTransactionRepository(db: Database) {
           taxMode: transactions.taxMode,
           taxCountry: transactions.taxCountry,
           taxAmountEur: transactions.taxAmountEur,
+          taxParams: transactions.taxParams,
           allowUncovered: transactions.allowUncovered,
           uncoveredEntryPrice: transactions.uncoveredEntryPrice,
           source: transactions.source,
@@ -330,6 +340,7 @@ export function createTransactionRepository(db: Database) {
         taxMode: row.taxMode ?? null,
         taxCountry: row.taxCountry ?? null,
         taxAmountEur: row.taxAmountEur === null ? null : Number(row.taxAmountEur),
+        taxParams: row.taxParams ?? null,
         allowUncovered: row.allowUncovered,
         uncoveredEntryPrice:
           row.uncoveredEntryPrice === null ? null : Number(row.uncoveredEntryPrice),
@@ -363,6 +374,7 @@ export function createTransactionRepository(db: Database) {
           taxMode: transactions.taxMode,
           taxCountry: transactions.taxCountry,
           taxAmountEur: transactions.taxAmountEur,
+          taxParams: transactions.taxParams,
           allowUncovered: transactions.allowUncovered,
           uncoveredEntryPrice: transactions.uncoveredEntryPrice,
         })

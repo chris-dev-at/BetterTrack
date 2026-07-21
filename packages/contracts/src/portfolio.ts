@@ -164,12 +164,13 @@ const cashAmountEurSchema = z.number().positive().finite().max(MAX_CASH_AMOUNT_E
 
 /**
  * Tax mode (V3-P4): `none` (default — exact pre-V3-P4 behavior), `manual_per_trade`
- * (optional user-entered tax on every sell/dividend, zero automation), or
- * `country_specific` (automated per country; AT only). The mode active when a
- * sell/dividend is *recorded* is frozen onto that row (§16 2026-07-08) —
- * switching later applies forward only and never rewrites history.
+ * (optional user-entered tax on every sell/dividend, zero automation),
+ * `country_specific` (automated per country; AT/DE), or `custom` (V5-P4c: the
+ * user-parameterized rule-built engine). The mode active when a sell/dividend
+ * is *recorded* is frozen onto that row (§16 2026-07-08) — switching later
+ * applies forward only and never rewrites history.
  */
-export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific'] as const;
+export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific', 'custom'] as const;
 export const taxModeSchema = z.enum(TAX_MODES);
 export type TaxMode = z.infer<typeof taxModeSchema>;
 
@@ -178,25 +179,74 @@ export const TAX_COUNTRIES = ['AT', 'DE'] as const;
 export const taxCountrySchema = z.enum(TAX_COUNTRIES);
 export type TaxCountry = z.infer<typeof taxCountrySchema>;
 
-/** `GET /settings/taxes` + `PATCH /settings/taxes` response — the caller's tax mode. */
+/** Cost-basis strategies the custom tax mode can pick (V5-P4, #580 seam). */
+export const CUSTOM_COST_BASIS = ['moving-average', 'fifo'] as const;
+export const customCostBasisSchema = z.enum(CUSTOM_COST_BASIS);
+export type CustomCostBasis = z.infer<typeof customCostBasisSchema>;
+
+/**
+ * The custom rule-built tax engine's parameter set (V5-P4c, #584): "if we
+ * don't support your tax system, you can enter how it works". Exactly the
+ * spec's list — rate %, in-year loss offset, refund of already-paid tax,
+ * year-boundary reset, carry-forward, cost-basis method. AT is expressible as
+ * `{27.5, offset, refund, reset, no carry, moving-average}` (pinned by test);
+ * a parameter change is a mode switch (forward-only — rows keep the snapshot
+ * they were taxed under).
+ */
+export const customTaxParamsSchema = z
+  .object({
+    /** Flat rate applied to the positive taxable pool, percent. */
+    ratePct: z.number().min(0).max(100).finite(),
+    /** Losses shrink the pool (on) or are ignored entirely (off). */
+    lossOffset: z.boolean(),
+    /** A shrinking pool refunds tax already paid (on) or held tax only ratchets up (off). */
+    refund: z.boolean(),
+    /** The pool resets every Jan 1 (on) or accumulates across years (off). */
+    yearReset: z.boolean(),
+    /** A year-end net loss carries into later years (on) or is forfeited (off). */
+    carryForward: z.boolean(),
+    /** How sell gains are basised: moving average (AT-style) or FIFO lots (DE-style). */
+    costBasis: customCostBasisSchema,
+  })
+  .strict();
+export type CustomTaxParams = z.infer<typeof customTaxParamsSchema>;
+
+/**
+ * `GET /settings/taxes` + `PATCH /settings/taxes` response — the caller's tax
+ * mode. The V5-P4c fields are OMITTED (not null) when absent, so pre-V5-P4
+ * responses stay byte-identical: `custom` is present exactly in `custom` mode,
+ * and the manual default (amount or rate, never both) only when configured in
+ * `manual_per_trade` mode.
+ */
 export const taxSettingsResponseSchema = z
   .object({
     mode: taxModeSchema,
     /** Set exactly when `mode` is `country_specific`. */
     country: taxCountrySchema.nullable(),
+    /** The custom engine's parameter set (V5-P4c); present exactly in `custom` mode. */
+    custom: customTaxParamsSchema.optional(),
+    /** Manual mode's default tax amount (EUR), prefilled into entry-less sells/dividends. */
+    manualDefaultAmountEur: z.number().optional(),
+    /** Manual mode's default tax rate (%), applied to the realized gain / gross. */
+    manualDefaultRatePct: z.number().optional(),
   })
   .strict();
 export type TaxSettingsResponse = z.infer<typeof taxSettingsResponseSchema>;
 
 /**
- * `PATCH /settings/taxes` body (Settings → Taxes, V3-P4). `country` is
- * required with `country_specific` and rejected with any other mode — the
- * pair is unrepresentable inconsistently, mirroring the DB CHECK.
+ * `PATCH /settings/taxes` body (Settings → Taxes, V3-P4; V5-P4c custom mode +
+ * manual default). Mode-dependent fields are unrepresentable inconsistently,
+ * mirroring the DB CHECKs: `country` exactly with `country_specific`, `custom`
+ * exactly with `custom`, the manual default (amount OR rate, not both) only
+ * with `manual_per_trade` — omitted = no default (today's behavior).
  */
 export const updateTaxSettingsRequestSchema = z
   .object({
     mode: taxModeSchema,
     country: taxCountrySchema.optional(),
+    custom: customTaxParamsSchema.optional(),
+    manualDefaultAmountEur: z.number().nonnegative().finite().max(MAX_CASH_AMOUNT_EUR).optional(),
+    manualDefaultRatePct: z.number().min(0).max(100).finite().optional(),
   })
   .strict()
   .superRefine((val, ctx) => {
@@ -212,6 +262,37 @@ export const updateTaxSettingsRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ['country'],
         message: 'A country applies only to country_specific mode.',
+      });
+    }
+    if (val.mode === 'custom' && val.custom === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['custom'],
+        message: 'custom mode requires its parameter set.',
+      });
+    }
+    if (val.mode !== 'custom' && val.custom !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['custom'],
+        message: 'Custom parameters apply only to custom mode.',
+      });
+    }
+    if (
+      val.mode !== 'manual_per_trade' &&
+      (val.manualDefaultAmountEur !== undefined || val.manualDefaultRatePct !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['manualDefaultAmountEur'],
+        message: 'A manual default applies only to manual_per_trade mode.',
+      });
+    }
+    if (val.manualDefaultAmountEur !== undefined && val.manualDefaultRatePct !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['manualDefaultAmountEur'],
+        message: 'Provide a manual default amount OR rate, not both.',
       });
     }
   });

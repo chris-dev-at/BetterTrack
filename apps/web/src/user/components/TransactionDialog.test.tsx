@@ -969,3 +969,121 @@ describe('TransactionDialog — manual per-trade tax', () => {
     expect(screen.queryByLabelText(/manual tax for this sale/i)).toBeNull();
   });
 });
+
+// --- Manual default prefill (V5-P4c, #584) ----------------------------------
+
+describe('TransactionDialog — manual default prefill (V5-P4c)', () => {
+  function useManualDefault(defaults: {
+    manualDefaultAmountEur?: number;
+    manualDefaultRatePct?: number;
+  }) {
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+      effective: { mode: 'manual_per_trade', country: null, ...defaults },
+      override: { mode: 'manual_per_trade', country: null, ...defaults },
+      userDefault: { mode: 'none', country: null },
+      source: 'portfolio',
+    });
+  }
+
+  async function sellWithPrice(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: 'Sell' }));
+    await user.type(screen.getByLabelText(/quantity for btc/i), '10');
+    await user.type(screen.getByLabelText(/price for btc/i), '100');
+  }
+
+  test('an amount default prefills the tax field and submits as-is', async () => {
+    useManualDefault({ manualDefaultAmountEur: 5 });
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
+    expect(taxInput).toHaveValue(5);
+    // The card explains the value came from the configurable default.
+    expect(screen.getByText(/prefilled from your default/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxAmountEur).toBe(5);
+    expect(submitted[0]!.taxRatePct).toBeUndefined();
+  });
+
+  test('a rate default prefills with the % unit active and submits a rate', async () => {
+    useManualDefault({ manualDefaultRatePct: 10 });
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
+    expect(taxInput).toHaveValue(10);
+    expect(screen.getByRole('button', { name: /% of gain/i })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxRatePct).toBe(10);
+    expect(submitted[0]!.taxAmountEur).toBeUndefined();
+  });
+
+  test('the prefill stays editable per trade — an explicit 0 submits 0', async () => {
+    useManualDefault({ manualDefaultAmountEur: 5 });
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
+    expect(taxInput).toHaveValue(5);
+    await user.clear(taxInput);
+    await user.type(taxInput, '0');
+
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxAmountEur).toBe(0);
+  });
+
+  test('a cleared prefill is never re-seeded and submits no tax entry', async () => {
+    useManualDefault({ manualDefaultAmountEur: 5 });
+    vi.mocked(portfolioApi.createTransactions).mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
+    expect(taxInput).toHaveValue(5);
+    await user.clear(taxInput);
+    expect(taxInput).toHaveValue(null);
+
+    await user.click(screen.getByRole('button', { name: /record sell/i }));
+    await waitFor(() => expect(portfolioApi.createTransactions).toHaveBeenCalledOnce());
+    const submitted = vi.mocked(portfolioApi.createTransactions).mock
+      .calls[0]![1] as TransactionInput[];
+    expect(submitted[0]!.taxAmountEur).toBeUndefined();
+    expect(submitted[0]!.taxRatePct).toBeUndefined();
+  });
+
+  test('no default keeps the tax field empty (byte-identical manual behavior)', async () => {
+    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
+      effective: { mode: 'manual_per_trade', country: null },
+      override: { mode: 'manual_per_trade', country: null },
+      userDefault: { mode: 'none', country: null },
+      source: 'portfolio',
+    });
+    const user = userEvent.setup();
+    renderDialog();
+
+    await sellWithPrice(user);
+    const taxInput = await screen.findByLabelText(/manual tax for this sale/i);
+    expect(taxInput).toHaveValue(null);
+  });
+});

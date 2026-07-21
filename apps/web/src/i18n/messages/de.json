@@ -954,7 +954,45 @@
         "country_specific_de": {
           "label": "Deutschland (Abgeltungsteuer)",
           "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen."
+        },
+        "custom": {
+          "label": "Eigene Regeln",
+          "description": "Bau dein eigenes Steuersystem: ein fester Satz plus Schalter für Verlustverrechnung, Erstattung, Jahresreset, Verlustvortrag und die Einstandsmethode."
         }
+      },
+      "custom": {
+        "rateLabel": "Steuersatz (%)",
+        "rateAria": "Eigener Steuersatz in Prozent",
+        "rateInfo": "Wird auf den positiven steuerpflichtigen Topf aus realisierten Gewinnen und Dividenden angewendet.",
+        "costBasisLabel": "Einstandsmethode",
+        "costBasisAria": "Einstandsmethode der eigenen Regeln",
+        "costBasisInfo": "Wie Verkaufsgewinne berechnet werden: gleitender Durchschnitt über alle Käufe oder FIFO — die älteste Tranche wird zuerst verkauft.",
+        "costBasis": {
+          "movingAverage": "Gleitender Durchschnitt",
+          "fifo": "FIFO"
+        },
+        "lossOffsetLabel": "Verluste verrechnen Gewinne",
+        "lossOffsetInfo": "Ein realisierter Verlust verkleinert den steuerpflichtigen Topf. Aus: Verluste werden komplett ignoriert.",
+        "refundLabel": "Zu viel gezahlte Steuer erstatten",
+        "refundInfo": "Schrumpft der Topf unter das bereits Gezahlte, wird die Differenz erstattet. Aus: Verluste erstatten nie — das Bearbeiten oder Löschen erfasster Trades korrigiert die Steuer aber weiterhin in beide Richtungen.",
+        "yearResetLabel": "Jedes Jahr am 1. Jänner zurücksetzen",
+        "yearResetInfo": "Jedes Kalenderjahr wird für sich besteuert. Aus: Ein Topf läuft über die Jahre weiter.",
+        "carryForwardLabel": "Verluste vortragen",
+        "carryForwardInfo": "Ein Nettoverlust am Jahresende wird in spätere Jahre übertragen statt zu verfallen.",
+        "apply": "Regeln anwenden",
+        "invalid": "Gib einen Satz zwischen 0 und 100 ein."
+      },
+      "manualDefault": {
+        "title": "Standard-Steuereingabe",
+        "info": "Wird bei jedem Verkauf und jeder Dividende vorausgefüllt und bleibt pro Trade änderbar. Leer lassen für keinen Standardwert.",
+        "unitAria": "Einheit des Standardwerts",
+        "unitAmount": "Betrag (€)",
+        "unitRate": "% des Gewinns",
+        "valueAria": "Manueller Standard-Steuerwert",
+        "placeholder": "Kein Standardwert",
+        "apply": "Standard speichern",
+        "clear": "Entfernen",
+        "invalid": "Gib einen gültigen Betrag ein oder einen Satz zwischen 0 und 100 %."
       }
     },
     "password": {
@@ -1079,7 +1117,8 @@
         "unitRate": "% des Gewinns",
         "valueAria": "Manuelle Steuer für diesen Verkauf",
         "placeholder": "0",
-        "invalid": "Gib einen gültigen Steuerbetrag ein oder einen Satz zwischen 0 und 100 %."
+        "invalid": "Gib einen gültigen Steuerbetrag ein oder einen Satz zwischen 0 und 100 %.",
+        "defaultHint": "Aus deinem Standardwert vorausgefüllt — pro Verkauf änderbar."
       },
       "autoHint": "auto",
       "derivedRecords": "· verbucht",
