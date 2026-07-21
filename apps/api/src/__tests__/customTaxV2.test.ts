@@ -457,7 +457,7 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     });
   });
 
-  it('parameter changes apply forward-only: frozen rows keep their snapshot, pools stay separate', async () => {
+  it('parameter changes re-derive the open year under the new set (#635); rows keep their snapshots', async () => {
     const { agent, pid, asset } = await setup({ mode: 'custom', custom: RATE10 });
 
     await trade(agent, pid, {
@@ -477,12 +477,14 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       addProceedsToCash: true,
     });
 
-    // Parameter change = a mode switch (forward-only).
+    // Parameter change: the OPEN year re-derives in full under the new set
+    // (#635 live model — supersedes the forward-only cutover).
     const RATE20: CustomTaxParams = { ...RATE10, ratePct: 20 };
     await patchTaxSettings(agent, { mode: 'custom', custom: RATE20 });
 
-    // A −100 loss under the NEW set: its own pool is −100 → no tax, and it
-    // must NOT refund the old set's 45 (independent regimes).
+    // A −100 loss under the NEW set. The live pool spans the whole year:
+    // existing +450 re-taxes at 20 % (correction −45 on top of the held 45),
+    // then the loss shrinks the pool to 350 → 70, refunding 20 on the row.
     const loss = await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
@@ -492,9 +494,9 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       addProceedsToCash: true,
     });
     let cash = await cashState(agent, pid);
-    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-45]);
+    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-45, 20, -45]);
 
-    // A +200 gain under the new set: pool −100 + 200 = 100 → 20 % = 20.
+    // A +200 gain: pool 350 + 200 = 550 → 20 % = 110; marginal 40.
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
@@ -504,9 +506,11 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       addProceedsToCash: true,
     });
     cash = await cashState(agent, pid);
-    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-45, -20]);
+    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-45, 20, -40, -45]);
+    const years = await yearSummaries(agent, pid);
+    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 110 });
 
-    // Each row keeps the exact parameter snapshot it was taxed under.
+    // Each row still keeps the exact parameter snapshot it recorded under.
     expect(await frozenRow(first.body.transactions[0].id as string)).toMatchObject({
       taxMode: 'custom',
       taxAmountEur: 45,
@@ -514,12 +518,12 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     });
     expect(await frozenRow(loss.body.transactions[0].id as string)).toMatchObject({
       taxMode: 'custom',
-      taxAmountEur: 0,
+      taxAmountEur: -20,
       taxParams: RATE20,
     });
   });
 
-  it('coexists with frozen AT rows: each regime steers only its own component', async () => {
+  it('switching AT→custom re-derives the open year under the custom set (#635)', async () => {
     const { agent, pid, asset } = await setup({ mode: 'country_specific', country: 'AT' });
 
     await trade(agent, pid, {
@@ -541,7 +545,9 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
 
     await patchTaxSettings(agent, { mode: 'custom', custom: RATE10 });
 
-    // Custom loss −100: its own pool parks at 0 — the AT component is untouched.
+    // Custom loss −100. The live pool spans the year: +450 at 10 % = 45
+    // (correction refunds 78.75 of the AT-era withholding), the loss shrinks
+    // the pool to 350 → 35, refunding 10 on the row.
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
@@ -551,9 +557,9 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       addProceedsToCash: true,
     });
     let cash = await cashState(agent, pid);
-    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-123.75]);
+    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-123.75, 10, 78.75]);
 
-    // Custom gain +200: 10 % × (−100 + 200) = 10 joins ON TOP of the AT tax.
+    // Custom gain +200: pool 350 + 200 = 550 → 10 % = 55; marginal 20.
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
@@ -563,10 +569,10 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       addProceedsToCash: true,
     });
     cash = await cashState(agent, pid);
-    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-123.75, -10]);
+    expect(taxMovements(cash.movements).map((m) => m.amountEur)).toEqual([-123.75, 10, -20, 78.75]);
 
     const years = await yearSummaries(agent, pid);
-    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 133.75 });
+    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 55 });
   });
 
   it('settlement stays append-only: delete posts a correction, re-add re-settles', async () => {

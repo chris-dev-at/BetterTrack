@@ -298,6 +298,14 @@ function YearRow({
             </span>
             {summary.year}
           </button>
+          {summary.locked ? (
+            <span
+              title={t('portfolio.taxReport.lockedHint')}
+              className="ml-2 rounded border border-neutral-800 px-1.5 py-0.5 align-middle text-[0.6rem] uppercase tracking-wide text-neutral-500"
+            >
+              {t('portfolio.taxReport.locked')}
+            </span>
+          ) : null}
         </td>
         <td className="px-3 py-3 text-right">
           <PnlAmount amount={summary.realizedPnlEur} />

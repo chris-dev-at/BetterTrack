@@ -1540,6 +1540,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // §16 2026-07-08). Planned up-front so the solvency replay below can
       // include it.
       const taxCorrections = await taxService.planTransactionDeleteCorrections(
+        userId,
         portfolioId,
         existing,
       );

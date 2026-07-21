@@ -955,6 +955,10 @@
           "label": "Deutschland (Abgeltungsteuer)",
           "description": "25 % Abgeltungsteuer plus 5,5 % Solidaritätszuschlag auf die Steuer, mit FIFO-Anschaffungskosten je Tranche. Der Sparer-Pauschbetrag von 1.000 € wird jedes Jahr zuerst angerechnet. Verluste aus Aktienverkäufen verrechnen sich nur mit Aktiengewinnen, sonstige Verluste mit allen Kapitalerträgen — nicht genutzte Verluste werden ins Folgejahr vorgetragen."
         },
+        "country_specific_fi": {
+          "label": "Finnland (Kapitalertragsteuer)",
+          "description": "30 % Kapitalertragsteuer auf Gewinne und Dividenden bis 30.000 € pro Jahr, 34 % darüber, mit FIFO-Kostenbasis. Ein Verlust im selben Kalenderjahr gleicht Gewinne aus und erstattet bereits einbehaltene Steuer — nichts wird ins Folgejahr übertragen."
+        },
         "custom": {
           "label": "Eigene Regeln",
           "description": "Bau dein eigenes Steuersystem: ein fester Satz plus Schalter für Verlustverrechnung, Erstattung, Jahresreset, Verlustvortrag und die Einstandsmethode."
@@ -1346,6 +1350,8 @@
       },
       "expandYear": "Details für {{year}} anzeigen",
       "collapseYear": "Details für {{year}} ausblenden",
+      "locked": "Abgeschlossen",
+      "lockedHint": "Dieses Jahr ist abgeschlossen: Seine Abrechnungen sind endgültig, und Änderungen am Steuermodus besteuern es nie neu. Offene Jahre werden laufend nach dem aktuellen Steuermodus des Portfolios besteuert.",
       "realized": "Realisiert",
       "tax": "Steuer",
       "sell": {

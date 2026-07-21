@@ -955,6 +955,10 @@
           "label": "Germany (Abgeltungsteuer)",
           "description": "25 % flat tax plus a 5.5 % solidarity surcharge on the tax, with FIFO cost basis per lot. A €1,000 saver's allowance (Sparer-Pauschbetrag) comes off each year first. Losses from selling shares only offset share gains, other losses offset all capital income — and unused losses carry forward into later years."
         },
+        "country_specific_fi": {
+          "label": "Finland (capital income tax)",
+          "description": "30 % capital-income tax on gains and dividends up to €30,000 per year, 34 % above, with FIFO cost basis. A loss in the same calendar year offsets gains and refunds tax already withheld — nothing carries into the next year."
+        },
         "custom": {
           "label": "Custom rules",
           "description": "Build your own tax system: a flat rate plus switches for loss offset, refunds, the year reset, loss carry-forward, and the cost basis."
@@ -1346,6 +1350,8 @@
       },
       "expandYear": "Show {{year}} details",
       "collapseYear": "Hide {{year}} details",
+      "locked": "Locked",
+      "lockedHint": "This year is closed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode.",
       "realized": "Realized",
       "tax": "Tax",
       "sell": {
