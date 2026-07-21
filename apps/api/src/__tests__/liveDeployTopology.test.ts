@@ -152,6 +152,41 @@ describe('live deploy loop boots the observability stack (guard 3)', () => {
   });
 });
 
+/**
+ * Worker job metrics are actually scraped (#632, §13.5 V5-P2).
+ *
+ * `bettertrack_job_outcomes_total` is incremented ONLY in the worker process
+ * (apps/api/src/jobs/worker.ts), so the dashboard's "Job outcomes" panel is
+ * permanently empty unless (a) the worker entrypoint binds its own /metrics
+ * listener, (b) that listener is reachable by the prometheus sidecar (bound to
+ * 0.0.0.0 inside the container, not the 127.0.0.1 schema default), and (c)
+ * prometheus.yml carries a scrape target for it. This guard pins all three.
+ */
+describe('worker job metrics are scraped (guard 4, #632)', () => {
+  const workerEntry = read('apps/api/src/scripts/worker.ts');
+  const prometheus = read('infra/prometheus/prometheus.yml');
+  const compose = read('infra/docker-compose.yml');
+
+  it('the worker entrypoint starts a metrics scrape listener', () => {
+    expect(workerEntry).toContain('createMetricsServer(config, logger)');
+  });
+
+  it('prometheus scrapes the worker metrics endpoint by service name', () => {
+    expect(prometheus).toContain('bettertrack-worker');
+    expect(prometheus).toContain("'worker:9464'");
+  });
+
+  it('the worker compose service binds the metrics listener on 0.0.0.0 so the sidecar can reach it', () => {
+    // The api service sets BT_METRICS_HOST=0.0.0.0; the worker must too, or its
+    // listener falls back to the 127.0.0.1 schema default and prometheus (a
+    // separate container) can never scrape worker:9464.
+    const workerBlock = compose.slice(compose.indexOf('\n  worker:'), compose.indexOf('\n  db:'));
+    expect(workerBlock).toContain('BT_METRICS_HOST');
+    expect(workerBlock).toContain('0.0.0.0');
+    expect(workerBlock).toContain('BT_METRICS_ENABLED');
+  });
+});
+
 describe('worker entry registers the durable notification consumer + bridge (guard 2)', () => {
   const workerEntry = read('apps/api/src/scripts/worker.ts');
 
