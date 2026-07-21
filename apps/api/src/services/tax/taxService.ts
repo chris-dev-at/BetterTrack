@@ -140,13 +140,14 @@ import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
  *    unattached corrections carry an explicit `taxYear`), and every mutation
  *    that re-shapes history — a backdated buy shifting existing AT gains, a
  *    deletion — posts a correcting movement rather than editing anything.
- *  - **The open-era residue is locked (#635).** Live open-year corrections
- *    carry dedicated notes; their net per year is the residue on top of the
- *    rows' frozen components. Closed-year settlements always target
- *    `frozen components + residue`, so the state a year reached under the
- *    live derivation survives rollover — a post-rollover backdated mutation
- *    adjusts the frozen components only, never un-heals (or re-taxes) the
- *    open-era corrections.
+ *  - **A closed year's open-era state is locked (#635).** Every closed-year
+ *    mutation settles the year by the CHANGE in its standalone frozen
+ *    decomposition (ΔF): the residue `held − Σ standalone frozen targets` is
+ *    computed on the PRE-mutation state and carried into the post-mutation
+ *    target, so whatever joint-pool state the live derivation reached —
+ *    healed rows, deliberate refunds, allowance/threshold coupling frozen
+ *    into attached marginals — survives by construction and is never
+ *    reconciled away (see {@link lockedResidueForYear}).
  *  - **EUR at trade dates.** Realized gains are computed in EUR with each
  *    leg converted at its own trade-date rate (§5.4 historical rates), so FX
  *    moves are part of the taxable gain, as they are for KESt. An
@@ -309,29 +310,17 @@ const NOTE_FI_CORRECTION = 'Tax year correction (FI)';
 const NOTE_OFF_CORRECTION = 'Tax year correction (tax tracking off)';
 /**
  * Open-year LIVE-derivation corrections (#635) carry their own note strings,
- * distinct from the closed-year machinery's. The distinction is LOAD-BEARING,
- * not cosmetic: the net of a year's live corrections is its open-era
- * **residue** — the part of the held tax the live derivation posted on top of
- * (or against) the rows' frozen amounts. Once the year closes, that residue is
- * locked: every closed-year settlement targets `frozen components + residue`
- * (see {@link openResidueForYear}), so a post-rollover backdated mutation
- * settles the frozen components append-only without ever reconciling the
- * open-era heal (or refund) away. Pre-#635 movements never carry these notes,
- * so their residue is 0 and the closed-year machinery is byte-identical.
+ * distinct from the closed-year machinery's, so the cash history states which
+ * corrections the live derivation posted (a mode switch healing a year reads
+ * differently from a backdated-trade reconciliation). Descriptive only: the
+ * closed-year lock derives each year's residue from held-vs-decomposition
+ * state ({@link lockedResidueForYear}), never from these markers — attached
+ * joint-pool marginals carry open-era state too, and notes could not see it.
  */
 const NOTE_AT_LIVE_CORRECTION = 'Live tax correction (AT)';
 const NOTE_DE_LIVE_CORRECTION = 'Live tax correction (DE)';
 const NOTE_FI_LIVE_CORRECTION = 'Live tax correction (FI)';
 const NOTE_CUSTOM_LIVE_CORRECTION = 'Live tax correction (custom rules)';
-
-/** The notes marking open-derivation corrections ({@link NOTE_AT_LIVE_CORRECTION}). */
-const OPEN_CORRECTION_NOTES: ReadonlySet<string> = new Set([
-  NOTE_OFF_CORRECTION,
-  NOTE_AT_LIVE_CORRECTION,
-  NOTE_DE_LIVE_CORRECTION,
-  NOTE_FI_LIVE_CORRECTION,
-  NOTE_CUSTOM_LIVE_CORRECTION,
-]);
 
 type EngineCountry = SupportedTaxCountry;
 /** The settlement regime a movement belongs to: a country's engine or custom. */
@@ -377,26 +366,6 @@ const openCorrectionNote = (regime: OpenRegime): string =>
 
 const isTaxMovementKind = (kind: CashMovementRecord['kind']): boolean =>
   kind === 'tax_withholding' || kind === 'tax_refund';
-
-/**
- * The open-era residue of a Vienna year: the net of the unattached corrections
- * the live open-year derivation posted for it ({@link OPEN_CORRECTION_NOTES}).
- * While the year is open the derivation steers the WHOLE held amount, so the
- * residue is just part of that balance; once the year closes it becomes a
- * frozen component of its own — the closed-year machinery adds it to every
- * combined target so the state the year locked in at rollover survives
- * backdated mutations (which settle only the row-derived components).
- */
-function openResidueForYear(movements: readonly CashMovementRecord[], year: number): number {
-  let residue = 0;
-  for (const m of movements) {
-    if (!isTaxMovementKind(m.kind) || m.taxYear !== year) continue;
-    if (m.transactionId !== null || m.dividendId !== null) continue;
-    if (m.note === null || !OPEN_CORRECTION_NOTES.has(m.note)) continue;
-    residue += -m.amountEur;
-  }
-  return floorCents(residue);
-}
 
 /** The setting key the tax override lives under in `portfolio_settings` (#636). */
 const PORTFOLIO_SETTING_KEY_TAX = 'tax';
@@ -853,6 +822,68 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     for (const gain of pool.existingGainsEur) poolEur += gain;
     for (const dividend of pool.existingDividendsEur) poolEur += dividend;
     return atYearTargetEur(poolEur);
+  }
+
+  /**
+   * One side (pre- or post-mutation) of a closed year's standalone frozen
+   * decomposition: the rows plus realization maps and per-regime frozen state
+   * consistent with them. The `involve*` gates MUST mirror the caller's
+   * combined-target sums so both sides of a delta omit the same components.
+   */
+  interface FrozenComponentState {
+    transactions: readonly TransactionRecord[];
+    dividendRows: readonly DividendRecord[];
+    realizations: ReadonlyMap<string, SellRealizationEur>;
+    fifoRealizations: ReadonlyMap<string, SellRealizationEur>;
+    deEvents: ReadonlyMap<number, readonly DeTaxableEvent[]>;
+    customGroups: ReadonlyMap<string, CustomGroup>;
+    involveDe: boolean;
+    involveFi: boolean;
+    involveCustom: boolean;
+  }
+
+  /** Σ standalone frozen-component targets of one year (AT + DE + FI + custom groups). */
+  function frozenTargetForYear(state: FrozenComponentState, year: number): number {
+    return floorCents(
+      atTargetForYear(state.transactions, state.dividendRows, state.realizations, year) +
+        (state.involveDe ? deTargetForYear(state.deEvents, year) : 0) +
+        (state.involveFi
+          ? fiTargetForYear(
+              state.transactions,
+              state.dividendRows,
+              state.fifoRealizations,
+              year,
+              viennaYearOfDate,
+            )
+          : 0) +
+        (state.involveCustom ? customTargetForYear(state.customGroups, year) : 0),
+    );
+  }
+
+  /**
+   * A closed year's locked residue (#635): the gap between the tax actually
+   * HELD and the standalone frozen decomposition, both evaluated on the
+   * PRE-mutation state. While the year was open, the live derivation held
+   * joint-pool amounts — attached marginals AND unattached corrections — that
+   * need not decompose into the per-regime standalone targets (DE allowance
+   * sharing, the FI threshold, chained custom carry). Whatever that gap is
+   * when a mutation touches the closed year, the machinery preserves it:
+   * every settlement targets `Σ standalone frozen targets (post-mutation) +
+   * residue`, so held shifts by exactly the CHANGE in the frozen
+   * decomposition and the state the year locked in — healed, deliberately
+   * refunded, or solvency-deferred — survives by construction. On data whose
+   * held already equals the decomposition (all pre-#635 history) the residue
+   * is 0 and behavior is byte-identical to the recording-time machinery.
+   */
+  function lockedResidueForYear(
+    baseline: FrozenComponentState,
+    movements: readonly CashMovementRecord[],
+    year: number,
+  ): number {
+    return floorCents(
+      heldForYear(baseline.transactions, baseline.dividendRows, movements, year) -
+        frozenTargetForYear(baseline, year),
+    );
   }
 
   /** Map a settlement spec to the unattached correction movement it posts. */
@@ -1341,11 +1372,41 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     };
 
     // ── Closed years: recording-time coexistence semantics (pre-#635), plus
-    // the year's locked open-era residue as its own component. ──────────────
-    for (const year of sortedYears.filter((y) => y < openFrom)) {
+    // the year's locked residue — settlements apply exactly the CHANGE in the
+    // standalone frozen decomposition ({@link lockedResidueForYear}). The
+    // baseline side uses realizations WITHOUT the pending batch: its
+    // (back)dated trades reshape existing rows' gains, and that reshape is
+    // precisely the delta a correction may carry. ───────────────────────────
+    const closedYears = sortedYears.filter((y) => y < openFrom);
+    let closedBaseline: FrozenComponentState | null = null;
+    if (closedYears.length > 0) {
+      const pendingIds = new Set(inputs.map((_, index) => `pending-${index}`));
+      const baselineTaxables = taxables.filter((t) => !pendingIds.has(t.id));
+      const baselineRealizations = realizationsById(baselineTaxables);
+      const baselineFifo =
+        involveDe || involveFi || involveCustom
+          ? realizationsById(baselineTaxables, 'fifo')
+          : new Map<string, SellRealizationEur>();
+      closedBaseline = {
+        transactions: allTxns,
+        dividendRows,
+        realizations: baselineRealizations,
+        fifoRealizations: baselineFifo,
+        deEvents: involveDe
+          ? deEventsByYear(buildDeView(allTxns, dividendRows, baselineFifo, mergedAssets))
+          : new Map<number, DeTaxableEvent[]>(),
+        customGroups: involveCustom
+          ? customGroups(buildCustomView(allTxns, dividendRows, baselineRealizations, baselineFifo))
+          : new Map<string, CustomGroup>(),
+        involveDe,
+        involveFi,
+        involveCustom,
+      };
+    }
+    for (const year of closedYears) {
       const yearSells = yearSellsOf(year);
       const heldEur = heldForYear(allTxns, dividendRows, movements, year);
-      const residueEur = openResidueForYear(movements, year);
+      const residueEur = lockedResidueForYear(closedBaseline!, movements, year);
       // The frozen custom groups' components — every group when a country
       // engine settles; all but the ACTIVE group when custom settles (that one
       // is steered by settleCustomYear itself).
@@ -1631,6 +1692,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     if (affectedYears.size === 0) return [];
 
     const neededAssetIds = new Set<string>();
+    // The pre-delete baseline needs the deleted row's own realization when it
+    // was engine-frozen — its standalone contribution is part of the delta.
+    if (isCsSell || deletedWasCustom) neededAssetIds.add(transaction.assetId);
     for (const t of remainingTxns) {
       if (t.side !== 'sell') continue;
       const year = viennaYearOfDate(t.executedAt);
@@ -1647,19 +1711,26 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
     let realizations = new Map<string, SellRealizationEur>();
     let fifoRealizations = new Map<string, SellRealizationEur>();
+    let baselineRealizations = new Map<string, SellRealizationEur>();
+    let baselineFifo = new Map<string, SellRealizationEur>();
     let assetsById = new Map<string, AssetRow>();
     if (neededAssetIds.size > 0) {
-      assetsById = await loadAssets(remainingTxns.map((t) => t.assetId));
-      const taxables = await buildTaxables(
-        remainingTxns,
+      assetsById = await loadAssets(allTxns.map((t) => t.assetId));
+      // One FX pass over the PRE-delete rows serves both sides: filtering the
+      // deleted row out replays exactly the post-delete realizations.
+      const baselineTaxables = await buildTaxables(
+        allTxns,
         [],
         neededAssetIds,
         currencyLookup(assetsById),
         createTradeDateConverter(fxWriteError),
       );
+      const taxables = baselineTaxables.filter((t) => t.id !== transaction.id);
       realizations = realizationsById(taxables);
+      baselineRealizations = realizationsById(baselineTaxables);
       if (involveDe || involveFi || involveCustom || openStrategy === 'fifo') {
         fifoRealizations = realizationsById(taxables, 'fifo');
+        baselineFifo = realizationsById(baselineTaxables, 'fifo');
       }
     }
     const deView = buildDeView(remainingTxns, dividendRows, fifoRealizations, assetsById);
@@ -1667,6 +1738,22 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const frozenGroups = involveCustom
       ? customGroups(buildCustomView(remainingTxns, dividendRows, realizations, fifoRealizations))
       : new Map<string, CustomGroup>();
+    // The PRE-delete decomposition the closed years' locked residue reads from.
+    const closedBaseline: FrozenComponentState = {
+      transactions: allTxns,
+      dividendRows,
+      realizations: baselineRealizations,
+      fifoRealizations: baselineFifo,
+      deEvents: involveDe
+        ? deEventsByYear(buildDeView(allTxns, dividendRows, baselineFifo, assetsById))
+        : new Map<number, DeTaxableEvent[]>(),
+      customGroups: involveCustom
+        ? customGroups(buildCustomView(allTxns, dividendRows, baselineRealizations, baselineFifo))
+        : new Map<string, CustomGroup>(),
+      involveDe,
+      involveFi,
+      involveCustom,
+    };
 
     // The regime the closed-year corrections are labeled with: an engine-taxed
     // deleted row names its own; a deleted BUY has none — it reshapes its
@@ -1690,9 +1777,10 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
     // Closed years settle append-only against their combined post-delete
     // frozen target (AT pool + DE year + FI pool + per-custom-group targets —
-    // components never mix) plus the year's locked open-era residue. The
-    // signed delta includes refund-off custom groups (§16): a reshape is a
-    // data correction, exempt from the ratchet.
+    // components never mix) plus the year's locked residue, so the delete
+    // shifts held by exactly the decomposition's change. The signed delta
+    // includes refund-off custom groups (§16): a reshape is a data
+    // correction, exempt from the ratchet.
     const corrections: NewCashMovement[] = [];
     for (const year of [...affectedYears].filter((y) => y < openFrom).sort((a, b) => a - b)) {
       const targetEur = floorCents(
@@ -1702,7 +1790,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             ? fiTargetForYear(remainingTxns, dividendRows, fifoRealizations, year, viennaYearOfDate)
             : 0) +
           (involveCustom ? customTargetForYear(frozenGroups, year) : 0) +
-          openResidueForYear(remainingMovements, year),
+          lockedResidueForYear(closedBaseline, movements, year),
       );
       const heldEur = heldForYear(remainingTxns, dividendRows, remainingMovements, year);
       const spec = taxMovementForDelta(floorCents(targetEur - heldEur));
@@ -1992,9 +2080,21 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       } else {
         // ── Backdated into a CLOSED year: recording-time coexistence
         // machinery (frozen AT/DE/FI/custom components, pre-#635) plus the
-        // year's locked open-era residue. ──────────────────────────────────
+        // year's locked residue. A dividend reshapes no realizations, so the
+        // current maps ARE the pre-mutation baseline. ──────────────────────
+        const closedBaseline: FrozenComponentState = {
+          transactions: allTxns,
+          dividendRows,
+          realizations,
+          fifoRealizations,
+          deEvents: frozenDeEvents,
+          customGroups: frozenGroups,
+          involveDe,
+          involveFi,
+          involveCustom,
+        };
         const heldEur = heldForYear(allTxns, dividendRows, movements, year);
-        const residueEur = openResidueForYear(movements, year);
+        const residueEur = lockedResidueForYear(closedBaseline, movements, year);
         const customTarget = involveCustom
           ? customTargetForYear(frozenGroups, year, isCustomMode ? activeKey : undefined)
           : 0;
@@ -2118,7 +2218,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
                   ? fiTargetForYear(allTxns, dividendRows, fifoRealizations, y, viennaYearOfDate)
                   : 0) +
                 customY +
-                openResidueForYear(movements, y),
+                lockedResidueForYear(closedBaseline, movements, y),
             );
             const heldY = heldForYear(allTxns, dividendRows, movements, y);
             const spec = taxMovementForDelta(floorCents(targetEur - heldY));
@@ -2390,6 +2490,23 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       const frozenGroups = involveCustom
         ? customGroups(buildCustomView(allTxns, remainingDividends, realizations, fifoRealizations))
         : new Map<string, CustomGroup>();
+      // The PRE-delete decomposition (deleted dividend still in) the closed
+      // years' locked residue reads from; realizations are dividend-agnostic.
+      const closedBaseline: FrozenComponentState = {
+        transactions: allTxns,
+        dividendRows,
+        realizations,
+        fifoRealizations,
+        deEvents: involveDe
+          ? deEventsByYear(buildDeView(allTxns, dividendRows, fifoRealizations, assetsById))
+          : new Map<number, DeTaxableEvent[]>(),
+        customGroups: involveCustom
+          ? customGroups(buildCustomView(allTxns, dividendRows, realizations, fifoRealizations))
+          : new Map<string, CustomGroup>(),
+        involveDe,
+        involveFi,
+        involveCustom,
+      };
 
       for (const y of [...affectedClosedYears].sort((a, b) => a - b)) {
         const targetEur = floorCents(
@@ -2399,7 +2516,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
               ? fiTargetForYear(allTxns, remainingDividends, fifoRealizations, y, viennaYearOfDate)
               : 0) +
             (involveCustom ? customTargetForYear(frozenGroups, y) : 0) +
-            openResidueForYear(remainingMovements, y),
+            lockedResidueForYear(closedBaseline, movements, y),
         );
         const heldEur = heldForYear(allTxns, remainingDividends, remainingMovements, y);
         const spec = taxMovementForDelta(floorCents(targetEur - heldEur));
@@ -2639,6 +2756,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         const heldAtDerivation = floorCents(
           settlement.targetAfterEur - settlement.correctionDeltaEur,
         );
+        // The guard recomputes over the derivation's ROW snapshot against the
+        // fresh movements, so it detects unattached-movement drift only: a
+        // trade committed since derivation lands its frozen tax on the row
+        // (not as an unattached movement), passes the guard, and this
+        // correction posts against slightly-stale rows — the next read
+        // re-derives from the merged state and self-heals.
         const heldNow = heldForYear(state.transactions, state.dividendRows, fresh, settlement.year);
         if (heldNow !== heldAtDerivation) {
           deps.logger?.warn(

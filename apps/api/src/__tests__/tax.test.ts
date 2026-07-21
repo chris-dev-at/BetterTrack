@@ -1341,6 +1341,152 @@ describe('healed years survive rollover (#635 residue lock)', () => {
       taxNetEur: 137.5,
     });
   });
+
+  // Round-2 review (#656): the open era's state can live in ATTACHED joint-pool
+  // marginals, not just unattached corrections — under a nonlinear regime the
+  // frozen amounts don't decompose into standalone components, and only the
+  // ΔF/baseline lock preserves the coupling term.
+
+  it('a nonlinear open era (DE allowance sharing) survives rollover intact', async () => {
+    const { agent, pid, asset } = await setup();
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+    // Recorded under none (+450, frozen none) — under the €1,000 allowance,
+    // so switching to DE heals to a €0 target and posts NOTHING: the open-era
+    // state will sit entirely in the next sell's attached joint-pool marginal.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 19,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'DE' });
+    let years = await yearSummaries(agent, pid);
+    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 0 });
+    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(0);
+
+    // The second sell's marginal is a JOINT-pool figure: the none-frozen +450
+    // already consumed allowance, so (450 + 2900 − 1000) × 26.375 % = 619.81
+    // freezes onto the row — while the standalone DE decomposition of the
+    // year is only (2900 − 1000) × 26.375 % = 501.12 (gap: 118.69).
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 68,
+      executedAt: '2026-06-20T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    let settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({
+      amountEur: -619.81,
+      note: 'KapESt + Soli withheld (DE)',
+    });
+
+    // Jan 1 passes: the joint-vs-standalone gap is locked; a read posts nothing.
+    clock = Date.parse('2027-01-05T12:00:00.000Z');
+    years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 619.81 });
+    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
+
+    // A backdated dividend settles only its own standalone marginal (the
+    // allowance is exhausted on both views: 100 × 26.375 % = 26.38, attached).
+    // No unattached refund reconciles the coupling away (pre-fix: −118.69,
+    // permanently untaxing the healed gain).
+    const dividend = await agent
+      .post(`/api/v1/portfolios/${pid}/dividends`)
+      .set(...XRW)
+      .send({ assetId: asset.id, grossAmountEur: 100, executedAt: '2026-09-01T10:00:00.000Z' });
+    expect(dividend.status, JSON.stringify(dividend.body)).toBe(201);
+    settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements.filter((m) => m.kind === 'tax_refund')).toHaveLength(0);
+    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-619.81, -26.38]);
+    years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 646.19 });
+
+    // Deleting it restores the locked state exactly — zero correction posts.
+    const del = await agent
+      .delete(`/api/v1/portfolios/${pid}/dividends/${dividend.body.dividend.id}`)
+      .set(...XRW);
+    expect(del.status).toBe(204);
+    settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements.map((m) => m.amountEur)).toEqual([-619.81]);
+    years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 619.81 });
+  });
+
+  it('switching to manual closes the year in place — the coupling survives engine-row deletion', async () => {
+    const { agent, pid, asset } = await setup();
+    // The same DE joint-pool state, still mid-2026: held 619.81 (attached on
+    // the DE sell), standalone decomposition 501.12, coupling 118.69.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 19,
+      executedAt: '2026-02-10T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'DE' });
+    const deSell = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 68,
+      executedAt: '2026-06-20T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+
+    // Manual mode derives nothing, so the CURRENT year becomes closed-
+    // machinery immediately — the round-2 gap is reachable without rollover.
+    await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'manual_per_trade' });
+    let years = await yearSummaries(agent, pid);
+    expect(years[0]).toMatchObject({ year: 2026, taxNetEur: 619.81 });
+
+    // Deleting the DE-frozen sell removes its standalone component (501.12 →
+    // 0) and cascades its attached −619.81, but the allowance the none-frozen
+    // row consumed stays locked: +118.69 re-withholds the coupling instead of
+    // the pre-fix €0 (which would evaporate the healed row's tax entirely).
+    const sellId = deSell.body.transactions[0].id as string;
+    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${sellId}`).set(...XRW);
+    expect(del.status, JSON.stringify(del.body)).toBe(204);
+    const settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements.map((m) => m.amountEur)).toEqual([-118.69]);
+    expect(settlements[0]).toMatchObject({
+      taxYear: 2026,
+      transactionId: null,
+      note: 'Tax year correction (DE)',
+    });
+    years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2026)).toMatchObject({
+      realizedPnlEur: 450,
+      taxNetEur: 118.69,
+    });
+  });
 });
 
 // ─── Uncovered sell (issue #369) ──────────────────────────────────────────────

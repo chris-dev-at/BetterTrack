@@ -1351,7 +1351,7 @@
       "expandYear": "Details für {{year}} anzeigen",
       "collapseYear": "Details für {{year}} ausblenden",
       "locked": "Abgeschlossen",
-      "lockedHint": "Dieses Jahr ist abgeschlossen: Seine Abrechnungen sind endgültig, und Änderungen am Steuermodus besteuern es nie neu. Offene Jahre werden laufend nach dem aktuellen Steuermodus des Portfolios besteuert.",
+      "lockedHint": "Dieses Jahr ist abgeschlossen: Seine Abrechnungen sind endgültig, und Änderungen am Steuermodus besteuern es nie neu. Offene Jahre werden laufend nach dem aktuellen Steuermodus des Portfolios besteuert; im manuellen Modus wird die Steuer stattdessen je Trade wie erfasst übernommen.",
       "realized": "Realisiert",
       "tax": "Steuer",
       "sell": {
