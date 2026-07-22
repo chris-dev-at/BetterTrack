@@ -170,6 +170,40 @@ describe('mirrorchain M2 — genesis + join replay', () => {
     expect((await harness.ctx.portfolio.listTransactions(bob.id, bPid, {})).items).toHaveLength(1);
   });
 
+  it('convert refuses a portfolio holding custom-asset rows before any chain row exists (§10 — a genesis op for one would stall every join)', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bettertrack.test', username: 'alice' });
+    const aPid = await harness.ctx.portfolio.getDefaultPortfolioId(alice.id);
+    const [custom] = await harness.db
+      .insert(schema.assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `custom:${alice.id}:art`,
+        type: 'custom',
+        symbol: 'ART',
+        name: 'Art collection',
+        currency: 'EUR',
+        ownerId: alice.id,
+      })
+      .returning();
+    await harness.ctx.portfolio.createTransactions(alice.id, aPid, [
+      {
+        assetId: custom!.id,
+        side: 'buy',
+        quantity: 1,
+        price: 500,
+        fee: 0,
+        executedAt: daysAgo(3),
+      },
+    ]);
+
+    await expect(harness.ctx.mirror.convertToChain(alice.id, aPid)).rejects.toMatchObject({
+      code: 'MIRROR_ASSET_NOT_SYNCABLE',
+    });
+    // Refused BEFORE the chain was created — no half-built chain to clean up.
+    expect(await harness.db.select().from(schema.mirrorChains)).toHaveLength(0);
+    expect(await harness.db.select().from(schema.mirrorChainMembers)).toHaveLength(0);
+  });
+
   it('convert refuses an already-synced portfolio; join refuses double membership', async () => {
     const alice = await harness.seedUser({ email: 'alice@bettertrack.test', username: 'alice' });
     const bob = await harness.seedUser({ email: 'bob@bettertrack.test', username: 'bob' });

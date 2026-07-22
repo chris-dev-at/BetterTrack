@@ -86,14 +86,27 @@ import type { TaxService } from '../tax/taxService';
  * (overdraw + zero-balance-archive gates waived, §2/§8), with idempotent per-op
  * effect (creates skip on an existing `mirror_rows` link; full-state updates
  * replay; deletes treat a missing row as done) and the watermark bump as the
- * last step. Joining is the same mechanism: genesis ops are synthesized at
- * convert so a join is a plain oplog replay through the joiner's services —
- * one code path (§2).
+ * last step. Each copy's replay runs under the SAME per-chain lock the submit
+ * path holds (watermark re-read inside it), so there is exactly one applier
+ * per copy at any moment — a replicate run can never race a submit's origin
+ * catch-up into double-applying an op. Joining is the same mechanism: genesis
+ * ops are synthesized at convert so a join is a plain oplog replay through the
+ * joiner's services — one code path (§2).
  */
 
 const LOCK_TTL_MS = 30_000;
 const LOCK_WAIT_MS = 10_000;
+/** The replicate job can afford a longer wait than an interactive submit. */
+const REPLICATE_LOCK_WAIT_MS = 30_000;
 const LOCK_POLL_MS = 25;
+/** Renew well inside the TTL — a long apply (join replay) must not outlive it. */
+const LOCK_RENEW_INTERVAL_MS = LOCK_TTL_MS / 3;
+
+/** Compare-and-delete / compare-and-expire: only ever release or renew OUR lock. */
+const LOCK_RELEASE_SCRIPT =
+  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+const LOCK_RENEW_SCRIPT =
+  "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], tonumber(ARGV[2])) else return 0 end";
 
 /** Ops whose presence as an entity's latest op make it terminally deleted (§3). */
 const TERMINAL_KINDS = new Set<string>(['tx.delete', 'dividend.delete']);
@@ -124,8 +137,12 @@ export interface MirrorServiceDeps {
   redis: Redis;
   /**
    * Enqueue the durable `mirror.replicate` job for a chain. Production wires
-   * the BullMQ queue (job-id deduped per chain); absent under test — tests
-   * drive {@link MirrorService.replicateChain} synchronously (the snapshot
+   * the BullMQ queue with plain per-write enqueues — deliberately NO job-id
+   * dedupe (BullMQ silently ignores an `add` whose id still exists in the
+   * retained completed/failed sets, which would stop replication after the
+   * first run); redundant jobs no-op cheaply off the watermark, serialized by
+   * the per-chain lock inside {@link MirrorService.replicateChain}. Absent
+   * under test — tests drive `replicateChain` synchronously (the snapshot
    * `requestRecompute` pattern).
    */
   enqueueReplicate?: (chainId: string) => Promise<void>;
@@ -302,15 +319,24 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   // ── Infrastructure ─────────────────────────────────────────────────────────
 
   /**
-   * Per-chain submit mutex. Serializes all submits of one chain so the origin's
-   * local apply order equals seq order and the pre-append guard reads cannot
-   * interleave with another submit's append. The DB-level `appendOpsChecked`
-   * guards stay authoritative for anything not holding this lock.
+   * Per-chain apply mutex — held by every submit AND by the replicate job's
+   * per-copy replay, so there is exactly ONE applier per copy at any moment
+   * (an unserialized replicate racing a submit's origin catch-up would let both
+   * pass the create idempotency check and commit the same op twice). Also keeps
+   * the origin's local apply order equal to seq order. The lock is token-fenced:
+   * release and renewal are compare-and-set Lua (never touching another
+   * holder's lock), and a heartbeat extends the TTL while `fn` runs so a long
+   * replay cannot silently lose the lock mid-apply. The DB-level
+   * `appendOpsChecked` guards stay authoritative for anything not holding it.
    */
-  async function withChainLock<T>(chainId: string, fn: () => Promise<T>): Promise<T> {
+  async function withChainLock<T>(
+    chainId: string,
+    fn: () => Promise<T>,
+    waitMs: number = LOCK_WAIT_MS,
+  ): Promise<T> {
     const key = `bt:mirror:submit:${chainId}`;
     const token = randomUUID();
-    const deadline = now() + LOCK_WAIT_MS;
+    const deadline = now() + waitMs;
     for (;;) {
       const acquired = await redis.set(key, token, 'PX', LOCK_TTL_MS, 'NX');
       if (acquired) break;
@@ -323,11 +349,31 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       }
       await sleep(LOCK_POLL_MS);
     }
+    const renew = setInterval(() => {
+      redis
+        .eval(LOCK_RENEW_SCRIPT, 1, key, token, String(LOCK_TTL_MS))
+        .then((extended) => {
+          if (extended === 0) {
+            logger?.warn({ chainId }, 'mirror: chain lock lost before renewal — TTL too tight?');
+          }
+        })
+        .catch((err) => logger?.warn({ chainId, err }, 'mirror: chain lock renewal failed'));
+    }, LOCK_RENEW_INTERVAL_MS);
     try {
       return await fn();
     } finally {
-      const holder = await redis.get(key);
-      if (holder === token) await redis.del(key);
+      clearInterval(renew);
+      try {
+        const released = await redis.eval(LOCK_RELEASE_SCRIPT, 1, key, token);
+        if (released === 0) {
+          logger?.warn(
+            { chainId },
+            'mirror: chain lock expired before release — another applier may have entered',
+          );
+        }
+      } catch (err) {
+        logger?.warn({ chainId, err }, 'mirror: chain lock release failed');
+      }
     }
   }
 
@@ -382,12 +428,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   }
 
   /** Refuse ops on per-user custom assets (design §10 — unappliable elsewhere). */
-  async function assertSyncableAssets(assetIds: string[]): Promise<void> {
+  async function assertSyncableAssets(assetIds: string[], message?: string): Promise<void> {
     const rows = await portfolioRepo.assetsByIds([...new Set(assetIds)]);
     for (const row of rows) {
       if (row.ownerId !== null) {
         throw badRequest(
-          'Custom assets cannot be recorded in a group portfolio — other members cannot see them. Use one of your own portfolios.',
+          message ??
+            'Custom assets cannot be recorded in a group portfolio — other members cannot see them. Use one of your own portfolios.',
           MIRROR_ASSET_NOT_SYNCABLE,
         );
       }
@@ -447,7 +494,30 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         const link = await repo.findMirrorRow('transaction', payload.mirrorId, portfolioId);
         if (!link) return { applied: false }; // deleted under a bypassed guard — LWW keeps the delete
         const local = await transactionRepo.findByIdForUser(userId, link.localId);
-        if (!local) return { applied: false };
+        if (!local) {
+          // A link without its row = the correction path's crash window (the
+          // delete committed, the re-create didn't). Heal from the full-state
+          // payload — the entity's create op carries its asset — rather than
+          // skipping: a skip advances the watermark and the copy silently
+          // loses the row forever (design §2).
+          const createOp = await repo.firstOpForEntity(member.chainId, payload.mirrorId);
+          const createPayload = createOp ? mirrorOpPayloadSchema.parse(createOp.payload) : null;
+          if (createPayload?.kind !== 'tx.create') {
+            throw new Error(
+              `mirror: transaction ${payload.mirrorId} has a link but no create op in ${member.chainId}`,
+            );
+          }
+          const input = await txInputFromPayload(member, {
+            ...payload,
+            assetId: createPayload.assetId,
+          });
+          const [dto] = await portfolio.createTransactions(userId, portfolioId, [input], {
+            source: syncTag,
+            force,
+          });
+          await repo.repointMirrorRow('transaction', payload.mirrorId, portfolioId, dto!.id);
+          return { applied: true, rowKind: 'transaction', localId: dto!.id, result: dto };
+        }
         const financial =
           local.side !== payload.side ||
           local.quantity !== payload.quantity ||
@@ -637,20 +707,27 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           },
           { source: syncTag, force },
         );
-        for (const [mirrorId, localId] of [
-          [payload.outMirrorId, res.outgoing.id],
-          [payload.inMirrorId, res.incoming.id],
-        ] as const) {
-          await repo.insertMirrorRow({
+        // One statement — a crash can never strand the pair half-linked.
+        await repo.insertMirrorRows([
+          {
             chainId: member.chainId,
             kind: 'cash_movement',
-            mirrorId,
+            mirrorId: payload.outMirrorId,
             portfolioId,
-            localId,
+            localId: res.outgoing.id,
             createdBy: meta.actorUserId,
             createdByUsername: meta.actorUsername,
-          });
-        }
+          },
+          {
+            chainId: member.chainId,
+            kind: 'cash_movement',
+            mirrorId: payload.inMirrorId,
+            portfolioId,
+            localId: res.incoming.id,
+            createdBy: meta.actorUserId,
+            createdByUsername: meta.actorUsername,
+          },
+        ]);
         return { applied: true, rowKind: 'cash_movement', localId: res.outgoing.id, result: res };
       }
 
@@ -986,6 +1063,22 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       }
       const username = await usernameOf(userId);
       const name = opts?.name?.trim() || row.name;
+      // Main first, so the source listing below always contains it (§8).
+      await cashSourceRepo.getOrCreateMain(portfolioId);
+      const [sources, txns, dividends, movements] = await Promise.all([
+        cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
+        transactionRepo.listForPortfolio(portfolioId),
+        taxRepo.listForPortfolio(portfolioId),
+        cashMovementRepo.listForPortfolio(portfolioId),
+      ]);
+      // Refuse per-user custom assets BEFORE the chain exists (design §10): a
+      // genesis op for one would 404 on every joiner's copy and stall the join
+      // replay at that seq forever — the same guard the steady-state submits
+      // enforce, run here over the pre-existing history.
+      await assertSyncableAssets(
+        [...txns.map((t) => t.assetId), ...dividends.map((d) => d.assetId)],
+        'This portfolio holds custom assets, which other members cannot see. Remove them (or use another portfolio) before making it a group portfolio.',
+      );
       const chain = await repo.createChain({
         name,
         createdBy: userId,
@@ -1007,14 +1100,6 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       // dividend must still find its asset transacted), money rows
       // chronological within their group, archive flips last (a movement can
       // never target an already-archived source mid-replay).
-      // Main first, so the source listing below always contains it (§8).
-      await cashSourceRepo.getOrCreateMain(portfolioId);
-      const [sources, txns, dividends, movements] = await Promise.all([
-        cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
-        transactionRepo.listForPortfolio(portfolioId),
-        taxRepo.listForPortfolio(portfolioId),
-        cashMovementRepo.listForPortfolio(portfolioId),
-      ]);
       const actor = {
         actorUserId: userId,
         actorUsername: username,
@@ -1285,7 +1370,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         role: opts?.role ?? 'member',
         invitedBy: opts?.invitedBy ?? null,
       });
-      await repo.appendOpsChecked(chainId, userId, [
+      const joined = await repo.appendOpsChecked(chainId, userId, [
         {
           kind: 'member.joined',
           actorUserId: userId,
@@ -1299,6 +1384,14 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           },
         },
       ]);
+      if ('refused' in joined) {
+        // The membership row was inserted just above, so any refusal here is a
+        // bug-level inconsistency — fail loudly rather than leave a member
+        // whose join never reached the oplog.
+        throw new Error(
+          `mirror: member.joined append refused (${joined.refused}) for chain ${chainId}`,
+        );
+      }
       // Join = plain oplog replay through the joiner's services (§2), driven by
       // the replicate job; the copy shows its syncing state via the watermark.
       await scheduleReplicate(chainId);
@@ -1314,9 +1407,22 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       for (const member of members) {
         if (!member.userId || !member.portfolioId) continue;
         if (member.appliedSeq >= chain.lastSeq) continue;
-        const ops = await repo.listOpsSince(chainId, member.appliedSeq);
         try {
-          applied += await applyOpsToMember(member, ops);
+          // Each copy's replay holds the same per-chain lock the submit path
+          // does — never a second applier next to a submit's origin catch-up.
+          // The membership is re-read INSIDE the lock (the pre-lock rows are
+          // only a cheap skip): a concurrent submit may have advanced this
+          // copy's watermark while we waited.
+          applied += await withChainLock(
+            chainId,
+            async () => {
+              const fresh = await repo.findActiveMembership(chainId, member.userId!);
+              if (!fresh?.portfolioId) return 0;
+              const ops = await repo.listOpsSince(chainId, fresh.appliedSeq);
+              return applyOpsToMember(fresh, ops);
+            },
+            REPLICATE_LOCK_WAIT_MS,
+          );
         } catch (err) {
           // This copy lags (never diverges, §2) — the others still catch up.
           failures.push({ memberId: member.id, err });
@@ -1631,17 +1737,18 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const res = await withChainLock(membership.chainId, async () => {
         const member = await catchUpOrigin(membership);
         const created = await portfolio.transferCash(userId, portfolioId, input);
-        for (const movement of [created.outgoing, created.incoming]) {
-          await repo.insertMirrorRow({
+        // One statement — a crash can never strand the pair half-linked.
+        await repo.insertMirrorRows(
+          [created.outgoing, created.incoming].map((movement) => ({
             chainId: member.chainId,
-            kind: 'cash_movement',
+            kind: 'cash_movement' as const,
             mirrorId: movement.id,
             portfolioId,
             localId: movement.id,
             createdBy: userId,
             createdByUsername: username,
-          });
-        }
+          })),
+        );
         await appendAndFinish(
           member,
           userId,

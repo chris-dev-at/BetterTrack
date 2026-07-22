@@ -577,4 +577,80 @@ describe('mirrorchain M2 — replication core', () => {
     const bLink = await mirrorRepo.findMirrorRow('transaction', tx!.id, bPid);
     expect(bLink!.localId).not.toBe(bLocalBefore);
   });
+
+  it('tx.update heals the correction path’s crash window (link present, row gone) by re-creating from the full-state payload (§2)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    const [tx] = await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 5,
+        price: 100,
+        fee: 0,
+        executedAt: new Date().toISOString(),
+      },
+    ]);
+    await harness.ctx.mirror.replicateChain(chain.id);
+    const bLocalBefore = (await mirrorRepo.findMirrorRow('transaction', tx!.id, bPid))!.localId;
+
+    // Simulate the correction path dying between its delete-commit and its
+    // re-create on Bob's copy: the local row is gone, the mirror link (still
+    // pointing at the dead id) and the pre-update watermark survive.
+    await harness.db.delete(schema.transactions).where(eq(schema.transactions.id, bLocalBefore));
+    await harness.ctx.mirror.submitTransactionUpdate(alice.id, aPid, tx!.id, { price: 120 });
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // The copy re-creates the row from the op's full state instead of silently
+    // dropping it (which would advance the watermark past a lost row).
+    const healed = (await harness.ctx.portfolio.listTransactions(bob.id, bPid, {})).items;
+    expect(healed).toHaveLength(1);
+    expect(healed[0]!.price).toBe(120);
+    expect(healed[0]!.quantity).toBe(5);
+    const bLink = await mirrorRepo.findMirrorRow('transaction', tx!.id, bPid);
+    expect(bLink!.localId).toBe(healed[0]!.id);
+    expect(bLink!.localId).not.toBe(bLocalBefore);
+  });
+
+  it('one applier per copy: a replicate run and a concurrent submit never double-apply an op (the per-chain lock)', async () => {
+    const { alice, bob, asset, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitTransactionsCreate(alice.id, aPid, [
+      {
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 5,
+        price: 100,
+        fee: 0,
+        executedAt: new Date().toISOString(),
+      },
+    ]);
+
+    // Widen the race window: every service-level create yields for 25 ms, so an
+    // UNSERIALIZED replicate + submit catch-up would both pass the create
+    // idempotency check before either inserts — the double-apply the per-chain
+    // lock exists to prevent.
+    type CreateTxns = typeof harness.ctx.portfolio.createTransactions;
+    const realCreate = harness.ctx.portfolio.createTransactions.bind(
+      harness.ctx.portfolio,
+    ) as CreateTxns;
+    harness.ctx.portfolio.createTransactions = (async (...args: Parameters<CreateTxns>) => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return realCreate(...args);
+    }) as CreateTxns;
+
+    // Bob writes (his origin catch-up must apply Alice's pending buy) while the
+    // replicate job replays the very same op onto his copy.
+    await Promise.all([
+      harness.ctx.mirror.replicateChain(chain.id),
+      harness.ctx.mirror.submitCashDeposit(bob.id, bPid, { amountEur: 10 }),
+    ]);
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Exactly one materialization of the buy on Bob's copy — never two.
+    const bTxs = (await harness.ctx.portfolio.listTransactions(bob.id, bPid, {})).items;
+    expect(bTxs).toHaveLength(1);
+    expect(bTxs[0]!.quantity).toBe(5);
+    // And the concurrent submit itself succeeded + replicated to Alice.
+    const aliceMoves = await createCashMovementRepository(harness.db).listForPortfolio(aPid);
+    expect(aliceMoves.filter((m) => m.kind === 'deposit' && m.amountEur === 10)).toHaveLength(1);
+  });
 });

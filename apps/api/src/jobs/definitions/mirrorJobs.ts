@@ -3,32 +3,32 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
  * `mirror.replicate` — the MIRRORCHAIN replication job (§13.5 V5-P7, design §2,
- * issue #644). One job per chain brings every active copy up to `last_seq`,
+ * issue #644). One run brings every active copy of a chain up to `last_seq`,
  * applying ops strictly in seq order through each member's own services (force
  * mode), idempotent per op with the per-copy watermark bump last — so BullMQ's
  * at-least-once delivery yields exactly-once effect and a retry resumes from
  * the watermark, never skipping and never reordering.
  *
- * Per-chain serialization: producers enqueue with `jobId =
- * mirrorReplicateJobId(chainId)` (see {@link mirrorReplicateJobId}), so at most
- * one job per chain is queued/running at a time; ops appended while a run is in
- * flight are caught by the run's final lag check, which re-enqueues itself. A
- * copy that keeps failing makes the job throw AFTER the sweep (the other copies
- * still catch up — a stalled copy lags, never diverges); the standard retry →
- * dead-letter path then lands it on the admin Problems page via the worker's
- * `onPermanentFailure` hook, and a later re-run ("retry sync") resumes from the
- * stalled copy's watermark.
+ * Producers enqueue plainly per write — deliberately NO job-id dedupe. BullMQ
+ * silently ignores an `add` whose id still exists in ANY state, including the
+ * retained completed/failed sets (`DEFAULT_JOB_OPTIONS` keeps both), so a fixed
+ * per-chain id would swallow every enqueue after the first run and halt
+ * replication (and one dead-lettered run would block the whole chain forever).
+ * Serialization lives in `replicateChain` itself: each copy's replay runs under
+ * the same per-chain Redis lock the submit path holds, so concurrent or
+ * redundant jobs are safe and no-op cheaply off the watermark — the same
+ * pattern as `snapshots.recompute`. A copy that keeps failing makes the run
+ * throw AFTER the sweep (the other copies still catch up — a stalled copy lags,
+ * never diverges); the standard retry → dead-letter path then lands it on the
+ * admin Problems page via the worker's `onPermanentFailure` hook, and any later
+ * enqueue ("retry sync" or the next write) resumes from the stalled copy's
+ * watermark.
  */
 
 export interface MirrorReplicateJobDeps {
   mirror: Pick<MirrorService, 'replicateChain'>;
-  /** Re-enqueue for the late-append tail race (the durable queue's enqueue). */
+  /** Chain a fresh run for ops appended while this one was sweeping. */
   enqueue: (chainId: string) => Promise<void>;
-}
-
-/** Job-id dedupe key: at most one queued/active replicate per chain (design §2). */
-export function mirrorReplicateJobId(chainId: string): string {
-  return `mirror.replicate:${chainId}`;
 }
 
 export function createMirrorReplicateJob(
@@ -41,7 +41,7 @@ export function createMirrorReplicateJob(
       const result = await deps.mirror.replicateChain(chainId);
       ctx.logger.info({ chainId, ...result }, 'mirror.replicate complete');
       // Ops appended after this run read `last_seq` would otherwise wait for
-      // the next write — chain the catch-up now that our job id is free again.
+      // the next write — chain a fresh job to catch the tail now.
       if (result.lagging > 0) await deps.enqueue(chainId);
     },
   };

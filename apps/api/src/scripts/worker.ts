@@ -42,7 +42,6 @@ import {
   createStandingOrdersJob,
   dividendNotifyGate,
   jobConnectionFactory,
-  mirrorReplicateJobId,
   registerSchedules,
   type JobContext,
 } from '../jobs';
@@ -313,8 +312,11 @@ const portfolioService = createPortfolioService({
   notify,
   logger,
 });
+// Plain enqueue, no job id: a retained completed/failed job under a fixed id
+// silently swallows every later add (see mirrorJobs.ts); `replicateChain`'s
+// per-chain lock serializes appliers instead.
 const enqueueMirrorReplicate = async (chainId: string) => {
-  await registry.enqueue('mirror.replicate', { chainId }, { jobId: mirrorReplicateJobId(chainId) });
+  await registry.enqueue('mirror.replicate', { chainId });
 };
 const mirror = createMirrorService({
   repo: createMirrorchainRepository(db),

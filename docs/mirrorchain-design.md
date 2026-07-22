@@ -138,15 +138,30 @@ race a write past their removal. A batch submit (multi-row transaction create)
 appends its ops with consecutive seqs in one append transaction.
 
 **Apply order is sacred — on every copy, including the origin.** The submit path
-is: (1) append the op(s); (2) bring the origin copy up to date by applying any
-pending earlier ops to it, then apply the new op through the normal service call
-(own transaction), record `mirror_rows`, bump `applied_seq`; (3) return the DTO;
-(4) enqueue `mirror.replicate` for the chain. The replicate job (BullMQ, one
-logical worker per chain via job-id dedupe, existing `jobs/**` patterns +
-`DEFAULT_JOB_OPTIONS` backoff + dead-letter) walks each other active membership
-and applies ops `applied_seq+1 … last_seq` strictly in seq order. If the origin
-copy cannot catch up in step 2 (a stalled earlier op — bug-level), the write is
-refused `503 MIRROR_SYNC_STALLED` rather than applied out of order.
+is (amended 2026-07-22, §16 — the original text listed the append first, but
+§1's rule that `mirror_id` IS the origin row's local id means the origin service
+call mints it, so the origin apply necessarily precedes the append): (1) under
+the per-chain apply lock, bring the origin copy up to date by applying any
+pending earlier ops to it; (2) apply the new write through the normal service
+call (own transaction) — the origin's validation is authoritative and a
+rejection appends nothing; (3) append the op(s) under the in-transaction
+membership/`baseSeq` guards, record `mirror_rows`, bump `applied_seq`; (4)
+return the DTO; (5) enqueue `mirror.replicate` for the chain. The lock keeps the
+origin's local apply order identical to seq order; the swap's cost is a crash
+window between the origin service commit and the append (an origin-only,
+mirror-linked row with no op) — detectable by the repair sweep below. The
+replicate job (BullMQ, existing `jobs/**` patterns + `DEFAULT_JOB_OPTIONS`
+backoff + dead-letter) walks each other active membership and applies ops
+`applied_seq+1 … last_seq` strictly in seq order. Producers enqueue plainly per
+write — deliberately NO job-id dedupe (amended 2026-07-22, §16: BullMQ silently
+ignores an `add` whose id still exists in the retained completed/failed sets, so
+a fixed per-chain job id would halt a chain's replication after its first run);
+instead `replicateChain` itself serializes, replaying each copy under the SAME
+per-chain Redis lock (token-fenced, TTL-renewed while applying) the submit path
+holds — exactly one applier per copy at any moment, and concurrent or redundant
+jobs no-op cheaply off the watermark. If the origin copy cannot catch up in
+step 1 (a stalled earlier op — bug-level), the write is refused
+`503 MIRROR_SYNC_STALLED` rather than applied out of order.
 
 **Idempotency (at-least-once delivery, exactly-once effect).** Creates: skip if
 `mirror_rows(kind, mirror_id, portfolio_id)` already exists (the natural key —
@@ -183,7 +198,14 @@ edit in place; a financial change on a copy where the local row carries recorded
 tax executes as the correction path — delete + re-create through the services
 (tax re-derived append-only), with `mirror_rows.local_id` re-pointed to the new
 row. Convergence is unaffected: the final financial state is the op's full
-state on every copy.
+state on every copy. The correction is made crash-safe at re-delivery (amended
+2026-07-22, §16): a `tx.update` that finds the mirror link but not the local row
+(the delete committed, the re-create didn't) re-creates the row from the op's
+full-state payload — asset identity from the entity's create op — and re-points
+the link, instead of skipping (a skip would advance the watermark and silently
+lose the row on that copy). The residual window (re-create committed, re-point
+not) can leave one orphaned re-created row — strictly narrower (the data is
+present, merely duplicated locally) and detectable by sweep (b) below.
 
 **Partial-failure repair.** A persistently failing per-copy apply dead-letters
 (existing machinery), flips that membership to a visible `sync stalled` state
@@ -192,6 +214,24 @@ state on every copy.
 is never broken — a stalled copy lags; it does not diverge. Realtime: each
 successful replica apply publishes the existing `portfolio.changed` event for
 that copy's user; no new event types are needed for data sync.
+
+**Crash-window repair sweeps** (added 2026-07-22, §16 — the two sub-transactional
+windows the amended orderings open, both detectable by query; wire them into the
+M4 repair sweep):
+
+- (a) origin-commit-then-append (submit path): an origin `mirror_rows` link
+  whose `mirror_id` has no op —
+  `select mr.* from mirror_rows mr where not exists (select 1 from
+mirror_chain_ops o where o.chain_id = mr.chain_id and o.mirror_id =
+mr.mirror_id)`. Such a row exists only on the origin copy and silently
+  diverges (later full-state updates no-op on copies that lack it) until
+  repaired (synthesize its create op from the local row, or surface it).
+- (b) correction re-create-then-re-point: a copy-local row in a synced
+  portfolio with no `mirror_rows` link pointing at it —
+  `select t.* from transactions t where t.portfolio_id = $copy and not exists
+(select 1 from mirror_rows mr where mr.portfolio_id = t.portfolio_id and
+mr.local_id = t.id)`. Local-only duplicate; safe to delete through the
+  services.
 
 **Joining = replaying the one true log.** When a chain is **created** — either
 "make this portfolio a group portfolio" (convert) or "new group portfolio"
@@ -511,7 +551,12 @@ middleware like every portfolio mutation (mobile offline queue).
 5. **M5 — UI** (`diff:intermediate`): avatar stack + member sheet, create/
    convert/invite/join/syncing/leave/kick/transfer flows, attribution chips,
    activity feed, share-attribution stripping (§10), fork provenance line,
-   EN+DE strings.
+   EN+DE strings. **MUST wire the §3 `baseSeq` guard end-to-end**: M2 exposes
+   `baseSeq` at the service seam only — no HTTP edit contract carries it yet,
+   so until wired a real client's concurrent edits silently take latest-seq
+   (LWW, exactly what §3 forbids). Add `baseSeq` (from the DTO's
+   `mirror.version`) to the tx/dividend/source edit request contracts and send
+   it from the edit dialogs so `409 MIRROR_CONFLICT` can actually fire.
 6. **M6 — e2e + gate** (`diff:intermediate`): the six §13.5 done-when
    scenarios as Playwright specs (see §13), joining the V5-P14 suite.
 

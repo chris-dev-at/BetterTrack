@@ -205,7 +205,6 @@ import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import { createMirrorService, type MirrorService } from '../services/mirror';
-import { mirrorReplicateJobId } from '../jobs/definitions/mirrorJobs';
 import { createSessionService } from '../services/sessions/sessionService';
 import { createSocialService, type SocialService } from '../services/social/socialService';
 import { createCommentService, type CommentService } from '../services/social/commentService';
@@ -999,8 +998,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // MIRRORCHAIN replication core (§13.5 V5-P7 M2): built on top of the plain
   // portfolio/tax services — every apply routes through them under the target
   // member's own context (design §2/§9). Production replicates via the durable
-  // `mirror.replicate` queue (job-id deduped per chain); tests drive
-  // `mirror.replicateChain` synchronously (the snapshots pattern).
+  // `mirror.replicate` queue — plain per-write enqueues, NO job-id dedupe
+  // (a retained completed/failed job under a fixed id silently swallows every
+  // later add); the per-chain lock inside `replicateChain` serializes appliers.
+  // Tests drive `mirror.replicateChain` synchronously (the snapshots pattern).
   const mirrorchainRepo = createMirrorchainRepository(db);
   const mirror = createMirrorService({
     repo: mirrorchainRepo,
@@ -1018,11 +1019,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     ...(queues
       ? {
           enqueueReplicate: async (chainId: string) => {
-            await queues.enqueue(
-              'mirror.replicate',
-              { chainId },
-              { jobId: mirrorReplicateJobId(chainId) },
-            );
+            await queues.enqueue('mirror.replicate', { chainId });
           },
         }
       : {}),

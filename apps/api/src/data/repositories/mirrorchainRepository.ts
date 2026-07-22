@@ -288,6 +288,21 @@ export function createMirrorchainRepository(db: Database) {
       return row ?? null;
     },
 
+    /**
+     * The lowest-seq op targeting `mirrorId` — the entity's create op, the only
+     * carrier of its immutable identity (a transaction's asset) once the local
+     * row is gone (the correction path's crash heal, design §2).
+     */
+    async firstOpForEntity(chainId: string, mirrorId: string): Promise<MirrorChainOpRow | null> {
+      const [row] = await db
+        .select()
+        .from(mirrorChainOps)
+        .where(and(eq(mirrorChainOps.chainId, chainId), eq(mirrorChainOps.mirrorId, mirrorId)))
+        .orderBy(asc(mirrorChainOps.seq))
+        .limit(1);
+      return row ?? null;
+    },
+
     // --- Members + watermarks ----------------------------------------------
 
     async insertMember(input: InsertMemberInput): Promise<MirrorChainMemberRow> {
@@ -450,6 +465,25 @@ export function createMirrorchainRepository(db: Database) {
         })
         .returning();
       return row!;
+    },
+
+    /** Insert several links in ONE statement — atomic (a transfer's paired legs). */
+    async insertMirrorRows(inputs: InsertMirrorRowInput[]): Promise<MirrorRowRow[]> {
+      if (inputs.length === 0) return [];
+      return db
+        .insert(mirrorRows)
+        .values(
+          inputs.map((input) => ({
+            chainId: input.chainId,
+            kind: input.kind,
+            mirrorId: input.mirrorId,
+            portfolioId: input.portfolioId,
+            localId: input.localId,
+            createdBy: input.createdBy,
+            createdByUsername: input.createdByUsername,
+          })),
+        )
+        .returning();
     },
 
     /**
