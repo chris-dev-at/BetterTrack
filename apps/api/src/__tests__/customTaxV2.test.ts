@@ -727,6 +727,47 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     );
     expect(res.body.error?.code).toBe('TAX_ENTRY_NOT_ALLOWED');
   });
+
+  it('a € 0-marginal custom loss sell is still financially immutable (#675 review)', async () => {
+    const { agent, pid, asset } = await setup({ mode: 'custom', custom: RATE10 });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2026-01-10T10:00:00.000Z',
+    });
+    // Loss sell with no gains to offset: marginal tax € 0, so NO settlement
+    // movement attaches and (without cash proceeds) the cash-link guard has
+    // nothing to catch — only the row's own engine mode blocks the edit. Yet
+    // the row anchors its parameter group's settled target: its loss is in
+    // the pool every later settlement of the group builds on.
+    const loss = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 5,
+      executedAt: '2026-02-10T10:00:00.000Z',
+    });
+    const lossId = loss.body.transactions[0].id as string;
+    expect((await frozenRow(lossId)).taxMode).toBe('custom');
+    const cash = await cashState(agent, pid);
+    expect(taxMovements(cash.movements)).toHaveLength(0);
+
+    const edit = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${lossId}`)
+      .set(...XRW)
+      .send({ quantity: 40 });
+    expect(edit.status, JSON.stringify(edit.body)).toBe(400);
+    expect(edit.body.error.code).toBe('TRANSACTION_TAXED');
+
+    // Note-only edits stay allowed on the frozen row.
+    const noteEdit = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${lossId}`)
+      .set(...XRW)
+      .send({ note: 'tax-loss harvest' });
+    expect(noteEdit.status, JSON.stringify(noteEdit.body)).toBe(200);
+  });
 });
 
 // ─── Refund off vs history reshapes: the ratchet gates events, not data
