@@ -49,6 +49,8 @@ export {
   type NotificationsDispatchJobDeps,
 } from './notificationsJob';
 
+export { createMirrorReplicateJob, type MirrorReplicateJobDeps } from './mirrorJobs';
+
 export {
   createDigestDailyJob,
   createDigestWeeklyJob,

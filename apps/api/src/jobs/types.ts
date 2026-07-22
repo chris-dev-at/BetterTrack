@@ -45,6 +45,10 @@ export const QUEUE_NAMES = {
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once (idempotent per period).
   standingOrdersProcess: 'standingOrders.process',
+  // V5-P7 MIRRORCHAIN (#644, design §2): bring every copy of one chain up to
+  // `last_seq` — strictly ordered, idempotent per op, per-chain serialized via
+  // job-id dedupe. Enqueued after every chain write and on join.
+  mirrorReplicate: 'mirror.replicate',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -75,6 +79,7 @@ export interface JobPayloads {
   'notifications.earningsRemind': Record<string, never>;
   'marketIntel.dividendScan': Record<string, never>;
   'standingOrders.process': Record<string, never>;
+  'mirror.replicate': { chainId: string };
   'system.heartbeat': Record<string, never>;
 }
 

@@ -47,6 +47,8 @@ export {
   ALERTS_EVALUATE_INTERVAL_MS,
   createNotificationsDispatchJob,
   type NotificationsDispatchJobDeps,
+  createMirrorReplicateJob,
+  type MirrorReplicateJobDeps,
   createDigestDailyJob,
   createDigestWeeklyJob,
   createDeferredDeliveryJob,

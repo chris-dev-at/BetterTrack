@@ -42,6 +42,10 @@ describe('mirrorchainRepository (M1)', () => {
       note: null,
       allowUncovered: false,
       uncoveredEntryPrice: null,
+      payFromCash: false,
+      addProceedsToCash: false,
+      cashSourceMirrorId: null,
+      settleCashAsOfToday: false,
       originSource: 'manual',
     };
   }
