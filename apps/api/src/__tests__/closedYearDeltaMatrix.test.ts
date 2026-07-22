@@ -23,7 +23,6 @@ import {
   buildFrozenComponentState,
   frozenTargetForYear,
   heldForYear,
-  isFifoRealizedSell,
 } from '../services/tax/closedSettlement';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -386,24 +385,29 @@ describe.each(REGIMES)('closed-year ΔF invariant — frozen regime $key', ({ ke
     expect(buyEdit.body.error.code).toBe('TRANSACTION_AFFECTS_TAXED');
     expect(await snapshot(pid)).toEqual(preGuards);
 
-    // The #675-review blocking door: an UNTAXED sell between the frozen
-    // sells. Its quantity steers how the 2026 frozen sell straddles the
-    // € 30/€ 35 lots under FIFO-realizing regimes; under the moving average
-    // it is inert (a sell never moves another row's average).
+    // The #675 rounds-1/2 door: an UNTAXED sell between the frozen sells,
+    // with a buy AFTER it. Under FIFO-realizing regimes its quantity steers
+    // how the 2026 frozen sell straddles the € 30/€ 35 lots; under the
+    // moving average it sets the held quantity the later buy re-averages
+    // with — so the fixture is a genuine reshape threat in EVERY regime
+    // (round 2's ordering, buy first, left average regimes inert and hid
+    // that the guard's carve-out was unsound). Recorded buy-first so the
+    // sell's own write replays oversell-free; the dates put it before the
+    // buy, which is all the chronological replay cares about.
     await patchSettings(agent, { mode: 'none' });
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
       quantity: 100,
       price: 35,
-      executedAt: '2025-06-15T10:00:00.000Z',
+      executedAt: '2025-08-01T10:00:00.000Z',
     });
     const noneSell = await trade(agent, pid, {
       assetId: asset.id,
       side: 'sell',
       quantity: 80,
       price: 40,
-      executedAt: '2025-08-01T10:00:00.000Z',
+      executedAt: '2025-06-15T10:00:00.000Z',
     });
     const noneSellId = noneSell.body.transactions[0].id as string;
     const preEdit = await snapshot(pid);
@@ -411,18 +415,15 @@ describe.each(REGIMES)('closed-year ΔF invariant — frozen regime $key', ({ ke
     // write path settles them (a sell-write-under-none cell for free).
     expectDeltaTracked(preGuards, preEdit, `${key}/edit-setup-writes`);
 
-    // Counterfactual ΣF if the edit landed: the threat must be real exactly
-    // where the guard's own FIFO classifier says frozen lots are in play.
+    // Counterfactual ΣF if the edit landed: the reject below must answer a
+    // real threat in this regime, not vacuous conservatism.
     const counterfactual = await snapshot(pid, (t) =>
       t.id === noneSellId ? { ...t, quantity: 30 } : t,
     );
     const wouldMove = CLOSED_YEARS.some(
       (year) => counterfactual.frozenEur.get(year) !== preEdit.frozenEur.get(year),
     );
-    const stored = await createTransactionRepository(harness.db).listForPortfolio(pid);
-    expect(wouldMove, `${key}: the fixture threat must match the FIFO classifier`).toBe(
-      stored.some(isFifoRealizedSell),
-    );
+    expect(wouldMove, `${key}: the fixture must be a genuine reshape threat`).toBe(true);
 
     const edit = await patchTransaction(agent, pid, noneSellId, { quantity: 30 });
     const postEdit = await snapshot(pid);
@@ -444,11 +445,40 @@ describe.each(REGIMES)('closed-year ΔF invariant — frozen regime $key', ({ ke
       expect(edit.body.error.code).toBe('TRANSACTION_AFFECTS_TAXED');
       expect(postEdit).toEqual(preEdit);
     }
-    // Today's contract: threatening edits are rejected outright (delete-and-
-    // re-add doctrine); harmless ones stay as permissive as v2. If edits ever
-    // gain their own settlement path, drop this line — the invariant block
-    // above is the one that must keep holding.
-    expect(edit.status).toBe(wouldMove ? 400 : 200);
+    // Today's contract: edits perform no settlement, so ANY financial edit
+    // is rejected while the asset carries engine-frozen sells — no side or
+    // regime carve-out is sound (#675 round 2: an untaxed sell steers a
+    // later buy's re-average weight even under the moving average). If edits
+    // ever gain their own settlement path, drop this line — the
+    // reject-or-settle block above is the one that must keep holding.
+    expect(edit.status).toBe(400);
+
+    // The reject is scoped to the asset carrying the frozen sells: rows of
+    // an asset no engine ever taxed stay as editable as v2, and their edit
+    // touches neither side of the decomposition.
+    const other = await seedAsset('OTHR.DE');
+    await trade(agent, pid, {
+      assetId: other.id,
+      side: 'buy',
+      quantity: 10,
+      price: 10,
+      executedAt: '2025-06-01T10:00:00.000Z',
+    });
+    const otherSell = await trade(agent, pid, {
+      assetId: other.id,
+      side: 'sell',
+      quantity: 5,
+      price: 12,
+      executedAt: '2025-09-01T10:00:00.000Z',
+    });
+    const otherEdit = await patchTransaction(
+      agent,
+      pid,
+      otherSell.body.transactions[0].id as string,
+      { quantity: 4 },
+    );
+    expect(otherEdit.status, JSON.stringify(otherEdit.body)).toBe(200);
+    expect(await snapshot(pid)).toEqual(preEdit);
   });
 
   it('a backdated dividend and its deletion self-adjust by exactly ΔF', async () => {

@@ -85,7 +85,7 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
-import { isEngineTaxed, isFifoRealizedSell } from '../tax/closedSettlement';
+import { isEngineTaxed } from '../tax/closedSettlement';
 import type { TaxService } from '../tax/taxService';
 import {
   buildIntradayEurValuePoints,
@@ -1476,28 +1476,28 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Build the asset's set with the edited row swapped in, then re-validate.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
 
-      // Editing a BUY re-shapes the moving average every later sell realized
-      // against — and under FIFO-realizing regimes (DE, FI, FIFO custom sets)
-      // EVERY trade consumes lots, so editing a SELL shifts the asset's
-      // engine-frozen sells' lot consumption just the same (#669/#675: the
-      // #656 round-3 lot-shift class through the edit door). Engine-taxed
-      // sells' gains are year-settled money (V3-P4); reject rather than
-      // silently un-anchor a settled year — deleting and re-adding routes
-      // through the append-only correction path instead. Editing an untaxed
-      // sell stays as permissive as v2 when the asset's frozen sells are all
-      // moving-average: a sell never moves another row's average. The side
-      // check covers both the stored and the patched side — a sell edited
-      // into a buy starts re-shaping averages too.
+      // While the asset carries engine-frozen sells (year-settled money,
+      // V3-P4), ANY financial edit is rejected — no side or regime carve-out
+      // is sound (#669/#675). A BUY re-shapes the moving average every later
+      // sell realized against; under FIFO-realizing regimes (DE, FI, FIFO
+      // custom sets) EVERY trade steers later lot consumption (the #656
+      // round-3 class through the edit door); and even an untaxed SELL sets
+      // the held quantity a later buy re-averages with — plus the
+      // covered/uncovered basis split — so the moving average is only inert
+      // when no buy ever follows the row, an ordering the same patch can
+      // break via `executedAt`. This path performs no settlement, so a
+      // leaked reshape would become permanent drift absorbed as fake locked
+      // residue; deleting and re-adding routes through the append-only
+      // correction path instead. Deliberately date-agnostic: a row dated
+      // after every frozen sell cannot reshape them, yet is rejected too —
+      // recorded as a conservative choice (#675 round 2).
       if (financialEdit) {
-        const frozenSells = siblings.filter(
+        const hasFrozenSells = siblings.some(
           (s) => s.id !== id && s.side === 'sell' && isEngineTaxed(s.taxMode),
         );
-        const reshapesAverages =
-          (existing.side === 'buy' || (patch.side ?? existing.side) === 'buy') &&
-          frozenSells.length > 0;
-        if (reshapesAverages || frozenSells.some(isFifoRealizedSell)) {
+        if (hasFrozenSells) {
           throw badRequest(
-            'Editing this transaction would change the realized gains of tax-settled sells. Delete and re-add it instead.',
+            'Editing this transaction could change the realized gains of tax-settled sells. Delete and re-add it instead.',
             'TRANSACTION_AFFECTS_TAXED',
           );
         }

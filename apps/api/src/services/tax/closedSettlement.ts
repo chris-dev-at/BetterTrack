@@ -27,7 +27,6 @@ import {
   customGroups,
   customGroupTargetForYear,
   isCustomDividend,
-  isCustomFifoSell,
   isCustomSell,
   type CustomGroup,
 } from './customState';
@@ -76,19 +75,6 @@ export const viennaYearOfDate = (at: Date): number => viennaYearOf(at.toISOStrin
 /** A row settled by an engine (country-specific or custom) — never manual. */
 export const isEngineTaxed = (taxMode: TransactionRecord['taxMode']): boolean =>
   taxMode === 'country_specific' || taxMode === 'custom';
-
-/**
- * A sell frozen under a FIFO-realizing regime — DE, FI, or a FIFO custom
- * parameter set. Unlike the moving average (which only buys re-shape, because
- * a sell never moves another row's average), FIFO replays EVERY trade of the
- * asset chronologically, so mutating ANY trade — a sell's quantity or date
- * too — can shift these rows' lot consumption (#656 round 3; #669/#675: the
- * same class through the edit door). The mutation guards and the ΔF matrix
- * test share this classifier so they can never disagree about what counts as
- * a reshape threat.
- */
-export const isFifoRealizedSell = (t: TransactionRecord): boolean =>
-  isDeSell(t) || isFiSell(t) || isCustomFifoSell(t);
 
 const isTaxMovementKind = (kind: CashMovementRecord['kind']): boolean =>
   kind === 'tax_withholding' || kind === 'tax_refund';
