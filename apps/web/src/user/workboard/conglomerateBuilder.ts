@@ -1,4 +1,5 @@
 import type {
+  AiConglomerateDraftLine,
   AssetType,
   ConglomerateSummary,
   CurrencyCode,
@@ -137,6 +138,39 @@ export function positionFromSearchResult(item: SearchResultItem): BuilderPositio
     weightPct: 0,
     locked: false,
   };
+}
+
+/**
+ * Build weighted Builder positions from an AI draft's RESOLVED lines (V5-P12).
+ * Unresolved lines (`asset: null`) are dropped here — the NL panel flags them
+ * separately so they are never silently lost — and duplicate assets are merged
+ * (weights summed) since the Builder keys positions by ref. Every weight is
+ * clamped to the stored 0–100 / 3-dp precision. The result is a plain draft the
+ * user reviews, edits and explicitly saves (nothing here persists on its own).
+ */
+export function positionsFromDraftLines(
+  lines: readonly AiConglomerateDraftLine[],
+): BuilderPosition[] {
+  const byRef = new Map<string, BuilderPosition>();
+  for (const line of lines) {
+    if (!line.asset) continue;
+    const existing = byRef.get(line.asset.id);
+    if (existing) {
+      existing.weightPct = clampWeight(existing.weightPct + line.weightPct);
+      continue;
+    }
+    byRef.set(line.asset.id, {
+      kind: 'asset',
+      refId: line.asset.id,
+      symbol: line.asset.symbol,
+      name: line.asset.name,
+      currency: line.asset.currency,
+      type: line.asset.type,
+      weightPct: clampWeight(line.weightPct),
+      locked: false,
+    });
+  }
+  return [...byRef.values()];
 }
 
 /** Build a weight-0 nested-conglomerate constituent from one of the user's own baskets (V5-P6). */

@@ -29,3 +29,23 @@ export {
   type AiServiceActor,
   type AiServiceDeps,
 } from './aiService';
+export {
+  createAiFeaturesService,
+  type AiFeaturesService,
+  type AiFeaturesServiceDeps,
+} from './aiFeaturesService';
+export {
+  buildInsightsPrompt,
+  computeInsights,
+  INSIGHTS_SYSTEM_PROMPT,
+  type ComputedInsights,
+  type InsightFactsInput,
+} from './insightFacts';
+export {
+  buildNlBuilderPrompt,
+  extractJsonObject,
+  NL_BUILDER_MAX_INTENTS,
+  NL_BUILDER_SYSTEM_PROMPT,
+  parseNlIntents,
+  type NlIntent,
+} from './nlIntent';

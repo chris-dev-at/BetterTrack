@@ -1608,6 +1608,30 @@
         "pnl": "G/V",
         "weight": "Gewicht",
         "contribution": "Beitrag"
+      },
+      "ai": {
+        "title": "KI-Einblicke",
+        "hint": "Eine verständliche Einordnung von Konzentration und Drawdown deines Portfolios. Die Zahlen stammen aus deinen Beständen — die KI formuliert sie nur.",
+        "generate": "Einblicke erzeugen",
+        "regenerate": "Neu erzeugen",
+        "generating": "Wird erzeugt…",
+        "disclaimer": "KI-generiert und nur informativ — keine Anlageberatung.",
+        "remaining": "{{remaining}} von {{cap}} heute übrig",
+        "capReached": "Du hast das heutige KI-Limit erreicht. Es wird morgen zurückgesetzt.",
+        "error": "Einblicke konnten gerade nicht erzeugt werden. Bitte erneut versuchen.",
+        "noData": "Füge diesem Portfolio Bestände hinzu, um Einblicke zu erzeugen.",
+        "model": "Modell: {{model}}",
+        "spent": "{{used}} von {{cap}} heute genutzt",
+        "observation": {
+          "concentration": "Konzentration",
+          "drawdown": "Drawdown"
+        },
+        "facts": {
+          "topWeightPct": "Größte Position",
+          "top3WeightPct": "Top-3-Positionen",
+          "positionCount": "Positionen",
+          "maxDrawdownPct": "Max. Drawdown"
+        }
       }
     },
     "taxReport": {
@@ -2308,6 +2332,19 @@
       "addAssetsHeading": "Anlagen hinzufügen",
       "addAssetsHint": "Suche und klicke ein Ergebnis an, um es mit Gewicht 0 hinzuzufügen.",
       "searchPlaceholder": "Aktien, ETFs, Indizes suchen…",
+      "ai": {
+        "title": "Mit KI beschreiben",
+        "hint": "Beschreibe den Korb in eigenen Worten — die KI entwirft gewichtete Positionen aus deinem lokalen Katalog zur Überprüfung.",
+        "placeholder": "z. B. 30 % US-Tech, 30 % EU-Industrie, 40 % Gold",
+        "submit": "Korb entwerfen",
+        "generating": "Wird entworfen…",
+        "disclaimer": "Die KI liefert einen aus deinem Katalog aufgelösten Startpunkt — Gewichte prüfen und speichern.",
+        "remaining": "{{remaining}} von {{cap}} heute übrig",
+        "capReached": "Du hast das heutige KI-Limit erreicht. Es wird morgen zurückgesetzt.",
+        "error": "Daraus konnte kein Korb entworfen werden. Formuliere es anders.",
+        "applied": "{{count}} Positionen vorausgefüllt — Gewichte prüfen und speichern.",
+        "unresolved": "Kein Katalogtreffer für diese — bitte manuell hinzufügen:"
+      },
       "positionsHeading": "Positionen",
       "autoBalance": "Auto-Balance",
       "normalize": "Normalisieren",

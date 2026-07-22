@@ -23,6 +23,7 @@ import { PriceChart } from '../../../ui/charts';
 import type { BenchmarkSeries, ChartPoint } from '../../../ui/charts';
 import { Alert } from '../../components/ui';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from '../PortfolioSwitcher';
+import { AiInsightsPanel } from './AiInsightsPanel';
 import { CompareControl, type CompareTarget } from './CompareControl';
 import { ContributionTable } from './ContributionTable';
 
@@ -395,6 +396,10 @@ export function AnalyticsPage() {
           baseCurrency={data?.baseCurrency ?? 'EUR'}
         />
       </section>
+
+      {/* AI insights (§13.5 V5-P12) — hidden entirely unless the capability read
+          says AI is available; compact and fold-away (anti-bloat). */}
+      <AiInsightsPanel portfolioId={portfolioId} hasHoldings={assets.length > 0} />
     </div>
   );
 }
