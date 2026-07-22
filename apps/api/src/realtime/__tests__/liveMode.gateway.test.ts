@@ -191,6 +191,9 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     const ack = await watch(bob, assetId, '12h');
     expect(ack.ok).toBe(true);
     expect(ack.frames!.length).toBeGreaterThanOrEqual(3);
+    // The ack reports the earliest instant it honestly covers (§13.5 V5-P1 §5):
+    // the oldest backfilled frame's timestamp.
+    expect(ack.coverageFrom).toBe(ack.frames![0]!.at);
     expect(ack.frames!.map((f) => f.price)).toEqual(
       aliceAll()
         .slice(0, ack.frames!.length)

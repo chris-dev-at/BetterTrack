@@ -235,6 +235,12 @@
       "priceChartAria": "Kurschart",
       "allocationFallbackTitle": "Aufteilung im Überblick"
     },
+    "marketState": {
+      "open": "Geöffnet",
+      "closed": "Geschlossen",
+      "pre": "Vorbörslich",
+      "post": "Nachbörslich"
+    },
     "or": "oder"
   },
   "ui": {
@@ -2664,7 +2670,9 @@
       "rateGroupHint": "Wie oft sich der Live-Kurs aktualisiert. Alle Betrachter teilen sich einen Update-Stream mit der schnellsten angefragten Rate.",
       "waiting": "Warte auf Live-Kurse…",
       "fallbackNote": "Live-Aktualisierung alle 60 s, bis der Stream wieder verbunden ist.",
-      "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}"
+      "chartAriaLabel": "Live-Kursdiagramm für {{symbol}}",
+      "marketClosed": "Markt geschlossen",
+      "marketClosedHint": "Zeigt die letzte Handelssitzung. Live-Updates werden fortgesetzt, sobald der Markt wieder öffnet."
     },
     "nav": {
       "overview": "Übersicht",

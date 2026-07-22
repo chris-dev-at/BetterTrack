@@ -16,7 +16,6 @@ import {
   type LiveWindow,
   type PricePoint,
   type QuoteResponse,
-  type RealtimeLiveFrame,
 } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
@@ -31,7 +30,7 @@ import {
   getAssetNews,
   getAssetSplits,
 } from '../../lib/marketIntelApi';
-import { useLiveFrames } from '../../lib/realtime';
+import { useLiveSeries } from '../../lib/realtime';
 import {
   WATCHLISTS_QUERY_KEY,
   listWatchlists,
@@ -46,7 +45,7 @@ import {
   formatSignedPercent,
   formatUnitPrice,
 } from '../../lib/format';
-import { Disclaimer, EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
+import { Disclaimer, EmptyState, MarketStateBadge, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart, Sparkline } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
 import { CapabilityTags } from './capabilityTags';
@@ -97,32 +96,6 @@ function toChartPoints(points: PricePoint[], interval: HistoryInterval | undefin
       : p.time.slice(0, 10)) as Time,
     value: p.close,
   }));
-}
-
-/**
- * Live frames → chart points (§6.3, V3-P7b). Live times are Unix seconds;
- * frames landing within the same second keep the newest value (lightweight-
- * charts requires strictly ascending unique times).
- */
-function toLiveChartPoints(frames: RealtimeLiveFrame[]): ChartPoint[] {
-  // Frames can arrive out of order (late poll-fallback samples, a stream
-  // reconnect replaying the ring buffer). lightweight-charts requires strictly
-  // ascending unique times, so sort by the ISO `at` timestamp before coalescing
-  // — otherwise a non-monotonic push crashes the live chart with "Cannot update
-  // oldest data". `at` is an ISO-8601 string, so lexical order is chronological.
-  const bySecond = new Map<number, number>();
-  for (const frame of [...frames].sort((a, b) => a.at.localeCompare(b.at))) {
-    bySecond.set(Math.floor(Date.parse(frame.at) / 1000), frame.price);
-  }
-  return [...bySecond.entries()].map(([time, value]) => ({ time: time as Time, value }));
-}
-
-/** Trim a frame list to the selected live window, anchored at the newest frame. */
-function trimToWindow(frames: RealtimeLiveFrame[], window: LiveWindow): RealtimeLiveFrame[] {
-  const last = frames[frames.length - 1];
-  if (!last) return frames;
-  const cutoff = Date.parse(last.at) - LIVE_WINDOW_MS[window];
-  return frames.filter((frame) => Date.parse(frame.at) >= cutoff);
 }
 
 // ─── Header ───────────────────────────────────────────────────────────────────
@@ -187,6 +160,8 @@ function AssetHeader({
                 {formatSignedPercent(dayChangePct)}
               </p>
             ) : null}
+            {/* Exchange session badge (§13.5 V5-P1) — invisible when unknown. */}
+            <MarketStateBadge state={quote.marketState} className="mt-1" />
           </div>
         ) : (
           <div className="text-right">
@@ -850,36 +825,6 @@ function LiveControls({
   );
 }
 
-/**
- * Poll-fallback frame accumulator: when Live Mode is on but the stream is
- * unavailable (flag off, gateway down, reconnecting), the already-running 60 s
- * cache-served quote poll feeds the live chart instead — the §6.3 "light
- * preview", with zero user-visible errors. Cleared while streaming so the two
- * sources never mix.
- */
-function usePollFallbackFrames(
-  assetId: string,
-  quote: QuoteResponse | undefined,
-  active: boolean,
-): RealtimeLiveFrame[] {
-  const [frames, setFrames] = useState<RealtimeLiveFrame[]>([]);
-  useEffect(() => {
-    if (!active) {
-      setFrames([]);
-      return;
-    }
-    if (!quote?.quote || !quote.asOf) return;
-    const { price, currency, dayChangePct } = quote.quote;
-    const at = quote.asOf;
-    setFrames((prev) => {
-      const last = prev[prev.length - 1];
-      if (last && last.at >= at) return prev;
-      return [...prev, { assetId, price, currency, dayChangePct: dayChangePct ?? null, at }];
-    });
-  }, [active, assetId, quote]);
-  return frames;
-}
-
 /** Quick actions (§6.3): reachable near the top, right under the header. */
 function ActionBar({ assetId, symbol }: { assetId: string; symbol: string }) {
   const t = useT();
@@ -952,26 +897,37 @@ export function AssetDetailPage() {
     enabled: !!id,
   });
 
-  // Live Mode (§6.3, V3-P7b): stream from the shared per-asset loop while it
-  // is reachable; otherwise the 60 s quote poll above doubles as the source.
+  // Live Mode (§6.3, V3-P7b; overhauled for §13.5 V5-P1): ONE merged, strictly-
+  // increasing series (seed ⊕ ring ⊕ ticks) with a generation counter — the
+  // chart rebuilds once per (asset/window/rate) change and appends the rest.
+  // The 60 s quote feeds the same series as a slow fallback tick when the
+  // stream is unavailable, so there is no per-tick redraw path left.
   const isCustom = detailQuery.data?.asset.isCustom ?? false;
   const liveActive = live && !isCustom && !!id;
-  const { frames: streamedFrames, streaming } = useLiveFrames(id, liveWindow, liveRate, liveActive);
-  const fallbackFrames = usePollFallbackFrames(id ?? '', quoteQuery.data, liveActive && !streaming);
+  const {
+    points: livePoints,
+    generation: liveGeneration,
+    streaming,
+    marketState: liveMarketState,
+  } = useLiveSeries(id, liveWindow, liveRate, liveActive, quoteQuery.data);
 
   // Derived chart series, memoized on their true inputs. Without this, unrelated
   // query settles (earnings/splits/news, #605/#610) re-render the page and hand
-  // PriceChart fresh array references every time, re-firing its data-push effect
-  // and — in live mode — replaying update() into a non-monotonic crash.
+  // PriceChart fresh array references every time, re-firing its data-push effect.
   const chartPoints = useMemo(
     () => toChartPoints(historyQuery.data?.points ?? [], historyQuery.data?.interval),
     [historyQuery.data?.points, historyQuery.data?.interval],
   );
-  const liveFrames = useMemo(
-    () => trimToWindow(streaming ? streamedFrames : fallbackFrames, liveWindow),
-    [streaming, streamedFrames, fallbackFrames, liveWindow],
+  // The hook's epoch-second points → lightweight-charts `ChartPoint`s.
+  const liveChartPoints = useMemo<ChartPoint[]>(
+    () => livePoints.map((p) => ({ time: p.time as Time, value: p.value })),
+    [livePoints],
   );
-  const livePoints = useMemo(() => toLiveChartPoints(liveFrames), [liveFrames]);
+
+  // Freshest exchange session: the streamed frame's state, else the 60 s quote's.
+  const liveWindowMs = LIVE_WINDOW_MS[liveWindow];
+  const chartMarketState = liveMarketState ?? quoteQuery.data?.quote?.marketState ?? null;
+  const marketClosed = chartMarketState === 'closed';
 
   if (!id) return null;
 
@@ -1029,17 +985,28 @@ export function AssetDetailPage() {
               onWindowChange={setLiveWindow}
               onRateChange={setLiveRate}
             />
-            {liveActive && !streaming ? (
+            {liveActive && marketClosed ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400 ring-1 ring-inset ring-neutral-700"
+                title={t('assets.live.marketClosedHint')}
+              >
+                <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-neutral-500" />
+                {t('assets.live.marketClosed')}
+              </span>
+            ) : liveActive && !streaming ? (
               <span className="text-xs text-neutral-500">{t('assets.live.fallbackNote')}</span>
             ) : null}
           </div>
         ) : null}
         {liveActive ? (
           <PriceChart
-            series={livePoints}
+            series={liveChartPoints}
             mode="area"
             showRangeToggle={false}
             live
+            generation={liveGeneration}
+            liveWindowMs={liveWindowMs}
+            marketClosed={marketClosed}
             emptyMessage={t('assets.live.waiting')}
             ariaLabel={t('assets.live.chartAriaLabel', { symbol: asset.symbol })}
           />

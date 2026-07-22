@@ -563,6 +563,40 @@ describe('AssetDetailPage — Live Mode (§6.3, V3-P7b)', () => {
   });
 });
 
+describe('AssetDetailPage — market state badge (§13.5 V5-P1 Part B)', () => {
+  const closedQuote = {
+    quote: { ...baseDetail.quote, marketState: 'closed' as const },
+    stale: false,
+    asOf: '2024-06-01T12:00:00.000Z',
+  };
+
+  test('renders the exchange-session badge in the header from the quote', async () => {
+    vi.mocked(getAssetQuote).mockResolvedValue(closedQuote);
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Closed')).toBeInTheDocument());
+  });
+
+  test('shows a "Market closed" state on the live chart when the market is closed', async () => {
+    vi.mocked(getAssetQuote).mockResolvedValue(closedQuote);
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Closed')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Toggle live mode' }));
+    expect(screen.getByText('Market closed')).toBeInTheDocument();
+  });
+
+  test('renders no badge when the provider reports no session state', async () => {
+    // Default fixture carries no marketState → the badge is absent, not wrong.
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+    expect(screen.queryByText('Closed')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open')).not.toBeInTheDocument();
+  });
+});
+
 describe('AssetDetailPage — quick actions (§13.2)', () => {
   test('quick actions render above the price chart, not buried at the bottom', async () => {
     renderPage();

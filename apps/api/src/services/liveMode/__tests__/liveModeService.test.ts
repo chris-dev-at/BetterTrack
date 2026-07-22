@@ -350,6 +350,75 @@ describe('liveModeService — history-stitched backfill (#372)', () => {
   });
 });
 
+describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
+  const stateQuote = (state: Quote['marketState']): CachedResult<Quote> => ({
+    value: {
+      price: 100,
+      currency: 'EUR',
+      dayChangePct: 0,
+      marketState: state,
+      asOf: '2026-07-09T14:00:00.000Z',
+    },
+    stale: false,
+    asOf: Date.now(),
+  });
+
+  it("carries the polled quote's market state onto every streamed frame", async () => {
+    const stub = createStubMarketData({
+      poll: () => stateQuote('closed'),
+      history: emptyHistory,
+    });
+    const { service } = makeService(stub);
+    const frames: string[] = [];
+    service.onFrame((f) => frames.push(f.marketState ?? 'none'));
+
+    service.watch(ASSET_ID, REF);
+    await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0));
+    expect(frames[0]).toBe('closed');
+  });
+
+  it('reports a null market state when the provider does not carry one', async () => {
+    const stub = createStubMarketData({ poll: () => quoteResult(100), history: emptyHistory });
+    const { service } = makeService(stub);
+    const seen: Array<string | null | undefined> = [];
+    service.onFrame((f) => seen.push(f.marketState));
+
+    service.watch(ASSET_ID, REF);
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
+    expect(seen[0]).toBeNull();
+  });
+});
+
+describe('liveModeService — backfill window coverage (§13.5 V5-P1 §5)', () => {
+  const T = Date.parse('2026-07-09T14:00:00.000Z');
+  const MIN = 60_000;
+  const bar = (atMs: number, close: number): PricePoint => ({
+    time: new Date(atMs).toISOString(),
+    close,
+  });
+
+  it('a fresh watch with cached bars seeds back to ~now − window (oldest ≤ start + 60 s), strictly increasing, no duplicate buckets', async () => {
+    // A full 30 minutes of 1-minute bars, empty ring (fresh watch).
+    const bars = Array.from({ length: 40 }, (_, i) => bar(T - (40 - i) * MIN, 300 + i));
+    const stub = createStubMarketData({
+      quote: () => quoteResult(100),
+      poll: () => quoteResult(100),
+      history: () => ({ value: bars, stale: false, asOf: T }),
+    });
+    const { service } = makeService(stub, { now: () => T });
+
+    const frames = await service.backfill(ASSET_ID, REF, '30m');
+
+    const windowStart = T - 30 * MIN;
+    expect(frames.length).toBeGreaterThan(0);
+    // Oldest seed reaches within one bar of the window start.
+    expect(Date.parse(frames[0]!.at)).toBeLessThanOrEqual(windowStart + MIN);
+    // Strictly increasing timestamps — no duplicate or backward buckets at the splice.
+    const times = frames.map((f) => Date.parse(f.at));
+    for (let i = 1; i < times.length; i++) expect(times[i]!).toBeGreaterThan(times[i - 1]!);
+  });
+});
+
 describe('liveRingBuffer', () => {
   const frame = (atMs: number, price: number) => ({
     assetId: ASSET_ID,

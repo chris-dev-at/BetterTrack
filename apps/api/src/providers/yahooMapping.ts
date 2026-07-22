@@ -5,6 +5,7 @@ import type {
   DividendEvents,
   EarningsEvent,
   EarningsEvents,
+  MarketState,
   NewsHeadline,
   SplitEvent,
   SplitEvents,
@@ -51,6 +52,30 @@ const MINOR_UNIT_CURRENCIES: Record<string, NormalizedCurrency> = {
   ZAX: { code: 'ZAR', priceScale: 0.01 },
   ILA: { code: 'ILS', priceScale: 0.01 }, // Tel Aviv agorot
 };
+
+/**
+ * Map Yahoo's `marketState` string to the contract's four-state enum (§13.5
+ * V5-P1 live badge). Yahoo emits `PRE`/`PREPRE`, `REGULAR`, `POST`/`POSTPOST`
+ * and `CLOSED`; crypto/24-7 symbols report `REGULAR`, so they map to `open`
+ * with no special-casing. An unknown/absent value maps to `null` so the client
+ * renders no badge rather than a wrong one — we never invent a state.
+ */
+export function mapMarketState(raw: string | null | undefined): MarketState | null {
+  switch ((raw ?? '').toUpperCase()) {
+    case 'REGULAR':
+      return 'open';
+    case 'PRE':
+    case 'PREPRE':
+      return 'pre';
+    case 'POST':
+    case 'POSTPOST':
+      return 'post';
+    case 'CLOSED':
+      return 'closed';
+    default:
+      return null;
+  }
+}
 
 /**
  * Normalise a raw Yahoo currency code into a real ISO-4217 code plus a price

@@ -24,7 +24,7 @@ import {
   reorderWorkboard,
   updateWatchlistSharing,
 } from '../../lib/workboardApi';
-import { EmptyState, MoneyText, Skeleton } from '../../ui';
+import { EmptyState, MarketStateBadge, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 
@@ -114,12 +114,16 @@ function WatchlistRow({
 
       {/* Symbol + Name + optional note */}
       <td className="min-w-0 px-3 py-3">
-        <Link
-          to={`/assets/${item.assetId}`}
-          className="block font-mono text-sm font-medium text-neutral-100 transition-colors hover:text-sky-400"
-        >
-          {item.asset.symbol}
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/assets/${item.assetId}`}
+            className="font-mono text-sm font-medium text-neutral-100 transition-colors hover:text-sky-400"
+          >
+            {item.asset.symbol}
+          </Link>
+          {/* Exchange session badge (§13.5 V5-P1) — only where the quote resolved. */}
+          <MarketStateBadge state={quote?.marketState} />
+        </div>
         <p className="max-w-[12rem] truncate text-xs text-neutral-500" title={item.asset.name}>
           {item.asset.name}
         </p>

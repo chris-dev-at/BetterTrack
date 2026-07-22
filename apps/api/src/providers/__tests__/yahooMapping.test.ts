@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { currencyForSearchResult, mapAssetType, normalizeCurrency } from '../yahooMapping';
+import {
+  currencyForSearchResult,
+  mapAssetType,
+  mapMarketState,
+  normalizeCurrency,
+} from '../yahooMapping';
 
 describe('normalizeCurrency (§5.4)', () => {
   it('passes through real ISO codes, upper-casing, scale 1', () => {
@@ -57,6 +62,24 @@ describe('mapAssetType (§5.5)', () => {
   it('defaults an unrecognized CURRENCY ref (no symbol given) to fx', () => {
     expect(mapAssetType('CURRENCY')).toBe('fx');
     expect(mapAssetType('CURRENCY', null)).toBe('fx');
+  });
+});
+
+describe('mapMarketState (§13.5 V5-P1)', () => {
+  it('maps Yahoo session strings to the four-state enum, crypto/REGULAR ⇒ open', () => {
+    expect(mapMarketState('REGULAR')).toBe('open');
+    expect(mapMarketState('PRE')).toBe('pre');
+    expect(mapMarketState('PREPRE')).toBe('pre');
+    expect(mapMarketState('POST')).toBe('post');
+    expect(mapMarketState('POSTPOST')).toBe('post');
+    expect(mapMarketState('CLOSED')).toBe('closed');
+  });
+
+  it('returns null for an unknown or absent state — never a wrong badge', () => {
+    expect(mapMarketState(undefined)).toBeNull();
+    expect(mapMarketState(null)).toBeNull();
+    expect(mapMarketState('')).toBeNull();
+    expect(mapMarketState('WAT')).toBeNull();
   });
 });
 

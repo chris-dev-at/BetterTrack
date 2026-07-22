@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
   const update = vi.fn();
   const remove = vi.fn();
   const fitContent = vi.fn();
+  const setVisibleRange = vi.fn();
   const applyOptions = vi.fn();
   const setMarkers = vi.fn();
   const addSeries = vi.fn((_def: unknown, _opts?: unknown) => ({
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => {
   const createChart = vi.fn((_el: unknown, _opts?: unknown) => ({
     addSeries,
     applyOptions,
-    timeScale: () => ({ fitContent }),
+    timeScale: () => ({ fitContent, setVisibleRange }),
     remove,
   }));
   const createSeriesMarkers = vi.fn(() => ({ setMarkers }));
@@ -28,6 +29,7 @@ const mocks = vi.hoisted(() => {
     update,
     remove,
     fitContent,
+    setVisibleRange,
     applyOptions,
     setMarkers,
     addSeries,
@@ -45,7 +47,20 @@ vi.mock('lightweight-charts', () => ({
   LineType: { Simple: 0, WithSteps: 1, Curved: 2 },
   ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
   PriceScaleMode: { Normal: 0, Logarithmic: 1, Percentage: 2, IndexedTo100: 3 },
+  TickMarkType: { Year: 0, Month: 1, DayOfMonth: 2, Time: 3, TimeWithSeconds: 4 },
 }));
+
+/** Read the options `createChart` was constructed with on its `n`-th call. */
+function chartOptions(call = 0) {
+  return mocks.createChart.mock.calls[call]?.[1] as {
+    localization?: { timeFormatter?: (t: unknown) => string };
+    timeScale?: {
+      tickMarkFormatter?: (t: unknown, type: number) => string;
+      shiftVisibleRangeOnNewBar?: boolean;
+      fixRightEdge?: boolean;
+    };
+  };
+}
 
 import { overlayColor, PriceChart } from './PriceChart';
 import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from './fixtures';
@@ -263,5 +278,161 @@ describe('PriceChart — live-append mode (§6.3, V3-P7b)', () => {
   test('renders the custom empty message while waiting for the first frame', () => {
     render(<PriceChart series={[]} live emptyMessage="Waiting for live prices…" />);
     expect(screen.getByRole('status')).toHaveTextContent('Waiting for live prices…');
+  });
+});
+
+describe('PriceChart — live generation + fixed viewport (§13.5 V5-P1)', () => {
+  const base = [
+    { time: 1_700_000_000 as never, value: 100 },
+    { time: 1_700_000_001 as never, value: 101 },
+  ];
+
+  test('a generation change is exactly one setData; an unchanged generation appends via update()', () => {
+    const { rerender } = render(
+      <PriceChart
+        series={base}
+        live
+        generation={1}
+        liveWindowMs={600_000}
+        showRangeToggle={false}
+      />,
+    );
+    expect(mocks.setData).toHaveBeenCalledTimes(1); // the one rebuild for generation 1
+
+    const grown = [...base, { time: 1_700_000_002 as never, value: 102 }];
+    rerender(
+      <PriceChart
+        series={grown}
+        live
+        generation={1}
+        liveWindowMs={600_000}
+        showRangeToggle={false}
+      />,
+    );
+    expect(mocks.setData).toHaveBeenCalledTimes(1); // no re-draw within the generation
+    expect(mocks.update).toHaveBeenCalled();
+
+    // A new generation (window / rate / asset change) → exactly one more setData.
+    rerender(
+      <PriceChart
+        series={grown}
+        live
+        generation={2}
+        liveWindowMs={600_000}
+        showRangeToggle={false}
+      />,
+    );
+    expect(mocks.setData).toHaveBeenCalledTimes(2);
+  });
+
+  test('a 500-frame soak never fires the #666 catch-fallback and setData ran exactly once', () => {
+    const onFallbackRedraw = vi.fn();
+    const start = 1_700_000_000;
+    let series: Array<{ time: never; value: number }> = [{ time: start as never, value: 100 }];
+    const { rerender } = render(
+      <PriceChart
+        series={series}
+        live
+        generation={7}
+        liveWindowMs={1_800_000}
+        onFallbackRedraw={onFallbackRedraw}
+        showRangeToggle={false}
+      />,
+    );
+    expect(mocks.setData).toHaveBeenCalledTimes(1);
+
+    for (let i = 1; i <= 500; i++) {
+      series = [...series, { time: (start + i) as never, value: 100 + (i % 7) }];
+      rerender(
+        <PriceChart
+          series={series}
+          live
+          generation={7}
+          liveWindowMs={1_800_000}
+          onFallbackRedraw={onFallbackRedraw}
+          showRangeToggle={false}
+        />,
+      );
+    }
+    // Zero per-tick full redraws across ≥500 monotonic appends (acceptance).
+    expect(mocks.setData).toHaveBeenCalledTimes(1);
+    expect(onFallbackRedraw).not.toHaveBeenCalled();
+    expect(mocks.update).toHaveBeenCalled();
+  });
+
+  test('pins the viewport to [now − window, now] via setVisibleRange and never fitContent (symptom 3)', () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const series = [
+      { time: (nowSec - 1800) as never, value: 100 }, // minute-density seed on the left
+      { time: (nowSec - 3) as never, value: 101 }, // dense live tick on the right
+    ];
+    render(
+      <PriceChart
+        series={series}
+        live
+        generation={1}
+        liveWindowMs={1_800_000}
+        showRangeToggle={false}
+      />,
+    );
+
+    expect(mocks.fitContent).not.toHaveBeenCalled();
+    const range = mocks.setVisibleRange.mock.calls.at(-1)?.[0] as { from: number; to: number };
+    expect(range.to - range.from).toBe(1800); // exactly the 30-minute window
+    // The scale is pinned — never auto-shifted onto a dense new bar.
+    expect(chartOptions().timeScale?.shiftVisibleRangeOnNewBar).toBe(false);
+    expect(chartOptions().timeScale?.fixRightEdge).toBe(false);
+  });
+
+  test('a closed market anchors the viewport to the newest datum, not wall-clock now', () => {
+    // Newest datum is an hour old (market closed) — the window must still frame it.
+    const nowSec = Math.floor(Date.now() / 1000);
+    const lastSec = nowSec - 3600;
+    const series = [
+      { time: (lastSec - 600) as never, value: 100 },
+      { time: lastSec as never, value: 101 },
+    ];
+    render(
+      <PriceChart
+        series={series}
+        live
+        generation={1}
+        liveWindowMs={600_000}
+        marketClosed
+        showRangeToggle={false}
+      />,
+    );
+    const range = mocks.setVisibleRange.mock.calls.at(-1)?.[0] as { from: number; to: number };
+    expect(range.to).toBe(lastSec); // anchored to the data, not `now`
+    expect(range.to - range.from).toBe(600);
+  });
+});
+
+describe('PriceChart — intraday time axis (§13.5 V5-P1 Part C)', () => {
+  test('tick formatter honors tickMarkType: HH:MM(:SS) for time ticks, day + month for date ticks', () => {
+    render(<PriceChart series={samplePriceSeries} />);
+    const format = chartOptions().timeScale!.tickMarkFormatter!;
+    const noon = Math.floor(Date.parse('2026-07-22T12:34:56Z') / 1000);
+
+    // Time / TimeWithSeconds → clock — never a bare repeated day number ("22 22").
+    expect(format(noon, 3)).toMatch(/^\d{1,2}:\d{2}$/); // Time = HH:MM
+    expect(format(noon, 4)).toMatch(/^\d{1,2}:\d{2}:\d{2}$/); // TimeWithSeconds
+
+    // Day ticks (a daily candle's calendar date) → "22 Jul", not a bare "22".
+    const day = format('2026-07-22', 2); // DayOfMonth
+    expect(day).toMatch(/22/);
+    expect(day).toMatch(/Jul/);
+    expect(format('2026-07-22', 1)).toMatch(/Jul/); // Month
+    expect(format('2026-07-22', 0)).toBe('2026'); // Year
+  });
+
+  test('crosshair shows day + time on intraday, day + month on a calendar date', () => {
+    render(<PriceChart series={samplePriceSeries} />);
+    const crosshair = chartOptions().localization!.timeFormatter!;
+    const instant = Math.floor(Date.parse('2026-07-22T12:34:00Z') / 1000);
+
+    expect(crosshair(instant)).toMatch(/\d{1,2}:\d{2}/); // intraday → carries a time
+    expect(crosshair('2026-07-22')).not.toMatch(/:/); // a calendar date → no time
+    expect(crosshair('2026-07-22')).toMatch(/Jul/);
   });
 });

@@ -19,7 +19,7 @@ import {
   listWatchlists,
   listWorkboard,
 } from '../../lib/workboardApi';
-import { EmptyState, Skeleton } from '../../ui';
+import { EmptyState, MarketStateBadge, Skeleton } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import {
   ACTIVE_SUM,
@@ -429,6 +429,7 @@ function ResultRow({
           <span className={cx('rounded px-1.5 py-0.5 text-xs font-medium', badgeClass)}>
             {item.type}
           </span>
+          <MarketStateBadge state={item.marketState} />
           <CapabilityTags type={item.type} />
         </div>
         <span className="truncate text-xs text-neutral-400">

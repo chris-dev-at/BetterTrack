@@ -205,6 +205,9 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         price: cached.value.price,
         currency: cached.value.currency,
         dayChangePct: cached.value.dayChangePct ?? null,
+        // The provider's session state rides the quote (§13.5 V5-P1): the chart
+        // shows "Market closed" when ticks stop because the exchange is closed.
+        marketState: cached.value.marketState ?? null,
         at: new Date(now()).toISOString(),
       };
       loop.failures = 0; // recovered — snap back to the finest-active cadence

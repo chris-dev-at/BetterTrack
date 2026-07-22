@@ -5,6 +5,7 @@ import {
   currencyCodeSchema,
   historyIntervalSchema,
   historyRangeSchema,
+  marketStateSchema,
   pricePointSchema,
   quoteSchema,
 } from './market';
@@ -51,6 +52,13 @@ export const searchResultItemSchema = z
     currency: currencyCodeSchema,
     /** True for the caller's own custom (`manual`) asset; false for a market asset. */
     isCustom: z.boolean(),
+    /**
+     * Best-effort exchange session for the market badge (§13.5 V5-P1). Search
+     * answers from the catalog with **no** synchronous provider call (§6.2), so
+     * this is only set where it is known without a quote fetch — always-on
+     * assets (crypto ⇒ `open`). Absent otherwise ⇒ the row renders no badge.
+     */
+    marketState: marketStateSchema.optional(),
   })
   .strict();
 export type SearchResultItem = z.infer<typeof searchResultItemSchema>;
