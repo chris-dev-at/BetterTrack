@@ -49,7 +49,15 @@ export {
   type NotificationsDispatchJobDeps,
 } from './notificationsJob';
 
-export { createMirrorReplicateJob, type MirrorReplicateJobDeps } from './mirrorJobs';
+export {
+  createMirrorReplicateJob,
+  createMirrorInviteCleanupJob,
+  MIRROR_INVITE_CLEANUP_SCHEDULER_ID,
+  MIRROR_INVITE_CLEANUP_CRON,
+  MIRROR_INVITE_CLEANUP_TZ,
+  type MirrorReplicateJobDeps,
+  type MirrorInviteCleanupJobDeps,
+} from './mirrorJobs';
 
 export {
   createWebhookDeliverJob,

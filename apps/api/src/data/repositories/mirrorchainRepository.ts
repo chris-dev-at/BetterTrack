@@ -513,6 +513,24 @@ export function createMirrorchainRepository(db: Database) {
         .where(eq(mirrorChainInvites.id, inviteId));
     },
 
+    /**
+     * Retire every pending invite created before `cutoff` — the daily
+     * `mirror.inviteCleanup` sweep enforcing the §4 30-day token hygiene. Frees
+     * the `(chain, invitee)` pending-unique slot and stamps `responded_at` with
+     * the sweep time, matching how the accept path marks a single stale invite
+     * expired. Returns the number of rows retired.
+     */
+    async expireStalePendingInvites(cutoff: Date): Promise<number> {
+      const rows = await db
+        .update(mirrorChainInvites)
+        .set({ status: 'expired', respondedAt: new Date() })
+        .where(
+          and(eq(mirrorChainInvites.status, 'pending'), lt(mirrorChainInvites.createdAt, cutoff)),
+        )
+        .returning({ id: mirrorChainInvites.id });
+      return rows.length;
+    },
+
     /** Fetch one invite by id (accept/decline/revoke authorization, §4). */
     async getInvite(inviteId: string): Promise<MirrorChainInviteRow | null> {
       const [row] = await db

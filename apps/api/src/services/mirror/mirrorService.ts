@@ -138,6 +138,14 @@ const CHAIN_OP_KINDS = new Set<string>(MIRROR_CHAIN_OP_KINDS);
 /** Suffix attempts for §1's collision rule (`Name (2)` …) on replicated names. */
 const NAME_SUFFIX_ATTEMPTS = 9;
 
+/**
+ * Invites expire with the standard token hygiene — 30 days (design §4). Age is
+ * measured off `created_at` (no `expires_at` column), so a stale pending invite
+ * is rejected at accept, hidden from the invite lists, and no longer blocks a
+ * re-invite; the daily `mirror.inviteCleanup` sweep retires the rows.
+ */
+export const MIRROR_INVITE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 type Payload<K extends MirrorOpPayload['kind']> = Extract<MirrorOpPayload, { kind: K }>;
 
 export interface MirrorServiceDeps {
@@ -1249,6 +1257,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     return members.find((m) => m.role === 'owner') ?? null;
   }
 
+  /** An invite past the §4 30-day token-hygiene horizon (age off `created_at`). */
+  function inviteExpired(invite: { createdAt: Date }): boolean {
+    return now() - invite.createdAt.getTime() > MIRROR_INVITE_TTL_MS;
+  }
+
   /** One activity-feed sentence per op kind (EN — the historical record, §6/§11). */
   function activitySummary(op: MirrorChainOpRow): string {
     const actor = op.actorUsername;
@@ -1836,6 +1849,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const incoming: MirrorInvite[] = [];
       const outgoing: MirrorInvite[] = [];
       for (const row of rows) {
+        // Stale (expired) invites are hidden until the daily sweep retires them
+        // (design §4) — they are never acceptable and never block a re-invite.
+        if (inviteExpired(row)) continue;
         const dto = toInviteDto(row, userId);
         (dto.direction === 'incoming' ? incoming : outgoing).push(dto);
       }
@@ -1871,13 +1887,20 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               `This group portfolio is full (max ${maxMembers} members).`,
             );
           }
-          // Pending-unique per (chain, invitee); declining allows a re-invite (§4).
-          if (await repo.findPendingInvite(chainId, inviteeId)) {
-            throw new ApiError(
-              409,
-              MIRROR_INVITE_EXISTS,
-              'That user already has a pending invite to this group portfolio.',
-            );
+          // Pending-unique per (chain, invitee); declining/expiry allows a
+          // re-invite (§4). An expired-but-not-yet-swept pending invite no longer
+          // blocks — retire it so the pending-unique slot frees for a fresh send.
+          const pending = await repo.findPendingInvite(chainId, inviteeId);
+          if (pending) {
+            if (inviteExpired(pending)) {
+              await repo.setInviteStatus(pending.id, 'expired', new Date(now()));
+            } else {
+              throw new ApiError(
+                409,
+                MIRROR_INVITE_EXISTS,
+                'That user already has a pending invite to this group portfolio.',
+              );
+            }
           }
           const invite = await repo.createInvite({ chainId, fromUser: actorId, toUser: inviteeId });
           return { chain, invite };
@@ -1898,6 +1921,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const invite = await repo.getInvite(inviteId);
       if (!invite || invite.status !== 'pending' || invite.toUser !== userId) {
         throw notFound('Invite not found.', MIRROR_INVITE_NOT_FOUND);
+      }
+      // Invites expire with the standard token hygiene (design §4, 30 days): a
+      // stale pending invite is rejected and marked expired at accept, freeing
+      // the (chain, invitee) pending-unique slot for a fresh re-invite.
+      if (inviteExpired(invite)) {
+        await repo.setInviteStatus(inviteId, 'expired', new Date(now()));
+        throw notFound('This invite has expired.', MIRROR_INVITE_NOT_FOUND);
       }
       const chain = await repo.getChain(invite.chainId);
       if (!chain || chain.status !== 'active') {
@@ -2028,6 +2058,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: targetUserId,
         meta: { chainId, role },
       });
+      // The role.* op bumped last_seq — replicate so every copy skip-acks it and
+      // the sync-state read models settle to 100% (design §11).
+      await scheduleReplicate(chainId);
     },
 
     async transferOwnership(actorId, chainId, toUserId) {
@@ -2067,11 +2100,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           return chain;
         },
       );
-      // Notify every active member ownership changed (design §5); the acting old
-      // owner already knows, so they are skipped.
+      // Notify every active member ownership changed (design §5). The acting old
+      // owner already knows; the NEW owner is skipped too — the copy reads
+      // "⟨actor⟩ is now the owner", which self-named reads wrong, and their own
+      // member sheet already shows the role.
       const newOwnerName = await usernameOf(toUserId);
       for (const m of await repo.listActiveMembers(chainId)) {
-        if (m.userId && m.userId !== actorId) {
+        if (m.userId && m.userId !== actorId && m.userId !== toUserId) {
           await emitMirror('mirror.ownership_transferred', m.userId, chain, newOwnerName, toUserId);
         }
       }
@@ -2082,6 +2117,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: toUserId,
         meta: { chainId },
       });
+      // The owner.transferred op bumped last_seq — replicate so every copy
+      // skip-acks it and the sync-state read models settle to 100% (design §11).
+      await scheduleReplicate(chainId);
     },
 
     async removeMember(actorId, chainId, targetUserId) {
@@ -2148,6 +2186,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: targetUserId,
         meta: { chainId },
       });
+      // The member.removed op bumped last_seq — replicate so the remaining
+      // copies skip-ack it and their sync-state read models settle (design §11).
+      await scheduleReplicate(chainId);
     },
 
     async leaveChain(userId, chainId) {
@@ -2201,6 +2242,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: chainId,
         meta: { chainId },
       });
+      // The member.left op bumped last_seq — replicate so the remaining copies
+      // skip-ack it and their sync-state read models settle (design §11).
+      await scheduleReplicate(chainId);
     },
 
     async renameChain(actorId, chainId, name) {
@@ -2225,6 +2269,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const updated = (await repo.getChain(chainId))!;
       const member = (await repo.findActiveMembership(chainId, actorId))!;
       const memberCount = await repo.countActiveMembers(chainId);
+      // The chain.rename op bumped last_seq — replicate so every copy skip-acks
+      // it and the sync-state read models settle to 100% (design §11).
+      await scheduleReplicate(chainId);
       return summaryOf(member, updated, memberCount);
     },
 
@@ -2264,6 +2311,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: chainId,
         meta: { chainId },
       });
+      // Uniform with the other membership ops (design §11). Every copy is now a
+      // fork, so this run finds no active members and no-ops — the sync-state
+      // read models no longer surface a dissolved chain anyway.
+      await scheduleReplicate(chainId);
     },
 
     async submitPortfolioDelete(userId, portfolioId) {

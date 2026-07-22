@@ -49,6 +49,10 @@ export const QUEUE_NAMES = {
   // `last_seq` — strictly ordered, idempotent per op, per-chain serialized via
   // job-id dedupe. Enqueued after every chain write and on join.
   mirrorReplicate: 'mirror.replicate',
+  // V5-P7 MIRRORCHAIN (#680, design §4): daily sweep that retires pending
+  // invites past the 30-day token-hygiene horizon (frees the pending-unique
+  // slot; matches the accept-time expiry check).
+  mirrorInviteCleanup: 'mirror.inviteCleanup',
   // V5-P10 outbound webhooks (#648): per-event HMAC-signed delivery with the
   // repo's retry/backoff, plus a daily retention sweep over the delivery log.
   webhooksDeliver: 'webhooks.deliver',
@@ -87,6 +91,7 @@ export interface JobPayloads {
   'marketIntel.dividendScan': Record<string, never>;
   'standingOrders.process': Record<string, never>;
   'mirror.replicate': { chainId: string };
+  'mirror.inviteCleanup': Record<string, never>;
   // One HMAC-signed POST of `event` to the subscription; `deliveryId` is stable
   // across retries (receiver dedupe key + delivery-log row id).
   'webhooks.deliver': { subscriptionId: string; deliveryId: string; event: DomainEvent };

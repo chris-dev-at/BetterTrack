@@ -1,4 +1,5 @@
-import type { MirrorService } from '../../services/mirror/mirrorService';
+import type { MirrorchainRepository } from '../../data/repositories/mirrorchainRepository';
+import { MIRROR_INVITE_TTL_MS, type MirrorService } from '../../services/mirror/mirrorService';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -43,6 +44,41 @@ export function createMirrorReplicateJob(
       // Ops appended after this run read `last_seq` would otherwise wait for
       // the next write — chain a fresh job to catch the tail now.
       if (result.lagging > 0) await deps.enqueue(chainId);
+    },
+  };
+}
+
+/**
+ * `mirror.inviteCleanup` — the daily sweep that retires pending invites past the
+ * §4 30-day token-hygiene horizon ({@link MIRROR_INVITE_TTL_MS}), keeping the
+ * `(chain, invitee)` pending-unique slot free for re-invites (the accept path
+ * already rejects a stale invite at use time; this just tidies the rows). The
+ * `webhookJobs`/`apiKeyJobs` cleanup pattern.
+ */
+
+export const MIRROR_INVITE_CLEANUP_SCHEDULER_ID = 'mirror.inviteCleanup';
+/** Daily at 04:50 Europe/Vienna — off-peak, just after the api-key sweep. */
+export const MIRROR_INVITE_CLEANUP_CRON = '50 4 * * *';
+export const MIRROR_INVITE_CLEANUP_TZ = 'Europe/Vienna';
+
+export interface MirrorInviteCleanupJobDeps {
+  repo: Pick<MirrorchainRepository, 'expireStalePendingInvites'>;
+}
+
+export function createMirrorInviteCleanupJob(
+  deps: MirrorInviteCleanupJobDeps,
+): JobDefinition<'mirror.inviteCleanup'> {
+  return {
+    name: QUEUE_NAMES.mirrorInviteCleanup,
+    async handler(_job, ctx) {
+      const cutoff = new Date(Date.now() - MIRROR_INVITE_TTL_MS);
+      const expired = await deps.repo.expireStalePendingInvites(cutoff);
+      if (expired > 0) ctx.logger.info({ expired }, 'stale mirror invites expired');
+    },
+    schedule: {
+      id: MIRROR_INVITE_CLEANUP_SCHEDULER_ID,
+      pattern: MIRROR_INVITE_CLEANUP_CRON,
+      tz: MIRROR_INVITE_CLEANUP_TZ,
     },
   };
 }

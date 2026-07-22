@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   MIRROR_FORBIDDEN,
   MIRROR_INVITE_EXISTS,
+  MIRROR_INVITE_NOT_FOUND,
   MIRROR_MEMBER_CAP_REACHED,
   MIRROR_NOT_FRIENDS,
   MIRROR_OWNER_TRANSFER_REQUIRED,
@@ -11,6 +12,7 @@ import {
 
 import * as schema from '../data/schema';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import { MIRROR_INVITE_TTL_MS } from '../services/mirror/mirrorService';
 import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -41,6 +43,23 @@ async function unfriend(h: TestHarness, a: string, b: string): Promise<void> {
   await h.db
     .delete(schema.friendships)
     .where(and(eq(schema.friendships.userA, lo), eq(schema.friendships.userB, hi)));
+}
+
+/** Age an invite by rewinding its `created_at` (there is no `expires_at` column). */
+async function backdateInvite(h: TestHarness, inviteId: string, ageDays: number): Promise<void> {
+  await h.db
+    .update(schema.mirrorChainInvites)
+    .set({ createdAt: new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000) })
+    .where(eq(schema.mirrorChainInvites.id, inviteId));
+}
+
+/** The current status of an invite row (asserting the expiry transition). */
+async function inviteStatus(h: TestHarness, inviteId: string): Promise<string> {
+  const [row] = await h.db
+    .select()
+    .from(schema.mirrorChainInvites)
+    .where(eq(schema.mirrorChainInvites.id, inviteId));
+  return row!.status;
 }
 
 /** Owner O with a converted chain; returns O + chainId + O's copy id. */
@@ -293,6 +312,81 @@ describe('mirrorchain M3 — invite flow (design §4)', () => {
   });
 });
 
+// ── Invite expiry (design §4 — the 30-day token hygiene) ─────────────────────
+
+describe('mirrorchain M3 — invite expiry (design §4)', () => {
+  it('rejects an invite past the 30-day horizon at accept and marks it expired', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await h.seedUser(uu('bob'));
+    await makeFriends(h, ownerId, bob.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, bob.id);
+    const inviteId = (await h.ctx.mirror.listInvites(bob.id)).incoming[0]!.id;
+
+    await backdateInvite(h, inviteId, 31);
+    await expect(h.ctx.mirror.acceptInvite(bob.id, inviteId)).rejects.toMatchObject({
+      code: MIRROR_INVITE_NOT_FOUND,
+    });
+    expect(await inviteStatus(h, inviteId)).toBe('expired');
+  });
+
+  it('hides an expired invite from both inboxes', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await h.seedUser(uu('bob'));
+    await makeFriends(h, ownerId, bob.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, bob.id);
+    const inviteId = (await h.ctx.mirror.listInvites(bob.id)).incoming[0]!.id;
+    expect((await h.ctx.mirror.listInvites(ownerId)).outgoing).toHaveLength(1);
+
+    await backdateInvite(h, inviteId, 40);
+    expect((await h.ctx.mirror.listInvites(bob.id)).incoming).toHaveLength(0);
+    expect((await h.ctx.mirror.listInvites(ownerId)).outgoing).toHaveLength(0);
+  });
+
+  it('an expired pending invite no longer blocks a re-invite (frees the pending-unique slot)', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    const bob = await h.seedUser(uu('bob'));
+    await makeFriends(h, ownerId, bob.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, bob.id);
+    const staleId = (await h.ctx.mirror.listInvites(bob.id)).incoming[0]!.id;
+    await backdateInvite(h, staleId, 45);
+
+    // The re-invite succeeds despite the stale pending row (which is retired),
+    // rather than tripping MIRROR_INVITE_EXISTS.
+    await h.ctx.mirror.inviteMember(ownerId, chainId, bob.id);
+    expect(await inviteStatus(h, staleId)).toBe('expired');
+
+    const fresh = (await h.ctx.mirror.listInvites(bob.id)).incoming;
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]!.id).not.toBe(staleId);
+    // The fresh invite accepts cleanly.
+    const accepted = await h.ctx.mirror.acceptInvite(bob.id, fresh[0]!.id);
+    expect(accepted.portfolioId).toBeTruthy();
+  });
+
+  it('the cleanup sweep retires only pending invites older than the cutoff', async () => {
+    const h = await createTestApp();
+    const repo = repoOf(h);
+    const { ownerId, chainId } = await ownerChain(h);
+    const stale = await h.seedUser(uu('stale'));
+    const fresh = await h.seedUser(uu('fresh'));
+    await makeFriends(h, ownerId, stale.id);
+    await makeFriends(h, ownerId, fresh.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, stale.id);
+    await h.ctx.mirror.inviteMember(ownerId, chainId, fresh.id);
+    const staleId = (await h.ctx.mirror.listInvites(stale.id)).incoming[0]!.id;
+    const freshId = (await h.ctx.mirror.listInvites(fresh.id)).incoming[0]!.id;
+    await backdateInvite(h, staleId, 31);
+
+    const cutoff = new Date(Date.now() - MIRROR_INVITE_TTL_MS);
+    expect(await repo.expireStalePendingInvites(cutoff)).toBe(1);
+    expect(await inviteStatus(h, staleId)).toBe('expired');
+    expect(await inviteStatus(h, freshId)).toBe('pending');
+  });
+});
+
 // ── Kick / leave → fork ──────────────────────────────────────────────────────
 
 describe('mirrorchain M3 — kick / leave → fork (design §6)', () => {
@@ -358,6 +452,28 @@ describe('mirrorchain M3 — transfer ownership (design §5)', () => {
     expect(members.find((m) => m.userId === ownerId)!.role).toBe('member');
     const ops = await repo.listActivity(chainId, { limit: 100 });
     expect(ops.some((o) => o.kind === 'owner.transferred')).toBe(true);
+  });
+
+  it('notifies other members but neither the acting owner nor the new owner', async () => {
+    const events: DispatchableEvent[] = [];
+    const h = await createTestApp({
+      notificationEnqueue: async (e) => {
+        events.push(e);
+      },
+    });
+    const { ownerId, chainId } = await ownerChain(h);
+    const newOwner = await join(h, chainId, 'member');
+    const third = await join(h, chainId, 'member');
+
+    await h.ctx.mirror.transferOwnership(ownerId, chainId, newOwner.userId);
+    const notified = events
+      .filter((e) => e.type === 'mirror.ownership_transferred')
+      .map((e) => e.userId);
+    expect(notified).toContain(third.userId);
+    // The new owner is skipped — the copy reads "⟨actor⟩ is now the owner", which
+    // self-named reads wrong; the acting old owner already knows.
+    expect(notified).not.toContain(newOwner.userId);
+    expect(notified).not.toContain(ownerId);
   });
 });
 
