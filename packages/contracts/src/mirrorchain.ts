@@ -32,6 +32,32 @@ export const mirrorOpVersionSchema = z.literal(MIRROR_OP_VERSION);
 /** Env-tunable cap on active members per chain (design §4, bounded fan-out). */
 export const MIRROR_MAX_MEMBERS = 16;
 
+// --- Error codes (M2, design §§2–3) -----------------------------------------
+
+/**
+ * Stale-edit refusal (design §3): a mutating op's `baseSeq` no longer matches
+ * the entity's latest op seq — the client refetches and re-submits against
+ * fresh data. HTTP 409.
+ */
+export const MIRROR_CONFLICT = 'MIRROR_CONFLICT';
+/**
+ * Terminal-delete refusal (design §3): the targeted `mirror_id`'s latest op is
+ * a `*.delete` — a deleted logical entity is never resurrected. HTTP 409.
+ */
+export const MIRROR_ROW_DELETED = 'MIRROR_ROW_DELETED';
+/**
+ * The acting member's own copy could not catch up on pending earlier ops
+ * (a stalled apply — bug-level), so the write is refused rather than applied
+ * out of order (design §2). HTTP 503.
+ */
+export const MIRROR_SYNC_STALLED = 'MIRROR_SYNC_STALLED';
+/**
+ * A write into a synced copy references a per-user custom asset (design §10:
+ * members never see each other's custom assets, so the op could never apply on
+ * any other copy). Custom assets live in non-chain portfolios. HTTP 400.
+ */
+export const MIRROR_ASSET_NOT_SYNCABLE = 'MIRROR_ASSET_NOT_SYNCABLE';
+
 // --- Enumerations (mirror the DB enums in apps/api schema) ------------------
 
 export const MIRROR_CHAIN_STATUSES = ['active', 'dissolved'] as const;
@@ -159,6 +185,22 @@ const transactionSideSchema = z.enum(['buy', 'sell']);
 // each copy taxes a replicated write under ITS OWN mode at apply time (design
 // §9) — so no tax fields appear here.
 
+/**
+ * Cash-link intent on a transaction op (M2 extension). The buy/sell cash legs
+ * themselves stay copy-derived (design §1: derived rows are copy-scoped), but
+ * WHETHER the trade funds from / pays into cash is part of the user's intent —
+ * replicating it keeps external flows identical on every copy, preserving §8's
+ * "balances skew by exactly the copy-local tax movements" invariant. Each copy
+ * resolves `cashSourceMirrorId` to its OWN local source (null → its Main). A
+ * bare source id on a sell without either flag names the tax settlement source
+ * (V3-P4); copies whose tax mode is `none` ignore it.
+ */
+const txCashIntentFields = {
+  payFromCash: z.boolean(),
+  addProceedsToCash: z.boolean(),
+  cashSourceMirrorId: mirrorIdSchema.nullable(),
+} as const;
+
 const txCreatePayload = z
   .object({
     opVersion: mirrorOpVersionSchema,
@@ -173,6 +215,14 @@ const txCreatePayload = z
     note: noteSchema,
     allowUncovered: z.boolean(),
     uncoveredEntryPrice: z.number().nonnegative().finite().nullable(),
+    ...txCashIntentFields,
+    /**
+     * Backdated pay-from-cash settlement (#378): each copy re-derives the leg
+     * date under its own ledger, so a short copy dates the leg "today" rather
+     * than dipping negative. Leg dates are TWR-internal, so per-copy variance
+     * here never touches performance.
+     */
+    settleCashAsOfToday: z.boolean(),
     originSource: mirrorOriginSourceSchema,
   })
   .strict();
@@ -191,6 +241,10 @@ const txUpdatePayload = z
     note: noteSchema,
     allowUncovered: z.boolean(),
     uncoveredEntryPrice: z.number().nonnegative().finite().nullable(),
+    // Full state carries the (immutable) cash-link intent too, so the
+    // tax-immutable correction path (design §2: delete + re-create) can rebuild
+    // the row's cash leg on every copy.
+    ...txCashIntentFields,
   })
   .strict();
 

@@ -62,6 +62,15 @@ import type { AppContext } from '../context';
  * is `portfolio_id`-scoped so multi-portfolio is purely additive; each handler
  * verifies the portfolio belongs to the session user (404 otherwise, enforced in
  * the repository — no IDOR, never a 403). Controllers stay thin.
+ *
+ * MIRRORCHAIN seam (§13.5 V5-P7 M2, design §1): every portfolio-CONTENT write
+ * (transactions, dividends, cash, sources) calls `ctx.mirror.submit*`, which
+ * routes a synced copy's write through op append + replication and falls
+ * through to the plain portfolio/tax service for every other portfolio — one
+ * membership-index lookup is the entire cost on the non-chain path, which
+ * otherwise stays byte-identical to before. Reads and copy-scoped writes
+ * (rename/visibility/archive of the portfolio itself, tax settings) never
+ * route through the chain (design §1 copy-scoped list).
  */
 export function createPortfolioRouter(ctx: AppContext): Router {
   const router = Router();
@@ -208,7 +217,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashEntryRequest;
-      const result = await ctx.portfolio.depositCash(req.authUser!.id, portfolioId, body);
+      const result = await ctx.mirror.submitCashDeposit(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
     },
   );
@@ -222,7 +231,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashEntryRequest;
-      const result = await ctx.portfolio.withdrawCash(req.authUser!.id, portfolioId, body);
+      const result = await ctx.mirror.submitCashWithdraw(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
     },
   );
@@ -264,7 +273,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CreateCashSourceRequest;
-      const source = await ctx.portfolio.createCashSource(req.authUser!.id, portfolioId, body);
+      const source = await ctx.mirror.submitSourceCreate(req.authUser!.id, portfolioId, body);
       const response: CashSourceResponse = { source };
       res.status(201).json(response);
     },
@@ -281,7 +290,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         sourceId: string;
       };
       const patch = req.valid?.body as UpdateCashSourceRequest;
-      const source = await ctx.portfolio.updateCashSource(
+      const source = await ctx.mirror.submitSourceUpdate(
         req.authUser!.id,
         portfolioId,
         sourceId,
@@ -302,7 +311,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         portfolioId: string;
         sourceId: string;
       };
-      const source = await ctx.portfolio.archiveCashSource(req.authUser!.id, portfolioId, sourceId);
+      const source = await ctx.mirror.submitSourceArchive(req.authUser!.id, portfolioId, sourceId);
       const response: CashSourceResponse = { source };
       res.json(response);
     },
@@ -317,7 +326,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         portfolioId: string;
         sourceId: string;
       };
-      const source = await ctx.portfolio.restoreCashSource(req.authUser!.id, portfolioId, sourceId);
+      const source = await ctx.mirror.submitSourceRestore(req.authUser!.id, portfolioId, sourceId);
       const response: CashSourceResponse = { source };
       res.json(response);
     },
@@ -333,7 +342,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CashTransferRequest;
-      const result = await ctx.portfolio.transferCash(req.authUser!.id, portfolioId, body);
+      const result = await ctx.mirror.submitCashTransfer(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
     },
   );
@@ -351,7 +360,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         sourceId: string;
       };
       const body = req.valid?.body as SetCashBalanceRequest;
-      const result = await ctx.portfolio.setCashBalance(
+      const result = await ctx.mirror.submitSetCashBalance(
         req.authUser!.id,
         portfolioId,
         sourceId,
@@ -370,7 +379,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CreateDividendRequest;
-      const result = await ctx.tax.recordDividend(req.authUser!.id, portfolioId, body);
+      const result = await ctx.mirror.submitDividendRecord(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
     },
   );
@@ -399,7 +408,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         portfolioId: string;
         dividendId: string;
       };
-      await ctx.tax.deleteDividend(req.authUser!.id, portfolioId, dividendId);
+      await ctx.mirror.submitDividendDelete(req.authUser!.id, portfolioId, dividendId);
       res.status(204).send();
     },
   );
@@ -518,7 +527,11 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const body = req.valid?.body as CreateTransactionsRequest;
       const inputs: TransactionInput[] = 'transactions' in body ? body.transactions : [body];
-      const created = await ctx.portfolio.createTransactions(req.authUser!.id, portfolioId, inputs);
+      const created = await ctx.mirror.submitTransactionsCreate(
+        req.authUser!.id,
+        portfolioId,
+        inputs,
+      );
       res.status(201).json({ transactions: created });
     },
   );
@@ -532,7 +545,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
       const patch = req.valid?.body as UpdateTransactionRequest;
-      const transaction = await ctx.portfolio.updateTransaction(
+      const transaction = await ctx.mirror.submitTransactionUpdate(
         req.authUser!.id,
         portfolioId,
         txId,
@@ -549,7 +562,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     idempotency,
     async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
-      await ctx.portfolio.deleteTransaction(req.authUser!.id, portfolioId, txId);
+      await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId);
       res.status(204).send();
     },
   );

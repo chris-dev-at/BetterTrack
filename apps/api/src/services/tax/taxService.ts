@@ -271,13 +271,16 @@ export interface TaxService {
    * Record a dividend (V3-P4c): gross EUR into a source, tax-mode aware.
    * `opts.source` is the V5-P0c source tag stamped on the dividend and its cash
    * movements — `manual` by default, `import:<broker>` from the CSV apply path.
-   * Server-assigned only (the HTTP body carries no source field).
+   * Server-assigned only (the HTTP body carries no source field). `opts.force`
+   * is the MIRRORCHAIN replica-apply mode (design §2/§8): the cash overdraw
+   * gate is waived — the copy taxes the replicated dividend under its OWN mode
+   * (design §9), and its copy-local settlement may legitimately skew the source.
    */
   recordDividend(
     userId: string,
     portfolioId: string,
     input: CreateDividendRequest,
-    opts?: { source?: string },
+    opts?: { source?: string; force?: boolean },
   ): Promise<CreateDividendResponse>;
   /** The portfolio's dividends, newest pay date first; optional source-tag filter (V5-P0c). */
   listDividends(
@@ -285,8 +288,17 @@ export interface TaxService {
     portfolioId: string,
     opts?: { source?: string },
   ): Promise<DividendListResponse>;
-  /** Delete a dividend; movements cascade, AT years settle append-only. */
-  deleteDividend(userId: string, portfolioId: string, dividendId: string): Promise<void>;
+  /**
+   * Delete a dividend; movements cascade, AT years settle append-only.
+   * `opts.force` (MIRRORCHAIN replica apply, design §2): waives the
+   * ledger-would-go-negative gate so a replica follows the chain's total order.
+   */
+  deleteDividend(
+    userId: string,
+    portfolioId: string,
+    dividendId: string,
+    opts?: { force?: boolean },
+  ): Promise<void>;
   /** Per-year summaries (realized P/L, dividends, taxes), newest first. */
   getYearReports(userId: string, portfolioId: string): Promise<TaxYearListResponse>;
   /** One year with per-position drill-down. */
@@ -2096,7 +2108,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     userId: string,
     portfolioId: string,
     input: CreateDividendRequest,
-    opts?: { source?: string },
+    opts?: { source?: string; force?: boolean },
   ): Promise<CreateDividendResponse> {
     await requireOwnedPortfolio(userId, portfolioId);
     // Source tag (V5-P0c): `manual` unless the CSV apply path passes a broker.
@@ -2527,7 +2539,11 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     movements.push(...extras);
 
     const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-    assertCashSolvent(existing.map(toDomainMovement), movements.map(newToDomainMovement));
+    // Waived in MIRRORCHAIN force mode (design §2/§8): the copy-local tax
+    // settlement may skew a replica's source; it renders honestly, never gates.
+    if (!opts?.force) {
+      assertCashSolvent(existing.map(toDomainMovement), movements.map(newToDomainMovement));
+    }
 
     const inserted = await taxRepo.insertDividend(
       portfolioId,
@@ -2602,6 +2618,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     userId: string,
     portfolioId: string,
     dividendId: string,
+    opts?: { force?: boolean },
   ): Promise<void> {
     await requireOwnedPortfolio(userId, portfolioId);
     const dividend = await taxRepo.findByIdForPortfolio(portfolioId, dividendId);
@@ -2799,20 +2816,24 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
     // Removing the gross inflow (and adding corrections) must never strand a
     // later outflow: replay the remaining history first (no silent negatives).
-    try {
-      projectCashLedgerBySource([
-        ...remainingMovements.map(toDomainMovement),
-        ...corrections.map(newToDomainMovement),
-      ]);
-    } catch (err) {
-      if (err instanceof InsufficientCashError) {
-        throw badRequest(
-          'Deleting this dividend would overdraw your cash balance on a later date. Add cash or remove the dependent movements first.',
-          'CASH_LEDGER_WOULD_GO_NEGATIVE',
-          { availableEur: err.balanceEur, shortfallEur: err.shortfallEur },
-        );
+    // Waived in MIRRORCHAIN force mode (design §2): replicas follow the chain's
+    // total order; a tax-skewed copy renders its negative balance honestly.
+    if (!opts?.force) {
+      try {
+        projectCashLedgerBySource([
+          ...remainingMovements.map(toDomainMovement),
+          ...corrections.map(newToDomainMovement),
+        ]);
+      } catch (err) {
+        if (err instanceof InsufficientCashError) {
+          throw badRequest(
+            'Deleting this dividend would overdraw your cash balance on a later date. Add cash or remove the dependent movements first.',
+            'CASH_LEDGER_WOULD_GO_NEGATIVE',
+            { availableEur: err.balanceEur, shortfallEur: err.shortfallEur },
+          );
+        }
+        throw err;
       }
-      throw err;
     }
 
     const deleted = await taxRepo.deleteForPortfolio(portfolioId, dividendId);

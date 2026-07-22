@@ -214,6 +214,8 @@ import {
 } from '../services/liveMode';
 import { createCatalogEnrichment } from '../services/search/catalogEnrichment';
 import { createSearchService, type SearchService } from '../services/search/searchService';
+import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
+import { createMirrorService, type MirrorService } from '../services/mirror';
 import { createSessionService } from '../services/sessions/sessionService';
 import { createSocialService, type SocialService } from '../services/social/socialService';
 import { createCommentService, type CommentService } from '../services/social/commentService';
@@ -273,6 +275,14 @@ export interface AppContext {
   snapshots: PortfolioSnapshotService;
   /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
   tax: TaxService;
+  /**
+   * MIRRORCHAIN replication core (§13.5 V5-P7 M2, design §§1–3): the write-path
+   * seam for synced copies — op append under the chain lock, origin apply,
+   * replicate/replay, conflict guard. Portfolio-content write routes call its
+   * `submit*` methods, which fall through to the plain portfolio/tax services
+   * for non-chain portfolios (those stay byte-identical to today).
+   */
+  mirror: MirrorService;
   /** Custom investments + their value-points editor (§6.9). */
   customAssets: CustomAssetService;
   /** Conglomerate CRUD — user-defined weighted asset baskets (§6.5). */
@@ -1000,6 +1010,37 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     snapshots,
   });
 
+  // MIRRORCHAIN replication core (§13.5 V5-P7 M2): built on top of the plain
+  // portfolio/tax services — every apply routes through them under the target
+  // member's own context (design §2/§9). Production replicates via the durable
+  // `mirror.replicate` queue — plain per-write enqueues, NO job-id dedupe
+  // (a retained completed/failed job under a fixed id silently swallows every
+  // later add); the per-chain lock inside `replicateChain` serializes appliers.
+  // Tests drive `mirror.replicateChain` synchronously (the snapshots pattern).
+  const mirrorchainRepo = createMirrorchainRepository(db);
+  const mirror = createMirrorService({
+    repo: mirrorchainRepo,
+    portfolio,
+    tax,
+    portfolioRepo,
+    transactionRepo,
+    cashMovementRepo,
+    cashSourceRepo,
+    taxRepo,
+    users: userRepo,
+    audit,
+    events,
+    redis,
+    ...(queues
+      ? {
+          enqueueReplicate: async (chainId: string) => {
+            await queues.enqueue('mirror.replicate', { chainId });
+          },
+        }
+      : {}),
+    logger,
+  });
+
   // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
   const conglomerateRepo = createConglomerateRepository(db);
   const conglomerate = createConglomerateService({
@@ -1369,6 +1410,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio,
     snapshots,
     tax,
+    mirror,
     customAssets,
     conglomerate,
     backtest: backtestPreview,
