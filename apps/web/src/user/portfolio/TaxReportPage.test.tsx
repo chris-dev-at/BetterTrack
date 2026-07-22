@@ -85,6 +85,46 @@ describe('TaxReportPage', () => {
     ).toBeInTheDocument();
   });
 
+  test('repeats the estimates disclaimer under each expanded year block (#635)', async () => {
+    vi.mocked(portfolioApi.getTaxYearReport).mockResolvedValue({
+      year: 2026,
+      summary: YEAR_2026,
+      positions: [
+        {
+          asset: APPLE,
+          realizedPnlEur: 350,
+          dividendsGrossEur: 0,
+          taxEur: 96.25,
+          sells: [],
+          dividends: [],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    // Header-only disclaimer before expanding.
+    expect(await screen.findByText(/Estimates for your personal overview only/i)).toBeInTheDocument();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    await screen.findByText('AAPL');
+
+    // Now the header notice AND the per-year block notice both render.
+    expect(
+      screen.getAllByText(/Estimates for your personal overview only/i).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  test('a past year shows the "Passed" status (not "Locked")', async () => {
+    vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({
+      years: [{ ...YEAR_2026, year: 2024, locked: true }],
+    });
+    renderPage();
+
+    expect(await screen.findByText('Passed')).toBeInTheDocument();
+    expect(screen.queryByText('Locked')).not.toBeInTheDocument();
+  });
+
   test('with this portfolio inheriting `none`, shows the off state + a default editor link, never queries the report', async () => {
     vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
       effective: { mode: 'none', country: null },
