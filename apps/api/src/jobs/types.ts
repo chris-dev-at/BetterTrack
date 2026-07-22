@@ -53,6 +53,9 @@ export const QUEUE_NAMES = {
   // repo's retry/backoff, plus a daily retention sweep over the delivery log.
   webhooksDeliver: 'webhooks.deliver',
   webhooksDeliveryCleanup: 'webhooks.deliveryCleanup',
+  // V5-P10 API-key governance (issue 2/2): daily retention sweep over the
+  // bounded per-key request-log audit trail.
+  apiKeyRequestLogCleanup: 'apiKeys.requestLogCleanup',
   systemHeartbeat: 'system.heartbeat',
 } as const;
 
@@ -88,6 +91,7 @@ export interface JobPayloads {
   // across retries (receiver dedupe key + delivery-log row id).
   'webhooks.deliver': { subscriptionId: string; deliveryId: string; event: DomainEvent };
   'webhooks.deliveryCleanup': Record<string, never>;
+  'apiKeys.requestLogCleanup': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }
 

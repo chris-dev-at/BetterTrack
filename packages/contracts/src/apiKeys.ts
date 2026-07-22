@@ -144,3 +144,109 @@ export const createApiKeyResponseSchema = z
   .object({ key: apiKeySummarySchema, token: z.string() })
   .strict();
 export type CreateApiKeyResponse = z.infer<typeof createApiKeyResponseSchema>;
+
+/* --------------------------------------------------------------------------
+ * Per-key rate tiers + audit trail (§13.5 V5-P10, issue 2/2)
+ * -------------------------------------------------------------------------- */
+
+/** Bounds for an admin-defined tier's request window (seconds) + allowance. */
+export const API_KEY_TIER_NAME_MAX = 80;
+export const API_KEY_TIER_LIMIT_MIN = 1;
+export const API_KEY_TIER_LIMIT_MAX = 1_000_000;
+export const API_KEY_TIER_WINDOW_MIN_SEC = 1;
+export const API_KEY_TIER_WINDOW_MAX_SEC = 24 * 60 * 60;
+
+/** An admin-configurable rate tier (name + limit-per-window). */
+export const apiKeyTierSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: z.string(),
+    requestLimit: z.number().int(),
+    windowSec: z.number().int(),
+    isDefault: z.boolean(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  })
+  .strict();
+export type ApiKeyTier = z.infer<typeof apiKeyTierSchema>;
+
+export const apiKeyTierListResponseSchema = z.object({ tiers: z.array(apiKeyTierSchema) }).strict();
+export type ApiKeyTierListResponse = z.infer<typeof apiKeyTierListResponseSchema>;
+
+const tierNameSchema = z.string().trim().min(1).max(API_KEY_TIER_NAME_MAX);
+const tierLimitSchema = z.number().int().min(API_KEY_TIER_LIMIT_MIN).max(API_KEY_TIER_LIMIT_MAX);
+const tierWindowSchema = z
+  .number()
+  .int()
+  .min(API_KEY_TIER_WINDOW_MIN_SEC)
+  .max(API_KEY_TIER_WINDOW_MAX_SEC);
+
+/** `POST /admin/api-key-tiers` — define a new tier. */
+export const createApiKeyTierRequestSchema = z
+  .object({
+    name: tierNameSchema,
+    requestLimit: tierLimitSchema,
+    windowSec: tierWindowSchema,
+    isDefault: z.boolean().optional(),
+  })
+  .strict();
+export type CreateApiKeyTierRequest = z.infer<typeof createApiKeyTierRequestSchema>;
+
+/** `PATCH /admin/api-key-tiers/:id` — edit a tier; at least one field. */
+export const updateApiKeyTierRequestSchema = z
+  .object({
+    name: tierNameSchema.optional(),
+    requestLimit: tierLimitSchema.optional(),
+    windowSec: tierWindowSchema.optional(),
+    isDefault: z.boolean().optional(),
+  })
+  .strict()
+  .refine((b) => Object.keys(b).length > 0, { message: 'At least one field is required.' });
+export type UpdateApiKeyTierRequest = z.infer<typeof updateApiKeyTierRequestSchema>;
+
+/** `PATCH /admin/api-keys/:id/tier` — assign a tier (or `null` ⇒ default). */
+export const assignApiKeyTierRequestSchema = z
+  .object({ tierId: z.string().uuid().nullable() })
+  .strict();
+export type AssignApiKeyTierRequest = z.infer<typeof assignApiKeyTierRequestSchema>;
+
+/** One key as listed on the admin governance surface (never carries the token). */
+export const adminApiKeySchema = z
+  .object({
+    id: z.string().uuid(),
+    userId: z.string().uuid(),
+    name: z.string(),
+    tierId: z.string().uuid().nullable(),
+    tierName: z.string().nullable(),
+    lastUsedAt: z.string().nullable(),
+    createdAt: z.string(),
+    revokedAt: z.string().nullable(),
+  })
+  .strict();
+export type AdminApiKey = z.infer<typeof adminApiKeySchema>;
+
+export const adminApiKeyListResponseSchema = z
+  .object({ keys: z.array(adminApiKeySchema) })
+  .strict();
+export type AdminApiKeyListResponse = z.infer<typeof adminApiKeyListResponseSchema>;
+
+/** One captured request-log line in a key's bounded audit trail. */
+export const apiKeyRequestLogEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    method: z.string(),
+    path: z.string(),
+    status: z.number().int(),
+    createdAt: z.string(),
+  })
+  .strict();
+export type ApiKeyRequestLogEntry = z.infer<typeof apiKeyRequestLogEntrySchema>;
+
+export const apiKeyAuditResponseSchema = z
+  .object({
+    keyId: z.string().uuid(),
+    lastUsedAt: z.string().nullable(),
+    entries: z.array(apiKeyRequestLogEntrySchema),
+  })
+  .strict();
+export type ApiKeyAuditResponse = z.infer<typeof apiKeyAuditResponseSchema>;

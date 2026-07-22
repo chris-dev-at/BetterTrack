@@ -212,6 +212,11 @@ export const apiKeys = pgTable(
       .notNull()
       .default(sql`ARRAY[]::text[]`),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    // Per-key rate tier (§13.5 V5-P10, issue 2/2). NULL ⇒ the admin-marked
+    // default tier (or the config fallback when none is marked), so every
+    // existing key keeps working unchanged. `set null` on tier deletion re-homes
+    // the key onto the default rather than orphaning it.
+    tierId: uuid('tier_id').references(() => apiKeyTiers.id, { onDelete: 'set null' }),
     // Revoke-only lifecycle: set to end access. No expiry counterpart exists.
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -219,6 +224,52 @@ export const apiKeys = pgTable(
   (t) => [
     uniqueIndex('api_keys_token_hash_unique').on(t.tokenHash),
     index('api_keys_user_idx').on(t.userId),
+  ],
+);
+
+/**
+ * Admin-configurable API-key rate tiers (§13.5 V5-P10, issue 2/2). Each tier is
+ * a named (limit, window) pair the per-key limiter reads; a key references one
+ * via {@link apiKeys.tierId} and unassigned keys fall back to the single
+ * `is_default` tier. Exactly one default is enforced in the repository (a
+ * transactional clear-then-set) rather than a DB constraint so re-marking a
+ * default stays a single service call.
+ */
+export const apiKeyTiers = pgTable('api_key_tiers', {
+  id: uuid('id').primaryKey().$defaultFn(newId),
+  name: varchar('name', { length: 80 }).notNull(),
+  requestLimit: integer('request_limit').notNull(),
+  windowSec: integer('window_sec').notNull(),
+  isDefault: boolean('is_default').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Bounded per-key request-log audit trail (§13.5 V5-P10, issue 2/2). One row per
+ * bearer request (method, mount-relative path, response status), PII-scrubbed on
+ * write per the observability scrubber conventions. Capture is best-effort — a
+ * write failure never affects request handling — and the log is bounded by the
+ * retention-cleanup cron that prunes by age.
+ */
+export const apiKeyRequestLog = pgTable(
+  'api_key_request_log',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    keyId: uuid('key_id')
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    method: varchar('method', { length: 10 }).notNull(),
+    path: text('path').notNull(),
+    status: integer('status').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('api_key_request_log_key_created_idx').on(t.keyId, t.createdAt),
+    index('api_key_request_log_created_idx').on(t.createdAt),
   ],
 );
 
@@ -2121,6 +2172,10 @@ export type AnnouncementRow = typeof announcements.$inferSelect;
 export type NewAnnouncementRow = typeof announcements.$inferInsert;
 export type AnnouncementDismissalRow = typeof announcementDismissals.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type ApiKeyTierRow = typeof apiKeyTiers.$inferSelect;
+export type NewApiKeyTierRow = typeof apiKeyTiers.$inferInsert;
+export type ApiKeyRequestLogRow = typeof apiKeyRequestLog.$inferSelect;
+export type NewApiKeyRequestLogRow = typeof apiKeyRequestLog.$inferInsert;
 export type OAuthClientRow = typeof oauthClients.$inferSelect;
 export type OAuthGrantRow = typeof oauthGrants.$inferSelect;
 export type OAuthAuthCodeRow = typeof oauthAuthCodes.$inferSelect;
@@ -3041,6 +3096,8 @@ export type NewWebhookDeliveryRow = typeof webhookDeliveries.$inferInsert;
 export const schema = {
   users,
   apiKeys,
+  apiKeyTiers,
+  apiKeyRequestLog,
   oauthClients,
   oauthGrants,
   oauthAuthCodes,

@@ -14,6 +14,7 @@ import { HealthPage } from './pages/HealthPage';
 import { InvitesPage } from './pages/InvitesPage';
 import { LoginPage } from './pages/LoginPage';
 import { MonitoringPage } from './pages/MonitoringPage';
+import { ApiKeysPage } from './pages/ApiKeysPage';
 import { OAuthAppsPage } from './pages/OAuthAppsPage';
 import { ProblemsPage } from './pages/ProblemsPage';
 import { UsageAnalyticsPage } from './pages/UsageAnalyticsPage';
@@ -46,6 +47,7 @@ function AdminShell() {
         <Route path="users/:userId" element={<UserDetailPage />} />
         <Route path="invites" element={<InvitesPage />} />
         <Route path="oauth-apps" element={<OAuthAppsPage />} />
+        <Route path="api-keys" element={<ApiKeysPage />} />
         <Route path="email" element={<EmailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="health" element={<HealthPage />} />

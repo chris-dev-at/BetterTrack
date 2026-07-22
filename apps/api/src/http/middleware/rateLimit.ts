@@ -4,6 +4,7 @@ import { tooManyRequests } from '../../errors';
 import {
   createProgressiveLimiter,
   type ProgressiveLimiter,
+  type ProgressiveSchedule,
 } from '../../services/security/progressiveLimiter';
 import type { AppContext } from '../context';
 
@@ -69,13 +70,25 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
    * Per-key guard for bearer requests: keyed by `req.apiKey.id` and skipped
    * entirely for cookie sessions, so a personal token gets its own automation
    * budget (§6.13) independent of the per-user `general` counter.
+   *
+   * The (limit, window) come from the key's resolved rate tier (§13.5 V5-P10),
+   * carried on `req.apiKey.rateLimit`; the escalation ladder + decay stay the
+   * shared `apiKey` config so tiers only tune the steady-state allowance. A key
+   * with no resolved tier (OAuth grants, or a key whose tier could not resolve)
+   * falls back to the base schedule verbatim. Keyed by key/grant id, so a key
+   * over its own limit is turned away without touching any other key's counter.
    */
-  const apiKeyGuard = (limiter: ProgressiveLimiter): RequestHandler => {
+  const apiKeyGuard = (baseSchedule: ProgressiveSchedule): RequestHandler => {
     return (req, res, next) => {
       if (!enabled || !req.apiKey) {
         next();
         return;
       }
+      const tier = req.apiKey.rateLimit;
+      const schedule: ProgressiveSchedule = tier
+        ? { ...baseSchedule, windowSec: tier.windowSec, limit: tier.limit }
+        : baseSchedule;
+      const limiter = createProgressiveLimiter(ctx.redis, 'api_key', schedule);
       void (async () => {
         const decision = await limiter.consume(req.apiKey!.id);
         if (!decision.allowed) {
@@ -102,7 +115,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   return {
     login: guard([loginLimiter], keyByIp),
     general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
-    apiKey: apiKeyGuard(createProgressiveLimiter(ctx.redis, 'api_key', apiKey)),
+    apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
     // keeps their counter independent of a co-located user's general traffic.
     admin: guard([createProgressiveLimiter(ctx.redis, 'admin', general)], keyByUserOrIp),

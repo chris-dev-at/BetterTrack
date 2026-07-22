@@ -12,6 +12,7 @@ import { createCorsMiddleware } from './http/middleware/cors';
 import { createCsrfGuard } from './http/middleware/csrf';
 import { createMetricsMiddleware } from './http/middleware/metrics';
 import { createUsageCaptureMiddleware } from './http/middleware/usageCapture';
+import { createApiKeyRequestLogMiddleware } from './http/middleware/apiKeyRequestLog';
 import { createRateLimiters } from './http/middleware/rateLimit';
 import { requireFeature } from './http/middleware/featureFlag';
 import {
@@ -96,6 +97,12 @@ export function createApp(ctx: AppContext) {
   // the cookie path stands down; the scope guard runs last so it sees the
   // resolved principal and covers every /api/v1 router by default (§6.13).
   app.use('/api/v1', loadBearerAuth(ctx));
+  // Per-key request-log audit capture (§13.5 V5-P10, issue 2/2): registers a
+  // `finish` hook for personal-API-key requests HERE — right after the principal
+  // resolves and BEFORE the rate-limit + scope guards — so even a denied
+  // (403/429) request is recorded. Best-effort, so a log-write failure never
+  // affects the response.
+  app.use('/api/v1', createApiKeyRequestLogMiddleware(ctx.apiKeys));
   app.use('/api/v1', loadSession(ctx));
 
   // Admin-authenticated Grafana reverse proxy (§13.5 V5-P2 arc (a), owner

@@ -3112,7 +3112,8 @@
       "problems": "Probleme",
       "featureFlags": "Feature-Flags",
       "usageAnalytics": "Nutzungsanalyse",
-      "monitoring": "Monitoring"
+      "monitoring": "Monitoring",
+      "apiKeys": "API-Schlüssel"
     },
     "monitoring": {
       "title": "Monitoring",

@@ -31,6 +31,7 @@ import {
   createMirrorReplicateJob,
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
+  createApiKeyRequestLogCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -61,6 +62,7 @@ import { createProfileRepository } from '../data/repositories/profileRepository'
 import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
 import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
 import { createStandingOrderService } from '../services/standingOrders/standingOrderService';
+import { createApiKeyRequestLogRepository } from '../data/repositories/apiKeyRequestLogRepository';
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
@@ -444,6 +446,9 @@ const definitions = [
   // job options + auto-disable) and the daily delivery-log retention sweep.
   createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
   createWebhookDeliveryCleanupJob({ deliveries: webhookDeliveryRepo }),
+  // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
+  // bounded per-key request-log audit trail.
+  createApiKeyRequestLogCleanupJob({ requestLog: createApiKeyRequestLogRepository(db) }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
