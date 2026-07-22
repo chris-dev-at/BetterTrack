@@ -8,7 +8,6 @@ import {
   MIRROR_INVITE_NOT_FOUND,
   MIRROR_MEMBER_CAP_REACHED,
   MIRROR_NOT_FRIENDS,
-  MIRROR_OWNER_TRANSFER_REQUIRED,
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
@@ -81,7 +80,7 @@ async function join(h: TestHarness, chainId: string, role: 'manager' | 'member')
 // ── The §5 authority matrix — every capability × role ────────────────────────
 
 type Role = 'owner' | 'manager' | 'member';
-type Outcome = 'allow' | 'forbidden' | 'ownerTransfer';
+type Outcome = 'allow' | 'forbidden';
 const ROLES: Role[] = ['owner', 'manager', 'member'];
 
 /** A fresh chain where the ACTOR holds `actorRole`. */
@@ -154,8 +153,10 @@ const MATRIX: MatrixCell[] = [
     },
   },
   {
+    // M4: owner leave no longer 409s — a solo owner's leave dissolves the chain
+    // via §7 succession (the dedicated cases live in mirrorSuccession.test.ts).
     name: 'leave (keeping a fork)',
-    expected: { owner: 'ownerTransfer', manager: 'allow', member: 'allow' },
+    expected: { owner: 'allow', manager: 'allow', member: 'allow' },
     async exec(h, actorRole) {
       const { chainId, actorId } = await chainWithActor(h, actorRole);
       await h.ctx.mirror.leaveChain(actorId, chainId);
@@ -183,12 +184,8 @@ describe('mirrorchain M3 — the §5 authority matrix (every capability × role)
       it(`${cell.name}: ${role} → ${outcome}`, async () => {
         if (outcome === 'allow') {
           await cell.exec(h, role); // no throw ⇒ permitted
-        } else if (outcome === 'forbidden') {
-          await expect(cell.exec(h, role)).rejects.toMatchObject({ code: MIRROR_FORBIDDEN });
         } else {
-          await expect(cell.exec(h, role)).rejects.toMatchObject({
-            code: MIRROR_OWNER_TRANSFER_REQUIRED,
-          });
+          await expect(cell.exec(h, role)).rejects.toMatchObject({ code: MIRROR_FORBIDDEN });
         }
       });
     }
@@ -512,21 +509,16 @@ describe('mirrorchain M3 — dissolve (design §6)', () => {
   });
 });
 
-// ── Owner-refusal stopgap (design §7 sequencing) ─────────────────────────────
+// ── Copy-delete interception (design §6) ─────────────────────────────────────
+// The owner paths (leave / copy-delete → §7 succession) live in
+// mirrorSuccession.test.ts (M4); here we cover only the non-owner interception.
 
-describe('mirrorchain M3 — owner-refusal stopgap + copy-delete interception (design §7)', () => {
-  it('owner leave / owner copy-delete are refused; a non-owner copy-delete = leave-then-delete', async () => {
+describe('mirrorchain M3 — copy-delete interception (design §6)', () => {
+  it('a non-owner copy-delete = leave-then-delete (the copy forks, then is removed)', async () => {
     const h = await createTestApp();
     const repo = repoOf(h);
-    const { ownerId, chainId, ownerPortfolioId } = await ownerChain(h);
+    const { chainId } = await ownerChain(h);
     const bob = await join(h, chainId, 'member');
-
-    await expect(h.ctx.mirror.leaveChain(ownerId, chainId)).rejects.toMatchObject({
-      code: MIRROR_OWNER_TRANSFER_REQUIRED,
-    });
-    await expect(
-      h.ctx.mirror.submitPortfolioDelete(ownerId, ownerPortfolioId),
-    ).rejects.toMatchObject({ code: MIRROR_OWNER_TRANSFER_REQUIRED });
 
     // A non-owner deleting their copy is intercepted as leave-then-delete.
     await h.ctx.mirror.submitPortfolioDelete(bob.userId, bob.portfolioId);

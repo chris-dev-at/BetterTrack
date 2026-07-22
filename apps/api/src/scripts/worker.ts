@@ -30,6 +30,7 @@ import {
   createJobWorkers,
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
+  createMirrorConsistencySweepJob,
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
@@ -450,6 +451,10 @@ const definitions = [
   // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past
   // the 30-day token-hygiene horizon (frees the pending-unique slot).
   createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
+  // V5-P7 MIRRORCHAIN (#684): the daily defense-in-depth repair sweep — re-applies
+  // §7 succession to any ownerless chain and surfaces the two crash residuals
+  // (design §2 (a)/(b)) onto the admin Problems page.
+  createMirrorConsistencySweepJob({ mirror, problems }),
   // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
   // job options + auto-disable) and the daily delivery-log retention sweep.
   createWebhookDeliverJob({ dispatcher: webhookDispatcher }),

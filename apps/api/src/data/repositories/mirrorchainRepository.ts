@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, notExists, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type {
@@ -16,6 +16,7 @@ import {
   mirrorChainOps,
   mirrorChains,
   mirrorRows,
+  transactions,
   users,
 } from '../schema';
 import type {
@@ -686,6 +687,100 @@ export function createMirrorchainRepository(db: Database) {
             eq(mirrorRows.portfolioId, portfolioId),
           ),
         );
+    },
+
+    // --- M4 repair-sweep queries (design §2 (a)/(b), §7 (0)) ----------------
+
+    /**
+     * (0) Active chains with **zero active owners** — an invariant the service
+     * never produces (creation always seeds an owner, and every owner-departure
+     * path runs §7 succession), so a hit means the chain was mutated behind the
+     * service (manual SQL). The M4 repair sweep re-applies §7 succession to each.
+     */
+    async listOwnerlessActiveChains(): Promise<MirrorChainRow[]> {
+      return db
+        .select()
+        .from(mirrorChains)
+        .where(
+          and(
+            eq(mirrorChains.status, 'active'),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(mirrorChainMembers)
+                .where(
+                  and(
+                    eq(mirrorChainMembers.chainId, mirrorChains.id),
+                    eq(mirrorChainMembers.status, 'active'),
+                    eq(mirrorChainMembers.role, 'owner'),
+                  ),
+                ),
+            ),
+          ),
+        );
+    },
+
+    /**
+     * (a) Origin-only mirror-linked rows whose `mirror_id` has **no op** (design
+     * §2): the submit path's origin-commit-then-append crash window. Such a row
+     * exists only on the origin copy and silently diverges (later full-state
+     * updates no-op on copies that lack it) until surfaced. Bounded by `limit`.
+     */
+    async listDanglingOriginRows(limit: number): Promise<MirrorRowRow[]> {
+      return db
+        .select()
+        .from(mirrorRows)
+        .where(
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(mirrorChainOps)
+              .where(
+                and(
+                  eq(mirrorChainOps.chainId, mirrorRows.chainId),
+                  eq(mirrorChainOps.mirrorId, mirrorRows.mirrorId),
+                ),
+              ),
+          ),
+        )
+        .limit(limit);
+    },
+
+    /**
+     * (b) Copy-local transactions in an **active synced copy** with no
+     * `mirror_rows` link pointing at them (design §2): the tax-immutable
+     * correction path's re-create-then-re-point crash residual — a safe-to-delete
+     * local-only duplicate. Forks are excluded (only `status='active'` copies).
+     * Bounded by `limit`.
+     */
+    async listOrphanedSyncedTransactions(
+      limit: number,
+    ): Promise<{ id: string; portfolioId: string }[]> {
+      return db
+        .selectDistinct({ id: transactions.id, portfolioId: transactions.portfolioId })
+        .from(transactions)
+        .innerJoin(
+          mirrorChainMembers,
+          and(
+            eq(mirrorChainMembers.portfolioId, transactions.portfolioId),
+            eq(mirrorChainMembers.status, 'active'),
+          ),
+        )
+        .where(
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(mirrorRows)
+              .where(
+                and(
+                  eq(mirrorRows.kind, 'transaction'),
+                  eq(mirrorRows.portfolioId, transactions.portfolioId),
+                  eq(mirrorRows.localId, transactions.id),
+                ),
+              ),
+          ),
+        )
+        .limit(limit);
     },
   };
 }

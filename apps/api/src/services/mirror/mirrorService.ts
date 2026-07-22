@@ -15,7 +15,6 @@ import {
   MIRROR_MEMBER_NOT_FOUND,
   MIRROR_NOT_FRIENDS,
   MIRROR_OP_VERSION,
-  MIRROR_OWNER_TRANSFER_REQUIRED,
   MIRROR_ROW_DELETED,
   MIRROR_SYNC_STALLED,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
@@ -196,6 +195,34 @@ export interface ReplicateChainResult {
   lagging: number;
 }
 
+/**
+ * What the M4 defense-in-depth repair sweep did (design §2 (a)/(b), §7 (0)). The
+ * ownerless chains are auto-repaired via §7 succession; the two crash residuals
+ * are surfaced (not auto-fixed) so an admin can act. The caller (the sweep job)
+ * logs every finding to the admin Problems page.
+ */
+export interface MirrorConsistencySweepResult {
+  /** (0) Active chains that were ownerless and were repaired via §7 succession. */
+  ownerlessRepaired: Array<{
+    chainId: string;
+    outcome: 'transferred' | 'dissolved';
+    /** The promoted manager's user id (transfer) — null when the chain dissolved. */
+    newOwnerUserId: string | null;
+  }>;
+  /** (a) Origin-only mirror-linked rows whose `mirror_id` has no op. */
+  danglingOriginRows: Array<{
+    chainId: string;
+    portfolioId: string;
+    mirrorId: string;
+    kind: MirrorRowKind;
+  }>;
+  /** (b) Copy-local transactions in an active synced copy with no mirror link. */
+  orphanedLocalRows: Array<{ portfolioId: string; localId: string }>;
+}
+
+/** Bound on rows surfaced per crash-residual category in one sweep run. */
+export const MIRROR_SWEEP_ROW_LIMIT = 500;
+
 export interface MirrorService {
   /**
    * The active membership behind a synced copy, or null for a normal
@@ -293,10 +320,32 @@ export interface MirrorService {
   dissolveChain(actorId: string, chainId: string): Promise<void>;
   /**
    * Delete a portfolio through the mirror seam: a non-chain portfolio deletes
-   * plainly; a synced copy is intercepted as leave-then-delete (§6), and an
-   * owner's copy-delete is refused with the §7 stopgap 409 until M4.
+   * plainly; a synced copy is intercepted as leave-then-delete (§6) — for the
+   * owner, the leave runs §7 succession first (M4), so no copy-delete is refused.
    */
   submitPortfolioDelete(userId: string, portfolioId: string): Promise<void>;
+
+  /**
+   * §7 deletion succession — the synchronous pre-delete hook the V4-P2c account
+   * deletion pipeline and the admin delete both call BEFORE the user row is
+   * removed (the same slot as session revocation). For each active membership of
+   * the departing user: if they own the chain, ownership transfers to the oldest
+   * active manager (or the chain dissolves with no manager, §7); then their
+   * membership ends `account_deleted`. Every other copy + the chain stay intact;
+   * the subsequent user-row delete cascades only the departing member's own copy
+   * away, while SET NULL + denormalized usernames keep attribution rendering
+   * ("alice (account deleted)"). Idempotent — a no-op once the user has no
+   * active memberships.
+   */
+  handleAccountDeletion(userId: string): Promise<void>;
+
+  /**
+   * The M4 defense-in-depth repair sweep (design §2 (a)/(b), §7 (0)): re-applies
+   * §7 succession to any active chain left ownerless behind the service, and
+   * detects the two sub-transactional crash residuals for the caller to surface
+   * on the admin Problems page. Returns what it repaired + detected.
+   */
+  runConsistencySweep(): Promise<MirrorConsistencySweepResult>;
 
   // ── The write-path seam (§1): portfolio-content writes route through these ──
   submitTransactionsCreate(
@@ -1369,6 +1418,81 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     ]);
   }
 
+  type OwnerSuccessionResult =
+    | { outcome: 'transferred'; newOwner: MirrorChainMemberRow }
+    | { outcome: 'dissolved' };
+
+  /**
+   * §7 owner-succession, executed under the chain lock. `activeMembers` are the
+   * chain's currently-active members with the departing owner ALREADY tombstoned
+   * (so the ≤1-active-owner index never sees two owners). Promotes the
+   * **earliest-joined active manager** to owner — tie broken by lowest user id,
+   * both encoded in {@link MirrorchainRepository.listActiveMembers}'s ordering —
+   * appending `owner.transferred` (actor = the departing owner, or `system` for
+   * the repair sweep) with the given `via`; or, with no active manager, dissolves
+   * the chain (append `chain.dissolved`, tombstone every remaining active member
+   * `dissolved`, mark the chain `dissolved`). Notifies the remaining members.
+   * `departing` is null only for the repair sweep (an ownerless chain has no
+   * identifiable prior owner). The caller tombstones the departing owner's own
+   * membership (with the right status) and appends its `member.left` op.
+   */
+  async function runOwnerSuccession(
+    chain: MirrorChainRow,
+    activeMembers: MirrorChainMemberRow[],
+    departing: { userId: string; username: string } | null,
+    via: 'account_deletion' | 'owner_left' | 'repair_sweep',
+  ): Promise<OwnerSuccessionResult> {
+    const actor = departing ?? { userId: null as string | null, username: 'system' };
+    // listActiveMembers is ordered (joinedAt asc, userId asc), so the first
+    // manager IS the earliest-joined (tie → lowest user id) — §7's rule.
+    const manager = activeMembers.find((m) => m.role === 'manager') ?? null;
+    if (manager) {
+      await repo.updateMemberRole(manager.id, 'owner');
+      const [op] = await appendMembershipOp(chain.id, actor, {
+        opVersion: MIRROR_OP_VERSION,
+        kind: 'owner.transferred',
+        fromUserId: departing?.userId ?? null,
+        fromUsername: departing?.username ?? null,
+        toUserId: manager.userId!,
+        toUsername: manager.username,
+        via,
+      });
+      // Tell the remaining members ownership moved — skip the new owner (their
+      // copy reads "⟨actor⟩ is now the owner", which self-named reads wrong) and
+      // the departing owner. The op seq discriminates the notice (design §5).
+      const refId = `${manager.userId}:${op!.seq}`;
+      for (const m of activeMembers) {
+        if (m.userId && m.userId !== manager.userId && m.userId !== departing?.userId) {
+          await emitMirror(
+            'mirror.ownership_transferred',
+            m.userId,
+            chain,
+            manager.username,
+            refId,
+          );
+        }
+      }
+      return { outcome: 'transferred', newOwner: manager };
+    }
+    // No manager volunteered stewardship → honest dissolution: every copy forks.
+    const endedAt = new Date(now());
+    for (const m of activeMembers) {
+      await repo.endMembership(m.id, 'dissolved', endedAt);
+    }
+    await appendMembershipOp(chain.id, actor, {
+      opVersion: MIRROR_OP_VERSION,
+      kind: 'chain.dissolved',
+      reason: 'no_manager_succession',
+    });
+    await repo.markChainDissolved(chain.id, endedAt);
+    for (const m of activeMembers) {
+      if (m.userId && m.userId !== departing?.userId) {
+        await emitMirror('mirror.chain_dissolved', m.userId, chain, actor.username, chain.id);
+      }
+    }
+    return { outcome: 'dissolved' };
+  }
+
   // ── Public surface ─────────────────────────────────────────────────────────
 
   const service: MirrorService = {
@@ -2216,20 +2340,42 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async leaveChain(userId, chainId) {
-      const { chain, leaverName, seq, notifyOwnerId } = await withAuthorizedMember(
+      const outcome = await withAuthorizedMember(
         chainId,
         userId,
-        (actor) => {
-          // Owner leave is refused until M4 ships succession (design §7 stopgap).
-          if (actor.role === 'owner') {
-            throw new ApiError(
-              409,
-              MIRROR_OWNER_TRANSFER_REQUIRED,
-              'As the owner you must transfer ownership or dissolve the group portfolio before leaving.',
-            );
-          }
+        () => {
+          // Every role may leave (design §5): a plain leave for a member/manager,
+          // and §7 succession for the owner — the M3 stopgap 409 is gone (M4).
         },
         async ({ chain, actor, members }) => {
+          if (actor.role === 'owner') {
+            // §7: the owner departs → ownership passes to the oldest manager (or
+            // the chain dissolves with no manager). Tombstone the owner FIRST so
+            // there is never a moment with two active owners, then succeed; the
+            // owner keeps their own copy as a fork (§6).
+            await repo.endMembership(actor.id, 'left', new Date(now()));
+            const remaining = await repo.listActiveMembers(chainId);
+            const result = await runOwnerSuccession(
+              chain,
+              remaining,
+              { userId, username: actor.username },
+              'owner_left',
+            );
+            if (result.outcome === 'transferred') {
+              // The departing owner's member.left-equivalent tombstone op (§7).
+              await appendMembershipOp(
+                chainId,
+                { userId, username: actor.username },
+                {
+                  opVersion: MIRROR_OP_VERSION,
+                  kind: 'member.left',
+                  userId,
+                  username: actor.username,
+                },
+              );
+            }
+            return { chain, kind: 'owner' as const };
+          }
           await repo.endMembership(actor.id, 'left', new Date(now()));
           const [op] = await appendMembershipOp(
             chainId,
@@ -2244,19 +2390,20 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           const owner = ownerOf(members);
           return {
             chain,
+            kind: 'member' as const,
             leaverName: actor.username,
             seq: op!.seq,
             notifyOwnerId: owner?.userId ?? null,
           };
         },
       );
-      if (notifyOwnerId && notifyOwnerId !== userId) {
+      if (outcome.kind === 'member' && outcome.notifyOwnerId && outcome.notifyOwnerId !== userId) {
         await emitMirror(
           'mirror.member_left',
-          notifyOwnerId,
-          chain,
-          leaverName,
-          `${userId}:${seq}`,
+          outcome.notifyOwnerId,
+          outcome.chain,
+          outcome.leaverName,
+          `${userId}:${outcome.seq}`,
         );
       }
       await audit.record({
@@ -2266,8 +2413,9 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         targetId: chainId,
         meta: { chainId },
       });
-      // The member.left op bumped last_seq — replicate so the remaining copies
-      // skip-ack it and their sync-state read models settle (design §11).
+      // The member.left / owner.transferred / chain.dissolved op bumped last_seq —
+      // replicate so the remaining copies skip-ack it and their sync-state read
+      // models settle (design §11).
       await scheduleReplicate(chainId);
     },
 
@@ -2344,18 +2492,130 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     async submitPortfolioDelete(userId, portfolioId) {
       const membership = await membershipForWrite(userId, portfolioId);
       if (!membership) return portfolio.deletePortfolio(userId, portfolioId);
-      // A synced copy: the owner must transfer/dissolve first (the §7 stopgap,
-      // replaced by succession in M4); a non-owner's delete is intercepted as
-      // leave-then-delete (§6) — the copy leaves the chain, then is deleted.
-      if (membership.role === 'owner') {
-        throw new ApiError(
-          409,
-          MIRROR_OWNER_TRANSFER_REQUIRED,
-          'Transfer ownership or dissolve this group portfolio before deleting your copy.',
-        );
-      }
+      // A synced copy is intercepted as leave-then-delete (§6): the copy leaves
+      // the chain, then is deleted. For the owner, the leave runs §7 succession
+      // first (M4 — no stopgap 409); every role ends the same way.
       await service.leaveChain(userId, membership.chainId);
       await portfolio.deletePortfolio(userId, portfolioId);
+    },
+
+    async handleAccountDeletion(userId) {
+      const memberships = await repo.listActiveMembershipsForUser(userId);
+      if (memberships.length === 0) return;
+      // The departing user's name — denormalized onto ops/tombstones so it keeps
+      // rendering ("alice (account deleted)") after the user row's SET NULL.
+      const username = await usernameOf(userId);
+      for (const membership of memberships) {
+        await withChainLock(membership.chainId, async () => {
+          const chain = await repo.getChain(membership.chainId);
+          if (!chain || chain.status !== 'active') return;
+          // Re-read under the lock — a concurrent op may have moved the row.
+          const self = await repo.findActiveMembership(membership.chainId, userId);
+          if (!self) return;
+          const endedAt = new Date(now());
+          if (self.role === 'owner') {
+            // Tombstone the owner FIRST (0 active owners, the ≤1-owner index),
+            // then run §7 succession. The op order in the log is
+            // `owner.transferred` then the `member.left`-equivalent (design §7).
+            await repo.endMembership(self.id, 'account_deleted', endedAt);
+            const remaining = await repo.listActiveMembers(membership.chainId);
+            const result = await runOwnerSuccession(
+              chain,
+              remaining,
+              { userId, username },
+              'account_deletion',
+            );
+            if (result.outcome === 'transferred') {
+              await appendMembershipOp(
+                membership.chainId,
+                { userId, username },
+                { opVersion: MIRROR_OP_VERSION, kind: 'member.left', userId, username },
+              );
+              await audit.record({
+                actorId: userId,
+                action: AuditAction.MirrorOwnershipTransferred,
+                targetType: 'user',
+                targetId: result.newOwner.userId!,
+                meta: { chainId: membership.chainId, via: 'account_deletion' },
+              });
+            } else {
+              await audit.record({
+                actorId: userId,
+                action: AuditAction.MirrorChainDissolved,
+                targetType: 'mirror_chain',
+                targetId: membership.chainId,
+                meta: { chainId: membership.chainId, via: 'account_deletion' },
+              });
+            }
+          } else {
+            // Non-owner: end the membership + a `member.left` op (feed
+            // completeness), notify the owner; the copy cascades away with the
+            // user row, the chain is otherwise untouched (design §7).
+            await repo.endMembership(self.id, 'account_deleted', endedAt);
+            const [leftOp] = await appendMembershipOp(
+              membership.chainId,
+              { userId, username },
+              { opVersion: MIRROR_OP_VERSION, kind: 'member.left', userId, username },
+            );
+            const owner = ownerOf(await repo.listActiveMembers(membership.chainId));
+            if (owner?.userId && owner.userId !== userId) {
+              await emitMirror(
+                'mirror.member_left',
+                owner.userId,
+                chain,
+                username,
+                `${userId}:${leftOp!.seq}`,
+              );
+            }
+            await audit.record({
+              actorId: userId,
+              action: AuditAction.MirrorMemberLeft,
+              targetType: 'mirror_chain',
+              targetId: membership.chainId,
+              meta: { chainId: membership.chainId, via: 'account_deletion' },
+            });
+          }
+        });
+        await scheduleReplicate(membership.chainId);
+      }
+    },
+
+    async runConsistencySweep() {
+      const ownerlessRepaired: MirrorConsistencySweepResult['ownerlessRepaired'] = [];
+      // (0) Ownerless active chains → §7 succession (design §7 defense-in-depth).
+      for (const chain of await repo.listOwnerlessActiveChains()) {
+        const repaired = await withChainLock(chain.id, async () => {
+          const fresh = await repo.getChain(chain.id);
+          if (!fresh || fresh.status !== 'active') return null;
+          const members = await repo.listActiveMembers(chain.id);
+          // A concurrent real transfer may have re-owned it between the scan and
+          // the lock — re-check under the lock before repairing.
+          if (members.some((m) => m.role === 'owner')) return null;
+          return runOwnerSuccession(fresh, members, null, 'repair_sweep');
+        });
+        if (repaired) {
+          ownerlessRepaired.push({
+            chainId: chain.id,
+            outcome: repaired.outcome,
+            newOwnerUserId: repaired.outcome === 'transferred' ? repaired.newOwner.userId : null,
+          });
+        }
+      }
+      // (a) origin-commit-then-append residual: an origin link with no op.
+      const danglingOriginRows = (await repo.listDanglingOriginRows(MIRROR_SWEEP_ROW_LIMIT)).map(
+        (r) => ({
+          chainId: r.chainId,
+          portfolioId: r.portfolioId,
+          mirrorId: r.mirrorId,
+          kind: r.kind,
+        }),
+      );
+      // (b) correction re-create-then-re-point residual: a synced-copy tx with
+      // no mirror link (a safe-to-delete local duplicate) — surfaced, not deleted.
+      const orphanedLocalRows = (
+        await repo.listOrphanedSyncedTransactions(MIRROR_SWEEP_ROW_LIMIT)
+      ).map((r) => ({ portfolioId: r.portfolioId, localId: r.id }));
+      return { ownerlessRepaired, danglingOriginRows, orphanedLocalRows };
     },
 
     // ── Submits ──────────────────────────────────────────────────────────────

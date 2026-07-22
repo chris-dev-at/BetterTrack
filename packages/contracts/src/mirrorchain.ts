@@ -423,19 +423,36 @@ const roleRevokedPayload = z
   .strict();
 
 /**
+ * How an `owner.transferred` op came about (design §5/§7). Absent → an explicit
+ * owner-initiated transfer (M3). Present → automatic §7 succession: the owner
+ * departed (account deletion / owner-leave / owner copy-deletion) and ownership
+ * passed to the oldest manager, or the M4 repair sweep crowned a manager on an
+ * ownerless chain (`from` is null there — no identifiable prior owner).
+ */
+export const MIRROR_OWNER_TRANSFER_VIA = [
+  'account_deletion',
+  'owner_left',
+  'repair_sweep',
+] as const;
+export const mirrorOwnerTransferViaSchema = z.enum(MIRROR_OWNER_TRANSFER_VIA);
+export type MirrorOwnerTransferVia = z.infer<typeof mirrorOwnerTransferViaSchema>;
+
+/**
  * Ownership transfer (design §5/§7): the target becomes owner, the old owner
- * becomes a plain member. `via` marks a succession triggered by owner account
- * deletion (design §7 worked example) rather than an explicit transfer.
+ * becomes a plain member. `via` marks an automatic §7 succession (owner
+ * departure / repair sweep) rather than an explicit transfer; `fromUserId` /
+ * `fromUsername` are null only when the repair sweep repaired an ownerless chain
+ * (no prior owner to attribute).
  */
 const ownerTransferredPayload = z
   .object({
     opVersion: mirrorOpVersionSchema,
     kind: z.literal('owner.transferred'),
-    fromUserId: z.string().uuid(),
-    fromUsername: z.string(),
+    fromUserId: z.string().uuid().nullable(),
+    fromUsername: z.string().nullable(),
     toUserId: z.string().uuid(),
     toUsername: z.string(),
-    via: z.literal('account_deletion').optional(),
+    via: mirrorOwnerTransferViaSchema.optional(),
   })
   .strict();
 
@@ -534,9 +551,10 @@ export const MIRROR_FORBIDDEN = 'MIRROR_FORBIDDEN';
 /** The target of a role/kick/transfer op is not an active member of the chain. HTTP 404. */
 export const MIRROR_MEMBER_NOT_FOUND = 'MIRROR_MEMBER_NOT_FOUND';
 /**
- * Owner leave / owner copy-deletion is refused until M4 ships succession
- * (design §7 sequencing stopgap): the owner must transfer or dissolve first.
- * M4 replaces this refusal with automatic transfer-on-delete. HTTP 409.
+ * @deprecated Retained for compatibility but no longer emitted since V5-P7 M4
+ * (#684). This was the M3 sequencing stopgap: owner leave / owner copy-deletion
+ * were refused (HTTP 409) until succession shipped. M4 replaced the refusal with
+ * automatic §7 transfer-on-delete, so those endpoints now succeed.
  */
 export const MIRROR_OWNER_TRANSFER_REQUIRED = 'MIRROR_OWNER_TRANSFER_REQUIRED';
 
