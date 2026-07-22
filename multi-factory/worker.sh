@@ -26,6 +26,10 @@ export WORKER_ID
 if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
   . /work/mf/lib.sh
   . /work/mf/mflib.sh
+
+# owner 2026-07-22: Fable writes, everything after writing runs Opus — cap post-write stages at hard
+post_write_diff(){ local d="$1"; [ "$d" = max ] && d=hard; echo "$d"; }
+
 fi
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
@@ -121,12 +125,12 @@ $materials")" || true
       log "triage: escalated retry at diff:$esc (was diff:$CYCLE_DIFF)"
       hb_ensure
       wstatus fixing "$n" "$pr"
-      mf_cc fixer "$esc" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
+      mf_cc fixer "$(post_write_diff "$esc")" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $tcomment
 
 $(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
       wstatus reviewing "$n" "$pr"
-      mf_cc reviewer "$(diff_at_least "$esc" "$(review_floor)")" \
+      mf_cc reviewer "$(post_write_diff "$(diff_at_least "$esc" "$(review_floor)")")" \
         "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
       local v2
       v2=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
@@ -280,13 +284,13 @@ run_cycle(){ # $1=issue $2=relocated
   for round in $(seq 1 "${MAX_FIX_ROUNDS:-2}"); do
     hb_ensure
     wstatus reviewing "$n" "$pr"
-    mf_cc reviewer "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")" \
+    mf_cc reviewer "$(post_write_diff "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")")" \
       "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
     verdict=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
     [ "$verdict" = "FACTORY-VERDICT: APPROVE" ] && { approved=1; break; }
     log "round $round: changes requested"
     wstatus fixing "$n" "$pr"
-    mf_cc fixer "$CYCLE_DIFF" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
+    mf_cc fixer "$(post_write_diff "$CYCLE_DIFF")" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
   done
 
   if [ "$approved" -eq 1 ]; then

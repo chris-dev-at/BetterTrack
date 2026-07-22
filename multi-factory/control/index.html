@@ -24,6 +24,20 @@
         --w3: #e5c07b;
         --w4: #56b6c2;
       }
+      .rng {
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        color: var(--ink2);
+        font: inherit;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .rng.on {
+        color: var(--ink);
+        border-color: var(--accent);
+      }
       * {
         box-sizing: border-box;
       }
@@ -1088,6 +1102,48 @@
       <div class="grid2">
         <div class="card" style="grid-column: 1/-1">
           <h2>
+            Subscription usage over time
+            <span class="hint"
+              ><span class="sw" style="background: #3d9ae8"></span> 5h window&nbsp;&nbsp;<span
+                class="sw"
+                style="background: #c47f18"
+              ></span>
+              7-day&nbsp;&nbsp;<span class="sw" style="background: #ab60d9"></span>
+              Fable (weekly)&nbsp;&nbsp;<span
+                style="border-left: 2px dashed var(--muted); padding-left: 6px"
+                >7d reset</span
+              ></span
+            >
+            <span style="float: right; display: flex; gap: 4px">
+              <button class="rng" data-h="24">24h</button>
+              <button class="rng on" data-h="168">7d</button>
+              <button class="rng" data-h="720">30d</button>
+            </span>
+          </h2>
+          <div style="position: relative">
+            <svg id="uh-svg" viewBox="0 0 720 200" style="width: 100%; height: auto"></svg>
+            <div
+              id="uh-tip"
+              style="
+                position: absolute;
+                display: none;
+                pointer-events: none;
+                background: var(--surface2);
+                border: 1px solid var(--border);
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 11px;
+                line-height: 1.6;
+                white-space: nowrap;
+                z-index: 5;
+              "
+            ></div>
+          </div>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="card" style="grid-column: 1/-1">
+          <h2>
             Spend per day — last 14 days
             <span class="hint"
               ><span class="sw" style="background: var(--accent)"></span>
@@ -1216,7 +1272,10 @@
           .querySelectorAll('section.tab')
           .forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
         if (S) render(S);
-        if (t === 'usage') fetchUsage(true);
+        if (t === 'usage') {
+          fetchUsage(true);
+          fetchUsageHist(true);
+        }
         if (t === 'models' && S) renderModels(S);
       }
 
@@ -1857,6 +1916,144 @@
       /* ---- USAGE analytics tab ---- */
       let uaData = null,
         uaFetchedAt = 0;
+      let uhHours = 168,
+        uhData = null,
+        uhFetchedAt = 0;
+      async function fetchUsageHist(force) {
+        if (!force && Date.now() - uhFetchedAt < 60000) return;
+        try {
+          const r = await fetch('/api/usage/history?hours=' + uhHours);
+          uhData = await r.json();
+          uhFetchedAt = Date.now();
+          renderUsageHist();
+        } catch {
+          /* keep last */
+        }
+      }
+      document.querySelectorAll('.rng').forEach((b) =>
+        b.addEventListener('click', () => {
+          document.querySelectorAll('.rng').forEach((x) => x.classList.remove('on'));
+          b.classList.add('on');
+          uhHours = Number(b.dataset.h);
+          fetchUsageHist(true);
+        }),
+      );
+      function renderUsageHist() {
+        const svg = $('uh-svg');
+        if (!svg || !uhData) return;
+        const W = 720,
+          H = 200,
+          L = 34,
+          R = 56,
+          T = 10,
+          B = 20;
+        const now = uhData.now,
+          t0 = now - uhHours * 3600000;
+        const es = (uhData.entries || []).filter((e) => e.at >= t0);
+        const X = (t) => L + ((t - t0) / (now - t0)) * (W - L - R);
+        const Y = (p) => T + (1 - p / 100) * (H - T - B);
+        let g = '';
+        for (const p of [0, 25, 50, 75, 100])
+          g +=
+            `<line x1="${L}" y1="${Y(p)}" x2="${W - R}" y2="${Y(p)}" stroke="var(--border)" stroke-width="1"/>` +
+            `<text x="${L - 5}" y="${Y(p) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${p}</text>`;
+        const ticks = 6;
+        for (let i = 0; i <= ticks; i++) {
+          const t = t0 + ((now - t0) * i) / ticks;
+          const lbl =
+            uhHours <= 24
+              ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : new Date(t).toLocaleDateString([], { weekday: 'short', day: 'numeric' });
+          g += `<text x="${X(t)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${lbl}</text>`;
+        }
+        // 7d reset lines: every distinct sevenDay resets_at seen in range (past = happened, future = upcoming)
+        const resets = [];
+        for (const e of es) {
+          if (!e.d7r) continue;
+          const t = Date.parse(e.d7r);
+          if (!isFinite(t) || t < t0 || t > now + (now - t0)) continue;
+          if (!resets.some((x) => Math.abs(x - t) < 60000)) resets.push(t);
+        }
+        for (const t of resets) {
+          if (t > now) continue;
+          g +=
+            `<line x1="${X(t)}" y1="${T}" x2="${X(t)}" y2="${H - B}" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="4 3"/>` +
+            `<text x="${X(t) + 3}" y="${T + 8}" font-size="9" fill="var(--ink2)">7d reset</text>`;
+        }
+        const SERIES = [
+          { k: 'f5', c: '#3d9ae8', lbl: '5h', v: (e) => e.f5 },
+          { k: 'd7', c: '#c47f18', lbl: '7d', v: (e) => e.d7 },
+          {
+            k: 'sc',
+            c: '#ab60d9',
+            lbl: 'Fable',
+            v: (e) => {
+              const m = (e.sc || []).find((x) => /fable/i.test(x.n)) || (e.sc || [])[0];
+              return m ? m.p : null;
+            },
+          },
+        ];
+        if (es.length < 2) {
+          svg.innerHTML =
+            g +
+            `<text x="${(L + W - R) / 2}" y="${H / 2}" text-anchor="middle" font-size="11" fill="var(--muted)">collecting usage history — the graph fills in from now on</text>`;
+          return;
+        }
+        for (const sr of SERIES) {
+          let d = '',
+            pen = 'M',
+            last = null;
+          for (const e of es) {
+            const v = sr.v(e);
+            if (v == null) {
+              pen = 'M';
+              continue;
+            }
+            if (last && e.at - last > 1800000) pen = 'M'; // break line across gaps
+            d += `${pen}${X(e.at).toFixed(1)} ${Y(v).toFixed(1)}`;
+            pen = 'L';
+            last = e.at;
+          }
+          g += `<path d="${d}" fill="none" stroke="${sr.c}" stroke-width="2" stroke-linejoin="round"/>`;
+          const tail = [...es].reverse().find((e) => sr.v(e) != null);
+          if (tail)
+            g +=
+              `<rect x="${W - R + 4}" y="${Y(sr.v(tail)) - 3}" width="6" height="6" rx="1" fill="${sr.c}"/>` +
+              `<text x="${W - R + 13}" y="${Y(sr.v(tail)) + 3}" font-size="9" fill="var(--ink2)">${sr.lbl} ${sr.v(tail)}%</text>`;
+        }
+        g += `<line id="uh-cross" x1="0" y1="${T}" x2="0" y2="${H - B}" stroke="var(--ink2)" stroke-width="1" style="display:none"/>`;
+        g += `<rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" id="uh-hit"/>`;
+        svg.innerHTML = g;
+        const hit = document.getElementById('uh-hit'),
+          cross = document.getElementById('uh-cross'),
+          tip = $('uh-tip');
+        hit.addEventListener('mousemove', (ev) => {
+          const box = svg.getBoundingClientRect();
+          const t = t0 + (((ev.clientX - box.left) / box.width) * W - L) / ((W - L - R) / (now - t0));
+          let best = es[0];
+          for (const e of es) if (Math.abs(e.at - t) < Math.abs(best.at - t)) best = e;
+          cross.setAttribute('x1', X(best.at));
+          cross.setAttribute('x2', X(best.at));
+          cross.style.display = '';
+          const rows = SERIES.map((sr) => {
+            const v = sr.v(best);
+            return v == null
+              ? ''
+              : `<span class="sw" style="background:${sr.c}"></span> ${sr.lbl}: ${v}%<br>`;
+          }).join('');
+          tip.innerHTML =
+            `<b>${new Date(best.at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</b><br>` +
+            rows;
+          tip.style.display = 'block';
+          const px = ((X(best.at) / W) * box.width) | 0;
+          tip.style.left = Math.min(px + 12, box.width - 150) + 'px';
+          tip.style.top = '10px';
+        });
+        hit.addEventListener('mouseleave', () => {
+          cross.style.display = 'none';
+          tip.style.display = 'none';
+        });
+      }
       async function fetchUsage(force) {
         if (!force && Date.now() - uaFetchedAt < 60000) return;
         try {
@@ -1869,7 +2066,10 @@
         }
       }
       setInterval(() => {
-        if (activeTab === 'usage') fetchUsage(false);
+        if (activeTab === 'usage') {
+          fetchUsage(false);
+          fetchUsageHist(false);
+        }
       }, 60000);
       const fmtTok = (n) =>
         n >= 1e9

@@ -348,10 +348,73 @@ async function usage() {
         : { error: String(e.message || e).slice(0, 80) };
     }
   }
-  if (!data.error && !data.stale) usageLastGood = data;
+  if (!data.error && !data.stale) {
+    usageLastGood = data;
+    appendUsageHistory(data);
+  }
   usageCache = { at: Date.now(), ttl, data };
   return data;
 }
+
+// ---- usage history (sampled; feeds the dashboard graph incl. 7d-reset lines) ----------
+const USAGE_HIST = join(CONTROL, 'usage-history.jsonl');
+let histLastAppend = 0;
+async function appendUsageHistory(d) {
+  if (Date.now() - histLastAppend < 240000) return; // ≤ ~1 row per poll interval
+  histLastAppend = Date.now();
+  const row = {
+    at: Date.now(),
+    f5: d.fiveHour?.pct ?? null,
+    d7: d.sevenDay?.pct ?? null,
+    d7r: d.sevenDay?.resetsAt ?? null,
+    sc: (d.scoped || []).map((x) => ({ n: x.name, p: x.pct })),
+  };
+  try {
+    await appendFile(USAGE_HIST, JSON.stringify(row) + '\n');
+  } catch {
+    /* best effort */
+  }
+}
+async function usageHistory(hours) {
+  const h = Math.min(Math.max(Number(hours) || 168, 1), 2160);
+  const cut = Date.now() - h * 3600000;
+  const out = [];
+  try {
+    for (const line of (await readFile(USAGE_HIST, 'utf8')).split('\n')) {
+      if (!line) continue;
+      try {
+        const r = JSON.parse(line);
+        if (r.at >= cut) out.push(r);
+      } catch {
+        /* skip corrupt line */
+      }
+    }
+  } catch {
+    /* no history yet */
+  }
+  return out;
+}
+// startup compaction (keep 90d) + a 5-min sampler so history accrues with no UI open
+(async () => {
+  try {
+    const lines = (await readFile(USAGE_HIST, 'utf8')).split('\n');
+    const cut = Date.now() - 90 * 86400000;
+    const kept = lines.filter((l) => {
+      if (!l) return false;
+      try {
+        return JSON.parse(l).at >= cut;
+      } catch {
+        return false;
+      }
+    });
+    if (kept.length + 8 < lines.length) await writeFile(USAGE_HIST, kept.join('\n') + '\n');
+  } catch {
+    /* no file yet */
+  }
+})();
+setInterval(() => {
+  usage().catch(() => {});
+}, 300000);
 
 // ---- difficulty → model routing (state/control/models.json) ---------------------------
 // Read fresh by mflib.sh before every agent run, so saving here applies from the
@@ -911,6 +974,14 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(join(__dirname, 'index.html')));
+    } else if (req.method === 'GET' && url.pathname === '/api/usage/history') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          now: Date.now(),
+          entries: await usageHistory(url.searchParams.get('hours')),
+        }),
+      );
     } else if (req.method === 'GET' && url.pathname === '/api/usage') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(await usageAnalytics()));
