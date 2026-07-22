@@ -29,7 +29,7 @@ export function Modal({
 
   return (
     <div
-      className="safe-pt safe-pb fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:items-center"
+      className="safe-pt-4 safe-pb-4 fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 px-4 sm:items-center"
       onMouseDown={onClose}
     >
       <div

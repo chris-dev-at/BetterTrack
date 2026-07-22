@@ -35,71 +35,84 @@ async function configureAdminOrigin(context: import('@playwright/test').BrowserC
   );
 }
 
-test('admin mobile: burger, users list, user detail render without clipping at 390×844', async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
+/**
+ * Both viewports the acceptance criterion names (§13.5 V5-P13b). 390×844 is the
+ * iPhone 12/13 baseline; 360×800 is the narrower Android baseline. The spec
+ * runs the same walkthrough at each width so any surface that only fits one
+ * width fails visibly.
+ */
+const PHONE_VIEWPORTS = [
+  { name: 'iphone-390x844', width: 390, height: 844 },
+  { name: 'android-360x800', width: 360, height: 800 },
+] as const;
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
-  const adminCtx = await newAdminBrowserContext(browser, apiRequest);
-  try {
-    await configureAdminOrigin(adminCtx);
-    // Force an iPhone 12 viewport — the root `mobile-chromium` project already
-    // uses Pixel 7 dimensions, but 390×844 is the primary owner target
-    // (§13.5 V5-P13b, "primary audience: iOS users").
-    const adminPage = await adminCtx.newPage();
-    await adminPage.setViewportSize({ width: 390, height: 844 });
+for (const viewport of PHONE_VIEWPORTS) {
+  test(`admin mobile [${viewport.name}]: burger, users list, user detail render without clipping`, async ({
+    browser,
+  }) => {
+    test.setTimeout(120_000);
 
-    await adminPage.goto('/admin/users');
+    const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+    await loginAsAdmin(apiRequest);
+    const adminCtx = await newAdminBrowserContext(browser, apiRequest);
+    try {
+      await configureAdminOrigin(adminCtx);
+      // The root `mobile-chromium` project uses Pixel 7 dimensions; this spec
+      // pins the exact widths the acceptance criterion names so surfaces that
+      // only fit one width fail visibly.
+      const adminPage = await adminCtx.newPage();
+      await adminPage.setViewportSize({ width: viewport.width, height: viewport.height });
 
-    // The mobile-only top bar shows the burger. The burger is the only way to
-    // reach the nav at this width; it must be visible and hit-testable.
-    const burger = adminPage.getByRole('button', { name: 'Open admin menu' });
-    await expect(burger).toBeVisible({ timeout: 20_000 });
-    await burger.click();
+      await adminPage.goto('/admin/users');
 
-    // Drawer opens and every nav link is reachable — a spot check on Settings
-    // proves the drawer isn't stuck behind the header/backdrop.
-    const menu = adminPage.getByRole('dialog', { name: 'Admin menu' });
-    await expect(menu).toBeVisible();
-    await expect(menu.getByRole('link', { name: 'Users' })).toBeVisible();
-    await menu.getByRole('button', { name: 'Close admin menu' }).click();
-    await expect(menu).toBeHidden();
+      // The mobile-only top bar shows the burger. The burger is the only way to
+      // reach the nav at this width; it must be visible and hit-testable.
+      const burger = adminPage.getByRole('button', { name: 'Open admin menu' });
+      await expect(burger).toBeVisible({ timeout: 20_000 });
+      await burger.click();
 
-    // The users search box and Create button remain reachable — no clipping
-    // above the fold at this viewport.
-    await expect(adminPage.getByLabel('Search')).toBeVisible();
-    const createUser = adminPage.getByRole('button', { name: 'Create user' });
-    await expect(createUser).toBeVisible();
+      // Drawer opens and every nav link is reachable — a spot check on Settings
+      // proves the drawer isn't stuck behind the header/backdrop.
+      const menu = adminPage.getByRole('dialog', { name: 'Admin menu' });
+      await expect(menu).toBeVisible();
+      await expect(menu.getByRole('link', { name: 'Users' })).toBeVisible();
+      await menu.getByRole('button', { name: 'Close admin menu' }).click();
+      await expect(menu).toBeHidden();
 
-    // The list body shows at least the seeded admin row; opening it drops us
-    // into the per-user detail view.
-    const adminRow = adminPage
-      .getByRole('row')
-      .filter({ hasText: 'e2e-admin@bettertrack.local' })
-      .first();
-    await expect(adminRow).toBeVisible({ timeout: 20_000 });
-    await adminRow.click();
+      // The users search box and Create button remain reachable — no clipping
+      // above the fold at this viewport.
+      await expect(adminPage.getByLabel('Search')).toBeVisible();
+      const createUser = adminPage.getByRole('button', { name: 'Create user' });
+      await expect(createUser).toBeVisible();
 
-    // The per-user Actions block ships the danger button — the row of buttons
-    // sits inside a `flex flex-wrap`, so on a narrow phone they wrap instead
-    // of clipping. Every button must remain hit-testable and inside the
-    // viewport.
-    await expect(adminPage.getByRole('button', { name: 'Delete' })).toBeVisible({
-      timeout: 20_000,
-    });
-    for (const label of ['Reset password', 'Send test email']) {
-      const button = adminPage.getByRole('button', { name: label });
-      await expect(button).toBeVisible();
-      const box = await button.boundingBox();
-      expect(box, `${label} bounding box`).toBeTruthy();
-      if (box) {
-        expect(box.x + box.width).toBeLessThanOrEqual(390);
+      // The list body shows at least the seeded admin row; opening it drops us
+      // into the per-user detail view.
+      const adminRow = adminPage
+        .getByRole('row')
+        .filter({ hasText: 'e2e-admin@bettertrack.local' })
+        .first();
+      await expect(adminRow).toBeVisible({ timeout: 20_000 });
+      await adminRow.click();
+
+      // The per-user Actions block ships the danger button — the row of buttons
+      // sits inside a `flex flex-wrap`, so on a narrow phone they wrap instead
+      // of clipping. Every button must remain hit-testable and inside the
+      // viewport.
+      await expect(adminPage.getByRole('button', { name: 'Delete' })).toBeVisible({
+        timeout: 20_000,
+      });
+      for (const label of ['Reset password', 'Send test email']) {
+        const button = adminPage.getByRole('button', { name: label });
+        await expect(button).toBeVisible();
+        const box = await button.boundingBox();
+        expect(box, `${label} bounding box`).toBeTruthy();
+        if (box) {
+          expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+        }
       }
+    } finally {
+      await apiRequest.dispose();
+      await adminCtx.close();
     }
-  } finally {
-    await apiRequest.dispose();
-    await adminCtx.close();
-  }
-});
+  });
+}

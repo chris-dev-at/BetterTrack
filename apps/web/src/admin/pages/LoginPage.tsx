@@ -76,7 +76,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="safe-pt safe-pb safe-px grid min-h-screen place-items-center bg-neutral-950 px-4">
+    <div className="safe-pt-0 safe-pb-0 safe-px-4 grid min-h-screen place-items-center bg-neutral-950">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <Wordmark edition="Admin" className="text-2xl" />

@@ -3,25 +3,29 @@
 /**
  * iOS installable-PWA polish (§13.5 V5-P13b): with `viewport-fit=cover` in the
  * document meta, standalone-mode iOS draws under the notch / home indicator.
- * The `safe-*` utilities add `env(safe-area-inset-*)` padding so headers, drawers
- * and floating hints stay inside the visible viewport on iPhone. Zero effect
- * on non-iOS or non-standalone browsers — the env() values resolve to 0.
+ * The functional `safe-p*-N` utilities set padding to `max(env(safe-area-inset-*),
+ * spacing(N))` so the base padding N is preserved everywhere and iOS extends
+ * it only when the notch/home-indicator inset is larger. The N mirrors the
+ * built-in `p-N` scale — write `safe-pt-3` instead of `pt-3` on elements that
+ * should also honour the top safe-area inset, and DO NOT combine with a
+ * plain `p*` for the same physical side (they'd tie on specificity and the
+ * later declaration would silently win).
  */
-@utility safe-pt {
-  padding-top: max(env(safe-area-inset-top, 0px), 0px);
+@utility safe-pt-* {
+  padding-top: max(env(safe-area-inset-top, 0px), --spacing(--value(integer)));
 }
-@utility safe-pb {
-  padding-bottom: max(env(safe-area-inset-bottom, 0px), 0px);
+@utility safe-pb-* {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), --spacing(--value(integer)));
 }
-@utility safe-pl {
-  padding-left: max(env(safe-area-inset-left, 0px), 0px);
+@utility safe-pl-* {
+  padding-left: max(env(safe-area-inset-left, 0px), --spacing(--value(integer)));
 }
-@utility safe-pr {
-  padding-right: max(env(safe-area-inset-right, 0px), 0px);
+@utility safe-pr-* {
+  padding-right: max(env(safe-area-inset-right, 0px), --spacing(--value(integer)));
 }
-@utility safe-px {
-  padding-left: max(env(safe-area-inset-left, 0px), 0px);
-  padding-right: max(env(safe-area-inset-right, 0px), 0px);
+@utility safe-px-* {
+  padding-left: max(env(safe-area-inset-left, 0px), --spacing(--value(integer)));
+  padding-right: max(env(safe-area-inset-right, 0px), --spacing(--value(integer)));
 }
 
 /**

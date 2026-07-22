@@ -141,11 +141,12 @@ export function AdminLayout() {
   const renderSidebar = (variant: 'desktop' | 'drawer') => (
     <div
       className={cx(
-        'flex h-full min-h-0 flex-col gap-4 bg-neutral-900 p-4',
+        'flex h-full min-h-0 flex-col gap-4 bg-neutral-900',
         // Drawer is the shell chrome in standalone iOS — respect the top/bottom
         // safe-area insets so the sign-out row doesn't sit under the home
-        // indicator.
-        variant === 'drawer' ? 'safe-pt safe-pb' : '',
+        // indicator. `safe-pt-4`/`safe-pb-4` collapse to the base 1rem on non-iOS
+        // (matching the desktop `p-4`) and only extend under a real inset.
+        variant === 'drawer' ? 'safe-pt-4 safe-pb-4 px-4' : 'p-4',
       )}
     >
       <div className="flex shrink-0 items-center justify-between gap-2 px-2">
@@ -210,9 +211,10 @@ export function AdminLayout() {
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 md:flex">
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
-          is persistent. `safe-pt` + `safe-px` respect iOS standalone insets
-          (§13.5 V5-P13b) so the burger and wordmark clear the notch. */}
-      <header className="safe-pt safe-px sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-3 md:hidden">
+          is persistent. `safe-pt-3` + `safe-px-4` respect iOS standalone insets
+          (§13.5 V5-P13b) so the burger and wordmark clear the notch — and
+          collapse to the base 0.75rem/1rem on non-iOS. */}
+      <header className="safe-pt-3 safe-px-4 sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 pb-3 md:hidden">
         <button
           ref={burgerRef}
           type="button"
@@ -267,7 +269,7 @@ export function AdminLayout() {
       ) : null}
 
       <main className="min-w-0 flex-1">
-        <div className="safe-pb safe-px mx-auto max-w-5xl px-4 py-8">
+        <div className="safe-pb-8 safe-px-4 mx-auto max-w-5xl pt-8">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}
           <ErrorBoundary key={location.pathname}>

@@ -8,9 +8,11 @@ const DISMISS_KEY = 'bt.iosInstallHint.dismissed';
  * True on iOS Safari (iPhone/iPad, not the in-app browsers). Detected by
  * user-agent because iOS has no reliable capability check for
  * `beforeinstallprompt` (Safari never fires it — see §13.5 V5-P13b). The extra
- * clauses exclude Chrome/Firefox/Edge on iOS (which share the WebKit engine but
- * still expose their own share sheet), because "Add to Home Screen" lives in
- * Safari's share sheet only.
+ * clauses exclude non-Safari browsers on iOS (which share the WebKit engine
+ * but still expose their own share sheet), because "Add to Home Screen"
+ * routes through Safari's share sheet only. DuckDuckGo (`DuckDuckGo/…`) and
+ * Brave (`Brave/…`) are included alongside the Chrome/Firefox/Edge/Opera
+ * tokens — they don't send WebKit's install path either.
  */
 function isIosSafari(): boolean {
   if (typeof navigator === 'undefined') return false;
@@ -22,7 +24,7 @@ function isIosSafari(): boolean {
   if (!isIos) return false;
   // WebKit is a substring on every iOS browser, but only Safari lacks the
   // vendor tokens below. Screening them out leaves iOS Safari alone.
-  return !/CriOS|FxiOS|EdgiOS|OPT|Chrome|Firefox/.test(ua);
+  return !/CriOS|FxiOS|EdgiOS|OPT|DuckDuckGo|Brave|Chrome|Firefox/.test(ua);
 }
 
 /** True when the SPA is running as an installed PWA (standalone display mode). */
@@ -82,7 +84,7 @@ export function IosInstallHint() {
       role="region"
       aria-live="polite"
       aria-label={t('ui.iosInstall.title')}
-      className="safe-pb safe-px fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-sm items-start gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-3 text-sm text-neutral-100 shadow-2xl backdrop-blur"
+      className="safe-pb-3 safe-px-3 fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-sm items-start gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 pt-3 text-sm text-neutral-100 shadow-2xl backdrop-blur"
     >
       <div className="flex-1">
         <p className="font-medium">{t('ui.iosInstall.title')}</p>

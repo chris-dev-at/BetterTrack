@@ -62,8 +62,10 @@ export function AppLayout() {
     <div className="min-h-screen bg-[#0b0e14] text-neutral-100">
       {/* iOS standalone-PWA polish (§13.5 V5-P13b): safe-area insets keep the
           header out from under the notch and the footer above the home
-          indicator. env(safe-area-inset-*) resolves to 0 everywhere else. */}
-      <header className="safe-pt safe-px border-b border-neutral-800 bg-neutral-900">
+          indicator. The base spacing (`-0` here — the header has no intrinsic
+          padding of its own) is preserved on non-iOS; env() adds the inset
+          only under a real iPhone notch. */}
+      <header className="safe-pt-0 safe-px-0 border-b border-neutral-800 bg-neutral-900">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex min-w-0 items-center gap-4 sm:gap-6">
             <Wordmark edition="Web" className="shrink-0 text-xl" />
@@ -117,7 +119,7 @@ export function AppLayout() {
           <Outlet />
         </ErrorBoundary>
       </main>
-      <footer className="safe-pb safe-px mx-auto max-w-6xl px-4 pb-8">
+      <footer className="safe-pb-8 safe-px-4 mx-auto max-w-6xl">
         <Disclaimer>{TAGLINE}</Disclaimer>
         <nav
           aria-label={t('footer.legal')}

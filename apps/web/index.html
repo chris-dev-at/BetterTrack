@@ -13,9 +13,11 @@
          for install/standalone metadata, so name + splash-style + touch icon
          are declared with meta/link tags. `apple-mobile-web-app-capable`
          opts into standalone; the black-translucent status bar keeps our
-         dark shell edge-to-edge. -->
+         dark shell edge-to-edge. Android/Chrome uses `display: "standalone"`
+         in the manifest for the same signal — the old `mobile-web-app-capable`
+         meta was Chrome-only, is now deprecated in favour of the manifest, and
+         drops a Lighthouse warning, so it isn't declared here. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="BetterTrack" />
     <link rel="apple-touch-icon" href="/BT_AppIcon.png" />

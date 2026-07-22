@@ -15,6 +15,10 @@ const IPHONE_SAFARI_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1';
 const IPHONE_CHROME_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/122.0 Mobile/15E148 Safari/604.1';
+const IPHONE_DUCKDUCKGO_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 DuckDuckGo/7 Safari/605.1.15';
+const IPHONE_BRAVE_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1 Brave/1.60';
 const DESKTOP_CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36';
 const STORAGE_KEY = 'bt.iosInstallHint.dismissed';
@@ -46,6 +50,18 @@ describe('IosInstallHint', () => {
 
   test('does not render on iOS Chrome (Add to Home Screen lives in Safari)', () => {
     setUserAgent(IPHONE_CHROME_UA);
+    render(<IosInstallHint />);
+    expect(screen.queryByRole('region')).toBeNull();
+  });
+
+  test('does not render on iOS DuckDuckGo (own share sheet, no Safari install path)', () => {
+    setUserAgent(IPHONE_DUCKDUCKGO_UA);
+    render(<IosInstallHint />);
+    expect(screen.queryByRole('region')).toBeNull();
+  });
+
+  test('does not render on iOS Brave (own share sheet, no Safari install path)', () => {
+    setUserAgent(IPHONE_BRAVE_UA);
     render(<IosInstallHint />);
     expect(screen.queryByRole('region')).toBeNull();
   });

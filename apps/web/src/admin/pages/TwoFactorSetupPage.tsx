@@ -47,7 +47,7 @@ export function TwoFactorSetupPage() {
   }
 
   return (
-    <div className="safe-pt safe-pb safe-px grid min-h-screen place-items-center bg-neutral-950 px-4 py-10">
+    <div className="safe-pt-10 safe-pb-10 safe-px-4 grid min-h-screen place-items-center bg-neutral-950">
       <div className="w-full max-w-md">
         <div className="mb-8 text-center">
           <Wordmark edition="Admin" className="text-2xl" />

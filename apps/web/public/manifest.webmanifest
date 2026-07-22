@@ -11,13 +11,13 @@
   "icons": [
     {
       "src": "/BT_AppIcon.png",
-      "sizes": "512x512",
+      "sizes": "any",
       "type": "image/png",
       "purpose": "any"
     },
     {
       "src": "/BT_AppIcon.png",
-      "sizes": "512x512",
+      "sizes": "any",
       "type": "image/png",
       "purpose": "maskable"
     }
