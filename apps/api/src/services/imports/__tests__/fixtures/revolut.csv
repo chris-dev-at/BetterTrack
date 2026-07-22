@@ -1,0 +1,4 @@
+Type,Product,Started Date,Completed Date,Description,Amount,Fee,Currency,State,Balance
+CARD_PAYMENT,Current,2024-01-03 08:15:22,2024-01-03 20:15:00,Spotify,-9.99,0.00,EUR,COMPLETED,1234.56
+CARD_PAYMENT,Current,2024-01-07 12:00:00,2024-01-07 12:05:00,Starbucks,-4.50,0.00,EUR,COMPLETED,1230.06
+TOPUP,Current,2024-01-01 09:00:00,2024-01-01 09:00:00,Payment from Employer,1500.00,0.00,EUR,COMPLETED,2730.06

@@ -292,7 +292,9 @@
     "tagline": "Track your spending and income — kept separate from your portfolio.",
     "nav": {
       "transactions": "Transactions",
-      "categories": "Categories"
+      "categories": "Categories",
+      "rules": "Rules",
+      "import": "Import"
     },
     "direction": {
       "expense": "Expense",
@@ -340,6 +342,63 @@
         "color": "Colour",
         "saveError": "Couldn't save the category. Please try again."
       }
+    },
+    "rules": {
+      "subtitle": "Rules auto-file imported transactions into categories by matching their description.",
+      "new": "New rule",
+      "loadError": "Couldn't load your rules.",
+      "deleteError": "Couldn't delete the rule. Please try again.",
+      "emptyTitle": "No rules yet",
+      "emptyDescription": "Add a rule to auto-categorize transactions as you import them.",
+      "unknownCategory": "Unknown category",
+      "disabled": "Off",
+      "matchType": {
+        "contains": "Contains",
+        "equals": "Equals",
+        "starts_with": "Starts with",
+        "regex": "Regex"
+      },
+      "dialog": {
+        "newTitle": "New rule",
+        "editTitle": "Edit rule",
+        "category": "Category",
+        "categoryRequired": "Pick a category.",
+        "matchType": "Match type",
+        "pattern": "Pattern",
+        "patternPlaceholder": "e.g. SPOTIFY",
+        "patternRequired": "Enter a pattern.",
+        "priority": "Priority",
+        "enabled": "Enabled",
+        "saveError": "Couldn't save the rule. Please try again."
+      }
+    },
+    "import": {
+      "subtitle": "Import a bank statement CSV — rows are auto-categorized and duplicates are skipped.",
+      "uploadTitle": "Upload a statement",
+      "chooseFile": "Choose a CSV file",
+      "bank": "Bank",
+      "bankAuto": "Auto-detect",
+      "preview": "Preview",
+      "previewing": "Reading…",
+      "uploadHint": "Erste/George, Raiffeisen ELBA, N26 and Revolut CSV exports are supported.",
+      "previewError": "Couldn't read that file. Check it's a supported bank export.",
+      "applyError": "Couldn't import the transactions. Please try again.",
+      "applied": "Imported {{applied}} · {{duplicate}} duplicate · {{error}} skipped.",
+      "importAnother": "Import another",
+      "previewTitle": "Detected {{bank}}",
+      "counts": "{{new}} new · {{duplicate}} duplicate · {{error}} error",
+      "colDate": "Date",
+      "colDescription": "Description",
+      "colAmount": "Amount",
+      "colCategory": "Category",
+      "flag": {
+        "new": "New",
+        "duplicate": "Dup",
+        "error": "Error"
+      },
+      "uncategorized": "Uncategorized",
+      "applying": "Importing…",
+      "apply": "Import {{count}} transactions"
     }
   },
   "nav": {

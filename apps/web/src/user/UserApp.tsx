@@ -22,6 +22,8 @@ import { ForecastPage } from './forecast/ForecastPage';
 import { ExpensesLayout } from './expenses/ExpensesSection';
 import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
 import { CategoriesPage as ExpenseCategoriesPage } from './expenses/CategoriesPage';
+import { RulesPage as ExpenseRulesPage } from './expenses/RulesPage';
+import { ImportPage as ExpenseImportPage } from './expenses/ImportPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
@@ -178,6 +180,8 @@ function UserShell() {
           <Route path="expenses" element={<ExpensesLayout />}>
             <Route index element={<ExpenseTransactionsPage />} />
             <Route path="categories" element={<ExpenseCategoriesPage />} />
+            <Route path="rules" element={<ExpenseRulesPage />} />
+            <Route path="import" element={<ExpenseImportPage />} />
           </Route>
 
           {/* ── Assets ── */}

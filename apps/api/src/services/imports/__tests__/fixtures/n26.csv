@@ -1,0 +1,4 @@
+Date,Payee,Account number,Transaction type,Payment reference,Amount (EUR),Amount (Foreign Currency),Type Foreign Currency,Exchange Rate
+2024-01-05,REWE,,MasterCard Payment,,-42.50,,,
+2024-01-10,Netflix,,Direct Debit,Netflix Monthly,-12.99,,,
+2024-01-28,ACME GmbH,,Income,Salary,2400.00,,,

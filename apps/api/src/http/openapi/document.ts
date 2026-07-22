@@ -266,6 +266,9 @@ const componentSchemas = {
   ExpenseRuleResponse: contracts.expenseRuleResponseSchema,
   CreateExpenseRuleRequest: contracts.createExpenseRuleRequestSchema,
   UpdateExpenseRuleRequest: contracts.updateExpenseRuleRequestSchema,
+  ExpenseBankListResponse: contracts.expenseBankListResponseSchema,
+  ExpenseImportPreviewResponse: contracts.expenseImportPreviewResponseSchema,
+  ExpenseImportApplyResponse: contracts.expenseImportApplyResponseSchema,
 
   // Announcements (§13.4 V4-P5b)
   Announcement: contracts.announcementSchema,
@@ -2406,6 +2409,48 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete an auto-categorization rule.',
     params: contracts.expenseRuleIdParamSchema,
     status: 204,
+  },
+  {
+    method: 'get',
+    path: '/expenses/import/banks',
+    tag: 'Expenses',
+    summary: 'The supported bank-statement CSV mappers (Erste/George, ELBA, N26, Revolut).',
+    status: 200,
+    response: R.ExpenseBankListResponse,
+  },
+  {
+    method: 'post',
+    path: '/expenses/import/preview',
+    tag: 'Expenses',
+    summary:
+      'Upload a bank CSV: autodetect (or pick) the bank, normalize + auto-categorize its rows, flag duplicates, and return the staged preview. Nothing is persisted.',
+    body: contracts.expenseImportPreviewFieldsSchema.extend({
+      file: z.string().openapi({
+        type: 'string',
+        format: 'binary',
+        description: 'The bank statement CSV export (UTF-8, ≤ 5 MB).',
+      }),
+    }),
+    bodyContentType: 'multipart/form-data',
+    status: 200,
+    response: R.ExpenseImportPreviewResponse,
+  },
+  {
+    method: 'post',
+    path: '/expenses/import/apply',
+    tag: 'Expenses',
+    summary:
+      'Confirm an import: re-upload the same CSV (+ optional per-row category overrides) and book the non-duplicate rows as expense transactions, tagged import:<bank>. Idempotent via content hashing.',
+    body: contracts.expenseImportApplyFieldsSchema.extend({
+      file: z.string().openapi({
+        type: 'string',
+        format: 'binary',
+        description: 'The same bank statement CSV re-uploaded (UTF-8, ≤ 5 MB).',
+      }),
+    }),
+    bodyContentType: 'multipart/form-data',
+    status: 200,
+    response: R.ExpenseImportApplyResponse,
   },
 
   // Broker CSV imports (§13.4 V4-P8)

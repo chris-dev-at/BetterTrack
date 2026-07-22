@@ -1,6 +1,9 @@
 import {
+  expenseBankListResponseSchema,
   expenseCategoryListResponseSchema,
   expenseCategoryResponseSchema,
+  expenseImportApplyResponseSchema,
+  expenseImportPreviewResponseSchema,
   expenseRuleListResponseSchema,
   expenseRuleResponseSchema,
   expenseTransactionListResponseSchema,
@@ -8,8 +11,12 @@ import {
   type CreateExpenseCategoryRequest,
   type CreateExpenseRuleRequest,
   type CreateExpenseTransactionRequest,
+  type ExpenseBankListResponse,
   type ExpenseCategoryListResponse,
   type ExpenseCategoryResponse,
+  type ExpenseImportApplyResponse,
+  type ExpenseImportOverride,
+  type ExpenseImportPreviewResponse,
   type ExpenseRuleListResponse,
   type ExpenseRuleResponse,
   type ExpenseTransactionListQuery,
@@ -149,4 +156,48 @@ export async function updateExpenseRule(
 
 export async function deleteExpenseRule(ruleId: string): Promise<void> {
   await apiRequest<unknown>(`/expenses/rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+}
+
+// ── Bank-statement CSV import (issue 2/3) ──
+
+/** Query key for the supported-banks list (static per deployment). */
+export const EXPENSE_IMPORT_BANKS_QUERY_KEY = ['expenses', 'import', 'banks'] as const;
+
+/** `GET /expenses/import/banks` — the supported bank mappers, for the picker. */
+export async function listExpenseImportBanks(
+  signal?: AbortSignal,
+): Promise<ExpenseBankListResponse> {
+  const data = await apiRequest<unknown>('/expenses/import/banks', { signal });
+  return expenseBankListResponseSchema.parse(data);
+}
+
+/** `POST /expenses/import/preview` — upload a bank CSV; get the staged preview back (persists nothing). */
+export async function previewExpenseImport(input: {
+  file: File;
+  bankId?: string;
+}): Promise<ExpenseImportPreviewResponse> {
+  const form = new FormData();
+  if (input.bankId) form.append('bankId', input.bankId);
+  form.append('file', input.file);
+  const data = await apiRequest<unknown>('/expenses/import/preview', {
+    method: 'POST',
+    body: form,
+  });
+  return expenseImportPreviewResponseSchema.parse(data);
+}
+
+/** `POST /expenses/import/apply` — re-upload the same CSV (+ category overrides) and book the rows. */
+export async function applyExpenseImport(input: {
+  file: File;
+  bankId?: string;
+  overrides?: ExpenseImportOverride[];
+}): Promise<ExpenseImportApplyResponse> {
+  const form = new FormData();
+  if (input.bankId) form.append('bankId', input.bankId);
+  if (input.overrides && input.overrides.length > 0) {
+    form.append('overrides', JSON.stringify(input.overrides));
+  }
+  form.append('file', input.file);
+  const data = await apiRequest<unknown>('/expenses/import/apply', { method: 'POST', body: form });
+  return expenseImportApplyResponseSchema.parse(data);
 }

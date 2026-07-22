@@ -114,6 +114,7 @@ function buildInertContext(): AppContext {
     imports: inertService('imports'),
     standingOrders: inertService('standingOrders'),
     expenses: inertService('expenses'),
+    expenseImports: inertService('expenseImports'),
     analytics: inertService('analytics'),
     social: inertService('social'),
     comments: inertService('comments'),

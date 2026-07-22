@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNotNull, lte } from 'drizzle-orm';
 
 import type { ExpenseDirection, ExpenseRuleMatchType } from '@bettertrack/contracts';
 
@@ -222,6 +222,23 @@ export interface ExpenseTransactionListFilters {
   limit: number;
 }
 
+/**
+ * One bank-import row to persist (issue 2/3). Like a manual create but carries an
+ * `import:<bank>` `source` and the `dedupHash` that keys idempotency — the CSV
+ * importer sets both; manual creates leave the hash null (NULLs never collide in
+ * the UNIQUE(user, dedup_hash) index).
+ */
+export interface InsertImportedExpenseInput {
+  categoryId: string | null;
+  direction: ExpenseDirection;
+  amount: number;
+  currency: string;
+  bookedOn: string;
+  description: string;
+  source: string;
+  dedupHash: string;
+}
+
 function toTransaction(row: ExpenseTransactionRow): ExpenseTransactionRecord {
   return {
     id: row.id,
@@ -296,6 +313,61 @@ export function createExpenseTransactionRepository(db: Database) {
         .returning();
       if (!row) throw new Error('Expense transaction vanished after insert');
       return toTransaction(row);
+    },
+
+    /**
+     * The owner's non-null import dedup hashes — the CSV importer's existing-set
+     * (issue 2/3). Manual rows carry a null hash and are excluded, so a manual
+     * entry can never mask or be masked by an import.
+     */
+    async dedupHashesForOwner(userId: string): Promise<Set<string>> {
+      const rows = await db
+        .select({ dedupHash: expenseTransactions.dedupHash })
+        .from(expenseTransactions)
+        .where(
+          and(eq(expenseTransactions.userId, userId), isNotNull(expenseTransactions.dedupHash)),
+        );
+      const hashes = new Set<string>();
+      for (const row of rows) if (row.dedupHash !== null) hashes.add(row.dedupHash);
+      return hashes;
+    },
+
+    /**
+     * Bulk-insert imported rows in ONE statement (transactional), skipping any
+     * whose `(user, dedup_hash)` already exists — the UNIQUE index is the
+     * idempotency backstop against a concurrent apply / a row that raced in since
+     * the caller computed its existing-set. Returns the hashes that actually
+     * landed, so the caller can report the rest as duplicates. The caller has
+     * already de-duplicated against the existing-set + within the file, so a
+     * conflict here is only a race, never the common path.
+     */
+    async insertImported(
+      userId: string,
+      inputs: InsertImportedExpenseInput[],
+    ): Promise<Set<string>> {
+      if (inputs.length === 0) return new Set();
+      const rows = await db
+        .insert(expenseTransactions)
+        .values(
+          inputs.map((input) => ({
+            userId,
+            categoryId: input.categoryId,
+            direction: input.direction,
+            amount: input.amount.toString(),
+            currency: input.currency,
+            bookedOn: input.bookedOn,
+            description: input.description,
+            source: input.source,
+            dedupHash: input.dedupHash,
+          })),
+        )
+        .onConflictDoNothing({
+          target: [expenseTransactions.userId, expenseTransactions.dedupHash],
+        })
+        .returning({ dedupHash: expenseTransactions.dedupHash });
+      const inserted = new Set<string>();
+      for (const row of rows) if (row.dedupHash !== null) inserted.add(row.dedupHash);
+      return inserted;
     },
 
     /** Update mutable fields, owner-scoped (§8). Null when the id is not the caller's. */

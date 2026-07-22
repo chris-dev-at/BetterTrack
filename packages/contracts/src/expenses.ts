@@ -260,3 +260,162 @@ export type ExpenseRuleResponse = z.infer<typeof expenseRuleResponseSchema>;
 /** Route param for the single-rule endpoints. */
 export const expenseRuleIdParamSchema = z.object({ ruleId: z.string().uuid() }).strict();
 export type ExpenseRuleIdParam = z.infer<typeof expenseRuleIdParamSchema>;
+
+// --- Bank-statement CSV import (issue 2/3) -----------------------------------
+
+/**
+ * Bank-statement CSV import (PROJECTPLAN.md §13.5 V5-P9, issue 2/3). A NEW mapper
+ * family distinct from the broker imports (§13.4): those map securities trades;
+ * these map a bank account's spend/income rows into expense transactions. The
+ * flow mirrors the broker one — upload → autodetect (or pick) the bank → a staged
+ * preview with per-row flags + a rule-suggested category → an explicit apply — but
+ * is **stateless**: no staging table (P9 owns no import DDL), so the preview holds
+ * nothing server-side and apply re-parses the same file, re-runs the rules, and
+ * relies on the `expense_transactions` UNIQUE(user, dedup_hash) key for idempotency
+ * (a re-import of an already-applied file writes nothing).
+ */
+
+/** One supported bank-statement mapper (Erste/George, Raiffeisen ELBA, N26, Revolut). */
+export const expenseBankSchema = z.object({ id: z.string(), label: z.string() }).strict();
+export type ExpenseBank = z.infer<typeof expenseBankSchema>;
+
+/** `GET /expenses/import/banks` — the supported bank mappers, for the picker. */
+export const expenseBankListResponseSchema = z
+  .object({ banks: z.array(expenseBankSchema) })
+  .strict();
+export type ExpenseBankListResponse = z.infer<typeof expenseBankListResponseSchema>;
+
+/**
+ * Per-row preview flag: `new` = parsed, will import; `duplicate` = its content
+ * hash already exists (or an earlier row of the same file) — skipped on apply;
+ * `error` = the row itself is malformed (reported, the rest of the file lands).
+ * There is no `unmapped` — an expense row references no catalog instrument.
+ */
+export const EXPENSE_IMPORT_ROW_FLAGS = ['new', 'duplicate', 'error'] as const;
+export const expenseImportRowFlagSchema = z.enum(EXPENSE_IMPORT_ROW_FLAGS);
+export type ExpenseImportRowFlag = z.infer<typeof expenseImportRowFlagSchema>;
+
+/**
+ * Per-row apply outcome. `applied` landed; `skipped_duplicate` mirrors a
+ * `duplicate`/raced row; `skipped_error` mirrors an `error` row (per-row error
+ * tolerance, never all-or-nothing).
+ */
+export const EXPENSE_IMPORT_ROW_RESULTS = [
+  'applied',
+  'skipped_duplicate',
+  'skipped_error',
+] as const;
+export const expenseImportRowResultSchema = z.enum(EXPENSE_IMPORT_ROW_RESULTS);
+export type ExpenseImportRowResult = z.infer<typeof expenseImportRowResultSchema>;
+
+/** Per-flag row counts for the preview header. */
+export const expenseImportCountsSchema = z
+  .object({
+    total: z.number().int(),
+    new: z.number().int(),
+    duplicate: z.number().int(),
+    error: z.number().int(),
+  })
+  .strict();
+export type ExpenseImportCounts = z.infer<typeof expenseImportCountsSchema>;
+
+/**
+ * One staged (normalized) bank-statement row. Every field is nullable because an
+ * `error` row carries only its `raw` line + `message`. `categoryId` is the rule
+ * engine's suggestion (null = uncategorized); `categoryName` is a display snapshot.
+ */
+export const expenseImportPreviewRowSchema = z
+  .object({
+    /** 1-based physical line number in the uploaded file (header = line 1). */
+    rowIndex: z.number().int(),
+    raw: z.string(),
+    flag: expenseImportRowFlagSchema,
+    message: z.string().nullable(),
+    /** ISO `YYYY-MM-DD` booking day. */
+    bookedOn: z.string().nullable(),
+    direction: expenseDirectionSchema.nullable(),
+    /** Positive magnitude; `direction` gives the sign. */
+    amount: z.number().nullable(),
+    currency: z.string().nullable(),
+    description: z.string().nullable(),
+    categoryId: z.string().uuid().nullable(),
+    categoryName: z.string().nullable(),
+  })
+  .strict();
+export type ExpenseImportPreviewRow = z.infer<typeof expenseImportPreviewRowSchema>;
+
+/** `POST /expenses/import/preview` response — the staged preview (nothing persisted). */
+export const expenseImportPreviewResponseSchema = z
+  .object({
+    bankId: z.string(),
+    bankLabel: z.string(),
+    filename: z.string(),
+    counts: expenseImportCountsSchema,
+    rows: z.array(expenseImportPreviewRowSchema),
+  })
+  .strict();
+export type ExpenseImportPreviewResponse = z.infer<typeof expenseImportPreviewResponseSchema>;
+
+/**
+ * The non-file multipart field of `POST /expenses/import/preview` (the CSV itself
+ * travels as the `file` part). `bankId` overrides autodetection; omitted → the
+ * server detects the bank (400 when it cannot).
+ */
+export const expenseImportPreviewFieldsSchema = z
+  .object({ bankId: z.string().min(1).max(64).optional() })
+  .strict();
+export type ExpenseImportPreviewFields = z.infer<typeof expenseImportPreviewFieldsSchema>;
+
+/**
+ * A preview-time category override the user made before applying. `categoryId:
+ * null` files the row uncategorized (overriding a rule suggestion); an absent
+ * `rowIndex` keeps the rule suggestion. Matched to the re-parsed file by the
+ * deterministic physical `rowIndex`.
+ */
+export const expenseImportOverrideSchema = z
+  .object({
+    rowIndex: z.number().int(),
+    categoryId: z.string().uuid().nullable(),
+  })
+  .strict();
+export type ExpenseImportOverride = z.infer<typeof expenseImportOverrideSchema>;
+
+/**
+ * The non-file multipart fields of `POST /expenses/import/apply`. The same CSV is
+ * re-uploaded as the `file` part (the server stays authoritative on amounts/dates
+ * — never trusting client-echoed money); `overrides` is a JSON-encoded
+ * {@link ExpenseImportOverride}[] the route parses + validates.
+ */
+export const expenseImportApplyFieldsSchema = z
+  .object({
+    bankId: z.string().min(1).max(64).optional(),
+    // A WYSIWYG apply sends one override per importable row, so a max-size file
+    // (IMPORT_MAX_ROWS) yields a large field — bounded under Multer's 1 MB field
+    // default (and its content re-bounded to IMPORT_MAX_ROWS entries in the route).
+    overrides: z.string().max(1_000_000).optional(),
+  })
+  .strict();
+export type ExpenseImportApplyFields = z.infer<typeof expenseImportApplyFieldsSchema>;
+
+/** One row's apply outcome inside the result report. */
+export const expenseImportApplyRowSchema = z
+  .object({
+    rowIndex: z.number().int(),
+    result: expenseImportRowResultSchema,
+    message: z.string().nullable(),
+  })
+  .strict();
+export type ExpenseImportApplyRow = z.infer<typeof expenseImportApplyRowSchema>;
+
+/** `POST /expenses/import/apply` response — the per-row result report. */
+export const expenseImportApplyResponseSchema = z
+  .object({
+    bankId: z.string(),
+    bankLabel: z.string(),
+    applied: z.number().int(),
+    duplicate: z.number().int(),
+    error: z.number().int(),
+    rows: z.array(expenseImportApplyRowSchema),
+  })
+  .strict();
+export type ExpenseImportApplyResponse = z.infer<typeof expenseImportApplyResponseSchema>;

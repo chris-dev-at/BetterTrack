@@ -1,10 +1,14 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
+import multer, { MulterError } from 'multer';
 
 import {
   createExpenseCategoryRequestSchema,
   createExpenseRuleRequestSchema,
   createExpenseTransactionRequestSchema,
   expenseCategoryIdParamSchema,
+  expenseImportApplyFieldsSchema,
+  expenseImportOverrideSchema,
+  expenseImportPreviewFieldsSchema,
   expenseRuleIdParamSchema,
   expenseTransactionIdParamSchema,
   expenseTransactionListQuerySchema,
@@ -12,19 +16,44 @@ import {
   updateExpenseCategoryRequestSchema,
   updateExpenseRuleRequestSchema,
   updateExpenseTransactionRequestSchema,
+  IMPORT_MAX_FILE_BYTES,
+  IMPORT_MAX_ROWS,
   type CreateExpenseCategoryRequest,
   type CreateExpenseRuleRequest,
   type CreateExpenseTransactionRequest,
+  type ExpenseImportApplyFields,
+  type ExpenseImportOverride,
+  type ExpenseImportPreviewFields,
   type ExpenseTransactionListQuery,
   type RecategorizeExpenseTransactionRequest,
   type UpdateExpenseCategoryRequest,
   type UpdateExpenseRuleRequest,
   type UpdateExpenseTransactionRequest,
 } from '@bettertrack/contracts';
+import { z } from 'zod';
 
+import { badRequest } from '../../errors';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
+
+/** Preview-time overrides travel as a JSON-encoded multipart field; bounded like the file. */
+const importOverridesSchema = z.array(expenseImportOverrideSchema).max(IMPORT_MAX_ROWS);
+
+/** Parse + validate the optional `overrides` multipart field (400 on malformed JSON). */
+function parseImportOverrides(raw: string | undefined): ExpenseImportOverride[] {
+  if (raw === undefined || raw.trim() === '') return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw badRequest('Invalid overrides payload.', 'EXPENSE_IMPORT_OVERRIDES_INVALID');
+  }
+  const result = importOverridesSchema.safeParse(parsed);
+  if (!result.success)
+    throw badRequest('Invalid overrides payload.', 'EXPENSE_IMPORT_OVERRIDES_INVALID');
+  return result.data;
+}
 
 /**
  * Expense tracking — a NEW top-level product area (PROJECTPLAN.md §13.5 V5-P9,
@@ -41,6 +70,32 @@ export function createExpensesRouter(ctx: AppContext): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  // In-memory multipart parsing for the one CSV part of a bank-statement import —
+  // files are capped well below anything worth streaming to disk (§13.5 V5-P9).
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: IMPORT_MAX_FILE_BYTES, files: 1 },
+  });
+
+  /** `upload.single('file')` with Multer's errors mapped onto the §8 envelope. */
+  const uploadFile: RequestHandler = (req, res, next) => {
+    upload.single('file')(req, res, (err?: unknown) => {
+      if (!err) {
+        next();
+        return;
+      }
+      if (err instanceof MulterError) {
+        const message =
+          err.code === 'LIMIT_FILE_SIZE'
+            ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
+            : 'Invalid file upload.';
+        next(badRequest(message, 'EXPENSE_IMPORT_FILE_INVALID'));
+        return;
+      }
+      next(err);
+    });
+  };
 
   // ── Categories ──
 
@@ -191,6 +246,51 @@ export function createExpensesRouter(ctx: AppContext): Router {
     await ctx.expenses.deleteRule(req.authUser!.id, ruleId);
     res.status(204).send();
   });
+
+  // ── Bank-statement CSV import (issue 2/3) ──
+  // Stateless: preview persists nothing; apply re-parses the re-uploaded file.
+
+  // GET /expenses/import/banks — the supported bank mappers, for the manual picker.
+  router.get('/import/banks', (_req, res) => {
+    res.json(ctx.expenseImports.listBanks());
+  });
+
+  // POST /expenses/import/preview — upload a CSV (multipart: `file` [+ bankId]);
+  // parse/normalize/auto-categorize/flag-duplicates and return the staged preview.
+  router.post(
+    '/import/preview',
+    uploadFile,
+    validateBody(expenseImportPreviewFieldsSchema),
+    async (req, res) => {
+      const fields = req.valid?.body as ExpenseImportPreviewFields;
+      if (!req.file) throw badRequest('A CSV file is required.', 'EXPENSE_IMPORT_FILE_REQUIRED');
+      const result = await ctx.expenseImports.preview(req.authUser!.id, {
+        content: req.file.buffer.toString('utf8'),
+        filename: req.file.originalname || 'import.csv',
+        bankId: fields.bankId,
+      });
+      res.json(result);
+    },
+  );
+
+  // POST /expenses/import/apply — the explicit confirm: re-upload the same CSV
+  // (+ optional per-row category overrides) and book the non-duplicate rows.
+  router.post(
+    '/import/apply',
+    uploadFile,
+    validateBody(expenseImportApplyFieldsSchema),
+    async (req, res) => {
+      const fields = req.valid?.body as ExpenseImportApplyFields;
+      if (!req.file) throw badRequest('A CSV file is required.', 'EXPENSE_IMPORT_FILE_REQUIRED');
+      const result = await ctx.expenseImports.apply(req.authUser!.id, {
+        content: req.file.buffer.toString('utf8'),
+        filename: req.file.originalname || 'import.csv',
+        bankId: fields.bankId,
+        overrides: parseImportOverrides(fields.overrides),
+      });
+      res.json(result);
+    },
+  );
 
   return router;
 }
