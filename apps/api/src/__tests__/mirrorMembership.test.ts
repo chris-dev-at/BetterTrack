@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  MIRROR_CANNOT_INVITE_SELF,
   MIRROR_FORBIDDEN,
   MIRROR_INVITE_EXISTS,
   MIRROR_INVITE_NOT_FOUND,
@@ -278,6 +279,14 @@ describe('mirrorchain M3 — invite flow (design §4)', () => {
     expect(after.incoming).toHaveLength(0);
   });
 
+  it('inviting yourself is refused with a dedicated code (not the not-friends code)', async () => {
+    const h = await createTestApp();
+    const { ownerId, chainId } = await ownerChain(h);
+    await expect(h.ctx.mirror.inviteMember(ownerId, chainId, ownerId)).rejects.toMatchObject({
+      code: MIRROR_CANNOT_INVITE_SELF,
+    });
+  });
+
   it('accept materializes a copy + notifies the owner; the member cap is enforced at accept', async () => {
     const events: DispatchableEvent[] = [];
     const h = await createTestApp({
@@ -466,14 +475,19 @@ describe('mirrorchain M3 — transfer ownership (design §5)', () => {
     const third = await join(h, chainId, 'member');
 
     await h.ctx.mirror.transferOwnership(ownerId, chainId, newOwner.userId);
-    const notified = events
-      .filter((e) => e.type === 'mirror.ownership_transferred')
-      .map((e) => e.userId);
+    const transferEvents = events.filter((e) => e.type === 'mirror.ownership_transferred');
+    const notified = transferEvents.map((e) => e.userId);
     expect(notified).toContain(third.userId);
     // The new owner is skipped — the copy reads "⟨actor⟩ is now the owner", which
     // self-named reads wrong; the acting old owner already knows.
     expect(notified).not.toContain(newOwner.userId);
     expect(notified).not.toContain(ownerId);
+    // The refId carries the op seq (not the bare new-owner id), so transferring
+    // ownership BACK to a prior owner is not silently deduped downstream.
+    const thirdEvent = transferEvents.find((e) => e.userId === third.userId)!;
+    expect((thirdEvent as { refId: string }).refId).toMatch(
+      new RegExp(`^${newOwner.userId}:\\d+$`),
+    );
   });
 });
 

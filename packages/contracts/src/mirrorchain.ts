@@ -521,6 +521,8 @@ export type MirrorRowInfo = z.infer<typeof mirrorRowInfoSchema>;
  * unfriend between send and accept voids the invite). HTTP 400.
  */
 export const MIRROR_NOT_FRIENDS = 'MIRROR_NOT_FRIENDS';
+/** The caller tried to invite themselves to the chain (design §4). HTTP 400. */
+export const MIRROR_CANNOT_INVITE_SELF = 'MIRROR_CANNOT_INVITE_SELF';
 /** The chain already has {@link MIRROR_MAX_MEMBERS} active members (design §4). HTTP 409. */
 export const MIRROR_MEMBER_CAP_REACHED = 'MIRROR_MEMBER_CAP_REACHED';
 /** A pending invite already exists for this (chain, invitee) (design §4). HTTP 409. */

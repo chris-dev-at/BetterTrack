@@ -258,7 +258,7 @@ function mirrorCopy(event: MirrorNotificationEvent): { title: string; body: stri
       };
     case 'mirror.member_removed':
       return {
-        title: `A member left ${chain}`,
+        title: `A member was removed from ${chain}`,
         body: `${actor} was removed from the group portfolio ${chain}.`,
       };
     case 'mirror.removed':

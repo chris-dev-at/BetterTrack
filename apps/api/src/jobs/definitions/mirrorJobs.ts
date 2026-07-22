@@ -23,11 +23,14 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * never diverges); the standard retry → dead-letter path then lands it on the
  * admin Problems page via the worker's `onPermanentFailure` hook, and any later
  * enqueue ("retry sync" or the next write) resumes from the stalled copy's
- * watermark.
+ * watermark. The member-facing `mirror.sync_stalled` notice fires off that SAME
+ * permanent-failure path (only once the auto-retries are exhausted, via
+ * `notifyChainStalled`), so a transient blip that heals on retry never tells a
+ * member to "Retry sync" manually.
  */
 
 export interface MirrorReplicateJobDeps {
-  mirror: Pick<MirrorService, 'replicateChain'>;
+  mirror: Pick<MirrorService, 'replicateChain' | 'notifyChainStalled'>;
   /** Chain a fresh run for ops appended while this one was sweeping. */
   enqueue: (chainId: string) => Promise<void>;
 }
@@ -39,7 +42,30 @@ export function createMirrorReplicateJob(
     name: QUEUE_NAMES.mirrorReplicate,
     async handler(job, ctx) {
       const { chainId } = job.data;
-      const result = await deps.mirror.replicateChain(chainId);
+      let result;
+      try {
+        result = await deps.mirror.replicateChain(chainId);
+      } catch (err) {
+        // A stalled copy makes the run throw so BullMQ retries with backoff. The
+        // `mirror.sync_stalled` notice tells the member to "Retry sync" manually,
+        // so it must signal a GENUINE stall — fire it only when the auto-retries
+        // are exhausted (this attempt is the last → permanent failure →
+        // dead-letter → Problems), never on a transient blip that heals on retry.
+        const maxAttempts = job.opts.attempts ?? 1;
+        if (job.attemptsMade + 1 >= maxAttempts) {
+          try {
+            await deps.mirror.notifyChainStalled(chainId);
+          } catch (notifyErr) {
+            // Best-effort: a notify failure must not mask the replicate error
+            // that drives the dead-letter path.
+            ctx.logger.error(
+              { chainId, err: notifyErr },
+              'mirror.replicate: sync_stalled notify failed',
+            );
+          }
+        }
+        throw err;
+      }
       ctx.logger.info({ chainId, ...result }, 'mirror.replicate complete');
       // Ops appended after this run read `last_seq` would otherwise wait for
       // the next write — chain a fresh job to catch the tail now.

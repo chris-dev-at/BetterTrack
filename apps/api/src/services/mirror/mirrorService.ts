@@ -4,6 +4,7 @@ import type { Redis } from 'ioredis';
 
 import {
   MIRROR_ASSET_NOT_SYNCABLE,
+  MIRROR_CANNOT_INVITE_SELF,
   MIRROR_CHAIN_OP_KINDS,
   MIRROR_CONFLICT,
   MIRROR_FORBIDDEN,
@@ -234,6 +235,15 @@ export interface MirrorService {
    * → the admin Problems page takes over.
    */
   replicateChain(chainId: string): Promise<ReplicateChainResult>;
+  /**
+   * Fire the `mirror.sync_stalled` notice for every copy still behind
+   * `last_seq` (design §2/§11) — the stalled member AND the owner, deduped per
+   * copy watermark. Called from the replicate job's PERMANENT-failure path
+   * (retries exhausted → dead-letter), never on a transient blip, so it never
+   * tells a member to "Retry sync" for a stall BullMQ is already healing.
+   * Idempotent and best-effort: re-derives the lagging set from the DB.
+   */
+  notifyChainStalled(chainId: string): Promise<void>;
 
   // ── M3 membership lifecycle (design §§4–7, §11) ────────────────────────────
   /** "New group portfolio" (§11): a fresh empty portfolio becomes the origin copy. */
@@ -1748,23 +1758,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       const lagging = membersAfter.filter(
         (m) => m.userId && m.portfolioId && m.appliedSeq < (after?.lastSeq ?? 0),
       ).length;
-      if (failures.length > 0 && after) {
-        // Wire the `mirror.sync_stalled` notice off the stall path (design §11):
-        // the stalled member AND the owner see it (design §2). Deduped per copy
-        // watermark, so a still-stuck copy re-notifies only after it makes
-        // progress — the notice fires once per stall episode, not per retry.
-        const owner = ownerOf(membersAfter);
-        const failedIds = new Set(failures.map((f) => f.memberId));
-        for (const stalled of membersAfter) {
-          if (!failedIds.has(stalled.id) || !stalled.userId) continue;
-          const refId = `${stalled.userId}:${stalled.appliedSeq}`;
-          await emitMirror('mirror.sync_stalled', stalled.userId, after, stalled.username, refId);
-          if (owner?.userId && owner.userId !== stalled.userId) {
-            await emitMirror('mirror.sync_stalled', owner.userId, after, stalled.username, refId);
-          }
-        }
-      }
       if (failures.length > 0) {
+        // Throw AFTER the sweep so BullMQ retry/backoff → dead-letter takes over
+        // (the other copies still caught up — a stalled copy lags, never
+        // diverges, §2). The `mirror.sync_stalled` notice is NOT fired here: on
+        // every attempt this branch runs, and a transient blip heals on retry —
+        // so the job wires `notifyChainStalled` off its PERMANENT-failure path
+        // (retries exhausted) instead, never crying wolf on a self-healing blip.
         const first = failures[0]!.err;
         throw new Error(
           `mirror.replicate: ${failures.length} of ${members.length} copies stalled on chain ${chainId}: ${
@@ -1773,6 +1773,28 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         );
       }
       return { applied, lagging };
+    },
+
+    async notifyChainStalled(chainId) {
+      // The genuine-stall signal (design §2/§11), fired only once the replicate
+      // job's retries are exhausted (permanent failure → dead-letter → Problems).
+      // Re-derive the lagging set from the DB: every copy still behind `last_seq`
+      // is stuck (ops apply strictly in order, so a poison op freezes ALL copies
+      // behind it), and its member + the owner are told, deduped per copy
+      // watermark so a still-stuck copy re-notifies only after it makes progress.
+      const chain = await repo.getChain(chainId);
+      if (!chain) return;
+      const members = await repo.listActiveMembers(chainId);
+      const owner = ownerOf(members);
+      for (const stalled of members) {
+        if (!stalled.userId || !stalled.portfolioId) continue;
+        if (stalled.appliedSeq >= chain.lastSeq) continue; // caught up — not stalled
+        const refId = `${stalled.userId}:${stalled.appliedSeq}`;
+        await emitMirror('mirror.sync_stalled', stalled.userId, chain, stalled.username, refId);
+        if (owner?.userId && owner.userId !== stalled.userId) {
+          await emitMirror('mirror.sync_stalled', owner.userId, chain, stalled.username, refId);
+        }
+      }
     },
 
     // ── M3 membership lifecycle (design §§4–7, §11) ────────────────────────────
@@ -1860,7 +1882,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
     async inviteMember(actorId, chainId, inviteeId) {
       if (actorId === inviteeId) {
-        throw badRequest('You cannot invite yourself.', MIRROR_NOT_FRIENDS);
+        throw badRequest('You cannot invite yourself.', MIRROR_CANNOT_INVITE_SELF);
       }
       // Friends-only (design §4) — checked here at send AND again at accept.
       if (!(await friendship.areFriends(actorId, inviteeId))) {
@@ -2064,7 +2086,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
 
     async transferOwnership(actorId, chainId, toUserId) {
-      const chain = await withAuthorizedMember(
+      const { chain, seq } = await withAuthorizedMember(
         chainId,
         actorId,
         (actor) => {
@@ -2085,7 +2107,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           // forbids two owners even momentarily), then crown the target (§5).
           await repo.updateMemberRole(actor.id, 'member');
           await repo.updateMemberRole(target.id, 'owner');
-          await appendMembershipOp(
+          const [op] = await appendMembershipOp(
             chainId,
             { userId: actorId, username: actor.username },
             {
@@ -2097,17 +2119,19 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
               toUsername: target.username,
             },
           );
-          return chain;
+          return { chain, seq: op!.seq };
         },
       );
       // Notify every active member ownership changed (design §5). The acting old
       // owner already knows; the NEW owner is skipped too — the copy reads
       // "⟨actor⟩ is now the owner", which self-named reads wrong, and their own
-      // member sheet already shows the role.
+      // member sheet already shows the role. The op seq discriminates the notice
+      // so transferring ownership back to a prior owner is not silently deduped.
       const newOwnerName = await usernameOf(toUserId);
+      const refId = `${toUserId}:${seq}`;
       for (const m of await repo.listActiveMembers(chainId)) {
         if (m.userId && m.userId !== actorId && m.userId !== toUserId) {
-          await emitMirror('mirror.ownership_transferred', m.userId, chain, newOwnerName, toUserId);
+          await emitMirror('mirror.ownership_transferred', m.userId, chain, newOwnerName, refId);
         }
       }
       await audit.record({
