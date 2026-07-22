@@ -19,7 +19,10 @@ import type {
 import type { Redis } from 'ioredis';
 
 import type { AssetRepository } from '../../data/repositories/assetRepository';
-import type { ConglomerateRepository } from '../../data/repositories/conglomerateRepository';
+import type {
+  ConglomerateConstituentRow,
+  ConglomerateRepository,
+} from '../../data/repositories/conglomerateRepository';
 import {
   backtest,
   BacktestError,
@@ -127,12 +130,38 @@ export interface BacktestComparisonInput {
   baselineId?: string;
 }
 
+/**
+ * Shared-conglomerate what-if sandbox input (§13.5 V5-P6 arc c): the shared
+ * conglomerate the viewer is looking at plus their locally-tweaked TOP-LEVEL
+ * weights keyed by each asset constituent's `assetId`. Same window/late-listing/
+ * rebalance knobs a single preview takes; no benchmark and no nested tweaking
+ * (recursive re-weighting is #592, out of scope here).
+ */
+export interface BacktestSharedSandboxInput {
+  conglomerateId: string;
+  positions: Array<{ id: string; weight: number }>;
+  range: BacktestPreviewRange;
+  mode?: BacktestMode;
+  rebalance?: RebalanceFrequency;
+}
+
 export interface BacktestServiceDeps {
   assetRepo: AssetRepository;
   conglomerateRepo: ConglomerateRepository;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   redis: Redis;
+  /**
+   * Share-read authorization for the V5-P6 sandbox (arc c) — the SAME guard the
+   * read-only shared conglomerate view uses (the §6.9 audience model): resolves
+   * the owner when the viewer may see the basket, else `undefined` (→ 404).
+   * Optional so the pure preview/compare paths construct without the social
+   * layer; {@link BacktestService.runSharedSandboxPreview} 404s when it is absent.
+   */
+  authorizeConglomerateRead?: (
+    viewerId: string,
+    conglomerateId: string,
+  ) => Promise<{ ownerId: string } | undefined>;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
 }
@@ -180,6 +209,25 @@ export interface BacktestService {
     input: BacktestComparisonInput,
     opts?: { baseCurrency?: string },
   ): Promise<BacktestComparisonResponse>;
+
+  /**
+   * Backtest a FRIEND-SHARED conglomerate with the viewer's local weight tweaks
+   * for the read-only "what-if" sandbox (§13.5 V5-P6 arc c). Authorized through
+   * the exact same share guard the shared view uses (`authorizeConglomerateRead`)
+   * — an unauthorized viewer gets a 404, never data. The tweak set is pinned to
+   * the shared basket's real asset constituents (a foreign / missing id is a
+   * 422), and every constituent is resolved as a PUBLIC catalog asset: a private
+   * custom asset (its manual valuations are absent from the share) and a nested
+   * child (arc-c tweaks no recursion) both make the basket un-sandboxable (422),
+   * so the curve leaks nothing beyond the share's existing exposure. Purely a
+   * read: no state is ever written. `reset to shared` is just this call with the
+   * original weights, so it reproduces the shared curve exactly.
+   */
+  runSharedSandboxPreview(
+    viewerId: string,
+    input: BacktestSharedSandboxInput,
+    opts?: { baseCurrency?: string },
+  ): Promise<BacktestResponse>;
 }
 
 /**
@@ -272,9 +320,20 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
     userId: string,
     assetId: string,
     providerRange: HistoryRange,
+    opts?: { globalOnly?: boolean },
   ): Promise<BacktestAsset> {
     const row = await assetRepo.findByIdForUser(assetId, userId);
     if (!row) throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
+    // Share-scoped sandbox (V5-P6 arc c): a custom asset's price history is the
+    // owner's private manual valuations — absent from the read-only share — so a
+    // viewer's backtest must never surface it. The existence is already exposed
+    // (its symbol/name are in the shared view), so this is a plain 422, not a 404.
+    if (opts?.globalOnly && row.ownerId !== null) {
+      throw unprocessable(
+        `${row.symbol} is a private custom asset and can’t be backtested in a shared sandbox.`,
+        'SANDBOX_PRIVATE_ASSET',
+      );
+    }
     const prices = await loadDailyCloses(
       { providerId: row.providerId, providerRef: row.providerRef },
       providerRange,
@@ -571,6 +630,97 @@ export function createBacktestService(deps: BacktestServiceDeps): BacktestServic
           };
         }),
       };
+    },
+
+    async runSharedSandboxPreview(viewerId, input, opts) {
+      // Same guard, same outcome as the read-only shared view (§6.9): resolve the
+      // owner when the viewer may see this basket, otherwise a 404 — never a 403,
+      // never data. Also covers the service constructed without the social guard.
+      const authorize = deps.authorizeConglomerateRead;
+      const owner = authorize ? await authorize(viewerId, input.conglomerateId) : undefined;
+      if (!owner) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+
+      // Read the basket AS THE OWNER — the viewer gains no owner scope; we only
+      // read what they are already authorized to see.
+      const detail = await conglomerateRepo.findByIdForOwner(owner.ownerId, input.conglomerateId);
+      if (!detail) throw notFound('Conglomerate not found.', 'CONGLOMERATE_NOT_FOUND');
+
+      // Arc c re-weights TOP-LEVEL asset constituents only. A nested child would
+      // need recursive re-weighting (#592, out of scope) and flattening it would
+      // fold in the child's own (unshared) internal weights — so any nested
+      // constituent makes the basket un-sandboxable.
+      const constituents = detail.positions.filter(
+        (p): p is Extract<ConglomerateConstituentRow, { kind: 'asset' }> => p.kind === 'asset',
+      );
+      if (constituents.length !== detail.positions.length) {
+        throw unprocessable(
+          'This conglomerate contains a nested basket and can’t be used in a what-if sandbox.',
+          'SANDBOX_NESTED_UNSUPPORTED',
+        );
+      }
+
+      // Pin the tweak set to the shared basket's real constituents: the viewer may
+      // re-weight only what the share already exposes, never add or drop an id. An
+      // id set that doesn't match exactly (a foreign id, a missing one, or a basket
+      // that changed under the viewer) is a 422 — the client refetches and resets.
+      const tweak = new Map(input.positions.map((p) => [p.id, p.weight]));
+      const idSetMatches =
+        tweak.size === constituents.length && constituents.every((p) => tweak.has(p.assetId));
+      if (!idSetMatches) {
+        throw unprocessable(
+          'Sandbox weights must cover exactly the shared basket’s constituents.',
+          'SANDBOX_POSITIONS_MISMATCH',
+        );
+      }
+
+      const fx =
+        opts?.baseCurrency === undefined
+          ? currencyService
+          : currencyService.withBase(opts.baseCurrency);
+      const providerRange = PROVIDER_RANGE[input.range];
+
+      // The tweaked basket: each shared constituent at the viewer's new weight,
+      // resolved as a PUBLIC catalog asset (globalOnly) so no private valuation
+      // history is ever pulled into the curve.
+      const positions = constituents.map((p) => ({
+        assetId: p.assetId,
+        weight: tweak.get(p.assetId)!,
+      }));
+      const assets: BacktestAsset[] = [];
+      for (const pos of positions) {
+        assets.push(
+          await loadBasketAsset(owner.ownerId, pos.assetId, providerRange, { globalOnly: true }),
+        );
+      }
+
+      // Window resolution mirrors runPreview exactly (§6.6/§14) so the sandbox
+      // curve is apples-to-apples with the shared basket's own backtest.
+      const mode = input.mode ?? 'clip';
+      const end = todayIso();
+      const start =
+        input.range === 'MAX'
+          ? mode === 'clip'
+            ? commonStart(assets)
+            : earliestStart(assets)
+          : yearsBefore(end, RANGE_YEARS[input.range]);
+
+      let result: BacktestResult;
+      try {
+        result = await backtest({
+          positions,
+          assets,
+          range: { start, end },
+          converter: fx,
+          baseCurrency: fx.baseCurrency,
+          mode,
+          rebalance: input.rebalance,
+        });
+      } catch (err) {
+        throw mapEngineError(err);
+      }
+      // No Redis memo and no writes: a viewer's slider-wiggle recomputes off the
+      // already-warm provider history, and the sandbox never persists a thing.
+      return toResponse(result, null);
     },
   };
 

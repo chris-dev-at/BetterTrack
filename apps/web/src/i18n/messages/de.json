@@ -2727,7 +2727,20 @@
       "watchlistEmptyTitle": "Leere Watchlist",
       "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen.",
       "sharedByReadOnly": "Geteilt von {{username}} · nur Lesezugriff",
-      "sharedByStatus": "Geteilt von {{username}} · {{status}}"
+      "sharedByStatus": "Geteilt von {{username}} · {{status}}",
+      "sandbox": {
+        "toggle": "Was-wäre-wenn-Sandbox",
+        "subtitle": "Eigene Gewichtungen testen – nichts wird gespeichert",
+        "description": "Passe die Gewichtungen an, um zu sehen, wie sich diese Mischung entwickelt hätte. Deine Änderungen bleiben auf deinem Gerät und berühren den geteilten Korb nie.",
+        "reset": "Auf geteilt zurücksetzen",
+        "rangeAriaLabel": "Was-wäre-wenn-Backtest-Zeitraum",
+        "weightAriaLabel": "Gewichtung für {{symbol}}",
+        "weightSliderAriaLabel": "Gewichtungsregler für {{symbol}}",
+        "chartAriaLabel": "Was-wäre-wenn-Wertentwicklung über die Zeit",
+        "weightsPositiveHint": "Gib jeder Position eine Gewichtung über 0, um eine Vorschau zu sehen.",
+        "previewError": "Diese Was-wäre-wenn-Analyse konnte nicht ausgeführt werden. Probiere einen anderen Zeitraum oder andere Gewichtungen.",
+        "empty": "Keine Daten für diesen Zeitraum."
+      }
     },
     "sharedIdea": {
       "backLink": "← Freunde",

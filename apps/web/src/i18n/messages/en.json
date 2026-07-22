@@ -2727,7 +2727,20 @@
       "watchlistEmptyTitle": "Empty watchlist",
       "watchlistEmptyDescription": "This friend isn't watching any assets.",
       "sharedByReadOnly": "Shared by {{username}} · read-only",
-      "sharedByStatus": "Shared by {{username}} · {{status}}"
+      "sharedByStatus": "Shared by {{username}} · {{status}}",
+      "sandbox": {
+        "toggle": "What-if sandbox",
+        "subtitle": "Try your own weights — nothing is saved",
+        "description": "Adjust the weights to see how this mix would have performed. Your changes stay on your device and never touch the shared basket.",
+        "reset": "Reset to shared",
+        "rangeAriaLabel": "What-if backtest range",
+        "weightAriaLabel": "Weight for {{symbol}}",
+        "weightSliderAriaLabel": "Weight slider for {{symbol}}",
+        "chartAriaLabel": "What-if performance over time",
+        "weightsPositiveHint": "Give every holding a weight above 0 to preview.",
+        "previewError": "Couldn't run this what-if. Try a different range or weights.",
+        "empty": "No data to preview for this range."
+      }
     },
     "sharedIdea": {
       "backLink": "← Friends",
