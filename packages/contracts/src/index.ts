@@ -26,3 +26,4 @@ export * from './monitoring';
 export * from './usageAnalytics';
 export * from './featureFlags';
 export * from './standingOrders';
+export * from './mirrorchain';
