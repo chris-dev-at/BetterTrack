@@ -100,8 +100,10 @@ import {
 } from '../services/featureFlags/featureFlagService';
 import {
   createAiDailyCap,
+  createAiFeaturesService,
   createAiRegistry,
   createAiService,
+  type AiFeaturesService,
   type AiService,
 } from '../services/ai';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
@@ -475,6 +477,13 @@ export interface AppContext {
    * there is no cloud adapter and no token storage behind it.
    */
   ai: AiService;
+  /**
+   * User-facing AI features (§13.5 V5-P12 2/2): portfolio insights (service-
+   * computed facts phrased by the model) + the NL conglomerate builder (model
+   * extracts intents, the local catalog resolves assets). Purely additive on
+   * {@link ai}; both consume the same guarded, capped completion path.
+   */
+  aiFeatures: AiFeaturesService;
 }
 
 export interface BuildContextDeps {
@@ -548,6 +557,13 @@ export interface BuildContextDeps {
    * single synchronous attempt under test (BullMQ can't run on ioredis-mock).
    */
   webhookDeliveryEnqueue?: (job: WebhookDeliveryJob) => Promise<void>;
+  /**
+   * Test seam (§13.5 V5-P12): the fetch the local-AI (Ollama) adapter uses.
+   * Defaults to global `fetch`; tests inject a canned/recording fake so the AI
+   * feature paths run with no real network — and so a test can assert the model
+   * only ever reaches the configured local endpoint (LOCAL AI ONLY).
+   */
+  aiFetch?: typeof fetch;
 }
 
 /** Composition root: repositories → services → context. */
@@ -646,7 +662,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // capability endpoint reports disabled and nothing AI-related renders.
   const ai = createAiService({
     appSettings,
-    registry: createAiRegistry({ appSettings, logger }),
+    registry: createAiRegistry({ appSettings, logger, fetchImpl: deps.aiFetch }),
     cap: createAiDailyCap({ redis }),
     featureFlags,
     audit,
@@ -1223,6 +1239,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
   });
 
+  // User-facing AI features (§13.5 V5-P12 2/2): insights phrase service-computed
+  // holdings/analytics facts; the NL builder resolves the model's weighted intents
+  // through the local search catalog. Built here (after portfolio/analytics/search)
+  // atop the guarded `ai` completion path, so availability + cap enforcement are
+  // shared with 1/2 and nothing extra needs configuring.
+  const aiFeatures = createAiFeaturesService({ ai, portfolio, analytics, search, logger });
+
   // Ideas (§13.4 V4-P9): saved & shareable Workboard analyses. CRUD is
   // owner-scoped; a referenced conglomerate is ownership-validated on write; the
   // clone routes through the SAME audience-enforcement layer as every other
@@ -1609,5 +1632,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     usageAnalytics,
     featureFlags,
     ai,
+    aiFeatures,
   };
 }

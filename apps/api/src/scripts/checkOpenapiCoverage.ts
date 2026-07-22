@@ -158,6 +158,7 @@ function buildInertContext(): AppContext {
     usageAnalytics: inertService('usageAnalytics'),
     featureFlags: inertService('featureFlags'),
     ai: inertService('ai'),
+    aiFeatures: inertService('aiFeatures'),
   };
 }
 

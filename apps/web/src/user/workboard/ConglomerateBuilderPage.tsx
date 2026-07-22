@@ -46,6 +46,7 @@ import {
   WEIGHT_SLIDER_STEP,
   type BuilderPosition,
 } from './conglomerateBuilder';
+import { NlBuilderPanel } from './NlBuilderPanel';
 
 /** Weight changes settle for this long before the live preview recomputes (§6.5). */
 const PREVIEW_DEBOUNCE_MS = 500;
@@ -307,6 +308,14 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
     [t],
   );
 
+  // AI draft (V5-P12): prefill the Builder with the resolved lines. It replaces
+  // the current positions with the draft; the user then reviews the weights,
+  // edits, and explicitly saves/activates — nothing auto-commits.
+  const handleApplyDraft = useCallback((drafted: BuilderPosition[]) => {
+    setNotice(null);
+    setPositions(drafted);
+  }, []);
+
   const setWeight = useCallback((refId: string, weightPct: number) => {
     setPositions((prev) =>
       prev.map((p) => (p.refId === refId ? { ...p, weightPct: clampWeight(weightPct) } : p)),
@@ -394,6 +403,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
           notice={notice}
           onSelect={handleAddAsset}
           onSelectConglomerate={handleAddConglomerate}
+          onApplyDraft={handleApplyDraft}
           ownId={ownId}
           positions={positions}
         />
@@ -523,12 +533,14 @@ function AddAssetsPanel({
   notice,
   onSelect,
   onSelectConglomerate,
+  onApplyDraft,
   ownId,
   positions,
 }: {
   notice: string | null;
   onSelect: (item: SearchResultItem) => void;
   onSelectConglomerate: (summary: ConglomerateSummary) => void;
+  onApplyDraft: (positions: BuilderPosition[]) => void;
   ownId: string | null;
   positions: BuilderPosition[];
 }) {
@@ -544,6 +556,7 @@ function AddAssetsPanel({
       <p className="text-xs text-neutral-500">{t('workboard.builder.addAssetsHint')}</p>
       {notice ? <Alert tone="error">{notice}</Alert> : null}
       <AssetSearchBox onSelect={onSelect} placeholder={t('workboard.builder.searchPlaceholder')} />
+      <NlBuilderPanel onApply={onApplyDraft} />
       <NestConglomeratePanel onSelect={onSelectConglomerate} ownId={ownId} positions={positions} />
     </section>
   );

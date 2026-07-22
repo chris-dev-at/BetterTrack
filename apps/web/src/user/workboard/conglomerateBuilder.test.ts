@@ -9,10 +9,12 @@ import {
   normalize,
   positionFromConglomerate,
   positionFromSearchResult,
+  positionsFromDraftLines,
   roundWeight,
   sumWeights,
   type BuilderPosition,
 } from './conglomerateBuilder';
+import type { AiConglomerateDraftLine } from '@bettertrack/contracts';
 
 function pos(refId: string, weightPct: number, locked = false): BuilderPosition {
   return {
@@ -184,5 +186,35 @@ describe('conglomerateBuilder helpers', () => {
     // A weight-0 row is ignored (dropped on save); the rest still sum to 100.
     expect(canActivate([pos('a', 60), pos('b', 40), pos('c', 0)])).toBe(true);
     expect(canActivate([])).toBe(false);
+  });
+});
+
+describe('positionsFromDraftLines (V5-P12 AI draft → builder)', () => {
+  const line = (id: string | null, weightPct: number, query = 'q'): AiConglomerateDraftLine => ({
+    query,
+    weightPct,
+    asset: id ? { id, symbol: `S${id}`, name: `Name ${id}`, type: 'stock', currency: 'USD' } : null,
+  });
+
+  test('drops unresolved lines, keeps weights, and never persists on its own', () => {
+    const positions = positionsFromDraftLines([line('a', 60), line(null, 40, 'unicorn')]);
+    expect(positions).toHaveLength(1);
+    expect(positions[0]).toMatchObject({
+      kind: 'asset',
+      refId: 'a',
+      symbol: 'Sa',
+      weightPct: 60,
+      locked: false,
+    });
+  });
+
+  test('merges duplicate assets by summing (and clamping) their weights', () => {
+    const positions = positionsFromDraftLines([line('a', 60), line('a', 70)]);
+    expect(positions).toHaveLength(1);
+    expect(positions[0]!.weightPct).toBe(100); // 60 + 70 clamped to 100
+  });
+
+  test('is empty when nothing resolved', () => {
+    expect(positionsFromDraftLines([line(null, 50), line(null, 50)])).toEqual([]);
   });
 });

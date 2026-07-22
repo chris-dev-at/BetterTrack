@@ -134,6 +134,11 @@ const componentSchemas = {
   AiTestConnectionRequest: contracts.aiTestConnectionRequestSchema,
   AiTestConnectionResponse: contracts.aiTestConnectionResponseSchema,
   AiCapabilityResponse: contracts.aiCapabilityResponseSchema,
+  // User-facing AI features (§13.5 V5-P12 2/2 — insights + NL conglomerate builder)
+  AiInsightsRequest: contracts.aiInsightsRequestSchema,
+  AiInsightsResponse: contracts.aiInsightsResponseSchema,
+  AiConglomerateDraftRequest: contracts.aiConglomerateDraftRequestSchema,
+  AiConglomerateDraftResponse: contracts.aiConglomerateDraftResponseSchema,
   // Admin API-key governance (§13.5 V5-P10, issue 2/2)
   ApiKeyTier: contracts.apiKeyTierSchema,
   ApiKeyTierListResponse: contracts.apiKeyTierListResponseSchema,
@@ -1383,6 +1388,27 @@ const endpoints: EndpointDef[] = [
     summary: 'Whether AI is available for the caller and how much of their daily cap remains.',
     status: 200,
     response: R.AiCapabilityResponse,
+  },
+  // User-facing AI features (§13.5 V5-P12 2/2) — gated on `requireFeature('ai')`.
+  {
+    method: 'post',
+    path: '/ai/insights',
+    tag: 'AI',
+    summary:
+      'Portfolio insights: service-computed observations phrased by the local model (informational only).',
+    body: R.AiInsightsRequest,
+    status: 200,
+    response: R.AiInsightsResponse,
+  },
+  {
+    method: 'post',
+    path: '/ai/conglomerate-draft',
+    tag: 'AI',
+    summary:
+      'Turn a natural-language basket description into a reviewed builder draft (assets resolved via the local catalog).',
+    body: R.AiConglomerateDraftRequest,
+    status: 200,
+    response: R.AiConglomerateDraftResponse,
   },
   {
     method: 'patch',

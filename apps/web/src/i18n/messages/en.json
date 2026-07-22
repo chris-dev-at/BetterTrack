@@ -1608,6 +1608,30 @@
         "pnl": "P/L",
         "weight": "Weight",
         "contribution": "Contribution"
+      },
+      "ai": {
+        "title": "AI insights",
+        "hint": "A plain-language read on your portfolio's concentration and drawdown. The figures are computed from your holdings — the AI only phrases them.",
+        "generate": "Generate insights",
+        "regenerate": "Regenerate",
+        "generating": "Generating…",
+        "disclaimer": "AI-generated and informational only — not financial advice.",
+        "remaining": "{{remaining}} of {{cap}} left today",
+        "capReached": "You've reached today's AI limit. It resets tomorrow.",
+        "error": "Couldn't generate insights right now. Please try again.",
+        "noData": "Add some holdings to this portfolio to generate insights.",
+        "model": "Model: {{model}}",
+        "spent": "{{used}} of {{cap}} used today",
+        "observation": {
+          "concentration": "Concentration",
+          "drawdown": "Drawdown"
+        },
+        "facts": {
+          "topWeightPct": "Largest holding",
+          "top3WeightPct": "Top 3 holdings",
+          "positionCount": "Positions",
+          "maxDrawdownPct": "Max drawdown"
+        }
       }
     },
     "taxReport": {
@@ -2308,6 +2332,19 @@
       "addAssetsHeading": "Add assets",
       "addAssetsHint": "Search and click a result to add it at weight 0.",
       "searchPlaceholder": "Search stocks, ETFs, indices…",
+      "ai": {
+        "title": "Describe it with AI",
+        "hint": "Describe the basket in plain words — the AI drafts weighted positions from your local catalog for you to review.",
+        "placeholder": "e.g. 30% US tech, 30% EU industrials, 40% gold",
+        "submit": "Draft basket",
+        "generating": "Drafting…",
+        "disclaimer": "AI drafts a starting point resolved from your catalog — review the weights and save.",
+        "remaining": "{{remaining}} of {{cap}} left today",
+        "capReached": "You've reached today's AI limit. It resets tomorrow.",
+        "error": "Couldn't draft a basket from that. Try rephrasing.",
+        "applied": "Prefilled {{count}} positions — review the weights and save.",
+        "unresolved": "No catalog match for these — add them manually:"
+      },
       "positionsHeading": "Positions",
       "autoBalance": "Auto-balance",
       "normalize": "Normalize",

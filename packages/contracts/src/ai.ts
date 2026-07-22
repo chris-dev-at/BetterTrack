@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { assetTypeSchema, currencyCodeSchema } from './market';
+
 /**
  * Local-AI provider layer (PROJECTPLAN.md §13.5 V5-P12, as amended by §16
  * 2026-07-22 — LOCAL AI ONLY). The product ships exactly ONE adapter: the
@@ -111,3 +113,100 @@ export const aiCapabilityResponseSchema = z
   })
   .strict();
 export type AiCapabilityResponse = z.infer<typeof aiCapabilityResponseSchema>;
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Issue 2/2 — the user-facing feature shapes (insights + NL conglomerate builder).
+ * Purely additive on the 1/2 layer above and gated by the same capability read.
+ * Design mandate: the model ONLY phrases / extracts intent — every number and
+ * every asset id below is service-computed, never model-derived.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** The observation kinds the insights service derives from holdings/analytics data. */
+export const AI_INSIGHT_KINDS = ['concentration', 'drawdown'] as const;
+export type AiInsightKind = (typeof AI_INSIGHT_KINDS)[number];
+
+/** `POST /ai/insights` — request the AI observations for one of the caller's portfolios. */
+export const aiInsightsRequestSchema = z.object({ portfolioId: z.string().uuid() }).strict();
+export type AiInsightsRequest = z.infer<typeof aiInsightsRequestSchema>;
+
+/**
+ * One service-computed fact: a stable `key` the web maps to an i18n label + a
+ * numeric `value`. Kept numeric on the wire (not a pre-formatted string) so the
+ * web owns EN/DE formatting — and so the value is unambiguously the authoritative,
+ * service-computed figure, never something a model phrased.
+ */
+export const aiInsightFactSchema = z.object({ key: z.string(), value: z.number() }).strict();
+export type AiInsightFact = z.infer<typeof aiInsightFactSchema>;
+
+/** One observation: its kind + the authoritative numeric facts behind it. */
+export const aiInsightObservationSchema = z
+  .object({
+    kind: z.enum(AI_INSIGHT_KINDS),
+    facts: z.array(aiInsightFactSchema).min(1),
+  })
+  .strict();
+export type AiInsightObservation = z.infer<typeof aiInsightObservationSchema>;
+
+/**
+ * `POST /ai/insights` response. `observations` carry the service-computed facts
+ * (authoritative); `summary` is the model's plain-language phrasing of them —
+ * informational ONLY, it never carries an action, and even if it contains figures
+ * they never override the `observations`. The web renders the hard
+ * "not financial advice" disclaimer (an i18n string) alongside it.
+ */
+export const aiInsightsResponseSchema = z
+  .object({
+    model: z.string(),
+    observations: z.array(aiInsightObservationSchema),
+    summary: z.string(),
+  })
+  .strict();
+export type AiInsightsResponse = z.infer<typeof aiInsightsResponseSchema>;
+
+/** `POST /ai/conglomerate-draft` — turn a natural-language basket description into a draft. */
+export const aiConglomerateDraftRequestSchema = z
+  .object({ prompt: z.string().trim().min(1).max(1000) })
+  .strict();
+export type AiConglomerateDraftRequest = z.infer<typeof aiConglomerateDraftRequestSchema>;
+
+/** The concrete asset a draft line resolved to via the LOCAL catalog (null ⇒ unresolvable). */
+export const aiDraftAssetSchema = z
+  .object({
+    id: z.string().uuid(),
+    symbol: z.string(),
+    name: z.string(),
+    type: assetTypeSchema,
+    currency: currencyCodeSchema,
+  })
+  .strict();
+export type AiDraftAsset = z.infer<typeof aiDraftAssetSchema>;
+
+/**
+ * One line of a drafted basket: the model-extracted `query` phrase + its weight,
+ * and the LOCAL-catalog asset it resolved to. `asset: null` ⇒ unresolvable, and
+ * the builder flags it — an unresolved intent is NEVER silently dropped. The model
+ * only supplies `query`/`weightPct`; resolution runs exclusively through the
+ * search catalog, never the model.
+ */
+export const aiConglomerateDraftLineSchema = z
+  .object({
+    query: z.string(),
+    weightPct: z.number().min(0).max(100),
+    asset: aiDraftAssetSchema.nullable(),
+  })
+  .strict();
+export type AiConglomerateDraftLine = z.infer<typeof aiConglomerateDraftLineSchema>;
+
+/**
+ * `POST /ai/conglomerate-draft` response — a DRAFT only. The web prefills the
+ * normal Conglomerate Builder with the resolved lines (flagging unresolved ones);
+ * the user reviews, edits and explicitly saves. Nothing here is ever persisted
+ * server-side.
+ */
+export const aiConglomerateDraftResponseSchema = z
+  .object({
+    model: z.string(),
+    lines: z.array(aiConglomerateDraftLineSchema),
+  })
+  .strict();
+export type AiConglomerateDraftResponse = z.infer<typeof aiConglomerateDraftResponseSchema>;

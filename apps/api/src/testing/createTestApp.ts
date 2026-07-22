@@ -228,6 +228,12 @@ export interface CreateTestAppOptions {
    */
   webhookTransport?: WebhookTransport;
   /**
+   * Canned/recording fetch for the local-AI (Ollama) adapter (§13.5 V5-P12).
+   * Lets a test drive the AI feature endpoints with no real network and assert
+   * the model only ever reaches the configured local endpoint.
+   */
+  aiFetch?: typeof fetch;
+  /**
    * Force `rateLimits.enabled` on (default: off under `NODE_ENV=test`). Set on
    * the specific tests that need to exercise the HTTP limiter end-to-end
    * (§13.5 V5-P10 — bearer→apiKey wiring), while leaving every other test on
@@ -277,6 +283,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     taxNow: options.taxNow,
     budgetNow: options.budgetNow,
     webhookTransport: options.webhookTransport,
+    aiFetch: options.aiFetch,
   });
   const app = createApp(ctx);
 
