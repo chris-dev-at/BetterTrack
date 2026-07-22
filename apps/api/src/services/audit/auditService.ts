@@ -103,6 +103,18 @@ export const AuditAction = {
    * audit trail is complete and survives forks and actor deletion.
    */
   MirrorOpApplied: 'mirror.op_applied',
+  // MIRRORCHAIN membership lifecycle (§13.5 V5-P7 M3, design §§4–7): the
+  // chain-level actions an admin/owner may need to trace. The oplog is the
+  // full chain audit trail; these mirror the security-relevant mutations into
+  // the per-account audit_log too.
+  MirrorChainCreated: 'mirror.chain_created',
+  MirrorMemberInvited: 'mirror.member_invited',
+  MirrorMemberJoined: 'mirror.member_joined',
+  MirrorMemberRemoved: 'mirror.member_removed',
+  MirrorMemberLeft: 'mirror.member_left',
+  MirrorRoleChanged: 'mirror.role_changed',
+  MirrorOwnershipTransferred: 'mirror.ownership_transferred',
+  MirrorChainDissolved: 'mirror.chain_dissolved',
   // Outbound webhooks (§13.5 V5-P10, issue 1/2): subscription lifecycle + the
   // auto-disable that a dead receiver triggers (the disable is audit-visible).
   WebhookCreated: 'webhook.created',

@@ -57,6 +57,25 @@ export interface NotificationEmailCopy {
   /** Alert-follow bodies are supplied by the caller (same as the bell, #455). */
   followAlertCreated: { subject: string; heading: string; button: string };
   followAlertFired: { subject: string; heading: string; button: string };
+  /**
+   * MIRRORCHAIN group-portfolio lifecycle emails (§13.5 V5-P7, design §11). The
+   * body is built HERE from `{actor}`/`{chain}` tokens (fully localized, like
+   * {@link earningsReminder}) rather than reusing the EN inbox sentence, so a DE
+   * recipient gets a DE email. One shared `heading`/`button`; a `{ subject, body }`
+   * per notice type (the eight `mirror.*` types).
+   */
+  mirror: {
+    heading: string;
+    button: string;
+    invite: { subject: string; body: string };
+    memberJoined: { subject: string; body: string };
+    memberLeft: { subject: string; body: string };
+    memberRemoved: { subject: string; body: string };
+    removed: { subject: string; body: string };
+    ownershipTransferred: { subject: string; body: string };
+    chainDissolved: { subject: string; body: string };
+    syncStalled: { subject: string; body: string };
+  };
   /** Approval-queue decision emails (§6.12, §13.4 V4-P4a). Approved bolds `{username}`. */
   registrationApproved: { subject: string; heading: string; body: string; button: string };
   registrationRejected: { subject: string; heading: string; body: string };
@@ -155,6 +174,42 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       subject: 'A price alert from someone you follow fired',
       heading: 'A price alert from someone you follow fired',
       button: 'Open BetterTrack',
+    },
+    mirror: {
+      heading: 'Group portfolio',
+      button: 'Open BetterTrack',
+      invite: {
+        subject: '{actor} invited you to a group portfolio',
+        body: '{actor} invited you to join the group portfolio {chain}. Its members share one synced portfolio — anyone can add or edit entries that appear in every copy.',
+      },
+      memberJoined: {
+        subject: 'New member in {chain}',
+        body: '{actor} joined the group portfolio {chain}.',
+      },
+      memberLeft: {
+        subject: 'A member left {chain}',
+        body: '{actor} left the group portfolio {chain}. Their copy stops syncing but keeps every entry.',
+      },
+      memberRemoved: {
+        subject: 'A member was removed from {chain}',
+        body: '{actor} was removed from the group portfolio {chain}.',
+      },
+      removed: {
+        subject: 'You were removed from {chain}',
+        body: 'You were removed from the group portfolio {chain}. You keep your copy — it just stops syncing.',
+      },
+      ownershipTransferred: {
+        subject: 'Ownership of {chain} changed',
+        body: '{actor} is now the owner of the group portfolio {chain}.',
+      },
+      chainDissolved: {
+        subject: '{chain} was dissolved',
+        body: 'The group portfolio {chain} was dissolved. You keep your copy — it just stops syncing.',
+      },
+      syncStalled: {
+        subject: 'Syncing {chain} is stuck',
+        body: 'The group portfolio {chain} could not finish syncing. Open it and choose Retry sync.',
+      },
     },
     registrationApproved: {
       subject: 'Your BetterTrack account has been approved',
@@ -256,6 +311,42 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       subject: 'Ein Preisalarm von jemandem, dem du folgst, wurde ausgelöst',
       heading: 'Preisalarm ausgelöst',
       button: 'BetterTrack öffnen',
+    },
+    mirror: {
+      heading: 'Gruppen-Portfolio',
+      button: 'BetterTrack öffnen',
+      invite: {
+        subject: '{actor} hat dich zu einem Gruppen-Portfolio eingeladen',
+        body: '{actor} hat dich eingeladen, dem Gruppen-Portfolio {chain} beizutreten. Mitglieder teilen sich ein synchronisiertes Portfolio — jede:r kann Einträge hinzufügen oder bearbeiten, die in jeder Kopie erscheinen.',
+      },
+      memberJoined: {
+        subject: 'Neues Mitglied in {chain}',
+        body: '{actor} ist dem Gruppen-Portfolio {chain} beigetreten.',
+      },
+      memberLeft: {
+        subject: 'Ein Mitglied hat {chain} verlassen',
+        body: '{actor} hat das Gruppen-Portfolio {chain} verlassen. Die Kopie wird nicht mehr synchronisiert, behält aber alle Einträge.',
+      },
+      memberRemoved: {
+        subject: 'Ein Mitglied wurde aus {chain} entfernt',
+        body: '{actor} wurde aus dem Gruppen-Portfolio {chain} entfernt.',
+      },
+      removed: {
+        subject: 'Du wurdest aus {chain} entfernt',
+        body: 'Du wurdest aus dem Gruppen-Portfolio {chain} entfernt. Deine Kopie bleibt erhalten — sie wird nur nicht mehr synchronisiert.',
+      },
+      ownershipTransferred: {
+        subject: 'Eigentümerschaft von {chain} geändert',
+        body: '{actor} ist jetzt Eigentümer:in des Gruppen-Portfolios {chain}.',
+      },
+      chainDissolved: {
+        subject: '{chain} wurde aufgelöst',
+        body: 'Das Gruppen-Portfolio {chain} wurde aufgelöst. Deine Kopie bleibt erhalten — sie wird nur nicht mehr synchronisiert.',
+      },
+      syncStalled: {
+        subject: 'Synchronisierung von {chain} hängt',
+        body: 'Das Gruppen-Portfolio {chain} konnte nicht fertig synchronisiert werden. Öffne es und wähle „Synchronisierung wiederholen“.',
+      },
     },
     registrationApproved: {
       subject: 'Dein BetterTrack-Konto wurde freigegeben',

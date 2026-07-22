@@ -512,3 +512,222 @@ export const mirrorRowInfoSchema = z
   })
   .strict();
 export type MirrorRowInfo = z.infer<typeof mirrorRowInfoSchema>;
+
+// --- M3 error codes (membership lifecycle, design §§4–7) --------------------
+
+/**
+ * An invite requires an active friendship between inviter and invitee, checked
+ * at send AND accept (design §4). Raised when they are not friends (or an
+ * unfriend between send and accept voids the invite). HTTP 400.
+ */
+export const MIRROR_NOT_FRIENDS = 'MIRROR_NOT_FRIENDS';
+/** The chain already has {@link MIRROR_MAX_MEMBERS} active members (design §4). HTTP 409. */
+export const MIRROR_MEMBER_CAP_REACHED = 'MIRROR_MEMBER_CAP_REACHED';
+/** A pending invite already exists for this (chain, invitee) (design §4). HTTP 409. */
+export const MIRROR_INVITE_EXISTS = 'MIRROR_INVITE_EXISTS';
+/** The invite is gone / not pending / not addressed to the caller. HTTP 404. */
+export const MIRROR_INVITE_NOT_FOUND = 'MIRROR_INVITE_NOT_FOUND';
+/** The caller's role does not permit this membership operation (the §5 matrix). HTTP 403. */
+export const MIRROR_FORBIDDEN = 'MIRROR_FORBIDDEN';
+/** The target of a role/kick/transfer op is not an active member of the chain. HTTP 404. */
+export const MIRROR_MEMBER_NOT_FOUND = 'MIRROR_MEMBER_NOT_FOUND';
+/**
+ * Owner leave / owner copy-deletion is refused until M4 ships succession
+ * (design §7 sequencing stopgap): the owner must transfer or dissolve first.
+ * M4 replaces this refusal with automatic transfer-on-delete. HTTP 409.
+ */
+export const MIRROR_OWNER_TRANSFER_REQUIRED = 'MIRROR_OWNER_TRANSFER_REQUIRED';
+
+// --- M3 request schemas (membership lifecycle) ------------------------------
+
+/** Chain name — same bounds as the genesis/rename op payloads. */
+const chainNameSchema = z.string().trim().min(1).max(120);
+
+/** `POST /mirrorchain/chains` — "new group portfolio" (empty origin copy, §11). */
+export const createMirrorChainRequestSchema = z.object({ name: chainNameSchema }).strict();
+export type CreateMirrorChainRequest = z.infer<typeof createMirrorChainRequestSchema>;
+
+/**
+ * `POST /mirrorchain/chains/convert` — "make this a group portfolio" (§2 genesis).
+ * The existing portfolio becomes the origin copy; `name` overrides the chain's
+ * display name (defaults to the portfolio's current name).
+ */
+export const convertMirrorChainRequestSchema = z
+  .object({ portfolioId: z.string().uuid(), name: chainNameSchema.optional() })
+  .strict();
+export type ConvertMirrorChainRequest = z.infer<typeof convertMirrorChainRequestSchema>;
+
+/** `POST /mirrorchain/chains/:chainId/invites` — invite one friend (design §4). */
+export const inviteMirrorMemberRequestSchema = z.object({ userId: z.string().uuid() }).strict();
+export type InviteMirrorMemberRequest = z.infer<typeof inviteMirrorMemberRequestSchema>;
+
+/**
+ * `PATCH /mirrorchain/chains/:chainId/members/:userId/role` — grant (`manager`)
+ * or revoke (`member`) chain-manage rights, owner-only (design §5). `owner` is
+ * not assignable here; ownership moves only via transfer.
+ */
+export const setMirrorMemberRoleRequestSchema = z
+  .object({ role: z.enum(['manager', 'member']) })
+  .strict();
+export type SetMirrorMemberRoleRequest = z.infer<typeof setMirrorMemberRoleRequestSchema>;
+
+/** `POST /mirrorchain/chains/:chainId/transfer` — transfer ownership (design §5). */
+export const transferMirrorOwnershipRequestSchema = z
+  .object({ toUserId: z.string().uuid() })
+  .strict();
+export type TransferMirrorOwnershipRequest = z.infer<typeof transferMirrorOwnershipRequestSchema>;
+
+/** `PATCH /mirrorchain/chains/:chainId` — rename the chain (owner + managers, §5). */
+export const renameMirrorChainRequestSchema = z.object({ name: chainNameSchema }).strict();
+export type RenameMirrorChainRequest = z.infer<typeof renameMirrorChainRequestSchema>;
+
+/** `:chainId` path param. */
+export const mirrorChainIdParamSchema = z.object({ chainId: z.string().uuid() }).strict();
+export type MirrorChainIdParam = z.infer<typeof mirrorChainIdParamSchema>;
+
+/** `:inviteId` path param. */
+export const mirrorInviteIdParamSchema = z.object({ inviteId: z.string().uuid() }).strict();
+export type MirrorInviteIdParam = z.infer<typeof mirrorInviteIdParamSchema>;
+
+/** `:chainId/:userId` path param (role change / kick). */
+export const mirrorMemberParamSchema = z
+  .object({ chainId: z.string().uuid(), userId: z.string().uuid() })
+  .strict();
+export type MirrorMemberParam = z.infer<typeof mirrorMemberParamSchema>;
+
+/** `GET /mirrorchain/chains/:chainId/activity?before=&limit=` — oplog page. */
+export const mirrorActivityQuerySchema = z
+  .object({
+    before: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+export type MirrorActivityQuery = z.infer<typeof mirrorActivityQuerySchema>;
+
+// --- M3 read-model DTOs (chain summary, members, invites, activity) ---------
+
+/**
+ * A copy's sync progress (design §4 "Syncing… n %"): `percent` = applied/last
+ * (100 when `lastSeq` is 0 or caught up). `synced` is the caught-up flag the
+ * switcher badge reads.
+ */
+export const mirrorSyncStateSchema = z
+  .object({
+    appliedSeq: z.number().int().nonnegative(),
+    lastSeq: z.number().int().nonnegative(),
+    percent: z.number().int().min(0).max(100),
+    synced: z.boolean(),
+  })
+  .strict();
+export type MirrorSyncState = z.infer<typeof mirrorSyncStateSchema>;
+
+/**
+ * One member as the member sheet renders them (design §10/§11): username +
+ * profile icon + role + join date + this copy's sync state. `userId` is null
+ * for an account-deleted member (username keeps the "alice (account deleted)"
+ * rendering). Absolute amounts / other portfolios are never exposed (§10).
+ */
+export const mirrorMemberSchema = z
+  .object({
+    userId: z.string().uuid().nullable(),
+    username: z.string(),
+    profileIcon: z.string().nullable(),
+    role: mirrorMemberRoleSchema,
+    joinedAt: z.string().datetime(),
+    isSelf: z.boolean(),
+    sync: mirrorSyncStateSchema,
+  })
+  .strict();
+export type MirrorMember = z.infer<typeof mirrorMemberSchema>;
+
+/**
+ * A chain summary for the caller — one per active membership (the portfolio
+ * switcher's group-portfolio rows). `role` is the caller's; `sync` is the
+ * caller's copy's progress.
+ */
+export const mirrorChainSummarySchema = z
+  .object({
+    chainId: z.string().uuid(),
+    name: z.string(),
+    status: mirrorChainStatusSchema,
+    /** The caller's copy (null only if their portfolio was deleted). */
+    portfolioId: z.string().uuid().nullable(),
+    role: mirrorMemberRoleSchema,
+    memberCount: z.number().int().nonnegative(),
+    sync: mirrorSyncStateSchema,
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type MirrorChainSummary = z.infer<typeof mirrorChainSummarySchema>;
+
+export const mirrorChainListResponseSchema = z
+  .object({ chains: z.array(mirrorChainSummarySchema) })
+  .strict();
+export type MirrorChainListResponse = z.infer<typeof mirrorChainListResponseSchema>;
+
+/** The member sheet (design §11): the chain header + the caller's role + the roster. */
+export const mirrorMemberListResponseSchema = z
+  .object({
+    chainId: z.string().uuid(),
+    name: z.string(),
+    status: mirrorChainStatusSchema,
+    /** The caller's own role — the client gates the management actions on it. */
+    role: mirrorMemberRoleSchema,
+    memberCap: z.number().int().positive(),
+    members: z.array(mirrorMemberSchema),
+  })
+  .strict();
+export type MirrorMemberListResponse = z.infer<typeof mirrorMemberListResponseSchema>;
+
+/** One pending invite, in either direction (design §4 + the Social request list). */
+export const mirrorInviteSchema = z
+  .object({
+    id: z.string().uuid(),
+    chainId: z.string().uuid(),
+    chainName: z.string(),
+    fromUsername: z.string().nullable(),
+    toUsername: z.string(),
+    direction: z.enum(['incoming', 'outgoing']),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type MirrorInvite = z.infer<typeof mirrorInviteSchema>;
+
+export const mirrorInviteListResponseSchema = z
+  .object({
+    incoming: z.array(mirrorInviteSchema),
+    outgoing: z.array(mirrorInviteSchema),
+  })
+  .strict();
+export type MirrorInviteListResponse = z.infer<typeof mirrorInviteListResponseSchema>;
+
+/** The response to accepting an invite — the freshly materialized copy (§4). */
+export const mirrorAcceptInviteResponseSchema = z
+  .object({ chainId: z.string().uuid(), portfolioId: z.string().uuid() })
+  .strict();
+export type MirrorAcceptInviteResponse = z.infer<typeof mirrorAcceptInviteResponseSchema>;
+
+/**
+ * One activity-feed entry (design §6/§11): the oplog rendered per the caller's
+ * copy. `summary` is a rendered EN sentence (the client localizes chrome, not
+ * the historical record). Membership + ledger ops both appear.
+ */
+export const mirrorActivityEntrySchema = z
+  .object({
+    seq: z.number().int().positive(),
+    kind: mirrorOpKindSchema,
+    actorUsername: z.string(),
+    summary: z.string(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type MirrorActivityEntry = z.infer<typeof mirrorActivityEntrySchema>;
+
+export const mirrorActivityResponseSchema = z
+  .object({
+    entries: z.array(mirrorActivityEntrySchema),
+    /** Seq to pass as `before` for the next (older) page; null at the start of the log. */
+    nextCursor: z.number().int().positive().nullable(),
+  })
+  .strict();
+export type MirrorActivityResponse = z.infer<typeof mirrorActivityResponseSchema>;

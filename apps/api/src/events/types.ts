@@ -343,6 +343,39 @@ export interface BudgetExceededEvent {
   occurredAt: string;
 }
 
+/**
+ * MIRRORCHAIN membership-lifecycle notices (§13.5 V5-P7, design §11). The eight
+ * `mirror.*` types share ONE event shape (they join the matrix as one compact
+ * group row): `userId` is the recipient, `chainName` renders the notice without
+ * a lookup, `actorUsername` names the member the notice is about (inviter,
+ * joiner, leaver, removed member, new owner — empty for self-directed notices
+ * like `mirror.removed`/`mirror.chain_dissolved`/`mirror.sync_stalled`), and
+ * `refId` is the occurrence discriminator the dispatcher folds into its dedupe
+ * key (the invite id, the target member's id, or the stalled copy's watermark).
+ * All render + email + matrix routing flow through the normal dispatcher, so
+ * quiet-hours and digest cadence apply like any other type.
+ */
+export interface MirrorNotificationEvent {
+  type:
+    | 'mirror.invite'
+    | 'mirror.member_joined'
+    | 'mirror.member_left'
+    | 'mirror.member_removed'
+    | 'mirror.removed'
+    | 'mirror.ownership_transferred'
+    | 'mirror.chain_dissolved'
+    | 'mirror.sync_stalled';
+  /** Recipient — the member (or invitee) the notice is delivered to. */
+  userId: string;
+  chainId: string;
+  chainName: string;
+  /** The member the notice is about; '' for a self-directed notice. */
+  actorUsername: string;
+  /** Occurrence discriminator for the dispatcher's (user, eventKey) dedupe. */
+  refId: string;
+  occurredAt: string;
+}
+
 /** The discriminated union of every domain event (§9). */
 export type DomainEvent =
   | AlertTriggeredEvent
@@ -364,7 +397,8 @@ export type DomainEvent =
   | EarningsReminderEvent
   | ChatMessageEvent
   | DividendEventNotice
-  | BudgetExceededEvent;
+  | BudgetExceededEvent
+  | MirrorNotificationEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
 export type DomainEventType = DomainEvent['type'];
@@ -394,4 +428,12 @@ export const DOMAIN_EVENT_TYPES = [
   'chat.message',
   'dividend.event',
   'budget.exceeded',
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
 ] as const satisfies readonly DomainEventType[];

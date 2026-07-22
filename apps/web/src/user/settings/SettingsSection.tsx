@@ -172,6 +172,38 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.budgetExceeded.label'),
       description: t('settings.notifications.types.budgetExceeded.description'),
     },
+    'mirror.invite': {
+      label: t('settings.notifications.types.mirrorInvite.label'),
+      description: t('settings.notifications.types.mirrorInvite.description'),
+    },
+    'mirror.member_joined': {
+      label: t('settings.notifications.types.mirrorMemberJoined.label'),
+      description: t('settings.notifications.types.mirrorMemberJoined.description'),
+    },
+    'mirror.member_left': {
+      label: t('settings.notifications.types.mirrorMemberLeft.label'),
+      description: t('settings.notifications.types.mirrorMemberLeft.description'),
+    },
+    'mirror.member_removed': {
+      label: t('settings.notifications.types.mirrorMemberRemoved.label'),
+      description: t('settings.notifications.types.mirrorMemberRemoved.description'),
+    },
+    'mirror.removed': {
+      label: t('settings.notifications.types.mirrorRemoved.label'),
+      description: t('settings.notifications.types.mirrorRemoved.description'),
+    },
+    'mirror.ownership_transferred': {
+      label: t('settings.notifications.types.mirrorOwnershipTransferred.label'),
+      description: t('settings.notifications.types.mirrorOwnershipTransferred.description'),
+    },
+    'mirror.chain_dissolved': {
+      label: t('settings.notifications.types.mirrorChainDissolved.label'),
+      description: t('settings.notifications.types.mirrorChainDissolved.description'),
+    },
+    'mirror.sync_stalled': {
+      label: t('settings.notifications.types.mirrorSyncStalled.label'),
+      description: t('settings.notifications.types.mirrorSyncStalled.description'),
+    },
   };
 }
 
@@ -194,6 +226,7 @@ function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string>
     alerts: t('settings.notifications.categories.alerts'),
     budgets: t('settings.notifications.categories.budgets'),
     markets: t('settings.notifications.categories.markets'),
+    mirrorchain: t('settings.notifications.categories.mirrorchain'),
     account: t('settings.notifications.categories.account'),
   };
 }

@@ -38,6 +38,7 @@ import { createIdeasRouter } from './http/routes/ideasRoutes';
 import { createImportsRouter } from './http/routes/importsRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
 import { createMarketIntelRouter } from './http/routes/marketIntelRoutes';
+import { createMirrorchainRouter } from './http/routes/mirrorchainRoutes';
 import { createNotificationsRouter } from './http/routes/notificationsRoutes';
 import { createOAuthPublicRouter, createOAuthRouter } from './http/routes/oauthRoutes';
 import { createPortfolioRouter } from './http/routes/portfolioRoutes';
@@ -177,6 +178,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/imports', requireFeature(ctx, 'imports'), createImportsRouter(ctx));
   app.use('/api/v1/analytics', createAnalyticsRouter(ctx));
   app.use('/api/v1/social', createSocialRouter(ctx, limiters));
+  app.use('/api/v1/mirrorchain', createMirrorchainRouter(ctx, limiters));
   app.use('/api/v1/chat', requireFeature(ctx, 'chat'), createChatRouter(ctx));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
   app.use('/api/v1/alerts', requireFeature(ctx, 'alerts'), createAlertsRouter(ctx));

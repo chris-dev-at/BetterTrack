@@ -40,6 +40,16 @@ export const WEBHOOK_EVENT_TYPES = [
   'chat.message',
   'dividend.event',
   'budget.exceeded',
+  // MIRRORCHAIN group-portfolio lifecycle (§13.5 V5-P7): user-scoped like the
+  // rest — each fires for the recipient only, carrying just their own data.
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];

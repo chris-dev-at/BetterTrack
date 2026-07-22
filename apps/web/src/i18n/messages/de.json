@@ -586,6 +586,38 @@
         "budgetExceeded": {
           "label": "Budget-Warnungen",
           "description": "Wenn deine Ausgaben in einer Kategorie ihr Monatsbudget überschreiten."
+        },
+        "mirrorInvite": {
+          "label": "Einladungen zu Gruppen-Portfolios",
+          "description": "Wenn dich ein:e Freund:in zu einem Gruppen-Portfolio einlädt."
+        },
+        "mirrorMemberJoined": {
+          "label": "Mitglied beigetreten",
+          "description": "Wenn jemand einem Gruppen-Portfolio beitritt, das dir gehört."
+        },
+        "mirrorMemberLeft": {
+          "label": "Mitglied ausgetreten",
+          "description": "Wenn ein Mitglied eines deiner Gruppen-Portfolios verlässt."
+        },
+        "mirrorMemberRemoved": {
+          "label": "Mitglied entfernt",
+          "description": "Wenn ein Mitglied aus deinem Gruppen-Portfolio entfernt wird."
+        },
+        "mirrorRemoved": {
+          "label": "Aus einem Gruppen-Portfolio entfernt",
+          "description": "Wenn du aus einem Gruppen-Portfolio entfernt wirst."
+        },
+        "mirrorOwnershipTransferred": {
+          "label": "Eigentümerschaft übertragen",
+          "description": "Wenn sich die Eigentümerschaft eines Gruppen-Portfolios ändert, in dem du bist."
+        },
+        "mirrorChainDissolved": {
+          "label": "Gruppen-Portfolio aufgelöst",
+          "description": "Wenn ein Gruppen-Portfolio, in dem du bist, aufgelöst wird."
+        },
+        "mirrorSyncStalled": {
+          "label": "Synchronisierungsprobleme",
+          "description": "Wenn ein Gruppen-Portfolio nicht fertig synchronisiert werden kann."
         }
       },
       "routing": {
@@ -648,6 +680,7 @@
         "alerts": "Preisalarme",
         "budgets": "Budgets",
         "markets": "Märkte",
+        "mirrorchain": "Gruppen-Portfolios",
         "account": "Konto"
       },
       "grid": {
@@ -972,7 +1005,15 @@
           "earningsReminder": "Erinnerung an Geschäftszahlen",
           "chatMessage": "Neue Chat-Nachricht",
           "dividendEvent": "Bevorstehende Dividende",
-          "budgetExceeded": "Budget überschritten"
+          "budgetExceeded": "Budget überschritten",
+          "mirrorInvite": "Einladung zum Gruppen-Portfolio",
+          "mirrorMemberJoined": "Mitglied im Gruppen-Portfolio beigetreten",
+          "mirrorMemberLeft": "Mitglied hat Gruppen-Portfolio verlassen",
+          "mirrorMemberRemoved": "Mitglied aus Gruppen-Portfolio entfernt",
+          "mirrorRemoved": "Aus Gruppen-Portfolio entfernt",
+          "mirrorOwnershipTransferred": "Eigentümerschaft des Gruppen-Portfolios übertragen",
+          "mirrorChainDissolved": "Gruppen-Portfolio aufgelöst",
+          "mirrorSyncStalled": "Synchronisierung des Gruppen-Portfolios hängt"
         }
       },
       "scope": {

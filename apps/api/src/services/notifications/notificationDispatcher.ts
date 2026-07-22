@@ -20,6 +20,7 @@ import type {
   FriendAcceptedEvent,
   FriendActivityEvent,
   FriendRequestEvent,
+  MirrorNotificationEvent,
   PortfolioSharedEvent,
   WatchlistSharedEvent,
 } from '../../events';
@@ -35,6 +36,7 @@ import type { AlertNotificationContext } from '../../data/repositories/alertRepo
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { alertBody, alertRuleSummary, alertTitle } from '../alerts/alertMessages';
 import type { EmailService } from '../email/emailService';
+import type { MirrorEmailVariant } from '../email/templates';
 import type { Logger } from '../../logger';
 
 import type { DiscordChannel } from './discordChannel';
@@ -95,7 +97,8 @@ export type DispatchableEvent =
   | EarningsReminderEvent
   | ChatMessageEvent
   | DividendEventNotice
-  | BudgetExceededEvent;
+  | BudgetExceededEvent
+  | MirrorNotificationEvent;
 
 /** The `type` strings the dispatcher accepts (guards the job payload). */
 export const DISPATCHABLE_EVENT_TYPES = [
@@ -115,6 +118,14 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'chat.message',
   'dividend.event',
   'budget.exceeded',
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -205,6 +216,71 @@ function eventKeyFor(event: DispatchableEvent): string {
       // at the dispatch layer so a redelivered/duplicated emit no-ops — exactly
       // one alert per budget per month.
       return `budget.exceeded:${event.budgetId}:${event.period}`;
+    case 'mirror.invite':
+    case 'mirror.member_joined':
+    case 'mirror.member_left':
+    case 'mirror.member_removed':
+    case 'mirror.removed':
+    case 'mirror.ownership_transferred':
+    case 'mirror.chain_dissolved':
+    case 'mirror.sync_stalled':
+      // Deduped per (chain, occurrence): `refId` is the invite id / target
+      // member id / stalled-copy watermark, so a redelivered membership notice
+      // no-ops while a later distinct occurrence gets a fresh key (design §11).
+      // The recipient userId (repo-side) keeps every member's row distinct.
+      return `${event.type}:${event.chainId}:${event.refId}`;
+  }
+}
+
+/**
+ * MIRRORCHAIN notice copy (EN — inbox strings are stored rendered like every
+ * other type; the email localizes its own from the `mirror` copy block). Names
+ * the chain and, where relevant, the member the notice is about (design §11).
+ */
+function mirrorCopy(event: MirrorNotificationEvent): { title: string; body: string } {
+  const chain = event.chainName;
+  const actor = event.actorUsername;
+  switch (event.type) {
+    case 'mirror.invite':
+      return {
+        title: 'Group portfolio invite',
+        body: `${actor} invited you to join the group portfolio ${chain}.`,
+      };
+    case 'mirror.member_joined':
+      return {
+        title: `New member in ${chain}`,
+        body: `${actor} joined the group portfolio ${chain}.`,
+      };
+    case 'mirror.member_left':
+      return {
+        title: `A member left ${chain}`,
+        body: `${actor} left the group portfolio ${chain}.`,
+      };
+    case 'mirror.member_removed':
+      return {
+        title: `A member left ${chain}`,
+        body: `${actor} was removed from the group portfolio ${chain}.`,
+      };
+    case 'mirror.removed':
+      return {
+        title: `Removed from ${chain}`,
+        body: `You were removed from the group portfolio ${chain}. You keep your copy — it just stops syncing.`,
+      };
+    case 'mirror.ownership_transferred':
+      return {
+        title: `Ownership of ${chain} changed`,
+        body: `${actor} is now the owner of the group portfolio ${chain}.`,
+      };
+    case 'mirror.chain_dissolved':
+      return {
+        title: `${chain} was dissolved`,
+        body: `The group portfolio ${chain} was dissolved. You keep your copy — it just stops syncing.`,
+      };
+    case 'mirror.sync_stalled':
+      return {
+        title: `Syncing ${chain} is stuck`,
+        body: `The group portfolio ${chain} could not finish syncing. Open it and choose Retry sync.`,
+      };
   }
 }
 
@@ -616,6 +692,36 @@ export function createNotificationDispatcher(
           data: { categoryId: event.categoryId, period: event.period },
         };
       }
+      case 'mirror.invite':
+      case 'mirror.member_joined':
+      case 'mirror.member_left':
+      case 'mirror.member_removed':
+      case 'mirror.removed':
+      case 'mirror.ownership_transferred':
+      case 'mirror.chain_dissolved':
+      case 'mirror.sync_stalled': {
+        const { title, body } = mirrorCopy(event);
+        return {
+          eventKey,
+          title,
+          body,
+          payload: {
+            eventKey,
+            chainId: event.chainId,
+            chainName: event.chainName,
+            actorUsername: event.actorUsername,
+            // The invite id for the Social request list deep link; the target
+            // member id / stall watermark otherwise (design §11).
+            refId: event.refId,
+          },
+          // Deep-links to the chain (its member sheet) on web + push; an invite
+          // also carries its id so the push can open the Social request entry.
+          data:
+            event.type === 'mirror.invite'
+              ? { chainId: event.chainId, inviteId: event.refId }
+              : { chainId: event.chainId },
+        };
+      }
     }
   }
 
@@ -716,6 +822,25 @@ export function createNotificationDispatcher(
         // In-app / push only (its email cell is locked in the settings grid): a
         // budget alert is a lightweight nudge and the dashboards are the system
         // of record — no localized budget email template ships (V5-P9, issue 3/3).
+        return;
+      case 'mirror.invite':
+      case 'mirror.member_joined':
+      case 'mirror.member_left':
+      case 'mirror.member_removed':
+      case 'mirror.removed':
+      case 'mirror.ownership_transferred':
+      case 'mirror.chain_dissolved':
+      case 'mirror.sync_stalled':
+        // Fully localized from the `mirror` copy block (§13.5 V5-P7): the type's
+        // suffix IS the email variant (`mirror.member_joined` → `member_joined`).
+        await email.sendMirrorNotification({
+          to,
+          userId,
+          variant: event.type.slice('mirror.'.length) as MirrorEmailVariant,
+          chainName: event.chainName,
+          actorUsername: event.actorUsername,
+          locale,
+        });
         return;
     }
   }

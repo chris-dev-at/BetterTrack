@@ -44,6 +44,14 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
   'chat.message': 'chatMessage',
   'dividend.event': 'dividendEvent',
   'budget.exceeded': 'budgetExceeded',
+  'mirror.invite': 'mirrorInvite',
+  'mirror.member_joined': 'mirrorMemberJoined',
+  'mirror.member_left': 'mirrorMemberLeft',
+  'mirror.member_removed': 'mirrorMemberRemoved',
+  'mirror.removed': 'mirrorRemoved',
+  'mirror.ownership_transferred': 'mirrorOwnershipTransferred',
+  'mirror.chain_dissolved': 'mirrorChainDissolved',
+  'mirror.sync_stalled': 'mirrorSyncStalled',
 };
 
 /** The one-time secret modal — the plaintext is available here and never again. */

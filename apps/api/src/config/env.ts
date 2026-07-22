@@ -230,6 +230,9 @@ const envSchema = z.object({
   // Per-user per-UTC-day completion budget (admin-configurable at runtime; this
   // is only the fallback default). Kept generous but finite.
   BT_AI_DAILY_CAP: z.coerce.number().int().min(1).max(100_000).default(20),
+  // MIRRORCHAIN active-member cap per chain (§13.5 V5-P7, design §4 — bounded
+  // fan-out). Env-tunable; defaults to the contract's MIRROR_MAX_MEMBERS (16).
+  MIRROR_MAX_MEMBERS: z.coerce.number().int().min(2).max(256).default(16),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -502,6 +505,10 @@ export interface AppConfig {
   marketIntel: {
     enabled: boolean;
   };
+  /** MIRRORCHAIN group portfolios (§13.5 V5-P7): the env-tunable member cap (§4). */
+  mirror: {
+    maxMembers: number;
+  };
   /**
    * Local AI provider (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY). These
    * are env DEFAULTS only; the admin's stored app_settings override them at
@@ -735,6 +742,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // surface via the "unconfigured" endpoint shape without any provider change.
     marketIntel: {
       enabled: boolFrom(e.MARKET_INTEL_ENABLED, true),
+    },
+    mirror: {
+      maxMembers: e.MIRROR_MAX_MEMBERS,
     },
     // V5-P12 local-AI defaults (LOCAL Ollama ONLY). Blank env ⇒ undefined so the
     // AI layer stays cleanly disabled until an endpoint + model resolve. The
