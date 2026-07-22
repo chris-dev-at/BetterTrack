@@ -213,6 +213,12 @@ export interface CreateTestAppOptions {
    * boundary derives from it, so tests can advance it across a rollover.
    */
   taxNow?: () => number;
+  /**
+   * Controlled clock for the expense budget/dashboard engine (§13.5 V5-P9) — the
+   * current evaluation period + a dashboard's default month derive from it, so a
+   * blown-budget alert and a month's aggregates are provable deterministically.
+   */
+  budgetNow?: () => Date;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -251,6 +257,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     notificationEnqueue: options.notificationEnqueue,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
+    budgetNow: options.budgetNow,
   });
   const app = createApp(ctx);
 

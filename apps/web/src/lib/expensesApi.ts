@@ -1,27 +1,37 @@
 import {
   expenseBankListResponseSchema,
+  expenseBudgetListResponseSchema,
+  expenseBudgetResponseSchema,
   expenseCategoryListResponseSchema,
   expenseCategoryResponseSchema,
   expenseImportApplyResponseSchema,
   expenseImportPreviewResponseSchema,
+  expenseMonthlySummaryResponseSchema,
   expenseRuleListResponseSchema,
   expenseRuleResponseSchema,
   expenseTransactionListResponseSchema,
   expenseTransactionResponseSchema,
+  expenseTrendResponseSchema,
+  type CreateExpenseBudgetRequest,
   type CreateExpenseCategoryRequest,
   type CreateExpenseRuleRequest,
   type CreateExpenseTransactionRequest,
   type ExpenseBankListResponse,
+  type ExpenseBudgetListResponse,
+  type ExpenseBudgetResponse,
   type ExpenseCategoryListResponse,
   type ExpenseCategoryResponse,
   type ExpenseImportApplyResponse,
   type ExpenseImportOverride,
   type ExpenseImportPreviewResponse,
+  type ExpenseMonthlySummaryResponse,
   type ExpenseRuleListResponse,
   type ExpenseRuleResponse,
   type ExpenseTransactionListQuery,
   type ExpenseTransactionListResponse,
   type ExpenseTransactionResponse,
+  type ExpenseTrendResponse,
+  type UpdateExpenseBudgetRequest,
   type UpdateExpenseCategoryRequest,
   type UpdateExpenseRuleRequest,
   type UpdateExpenseTransactionRequest,
@@ -38,6 +48,9 @@ import { apiRequest } from './apiClient';
 export const EXPENSE_CATEGORIES_QUERY_KEY = ['expenses', 'categories'] as const;
 export const EXPENSE_TRANSACTIONS_QUERY_KEY = ['expenses', 'transactions'] as const;
 export const EXPENSE_RULES_QUERY_KEY = ['expenses', 'rules'] as const;
+export const EXPENSE_SUMMARY_QUERY_KEY = ['expenses', 'summary'] as const;
+export const EXPENSE_TRENDS_QUERY_KEY = ['expenses', 'trends'] as const;
+export const EXPENSE_BUDGETS_QUERY_KEY = ['expenses', 'budgets'] as const;
 
 // ── Categories ──
 
@@ -200,4 +213,66 @@ export async function applyExpenseImport(input: {
   form.append('file', input.file);
   const data = await apiRequest<unknown>('/expenses/import/apply', { method: 'POST', body: form });
   return expenseImportApplyResponseSchema.parse(data);
+}
+
+// ── Dashboards + budgets (issue 3/3) ──
+
+/** `GET /expenses/summary?month=` — spend by category + income-vs-spend for a month. */
+export async function getExpenseSummary(
+  month?: string,
+  signal?: AbortSignal,
+): Promise<ExpenseMonthlySummaryResponse> {
+  const data = await apiRequest<unknown>('/expenses/summary', {
+    query: month ? { month } : undefined,
+    signal,
+  });
+  return expenseMonthlySummaryResponseSchema.parse(data);
+}
+
+/** `GET /expenses/trends?months=` — income-vs-spend over the trailing months. */
+export async function getExpenseTrends(
+  months?: number,
+  signal?: AbortSignal,
+): Promise<ExpenseTrendResponse> {
+  const data = await apiRequest<unknown>('/expenses/trends', {
+    query: months ? { months } : undefined,
+    signal,
+  });
+  return expenseTrendResponseSchema.parse(data);
+}
+
+/** `GET /expenses/budgets?month=` — the caller's budgets with this period's progress. */
+export async function listExpenseBudgets(
+  month?: string,
+  signal?: AbortSignal,
+): Promise<ExpenseBudgetListResponse> {
+  const data = await apiRequest<unknown>('/expenses/budgets', {
+    query: month ? { month } : undefined,
+    signal,
+  });
+  return expenseBudgetListResponseSchema.parse(data);
+}
+
+export async function createExpenseBudget(
+  body: CreateExpenseBudgetRequest,
+): Promise<ExpenseBudgetResponse> {
+  const data = await apiRequest<unknown>('/expenses/budgets', { method: 'POST', body });
+  return expenseBudgetResponseSchema.parse(data);
+}
+
+export async function updateExpenseBudget(
+  budgetId: string,
+  body: UpdateExpenseBudgetRequest,
+): Promise<ExpenseBudgetResponse> {
+  const data = await apiRequest<unknown>(`/expenses/budgets/${encodeURIComponent(budgetId)}`, {
+    method: 'PATCH',
+    body,
+  });
+  return expenseBudgetResponseSchema.parse(data);
+}
+
+export async function deleteExpenseBudget(budgetId: string): Promise<void> {
+  await apiRequest<unknown>(`/expenses/budgets/${encodeURIComponent(budgetId)}`, {
+    method: 'DELETE',
+  });
 }

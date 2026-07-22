@@ -168,6 +168,10 @@ function notificationTypeMeta(
       label: t('settings.notifications.types.dividendEvent.label'),
       description: t('settings.notifications.types.dividendEvent.description'),
     },
+    'budget.exceeded': {
+      label: t('settings.notifications.types.budgetExceeded.label'),
+      description: t('settings.notifications.types.budgetExceeded.description'),
+    },
   };
 }
 
@@ -188,6 +192,7 @@ function categoryLabels(t: TranslateFn): Record<NotificationCategoryKey, string>
     sharing: t('settings.notifications.categories.sharing'),
     chat: t('settings.notifications.categories.chat'),
     alerts: t('settings.notifications.categories.alerts'),
+    budgets: t('settings.notifications.categories.budgets'),
     markets: t('settings.notifications.categories.markets'),
     account: t('settings.notifications.categories.account'),
   };
@@ -206,6 +211,10 @@ function cellLocked(type: NotificationType, channel: NotificationSettingChannel)
   // it (the download is gated by a token the requester already holds), so its
   // email cell is informational, like `account.temp_password`'s.
   if (type === 'account.data_export' && channel === 'email') return true;
+  // `budget.exceeded` (V5-P9) is a lightweight in-app / push nudge — the
+  // dashboards are the system of record, so no budget email ships; its email
+  // cell is informational like the account-notice ones above.
+  if (type === 'budget.exceeded' && channel === 'email') return true;
   return type === 'account.temp_password' && channel === 'email';
 }
 

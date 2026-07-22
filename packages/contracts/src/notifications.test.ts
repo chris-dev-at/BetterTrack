@@ -45,6 +45,7 @@ describe('notification taxonomy (#368)', () => {
       'earnings.reminder',
       'chat.message',
       'dividend.event',
+      'budget.exceeded',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',

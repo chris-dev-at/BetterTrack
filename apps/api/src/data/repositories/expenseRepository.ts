@@ -1,12 +1,15 @@
-import { and, asc, desc, eq, gte, isNotNull, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNotNull, lt, lte, sql } from 'drizzle-orm';
 
 import type { ExpenseDirection, ExpenseRuleMatchType } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import {
+  expenseBudgetFires,
+  expenseBudgets,
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  type ExpenseBudgetRow,
   type ExpenseCategoryRow,
   type ExpenseRuleRow,
   type ExpenseTransactionRow,
@@ -222,6 +225,21 @@ export interface ExpenseTransactionListFilters {
   limit: number;
 }
 
+/** A (category, direction) magnitude total over a date range (dashboards, 3/3). */
+export interface ExpenseCategoryDirectionTotal {
+  categoryId: string | null;
+  direction: ExpenseDirection;
+  total: number;
+}
+
+/** A (month, direction) magnitude total over a date range — the trend series (3/3). */
+export interface ExpenseMonthDirectionTotal {
+  /** `YYYY-MM`. */
+  month: string;
+  direction: ExpenseDirection;
+  total: number;
+}
+
 /**
  * One bank-import row to persist (issue 2/3). Like a manual create but carries an
  * `import:<bank>` `source` and the `dedupHash` that keys idempotency — the CSV
@@ -419,6 +437,70 @@ export function createExpenseTransactionRepository(db: Database) {
       return row ? toTransaction(row) : null;
     },
 
+    /**
+     * Sum the owner's transaction magnitudes over `[fromInclusive, toExclusive)`,
+     * grouped by (category, direction) — the monthly dashboard's building block
+     * (3/3). `categoryId` is null for the uncategorized bucket. Currency-naive by
+     * design (the expense area does no FX): amounts are summed as recorded.
+     */
+    async sumByCategoryDirection(
+      userId: string,
+      fromInclusive: string,
+      toExclusive: string,
+    ): Promise<ExpenseCategoryDirectionTotal[]> {
+      const rows = await db
+        .select({
+          categoryId: expenseTransactions.categoryId,
+          direction: expenseTransactions.direction,
+          total: sql<string>`coalesce(sum(${expenseTransactions.amount}), 0)`,
+        })
+        .from(expenseTransactions)
+        .where(
+          and(
+            eq(expenseTransactions.userId, userId),
+            gte(expenseTransactions.bookedOn, fromInclusive),
+            lt(expenseTransactions.bookedOn, toExclusive),
+          ),
+        )
+        .groupBy(expenseTransactions.categoryId, expenseTransactions.direction);
+      return rows.map((r) => ({
+        categoryId: r.categoryId,
+        direction: r.direction,
+        total: Number(r.total),
+      }));
+    },
+
+    /**
+     * Sum the owner's transaction magnitudes over `[fromInclusive, toExclusive)`,
+     * grouped by (calendar month, direction) — the trend series (3/3). The month
+     * bucket is `substr(booked_on::text, 1, 7)` (`YYYY-MM`), avoiding any locale-
+     * dependent date function. Months with no rows are absent; the service fills
+     * the gaps so a sparse ledger still renders a dense curve.
+     */
+    async sumByMonthDirection(
+      userId: string,
+      fromInclusive: string,
+      toExclusive: string,
+    ): Promise<ExpenseMonthDirectionTotal[]> {
+      const monthExpr = sql<string>`substr(${expenseTransactions.bookedOn}::text, 1, 7)`;
+      const rows = await db
+        .select({
+          month: monthExpr,
+          direction: expenseTransactions.direction,
+          total: sql<string>`coalesce(sum(${expenseTransactions.amount}), 0)`,
+        })
+        .from(expenseTransactions)
+        .where(
+          and(
+            eq(expenseTransactions.userId, userId),
+            gte(expenseTransactions.bookedOn, fromInclusive),
+            lt(expenseTransactions.bookedOn, toExclusive),
+          ),
+        )
+        .groupBy(monthExpr, expenseTransactions.direction);
+      return rows.map((r) => ({ month: r.month, direction: r.direction, total: Number(r.total) }));
+    },
+
     /** Hard-delete, owner-scoped. False when the id is not owned. */
     async delete(userId: string, id: string): Promise<boolean> {
       const rows = await db
@@ -559,3 +641,147 @@ export function createExpenseRuleRepository(db: Database) {
 }
 
 export type ExpenseRuleRepository = ReturnType<typeof createExpenseRuleRepository>;
+
+// ── Budgets + the per-(budget, period) fired-marker (issue 3/3) ──────────────
+
+/** A per-category monthly budget as stored (`amount` parsed to a number). */
+export interface ExpenseBudgetRecord {
+  id: string;
+  userId: string;
+  categoryId: string;
+  amount: number;
+  currency: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** Fields a budget create persists. */
+export interface CreateExpenseBudgetInput {
+  categoryId: string;
+  amount: number;
+  currency: string;
+}
+
+/** Fields a budget update may touch (all optional). */
+export interface UpdateExpenseBudgetPatch {
+  amount?: number;
+  currency?: string;
+}
+
+function toBudget(row: ExpenseBudgetRow): ExpenseBudgetRecord {
+  return {
+    id: row.id,
+    userId: row.userId,
+    categoryId: row.categoryId,
+    amount: Number(row.amount),
+    currency: row.currency,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function createExpenseBudgetRepository(db: Database) {
+  return {
+    /** Every budget the owner has, by age (stable order for the list). */
+    async listForOwner(userId: string): Promise<ExpenseBudgetRecord[]> {
+      const rows = await db
+        .select()
+        .from(expenseBudgets)
+        .where(eq(expenseBudgets.userId, userId))
+        .orderBy(asc(expenseBudgets.createdAt), asc(expenseBudgets.id));
+      return rows.map(toBudget);
+    },
+
+    /** A single budget scoped to its owner (§8): null when unknown or foreign. */
+    async findByIdForOwner(userId: string, id: string): Promise<ExpenseBudgetRecord | null> {
+      const [row] = await db
+        .select()
+        .from(expenseBudgets)
+        .where(and(eq(expenseBudgets.id, id), eq(expenseBudgets.userId, userId)))
+        .limit(1);
+      return row ? toBudget(row) : null;
+    },
+
+    /**
+     * Persist a new budget. Throws the 23505 unique violation when the category
+     * already has a budget (UNIQUE(category)) — the service maps that to a 409.
+     */
+    async create(userId: string, input: CreateExpenseBudgetInput): Promise<ExpenseBudgetRecord> {
+      const [row] = await db
+        .insert(expenseBudgets)
+        .values({
+          userId,
+          categoryId: input.categoryId,
+          amount: input.amount.toString(),
+          currency: input.currency,
+        })
+        .returning();
+      if (!row) throw new Error('Expense budget vanished after insert');
+      return toBudget(row);
+    },
+
+    /** Update mutable fields, owner-scoped (§8). Null when the id is not the caller's. */
+    async update(
+      userId: string,
+      id: string,
+      patch: UpdateExpenseBudgetPatch,
+    ): Promise<ExpenseBudgetRecord | null> {
+      const set: Partial<{ amount: string; currency: string; updatedAt: Date }> = {};
+      if (patch.amount !== undefined) set.amount = patch.amount.toString();
+      if (patch.currency !== undefined) set.currency = patch.currency;
+      if (Object.keys(set).length === 0) return this.findByIdForOwner(userId, id);
+      set.updatedAt = new Date();
+      const [row] = await db
+        .update(expenseBudgets)
+        .set(set)
+        .where(and(eq(expenseBudgets.id, id), eq(expenseBudgets.userId, userId)))
+        .returning();
+      return row ? toBudget(row) : null;
+    },
+
+    /** Hard-delete, owner-scoped. False when the id is not owned. Cascades its fired-markers. */
+    async delete(userId: string, id: string): Promise<boolean> {
+      const rows = await db
+        .delete(expenseBudgets)
+        .where(and(eq(expenseBudgets.id, id), eq(expenseBudgets.userId, userId)))
+        .returning({ id: expenseBudgets.id });
+      return rows.length > 0;
+    },
+
+    /**
+     * Atomically claim the (budget, period) over-budget alert (issue 3/3's
+     * exactly-once gate). `INSERT … ON CONFLICT DO NOTHING` against
+     * UNIQUE(budget, period): returns true iff THIS call inserted the marker, so
+     * only the first evaluation of a blown budget in a month emits — a blown
+     * budget fires exactly one alert per period, race-safe like `standing_order_runs`.
+     */
+    async claimFire(budgetId: string, periodKey: string): Promise<boolean> {
+      const rows = await db
+        .insert(expenseBudgetFires)
+        .values({ budgetId, periodKey })
+        .onConflictDoNothing({
+          target: [expenseBudgetFires.budgetId, expenseBudgetFires.periodKey],
+        })
+        .returning({ id: expenseBudgetFires.id });
+      return rows.length > 0;
+    },
+
+    /**
+     * Release a claimed (budget, period) marker — used only to roll the claim
+     * back when the notification emit failed to reach the durable queue, so a
+     * later write re-attempts rather than silently swallowing the one alert.
+     */
+    async releaseFire(budgetId: string, periodKey: string): Promise<void> {
+      await db
+        .delete(expenseBudgetFires)
+        .where(
+          and(
+            eq(expenseBudgetFires.budgetId, budgetId),
+            eq(expenseBudgetFires.periodKey, periodKey),
+          ),
+        );
+    },
+  };
+}
+
+export type ExpenseBudgetRepository = ReturnType<typeof createExpenseBudgetRepository>;

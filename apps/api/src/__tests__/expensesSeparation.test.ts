@@ -22,6 +22,8 @@ const API_SRC = join(HERE, '..');
 /** Every source file the expense feature owns on the API side. */
 const EXPENSE_FILES = [
   'services/expenses/expenseService.ts',
+  'services/expenses/expenseImportService.ts',
+  'services/expenses/budgetService.ts',
   'data/repositories/expenseRepository.ts',
   'http/routes/expensesRoutes.ts',
 ];
