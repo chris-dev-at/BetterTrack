@@ -79,7 +79,7 @@ export function IosInstallHint() {
 
   return (
     <div
-      role="dialog"
+      role="region"
       aria-live="polite"
       aria-label={t('ui.iosInstall.title')}
       className="safe-pb safe-px fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-sm items-start gap-3 rounded-xl border border-neutral-700 bg-neutral-900/95 p-3 text-sm text-neutral-100 shadow-2xl backdrop-blur"

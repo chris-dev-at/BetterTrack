@@ -41,26 +41,26 @@ describe('IosInstallHint', () => {
   test('shows the hint on iOS Safari in a normal browser tab', () => {
     setUserAgent(IPHONE_SAFARI_UA);
     render(<IosInstallHint />);
-    expect(screen.getByRole('dialog')).toHaveTextContent(/Install BetterTrack/i);
+    expect(screen.getByRole('region')).toHaveTextContent(/Install BetterTrack/i);
   });
 
   test('does not render on iOS Chrome (Add to Home Screen lives in Safari)', () => {
     setUserAgent(IPHONE_CHROME_UA);
     render(<IosInstallHint />);
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('region')).toBeNull();
   });
 
   test('does not render on desktop Chrome', () => {
     setUserAgent(DESKTOP_CHROME_UA);
     render(<IosInstallHint />);
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('region')).toBeNull();
   });
 
   test('does not render inside iOS standalone mode', () => {
     setUserAgent(IPHONE_SAFARI_UA);
     setStandalone(true);
     render(<IosInstallHint />);
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('region')).toBeNull();
   });
 
   test('dismissing hides the hint and persists across renders', async () => {
@@ -68,19 +68,19 @@ describe('IosInstallHint', () => {
     setUserAgent(IPHONE_SAFARI_UA);
     const first = render(<IosInstallHint />);
     await user.click(screen.getByRole('button', { name: 'Dismiss' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('region')).toBeNull();
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe('1');
 
     // A fresh mount reads the persisted dismissal and stays hidden.
     first.unmount();
     render(<IosInstallHint />);
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('region')).toBeNull();
   });
 
   test('a pre-existing dismissal keeps the hint hidden on first render', () => {
     setUserAgent(IPHONE_SAFARI_UA);
     window.localStorage.setItem(STORAGE_KEY, '1');
     render(<IosInstallHint />);
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('region')).toBeNull();
   });
 });

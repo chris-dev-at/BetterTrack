@@ -175,7 +175,7 @@ export function OAuthAppsPage() {
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="break-all font-semibold text-neutral-100">{app.name}</span>
+                    <span className="font-semibold break-words text-neutral-100">{app.name}</span>
                     <Badge tone="green">first-party</Badge>
                     <Badge tone={app.public ? 'neutral' : 'amber'}>
                       {app.public ? 'public / PKCE' : 'confidential'}

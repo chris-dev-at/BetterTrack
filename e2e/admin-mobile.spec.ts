@@ -20,12 +20,19 @@ import { API_BASE_URL } from './support/config';
  * `app: 'user'`.
  */
 async function configureAdminOrigin(context: import('@playwright/test').BrowserContext) {
-  await context.addInitScript(() => {
-    (window as unknown as { __BT__?: { app: string; apiOrigin: string } }).__BT__ = {
-      app: 'admin',
-      apiOrigin: '',
-    };
-  });
+  // `addInitScript` runs after document creation but BEFORE the classical
+  // `<script src="/config.js">` in apps/web/index.html executes, so the
+  // default `window.__BT__ = { app: 'user', ... }` in that file would clobber
+  // an init-script assignment and the SPA would boot the user router. Fulfill
+  // the config.js request itself with admin flags so the SPA sees `app:
+  // 'admin'` when it reads runtime config after boot.
+  await context.route('**/config.js', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/javascript',
+      body: "window.__BT__ = { app: 'admin', apiOrigin: '' };",
+    }),
+  );
 }
 
 test('admin mobile: burger, users list, user detail render without clipping at 390×844', async ({
