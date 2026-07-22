@@ -37,6 +37,7 @@ import { clearLoginThrottle } from '../auth/loginThrottle';
 import { generateToken } from '../crypto/tokens';
 import type { EmailSendResult, EmailService } from '../email/emailService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import type { MirrorService } from '../mirror/mirrorService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { generateTempPassword } from '../password/tempPassword';
 import type { SessionService } from '../sessions/sessionService';
@@ -63,6 +64,12 @@ export interface AdminServiceDeps {
   appSettings: AppSettingsService;
   /** The central notification pipeline (#368) — `account.temp_password` notices. */
   notify: NotificationCenter;
+  /**
+   * MIRRORCHAIN §7 pre-delete succession hook (V5-P7 M4): admin delete runs the
+   * same owner-succession as the self-serve pipeline BEFORE the user row is
+   * removed, so an admin deleting a chain owner never orphans the chain.
+   */
+  mirror: Pick<MirrorService, 'handleAccountDeletion'>;
 }
 
 export interface AdminActor {
@@ -90,6 +97,7 @@ export function createAdminService(deps: AdminServiceDeps) {
     emailLog,
     appSettings,
     notify,
+    mirror,
   } = deps;
 
   async function loadUser(id: string): Promise<UserRow> {
@@ -390,6 +398,9 @@ export function createAdminService(deps: AdminServiceDeps) {
       }
       await ensureNotLastActiveAdmin(target);
       await sessions.destroyAllForUser(target.id);
+      // MIRRORCHAIN §7: hand off any group portfolios the target owns BEFORE the
+      // row delete cascades their copy away (V5-P7 M4), so the chain survives.
+      await mirror.handleAccountDeletion(target.id);
       await userRepo.remove(target.id);
       await audit.record({
         actorId: actor.id,
