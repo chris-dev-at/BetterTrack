@@ -98,6 +98,12 @@ import {
   createFeatureFlagService,
   type FeatureFlagService,
 } from '../services/featureFlags/featureFlagService';
+import {
+  createAiDailyCap,
+  createAiRegistry,
+  createAiService,
+  type AiService,
+} from '../services/ai';
 import { createAssetService, type AssetService } from '../services/assets/assetService';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
 import {
@@ -462,6 +468,13 @@ export interface AppContext {
    * router and the SPA-bootstrap advertisement.
    */
   featureFlags: FeatureFlagService;
+  /**
+   * Local-AI provider layer (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY):
+   * the user capability read + the guarded completion path, plus the admin
+   * endpoint/model/cap settings and test-connection. Unconfigured ⇒ disabled;
+   * there is no cloud adapter and no token storage behind it.
+   */
+  ai: AiService;
 }
 
 export interface BuildContextDeps {
@@ -612,6 +625,11 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const appSettings = createAppSettingsService({
     repo: appSettingsRepo,
     adminSessionLifetimeDefaultHours: config.admin.sessionLifetimeHours,
+    aiDefaults: {
+      endpoint: config.ai.endpoint,
+      model: config.ai.model,
+      dailyCap: config.ai.dailyCap,
+    },
   });
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c)): admin-toggled, read per
@@ -620,6 +638,20 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // realtime gateway + the gated route guards below can consult it, and the
   // admin router + SPA-bootstrap route can list/advertise it. Default: all ON.
   const featureFlags = createFeatureFlagService({ repo: appSettingsRepo, redis, audit, logger });
+
+  // Local-AI provider layer (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY).
+  // The registry resolves the active endpoint/model from app-settings at request
+  // time (redeploy-free switching); the daily cap is a plain Redis counter (no
+  // new table); the `ai` feature flag folds into availability. Unconfigured ⇒ the
+  // capability endpoint reports disabled and nothing AI-related renders.
+  const ai = createAiService({
+    appSettings,
+    registry: createAiRegistry({ appSettings, logger }),
+    cap: createAiDailyCap({ redis }),
+    featureFlags,
+    audit,
+    logger,
+  });
 
   // Admin monitoring / diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19):
   // Grafana/Prometheus reachability probe + the external-exposure gate the
@@ -1573,5 +1605,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     monitoring,
     usageAnalytics,
     featureFlags,
+    ai,
   };
 }

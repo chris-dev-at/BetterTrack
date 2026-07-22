@@ -25,6 +25,7 @@ import { createGrafanaProxyMiddleware } from './http/grafanaProxy';
 import { createOpenApiRouter } from './http/openapi';
 import { createAccountRouter } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
+import { createAiRouter } from './http/routes/aiRoutes';
 import { createAlertsRouter } from './http/routes/alertsRoutes';
 import { createAnalyticsRouter } from './http/routes/analyticsRoutes';
 import { createAssetsRouter } from './http/routes/assetsRoutes';
@@ -179,6 +180,10 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/chat', requireFeature(ctx, 'chat'), createChatRouter(ctx));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
   app.use('/api/v1/alerts', requireFeature(ctx, 'alerts'), createAlertsRouter(ctx));
+  // Local-AI capability read (§13.5 V5-P12): ALWAYS mounted, returns the
+  // "disabled" shape when unconfigured (never a 404), so the SPA has one stable
+  // read. Issue 2/2's generation endpoints mount here behind requireFeature('ai').
+  app.use('/api/v1/ai', createAiRouter(ctx));
   // Outbound webhook management (§13.5 V5-P10): mounted at the more specific
   // `/settings/webhooks` BEFORE the general settings router so it owns that
   // subtree. Session-only (the bearer scope guard bars key/token access).

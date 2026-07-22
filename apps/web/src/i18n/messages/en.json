@@ -3113,7 +3113,8 @@
       "featureFlags": "Feature flags",
       "usageAnalytics": "Usage analytics",
       "monitoring": "Monitoring",
-      "apiKeys": "API keys"
+      "apiKeys": "API keys",
+      "ai": "AI"
     },
     "monitoring": {
       "title": "Monitoring",
@@ -3150,6 +3151,35 @@
         "hidden": "Grafana is reachable over localhost/LAN only. Enable external access to embed it here.",
         "frameTitle": "Grafana dashboards"
       }
+    },
+    "ai": {
+      "title": "AI (local Ollama)",
+      "subtitle": "Connect the local AI model that powers insights and the assistant. Runs entirely on your own hardware — no cloud provider, no API keys.",
+      "loadError": "Could not load the AI settings.",
+      "retry": "Retry",
+      "statusLabel": "Status",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "lastChanged": "Last changed",
+      "neverChanged": "Never changed",
+      "savedNotice": "AI settings saved. The change is live on the next request.",
+      "localOnlyNote": "Local only: the app talks to this Ollama endpoint and nothing else. There is no cloud provider and no API token — only a plain URL and a model name.",
+      "endpointLabel": "Ollama endpoint",
+      "endpointHint": "Base URL of your Ollama server, e.g. http://localhost:11434. Leave empty to use the environment default.",
+      "modelLabel": "Model",
+      "modelHint": "A mid-size instruct model (~7–14B, quantized), e.g. llama3.1:8b. Test the connection to list installed models.",
+      "capLabel": "Daily limit per user",
+      "capHint": "Maximum AI requests each user may make per day (UTC).",
+      "capInvalid": "Enter a whole number between {{min}} and {{max}}.",
+      "testButton": "Test connection",
+      "testing": "Testing…",
+      "saveButton": "Save",
+      "saving": "Saving…",
+      "testError": "Could not reach the endpoint.",
+      "saveError": "Could not save the AI settings.",
+      "testOkModels": "Endpoint reachable — {{count}} model(s) found.",
+      "testOkNoModels": "Endpoint reachable, but no models are installed yet.",
+      "testFailed": "Endpoint not reachable."
     },
     "security": {
       "title": "Security",

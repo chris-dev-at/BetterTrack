@@ -3,6 +3,10 @@ import { Router, type Request } from 'express';
 import {
   adminHealthResponseSchema,
   adminUserListQuerySchema,
+  aiSettingsResponseSchema,
+  aiTestConnectionRequestSchema,
+  aiTestConnectionResponseSchema,
+  updateAiSettingsRequestSchema,
   auditQuerySchema,
   bulkUserActionRequestSchema,
   createAnnouncementRequestSchema,
@@ -26,6 +30,8 @@ import {
   type BulkUserActionRequest,
   type CreateAnnouncementRequest,
   type UpdateAccountDefaultsRequest,
+  type AiTestConnectionRequest,
+  type UpdateAiSettingsRequest,
   type CreateInviteRequest,
   type CreateOAuthClientRequest,
   type CreateRegistrationTokenRequest,
@@ -312,6 +318,35 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
         actorOf(req),
       );
       res.json(defaults);
+    },
+  );
+
+  // ── Local-AI provider settings (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA
+  // ONLY) ──────────────────────────────────────────────────────────────────
+  // The Ollama endpoint + model + per-user daily cap. NO secrets ride these
+  // routes (the endpoint is a URL, never a token) and there is no cloud provider.
+  // Writes are audit-logged in the service and take effect on the next request
+  // (the registry resolves the active config live — no redeploy). test-connection
+  // probes an endpoint and lists the models it serves (the model picker).
+  router.get('/ai/settings', async (_req, res) => {
+    res.json(aiSettingsResponseSchema.parse(await ctx.ai.getSettings()));
+  });
+
+  router.patch('/ai/settings', validateBody(updateAiSettingsRequestSchema), async (req, res) => {
+    const settings = await ctx.ai.updateSettings(
+      req.valid?.body as UpdateAiSettingsRequest,
+      actorOf(req),
+    );
+    res.json(aiSettingsResponseSchema.parse(settings));
+  });
+
+  router.post(
+    '/ai/test-connection',
+    validateBody(aiTestConnectionRequestSchema),
+    async (req, res) => {
+      const { endpoint } = req.valid?.body as AiTestConnectionRequest;
+      const result = await ctx.ai.testConnection(endpoint ?? undefined);
+      res.json(aiTestConnectionResponseSchema.parse(result));
     },
   );
 

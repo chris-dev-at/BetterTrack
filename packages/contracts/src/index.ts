@@ -3,6 +3,7 @@ export * from './common';
 export * from './i18n';
 export * from './auth';
 export * from './admin';
+export * from './ai';
 export * from './market';
 export * from './marketIntel';
 export * from './assets';

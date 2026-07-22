@@ -3113,7 +3113,8 @@
       "featureFlags": "Feature-Flags",
       "usageAnalytics": "Nutzungsanalyse",
       "monitoring": "Monitoring",
-      "apiKeys": "API-Schlüssel"
+      "apiKeys": "API-Schlüssel",
+      "ai": "KI"
     },
     "monitoring": {
       "title": "Monitoring",
@@ -3150,6 +3151,35 @@
         "hidden": "Grafana ist nur über localhost/LAN erreichbar. Aktiviere den externen Zugriff, um es hier einzubetten.",
         "frameTitle": "Grafana-Dashboards"
       }
+    },
+    "ai": {
+      "title": "KI (lokales Ollama)",
+      "subtitle": "Verbinde das lokale KI-Modell für Insights und den Assistenten. Läuft vollständig auf deiner eigenen Hardware — kein Cloud-Anbieter, keine API-Schlüssel.",
+      "loadError": "Die KI-Einstellungen konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
+      "statusLabel": "Status",
+      "configured": "Konfiguriert",
+      "notConfigured": "Nicht konfiguriert",
+      "lastChanged": "Zuletzt geändert",
+      "neverChanged": "Nie geändert",
+      "savedNotice": "KI-Einstellungen gespeichert. Die Änderung ist ab der nächsten Anfrage aktiv.",
+      "localOnlyNote": "Nur lokal: Die App spricht ausschließlich mit diesem Ollama-Endpunkt. Es gibt keinen Cloud-Anbieter und keinen API-Token — nur eine einfache URL und einen Modellnamen.",
+      "endpointLabel": "Ollama-Endpunkt",
+      "endpointHint": "Basis-URL deines Ollama-Servers, z. B. http://localhost:11434. Leer lassen, um den Standard aus der Umgebung zu verwenden.",
+      "modelLabel": "Modell",
+      "modelHint": "Ein mittelgroßes Instruct-Modell (~7–14B, quantisiert), z. B. llama3.1:8b. Teste die Verbindung, um installierte Modelle aufzulisten.",
+      "capLabel": "Tageslimit pro Nutzer",
+      "capHint": "Maximale KI-Anfragen, die jeder Nutzer pro Tag (UTC) stellen darf.",
+      "capInvalid": "Gib eine ganze Zahl zwischen {{min}} und {{max}} ein.",
+      "testButton": "Verbindung testen",
+      "testing": "Teste…",
+      "saveButton": "Speichern",
+      "saving": "Speichere…",
+      "testError": "Der Endpunkt konnte nicht erreicht werden.",
+      "saveError": "Die KI-Einstellungen konnten nicht gespeichert werden.",
+      "testOkModels": "Endpunkt erreichbar — {{count}} Modell(e) gefunden.",
+      "testOkNoModels": "Endpunkt erreichbar, aber es sind noch keine Modelle installiert.",
+      "testFailed": "Endpunkt nicht erreichbar."
     },
     "security": {
       "title": "Sicherheit",
