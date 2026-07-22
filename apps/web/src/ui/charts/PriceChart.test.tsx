@@ -385,7 +385,11 @@ describe('PriceChart — live generation + fixed viewport (§13.5 V5-P1)', () =>
   });
 
   test('a closed market anchors the viewport to the newest datum, not wall-clock now', () => {
-    // Newest datum is an hour old (market closed) — the window must still frame it.
+    // Newest datum is an hour old — this is the REAL pipeline state while the
+    // market is shut: useLiveSeries drops `marketState:'closed'` frames (issue
+    // #690 Part A), so the series stops growing at the last pre-close
+    // observation and the anchor must frame it (its data-path is covered by the
+    // useLiveSeries "closed-market frames … never append" test).
     const nowSec = Math.floor(Date.now() / 1000);
     const lastSec = nowSec - 3600;
     const series = [

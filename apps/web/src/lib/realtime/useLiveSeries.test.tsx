@@ -128,6 +128,44 @@ describe('useLiveSeries — merged timeline + streaming', () => {
     expect(times.every((t, i) => i === 0 || t > times[i - 1]!)).toBe(true);
   });
 
+  test('closed-market frames flip the badge but never append as fake flat ticks (Part A)', async () => {
+    const backfill = [
+      frame('2026-07-08T10:00:00.000Z', 100),
+      frame('2026-07-08T10:01:00.000Z', 101),
+    ];
+    const { value, push } = makeContext({ watchLive: vi.fn(async () => ackOf(backfill)) });
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '30m', '1s', true), {
+      wrapper: wrapperFor(value),
+    });
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+    const gen = result.current.generation;
+    const chartBefore = result.current.chartPoints;
+    const lastBefore = chartBefore[chartBefore.length - 1]!;
+
+    act(() => {
+      // The market closes: the loop keeps re-serving the last close, stamped now.
+      push({ ...frame('2026-07-08T10:05:00.000Z', 101), marketState: 'closed' });
+      push({ ...frame('2026-07-08T10:06:00.000Z', 101), marketState: 'closed' });
+    });
+
+    // The badge flips closed…
+    expect(result.current.marketState).toBe('closed');
+    // …but not one flat tick was appended: the series is still the real seed, so
+    // the pinned viewport frames the past window instead of an all-flat line.
+    expect(result.current.points.map((p) => p.value)).toEqual([100, 101]);
+    const chartAfter = result.current.chartPoints;
+    expect(chartAfter[chartAfter.length - 1]).toEqual(lastBefore); // no growth past 10:01
+    expect(result.current.generation).toBe(gen); // still one clean generation
+
+    // A real session resuming (open/pre/post move prices) appends as normal — the
+    // filter is closed-only, never "freeze forever".
+    act(() => {
+      push({ ...frame('2026-07-08T10:07:00.000Z', 105), marketState: 'open' });
+    });
+    expect(result.current.points.map((p) => p.value)).toEqual([100, 101, 105]);
+    expect(result.current.marketState).toBe('open');
+  });
+
   test('a window switch is exactly ONE clean rebuild (generation bump) without releasing the loop', async () => {
     const watchLive = vi.fn(async () => ackOf([frame('2026-07-08T10:00:00.000Z', 100)]));
     const unwatchLive = vi.fn();
@@ -277,6 +315,32 @@ describe('useLiveSeries — poll fallback (§4.5)', () => {
     rerender({ quote: quoteResponse(101, '2026-07-08T10:01:00.000Z') });
     await waitFor(() => expect(result.current.points.map((p) => p.value)).toEqual([100, 101]));
     expect(result.current.generation).toBe(gen);
+  });
+
+  test('a closed-market fallback quote flips the badge but seeds no flat tick (Part A)', async () => {
+    const watchLive = vi.fn(async () => null); // no socket → poll fallback
+    const { value } = makeContext({ watchLive });
+    const closed: QuoteResponse = {
+      quote: {
+        price: 100,
+        currency: 'EUR',
+        dayChangePct: null,
+        marketState: 'closed',
+        asOf: '2026-07-08T10:00:00.000Z',
+      },
+      stale: false,
+      asOf: '2026-07-08T10:00:00.000Z',
+    };
+
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '10m', '10s', true, closed), {
+      wrapper: wrapperFor(value),
+    });
+
+    await waitFor(() => expect(result.current.marketState).toBe('closed'));
+    // No socket ⇒ no backfill; a closed quote must not fabricate a lone flat
+    // point — the chart shows the empty "waiting" state + the closed chip.
+    expect(result.current.points).toEqual([]);
+    expect(result.current.streaming).toBe(false);
   });
 });
 

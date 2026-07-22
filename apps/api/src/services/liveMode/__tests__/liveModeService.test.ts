@@ -387,6 +387,26 @@ describe('liveModeService — market state on frames (§13.5 V5-P1)', () => {
     await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
     expect(seen[0]).toBeNull();
   });
+
+  it('keeps closed-market frames out of the ring — backfill stays free of fake flat ticks (Part A)', async () => {
+    const stub = createStubMarketData({
+      poll: () => stateQuote('closed'),
+      quote: () => stateQuote('closed'),
+      history: emptyHistory,
+    });
+    const { service } = makeService(stub);
+    const states: Array<string | null | undefined> = [];
+    service.onFrame((f) => states.push(f.marketState));
+
+    service.watch(ASSET_ID, REF);
+    await vi.waitFor(() => expect(states.length).toBeGreaterThanOrEqual(2));
+    // The closed state still fans out to live viewers (drives the badge)…
+    expect(states.every((s) => s === 'closed')).toBe(true);
+    // …but no closed frame landed in the ring: a fresh joiner backfills only the
+    // honest history seed (here none) instead of a wall of `now`-stamped flat
+    // ticks. Without the skip this would return the accumulated closed frames.
+    expect(await service.backfill(ASSET_ID, REF, '12h')).toEqual([]);
+  });
 });
 
 describe('liveModeService — backfill window coverage (§13.5 V5-P1 §5)', () => {

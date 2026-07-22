@@ -155,6 +155,13 @@ export function useLiveSeries(
       if (!parsed.success || parsed.data.assetId !== assetId) return;
       const frame = parsed.data;
       if (frame.marketState != null) setMarketState(frame.marketState);
+      // A closed-market frame is the last close re-stamped at `now`, not a new
+      // observation: it drives the "Market closed" chip (above) but must never
+      // append as a fake flat tick filling the pinned viewport — the seeded past
+      // window would be crushed to an all-flat line (issue #690 Part A). Real
+      // sessions (open/pre/post move prices) merge as normal; the server keeps
+      // closed frames out of the ring too, so backfill stays honest.
+      if (frame.marketState === 'closed') return;
       setPoints((prev) => mergePoints(prev, framesToPoints([frame], rateMs)));
     });
   }, [active, assetId, on, rateMs]);
@@ -224,6 +231,11 @@ export function useLiveSeries(
       at,
     };
     if (quote.marketState != null) setMarketState(quote.marketState);
+    // Same rule on the fallback path: a closed-market quote is a stale repeat,
+    // so it flips the badge but never seeds/appends a flat tick (issue #690
+    // Part A). Fallback has no server backfill, so a closed market simply shows
+    // the empty "waiting" state + the chip — honest, never a fabricated line.
+    if (quote.marketState === 'closed') return;
     const incoming = framesToPoints([frame], rateMs);
     if (modeRef.current !== 'fallback') {
       modeRef.current = 'fallback';

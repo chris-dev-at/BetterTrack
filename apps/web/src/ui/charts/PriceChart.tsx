@@ -237,8 +237,11 @@ function makeCrosshairFormatter(intlLocale: string): (time: Time) => string {
  * uniform-density. The caller therefore feeds a densified series (one grid step),
  * so a minute seed and a per-second tail occupy proportional horizontal space
  * (issue #690 symptom 3) instead of the seed collapsing to its point-count share.
- * A closed market (no fresh ticks) anchors to the newest datum so the seeded past
- * window shows instead of an empty right edge.
+ * A closed market anchors to the newest datum so the seeded past window shows
+ * instead of an empty right edge. This is a live path, not a corner case: the
+ * caller drops `marketState:'closed'` frames (they never append), so while the
+ * market is shut the newest datum stays the last real pre-close observation —
+ * genuinely older than `now` — and the viewport frames it (issue #690 Part A).
  */
 function applyLiveViewport(
   chart: IChartApi,
