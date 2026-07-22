@@ -533,10 +533,10 @@ describe('DE year boundary: pots carry forward, the Sparer-Pauschbetrag does not
   });
 });
 
-// ─── Cutover: AT → DE mid-year, forward-only (§16) ────────────────────────────
+// ─── Cutover: AT → DE mid-year — #635 live re-derivation (§16 2026-07-21) ─────
 
-describe('switching AT→DE mid-year applies forward only', () => {
-  it('frozen AT rows keep their tax; new rows settle under DE FIFO; one year carries both', async () => {
+describe('switching AT→DE mid-year re-derives the open year live under DE', () => {
+  it('the AT-era gain re-enters the DE year (KESt refunds via correction); new rows settle under DE FIFO', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);

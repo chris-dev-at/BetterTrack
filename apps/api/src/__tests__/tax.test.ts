@@ -1487,6 +1487,101 @@ describe('healed years survive rollover (#635 residue lock)', () => {
       taxNetEur: 118.69,
     });
   });
+
+  // Round-3 review (#656): FI mandates FIFO, so a mutation in ANOTHER closed
+  // year shifts an FI-frozen sell's lot consumption across the year boundary.
+  // The affected-years sets must pull those FI years in (as they do for DE /
+  // custom-FIFO) — otherwise the year never re-settles and the drift is later
+  // absorbed into the locked residue, permanently.
+
+  it('a mutation in an earlier closed year re-settles FI-frozen years by their ΔF (write + delete paths)', async () => {
+    const { agent, pid, asset } = await setup();
+    const toFi = await agent
+      .patch('/api/v1/settings/taxes')
+      .set(...XRW)
+      .send({ mode: 'country_specific', country: 'FI' });
+    expect(toFi.status).toBe(200);
+    // Two 2025 lots at different prices — the raw material for a lot shift.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 10,
+      executedAt: '2025-01-10T10:00:00.000Z',
+    });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 20,
+      executedAt: '2025-02-10T10:00:00.000Z',
+    });
+    // Open-2026 FI sell: FIFO consumes the full €10 lot → gain 1,500 →
+    // 30 % = 450, attached.
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 100,
+      price: 25,
+      executedAt: '2026-03-01T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    let settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({
+      amountEur: -450,
+      note: 'Capital-income tax withheld (FI)',
+    });
+
+    // Jan 1 passes: 2026 closes at 450; a read posts nothing.
+    clock = Date.parse('2027-01-05T12:00:00.000Z');
+    let years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 450 });
+    expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
+
+    // Backdating a sell into closed 2025 consumes 50 @ 10 first (gain 1,000 →
+    // 300 attached to the new row) and re-bases the 2026 sell to 50 @ 10 +
+    // 50 @ 20 (gain 1,500 → 1,000, FI target 450 → 300): 2026 must re-settle
+    // by its ΔF = −150 (pre-fix: no correction, and the 150 drift would later
+    // be absorbed into the locked residue as if it were open-era state).
+    const backdated = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 50,
+      price: 30,
+      executedAt: '2025-06-01T10:00:00.000Z',
+      addProceedsToCash: true,
+    });
+    settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-450, -300, 150]);
+    expect(settlements.find((m) => m.amountEur === 150)).toMatchObject({
+      kind: 'tax_refund',
+      taxYear: 2026,
+      transactionId: null,
+      note: 'Tax year correction (FI)',
+    });
+    years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2025)).toMatchObject({ locked: true, taxNetEur: 300 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 300 });
+
+    // Deleting the 2025 sell hands the €10 lot back to the 2026 sell: its own
+    // attached 300 cascades away with the row, and 2026 re-settles by
+    // ΔF = +150 back to its original 450 (pre-fix: the deleted sell's year
+    // was the only affected year).
+    const sellId = backdated.body.transactions[0].id as string;
+    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${sellId}`).set(...XRW);
+    expect(del.status, JSON.stringify(del.body)).toBe(204);
+    settlements = taxMovements((await cashState(agent, pid)).movements);
+    expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-450, -150, 150]);
+    expect(settlements.find((m) => m.amountEur === -150)).toMatchObject({
+      kind: 'tax_withholding',
+      taxYear: 2026,
+      transactionId: null,
+      note: 'Tax year correction (FI)',
+    });
+    years = await yearSummaries(agent, pid);
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 450 });
+  });
 });
 
 // ─── Uncovered sell (issue #369) ──────────────────────────────────────────────

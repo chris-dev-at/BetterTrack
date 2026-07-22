@@ -1228,6 +1228,19 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         }
       }
     }
+    // FI mandates FIFO, so any batch trade of an asset shifts that asset's
+    // FI-frozen sells' lot consumption in EVERY year — but FI carries no
+    // state across year boundaries, so a changed FI year needs no downstream
+    // engineTaxedYears ripple (kept after the chain block so it cannot lower
+    // that ripple's minYear).
+    if (involveFi) {
+      const batchAssets = new Set(inputs.map((i) => i.assetId));
+      for (const t of allTxns) {
+        if (isFiSell(t) && batchAssets.has(t.assetId)) {
+          affectedYears.add(viennaYearOfDate(t.executedAt));
+        }
+      }
+    }
     // #635: a FIFO-realizing ACTIVE regime extends the same rule to every
     // derivable open-year sell of a batch asset.
     if (openStrategy === 'fifo') {
@@ -1666,6 +1679,17 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         const minYear = Math.min(...affectedYears);
         for (const year of engineTaxedYears(remainingTxns, dividendRows, remainingMovements)) {
           if (year > minYear) affectedYears.add(year);
+        }
+      }
+    }
+    // FI mandates FIFO, so removing any trade of the asset shifts its
+    // FI-frozen sells' lot consumption in EVERY year — no downstream ripple
+    // needed (FI carries no state across year boundaries; kept after the
+    // chain block so it cannot lower that ripple's minYear).
+    if (involveFi) {
+      for (const t of remainingTxns) {
+        if (isFiSell(t) && t.assetId === transaction.assetId) {
+          affectedYears.add(viennaYearOfDate(t.executedAt));
         }
       }
     }
