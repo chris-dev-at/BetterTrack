@@ -26,6 +26,11 @@ export WORKER_ID
 if [ "${MF_SOURCE_ONLY:-0}" != 1 ]; then
   . /work/mf/lib.sh
   . /work/mf/mflib.sh
+
+# owner 2026-07-22 (b): Fable meter critical — EVERY stage of diff:max issues runs at hard (Opus),
+# writer included; only the composer (master, rare ≤2-issues runs) still spends Fable
+post_write_diff(){ local d="$1"; [ "$d" = max ] && d=hard; echo "$d"; }
+
 fi
 
 atomic_write(){ local tmp; tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
@@ -121,12 +126,12 @@ $materials")" || true
       log "triage: escalated retry at diff:$esc (was diff:$CYCLE_DIFF)"
       hb_ensure
       wstatus fixing "$n" "$pr"
-      mf_cc fixer "$esc" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
+      mf_cc fixer "$(post_write_diff "$esc")" "$(with_pack "TRIAGE DIAGNOSIS BRIEF (address this root cause):
 $tcomment
 
 $(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
       wstatus reviewing "$n" "$pr"
-      mf_cc reviewer "$(diff_at_least "$esc" "$(review_floor)")" \
+      mf_cc reviewer "$(post_write_diff "$(diff_at_least "$esc" "$(review_floor)")")" \
         "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
       local v2
       v2=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
@@ -230,7 +235,7 @@ run_cycle(){ # $1=issue $2=relocated
   local writer_ok=0 w_try
   for w_try in $(seq 1 "${WRITER_RETRIES:-2}"); do
     hb_ensure
-    if mf_cc writer "$CYCLE_DIFF" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
+    if mf_cc writer "$(post_write_diff "$CYCLE_DIFF")" "$(with_pack "$(sed "s/{{N}}/$n/g" "$PROMPTS/writer.md")")"; then
       writer_ok=1; break
     fi
     log "writer attempt $w_try/${WRITER_RETRIES:-2} failed"
@@ -280,13 +285,13 @@ run_cycle(){ # $1=issue $2=relocated
   for round in $(seq 1 "${MAX_FIX_ROUNDS:-2}"); do
     hb_ensure
     wstatus reviewing "$n" "$pr"
-    mf_cc reviewer "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")" \
+    mf_cc reviewer "$(post_write_diff "$(diff_at_least "$CYCLE_DIFF" "$(review_floor)")")" \
       "$(with_pack "$(sed "s/{{PR}}/$pr/g; s/{{N}}/$n/g" "$PROMPTS/reviewer.md")")" || true
     verdict=$(gh pr view "$pr" --json comments -q '.comments[].body' | grep -oE 'FACTORY-VERDICT: (APPROVE|REQUEST_CHANGES)' | tail -1)
     [ "$verdict" = "FACTORY-VERDICT: APPROVE" ] && { approved=1; break; }
     log "round $round: changes requested"
     wstatus fixing "$n" "$pr"
-    mf_cc fixer "$CYCLE_DIFF" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
+    mf_cc fixer "$(post_write_diff "$CYCLE_DIFF")" "$(with_pack "$(sed "s/{{PR}}/$pr/g" "$PROMPTS/fixer.md")")" || true
   done
 
   if [ "$approved" -eq 1 ]; then
