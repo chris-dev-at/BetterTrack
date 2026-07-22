@@ -1473,15 +1473,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
 
       // Editing a BUY re-shapes the moving average every later sell realized
-      // against — and AT-taxed sells' gains are year-settled money (V3-P4).
-      // Reject rather than silently un-anchor a settled year; deleting and
-      // re-adding routes through the append-only correction path instead.
-      // (Sells never move another row's average, so editing an untaxed sell
-      // stays as permissive as v2.)
+      // against — and engine-taxed sells' gains (country-specific AND custom
+      // rules, V5-P4c) are year-settled money (V3-P4). Reject rather than
+      // silently un-anchor a settled year; deleting and re-adding routes
+      // through the append-only correction path instead. (Sells never move
+      // another row's average, so editing an untaxed sell stays as permissive
+      // as v2.)
       if (
         financialEdit &&
         existing.side === 'buy' &&
-        siblings.some((s) => s.side === 'sell' && s.taxMode === 'country_specific')
+        siblings.some(
+          (s) => s.side === 'sell' && (s.taxMode === 'country_specific' || s.taxMode === 'custom'),
+        )
       ) {
         throw badRequest(
           'Editing this buy would change the realized gains of tax-settled sells. Delete and re-add it instead.',
@@ -1540,6 +1543,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // §16 2026-07-08). Planned up-front so the solvency replay below can
       // include it.
       const taxCorrections = await taxService.planTransactionDeleteCorrections(
+        userId,
         portfolioId,
         existing,
       );

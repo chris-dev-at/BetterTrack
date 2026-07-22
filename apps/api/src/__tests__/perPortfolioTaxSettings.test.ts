@@ -249,4 +249,58 @@ describe('Per-portfolio tax settings scoping (#636)', () => {
     expect((await putOverride(bobAgent, alicePid, { mode: 'manual_per_trade' })).status).toBe(404);
     expect((await clearOverride(bobAgent, alicePid)).status).toBe(404);
   });
+
+  it('a per-portfolio override write reconciles the open year immediately (#635)', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset('OMV.VI');
+
+    // Recorded with no tax mode anywhere: untaxed at entry (the #635 shape).
+    const trade = (body: Record<string, unknown>) =>
+      agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send(body);
+    expect(
+      (
+        await trade({
+          assetId: asset.id,
+          side: 'buy',
+          quantity: 100,
+          price: 10,
+          executedAt: '2026-01-10T10:00:00.000Z',
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await trade({
+          assetId: asset.id,
+          side: 'sell',
+          quantity: 50,
+          price: 19,
+          executedAt: '2026-02-10T10:00:00.000Z',
+          addProceedsToCash: true,
+        })
+      ).status,
+    ).toBe(201);
+
+    // The override WRITE itself heals the open year — no report read needed:
+    // 27.5 % × 450 = 123.75 posts as an unattached correction.
+    const res = await putOverride(agent, pid, { mode: 'country_specific', country: 'AT' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const cash = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+    expect(cash.status).toBe(200);
+    const taxMoves = (cash.body.movements as { kind: string }[]).filter(
+      (m) => m.kind === 'tax_withholding' || m.kind === 'tax_refund',
+    );
+    expect(taxMoves).toHaveLength(1);
+    expect(taxMoves[0]).toMatchObject({
+      kind: 'tax_withholding',
+      amountEur: -123.75,
+      taxYear: 2026,
+      transactionId: null,
+    });
+  });
 });

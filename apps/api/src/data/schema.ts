@@ -1360,10 +1360,12 @@ export type PortfolioSnapshotStateRow = typeof portfolioSnapshotState.$inferSele
  * Per-user tax settings (V3-P4, §13.3): Settings → Taxes. One optional row per
  * user — a missing row IS `none` mode (the pre-V3-P4 default), so the feature
  * is additive by construction. `country` is set exactly when the mode is
- * `country_specific` (AT is the only shipped country); the CHECK makes the
- * pair unrepresentable any other way. The mode applies to sells/dividends at
- * the moment they are *recorded* (§16 2026-07-08) — switching never rewrites
- * existing rows.
+ * `country_specific` (AT, DE and FI ship as of V5-P4/#635); the CHECK makes
+ * the pair unrepresentable any other way. Rows freeze the mode they were
+ * recorded under, but OPEN (current-and-later) years re-derive live under the
+ * active regime — switching reshapes their settled tax via corrections, while
+ * closed years settle only by the delta of their frozen decomposition
+ * (§16 2026-07-21, superseding the forward-only rule of §16 2026-07-08).
  */
 export const userTaxSettings = pgTable(
   'user_tax_settings',

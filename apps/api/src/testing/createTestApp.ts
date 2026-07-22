@@ -208,6 +208,11 @@ export interface CreateTestAppOptions {
    * auto-archive sweep threshold provable deterministically.
    */
   notificationNow?: () => Date;
+  /**
+   * Controlled clock for the tax engine (#635) — the open/closed Vienna-year
+   * boundary derives from it, so tests can advance it across a rollover.
+   */
+  taxNow?: () => number;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -245,6 +250,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     liveModeOptions: options.liveModeOptions,
     notificationEnqueue: options.notificationEnqueue,
     notificationNow: options.notificationNow,
+    taxNow: options.taxNow,
   });
   const app = createApp(ctx);
 

@@ -533,10 +533,10 @@ describe('DE year boundary: pots carry forward, the Sparer-Pauschbetrag does not
   });
 });
 
-// ─── Cutover: AT → DE mid-year, forward-only (§16) ────────────────────────────
+// ─── Cutover: AT → DE mid-year — #635 live re-derivation (§16 2026-07-21) ─────
 
-describe('switching AT→DE mid-year applies forward only', () => {
-  it('frozen AT rows keep their tax; new rows settle under DE FIFO; one year carries both', async () => {
+describe('switching AT→DE mid-year re-derives the open year live under DE', () => {
+  it('the AT-era gain re-enters the DE year (KESt refunds via correction); new rows settle under DE FIFO', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
@@ -568,7 +568,8 @@ describe('switching AT→DE mid-year applies forward only', () => {
       note: 'KESt withheld (AT)',
     });
 
-    // The switch — forward-only by construction.
+    // The switch — #635 live model: the whole OPEN year re-derives under DE
+    // on the next write/read.
     const toDe = await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
@@ -576,9 +577,11 @@ describe('switching AT→DE mid-year applies forward only', () => {
     expect(toDe.status).toBe(200);
 
     // DE era: a second lot at 12, then a partial sell of 100 @ 40.
-    // FIFO basis: 50 remaining @ 10 + 50 @ 12 = 1,100 → P/L 2,900 → after the
-    // €1,000 allowance: KapESt 475.00 + Soli 26.12 = 501.12. (The moving
-    // average would realize 2,866.67 → 492.32 — must NOT happen.)
+    // The LIVE derivation taxes the full year under DE FIFO: the AT-era +450
+    // re-enters the DE year (falling under the €1,000 allowance — its KESt
+    // refunds via correction), the new sell realizes FIFO 50 @ 10 + 50 @ 12 =
+    // 1,100 basis → P/L 2,900. Year pool 3,350 − 1,000 allowance → KapESt
+    // 587.50 + Soli 32.31 = 619.81; marginal tax of the new sell = 619.81.
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -598,31 +601,33 @@ describe('switching AT→DE mid-year applies forward only', () => {
     const deWithholding = movements.find(
       (m) => m.kind === 'tax_withholding' && m.note === 'KapESt + Soli withheld (DE)',
     );
-    expect(deWithholding).toMatchObject({ amountEur: -501.12, taxYear: 2026 });
+    expect(deWithholding).toMatchObject({ amountEur: -619.81, taxYear: 2026 });
 
-    // The AT row is untouched — its frozen tax sits beside the DE row's.
+    // The AT row keeps its frozen recording-time facts; the year-level
+    // refund correction backed its withholding out.
     const report = await yearReport(agent, pid, 2026);
     const sells = report.positions[0]!.sells;
     expect(sells[0]).toMatchObject({ taxAmountEur: 123.75, realizedPnlEur: 450 }); // AT, Feb
-    expect(sells[1]).toMatchObject({ taxAmountEur: 501.12, realizedPnlEur: 2900 }); // DE, Apr (FIFO)
+    expect(sells[1]).toMatchObject({ taxAmountEur: 619.81, realizedPnlEur: 2900 }); // DE, Apr (FIFO)
 
-    // One year, both regimes: held = AT target + DE target.
+    // One open year, ONE live regime: net = the DE target over all rows.
     const years = await yearSummaries(agent, pid);
     expect(years[0]).toMatchObject({
       year: 2026,
-      taxWithheldEur: 624.87,
-      taxRefundedEur: 0,
-      taxNetEur: 624.87,
-      de: { allowanceUsedEur: 1000, kapestEur: 475, soliEur: 26.12 },
+      taxWithheldEur: 743.56,
+      taxRefundedEur: 123.75,
+      taxNetEur: 619.81,
+      de: { allowanceUsedEur: 1000, kapestEur: 587.5, soliEur: 32.31 },
     });
 
-    // The switch itself never re-taxed the frozen AT row: no unattached
-    // correction movement exists anywhere.
+    // Exactly one unattached correction: the +123.75 refund of the AT-era
+    // withholding the live DE derivation superseded.
     movements = await cashMovements(agent, pid);
     const corrections = movements.filter(
       (m) => (m.kind === 'tax_withholding' || m.kind === 'tax_refund') && m.transactionId === null,
     );
-    expect(corrections).toHaveLength(0);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0]).toMatchObject({ kind: 'tax_refund', amountEur: 123.75, taxYear: 2026 });
   });
 
   it('a DE dividend backdated below a frozen-AT year replays that year for the ripple', async () => {
@@ -678,24 +683,33 @@ describe('switching AT→DE mid-year applies forward only', () => {
         [-123.75, 2026],
       ]),
     );
-    // 2026's combined target did not move (its DE component is 0): the ripple
-    // settles to a zero delta and posts no unattached correction.
+    // #635: the open year 2026 re-derives under the ACTIVE DE regime — the
+    // AT-frozen +450 falls under its own €1,000 allowance, so the ripple
+    // posts exactly one unattached correction refunding the frozen KESt.
     const unattached = movements.filter(
       (m) =>
         (m.kind === 'tax_withholding' || m.kind === 'tax_refund') &&
         m.transactionId === null &&
         m.dividendId === null,
     );
-    expect(unattached).toHaveLength(0);
+    expect(unattached).toHaveLength(1);
+    expect(unattached[0]).toMatchObject({ kind: 'tax_refund', amountEur: 123.75, taxYear: 2026 });
 
     const years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2025)).toMatchObject({
+      locked: true,
       taxNetEur: 263.75,
       de: { allowanceUsedEur: 1000, kapestEur: 250, soliEur: 13.75 },
     });
     const y2026 = years.find((y) => y.year === 2026)!;
-    expect(y2026.taxNetEur).toBe(123.75);
-    expect(y2026.de).toBeUndefined();
+    expect(y2026.taxNetEur).toBe(0);
+    // The open year now carries the LIVE DE block: +450 under the allowance.
+    expect(y2026.de).toMatchObject({
+      allowanceUsedEur: 450,
+      allowanceRemainingEur: 550,
+      kapestEur: 0,
+      soliEur: 0,
+    });
   });
 });
 

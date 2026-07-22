@@ -82,6 +82,27 @@ export const DE_SOLI_RATE = 0.055;
  */
 export const DE_SPARER_PAUSCHBETRAG_EUR = 1000;
 
+/** The third shipped country of `country_specific` mode (#635). */
+export const TAX_COUNTRY_FI = 'FI';
+
+/**
+ * Finnish capital-income tax (pääomatulovero, TVL 124 §): 30 % up to the
+ * progressive threshold, 34 % on the part above it. Gains, dividends and
+ * losses share one within-year pool (losses offset gains first); v1 carries
+ * no losses across years — extensible later like the DE pots.
+ */
+export const FI_CAPITAL_INCOME_RATE = 0.3;
+export const FI_CAPITAL_INCOME_HIGH_RATE = 0.34;
+export const FI_HIGH_RATE_THRESHOLD_EUR = 30_000;
+
+/**
+ * The countries the `country_specific` engine ships (#635). Adding a country =
+ * add it here + a settle function below + the service-level engine entry
+ * (`services/tax/openYear.ts` documents the full checklist).
+ */
+export const SUPPORTED_TAX_COUNTRIES = [TAX_COUNTRY_AT, TAX_COUNTRY_DE, TAX_COUNTRY_FI] as const;
+export type SupportedTaxCountry = (typeof SUPPORTED_TAX_COUNTRIES)[number];
+
 /**
  * Cost-basis strategies of the EUR tax replay (V5-P4, #580): `moving-average`
  * is the AT method (gleitender Durchschnittspreis — the pre-V5-P4 behavior,
@@ -93,9 +114,9 @@ export const DE_SPARER_PAUSCHBETRAG_EUR = 1000;
 export const COST_BASIS_STRATEGIES = ['moving-average', 'fifo'] as const;
 export type CostBasisStrategy = (typeof COST_BASIS_STRATEGIES)[number];
 
-/** The cost-basis strategy a tax country mandates (DE = FIFO, AT = average). */
+/** The cost-basis strategy a tax country mandates (DE/FI = FIFO, AT = average). */
 export function costBasisStrategyForCountry(country: string | null | undefined): CostBasisStrategy {
-  return country === TAX_COUNTRY_DE ? 'fifo' : 'moving-average';
+  return country === TAX_COUNTRY_DE || country === TAX_COUNTRY_FI ? 'fifo' : 'moving-average';
 }
 
 /**
@@ -543,6 +564,20 @@ function assertFiniteAmount(value: number, label: string): void {
  * `heldAfterEur` is exactly the final target.
  */
 export function settleAtYear(input: AtYearSettlementInput): AtYearSettlementResult {
+  return settlePoolYear(atYearTargetEur, input);
+}
+
+/**
+ * The shared pool-style year settlement (#635): a within-year pool of signed
+ * gains + positive dividends, a country-specific `targetOf(pool)` function,
+ * and the same delta-steering contract as {@link settleAtYear} (which is the
+ * AT instantiation; {@link settleFiYear} the FI one). Countries with per-event
+ * category state (DE's dual pots) keep their own settle function instead.
+ */
+function settlePoolYear(
+  targetOf: (poolEur: number) => number,
+  input: AtYearSettlementInput,
+): AtYearSettlementResult {
   assertFiniteAmount(input.heldEur, 'heldEur');
   let poolEur = 0;
   for (const gain of input.existingGainsEur) {
@@ -559,7 +594,7 @@ export function settleAtYear(input: AtYearSettlementInput): AtYearSettlementResu
     poolEur += dividend;
   }
 
-  const correctionDeltaEur = floorCents(atYearTargetEur(poolEur) - input.heldEur);
+  const correctionDeltaEur = floorCents(targetOf(poolEur) - input.heldEur);
   let heldEur = floorCents(input.heldEur + correctionDeltaEur);
 
   const newEventDeltasEur: number[] = [];
@@ -572,15 +607,47 @@ export function settleAtYear(input: AtYearSettlementInput): AtYearSettlementResu
         );
       }
     } else if (event.kind !== 'sell_gain') {
-      throw new TaxComputationError(`Unknown AT event kind ${String(event.kind)}.`);
+      throw new TaxComputationError(`Unknown pool event kind ${String(event.kind)}.`);
     }
     poolEur += event.amountEur;
-    const deltaEur = floorCents(atYearTargetEur(poolEur) - heldEur);
+    const deltaEur = floorCents(targetOf(poolEur) - heldEur);
     newEventDeltasEur.push(deltaEur);
     heldEur = floorCents(heldEur + deltaEur);
   }
 
   return { correctionDeltaEur, newEventDeltasEur, heldAfterEur: heldEur };
+}
+
+// ---------------------------------------------------------------------------
+// FI year settlement (progressive pääomatulovero, same-year offset) — #635
+// ---------------------------------------------------------------------------
+
+/**
+ * The tax a year's FI pool demands (TVL 124 §): 30 % of the positive pool up
+ * to €30,000 and 34 % of the part above, quantized to cents. A net-loss year
+ * clamps to €0.00 — held tax is never negative — and v1 carries no loss into
+ * the next year (documented simplification; the tappiontasaus carry can join
+ * later the way the DE pots chain).
+ */
+export function fiYearTargetEur(poolEur: number): number {
+  if (!Number.isFinite(poolEur)) {
+    throw new TaxComputationError(`Year pool must be a finite EUR amount, got ${poolEur}.`);
+  }
+  const taxableEur = Math.max(0, poolEur);
+  const baseEur = Math.min(taxableEur, FI_HIGH_RATE_THRESHOLD_EUR);
+  const highEur = taxableEur - baseEur;
+  return floorCents(FI_CAPITAL_INCOME_RATE * baseEur + FI_CAPITAL_INCOME_HIGH_RATE * highEur);
+}
+
+/**
+ * Settle one Vienna year of one portfolio under FI rules: identical pool
+ * semantics to {@link settleAtYear} (within-year offset, refunds down to
+ * €0.00, hard Jan-1 reset) with the progressive {@link fiYearTargetEur} as
+ * the target — a marginal event that pushes the pool across the €30,000
+ * threshold is taxed at 34 % on the excess by construction.
+ */
+export function settleFiYear(input: AtYearSettlementInput): AtYearSettlementResult {
+  return settlePoolYear(fiYearTargetEur, input);
 }
 
 // ---------------------------------------------------------------------------

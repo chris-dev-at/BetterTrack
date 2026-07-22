@@ -39,6 +39,7 @@ export const TAX_OPTIONS: readonly TaxOption[] = [
   { i18nKey: 'manual_per_trade', mode: 'manual_per_trade' },
   { i18nKey: 'country_specific', mode: 'country_specific', country: 'AT' },
   { i18nKey: 'country_specific_de', mode: 'country_specific', country: 'DE' },
+  { i18nKey: 'country_specific_fi', mode: 'country_specific', country: 'FI' },
   { i18nKey: 'custom', mode: 'custom' },
 ];
 

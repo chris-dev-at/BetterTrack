@@ -35,6 +35,8 @@ describe('NewPortfolioDefaultsPage (issue #636)', () => {
     // portfolio can override it.
     expect(await screen.findByText(/override or reset it per portfolio/i)).toBeInTheDocument();
     expect(screen.getByText(/Defaults for new portfolios/i)).toBeInTheDocument();
+    // Owner-mandated liability framing (#635) on the tax settings surface.
+    expect(screen.getByText(/Estimates for your personal overview only/i)).toBeInTheDocument();
   });
 
   test('offers all modes with `none` selected, editing the user-level default', async () => {
