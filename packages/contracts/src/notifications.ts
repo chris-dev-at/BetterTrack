@@ -42,6 +42,19 @@ export const NOTIFICATION_TYPES = [
   // email (the lean-email default); routed through the standard matrix so
   // instant/digest + quiet hours are honoured automatically.
   'budget.exceeded',
+  // V5-P7 MIRRORCHAIN group portfolios (design §11): the eight chain-lifecycle
+  // notices. They join the matrix as ONE compact group row (`mirrorchain`
+  // category below, anti-bloat) — all normal (non-opt-in) types: in-app ON,
+  // email OFF by the lean-email default, honouring instant/digest + quiet hours
+  // like any other type. `mirror.invite` also surfaces in the Social request list.
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
@@ -97,6 +110,23 @@ export const NOTIFICATION_CATEGORIES = [
   // dividend ex-dates; more event families later). Default OFF on every channel
   // — see {@link isOptInNotificationType} / {@link notificationChannelDefaultEnabled}.
   { key: 'markets', types: ['earnings.reminder', 'dividend.event'] },
+  // Group portfolios (§13.5 V5-P7 MIRRORCHAIN, design §11): the eight chain
+  // notices collapse into ONE compact group row (anti-bloat) — a single master
+  // toggle governs invites, membership changes, ownership/dissolution and the
+  // sync-stalled alert. In-app ON / email OFF by the lean-email default.
+  {
+    key: 'mirrorchain',
+    types: [
+      'mirror.invite',
+      'mirror.member_joined',
+      'mirror.member_left',
+      'mirror.member_removed',
+      'mirror.removed',
+      'mirror.ownership_transferred',
+      'mirror.chain_dissolved',
+      'mirror.sync_stalled',
+    ],
+  },
   { key: 'account', types: ['account.invite', 'account.temp_password', 'account.data_export'] },
 ] as const satisfies readonly { key: string; types: readonly NotificationType[] }[];
 export type NotificationCategoryKey = (typeof NOTIFICATION_CATEGORIES)[number]['key'];

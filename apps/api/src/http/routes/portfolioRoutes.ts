@@ -124,7 +124,10 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   // DELETE gated by ownership (bearer needs portfolio:write).
   router.delete('/:portfolioId', validateParams(portfolioIdParamSchema), async (req, res) => {
     const { portfolioId } = req.valid?.params as { portfolioId: string };
-    await ctx.portfolio.deletePortfolio(req.authUser!.id, portfolioId);
+    // Routed through the mirror seam (§13.5 V5-P7 M3): a non-chain portfolio
+    // deletes plainly; a synced copy is intercepted as leave-then-delete (§6),
+    // and an owner's copy-delete is refused with the §7 stopgap 409 until M4.
+    await ctx.mirror.submitPortfolioDelete(req.authUser!.id, portfolioId);
     res.status(204).send();
   });
 

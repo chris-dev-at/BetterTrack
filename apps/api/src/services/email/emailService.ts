@@ -10,6 +10,8 @@ import {
   digestEmail,
   dividendEventEmail,
   followAlertEmail,
+  mirrorNotificationEmail,
+  type MirrorEmailVariant,
   conglomerateSharedEmail,
   friendAcceptedEmail,
   followPublishedEmail,
@@ -208,6 +210,19 @@ export interface EmailService {
     locale?: string;
   }): Promise<EmailSendResult>;
   /**
+   * Notification email: a MIRRORCHAIN group-portfolio lifecycle notice (§13.5
+   * V5-P7, design §11). Fully localized — the body is built from the `mirror`
+   * copy block's `{actor}`/`{chain}` tokens, not a caller-supplied EN sentence.
+   */
+  sendMirrorNotification(params: {
+    to: string;
+    userId: string;
+    variant: MirrorEmailVariant;
+    chainName: string;
+    actorUsername: string;
+    locale?: string;
+  }): Promise<EmailSendResult>;
+  /**
    * Digest summary email (V5-P3): ONE send bundling a period's deferred
    * notifications (each the same title/body the instant email would carry).
    * Best-effort like every send; localized to the recipient.
@@ -266,6 +281,7 @@ type EmailTemplateKind =
   | 'alert_triggered'
   | 'earnings_reminder'
   | 'chat_message'
+  | 'mirror_notification'
   | 'digest';
 
 /** Coarse, secret-free error tag for logs/audit. Never the raw SMTP response. */
@@ -521,6 +537,20 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'chat_message',
         to,
         chatMessageEmail({ actorUsername, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendMirrorNotification: ({ to, userId, variant, chainName, actorUsername, locale }) =>
+      deliver(
+        'mirror_notification',
+        to,
+        mirrorNotificationEmail({
+          variant,
+          chainName,
+          actorUsername,
+          appUrl: config.appOrigin,
+          locale,
+        }),
         { userId },
       ),
 

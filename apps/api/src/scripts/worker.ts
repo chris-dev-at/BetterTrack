@@ -29,6 +29,7 @@ import {
   createJobDefinitions,
   createJobWorkers,
   createMirrorReplicateJob,
+  createMirrorInviteCleanupJob,
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
@@ -332,8 +333,9 @@ const portfolioService = createPortfolioService({
 const enqueueMirrorReplicate = async (chainId: string) => {
   await registry.enqueue('mirror.replicate', { chainId });
 };
+const mirrorchainRepo = createMirrorchainRepository(db);
 const mirror = createMirrorService({
-  repo: createMirrorchainRepository(db),
+  repo: mirrorchainRepo,
   portfolio: portfolioService,
   tax: taxService,
   portfolioRepo,
@@ -342,6 +344,9 @@ const mirror = createMirrorService({
   cashSourceRepo,
   taxRepo,
   users: createUserRepository(db),
+  friendship: friendshipRepo,
+  notify,
+  maxMembers: config.mirror.maxMembers,
   audit,
   events,
   redis: deadLetterConnection,
@@ -442,6 +447,9 @@ const definitions = [
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
   createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+  // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past
+  // the 30-day token-hygiene horizon (frees the pending-unique slot).
+  createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
   // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
   // job options + auto-disable) and the daily delivery-log retention sweep.
   createWebhookDeliverJob({ dispatcher: webhookDispatcher }),

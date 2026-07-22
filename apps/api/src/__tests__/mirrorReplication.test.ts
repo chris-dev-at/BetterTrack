@@ -15,6 +15,7 @@ import * as schema from '../data/schema';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import { ApiError } from '../errors';
+import type { DispatchableEvent } from '../services/notifications/notificationDispatcher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -535,6 +536,76 @@ describe('mirrorchain M2 — replication core', () => {
     await expect(
       harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 1 }),
     ).rejects.toMatchObject({ code: MIRROR_SYNC_STALLED, statusCode: 503 });
+  });
+
+  it('the sync_stalled notice fires only off the PERMANENT-stall path (notifyChainStalled), never from replicateChain itself (design §2/§11)', async () => {
+    // A capture harness: replicateChain runs synchronously here, so if it emitted
+    // sync_stalled on its own (as it used to) a transient blip would notify on
+    // attempt 1 of 3. The job now fires notifyChainStalled off the exhausted-
+    // retries path instead — so replicateChain's throw must NOT emit.
+    const events: DispatchableEvent[] = [];
+    const h = await createTestApp({
+      notificationEnqueue: async (e) => {
+        events.push(e);
+      },
+    });
+    const repo = createMirrorchainRepository(h.db);
+    const alice = await h.seedUser({ email: 'alice@bettertrack.test', username: 'alice' });
+    const bob = await h.seedUser({ email: 'bob@bettertrack.test', username: 'bob' });
+    const aPid = await h.ctx.portfolio.getDefaultPortfolioId(alice.id);
+    const { chain } = await h.ctx.mirror.convertToChain(alice.id, aPid, { name: 'Family' });
+    await h.ctx.mirror.attachMemberCopy(chain.id, bob.id);
+    await h.ctx.mirror.replicateChain(chain.id);
+
+    // A poison op (unknown asset — deterministic apply failure) freezes every copy.
+    await repo.appendOps(chain.id, [
+      {
+        kind: 'tx.create',
+        mirrorId: '018f0000-0000-7000-8000-0000000000ba',
+        actorUserId: alice.id,
+        actorUsername: 'alice',
+        originPortfolioId: null,
+        payload: {
+          opVersion: MIRROR_OP_VERSION,
+          kind: 'tx.create',
+          mirrorId: '018f0000-0000-7000-8000-0000000000ba',
+          assetId: '018f0000-0000-7000-8000-0000000000bb', // does not exist
+          side: 'buy',
+          quantity: 1,
+          price: 1,
+          fee: 0,
+          executedAt: new Date().toISOString(),
+          note: null,
+          allowUncovered: false,
+          uncoveredEntryPrice: null,
+          payFromCash: false,
+          addProceedsToCash: false,
+          cashSourceMirrorId: null,
+          settleCashAsOfToday: false,
+          originSource: 'manual',
+        },
+      },
+    ]);
+
+    // The replicate run throws (→ retry → dead-letter) but emits NOTHING itself.
+    await expect(h.ctx.mirror.replicateChain(chain.id)).rejects.toThrow(/stalled/);
+    expect(events.filter((e) => e.type === 'mirror.sync_stalled')).toHaveLength(0);
+
+    // The permanent-stall notice (fired by the job once retries are exhausted):
+    // every copy still behind last_seq is stuck, so its member AND the owner hear.
+    await h.ctx.mirror.notifyChainStalled(chain.id);
+    const keyOf = (e: DispatchableEvent) => `${e.userId}:${(e as { refId: string }).refId}`;
+    const stalledEvents = () => events.filter((e) => e.type === 'mirror.sync_stalled');
+    const recipients = new Set(stalledEvents().map((e) => e.userId));
+    expect(recipients.has(bob.id)).toBe(true); // the lagging member
+    expect(recipients.has(alice.id)).toBe(true); // the owner (also a stalled copy)
+    const firstKeys = new Set(stalledEvents().map(keyOf));
+
+    // Deduped per copy watermark (design §2): calling again while every copy is
+    // still frozen re-uses the SAME (recipient, refId) keys, so the downstream
+    // dispatcher collapses them to one delivered notice per stall episode.
+    await h.ctx.mirror.notifyChainStalled(chain.id);
+    expect(new Set(stalledEvents().map(keyOf))).toEqual(firstKeys);
   });
 
   it('tax-immutable/cash-linked rows: a financial edit applies per copy via the delete-and-re-add correction path (§2)', async () => {

@@ -46,6 +46,14 @@ describe('notification taxonomy (#368)', () => {
       'chat.message',
       'dividend.event',
       'budget.exceeded',
+      'mirror.invite',
+      'mirror.member_joined',
+      'mirror.member_left',
+      'mirror.member_removed',
+      'mirror.removed',
+      'mirror.ownership_transferred',
+      'mirror.chain_dissolved',
+      'mirror.sync_stalled',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',
@@ -106,6 +114,37 @@ describe('opt-in notification types (§13.5 V5-P5)', () => {
 
   it('an opt-in type is not urgent (never bypasses quiet hours)', () => {
     for (const type of OPT_IN_NOTIFICATION_TYPES) {
+      expect(isUrgentNotification({ type })).toBe(false);
+    }
+  });
+});
+
+describe('MIRRORCHAIN notification group (§13.5 V5-P7, design §11)', () => {
+  const MIRROR_TYPES = [
+    'mirror.invite',
+    'mirror.member_joined',
+    'mirror.member_left',
+    'mirror.member_removed',
+    'mirror.removed',
+    'mirror.ownership_transferred',
+    'mirror.chain_dissolved',
+    'mirror.sync_stalled',
+  ];
+
+  it('registers all eight mirror.* types as ONE compact group row (anti-bloat)', () => {
+    const group = NOTIFICATION_CATEGORIES.find((c) => c.key === 'mirrorchain');
+    expect(group).toBeDefined();
+    expect([...(group?.types ?? [])].sort()).toEqual([...MIRROR_TYPES].sort());
+  });
+
+  it('defaults in-app ON, email OFF (lean default), not opt-in', () => {
+    for (const type of MIRROR_TYPES) {
+      expect(isOptInNotificationType(type)).toBe(false);
+      expect(isAccountSecurityNotificationType(type)).toBe(false);
+      expect(notificationChannelDefaultEnabled('inapp', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('push', type)).toBe(true);
+      expect(notificationChannelDefaultEnabled('email', type)).toBe(false);
+      // Not urgent — a membership change never bypasses quiet hours.
       expect(isUrgentNotification({ type })).toBe(false);
     }
   });

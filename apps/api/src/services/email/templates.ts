@@ -515,6 +515,60 @@ export function dividendEventEmail(params: {
 }
 
 /**
+ * MIRRORCHAIN group-portfolio lifecycle email (§13.5 V5-P7, design §11). Unlike
+ * the reuse-the-EN-body notices above, the body is built HERE from the localized
+ * `mirror` copy block (`{actor}`/`{chain}` tokens filled), so a DE recipient
+ * gets a DE email. `variant` selects the notice; self-directed notices
+ * (`removed`/`chain_dissolved`/`sync_stalled`) simply ignore the actor token.
+ */
+export type MirrorEmailVariant =
+  | 'invite'
+  | 'member_joined'
+  | 'member_left'
+  | 'member_removed'
+  | 'removed'
+  | 'ownership_transferred'
+  | 'chain_dissolved'
+  | 'sync_stalled';
+
+export function mirrorNotificationEmail(params: {
+  variant: MirrorEmailVariant;
+  chainName: string;
+  actorUsername: string;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { variant, chainName, actorUsername, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const m = copy.mirror;
+  const byVariant: Record<MirrorEmailVariant, { subject: string; body: string }> = {
+    invite: m.invite,
+    member_joined: m.memberJoined,
+    member_left: m.memberLeft,
+    member_removed: m.memberRemoved,
+    removed: m.removed,
+    ownership_transferred: m.ownershipTransferred,
+    chain_dissolved: m.chainDissolved,
+    sync_stalled: m.syncStalled,
+  };
+  const c = byVariant[variant];
+  const values = { actor: actorUsername, chain: chainName };
+  return {
+    subject: fillText(c.subject, values),
+    html: layout(
+      m.heading,
+      [
+        `<p>${fillHtml(c.body, values)}</p>`,
+        `<p style="padding:8px 0 0;">${button(appUrl, m.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, values), '', `${m.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/**
  * Alert-follow notification emails (#455): a followed person created a price
  * alert (`variant: 'created'`) or one of their alerts fired (`variant:
  * 'fired'`). The body sentence is pre-rendered by the dispatcher (identical to

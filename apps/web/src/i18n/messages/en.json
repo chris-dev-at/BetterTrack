@@ -588,6 +588,38 @@
         "budgetExceeded": {
           "label": "Budget alerts",
           "description": "When your spending in a category blows its monthly budget."
+        },
+        "mirrorInvite": {
+          "label": "Group portfolio invites",
+          "description": "When a friend invites you to a group portfolio."
+        },
+        "mirrorMemberJoined": {
+          "label": "Member joined",
+          "description": "When someone joins a group portfolio you own."
+        },
+        "mirrorMemberLeft": {
+          "label": "Member left",
+          "description": "When a member leaves one of your group portfolios."
+        },
+        "mirrorMemberRemoved": {
+          "label": "Member removed",
+          "description": "When a member is removed from your group portfolio."
+        },
+        "mirrorRemoved": {
+          "label": "Removed from a group portfolio",
+          "description": "When you are removed from a group portfolio."
+        },
+        "mirrorOwnershipTransferred": {
+          "label": "Ownership transferred",
+          "description": "When ownership of a group portfolio you are in changes."
+        },
+        "mirrorChainDissolved": {
+          "label": "Group portfolio dissolved",
+          "description": "When a group portfolio you are in is dissolved."
+        },
+        "mirrorSyncStalled": {
+          "label": "Sync problems",
+          "description": "When a group portfolio can't finish syncing."
         }
       },
       "routing": {
@@ -650,6 +682,7 @@
         "alerts": "Price alerts",
         "budgets": "Budgets",
         "markets": "Markets",
+        "mirrorchain": "Group portfolios",
         "account": "Account"
       },
       "grid": {
@@ -974,7 +1007,15 @@
           "earningsReminder": "Earnings reminder",
           "chatMessage": "New chat message",
           "dividendEvent": "Upcoming dividend",
-          "budgetExceeded": "Budget exceeded"
+          "budgetExceeded": "Budget exceeded",
+          "mirrorInvite": "Group portfolio invite",
+          "mirrorMemberJoined": "Group portfolio member joined",
+          "mirrorMemberLeft": "Group portfolio member left",
+          "mirrorMemberRemoved": "Group portfolio member removed",
+          "mirrorRemoved": "Removed from a group portfolio",
+          "mirrorOwnershipTransferred": "Group portfolio ownership transferred",
+          "mirrorChainDissolved": "Group portfolio dissolved",
+          "mirrorSyncStalled": "Group portfolio sync stalled"
         }
       },
       "scope": {
