@@ -12,6 +12,11 @@ import { createMarketIntelRepository } from '../data/repositories/marketIntelRep
 import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createIdeaRepository } from '../data/repositories/ideaRepository';
+import {
+  createExpenseCategoryRepository,
+  createExpenseRuleRepository,
+  createExpenseTransactionRepository,
+} from '../data/repositories/expenseRepository';
 import { createImportRepository } from '../data/repositories/importRepository';
 import { createCustomAssetRepository } from '../data/repositories/customAssetRepository';
 import { createEmailLogRepository } from '../data/repositories/emailLogRepository';
@@ -136,6 +141,7 @@ import {
 import { createTwoFactorService, type TwoFactorService } from '../services/auth/twoFactorService';
 import { createChatService, type ChatService } from '../services/chat';
 import { createIdeasService, type IdeasService } from '../services/ideas/ideasService';
+import { createExpenseService, type ExpenseService } from '../services/expenses/expenseService';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
   createStandingOrderService,
@@ -284,6 +290,8 @@ export interface AppContext {
   imports: ImportService;
   /** Standing orders — scheduled recurring buys / cash movements, auto-recorded (§13.5 V5-P6b). */
   standingOrders: StandingOrderService;
+  /** Expense tracking — categories/transactions/rules CRUD, separate from portfolio money (§13.5 V5-P9). */
+  expenses: ExpenseService;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -1111,6 +1119,16 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // Expense tracking (§13.5 V5-P9, foundation 1/3): a NEW top-level area,
+  // strictly separate from portfolio money (its repositories touch no portfolio
+  // table). CRUD over categories/transactions/rules; the category manager seeds
+  // sensible defaults on first use.
+  const expenses = createExpenseService({
+    categories: createExpenseCategoryRepository(db),
+    transactions: createExpenseTransactionRepository(db),
+    rules: createExpenseRuleRepository(db),
+  });
+
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Emits friend.request / friend.accepted through the notification center.
@@ -1381,6 +1399,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     ideas,
     imports,
     standingOrders,
+    expenses,
     analytics,
     social,
     comments,

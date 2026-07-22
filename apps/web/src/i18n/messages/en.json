@@ -287,10 +287,66 @@
       }
     }
   },
+  "expenses": {
+    "title": "Expenses",
+    "tagline": "Track your spending and income — kept separate from your portfolio.",
+    "nav": {
+      "transactions": "Transactions",
+      "categories": "Categories"
+    },
+    "direction": {
+      "expense": "Expense",
+      "income": "Income",
+      "expensePlural": "Expenses",
+      "incomePlural": "Income"
+    },
+    "transactions": {
+      "subtitle": "Your spending and income, newest first.",
+      "new": "New transaction",
+      "loadError": "Couldn't load your transactions.",
+      "recategorize": "Change category",
+      "uncategorized": "Uncategorized",
+      "emptyTitle": "No transactions yet",
+      "emptyDescription": "Add your first spend or income entry to get started.",
+      "emptyCta": "Add a transaction",
+      "dialog": {
+        "newTitle": "New transaction",
+        "editTitle": "Edit transaction",
+        "direction": "Direction",
+        "amount": "Amount",
+        "amountRequired": "Enter an amount greater than 0.",
+        "date": "Date",
+        "dateRequired": "Pick a date.",
+        "description": "Description",
+        "descriptionPlaceholder": "e.g. BILLA groceries",
+        "descriptionRequired": "Enter a description.",
+        "category": "Category",
+        "saveError": "Couldn't save the transaction. Please try again."
+      }
+    },
+    "categories": {
+      "subtitle": "Organize your spending and income into categories.",
+      "new": "New category",
+      "loadError": "Couldn't load your categories.",
+      "deleteError": "Couldn't delete the category. Please try again.",
+      "dialog": {
+        "newTitle": "New category",
+        "editTitle": "Edit category",
+        "name": "Name",
+        "namePlaceholder": "e.g. Groceries",
+        "nameRequired": "Enter a name.",
+        "nameTaken": "You already have a category with that name.",
+        "direction": "Direction",
+        "color": "Colour",
+        "saveError": "Couldn't save the category. Please try again."
+      }
+    }
+  },
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workboard",
     "forecast": "Forecast",
+    "expenses": "Expenses",
     "assets": "Assets",
     "social": "Social",
     "primary": "Primary",
@@ -1351,8 +1407,8 @@
       },
       "expandYear": "Show {{year}} details",
       "collapseYear": "Hide {{year}} details",
-      "locked": "Locked",
-      "lockedHint": "This year is closed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode; in manual mode tax is instead recorded per trade as entered.",
+      "passed": "Passed",
+      "passedHint": "This year has passed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode; in manual mode tax is instead recorded per trade as entered.",
       "realized": "Realized",
       "tax": "Tax",
       "sell": {

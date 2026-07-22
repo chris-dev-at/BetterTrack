@@ -8,7 +8,8 @@
  * single download covers the whole year: `Summary` (year totals), `Germany`
  * (present only when the year carries DE-taxed rows — the Sparer-Pauschbetrag,
  * both §20 Abs. 6 loss pots in→out, and the KapESt/Soli split), `Positions`
- * (per-asset totals), then the `Sells` and `Dividends` drill-down rows.
+ * (per-asset totals), then the `Sells` and `Dividends` drill-down rows, and a
+ * final `Disclaimer` section carrying the owner-mandated estimates-only notice.
  *
  * Number format (documented in the endpoint contract too): a period decimal
  * separator, no thousands grouping, money to 2 decimals — spreadsheet-safe on
@@ -66,6 +67,10 @@ interface CsvCopy {
     gross: string;
     taxMode: string;
     tax: string;
+  };
+  disclaimer: {
+    title: string;
+    text: string;
   };
 }
 
@@ -126,6 +131,10 @@ const CSV_COPY: Record<TaxExportLocale, CsvCopy> = {
       taxMode: 'Tax mode',
       tax: 'Tax (EUR)',
     },
+    disclaimer: {
+      title: 'Disclaimer',
+      text: 'Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document.',
+    },
   },
   de: {
     section: 'Abschnitt',
@@ -177,6 +186,10 @@ const CSV_COPY: Record<TaxExportLocale, CsvCopy> = {
       gross: 'Brutto (EUR)',
       taxMode: 'Steuermodus',
       tax: 'Steuer (EUR)',
+    },
+    disclaimer: {
+      title: 'Haftungsausschluss',
+      text: 'Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung.',
     },
   },
 };
@@ -366,6 +379,14 @@ export function serializeTaxYearReportCsv(
       );
     }
   }
+
+  // ── Disclaimer (owner-mandated liability framing, #635) ──
+  // A final labeled section so the export carries the same estimates-only notice
+  // the on-screen report shows. Its own section (blank-line separated) never
+  // disturbs the parsing of the data rows above.
+  lines.push('');
+  lines.push(csvRow([c.section, c.disclaimer.title]));
+  lines.push(csvRow([c.disclaimer.text]));
 
   // Trailing CRLF so the last record is terminated (RFC-4180 friendly).
   return lines.join('\r\n') + '\r\n';

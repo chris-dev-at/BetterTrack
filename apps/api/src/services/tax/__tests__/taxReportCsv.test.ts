@@ -292,6 +292,34 @@ describe('serializeTaxYearReportCsv', () => {
     expect(section(de, 'Zusammenfassung').rows[0]).toEqual(section(en, 'Summary').rows[0]);
   });
 
+  it('appends the owner-mandated estimates disclaimer as a final section without breaking the data rows', () => {
+    const csv = serializeTaxYearReportCsv(AT_YEAR, 'en');
+
+    // The disclaimer rides in its own trailing labeled section…
+    const disclaimer = section(csv, 'Disclaimer');
+    expect(disclaimer.header[0]).toBe(
+      'Estimates for your personal overview only — not tax advice, no guarantee of correctness, not a filing document.',
+    );
+
+    // …and the data sections above still parse to the exact same numbers.
+    expect(section(csv, 'Summary').rows[0]).toEqual([
+      '2026',
+      '350.00',
+      '40.00',
+      '123.75',
+      '27.50',
+      '96.25',
+    ]);
+    expect(section(csv, 'Sells').rows[0]![0]).toBe('AAPL');
+  });
+
+  it('localizes the disclaimer section to German', () => {
+    const de = serializeTaxYearReportCsv(AT_YEAR, 'de');
+    expect(section(de, 'Haftungsausschluss').header[0]).toBe(
+      'Schätzwerte nur für deine persönliche Übersicht — keine Steuerberatung, keine Gewähr für Richtigkeit, kein Dokument für die Steuererklärung.',
+    );
+  });
+
   it('names the download per year', () => {
     expect(taxReportCsvFilename(2026)).toBe('tax-report-2026.csv');
   });

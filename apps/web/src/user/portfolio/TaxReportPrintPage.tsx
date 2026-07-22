@@ -280,6 +280,10 @@ export function TaxReportPrintPage() {
               <PositionBlock key={position.asset.id} position={position} t={t} />
             ))
           )}
+          {/* Owner-mandated liability framing (#635): on the printout/PDF too. */}
+          <footer className="mt-4 border-t border-neutral-300 pt-3 text-xs text-neutral-500">
+            {t('settings.taxes.disclaimer')}
+          </footer>
         </div>
       )}
     </div>
