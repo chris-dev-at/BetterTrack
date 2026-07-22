@@ -15,7 +15,7 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
-import { formatMoney } from '../../lib/format';
+import { DISCREET_MASK, formatMoney, isDiscreetMode } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { getPortfolio } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
@@ -486,8 +486,13 @@ function windowStartIso(asOf: string, window: ReturnWindow): string | undefined 
   return date.toISOString().slice(0, 10);
 }
 
-/** Compact EUR axis tick, e.g. `€1.2M` / `€820k` — locale-agnostic and short. */
+/**
+ * Compact EUR axis tick, e.g. `€1.2M` / `€820k` — locale-agnostic and short.
+ * Masked to {@link DISCREET_MASK} under discreet mode (§13.5 V5-P13 arc (a)) so
+ * the projection chart's y-axis never paints an absolute forecast amount.
+ */
 function formatCompactEur(value: number): string {
+  if (isDiscreetMode()) return DISCREET_MASK;
   const abs = Math.abs(value);
   if (abs >= 1_000_000) return `€${(value / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `€${Math.round(value / 1_000)}k`;

@@ -453,6 +453,8 @@
     "account": "Account",
     "myPortfolio": "My Portfolio",
     "settings": "Settings",
+    "discreetMode": "Discreet mode",
+    "discreetModeError": "Couldn't save that change. Please try again.",
     "inviteOthers": "Invite Others",
     "shareProfile": "Share Profile",
     "logout": "Logout"

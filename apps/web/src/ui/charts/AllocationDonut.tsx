@@ -2,7 +2,7 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
-import { formatPercent, formatQuantity } from '../../lib/format';
+import { DISCREET_MASK, formatPercent, formatQuantity, isDiscreetMode } from '../../lib/format';
 import type { AllocationSegment } from './types';
 
 export interface AllocationDonutProps {
@@ -89,7 +89,11 @@ export function AllocationDonut({ data, size = 200, className, title }: Allocati
             <Tooltip
               formatter={(value, name) => {
                 const v = Number(value) || 0;
-                return [`${formatShare(v / total)} (${formatQuantity(v)})`, String(name)];
+                // §13.5 V5-P13 arc (a): the raw segment value is an absolute
+                // amount (EUR-denominated portfolio value); mask it under
+                // discreet mode so only the relative share still surfaces.
+                const rawLabel = isDiscreetMode() ? DISCREET_MASK : formatQuantity(v);
+                return [`${formatShare(v / total)} (${rawLabel})`, String(name)];
               }}
               contentStyle={{
                 background: '#18181b',

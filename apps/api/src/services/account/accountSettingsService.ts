@@ -32,6 +32,7 @@ export interface AccountSettingsPatch {
   defaultPortfolioVisibility?: 'private' | 'friends';
   locale?: string;
   baseCurrency?: BaseCurrency;
+  discreetMode?: boolean;
 }
 
 export interface AccountSettingsService {
@@ -54,6 +55,7 @@ export function createAccountSettingsService(
       defaultPortfolioVisibility: row?.defaultPortfolioVisibility ?? 'private',
       locale: row?.locale ?? DEFAULT_LOCALE,
       baseCurrency: base.success ? base.data : 'EUR',
+      discreetMode: row?.discreetMode ?? false,
     };
   }
 
@@ -71,6 +73,9 @@ export function createAccountSettingsService(
       }
       if (patch.baseCurrency !== undefined) {
         await userRepo.setBaseCurrency(userId, patch.baseCurrency);
+      }
+      if (patch.discreetMode !== undefined) {
+        await userRepo.setDiscreetMode(userId, patch.discreetMode);
       }
       return read(userId);
     },

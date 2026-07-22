@@ -170,6 +170,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
       defaultPortfolioVisibility: body.defaultPortfolioVisibility,
       locale: body.locale,
       baseCurrency: body.baseCurrency,
+      discreetMode: body.discreetMode,
     });
     res.json(settings);
   });

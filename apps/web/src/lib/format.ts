@@ -19,6 +19,14 @@
 /** Rendered in place of an absent or non-finite value. */
 export const EM_DASH = '—';
 
+/**
+ * Discreet-mode placeholder (§13.5 V5-P13 arc (a)): renders in place of every
+ * absolute money amount while the user has discreet mode ON. Three bullets keep
+ * the width of a masked cell narrow enough not to distort layouts and are
+ * unmistakably a mask (not confusable with `—` for missing data).
+ */
+export const DISCREET_MASK = '•••';
+
 /** Dates always display in Vienna wall-clock, regardless of host timezone (§5.5). */
 const DISPLAY_TIME_ZONE = 'Europe/Vienna';
 
@@ -58,6 +66,27 @@ export function setMoneyCurrency(currency: string): void {
 /** The active default money currency — the user's base (§5.4). */
 export function getMoneyCurrency(): string {
   return activeCurrency;
+}
+
+/**
+ * Discreet mode (§13.5 V5-P13 arc (a)) is a module-level flag the auth runtime
+ * drives from the session user's `discreetMode` setting. While ON, every money
+ * / unit-price / signed-money helper below returns the {@link DISCREET_MASK}
+ * placeholder instead of the formatted amount — percentages, quantities, dates
+ * and other relative values stay untouched so the user can still show the app
+ * to others without exposing absolute numbers. Off by default so tests and any
+ * non-UI consumer produce byte-identical output without a provider.
+ */
+let discreetMode = false;
+
+/** Turn discreet mode on/off (called by the auth runtime + the profile toggle). */
+export function setDiscreetMode(next: boolean): void {
+  discreetMode = next;
+}
+
+/** Whether discreet mode is active — exposed for tests and non-format consumers. */
+export function isDiscreetMode(): boolean {
+  return discreetMode;
 }
 
 /**
@@ -203,6 +232,10 @@ function currencySymbolFor(currency: string): string {
  */
 export function formatMoney(value: number | null | undefined, currency?: string): string {
   if (!isFiniteNumber(value)) return EM_DASH;
+  // Discreet mode (§13.5 V5-P13 arc (a)) — mask the amount so the SPA never
+  // paints an absolute value on any surface. Percent/quantity/date helpers are
+  // deliberately untouched: relative values stay live.
+  if (discreetMode) return DISCREET_MASK;
   currency ??= activeCurrency;
 
   const parts = moneyFormatter(currency).formatToParts(withoutNegativeZero(value));
@@ -242,6 +275,7 @@ export function formatQuantity(value: number | null | undefined): string {
  */
 export function formatUnitPrice(value: number | null | undefined, currency?: string): string {
   if (!isFiniteNumber(value)) return EM_DASH;
+  if (discreetMode) return DISCREET_MASK;
   currency ??= activeCurrency;
   const v = withoutNegativeZero(value);
   if (v !== 0 && Math.abs(v) < 0.01) {
@@ -280,6 +314,11 @@ export function formatSignedPercent(value: number | null | undefined): string {
  */
 export function formatSignedDelta(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return EM_DASH;
+  // The signed-delta helper is used almost exclusively for money-shaped deltas
+  // (a P/L number rendered without a currency symbol). Mask under discreet
+  // mode so a raw "+1.234,56" never leaks through where a MoneyText would have
+  // been masked.
+  if (discreetMode) return DISCREET_MASK;
   return normalizeSpaces(formatters().signedDelta.format(withoutNegativeZero(value)));
 }
 
