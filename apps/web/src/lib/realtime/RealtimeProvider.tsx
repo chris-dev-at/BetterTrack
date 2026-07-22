@@ -31,6 +31,18 @@ import { createRealtimeSocket } from './socket';
 export type RealtimeServerEvent =
   (typeof REALTIME_SERVER_EVENTS)[keyof typeof REALTIME_SERVER_EVENTS];
 
+/**
+ * A resolved Live Mode watch (§6.3, §13.5 V5-P1): the requested window's
+ * backfill (oldest first) plus the earliest instant it honestly covers
+ * (`coverageFrom`, ISO), so the chart renders the full window from the first
+ * frame and knows how far back the data actually reaches. `null` coverage means
+ * an empty backfill.
+ */
+export interface LiveWatchResult {
+  frames: RealtimeLiveFrame[];
+  coverageFrom: string | null;
+}
+
 export interface RealtimeContextValue {
   /** True while the socket is connected — pushes are flowing. */
   connected: boolean;
@@ -54,11 +66,7 @@ export interface RealtimeContextValue {
    * and re-registers this client's rate; the shared upstream loop keeps
    * running at the finest active rate.
    */
-  watchLive(
-    assetId: string,
-    window: LiveWindow,
-    rate: LiveRate,
-  ): Promise<RealtimeLiveFrame[] | null>;
+  watchLive(assetId: string, window: LiveWindow, rate: LiveRate): Promise<LiveWatchResult | null>;
   /** Release a Live Mode watch (fire-and-forget; disconnects also release it). */
   unwatchLive(assetId: string): void;
   /**
@@ -212,7 +220,10 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
           .emitWithAck(REALTIME_CLIENT_EVENTS.liveWatch, { assetId, window, rate });
         const parsed = realtimeLiveWatchAckSchema.safeParse(ack);
         if (!parsed.success || !parsed.data.ok) return null;
-        return parsed.data.frames ?? [];
+        return {
+          frames: parsed.data.frames ?? [],
+          coverageFrom: parsed.data.coverageFrom ?? null,
+        };
       } catch {
         // No ack (gateway down mid-flight): silent — the poll fallback carries
         // the chart, exactly like every other push in this layer (§4.5).

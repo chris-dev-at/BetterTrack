@@ -362,7 +362,12 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
       entry.rateMs = rateMs;
     }
     const frames = await liveMode.backfill(assetId, entry.ref, window);
-    respond({ ok: true, frames });
+    // The oldest frame is the earliest instant the backfill honestly covers
+    // (§13.5 V5-P1 §5): when the seed reaches the window start it is ~now−window,
+    // when history is genuinely short (new listing, market just opened) it is
+    // later, and the client renders from here instead of padding an empty edge.
+    const coverageFrom = frames[0]?.at;
+    respond({ ok: true, frames, coverageFrom });
   }
 
   /**

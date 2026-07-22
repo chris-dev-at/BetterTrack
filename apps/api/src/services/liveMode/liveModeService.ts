@@ -205,17 +205,31 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         price: cached.value.price,
         currency: cached.value.currency,
         dayChangePct: cached.value.dayChangePct ?? null,
+        // The provider's session state rides the quote (§13.5 V5-P1): the chart
+        // shows "Market closed" when ticks stop because the exchange is closed.
+        marketState: cached.value.marketState ?? null,
         at: new Date(now()).toISOString(),
       };
       loop.failures = 0; // recovered — snap back to the finest-active cadence
       applyCadence(loop);
-      try {
-        await ring.append(frame);
-      } catch (err) {
-        // A Redis hiccup only costs backfill history — the quote succeeded, so
-        // the frame still reaches live viewers and the cadence stays at base;
-        // stretching is reserved for UPSTREAM distress (§5.3).
-        logger.warn({ err, assetId }, 'live ring append failed; frame emitted without backfill');
+      // A CLOSED market produces no new trades: the provider just re-serves the
+      // last close, so a frame stamped `now` is a stale repeat, not an
+      // observation. It still EMITS (drives the chart's "Market closed" chip),
+      // but it must NOT enter the ring — otherwise a fresh joiner's backfill
+      // fills the pinned [now − window, now] viewport with fake flat ticks
+      // stamped `now` and the real last session scrolls off-screen (issue #690
+      // Part A: "no fake flat ticks"). Real sessions — open/pre/post all move
+      // prices — still record. This touches only what is stored, never the
+      // verified coalescing/cadence loop (#372). §16-logged (V5-P1).
+      if (frame.marketState !== 'closed') {
+        try {
+          await ring.append(frame);
+        } catch (err) {
+          // A Redis hiccup only costs backfill history — the quote succeeded, so
+          // the frame still reaches live viewers and the cadence stays at base;
+          // stretching is reserved for UPSTREAM distress (§5.3).
+          logger.warn({ err, assetId }, 'live ring append failed; frame emitted without backfill');
+        }
       }
       emit(frame);
     } catch (err) {

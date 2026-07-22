@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { currencyCodeSchema } from './market';
+import { currencyCodeSchema, marketStateSchema } from './market';
 
 /**
  * Realtime gateway contracts (PROJECTPLAN.md §4.5, V3-P7a) and Live Mode
@@ -178,6 +178,12 @@ export const realtimeLiveFrameSchema = z.object({
   price: z.number(),
   currency: currencyCodeSchema,
   dayChangePct: z.number().nullable(),
+  /**
+   * The exchange session the loop observed this price in (§13.5 V5-P1): drives
+   * the chart's "Market closed" state when no ticks arrive. Null on a
+   * history-stitched seed and whenever the provider does not report it.
+   */
+  marketState: marketStateSchema.nullable().optional(),
   /** When the loop observed this price (ISO-8601, producer-stamped). */
   at: z.string().datetime(),
   /**
@@ -213,6 +219,14 @@ export const realtimeLiveWatchAckSchema = z.object({
   /** Machine-readable reason when `ok` is false (e.g. `NOT_FOUND`, `UNAVAILABLE`). */
   error: z.string().optional(),
   frames: z.array(realtimeLiveFrameSchema).optional(),
+  /**
+   * The earliest instant the backfill honestly covers (ISO-8601) — the oldest
+   * frame's timestamp (§13.5 V5-P1 §5). When less history exists than the
+   * requested window reaches back to (a new listing, market just opened), this
+   * is later than `now − window`, so the client renders honestly from here
+   * instead of padding an empty left edge. Absent when the backfill is empty.
+   */
+  coverageFrom: z.string().datetime().optional(),
 });
 export type RealtimeLiveWatchAck = z.infer<typeof realtimeLiveWatchAckSchema>;
 

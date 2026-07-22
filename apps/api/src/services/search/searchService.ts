@@ -56,6 +56,11 @@ const toResultItem = (match: CatalogSearchMatch): SearchResultItem => ({
   type: match.type,
   currency: match.currency,
   isCustom: match.ownerId !== null,
+  // Search answers from the catalog with no synchronous provider call (§6.2),
+  // so a live session state is not available per row. The one state knowable
+  // without a quote is the always-on case: crypto trades 24/7 ⇒ `open`. Every
+  // other type is left unset so the row renders no (possibly wrong) badge.
+  ...(match.type === 'crypto' ? { marketState: 'open' as const } : {}),
 });
 
 export function createSearchService(deps: SearchServiceDeps): SearchService {

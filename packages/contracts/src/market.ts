@@ -17,6 +17,17 @@ export const currencyCodeSchema = z
   .regex(/^[A-Z]{3}$/, 'currency must be a 3-letter ISO-4217 code');
 export type CurrencyCode = z.infer<typeof currencyCodeSchema>;
 
+/**
+ * Exchange session state for an asset (§6.3 / §13.5 V5-P1 — the live-mode
+ * market badge). Sourced from the provider's own field (Yahoo `marketState`)
+ * and cached with the quote — never a hand-built exchange calendar. `open` also
+ * covers always-on assets (crypto is 24/7 → always `open`). Absent/unknown ⇒ no
+ * badge is rendered (never a wrong one).
+ */
+export const MARKET_STATES = ['open', 'closed', 'pre', 'post'] as const;
+export const marketStateSchema = z.enum(MARKET_STATES);
+export type MarketState = z.infer<typeof marketStateSchema>;
+
 /** Asset taxonomy — mirrors the `assets.type` enum in §5.5. */
 export const ASSET_TYPES = [
   'stock',
@@ -78,6 +89,13 @@ export const quoteSchema = z
     currency: currencyCodeSchema,
     prevClose: z.number().nullable().optional(),
     dayChangePct: z.number().nullable().optional(),
+    /**
+     * The exchange session the quote was observed in (§13.5 V5-P1 live badge):
+     * the provider's own state field, cached with the quote. Absent when the
+     * provider does not report it (secondary providers, custom assets) — the
+     * client then renders no badge.
+     */
+    marketState: marketStateSchema.nullable().optional(),
     /** When the upstream last observed this price (ISO-8601). */
     asOf: z.string().datetime(),
   })

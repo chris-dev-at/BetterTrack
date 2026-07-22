@@ -21,6 +21,7 @@ import {
   mapAssetType,
   mapDividendEvents,
   mapEarningsEvents,
+  mapMarketState,
   mapNewsHeadlines,
   mapSplitEvents,
   normalizeCurrency,
@@ -132,6 +133,9 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
       currency: code,
       prevClose,
       dayChangePct,
+      // The provider's own session state (§13.5 V5-P1) — cached with the quote,
+      // so the badge and the live chart's closed-state read it for free.
+      marketState: mapMarketState(q.marketState),
       asOf: toIso(q.regularMarketTime, now()),
     };
   }

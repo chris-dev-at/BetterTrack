@@ -1,5 +1,6 @@
 /** Shared presentational kit (PROJECTPLAN.md §7.3) — prop-driven, no network. */
 export { MoneyText, type MoneyTextProps } from './MoneyText';
+export { MarketStateBadge, type MarketStateBadgeProps } from './MarketStateBadge';
 export { StatCard, type StatCardProps } from './StatCard';
 export { EmptyState, type EmptyStateProps } from './EmptyState';
 export { ComingSoon, type ComingSoonProps } from './ComingSoon';

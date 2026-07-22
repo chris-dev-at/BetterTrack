@@ -5,8 +5,10 @@ export {
   usePresence,
   useRealtime,
   useRealtimeEvent,
+  type LiveWatchResult,
   type RealtimeContextValue,
   type RealtimeServerEvent,
 } from './RealtimeProvider';
 export { createRealtimeSocket } from './socket';
-export { useLiveFrames, type LiveFramesState } from './useLiveFrames';
+export { framesToPoints, mergePoints, bucketSeconds, type LivePoint } from './liveSeries';
+export { useLiveSeries, type LiveSeriesState } from './useLiveSeries';

@@ -235,6 +235,12 @@
       "priceChartAria": "Price chart",
       "allocationFallbackTitle": "Allocation breakdown"
     },
+    "marketState": {
+      "open": "Open",
+      "closed": "Closed",
+      "pre": "Pre-market",
+      "post": "After hours"
+    },
     "or": "or"
   },
   "ui": {
@@ -2664,7 +2670,9 @@
       "rateGroupHint": "How often the live price refreshes. Viewers share one update stream at the fastest rate anyone requested.",
       "waiting": "Waiting for live prices…",
       "fallbackNote": "Live updates every 60 s while the stream reconnects.",
-      "chartAriaLabel": "Live price chart for {{symbol}}"
+      "chartAriaLabel": "Live price chart for {{symbol}}",
+      "marketClosed": "Market closed",
+      "marketClosedHint": "Showing the most recent session. Live updates resume when the market reopens."
     },
     "nav": {
       "overview": "Overview",
