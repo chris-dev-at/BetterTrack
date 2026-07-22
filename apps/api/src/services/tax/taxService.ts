@@ -1912,6 +1912,11 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       // years handed down); open years re-settle through the live
       // derivation instead (#635). A dividend reshapes no realizations, so
       // both sides share the rows and no mutated assets enter the scoping.
+      // Deliberately wider than the pre-#669 active-regime gate: the ripple
+      // runs whenever ANY chain-sensitive frozen rows exist (an AT dividend
+      // beside unrelated frozen DE rows still scans) — the extra years
+      // settle to ΔF = 0 by construction; over-inclusion is the safe side
+      // of the killed bug class.
       const sideRows = { transactions: allTxns, dividendRows };
       const scope = scopeClosedMutation({
         before: sideRows,

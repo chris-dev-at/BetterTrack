@@ -68,12 +68,15 @@ function viewOf(
 }
 
 describe('openCountryOf', () => {
-  it('narrows to a supported engine; legacy/unknown ⇒ AT', () => {
+  it('narrows to a supported engine; legacy null ⇒ AT', () => {
     expect(openCountryOf('DE')).toBe(TAX_COUNTRY_DE);
     expect(openCountryOf('FI')).toBe(TAX_COUNTRY_FI);
     expect(openCountryOf('AT')).toBe(TAX_COUNTRY_AT);
     expect(openCountryOf(null)).toBe(TAX_COUNTRY_AT);
-    expect(openCountryOf('US')).toBe(TAX_COUNTRY_AT);
+  });
+
+  it('fails LOUD on an unwired country instead of silently running the AT engine (#669)', () => {
+    expect(() => openCountryOf('US')).toThrow(/no open-year engine/);
   });
 });
 

@@ -34,15 +34,21 @@ import {
 
 /**
  * The engine country a frozen `country_specific` row belongs to. Legacy rows
- * (V3-P4) always carry `AT`; anything that is not `DE`/`FI` settles as AT so
- * an unexpected value can never silently drop a row from every pool.
+ * (V3-P4) carry `null` and settle as AT. Any OTHER unrecognized value fails
+ * LOUD (#669 hardening): a country recordable through the API but not wired
+ * into the settlement modules must never fall through into the AT pool —
+ * its frozen rows would silently decompose and settle at AT rates, and the
+ * drift would read as legitimate locked residue forever.
  */
 export function rowEngineCountry(
   taxCountry: string | null,
 ): typeof TAX_COUNTRY_AT | typeof TAX_COUNTRY_DE | typeof TAX_COUNTRY_FI {
-  return taxCountry === TAX_COUNTRY_DE || taxCountry === TAX_COUNTRY_FI
-    ? taxCountry
-    : TAX_COUNTRY_AT;
+  if (taxCountry === null || taxCountry === TAX_COUNTRY_AT) return TAX_COUNTRY_AT;
+  if (taxCountry === TAX_COUNTRY_DE || taxCountry === TAX_COUNTRY_FI) return taxCountry;
+  throw new Error(
+    `Tax engine: no settlement component for frozen tax country "${taxCountry}" — ` +
+      'wire it into SUPPORTED_TAX_COUNTRIES and the country modules (openYear.ts checklist)',
+  );
 }
 
 /** A sell taxed under `country_specific` mode (any country). */

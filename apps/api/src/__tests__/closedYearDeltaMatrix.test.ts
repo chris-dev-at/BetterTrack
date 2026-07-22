@@ -2,7 +2,7 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { CashMovement, CustomTaxParams } from '@bettertrack/contracts';
+import { TAX_COUNTRIES, type CashMovement, type CustomTaxParams } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
@@ -36,14 +36,16 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * residue `held − ΣF` is conserved on every path. A regime/mode branch that
  * skips the centralized settlement leaves held flat while ΣF moves — its cell
  * fails here instead of in a future review round. Each cell also asserts its
- * fixture really moves the decomposition (`ΔΣF ≠ 0` somewhere). A new country
- * added to `SUPPORTED_TAX_COUNTRIES` joins the matrix automatically: unless
- * its settlement and its frozen-component analog in the decomposition agree
- * on every mutation path, its cells break the invariant — the developer is
- * forced through the choke point, not through another review round.
+ * fixture really moves the decomposition (`ΔΣF ≠ 0` somewhere).
  *
  * The regime axis is built FROM `SUPPORTED_TAX_COUNTRIES` (+ a chained FIFO
- * custom set), so new country modules join the matrix automatically.
+ * custom set), and that list is PINNED equal to contracts' `TAX_COUNTRIES` —
+ * the enum a country must join to be recordable through the API at all — so
+ * a new country cannot ship without joining the matrix: leave the domain
+ * list untouched and the pin fails; join it unwired and `rowEngineCountry`
+ * fails loud in its cells (instead of its frozen rows silently settling in
+ * the AT pool). Either way the developer is forced through the choke point,
+ * not through another review round.
  *
  * The fixture spans TWO closed years with cross-year coupling (FIFO lots and
  * DE/custom carry cross the 2025→2026 boundary), so the round-3 class — a
@@ -206,6 +208,9 @@ async function snapshot(
   const heldEur = new Map<number, number>();
   const frozenEur = new Map<number, number>();
   for (const year of CLOSED_YEARS) {
+    // With a `transform`, held mixes rewritten rows with STORED movements —
+    // only `frozenEur` is meaningful (and read) from a counterfactual
+    // snapshot; trust `heldEur` only when no transform was given.
     heldEur.set(year, heldForYear(transactions, dividendRows, movements, year));
     frozenEur.set(year, frozenTargetForYear(state, year));
   }
@@ -246,6 +251,18 @@ const REGIMES: Array<{ key: string; settings: Record<string, unknown> }> = [
   })),
   { key: 'custom', settings: { mode: 'custom', custom: CHAINED_CUSTOM } },
 ];
+
+// The seam the axis could silently miss (#677 review): a country becomes
+// recordable the moment it joins contracts' `TAX_COUNTRIES`, but the domain
+// list feeding the axis has no production consumer forcing it to follow. Pin
+// the lists equal so country #N added to the contracts enum without a wired
+// settlement module fails HERE — with zero matrix coverage being impossible,
+// not merely unlikely.
+describe('regime-axis completeness', () => {
+  it('the domain regime list covers every API-recordable tax country', () => {
+    expect([...SUPPORTED_TAX_COUNTRIES]).toEqual([...TAX_COUNTRIES]);
+  });
+});
 
 /** The recording modes a reshaping batch can arrive under (mutation-path axis). */
 const RECORDING_MODES = ['engine', 'none', 'manual_per_trade'] as const;
