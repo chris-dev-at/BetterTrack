@@ -234,6 +234,15 @@ export function createUserRepository(db: Database) {
     },
 
     /**
+     * Toggle discreet mode (§13.5 V5-P13 arc (a)). Persists per user; the SPA
+     * reads the flag on `/auth/me` and after every account-settings PATCH to
+     * drive the shared format seam that masks absolute money amounts.
+     */
+    async setDiscreetMode(id: string, discreetMode: boolean): Promise<void> {
+      await db.update(users).set({ discreetMode, updatedAt: new Date() }).where(eq(users.id, id));
+    },
+
+    /**
      * Set (or clear) the caller's curated profile icon id (§13.5 V5-P0c). The
      * service layer validates against the finite allow-list before calling; a
      * `null` clears the picked icon and returns the user to the deterministic

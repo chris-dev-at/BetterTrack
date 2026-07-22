@@ -207,6 +207,14 @@ export const accountSettingsResponseSchema = z
     locale: localeSchema,
     /** The user's base currency (§13.3 V3-P10d); EUR by default. */
     baseCurrency: baseCurrencySchema,
+    /**
+     * Discreet mode (§13.5 V5-P13 arc (a)): while true the SPA masks every
+     * absolute money amount app-wide (balances, values, cash, transaction
+     * amounts, tooltips, chart axes) and keeps percentages/relative values
+     * live — for showing the app to others without exposing amounts.
+     * Per-user, server-persisted, OFF by default.
+     */
+    discreetMode: z.boolean(),
   })
   .strict();
 export type AccountSettingsResponse = z.infer<typeof accountSettingsResponseSchema>;
@@ -222,13 +230,16 @@ export const updateAccountSettingsRequestSchema = z
     defaultPortfolioVisibility: portfolioVisibilitySchema.optional(),
     locale: localeSchema.optional(),
     baseCurrency: baseCurrencySchema.optional(),
+    /** Toggle discreet mode (§13.5 V5-P13 arc (a)); persists per user. */
+    discreetMode: z.boolean().optional(),
   })
   .strict()
   .refine(
     (body) =>
       body.defaultPortfolioVisibility !== undefined ||
       body.locale !== undefined ||
-      body.baseCurrency !== undefined,
+      body.baseCurrency !== undefined ||
+      body.discreetMode !== undefined,
     {
       message: 'At least one setting is required.',
     },

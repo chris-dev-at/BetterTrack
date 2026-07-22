@@ -91,11 +91,13 @@ beforeEach(() => {
     defaultPortfolioVisibility: 'private',
     locale: 'en',
     baseCurrency: 'EUR',
+    discreetMode: false,
   });
   vi.mocked(updateAccountSettings).mockResolvedValue({
     defaultPortfolioVisibility: 'private',
     locale: 'en',
     baseCurrency: 'EUR',
+    discreetMode: false,
   });
 });
 
@@ -170,6 +172,7 @@ describe('AccountSettingsPage', () => {
       defaultPortfolioVisibility: 'private',
       locale: 'de',
       baseCurrency: 'EUR',
+      discreetMode: false,
     });
     renderPage();
 
@@ -190,6 +193,7 @@ describe('AccountSettingsPage', () => {
       defaultPortfolioVisibility: 'private',
       locale: 'en',
       baseCurrency: 'USD',
+      discreetMode: false,
     });
     renderPage();
 

@@ -1,5 +1,5 @@
 import { cx } from '../lib/cx';
-import { formatMoney, formatUnitPrice, getMoneyCurrency } from '../lib/format';
+import { formatMoney, formatUnitPrice, getMoneyCurrency, isDiscreetMode } from '../lib/format';
 
 export interface MoneyTextProps {
   /** The amount. */
@@ -50,16 +50,23 @@ export function MoneyText({
   const effectiveCurrency = currency ?? base;
   const format = unitPrice ? formatUnitPrice : formatMoney;
   const formatted = format(amount, effectiveCurrency);
+  const discreet = isDiscreetMode();
 
   // Only positive/negative finite deltas get colour and a leading `+`; zero,
-  // null and NaN stay neutral.
-  const sign = signed && amount != null && Number.isFinite(amount) ? Math.sign(amount) : 0;
+  // null and NaN stay neutral. Under discreet mode we drop both the sign colour
+  // AND the leading `+` — the mask `•••` must not leak whether a delta was up
+  // or down (§13.5 V5-P13 arc (a)).
+  const sign =
+    !discreet && signed && amount != null && Number.isFinite(amount) ? Math.sign(amount) : 0;
   const colorClass = sign > 0 ? 'text-emerald-400' : sign < 0 ? 'text-red-400' : undefined;
   // Intl already emits `-` for negatives; we only need to add the `+`.
   const display = sign > 0 ? `+${formatted}` : formatted;
 
   const showConverted =
-    convertedAmount != null && Number.isFinite(convertedAmount) && effectiveCurrency !== base;
+    !discreet &&
+    convertedAmount != null &&
+    Number.isFinite(convertedAmount) &&
+    effectiveCurrency !== base;
 
   return (
     <span className={cx('tabular-nums', colorClass, className)}>

@@ -28,7 +28,8 @@ import type {
 import { DEFAULT_PIN_WINDOW_MINUTES } from '@bettertrack/contracts';
 
 import { ApiError, setAuthResponsePolicy } from '../lib/apiClient';
-import { setMoneyCurrency } from '../lib/format';
+import { setDiscreetMode, setMoneyCurrency } from '../lib/format';
+import { updateAccountSettings } from '../lib/settingsApi';
 import * as api from '../lib/userApi';
 import { clearRememberedAccount, writeRememberedAccount } from './auth/rememberedAccount';
 
@@ -253,6 +254,14 @@ interface AuthContextValue {
    */
   forgetRememberedAccount: () => Promise<void>;
   logout: () => Promise<void>;
+  /**
+   * Discreet-mode quick toggle (§13.5 V5-P13 arc (a)). Flips the per-user flag
+   * on the server via `PATCH /settings/account`, updates the shared format seam
+   * so every money surface re-renders masked (or restored on toggle-back), and
+   * mirrors the value onto the current MeResponse so consumers observe it via
+   * `user.discreetMode` without a re-fetch.
+   */
+  toggleDiscreetMode: (next?: boolean) => Promise<void>;
   /** Non-null while a 429 toast should be visible. Cleared on dismiss. */
   rateLimitBanner: string | null;
   clearRateLimitBanner: () => void;
@@ -294,6 +303,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // is denominated in it, so the omitted-currency formatMoney default must
     // match before the first money paint.
     setMoneyCurrency(me.baseCurrency);
+    // Drive the discreet-mode format seam from the session user's flag
+    // (§13.5 V5-P13 arc (a)), so every subsequent formatMoney/MoneyText
+    // renders masked whenever the account has discreet mode on. `undefined`
+    // (pre-V5-P13 fixture) is treated as OFF.
+    setDiscreetMode(me.discreetMode === true);
     if (me.mustChangePassword) {
       setStatus('password-change-required');
     } else if (isPinLocked(me)) {
@@ -315,6 +329,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Back to the EUR default so the next account never inherits the previous
     // user's base currency (mirrors the query-cache clear below).
     setMoneyCurrency('EUR');
+    // Reset discreet mode too — a fresh anonymous shell must render real
+    // (default zero-state) amounts, and the next user's toggle sets it fresh.
+    setDiscreetMode(false);
     queryClient.clear();
   }, [queryClient]);
 
@@ -652,6 +669,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await api.forgetRememberedDevice().catch(() => undefined);
   }, []);
 
+  const toggleDiscreetMode = useCallback(
+    async (next?: boolean) => {
+      // Fall back to the current user's flag when the caller omits `next`.
+      // Passing an explicit value lets the profile toggle stay idempotent under
+      // a double-click and lets tests set a deterministic state.
+      const target = next ?? !(user?.discreetMode === true);
+      // Optimistic UX: flip the shared format seam and the local MeResponse
+      // first so the whole tree re-renders with the mask/restored view; the
+      // server PATCH follows. If the PATCH fails, roll both back so the user
+      // sees exactly the state the server holds.
+      setDiscreetMode(target);
+      setUser((current) => (current ? { ...current, discreetMode: target } : current));
+      try {
+        await updateAccountSettings({ discreetMode: target });
+      } catch (err) {
+        setDiscreetMode(!target);
+        setUser((current) => (current ? { ...current, discreetMode: !target } : current));
+        throw err;
+      }
+    },
+    [user],
+  );
+
   const logout = useCallback(async () => {
     try {
       await api.logout();
@@ -683,6 +723,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       rememberThisDevice,
       forgetRememberedAccount,
       logout,
+      toggleDiscreetMode,
       rateLimitBanner,
       clearRateLimitBanner,
     }),
@@ -704,6 +745,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       rememberThisDevice,
       forgetRememberedAccount,
       logout,
+      toggleDiscreetMode,
       rateLimitBanner,
       clearRateLimitBanner,
     ],

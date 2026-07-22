@@ -9,8 +9,9 @@ import { beforeEach, expect, test, vi } from 'vitest';
 // (the thing under test) is exercised.
 vi.mock('../AuthContext', () => ({
   useAuth: () => ({
-    user: { username: 'jane', email: 'jane@bettertrack.test' },
+    user: { username: 'jane', email: 'jane@bettertrack.test', discreetMode: false },
     logout: vi.fn(),
+    toggleDiscreetMode: vi.fn(),
   }),
 }));
 vi.mock('../../lib/notificationsApi', () => ({

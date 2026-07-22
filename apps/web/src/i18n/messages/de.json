@@ -453,6 +453,8 @@
     "account": "Konto",
     "myPortfolio": "Mein Portfolio",
     "settings": "Einstellungen",
+    "discreetMode": "Diskreter Modus",
+    "discreetModeError": "Änderung konnte nicht gespeichert werden. Bitte erneut versuchen.",
     "inviteOthers": "Andere einladen",
     "shareProfile": "Profil teilen",
     "logout": "Abmelden"

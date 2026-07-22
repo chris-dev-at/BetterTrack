@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 
 import {
+  DISCREET_MASK,
   EM_DASH,
   formatDate,
   formatDateTime,
@@ -13,6 +14,8 @@ import {
   formatWeight,
   getFormatLocale,
   getMoneyCurrency,
+  isDiscreetMode,
+  setDiscreetMode,
   setFormatLocale,
   setMoneyCurrency,
 } from './format';
@@ -317,5 +320,64 @@ describe('locale-aware formatting (§13.3 V3-P1)', () => {
     expect(formatDate('2024-01-15T12:00:00.000Z')).toMatch(/15 Jan 2024/);
     setFormatLocale('de-AT');
     expect(formatDate('2024-01-15T12:00:00.000Z')).toBe('15.01.2024');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discreet mode (§13.5 V5-P13 arc (a)) — the shared masking seam. Every
+// absolute-money helper returns {@link DISCREET_MASK} while the flag is ON;
+// percent / quantity / date helpers stay live so relative values keep rendering.
+// The flag is module-level state driven by the auth runtime and the profile
+// quick toggle — reset after each test to keep ordering irrelevant.
+
+describe('discreet mode (§13.5 V5-P13 arc (a))', () => {
+  afterEach(() => setDiscreetMode(false));
+
+  test('toggles a module-level flag exposed by isDiscreetMode()', () => {
+    expect(isDiscreetMode()).toBe(false);
+    setDiscreetMode(true);
+    expect(isDiscreetMode()).toBe(true);
+    setDiscreetMode(false);
+    expect(isDiscreetMode()).toBe(false);
+  });
+
+  test('masks every absolute-money helper — formatMoney/formatUnitPrice/formatSignedDelta', () => {
+    setDiscreetMode(true);
+    expect(formatMoney(1234.56)).toBe(DISCREET_MASK);
+    expect(formatMoney(-1234.56, 'USD')).toBe(DISCREET_MASK);
+    expect(formatMoney(0)).toBe(DISCREET_MASK);
+    // Sub-cent path still masks — no unit-price leak.
+    expect(formatUnitPrice(0.000012)).toBe(DISCREET_MASK);
+    expect(formatUnitPrice(12.5, 'USD')).toBe(DISCREET_MASK);
+    expect(formatSignedDelta(1.25)).toBe(DISCREET_MASK);
+    expect(formatSignedDelta(-1.25)).toBe(DISCREET_MASK);
+  });
+
+  test('leaves percentages, quantities and dates untouched', () => {
+    setDiscreetMode(true);
+    // Relative values keep rendering — that's the whole point of discreet mode.
+    expect(formatPercent(2.5)).toBe('2,50 %');
+    expect(formatSignedPercent(2.5)).toMatch(/^\+2,50 %/);
+    expect(formatWeight(50)).toBe('50,00 %');
+    expect(formatQuantity(12.5)).toBe('12,5');
+    expect(formatDate('2024-01-15T12:00:00.000Z')).toBe('15.01.2024');
+  });
+
+  test('em-dash for missing values wins over the mask (nothing to hide)', () => {
+    setDiscreetMode(true);
+    expect(formatMoney(null)).toBe(EM_DASH);
+    expect(formatMoney(undefined)).toBe(EM_DASH);
+    expect(formatMoney(Number.NaN)).toBe(EM_DASH);
+    expect(formatUnitPrice(null)).toBe(EM_DASH);
+    expect(formatSignedDelta(null)).toBe(EM_DASH);
+  });
+
+  test('turning the flag back off restores exact rendering', () => {
+    setDiscreetMode(true);
+    expect(formatMoney(1234.56)).toBe(DISCREET_MASK);
+    setDiscreetMode(false);
+    expect(formatMoney(1234.56)).toBe('1.234,56 €');
+    expect(formatUnitPrice(0.000012)).toBe('0,000012 €');
+    expect(formatSignedDelta(1.25)).toBe('+1,25');
   });
 });
