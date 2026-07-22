@@ -146,41 +146,27 @@ export function MirrorForkProvenanceLine({ fork }: { fork: PortfolioForkProvenan
 /**
  * Small actor chip rendered on chain rows in the transaction / dividend / cash
  * lists (design §10/§11): who added the row. On a shared copy viewed by a
- * non-member, the server replaces the actor with the generic "group member"
- * chip — a member may expose their own book, never their co-members'
- * identities (design §10, enforced server-side).
+ * non-member, the server replaces the actor with a stripped attribution
+ * (userId: null) — a member may expose their own book, never their co-members'
+ * identities (design §10, enforced server-side). The chip renders the DE/EN
+ * i18n string in that stripped case so the raw English server literal never
+ * reaches the UI.
  */
 export function MirrorAttributionChip({
   attribution,
 }: {
-  attribution: { username: string; profileIcon: string | null };
+  attribution: { userId: string | null; username: string; profileIcon: string | null };
 }) {
   const t = useT();
+  const stripped = attribution.userId === null;
+  const label = stripped ? t('mirrorchain.attribution.groupMember') : attribution.username;
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full bg-neutral-800 py-0.5 pl-0.5 pr-2 text-xs text-neutral-300"
-      title={t('mirrorchain.attribution.by', { username: attribution.username })}
+      title={t('mirrorchain.attribution.by', { username: label })}
     >
-      <Avatar
-        name={attribution.username}
-        iconId={attribution.profileIcon}
-        size="sm"
-        className="!h-4 !w-4"
-      />
-      <span className="truncate max-w-[9rem]">{attribution.username}</span>
-    </span>
-  );
-}
-
-// ─── Sync progress badge ─────────────────────────────────────────────────────
-
-export function MirrorSyncBadge({ badge }: { badge: PortfolioMirrorBadge }) {
-  const t = useT();
-  if (badge.sync.synced) return null;
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-300">
-      <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
-      {t('mirrorchain.avatarStack.syncing', { percent: badge.sync.percent })}
+      <Avatar name={label} iconId={attribution.profileIcon} size="sm" className="!h-4 !w-4" />
+      <span className="truncate max-w-[9rem]">{label}</span>
     </span>
   );
 }
@@ -461,7 +447,13 @@ function ActivitySection({
 
 // ─── Invite dialog (friend picker → send) ────────────────────────────────────
 
-function InviteDialog({
+/**
+ * Friend-picker invite step (design §11) — the FIRST screen a user sees after
+ * Create/Convert (both flows chain into it immediately, per AC "zero
+ * configuration"). Exported so the switcher's Create flow and the page's
+ * Convert flow can render it without going through the member sheet.
+ */
+export function InviteDialog({
   chainId,
   existingMemberUserIds,
   onClose,
@@ -550,6 +542,53 @@ function inviteErrorMessage(error: unknown, t: TranslateFn): string {
     if (error.code === 'MIRROR_ALREADY_MEMBER') return t('mirrorchain.invite.errorAlreadyMember');
   }
   return t('mirrorchain.invite.errorGeneric');
+}
+
+/**
+ * Page-level wrapper that fetches the fresh chain's member list, then renders
+ * {@link InviteDialog}. Wires the create/convert flows straight into the
+ * friend-picker invite step (§11 zero-config AC) without dragging in the full
+ * member sheet.
+ */
+export function MirrorInviteStepDialog({
+  chainId,
+  onClose,
+  onDone,
+}: {
+  chainId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const t = useT();
+  const membersQuery = useQuery({
+    queryKey: chainMembersKey(chainId),
+    queryFn: ({ signal }) => getMirrorMembers(chainId, signal),
+  });
+  if (membersQuery.isLoading) {
+    return (
+      <Dialog title={t('mirrorchain.invite.title')} onClose={onClose} widthClassName="max-w-md">
+        <p className="text-sm text-neutral-500">{t('common.loading')}</p>
+      </Dialog>
+    );
+  }
+  if (membersQuery.isError || !membersQuery.data) {
+    return (
+      <Dialog title={t('mirrorchain.invite.title')} onClose={onClose} widthClassName="max-w-md">
+        <Alert tone="error">{t('mirrorchain.memberSheet.loadError')}</Alert>
+      </Dialog>
+    );
+  }
+  const existingMemberUserIds = new Set(
+    membersQuery.data.members.map((m) => m.userId).filter(Boolean) as string[],
+  );
+  return (
+    <InviteDialog
+      chainId={chainId}
+      existingMemberUserIds={existingMemberUserIds}
+      onClose={onClose}
+      onDone={onDone}
+    />
+  );
 }
 
 // ─── Rename dialog ───────────────────────────────────────────────────────────

@@ -1185,6 +1185,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       );
     }
     const latestSeq = latest?.seq ?? 0;
+    // Pre-M5-client compatibility fallback: a client that omits baseSeq
+    // (e.g. an older UI build) gets last-writer-wins for this entry. The M5
+    // web clients all send baseSeq off the row's mirror.version — new client
+    // code MUST NOT rely on this fallback (that would be silent LWW, §3
+    // forbids). Kept only so a stale tab does not 409 forever.
     const baseSeq = suppliedBaseSeq ?? latestSeq;
     if (baseSeq !== latestSeq) {
       throw new ApiError(
@@ -1291,6 +1296,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
    * §1). `stripAttribution` (design §10): a non-member viewer of a shared/public
    * copy sees every actor replaced with the generic "group member" chip — a
    * member exposes their own book, never their co-members' identities.
+   *
+   * NOTE: no wire path exposes chain-copy ledger rows to non-members today —
+   * `getSharedPortfolio` in the social service only ships holdings/history/
+   * totals, never per-row DTOs. `stripAttribution` is a keystone the guard
+   * relies on and the M5 unit tests exercise it directly, so a future
+   * shared-ledger view can flip it on without touching the strip logic itself.
    */
   async function overlayForPortfolio(
     portfolioId: string,

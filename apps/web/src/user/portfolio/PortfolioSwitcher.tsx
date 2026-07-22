@@ -17,6 +17,7 @@ import {
 import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
+import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 
 /**
  * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). Replaces the V1
@@ -88,6 +89,11 @@ export function PortfolioSwitcher() {
   const [confirmArchive, setConfirmArchive] = useState<PortfolioSummary | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<PortfolioSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Create-group-portfolio flow (V5-P7 §11): the "New group portfolio" menu
+  // item opens CreateChainDialog; on success we chain straight into the
+  // friend-picker invite step (§4/§11 zero-config AC).
+  const [createChainOpen, setCreateChainOpen] = useState(false);
+  const [inviteChainId, setInviteChainId] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -306,6 +312,18 @@ export function PortfolioSwitcher() {
             <button
               type="button"
               role="menuitem"
+              onClick={() => {
+                setActionError(null);
+                setCreateChainOpen(true);
+                setOpen(false);
+              }}
+              className={itemClass}
+            >
+              {t('portfolio.switcher.newGroupPortfolio')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
               disabled={!active}
               onClick={() => {
                 if (!active) return;
@@ -442,6 +460,28 @@ export function PortfolioSwitcher() {
             setActionError(null);
           }}
           onConfirm={() => deleteMutation.mutate(confirmDelete.id)}
+        />
+      ) : null}
+
+      {createChainOpen ? (
+        <CreateChainDialog
+          onClose={() => setCreateChainOpen(false)}
+          onCreated={(chainId) => {
+            setCreateChainOpen(false);
+            refetchLists();
+            setInviteChainId(chainId);
+          }}
+        />
+      ) : null}
+
+      {inviteChainId ? (
+        <MirrorInviteStepDialog
+          chainId={inviteChainId}
+          onClose={() => setInviteChainId(null)}
+          onDone={() => {
+            setInviteChainId(null);
+            refetchLists();
+          }}
         />
       ) : null}
 

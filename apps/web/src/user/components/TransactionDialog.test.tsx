@@ -409,6 +409,97 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/could not save/i)).not.toBeInTheDocument();
   });
+
+  // --- V5-P7 M5: baseSeq stale-edit guard (design §3) ------------------------
+
+  const CHAIN_TXN: Transaction = {
+    ...EDIT_TXN,
+    // The chain row carries the mirror overlay the API adds via
+    // `overlayForPortfolio`. `version` is the seq of the last op on this
+    // mirrorId — the client sends it as `baseSeq` to detect concurrent edits.
+    mirror: {
+      mirrorId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      version: 42,
+      addedBy: {
+        userId: '00000000-0000-4000-8000-000000000001',
+        username: 'alice',
+        profileIcon: null,
+      },
+    },
+  };
+
+  test('a chain row PATCH carries `baseSeq: mirror.version` on the wire (§3 stale-edit guard)', async () => {
+    vi.mocked(portfolioApi.updateTransaction).mockResolvedValue({ ...CHAIN_TXN, note: 'DCA' });
+    const user = userEvent.setup();
+    renderDialog({ transaction: CHAIN_TXN, asset: undefined });
+
+    await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(portfolioApi.updateTransaction).toHaveBeenCalledOnce());
+    // The note-only diff + baseSeq guard — the field carries the row's seq
+    // verbatim so the server compares against the latest op and refuses if a
+    // co-member wrote in the meantime.
+    expect(vi.mocked(portfolioApi.updateTransaction).mock.calls[0]![2]).toEqual({
+      note: 'DCA',
+      baseSeq: 42,
+    });
+  });
+
+  test('a non-chain row PATCH omits `baseSeq` (guard skipped for the vast majority)', async () => {
+    vi.mocked(portfolioApi.updateTransaction).mockResolvedValue({ ...EDIT_TXN, note: 'DCA' });
+    const user = userEvent.setup();
+    renderDialog({ transaction: EDIT_TXN, asset: undefined });
+
+    await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => expect(portfolioApi.updateTransaction).toHaveBeenCalledOnce());
+    expect(vi.mocked(portfolioApi.updateTransaction).mock.calls[0]![2]).toEqual({ note: 'DCA' });
+    expect(vi.mocked(portfolioApi.updateTransaction).mock.calls[0]![2]).not.toHaveProperty(
+      'baseSeq',
+    );
+  });
+
+  test('a MIRROR_CONFLICT 409 surfaces the i18n stale-edit copy (not the generic saveError)', async () => {
+    vi.mocked(portfolioApi.updateTransaction).mockRejectedValue(
+      new ApiError(
+        409,
+        'MIRROR_CONFLICT',
+        'Another member changed this entry in the meantime. Refresh and re-apply your edit.',
+      ),
+    );
+    const user = userEvent.setup();
+    renderDialog({ transaction: CHAIN_TXN, asset: undefined });
+
+    await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    // The dedicated MIRROR_CONFLICT copy is what the M5 guard surface promises —
+    // NOT the generic "Could not save. Please try again." fallback.
+    expect(await screen.findByText(/another member changed this entry/i)).toBeInTheDocument();
+    expect(screen.queryByText(/could not save/i)).not.toBeInTheDocument();
+  });
+
+  test('a MIRROR_ROW_DELETED 409 surfaces the deleted-row copy', async () => {
+    vi.mocked(portfolioApi.updateTransaction).mockRejectedValue(
+      new ApiError(
+        409,
+        'MIRROR_ROW_DELETED',
+        'This entry was deleted by another member. Refresh and try again.',
+      ),
+    );
+    const user = userEvent.setup();
+    renderDialog({ transaction: CHAIN_TXN, asset: undefined });
+
+    await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
+    await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+    expect(
+      await screen.findByText(/another member deleted this entry/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/could not save/i)).not.toBeInTheDocument();
+  });
 });
 
 // --- Dialog: linked date ↔ price fields (#226) ------------------------------

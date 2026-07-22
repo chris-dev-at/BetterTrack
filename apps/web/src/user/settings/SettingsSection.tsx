@@ -438,8 +438,7 @@ function NotificationMatrixGrid({
           // MIRRORCHAIN group portfolios (V5-P7 M5, design §11): the eight
           // chain notices join the matrix as ONE compact group row
           // (anti-bloat) — the visible row governs every mirror.* type as
-          // one; individual overrides stay accessible in the collapsed
-          // details for advanced users.
+          // one, all-or-nothing per channel.
           const isMirrorchain = category.key === 'mirrorchain';
           return (
             <tbody key={category.key} className="border-b border-neutral-800 last:border-b-0">

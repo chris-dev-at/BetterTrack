@@ -1744,6 +1744,7 @@
       "defaultBadge": "Default",
       "menuAriaLabel": "Portfolios",
       "newPortfolio": "+ New portfolio",
+      "newGroupPortfolio": "+ New group portfolio",
       "renameCurrent": "Rename current",
       "archiveCurrent": "Archive current",
       "archiveDisabledHint": "You cannot archive your only portfolio",
@@ -3178,7 +3179,8 @@
       "provenance": "Forked from {{chain}} · {{date}}"
     },
     "attribution": {
-      "by": "Added by {{username}}"
+      "by": "Added by {{username}}",
+      "groupMember": "Group member"
     },
     "role": {
       "owner": "Owner",

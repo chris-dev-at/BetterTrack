@@ -77,7 +77,28 @@ describe('MirrorchainPanel — fork provenance line (design §6)', () => {
 
 describe('MirrorchainPanel — attribution chip (design §10)', () => {
   test('renders the member username as the actor', () => {
-    wrap(<MirrorAttributionChip attribution={{ username: 'alice', profileIcon: null }} />);
+    wrap(
+      <MirrorAttributionChip
+        attribution={{
+          userId: '00000000-0000-4000-8000-000000000010',
+          username: 'alice',
+          profileIcon: null,
+        }}
+      />,
+    );
     expect(screen.getByText('alice')).toBeInTheDocument();
+  });
+
+  test('renders the i18n "group member" label when the server stripped attribution', () => {
+    // §10: a non-member viewer of a shared synced copy sees `userId: null` and
+    // the server-side literal "group member" — the chip translates that to the
+    // active locale (EN "Group member" here) so the English literal never
+    // reaches the UI.
+    wrap(
+      <MirrorAttributionChip
+        attribution={{ userId: null, username: 'group member', profileIcon: null }}
+      />,
+    );
+    expect(screen.getByText('Group member')).toBeInTheDocument();
   });
 });

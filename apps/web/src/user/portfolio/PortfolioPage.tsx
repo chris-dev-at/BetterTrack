@@ -54,6 +54,7 @@ import {
   MirrorAttributionChip,
   MirrorAvatarStack,
   MirrorForkProvenanceLine,
+  MirrorInviteStepDialog,
 } from './MirrorchainPanel';
 
 // ─── Range mapping ──────────────────────────────────────────────────────────
@@ -1144,6 +1145,9 @@ export function PortfolioPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [memberSheetOpen, setMemberSheetOpen] = useState(false);
   const [convertOpen, setConvertOpen] = useState(false);
+  // After Convert succeeds, jump straight to the friend-picker invite step
+  // (§4/§11 zero-config AC) — NOT the full member sheet.
+  const [inviteStepChainId, setInviteStepChainId] = useState<string | null>(null);
 
   // The API is portfolio_id-scoped (§6.8): resolve the active portfolio, then
   // thread its id through every scoped read/write. The active one is named by
@@ -1356,10 +1360,20 @@ export function PortfolioPage() {
             portfolioId={portfolio.id}
             portfolioName={portfolio.name}
             onClose={() => setConvertOpen(false)}
-            onConverted={() => {
+            onConverted={(chainId) => {
               setConvertOpen(false);
               refetchAll();
-              setMemberSheetOpen(true);
+              setInviteStepChainId(chainId);
+            }}
+          />
+        ) : null}
+        {inviteStepChainId ? (
+          <MirrorInviteStepDialog
+            chainId={inviteStepChainId}
+            onClose={() => setInviteStepChainId(null)}
+            onDone={() => {
+              setInviteStepChainId(null);
+              refetchAll();
             }}
           />
         ) : null}
