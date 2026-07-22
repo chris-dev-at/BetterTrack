@@ -215,12 +215,22 @@ export async function updateTransaction(
   return transactionSchema.parse(data.transaction);
 }
 
-/** `DELETE /portfolios/:id/transactions/:txId` — remove a transaction; re-validates oversell. */
-export async function deleteTransaction(portfolioId: string, id: string): Promise<void> {
+/**
+ * `DELETE /portfolios/:id/transactions/:txId` — remove a transaction; re-validates
+ * oversell. `baseSeq` (V5-P7 M5, design §3): on a chain row send the row's
+ * `mirror.version` so the server refuses with `409 MIRROR_CONFLICT` if another
+ * member changed it in the meantime; omit on non-chain rows.
+ */
+export async function deleteTransaction(
+  portfolioId: string,
+  id: string,
+  opts?: { baseSeq?: number },
+): Promise<void> {
   await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/transactions/${encodeURIComponent(id)}`,
     {
       method: 'DELETE',
+      body: opts?.baseSeq !== undefined ? { baseSeq: opts.baseSeq } : undefined,
     },
   );
 }

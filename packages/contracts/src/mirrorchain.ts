@@ -624,6 +624,36 @@ export const mirrorActivityQuerySchema = z
   .strict();
 export type MirrorActivityQuery = z.infer<typeof mirrorActivityQuerySchema>;
 
+/**
+ * Body for chain-guarded destructive mutations (design §3 M5 wiring): DELETE
+ * tx/dividend, POST source/archive|restore. `baseSeq` is the entity's
+ * `mirror.version` at the moment the client opened the edit — the append
+ * transaction refuses with `409 MIRROR_CONFLICT` if the entity's latest op seq
+ * has moved past it. The field is OPTIONAL and the WHOLE body is optional: a
+ * request with no body / no JSON at all still passes (Express hands us
+ * `undefined` for a body-less DELETE, which we normalize to `{}` here) — non-
+ * chain portfolios simply omit `baseSeq`, the mirror seam skips the guard.
+ */
+export const mirrorGuardRequestSchema = z.preprocess(
+  (value) => (value === undefined ? {} : value),
+  z.object({ baseSeq: z.number().int().nonnegative().optional() }).strict(),
+);
+export type MirrorGuardRequest = z.infer<typeof mirrorGuardRequestSchema>;
+
+/**
+ * The generic "group member" chip a non-member viewer of a shared synced copy
+ * sees (design §10). A member exposes their own book, never their co-members'
+ * identities — so the service replaces every `mirror.addedBy` with this token
+ * on non-member reads. The web client renders it as a neutral chip with the
+ * same shape as {@link mirrorAttributionSchema}.
+ */
+export const MIRROR_STRIPPED_ATTRIBUTION_USERNAME = 'group member';
+export const strippedMirrorAttribution: MirrorAttribution = {
+  userId: null,
+  username: MIRROR_STRIPPED_ATTRIBUTION_USERNAME,
+  profileIcon: null,
+};
+
 // --- M3 read-model DTOs (chain summary, members, invites, activity) ---------
 
 /**

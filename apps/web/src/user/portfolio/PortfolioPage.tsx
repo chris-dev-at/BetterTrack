@@ -48,6 +48,13 @@ import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
+import {
+  ConvertChainDialog,
+  MemberSheet,
+  MirrorAttributionChip,
+  MirrorAvatarStack,
+  MirrorForkProvenanceLine,
+} from './MirrorchainPanel';
 
 // ─── Range mapping ──────────────────────────────────────────────────────────
 
@@ -577,7 +584,7 @@ interface HoldingsTableProps {
   onToggle: (assetId: string) => void;
   onRecord: (asset: TransactionDialogAsset) => void;
   onEditTxn: (txn: Transaction) => void;
-  onDeleteTxn: (id: string) => void;
+  onDeleteTxn: (txn: Transaction) => void;
   onEditValuePoints: (asset: ValuePointEditorAsset) => void;
   deletingId: string | null;
 }
@@ -651,7 +658,7 @@ interface HoldingRowProps {
   onToggle: () => void;
   onRecord: (asset: TransactionDialogAsset) => void;
   onEditTxn: (txn: Transaction) => void;
-  onDeleteTxn: (id: string) => void;
+  onDeleteTxn: (txn: Transaction) => void;
   onEditValuePoints: (asset: ValuePointEditorAsset) => void;
   deletingId: string | null;
 }
@@ -818,7 +825,7 @@ function HoldingRow({
                         txn={txn}
                         currency={asset.currency}
                         onEdit={() => onEditTxn(txn)}
-                        onDelete={() => onDeleteTxn(txn.id)}
+                        onDelete={() => onDeleteTxn(txn)}
                         deleting={deletingId === txn.id}
                       />
                     ))}
@@ -867,6 +874,7 @@ function TransactionRow({
               : t('portfolio.overview.side.sell')}
           </span>
           <SourceBadge source={txn.source} />
+          {txn.mirror ? <MirrorAttributionChip attribution={txn.mirror.addedBy} /> : null}
         </span>
       </td>
       <td className="py-2 pr-3 text-right tabular-nums text-neutral-300">
@@ -1134,6 +1142,8 @@ export function PortfolioPage() {
   const [customOpen, setCustomOpen] = useState(false);
   const [cashDialogKind, setCashDialogKind] = useState<'deposit' | 'withdrawal' | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [memberSheetOpen, setMemberSheetOpen] = useState(false);
+  const [convertOpen, setConvertOpen] = useState(false);
 
   // The API is portfolio_id-scoped (§6.8): resolve the active portfolio, then
   // thread its id through every scoped read/write. The active one is named by
@@ -1187,7 +1197,8 @@ export function PortfolioPage() {
   const cashSources = cashSourcesQuery.data?.sources ?? [];
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteTransaction(portfolioId!, id),
+    mutationFn: ({ id, baseSeq }: { id: string; baseSeq?: number }) =>
+      deleteTransaction(portfolioId!, id, { baseSeq }),
     onSuccess: () => {
       setActionError(null);
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
@@ -1199,7 +1210,11 @@ export function PortfolioPage() {
       setActionError(
         err instanceof ApiError && err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE'
           ? err.message
-          : t('portfolio.overview.deleteTxnError'),
+          : err instanceof ApiError && err.code === 'MIRROR_CONFLICT'
+            ? t('portfolio.transaction.mirrorConflict')
+            : err instanceof ApiError && err.code === 'MIRROR_ROW_DELETED'
+              ? t('portfolio.transaction.mirrorRowDeleted')
+              : t('portfolio.overview.deleteTxnError'),
       ),
   });
 
@@ -1330,6 +1345,24 @@ export function PortfolioPage() {
         {customOpen ? (
           <CustomInvestmentDialog onClose={() => setCustomOpen(false)} onCreated={refetchAll} />
         ) : null}
+        {memberSheetOpen && portfolio?.mirror ? (
+          <MemberSheet
+            chainId={portfolio.mirror.chainId}
+            onClose={() => setMemberSheetOpen(false)}
+          />
+        ) : null}
+        {convertOpen && portfolio && !portfolio.mirror ? (
+          <ConvertChainDialog
+            portfolioId={portfolio.id}
+            portfolioName={portfolio.name}
+            onClose={() => setConvertOpen(false)}
+            onConverted={() => {
+              setConvertOpen(false);
+              refetchAll();
+              setMemberSheetOpen(true);
+            }}
+          />
+        ) : null}
       </>
     );
   }
@@ -1339,6 +1372,7 @@ export function PortfolioPage() {
       <PageHeader
         onRecord={() => setTxnDialog({ kind: 'create' })}
         onNewCustom={() => setCustomOpen(true)}
+        onMakeGroup={portfolio && !portfolio.mirror ? () => setConvertOpen(true) : undefined}
       />
 
       <RecategorizeBanner />
@@ -1367,6 +1401,10 @@ export function PortfolioPage() {
         />
       ) : (
         <>
+          {portfolio?.mirror ? (
+            <MirrorAvatarStack badge={portfolio.mirror} onClick={() => setMemberSheetOpen(true)} />
+          ) : null}
+          {portfolio?.mirrorFork ? <MirrorForkProvenanceLine fork={portfolio.mirrorFork} /> : null}
           <TotalsHeader
             totals={totals}
             onDeposit={() => setCashDialogKind('deposit')}
@@ -1447,9 +1485,11 @@ export function PortfolioPage() {
               onToggle={toggleExpanded}
               onRecord={(asset) => setTxnDialog({ kind: 'create', asset })}
               onEditTxn={(transaction) => setTxnDialog({ kind: 'edit', transaction })}
-              onDeleteTxn={(id) => deleteMutation.mutate(id)}
+              onDeleteTxn={(txn) =>
+                deleteMutation.mutate({ id: txn.id, baseSeq: txn.mirror?.version })
+              }
               onEditValuePoints={setValuePointAsset}
-              deletingId={deleteMutation.isPending ? (deleteMutation.variables ?? null) : null}
+              deletingId={deleteMutation.isPending ? (deleteMutation.variables?.id ?? null) : null}
             />
           </section>
 
@@ -1494,7 +1534,21 @@ function ModeButton({
   );
 }
 
-function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCustom: () => void }) {
+function PageHeader({
+  onRecord,
+  onNewCustom,
+  onMakeGroup,
+}: {
+  onRecord: () => void;
+  onNewCustom: () => void;
+  /**
+   * MIRRORCHAIN (V5-P7 M5, design §11): "Make this a group portfolio" — the
+   * convert entry point on an existing non-chain portfolio. Absent (no button)
+   * when the active portfolio is already a synced copy (design §1 uniqueness)
+   * or when the page has no active portfolio (loading/error).
+   */
+  onMakeGroup?: () => void;
+}) {
   const t = useT();
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1504,7 +1558,12 @@ function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCust
         </h1>
         <p className="mt-1 text-sm text-neutral-400">{t('portfolio.overview.subtitle')}</p>
       </div>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
+        {onMakeGroup ? (
+          <Button variant="secondary" onClick={onMakeGroup}>
+            {t('mirrorchain.actions.makeGroup')}
+          </Button>
+        ) : null}
         <Button variant="secondary" onClick={onNewCustom}>
           {t('portfolio.overview.newCustomButton')}
         </Button>

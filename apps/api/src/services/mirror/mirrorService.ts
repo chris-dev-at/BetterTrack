@@ -19,6 +19,7 @@ import {
   MIRROR_SYNC_STALLED,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   mirrorOpPayloadSchema,
+  strippedMirrorAttribution,
   type CashEntryRequest,
   type CashMovementResponse,
   type CashTransferRequest,
@@ -30,6 +31,7 @@ import {
   type MirrorAcceptInviteResponse,
   type MirrorActivityEntry,
   type MirrorActivityResponse,
+  type MirrorAttribution,
   type MirrorChainSummary,
   type MirrorInvite,
   type MirrorInviteListResponse,
@@ -39,7 +41,11 @@ import {
   type MirrorOpKind,
   type MirrorSyncState,
   type MirrorOpPayload,
+  type MirrorRowInfo,
   type MirrorRowKind,
+  type PortfolioForkProvenance,
+  type PortfolioMirrorBadge,
+  type PortfolioSummary,
   type SetCashBalanceRequest,
   type SetCashBalanceResponse,
   type Transaction as TransactionDto,
@@ -231,6 +237,35 @@ export interface MirrorService {
    * stay byte-identical to today.
    */
   syncedMembership(portfolioId: string): Promise<MirrorChainMemberRow | null>;
+  /**
+   * Enrich a batch of portfolio summaries with the M5 chain badge (active
+   * synced copies, design §11) and fork provenance line (formerly-synced
+   * copies whose membership ended, design §6). Non-chain portfolios pass
+   * through untouched (both optional fields absent). Called by the
+   * portfolio-list read paths so the switcher / portfolio page can render
+   * the avatar-stack + syncing state + "Forked from ⟨chain⟩" line without
+   * a second round-trip.
+   */
+  enrichPortfolioSummaries(
+    userId: string,
+    summaries: readonly PortfolioSummary[],
+  ): Promise<PortfolioSummary[]>;
+  /**
+   * Ledger DTO overlay for one copy (design §3/§10/§11): per-kind maps keyed
+   * by the copy-local row id, so ledger read paths can attach `mirror` cheaply
+   * by localId lookup. Non-synced portfolios short-circuit to empty maps.
+   * `stripAttribution` swaps every `addedBy` for the generic "group member"
+   * chip (design §10) — used when a non-member views a shared/public copy.
+   */
+  overlayForPortfolio(
+    portfolioId: string,
+    opts?: { stripAttribution?: boolean },
+  ): Promise<{
+    transactions: Map<string, MirrorRowInfo>;
+    dividends: Map<string, MirrorRowInfo>;
+    cashMovements: Map<string, MirrorRowInfo>;
+    cashSources: Map<string, MirrorRowInfo>;
+  }>;
   /**
    * "Make this portfolio a group portfolio" (§2 convert): creates the chain
    * with the caller as owner and their portfolio as the origin copy, and
@@ -1247,6 +1282,142 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     return { appliedSeq, lastSeq, percent, synced };
   }
 
+  /**
+   * Ledger DTO overlay for one copy (M5, design §3/§10/§11). Returns per-kind
+   * maps keyed by the copy-local row id, so ledger read paths (transactions /
+   * dividends / cash movements / cash sources) can attach `mirror` cheaply by
+   * localId lookup. Non-synced portfolios short-circuit to empty maps —
+   * enrichment then no-ops and the DTOs stay byte-identical to today (design
+   * §1). `stripAttribution` (design §10): a non-member viewer of a shared/public
+   * copy sees every actor replaced with the generic "group member" chip — a
+   * member exposes their own book, never their co-members' identities.
+   */
+  async function overlayForPortfolio(
+    portfolioId: string,
+    opts?: { stripAttribution?: boolean },
+  ): Promise<{
+    transactions: Map<string, MirrorRowInfo>;
+    dividends: Map<string, MirrorRowInfo>;
+    cashMovements: Map<string, MirrorRowInfo>;
+    cashSources: Map<string, MirrorRowInfo>;
+  }> {
+    const result = {
+      transactions: new Map<string, MirrorRowInfo>(),
+      dividends: new Map<string, MirrorRowInfo>(),
+      cashMovements: new Map<string, MirrorRowInfo>(),
+      cashSources: new Map<string, MirrorRowInfo>(),
+    };
+    // Only synced copies have mirror-linked rows — skip the query for the
+    // steady-state non-chain portfolio (the vast majority).
+    const membership = await repo.findActiveMembershipByPortfolio(portfolioId);
+    if (!membership) return result;
+    const rows = await repo.listMirrorRowInfoForPortfolio(portfolioId);
+    for (const row of rows) {
+      const addedBy: MirrorAttribution = opts?.stripAttribution
+        ? strippedMirrorAttribution
+        : {
+            userId: row.createdBy,
+            username: row.createdByUsername,
+            profileIcon: row.profileIcon,
+          };
+      const info: MirrorRowInfo = {
+        mirrorId: row.mirrorId,
+        version: row.latestSeq,
+        addedBy,
+      };
+      switch (row.kind) {
+        case 'transaction':
+          result.transactions.set(row.localId, info);
+          break;
+        case 'dividend':
+          result.dividends.set(row.localId, info);
+          break;
+        case 'cash_movement':
+          result.cashMovements.set(row.localId, info);
+          break;
+        case 'cash_source':
+          result.cashSources.set(row.localId, info);
+          break;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Enrich a batch of portfolio summaries with the M5 chain badges (design §11)
+   * + fork provenance line (design §6). One round-trip for the caller's active
+   * memberships (badge) plus one for the ended memberships whose copy still
+   * exists (fork). Non-chain portfolios stay byte-identical — the optional
+   * fields simply don't appear.
+   */
+  async function enrichPortfolioSummaries(
+    userId: string,
+    summaries: readonly PortfolioSummary[],
+  ): Promise<PortfolioSummary[]> {
+    if (summaries.length === 0) return [...summaries];
+    const [activeMemberships, forkMemberships] = await Promise.all([
+      repo.listActiveMembershipsForUser(userId),
+      repo.listForkMembershipsForUser(userId),
+    ]);
+    const activeByPortfolio = new Map<string, (typeof activeMemberships)[number]>();
+    for (const m of activeMemberships) {
+      if (m.portfolioId) activeByPortfolio.set(m.portfolioId, m);
+    }
+    const chainCache = new Map<string, Awaited<ReturnType<typeof repo.getChain>>>();
+    const memberCountCache = new Map<string, number>();
+    async function getChainCached(chainId: string) {
+      if (chainCache.has(chainId)) return chainCache.get(chainId)!;
+      const chain = await repo.getChain(chainId);
+      chainCache.set(chainId, chain);
+      return chain;
+    }
+    async function getMemberCountCached(chainId: string) {
+      if (memberCountCache.has(chainId)) return memberCountCache.get(chainId)!;
+      const n = await repo.countActiveMembers(chainId);
+      memberCountCache.set(chainId, n);
+      return n;
+    }
+    // Fork rows are ended_at DESC (repo); FIRST hit per portfolio wins — the
+    // most recent tombstone is the current fork story. An active membership
+    // for the same portfolio overrides (rejoined after leaving).
+    const forkByPortfolio = new Map<string, PortfolioForkProvenance>();
+    for (const m of forkMemberships) {
+      if (!m.portfolioId || forkByPortfolio.has(m.portfolioId)) continue;
+      if (activeByPortfolio.has(m.portfolioId)) continue;
+      forkByPortfolio.set(m.portfolioId, {
+        chainId: m.chainId,
+        chainName: m.chainName,
+        endedAt: (m.endedAt ?? new Date(now())).toISOString(),
+      });
+    }
+    const out: PortfolioSummary[] = [];
+    for (const summary of summaries) {
+      const active = activeByPortfolio.get(summary.id);
+      if (active) {
+        const chain = await getChainCached(active.chainId);
+        if (chain && chain.status === 'active') {
+          const memberCount = await getMemberCountCached(chain.id);
+          const badge: PortfolioMirrorBadge = {
+            chainId: chain.id,
+            chainName: chain.name,
+            role: active.role,
+            memberCount,
+            sync: syncStateOf(active.appliedSeq, chain.lastSeq),
+          };
+          out.push({ ...summary, mirror: badge });
+          continue;
+        }
+      }
+      const fork = forkByPortfolio.get(summary.id);
+      if (fork) {
+        out.push({ ...summary, mirrorFork: fork });
+        continue;
+      }
+      out.push(summary);
+    }
+    return out;
+  }
+
   function toMirrorMember(
     row: MirrorMemberDetailRow,
     selfUserId: string,
@@ -1498,6 +1669,14 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   const service: MirrorService = {
     syncedMembership(portfolioId) {
       return repo.findActiveMembershipByPortfolio(portfolioId);
+    },
+
+    enrichPortfolioSummaries(userId, summaries) {
+      return enrichPortfolioSummaries(userId, summaries);
+    },
+
+    overlayForPortfolio(portfolioId, opts) {
+      return overlayForPortfolio(portfolioId, opts);
     },
 
     async convertToChain(userId, portfolioId, opts) {

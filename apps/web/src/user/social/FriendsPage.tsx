@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { FriendRequest, Friendship } from '@bettertrack/contracts';
+import type { FriendRequest, Friendship, MirrorInvite } from '@bettertrack/contracts';
 
 import {
   acceptFriendRequest,
@@ -21,6 +21,11 @@ import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
 import { FriendGroupsSection } from './FriendGroupsSection';
+import {
+  AcceptInviteDialog,
+  useMirrorInvites,
+  useRevokeMirrorInvite,
+} from '../portfolio/MirrorchainPanel';
 import {
   ActivityAlertToggle,
   SharedItemRow,
@@ -169,6 +174,101 @@ function OutgoingRequestRow({
   );
 }
 
+/**
+ * MIRRORCHAIN group-portfolio invites (V5-P7 M5, design §4 + §11): shows
+ * inbound + outbound pending invites in the same Social requests area as
+ * friend requests. Accepting opens the §4 one-screen acknowledgment — the
+ * confirmation IS the accept (design §4 zero-config).
+ */
+function MirrorInvitesSection() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const invitesQuery = useMirrorInvites();
+  const revoke = useRevokeMirrorInvite();
+  const [acceptTarget, setAcceptTarget] = useState<MirrorInvite | null>(null);
+
+  if (invitesQuery.isLoading || !invitesQuery.data) return null;
+  const { incoming, outgoing } = invitesQuery.data;
+  if (incoming.length === 0 && outgoing.length === 0) return null;
+
+  function invalidate() {
+    void queryClient.invalidateQueries({ queryKey: ['mirror', 'invites'] });
+    void queryClient.invalidateQueries({ queryKey: ['mirror', 'chains'] });
+    void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {incoming.length > 0 ? (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            {t('mirrorchain.invites.incomingTitle')}
+          </h2>
+          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+            {incoming.map((invite) => (
+              <li
+                key={invite.id}
+                className="flex flex-wrap items-center justify-between gap-3 px-3 py-3"
+              >
+                <span className="flex items-center gap-2 text-sm text-neutral-100">
+                  <span className="text-neutral-500">
+                    {t('mirrorchain.invites.incomingLabel', {
+                      inviter: invite.fromUsername ?? t('common.unknown'),
+                    })}
+                  </span>
+                  <span className="font-medium">{invite.chainName}</span>
+                </span>
+                <Button variant="primary" onClick={() => setAcceptTarget(invite)}>
+                  {t('mirrorchain.invites.openAccept')}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {outgoing.length > 0 ? (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            {t('mirrorchain.invites.outgoingTitle')}
+          </h2>
+          <ul className="divide-y divide-neutral-800 overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900/40">
+            {outgoing.map((invite) => (
+              <li
+                key={invite.id}
+                className="flex flex-wrap items-center justify-between gap-3 px-3 py-3"
+              >
+                <span className="flex items-center gap-2 text-sm text-neutral-100">
+                  <span className="text-neutral-500">
+                    {t('mirrorchain.invites.outgoingLabel', { invitee: invite.toUsername })}
+                  </span>
+                  <span className="font-medium">{invite.chainName}</span>
+                </span>
+                <Button
+                  variant="secondary"
+                  onClick={() => revoke.mutate(invite.id)}
+                  disabled={revoke.isPending && revoke.variables === invite.id}
+                >
+                  {t('mirrorchain.actions.revokeInvite')}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {acceptTarget ? (
+        <AcceptInviteDialog
+          invite={acceptTarget}
+          onClose={() => setAcceptTarget(null)}
+          onAccepted={() => {
+            setAcceptTarget(null);
+            invalidate();
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function RequestsSection() {
   const t = useT();
   const queryClient = useQueryClient();
@@ -215,6 +315,7 @@ function RequestsSection() {
   return (
     // `#requests` is the deep-link anchor for friend.request notifications (V4-P0c).
     <div id="requests" className="flex flex-col gap-8 scroll-mt-20">
+      <MirrorInvitesSection />
       <section className="flex flex-col gap-3">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
           {t('social.friends.incomingTitle')}

@@ -13,6 +13,7 @@ import {
   createTransactionsRequestSchema,
   dividendListQuerySchema,
   dividendParamsSchema,
+  mirrorGuardRequestSchema,
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
   portfolioListQuerySchema,
@@ -36,6 +37,7 @@ import {
   type CreatePortfolioRequest,
   type CreateTransactionsRequest,
   type DividendListQuery,
+  type MirrorGuardRequest,
   type PortfolioHistoryQuery,
   type PortfolioListQuery,
   type PortfolioMutationResponse,
@@ -84,18 +86,23 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   const idempotency = createIdempotency(ctx);
 
   // GET /portfolios?includeArchived= — the user's portfolios (active by default,
-  // §6.8; archived rows included only when asked, §13.2 V2-P8).
+  // §6.8; archived rows included only when asked, §13.2 V2-P8). Enriched with
+  // the MIRRORCHAIN badge / fork provenance (V5-P7 M5, design §11/§6) so the
+  // switcher can render the avatar stack + "Syncing…" state / "Forked from ⟨X⟩"
+  // line without a second round-trip.
   router.get('/', validateQuery(portfolioListQuerySchema), async (req, res) => {
     const { includeArchived } = req.valid?.query as PortfolioListQuery;
     const list = await ctx.portfolio.listPortfolios(req.authUser!.id, { includeArchived });
-    res.json(list);
+    const portfolios = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, list.portfolios);
+    res.json({ portfolios });
   });
 
   // POST /portfolios — create a named portfolio (§13.2 V2-P8).
   router.post('/', validateBody(createPortfolioRequestSchema), async (req, res) => {
     const body = req.valid?.body as CreatePortfolioRequest;
     const portfolio = await ctx.portfolio.createPortfolio(req.authUser!.id, body);
-    const response: PortfolioMutationResponse = { portfolio };
+    const [enriched] = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, [portfolio]);
+    const response: PortfolioMutationResponse = { portfolio: enriched! };
     res.status(201).json(response);
   });
 
@@ -103,7 +110,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post('/:portfolioId/archive', validateParams(portfolioIdParamSchema), async (req, res) => {
     const { portfolioId } = req.valid?.params as { portfolioId: string };
     const portfolio = await ctx.portfolio.archivePortfolio(req.authUser!.id, portfolioId);
-    const response: PortfolioMutationResponse = { portfolio };
+    const [enriched] = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, [portfolio]);
+    const response: PortfolioMutationResponse = { portfolio: enriched! };
     res.json(response);
   });
 
@@ -111,7 +119,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   router.post('/:portfolioId/restore', validateParams(portfolioIdParamSchema), async (req, res) => {
     const { portfolioId } = req.valid?.params as { portfolioId: string };
     const portfolio = await ctx.portfolio.restorePortfolio(req.authUser!.id, portfolioId);
-    const response: PortfolioMutationResponse = { portfolio };
+    const [enriched] = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, [portfolio]);
+    const response: PortfolioMutationResponse = { portfolio: enriched! };
     res.json(response);
   });
 
@@ -198,7 +207,9 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   );
 
   // GET /portfolios/:portfolioId/cash?source= — cash movements + current balance
-  // (§14, #220), optionally narrowed to one source tag (V5-P0c).
+  // (§14, #220), optionally narrowed to one source tag (V5-P0c). On a synced
+  // copy, each replicated movement / source carries the M5 `mirror` overlay
+  // (design §3/§11).
   router.get(
     '/:portfolioId/cash',
     validateParams(portfolioIdParamSchema),
@@ -207,7 +218,16 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const { source } = req.valid?.query as CashMovementsQuery;
       const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, { source });
-      res.json(cash);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const movements = cash.movements.map((m) => {
+        const mirror = overlay.cashMovements.get(m.id);
+        return mirror ? { ...m, mirror } : m;
+      });
+      const sources = cash.sources.map((s) => {
+        const mirror = overlay.cashSources.get(s.id);
+        return mirror ? { ...s, mirror } : s;
+      });
+      res.json({ ...cash, movements, sources });
     },
   );
 
@@ -253,7 +273,9 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   );
 
   // GET /portfolios/:portfolioId/cash/sources?includeArchived= — the sources with
-  // per-source balances, Main first (V3-P3).
+  // per-source balances, Main first (V3-P3). Chain sources carry the M5 `mirror`
+  // overlay (V5-P7 M5, design §3/§11) — powers the rename/archive stale-edit
+  // guard and the attribution chip.
   router.get(
     '/:portfolioId/cash/sources',
     validateParams(portfolioIdParamSchema),
@@ -264,7 +286,12 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const list = await ctx.portfolio.listCashSources(req.authUser!.id, portfolioId, {
         includeArchived,
       });
-      res.json(list);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const sources = list.sources.map((s) => {
+        const mirror = overlay.cashSources.get(s.id);
+        return mirror ? { ...s, mirror } : s;
+      });
+      res.json({ sources });
     },
   );
 
@@ -292,12 +319,13 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         portfolioId: string;
         sourceId: string;
       };
-      const patch = req.valid?.body as UpdateCashSourceRequest;
+      const { baseSeq, ...patch } = req.valid?.body as UpdateCashSourceRequest;
       const source = await ctx.mirror.submitSourceUpdate(
         req.authUser!.id,
         portfolioId,
         sourceId,
         patch,
+        { baseSeq },
       );
       const response: CashSourceResponse = { source };
       res.json(response);
@@ -305,31 +333,41 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   );
 
   // POST /portfolios/:portfolioId/cash/sources/:sourceId/archive — soft-archive;
-  // rejects Main and any non-zero balance (V3-P3).
+  // rejects Main and any non-zero balance (V3-P3). Body may carry `baseSeq` on a
+  // synced copy (V5-P7 M5, design §3) — the chain's stale-edit guard.
   router.post(
     '/:portfolioId/cash/sources/:sourceId/archive',
     validateParams(cashSourceParamsSchema),
+    validateBody(mirrorGuardRequestSchema),
     async (req, res) => {
       const { portfolioId, sourceId } = req.valid?.params as {
         portfolioId: string;
         sourceId: string;
       };
-      const source = await ctx.mirror.submitSourceArchive(req.authUser!.id, portfolioId, sourceId);
+      const { baseSeq } = req.valid?.body as MirrorGuardRequest;
+      const source = await ctx.mirror.submitSourceArchive(req.authUser!.id, portfolioId, sourceId, {
+        baseSeq,
+      });
       const response: CashSourceResponse = { source };
       res.json(response);
     },
   );
 
-  // POST /portfolios/:portfolioId/cash/sources/:sourceId/restore — undo archive (V3-P3).
+  // POST /portfolios/:portfolioId/cash/sources/:sourceId/restore — undo archive
+  // (V3-P3). Body may carry `baseSeq` on a synced copy (V5-P7 M5, design §3).
   router.post(
     '/:portfolioId/cash/sources/:sourceId/restore',
     validateParams(cashSourceParamsSchema),
+    validateBody(mirrorGuardRequestSchema),
     async (req, res) => {
       const { portfolioId, sourceId } = req.valid?.params as {
         portfolioId: string;
         sourceId: string;
       };
-      const source = await ctx.mirror.submitSourceRestore(req.authUser!.id, portfolioId, sourceId);
+      const { baseSeq } = req.valid?.body as MirrorGuardRequest;
+      const source = await ctx.mirror.submitSourceRestore(req.authUser!.id, portfolioId, sourceId, {
+        baseSeq,
+      });
       const response: CashSourceResponse = { source };
       res.json(response);
     },
@@ -388,7 +426,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   );
 
   // GET /portfolios/:portfolioId/dividends?source= — the recorded dividends
-  // (V3-P4), optionally narrowed to one source tag (V5-P0c).
+  // (V3-P4), optionally narrowed to one source tag (V5-P0c). On a synced copy,
+  // each replicated dividend carries the M5 `mirror` overlay (design §3/§11).
   router.get(
     '/:portfolioId/dividends',
     validateParams(portfolioIdParamSchema),
@@ -397,21 +436,31 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const { source } = req.valid?.query as DividendListQuery;
       const list = await ctx.tax.listDividends(req.authUser!.id, portfolioId, { source });
-      res.json(list);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const dividends = list.dividends.map((d) => {
+        const mirror = overlay.dividends.get(d.id);
+        return mirror ? { ...d, mirror } : d;
+      });
+      res.json({ dividends });
     },
   );
 
   // DELETE /portfolios/:portfolioId/dividends/:dividendId — remove a dividend;
-  // its movements cascade and an AT year re-settles append-only (V3-P4).
+  // its movements cascade and an AT year re-settles append-only (V3-P4). Body
+  // may carry `baseSeq` on a synced copy (V5-P7 M5, design §3).
   router.delete(
     '/:portfolioId/dividends/:dividendId',
     validateParams(dividendParamsSchema),
+    validateBody(mirrorGuardRequestSchema),
     async (req, res) => {
       const { portfolioId, dividendId } = req.valid?.params as {
         portfolioId: string;
         dividendId: string;
       };
-      await ctx.mirror.submitDividendDelete(req.authUser!.id, portfolioId, dividendId);
+      const { baseSeq } = req.valid?.body as MirrorGuardRequest;
+      await ctx.mirror.submitDividendDelete(req.authUser!.id, portfolioId, dividendId, {
+        baseSeq,
+      });
       res.status(204).send();
     },
   );
@@ -504,6 +553,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   );
 
   // GET /portfolios/:portfolioId/transactions?cursor= — newest-first ledger (§8).
+  // On a synced copy, each chain-linked row carries the M5 `mirror` overlay
+  // (V5-P7 M5, design §3/§11) — powers the edit stale-guard + attribution chip.
   router.get(
     '/:portfolioId/transactions',
     validateParams(portfolioIdParamSchema),
@@ -516,7 +567,12 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         limit,
         source,
       });
-      res.json(page);
+      const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
+      const items = page.items.map((tx) => {
+        const mirror = overlay.transactions.get(tx.id);
+        return mirror ? { ...tx, mirror } : tx;
+      });
+      res.json({ ...page, items });
     },
   );
 
@@ -547,25 +603,29 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     validateBody(updateTransactionRequestSchema),
     async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
-      const patch = req.valid?.body as UpdateTransactionRequest;
+      const { baseSeq, ...patch } = req.valid?.body as UpdateTransactionRequest;
       const transaction = await ctx.mirror.submitTransactionUpdate(
         req.authUser!.id,
         portfolioId,
         txId,
         patch,
+        { baseSeq },
       );
       res.json({ transaction });
     },
   );
 
-  // DELETE /portfolios/:portfolioId/transactions/:txId — remove; re-validates oversell (§6.8).
+  // DELETE /portfolios/:portfolioId/transactions/:txId — remove; re-validates
+  // oversell (§6.8). Body may carry `baseSeq` on a synced copy (V5-P7 M5, §3).
   router.delete(
     '/:portfolioId/transactions/:txId',
     validateParams(portfolioTransactionParamsSchema),
     idempotency,
+    validateBody(mirrorGuardRequestSchema),
     async (req, res) => {
       const { portfolioId, txId } = req.valid?.params as { portfolioId: string; txId: string };
-      await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId);
+      const { baseSeq } = req.valid?.body as MirrorGuardRequest;
+      await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId, { baseSeq });
       res.status(204).send();
     },
   );

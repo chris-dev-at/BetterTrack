@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, lt, notExists, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNotNull, lt, ne, notExists, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 
 import type {
@@ -410,6 +410,31 @@ export function createMirrorchainRepository(db: Database) {
         .where(and(eq(mirrorChainMembers.userId, userId), eq(mirrorChainMembers.status, 'active')));
     },
 
+    /**
+     * A user's ENDED memberships (kick/leave/dissolve/account_deleted) whose
+     * copy still exists — the fork provenance source (design §6/§11: "Forked
+     * from ⟨chain⟩ · ⟨date⟩"). Rows with `portfolio_id = NULL` (the copy was
+     * deleted) are excluded — there's nothing to render for. Sorted so the
+     * latest tombstone wins per portfolio.
+     */
+    async listForkMembershipsForUser(
+      userId: string,
+    ): Promise<Array<MirrorChainMemberRow & { chainName: string }>> {
+      const rows = await db
+        .select({ member: mirrorChainMembers, chainName: mirrorChains.name })
+        .from(mirrorChainMembers)
+        .innerJoin(mirrorChains, eq(mirrorChains.id, mirrorChainMembers.chainId))
+        .where(
+          and(
+            eq(mirrorChainMembers.userId, userId),
+            ne(mirrorChainMembers.status, 'active'),
+            isNotNull(mirrorChainMembers.portfolioId),
+          ),
+        )
+        .orderBy(desc(mirrorChainMembers.endedAt));
+      return rows.map((r) => ({ ...r.member, chainName: r.chainName }));
+    },
+
     /** Count active members of a chain (the §4 member-cap check + summary count). */
     async countActiveMembers(chainId: string): Promise<number> {
       const [row] = await db
@@ -648,6 +673,70 @@ export function createMirrorchainRepository(db: Database) {
     /** All mirror-row links for one copy (attribution overlay on the ledger). */
     async listMirrorRowsForPortfolio(portfolioId: string): Promise<MirrorRowRow[]> {
       return db.select().from(mirrorRows).where(eq(mirrorRows.portfolioId, portfolioId));
+    },
+
+    /**
+     * Mirror-row overlay for one copy (M5, design §3/§10/§11): every chain-row
+     * link the copy holds, enriched with the creator's live profile icon (for
+     * the attribution chip) and the entity's latest op seq (the `mirror.version`
+     * the §3 stale-edit guard's `baseSeq` reads). One round-trip per portfolio:
+     * LEFT JOIN on users (SET NULL survives account deletion) + a per-mirror_id
+     * correlated MAX(seq) from `mirror_chain_ops`. Called by the mirror-service
+     * enrichment helpers that populate the DTO `mirror` field on ledger reads.
+     */
+    async listMirrorRowInfoForPortfolio(portfolioId: string): Promise<
+      Array<{
+        kind: MirrorRowKind;
+        mirrorId: string;
+        localId: string;
+        createdBy: string | null;
+        createdByUsername: string;
+        profileIcon: string | null;
+        /** MAX(seq) across all ops targeting this mirror_id — the §3 `version`. */
+        latestSeq: number;
+      }>
+    > {
+      const rows = await db
+        .select({
+          kind: mirrorRows.kind,
+          mirrorId: mirrorRows.mirrorId,
+          localId: mirrorRows.localId,
+          createdBy: mirrorRows.createdBy,
+          createdByUsername: mirrorRows.createdByUsername,
+          profileIcon: users.profileIcon,
+          chainId: mirrorRows.chainId,
+        })
+        .from(mirrorRows)
+        .leftJoin(users, eq(users.id, mirrorRows.createdBy))
+        .where(eq(mirrorRows.portfolioId, portfolioId));
+      if (rows.length === 0) return [];
+      // Batch the per-mirror_id latest seq in one query, keyed by (chainId, mirrorId)
+      // — a mirror_id is unique within its chain (design §1), so pairing on both
+      // survives the (astronomically rare) case of the same UUIDv7 across chains.
+      const seqRows = await db
+        .select({
+          chainId: mirrorChainOps.chainId,
+          mirrorId: mirrorChainOps.mirrorId,
+          latestSeq: sql<number>`max(${mirrorChainOps.seq})::int`,
+        })
+        .from(mirrorChainOps)
+        .where(
+          and(eq(mirrorChainOps.chainId, rows[0]!.chainId), isNotNull(mirrorChainOps.mirrorId)),
+        )
+        .groupBy(mirrorChainOps.chainId, mirrorChainOps.mirrorId);
+      const seqByMirrorId = new Map<string, number>();
+      for (const r of seqRows) {
+        if (r.mirrorId) seqByMirrorId.set(r.mirrorId, r.latestSeq);
+      }
+      return rows.map((r) => ({
+        kind: r.kind,
+        mirrorId: r.mirrorId,
+        localId: r.localId,
+        createdBy: r.createdBy,
+        createdByUsername: r.createdByUsername,
+        profileIcon: r.profileIcon ?? null,
+        latestSeq: seqByMirrorId.get(r.mirrorId) ?? 0,
+      }));
     },
 
     /**

@@ -214,6 +214,9 @@
     "search": "Suchen",
     "yes": "Ja",
     "no": "Nein",
+    "processing": "Wird verarbeitet…",
+    "creating": "Wird erstellt…",
+    "unknown": "unbekannt",
     "private": "Privat",
     "friends": "Freunde",
     "soon": "Bald",
@@ -697,6 +700,11 @@
         "saveError": "Die Änderung konnte nicht gespeichert werden. Bitte versuche es erneut.",
         "inviteHint": "Einladungs-E-Mails gehen an Personen ohne Konto — hier gibt es nichts zu steuern.",
         "tempPasswordEmailHint": "Die E-Mail mit dem temporären Passwort wird immer gesendet — sie enthält deine Zugangsdaten."
+      },
+      "mirrorchain": {
+        "groupLabel": "Aktivität im Gruppenportfolio",
+        "groupHint": "Einladungen, Mitgliederänderungen, Eigentümer, Auflösung und Sync-Hinweise — alles in einer Einstellung.",
+        "cellAria": "Aktivität im Gruppenportfolio per {{channel}}"
       },
       "mute": {
         "label": "Alle Benachrichtigungen stummschalten",
@@ -1381,6 +1389,8 @@
       "saving": "Wird gespeichert…",
       "cancel": "Abbrechen",
       "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut.",
+      "mirrorConflict": "Ein anderes Mitglied hat diesen Eintrag in der Zwischenzeit geändert. Schließe den Dialog, öffne die Zeile erneut und wiederhole deine Änderung.",
+      "mirrorRowDeleted": "Ein anderes Mitglied hat diesen Eintrag gelöscht. Schließe den Dialog und aktualisiere die Liste.",
       "uncoveredWarning": "Du hältst nur {{held}} {{symbol}} — beim Verkauf von {{quantity}} gehören dir {{uncovered}} nicht.",
       "uncoveredNoShorts": "Die Position schließt bei 0 — es entsteht keine Short-Position. Der Erlös wird wie üblich dem Bargeld gutgeschrieben.",
       "uncoveredAck": "Trotzdem fortfahren — mehr verkaufen, als ich halte",
@@ -3152,6 +3162,135 @@
         "compass": "Kompass",
         "anchor": "Anker"
       }
+    }
+  },
+  "mirrorchain": {
+    "avatarStack": {
+      "openAria": "{{name}} — {{count}} Mitglieder. Mitgliederliste öffnen.",
+      "membersCount": "{{count}} Mitglieder",
+      "syncing": "Synchronisiere… {{percent}} %"
+    },
+    "fork": {
+      "provenance": "Abgezweigt von {{chain}} · {{date}}"
+    },
+    "attribution": {
+      "by": "Hinzugefügt von {{username}}"
+    },
+    "role": {
+      "owner": "Besitzer",
+      "manager": "Manager",
+      "member": "Mitglied"
+    },
+    "actions": {
+      "makeGroup": "Zu Gruppenportfolio machen",
+      "invite": "Einladen",
+      "rename": "Umbenennen",
+      "kick": "Entfernen",
+      "grantManage": "Manager-Rechte geben",
+      "revokeManage": "Manager-Rechte entziehen",
+      "transfer": "Besitzer machen",
+      "leave": "Verlassen",
+      "dissolve": "Gruppe auflösen",
+      "sendInvite": "Einladen",
+      "revokeInvite": "Einladung zurückziehen"
+    },
+    "create": {
+      "title": "Neues Gruppenportfolio",
+      "body": "Ein Portfolio, das du mit eingeladenen Freund:innen teilst — alle sehen jede Buchung, und jede:r kann Einträge hinzufügen oder bearbeiten.",
+      "namePlaceholder": "Name des Gruppenportfolios",
+      "confirm": "Erstellen",
+      "error": "Das Gruppenportfolio konnte nicht erstellt werden. Bitte versuche es erneut."
+    },
+    "convert": {
+      "title": "Zu Gruppenportfolio machen",
+      "body": "Verwandle dieses Portfolio in ein geteiltes. Die Historie bleibt genau wie sie ist; ab jetzt kann jedes eingeladene Mitglied Einträge hinzufügen oder bearbeiten und alle sehen sie.",
+      "confirm": "Weiter",
+      "errorAlreadySynced": "Dieses Portfolio ist bereits ein Gruppenportfolio.",
+      "errorCustomAsset": "Dieses Portfolio enthält benutzerdefinierte Werte, die andere Mitglieder nicht sehen können. Entferne sie (oder verwende ein anderes Portfolio), bevor du es zu einem Gruppenportfolio machst.",
+      "errorGeneric": "Dieses Portfolio konnte nicht konvertiert werden. Bitte versuche es erneut."
+    },
+    "invite": {
+      "title": "Freund:in einladen",
+      "body": "Nur Freund:innen können eingeladen werden. Die eingeladene Person sieht eine einseitige Bestätigung und tritt mit einer frischen Kopie bei, die automatisch synchronisiert wird.",
+      "searchPlaceholder": "Freund:innen nach Benutzername suchen",
+      "empty": "Keine Freund:innen zum Einladen. Füge zuerst welche unter Social hinzu.",
+      "sending": "Einladung wird gesendet…",
+      "errorNotFriends": "Du kannst nur Freund:innen zu einem Gruppenportfolio einladen.",
+      "errorCapReached": "Diese Gruppe ist voll (max. {{max}} Mitglieder).",
+      "errorAlreadyInvited": "Diese Person hat bereits eine offene Einladung zu dieser Gruppe.",
+      "errorAlreadyMember": "Diese Person ist bereits Mitglied dieser Gruppe.",
+      "errorGeneric": "Die Einladung konnte nicht gesendet werden. Bitte versuche es erneut."
+    },
+    "accept": {
+      "title": "„{{chain}}“ beitreten?",
+      "acknowledgment": "Mitglieder von „{{chain}}“ sehen alles in diesem Portfolio und können Einträge hinzufügen oder bearbeiten, die in deinem Konto erscheinen. Deine anderen Portfolios bleiben privat. Du kannst jederzeit austreten und deine Kopie behalten.",
+      "accept": "Beitreten",
+      "decline": "Ablehnen"
+    },
+    "rename": {
+      "title": "Gruppenportfolio umbenennen",
+      "error": "Die Gruppe konnte nicht umbenannt werden. Bitte versuche es erneut."
+    },
+    "memberSheet": {
+      "title": "Mitglieder des Gruppenportfolios",
+      "subtitle": "Mitglieder, Rollen und Aktivität. Als Besitzer oder Manager siehst du die Einlade- und Verwaltungsaktionen.",
+      "roster": "{{count}} von {{max}} Mitgliedern",
+      "loadError": "Die Mitgliederliste konnte nicht geladen werden. Bitte versuche es erneut."
+    },
+    "memberRow": {
+      "you": "du",
+      "joined": "Beigetreten {{date}}"
+    },
+    "confirm": {
+      "leave": {
+        "title": "Dieses Gruppenportfolio verlassen?",
+        "body": "Du behältst deine Kopie; sie wird nur nicht mehr synchronisiert. Neue Einträge von dir oder den anderen wandern ab jetzt nicht mehr über.",
+        "confirm": "Verlassen"
+      },
+      "dissolve": {
+        "title": "Dieses Gruppenportfolio auflösen?",
+        "body": "Jedes Mitglied — auch du — behält seine eigene Kopie als normales Portfolio. Die Synchronisierung endet für alle. Das kann nicht rückgängig gemacht werden.",
+        "confirm": "Auflösen"
+      },
+      "kick": {
+        "title": "„{{username}}“ entfernen?",
+        "body": "„{{username}}“ behält die Kopie; sie wird nur nicht mehr synchronisiert. Neue Einträge dieser Person bleiben ab jetzt nur in ihrem eigenen Buch.",
+        "confirm": "Entfernen"
+      },
+      "grantManage": {
+        "title": "„{{username}}“ Manager-Rechte geben?",
+        "body": "Manager:innen können Freund:innen einladen, einfache Mitglieder entfernen und die Gruppe umbenennen. Nur der:die Besitzer:in kann Eigentum übertragen oder die Gruppe auflösen.",
+        "confirm": "Geben"
+      },
+      "revokeManage": {
+        "title": "„{{username}}“ die Manager-Rechte entziehen?",
+        "body": "„{{username}}“ bleibt Mitglied, kann aber keine Freund:innen mehr einladen, niemanden entfernen und die Gruppe nicht umbenennen.",
+        "confirm": "Entziehen"
+      },
+      "transfer": {
+        "title": "„{{username}}“ zur Besitzer:in machen?",
+        "body": "„{{username}}“ wird Besitzer:in und du wirst einfaches Mitglied. Du kannst jederzeit austreten und deine Kopie behalten.",
+        "confirm": "Übertragen"
+      }
+    },
+    "activity": {
+      "title": "Aktivität",
+      "empty": "Hier ist noch nichts passiert.",
+      "loadError": "Die Aktivitätsliste konnte nicht geladen werden. Bitte versuche es erneut."
+    },
+    "invites": {
+      "incomingTitle": "Einladungen zu Gruppenportfolios",
+      "outgoingTitle": "Von dir gesendete Einladungen",
+      "incomingLabel": "{{inviter}} hat dich eingeladen zu",
+      "outgoingLabel": "{{invitee}} — eingeladen zu",
+      "openAccept": "Ansehen"
+    },
+    "share": {
+      "syncedNotice": "Andere Mitglieder dieses Gruppenportfolios bleiben für dich sichtbar, ihre Namen werden aber für Personen ausgeblendet, mit denen du das Portfolio teilst und die selbst nicht Mitglied sind."
+    },
+    "errors": {
+      "forbidden": "Deine Rolle erlaubt diese Aktion im Gruppenportfolio nicht.",
+      "generic": "Etwas ist schiefgelaufen. Bitte versuche es erneut."
     }
   },
   "deleteAccount": {
