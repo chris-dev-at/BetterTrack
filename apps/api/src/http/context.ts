@@ -13,6 +13,7 @@ import { createAuditRepository } from '../data/repositories/auditRepository';
 import { createConglomerateRepository } from '../data/repositories/conglomerateRepository';
 import { createIdeaRepository } from '../data/repositories/ideaRepository';
 import {
+  createExpenseBudgetRepository,
   createExpenseCategoryRepository,
   createExpenseRuleRepository,
   createExpenseTransactionRepository,
@@ -146,6 +147,10 @@ import {
   createExpenseImportService,
   type ExpenseImportService,
 } from '../services/expenses/expenseImportService';
+import {
+  createExpenseBudgetService,
+  type ExpenseBudgetService,
+} from '../services/expenses/budgetService';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
@@ -299,6 +304,8 @@ export interface AppContext {
   expenses: ExpenseService;
   /** Bank-statement CSV import + rule-based auto-categorization for the expense area (§13.5 V5-P9, issue 2/3). */
   expenseImports: ExpenseImportService;
+  /** Expense dashboards + per-category budgets with matrix-routed alerts (§13.5 V5-P9, issue 3/3). */
+  expenseBudgets: ExpenseBudgetService;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -483,6 +490,13 @@ export interface BuildContextDeps {
    * a controlled clock across Jan 1. Defaults to the real time.
    */
   taxNow?: () => number;
+  /**
+   * Test seam (§13.5 V5-P9): the expense budget/dashboard clock — the current
+   * evaluation period + the dashboards' default month derive from it, so a
+   * blown-budget alert and a month's aggregates are provable against a controlled
+   * clock. Defaults to the real time.
+   */
+  budgetNow?: () => Date;
 }
 
 /** Composition root: repositories → services → context. */
@@ -1133,18 +1147,35 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const expenseCategoryRepo = createExpenseCategoryRepository(db);
   const expenseTransactionRepo = createExpenseTransactionRepository(db);
   const expenseRuleRepo = createExpenseRuleRepository(db);
+  const expenseBudgetRepo = createExpenseBudgetRepository(db);
+  // Dashboards + per-category budgets with matrix-routed alerts (issue 3/3): the
+  // insights surface over the ledger. It emits `budget.exceeded` through the ONE
+  // notification center (so instant/digest + quiet hours ride the normal path)
+  // and its `evaluate` hook re-checks budgets after every expense write — the
+  // exactly-once (budget, period) gate lives in the fired-marker it claims.
+  const expenseBudgets = createExpenseBudgetService({
+    categories: expenseCategoryRepo,
+    transactions: expenseTransactionRepo,
+    budgets: expenseBudgetRepo,
+    notify,
+    now: deps.budgetNow,
+    logger,
+  });
   const expenses = createExpenseService({
     categories: expenseCategoryRepo,
     transactions: expenseTransactionRepo,
     rules: expenseRuleRepo,
+    onTransactionWrite: (userId) => expenseBudgets.evaluate(userId),
   });
   // Bank-statement CSV import + rule-based auto-categorization (issue 2/3): a
-  // stateless preview → apply over the same owner-scoped repos.
+  // stateless preview → apply over the same owner-scoped repos. A non-empty apply
+  // re-evaluates budgets so an imported batch that blows a target still alerts.
   const expenseImports = createExpenseImportService({
     categories: expenseCategoryRepo,
     transactions: expenseTransactionRepo,
     rules: expenseRuleRepo,
     mappers: ALL_BANK_MAPPERS,
+    onApply: (userId) => expenseBudgets.evaluate(userId),
   });
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
@@ -1419,6 +1450,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     standingOrders,
     expenses,
     expenseImports,
+    expenseBudgets,
     analytics,
     social,
     comments,

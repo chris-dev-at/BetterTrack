@@ -20,7 +20,9 @@ import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { ForecastPage } from './forecast/ForecastPage';
 import { ExpensesLayout } from './expenses/ExpensesSection';
+import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
 import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
+import { BudgetsPage as ExpenseBudgetsPage } from './expenses/BudgetsPage';
 import { CategoriesPage as ExpenseCategoriesPage } from './expenses/CategoriesPage';
 import { RulesPage as ExpenseRulesPage } from './expenses/RulesPage';
 import { ImportPage as ExpenseImportPage } from './expenses/ImportPage';
@@ -178,7 +180,9 @@ function UserShell() {
           {/* ── Expenses (§13.5 V5-P9) — a NEW top-level area, separate from
               portfolio money. Foundation: transactions + category manager. ── */}
           <Route path="expenses" element={<ExpensesLayout />}>
-            <Route index element={<ExpenseTransactionsPage />} />
+            <Route index element={<ExpenseDashboardPage />} />
+            <Route path="transactions" element={<ExpenseTransactionsPage />} />
+            <Route path="budgets" element={<ExpenseBudgetsPage />} />
             <Route path="categories" element={<ExpenseCategoriesPage />} />
             <Route path="rules" element={<ExpenseRulesPage />} />
             <Route path="import" element={<ExpenseImportPage />} />

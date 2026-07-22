@@ -291,7 +291,9 @@
     "title": "Expenses",
     "tagline": "Track your spending and income — kept separate from your portfolio.",
     "nav": {
+      "dashboard": "Dashboard",
       "transactions": "Transactions",
+      "budgets": "Budgets",
       "categories": "Categories",
       "rules": "Rules",
       "import": "Import"
@@ -399,6 +401,42 @@
       "uncategorized": "Uncategorized",
       "applying": "Importing…",
       "apply": "Import {{count}} transactions"
+    },
+    "dashboard": {
+      "subtitle": "Where your money went this month.",
+      "month": "Month",
+      "loadError": "Couldn't load your dashboard.",
+      "income": "Income",
+      "spend": "Spend",
+      "net": "Net",
+      "spendByCategory": "Spend by category",
+      "noSpend": "No spending recorded for this month.",
+      "uncategorized": "Uncategorized",
+      "trend": "Income vs spend",
+      "emptyTitle": "No activity yet",
+      "emptyDescription": "Record some transactions to see your monthly trends."
+    },
+    "budgets": {
+      "subtitle": "Set a monthly target per category — we'll alert you when one is blown.",
+      "new": "New budget",
+      "loadError": "Couldn't load your budgets.",
+      "exceeded": "Over budget",
+      "over": "{{amount}} over",
+      "left": "{{amount}} left",
+      "emptyTitle": "No budgets yet",
+      "emptyDescription": "Set a monthly target for a category to track your spending against it.",
+      "emptyCta": "Add a budget",
+      "dialog": {
+        "newTitle": "New budget",
+        "editTitle": "Edit budget",
+        "category": "Category",
+        "categoryRequired": "Pick a category.",
+        "categoryTaken": "That category already has a budget.",
+        "noCategories": "Every expense category already has a budget.",
+        "amount": "Monthly target",
+        "amountRequired": "Enter an amount greater than 0.",
+        "saveError": "Couldn't save the budget. Please try again."
+      }
     }
   },
   "nav": {
@@ -544,6 +582,10 @@
         "dividendEvent": {
           "label": "Dividend reminders",
           "description": "When a stock you hold is about to go ex-dividend. Off by default."
+        },
+        "budgetExceeded": {
+          "label": "Budget alerts",
+          "description": "When your spending in a category blows its monthly budget."
         }
       },
       "routing": {
@@ -604,6 +646,7 @@
         "sharing": "Sharing & activity",
         "chat": "Chat",
         "alerts": "Price alerts",
+        "budgets": "Budgets",
         "markets": "Markets",
         "account": "Account"
       },

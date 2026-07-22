@@ -21,6 +21,7 @@ import type {
 } from '../../data/repositories/expenseRepository';
 import { parseCsv, type ParsedCsv } from '../imports/csv';
 import { createBankMapperRegistry, type BankStatementMapper } from '../imports/expenseBank';
+import type { ExpenseWriteHook } from './expenseService';
 import { categorizeByRules } from './ruleEngine';
 
 /**
@@ -44,6 +45,8 @@ export interface ExpenseImportServiceDeps {
   transactions: ExpenseTransactionRepository;
   rules: ExpenseRuleRepository;
   mappers: readonly BankStatementMapper[];
+  /** Budget re-evaluation hook (issue 3/3) — run once after a non-empty apply. */
+  onApply?: ExpenseWriteHook;
 }
 
 export interface ExpenseImportPreviewInput {
@@ -112,7 +115,7 @@ export function expenseDedupHash(row: {
 }
 
 export function createExpenseImportService(deps: ExpenseImportServiceDeps): ExpenseImportService {
-  const { categories, transactions, rules } = deps;
+  const { categories, transactions, rules, onApply } = deps;
   const registry = createBankMapperRegistry(deps.mappers);
 
   /** Shared parse + row guards + mapper resolution for preview and apply. */
@@ -273,6 +276,9 @@ export function createExpenseImportService(deps: ExpenseImportServiceDeps): Expe
       }
 
       const inserted = await transactions.insertImported(userId, toInsert);
+      // Newly-booked spend may blow a budget — re-evaluate once for the batch
+      // (best-effort; the hook never throws). Skip when nothing landed.
+      if (inserted.size > 0 && onApply) await onApply(userId);
       // Any row we queued whose hash did not land lost a race to a concurrent
       // apply — report it as a duplicate rather than claim it applied.
       for (const outcome of outcomes) {

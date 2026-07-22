@@ -419,3 +419,176 @@ export const expenseImportApplyResponseSchema = z
   })
   .strict();
 export type ExpenseImportApplyResponse = z.infer<typeof expenseImportApplyResponseSchema>;
+
+// --- Dashboards + budgets (issue 3/3) ----------------------------------------
+
+/**
+ * Spend-by-category/month, income-vs-spend and trend dashboards plus per-category
+ * monthly budgets with matrix-routed alerts (PROJECTPLAN.md §13.5 V5-P9, issue
+ * 3/3). All aggregates are **currency-naive magnitude sums** in the category's
+ * recorded amounts: the expense area is single-currency by design and imports no
+ * FX/currency service (the strict-separation wall) — so a budget/dashboard never
+ * converts, it sums the amounts as stored. A month is the calendar period
+ * (`YYYY-MM`); a budget's `spent` and every dashboard total counts only
+ * EXPENSE-direction rows unless a field says otherwise.
+ */
+
+/** A calendar month `YYYY-MM` (the dashboard + budget period key). */
+export const expenseMonthSchema = z
+  .string()
+  .regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'Expected a YYYY-MM month.');
+
+/** Default / max number of trailing months a trend query returns. */
+export const EXPENSE_TREND_MONTHS_DEFAULT = 6;
+export const EXPENSE_TREND_MONTHS_MAX = 24;
+
+// ── Monthly summary (spend by category, income vs spend) ──
+
+/**
+ * One category's totals for a month. `categoryId: null` is the uncategorized
+ * bucket (its `name`/`color` are null — the UI labels it locally). Both an
+ * `expense` and an `income` magnitude are reported so the same row feeds the
+ * spend donut and the income breakdown without a second query.
+ */
+export const expenseCategorySummarySchema = z
+  .object({
+    categoryId: z.string().uuid().nullable(),
+    name: z.string().nullable(),
+    color: z.string().nullable(),
+    expense: z.number(),
+    income: z.number(),
+  })
+  .strict();
+export type ExpenseCategorySummary = z.infer<typeof expenseCategorySummarySchema>;
+
+/** `GET /expenses/summary?month=` query — omitted month ⇒ the current month. */
+export const expenseSummaryQuerySchema = z
+  .object({ month: expenseMonthSchema.optional() })
+  .strict();
+export type ExpenseSummaryQuery = z.infer<typeof expenseSummaryQuerySchema>;
+
+/**
+ * `GET /expenses/summary` response. `totalExpense`/`totalIncome` reconcile
+ * exactly to the sum of `categories[].expense`/`.income` (and thus to the
+ * recorded/imported transaction sum for the month — the done-when invariant).
+ */
+export const expenseMonthlySummaryResponseSchema = z
+  .object({
+    month: z.string(),
+    totalExpense: z.number(),
+    totalIncome: z.number(),
+    /** `totalIncome - totalExpense`. */
+    net: z.number(),
+    /** Per-category totals, expense-heaviest first; the uncategorized bucket last. */
+    categories: z.array(expenseCategorySummarySchema),
+  })
+  .strict();
+export type ExpenseMonthlySummaryResponse = z.infer<typeof expenseMonthlySummaryResponseSchema>;
+
+// ── Trends (income vs spend over the trailing months) ──
+
+/** One month's expense + income magnitude for the trend chart. */
+export const expenseTrendPointSchema = z
+  .object({ month: z.string(), expense: z.number(), income: z.number() })
+  .strict();
+export type ExpenseTrendPoint = z.infer<typeof expenseTrendPointSchema>;
+
+/** `GET /expenses/trends?months=` query — trailing-month count (default 6, max 24). */
+export const expenseTrendQuerySchema = z
+  .object({
+    months: z.coerce.number().int().positive().max(EXPENSE_TREND_MONTHS_MAX).optional(),
+  })
+  .strict();
+export type ExpenseTrendQuery = z.infer<typeof expenseTrendQuerySchema>;
+
+/** `GET /expenses/trends` response — oldest→newest, one point per month in the window. */
+export const expenseTrendResponseSchema = z
+  .object({ points: z.array(expenseTrendPointSchema) })
+  .strict();
+export type ExpenseTrendResponse = z.infer<typeof expenseTrendResponseSchema>;
+
+// ── Budgets (per-category monthly targets + matrix-routed alerts) ──
+
+/** One per-category monthly budget as returned to its owner. */
+export const expenseBudgetSchema = z
+  .object({
+    id: z.string().uuid(),
+    categoryId: z.string().uuid(),
+    /** Positive monthly spend target. */
+    amount: z.number(),
+    currency: z.string(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type ExpenseBudget = z.infer<typeof expenseBudgetSchema>;
+
+/**
+ * A budget with its evaluated progress for a period — what the budgets surface
+ * lists. `spent` is the period's expense total in the category; `exceeded` is
+ * `spent > amount` (the exact condition that fires the `budget.exceeded` alert).
+ */
+export const expenseBudgetProgressSchema = z
+  .object({
+    id: z.string().uuid(),
+    categoryId: z.string().uuid(),
+    /** Category snapshot for the row (a budget always targets a live category). */
+    categoryName: z.string(),
+    categoryColor: z.string(),
+    amount: z.number(),
+    currency: z.string(),
+    /** The evaluated period (`YYYY-MM`). */
+    period: z.string(),
+    /** Expense spend recorded in the category this period. */
+    spent: z.number(),
+    /** `amount - spent` (negative once over budget). */
+    remaining: z.number(),
+    exceeded: z.boolean(),
+  })
+  .strict();
+export type ExpenseBudgetProgress = z.infer<typeof expenseBudgetProgressSchema>;
+
+/** `GET /expenses/budgets?month=` query — omitted month ⇒ the current month. */
+export const expenseBudgetListQuerySchema = z
+  .object({ month: expenseMonthSchema.optional() })
+  .strict();
+export type ExpenseBudgetListQuery = z.infer<typeof expenseBudgetListQuerySchema>;
+
+/** `GET /expenses/budgets` response — the caller's budgets with this period's progress. */
+export const expenseBudgetListResponseSchema = z
+  .object({ period: z.string(), budgets: z.array(expenseBudgetProgressSchema) })
+  .strict();
+export type ExpenseBudgetListResponse = z.infer<typeof expenseBudgetListResponseSchema>;
+
+/**
+ * `POST /expenses/budgets` body. One budget per category (a second create for the
+ * same category is a 409); `categoryId` must be a category the caller owns.
+ */
+export const createExpenseBudgetRequestSchema = z
+  .object({
+    categoryId: z.string().uuid(),
+    amount: expenseAmountSchema,
+    currency: currencySchema.default('EUR'),
+  })
+  .strict();
+export type CreateExpenseBudgetRequest = z.infer<typeof createExpenseBudgetRequestSchema>;
+
+/**
+ * `PATCH /expenses/budgets/:budgetId` body — retarget the amount (and optionally
+ * the currency). The category is fixed at creation (move = delete + create).
+ */
+export const updateExpenseBudgetRequestSchema = z
+  .object({
+    amount: expenseAmountSchema.optional(),
+    currency: currencySchema.optional(),
+  })
+  .strict();
+export type UpdateExpenseBudgetRequest = z.infer<typeof updateExpenseBudgetRequestSchema>;
+
+/** `POST` / `PATCH` budget response. */
+export const expenseBudgetResponseSchema = z.object({ budget: expenseBudgetSchema }).strict();
+export type ExpenseBudgetResponse = z.infer<typeof expenseBudgetResponseSchema>;
+
+/** Route param for the single-budget endpoints. */
+export const expenseBudgetIdParamSchema = z.object({ budgetId: z.string().uuid() }).strict();
+export type ExpenseBudgetIdParam = z.infer<typeof expenseBudgetIdParamSchema>;

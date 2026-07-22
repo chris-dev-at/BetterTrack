@@ -71,10 +71,21 @@ export const DEFAULT_EXPENSE_CATEGORIES: readonly CreateExpenseCategoryInput[] =
   { name: 'Other income', direction: 'income', color: '#34d399' },
 ];
 
+/**
+ * Called after a transaction write so budgets (issue 3/3) can re-evaluate the
+ * current month and fire an over-budget alert (exactly once per period). Injected
+ * as a plain callback — NOT a service import — so this CRUD service keeps its
+ * strict separation from the notification/budget wiring and imports nothing new.
+ * Best-effort: the hook swallows its own failures and never throws.
+ */
+export type ExpenseWriteHook = (userId: string) => Promise<void>;
+
 export interface ExpenseServiceDeps {
   categories: ExpenseCategoryRepository;
   transactions: ExpenseTransactionRepository;
   rules: ExpenseRuleRepository;
+  /** Budget re-evaluation hook (issue 3/3); omit to disable (foundation tests). */
+  onTransactionWrite?: ExpenseWriteHook;
 }
 
 export interface ExpenseService {
@@ -181,11 +192,16 @@ function toRule(record: ExpenseRuleRecord): ExpenseRule {
 }
 
 export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
-  const { categories, transactions, rules } = deps;
+  const { categories, transactions, rules, onTransactionWrite } = deps;
 
   /** A referenced category must be one the caller actually owns (§8). */
   async function assertOwnsCategory(userId: string, categoryId: string): Promise<void> {
     if (!(await categories.ownsCategory(userId, categoryId))) throw CATEGORY_REF_INVALID();
+  }
+
+  /** Fire the budget re-evaluation hook after a write (no-op when unwired). */
+  async function afterWrite(userId: string): Promise<void> {
+    if (onTransactionWrite) await onTransactionWrite(userId);
   }
 
   return {
@@ -266,6 +282,7 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
         description: input.description,
         source: 'manual',
       });
+      await afterWrite(userId);
       return { transaction: toTransaction(record) };
     },
 
@@ -281,6 +298,7 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
         description: patch.description,
       });
       if (!record) throw TRANSACTION_NOT_FOUND();
+      await afterWrite(userId);
       return { transaction: toTransaction(record) };
     },
 
@@ -288,6 +306,7 @@ export function createExpenseService(deps: ExpenseServiceDeps): ExpenseService {
       if (categoryId !== null) await assertOwnsCategory(userId, categoryId);
       const record = await transactions.setCategory(userId, transactionId, categoryId);
       if (!record) throw TRANSACTION_NOT_FOUND();
+      await afterWrite(userId);
       return { transaction: toTransaction(record) };
     },
 

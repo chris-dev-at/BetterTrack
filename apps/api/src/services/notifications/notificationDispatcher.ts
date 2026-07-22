@@ -9,6 +9,7 @@ import type {
   AccountDataExportEvent,
   AccountTempPasswordEvent,
   AlertTriggeredEvent,
+  BudgetExceededEvent,
   ChatMessageEvent,
   ConglomerateSharedEvent,
   DividendEventNotice,
@@ -93,7 +94,8 @@ export type DispatchableEvent =
   | AlertTriggeredEvent
   | EarningsReminderEvent
   | ChatMessageEvent
-  | DividendEventNotice;
+  | DividendEventNotice
+  | BudgetExceededEvent;
 
 /** The `type` strings the dispatcher accepts (guards the job payload). */
 export const DISPATCHABLE_EVENT_TYPES = [
@@ -112,6 +114,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'earnings.reminder',
   'chat.message',
   'dividend.event',
+  'budget.exceeded',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -196,7 +199,27 @@ function eventKeyFor(event: DispatchableEvent): string {
       // upcoming event for days on end, but only the first emit surfaces; the
       // recipient userId (repo-side) keeps holders distinct.
       return `dividend.event:${event.assetId}:${event.exDate.slice(0, 10)}`;
+    case 'budget.exceeded':
+      // Deduped per (budget, period): the producer already claims the
+      // `expense_budget_fires` marker before emitting, and this key backs it up
+      // at the dispatch layer so a redelivered/duplicated emit no-ops — exactly
+      // one alert per budget per month.
+      return `budget.exceeded:${event.budgetId}:${event.period}`;
   }
+}
+
+/**
+ * Budget-exceeded copy (EN — inbox strings are stored rendered like every other
+ * type). Names the blown category, the target and the recorded spend so the
+ * notification reads on its own; amounts render in the budget's currency.
+ */
+function budgetExceededCopy(event: BudgetExceededEvent): { title: string; body: string } {
+  const target = `${event.amount} ${event.currency}`;
+  const spent = `${event.spent} ${event.currency}`;
+  return {
+    title: `Budget exceeded: ${event.categoryName}`,
+    body: `You spent ${spent} on ${event.categoryName} this month — over your ${target} budget.`,
+  };
 }
 
 /**
@@ -574,6 +597,25 @@ export function createNotificationDispatcher(
           data: { assetId: event.assetId },
         };
       }
+      case 'budget.exceeded': {
+        const { title, body } = budgetExceededCopy(event);
+        return {
+          eventKey,
+          title,
+          body,
+          payload: {
+            eventKey,
+            budgetId: event.budgetId,
+            categoryId: event.categoryId,
+            period: event.period,
+            amount: event.amount,
+            spent: event.spent,
+            currency: event.currency,
+          },
+          // Deep-links to the expenses budgets surface on web + push.
+          data: { categoryId: event.categoryId, period: event.period },
+        };
+      }
     }
   }
 
@@ -669,6 +711,11 @@ export function createNotificationDispatcher(
         // The rendered body already names the asset + ex-date; the email reuses
         // it verbatim in the recipient's locale (V5-P5).
         await email.sendDividendEvent({ to, userId, body: rendered.body, locale });
+        return;
+      case 'budget.exceeded':
+        // In-app / push only (its email cell is locked in the settings grid): a
+        // budget alert is a lightweight nudge and the dashboards are the system
+        // of record — no localized budget email template ships (V5-P9, issue 3/3).
         return;
     }
   }
