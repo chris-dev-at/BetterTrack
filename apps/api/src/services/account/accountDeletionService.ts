@@ -9,6 +9,7 @@ import { badRequest, tooManyRequests, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { ACCOUNT_DELETE_NAMESPACE } from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
+import type { MirrorService } from '../mirror/mirrorService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SessionService } from '../sessions/sessionService';
@@ -46,6 +47,13 @@ export interface AccountDeletionServiceDeps {
   audit: AuditService;
   passwordHasher: PasswordHasher;
   twoFactor: TwoFactorService;
+  /**
+   * MIRRORCHAIN §7 pre-delete succession hook (V5-P7 M4): for every group
+   * portfolio the account owns, ownership transfers to the oldest manager (or
+   * the chain dissolves) BEFORE the user row is removed, so the chain and the
+   * other members' copies survive the deletion.
+   */
+  mirror: Pick<MirrorService, 'handleAccountDeletion'>;
 }
 
 export interface AccountDeletionService {
@@ -65,7 +73,8 @@ export interface AccountDeletionService {
 export function createAccountDeletionService(
   deps: AccountDeletionServiceDeps,
 ): AccountDeletionService {
-  const { config, redis, userRepo, chatRepo, sessions, audit, passwordHasher, twoFactor } = deps;
+  const { config, redis, userRepo, chatRepo, sessions, audit, passwordHasher, twoFactor, mirror } =
+    deps;
 
   // Per-account wrong-credential throttle (§10) on the same escalation ladder
   // as failed logins, independent of the per-IP limiter the route carries.
@@ -136,6 +145,11 @@ export function createAccountDeletionService(
       // credentials need no separate revocation: their rows cascade, and the
       // bearer lookup resolves from the DB per request.
       await sessions.destroyAllForUser(userId);
+      // MIRRORCHAIN §7: hand off owned group portfolios (transfer-on-delete to
+      // the oldest manager, or dissolve) in the SAME pre-delete slot, so the
+      // subsequent row delete only cascades this member's own copy away and
+      // every other member's copy + the chain stay intact (V5-P7 M4).
+      await mirror.handleAccountDeletion(userId);
       await userRepo.remove(userId);
       await chatRepo.purgeOrphanedConversations();
 

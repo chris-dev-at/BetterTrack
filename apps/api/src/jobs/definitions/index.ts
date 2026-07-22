@@ -52,11 +52,16 @@ export {
 export {
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
+  createMirrorConsistencySweepJob,
   MIRROR_INVITE_CLEANUP_SCHEDULER_ID,
   MIRROR_INVITE_CLEANUP_CRON,
   MIRROR_INVITE_CLEANUP_TZ,
+  MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID,
+  MIRROR_CONSISTENCY_SWEEP_CRON,
+  MIRROR_CONSISTENCY_SWEEP_TZ,
   type MirrorReplicateJobDeps,
   type MirrorInviteCleanupJobDeps,
+  type MirrorConsistencySweepJobDeps,
 } from './mirrorJobs';
 
 export {

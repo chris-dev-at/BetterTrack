@@ -971,6 +971,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
+  // MIRRORCHAIN §7 pre-delete succession hook (V5-P7 M4). Both delete paths — the
+  // self-serve V4-P2c pipeline and admin delete — call it in the same slot as
+  // session revocation, BEFORE the user row is removed. `admin` is constructed
+  // above `mirror`, so a mutable holder (the exportHolder late-bind idiom below)
+  // wires the real implementation in once `mirror` exists.
+  const mirrorDeletionHook: Pick<MirrorService, 'handleAccountDeletion'> = {
+    handleAccountDeletion: async () => {},
+  };
+
   const admin = createAdminService({
     config,
     redis,
@@ -988,6 +997,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     emailLog: emailLogRepo,
     appSettings,
     notify,
+    mirror: mirrorDeletionHook,
   });
 
   // Registers the Yahoo + manual providers and wraps them in caching/resilience
@@ -1181,6 +1191,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       : {}),
     logger,
   });
+  // Late-bind the §7 pre-delete succession hook now that `mirror` exists (see the
+  // holder above `admin`); both delete paths route through it.
+  mirrorDeletionHook.handleAccountDeletion = (userId) => mirror.handleAccountDeletion(userId);
 
   // Conglomerates: user-defined weighted asset baskets, owner-scoped CRUD (§6.5).
   const conglomerateRepo = createConglomerateRepository(db);
@@ -1418,6 +1431,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     passwordHasher,
     twoFactor,
+    mirror,
   });
 
   // Account data export (§13.4 V4-P6a, #494): the request handler enqueues the

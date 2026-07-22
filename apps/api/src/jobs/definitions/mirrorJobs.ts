@@ -1,5 +1,9 @@
 import type { MirrorchainRepository } from '../../data/repositories/mirrorchainRepository';
 import { MIRROR_INVITE_TTL_MS, type MirrorService } from '../../services/mirror/mirrorService';
+import type {
+  ProblemCaptureContext,
+  ProblemService,
+} from '../../services/observability/problemService';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -105,6 +109,89 @@ export function createMirrorInviteCleanupJob(
       id: MIRROR_INVITE_CLEANUP_SCHEDULER_ID,
       pattern: MIRROR_INVITE_CLEANUP_CRON,
       tz: MIRROR_INVITE_CLEANUP_TZ,
+    },
+  };
+}
+
+/**
+ * `mirror.consistencySweep` — the MIRRORCHAIN M4 defense-in-depth repair sweep
+ * (§13.5 V5-P7, design §2/§7, issue #684). One run:
+ *  - (0) re-applies §7 succession to any **ownerless active chain** — an
+ *    invariant the service never produces, so a hit means the chain was mutated
+ *    behind the service (manual SQL); the oldest manager is crowned (or the
+ *    chain dissolves with no manager);
+ *  - (a) detects the submit path's origin-commit-then-append crash residual (an
+ *    origin mirror-row link with no op);
+ *  - (b) detects the tax-immutable correction path's re-create-then-re-point
+ *    residual (a synced-copy transaction with no mirror link).
+ * Every finding is logged onto the admin Problems page (V5-P2) — the (0)
+ * repairs as a healed anomaly, (a)/(b) as anomalies for an admin to act on. The
+ * `webhookJobs`/`apiKeyJobs`/`mirrorInviteCleanup` daily-sweep pattern.
+ */
+
+export const MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID = 'mirror.consistencySweep';
+/** Daily at 05:05 Europe/Vienna — off-peak, just after the invite sweep. */
+export const MIRROR_CONSISTENCY_SWEEP_CRON = '5 5 * * *';
+export const MIRROR_CONSISTENCY_SWEEP_TZ = 'Europe/Vienna';
+
+export interface MirrorConsistencySweepJobDeps {
+  mirror: Pick<MirrorService, 'runConsistencySweep'>;
+  /** Surfaces each finding onto the admin Problems page (design §2 / V5-P2). */
+  problems: Pick<ProblemService, 'captureError'>;
+}
+
+export function createMirrorConsistencySweepJob(
+  deps: MirrorConsistencySweepJobDeps,
+): JobDefinition<'mirror.consistencySweep'> {
+  return {
+    name: QUEUE_NAMES.mirrorConsistencySweep,
+    async handler(_job, ctx) {
+      const result = await deps.mirror.runConsistencySweep();
+
+      // captureError folds by (kind, normalized title, message) and rate-caps, so
+      // a storm of identical residuals costs one Problems row with an occurrence
+      // count — the title names the anomaly class, the context carries specifics.
+      const surface = (title: string, message: string, context: ProblemCaptureContext): void => {
+        const err = new Error(message);
+        err.name = title;
+        deps.problems.captureError(err, context);
+      };
+
+      for (const r of result.ownerlessRepaired) {
+        surface(
+          'mirror: ownerless chain repaired',
+          `chain ${r.chainId} had no active owner — applied §7 succession (${r.outcome})`,
+          { chainId: r.chainId, outcome: r.outcome, newOwnerUserId: r.newOwnerUserId },
+        );
+      }
+      for (const r of result.danglingOriginRows) {
+        surface(
+          'mirror: origin row without op',
+          `mirror row ${r.mirrorId} (${r.kind}) in portfolio ${r.portfolioId} has no op`,
+          { chainId: r.chainId, portfolioId: r.portfolioId, mirrorId: r.mirrorId, kind: r.kind },
+        );
+      }
+      for (const r of result.orphanedLocalRows) {
+        surface(
+          'mirror: orphaned synced transaction',
+          `transaction ${r.localId} in synced portfolio ${r.portfolioId} has no mirror link`,
+          { portfolioId: r.portfolioId, localId: r.localId },
+        );
+      }
+
+      ctx.logger.info(
+        {
+          ownerlessRepaired: result.ownerlessRepaired.length,
+          danglingOriginRows: result.danglingOriginRows.length,
+          orphanedLocalRows: result.orphanedLocalRows.length,
+        },
+        'mirror.consistencySweep complete',
+      );
+    },
+    schedule: {
+      id: MIRROR_CONSISTENCY_SWEEP_SCHEDULER_ID,
+      pattern: MIRROR_CONSISTENCY_SWEEP_CRON,
+      tz: MIRROR_CONSISTENCY_SWEEP_TZ,
     },
   };
 }

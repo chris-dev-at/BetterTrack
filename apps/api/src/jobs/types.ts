@@ -53,6 +53,10 @@ export const QUEUE_NAMES = {
   // invites past the 30-day token-hygiene horizon (frees the pending-unique
   // slot; matches the accept-time expiry check).
   mirrorInviteCleanup: 'mirror.inviteCleanup',
+  // V5-P7 MIRRORCHAIN (#684, design §2/§7): daily defense-in-depth repair sweep
+  // that re-applies §7 succession to any ownerless active chain and surfaces the
+  // two crash residuals onto the admin Problems page.
+  mirrorConsistencySweep: 'mirror.consistencySweep',
   // V5-P10 outbound webhooks (#648): per-event HMAC-signed delivery with the
   // repo's retry/backoff, plus a daily retention sweep over the delivery log.
   webhooksDeliver: 'webhooks.deliver',
@@ -92,6 +96,7 @@ export interface JobPayloads {
   'standingOrders.process': Record<string, never>;
   'mirror.replicate': { chainId: string };
   'mirror.inviteCleanup': Record<string, never>;
+  'mirror.consistencySweep': Record<string, never>;
   // One HMAC-signed POST of `event` to the subscription; `deliveryId` is stable
   // across retries (receiver dedupe key + delivery-log row id).
   'webhooks.deliver': { subscriptionId: string; deliveryId: string; event: DomainEvent };
