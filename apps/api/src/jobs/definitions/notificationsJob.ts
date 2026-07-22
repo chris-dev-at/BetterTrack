@@ -2,6 +2,7 @@ import {
   isDispatchableEvent,
   type NotificationDispatcher,
 } from '../../services/notifications/notificationDispatcher';
+import type { WebhookBridge } from '../../services/webhooks';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
 
 /**
@@ -21,6 +22,14 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  */
 export interface NotificationsDispatchJobDeps {
   dispatcher: NotificationDispatcher;
+  /**
+   * Outbound-webhook fan-out (§13.5 V5-P10): the durable `notifications.dispatch`
+   * queue is the ONE place every user-scoped domain event converges, so webhooks
+   * tap it here rather than duplicating the pipeline. Optional — deployments/
+   * tests without webhooks pass nothing. `handleEvent` never throws, so it can't
+   * fail (or retrigger) the notification dispatch it rides alongside.
+   */
+  webhooks?: WebhookBridge;
 }
 
 export function createNotificationsDispatchJob(
@@ -34,6 +43,9 @@ export function createNotificationsDispatchJob(
       // events dispatch — anything else (a stray ephemeral event) is a no-op.
       if (!isDispatchableEvent(event)) return;
       await deps.dispatcher.dispatch(event);
+      // After the notification is delivered, offer the same event to any of the
+      // recipient's webhook subscriptions (own-data-only by construction).
+      await deps.webhooks?.handleEvent(event);
     },
   };
 }

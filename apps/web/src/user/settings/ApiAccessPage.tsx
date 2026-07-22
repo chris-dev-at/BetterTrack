@@ -28,6 +28,7 @@ import { formatDate } from '../../lib/format';
 import { EmptyState, ScopePicker, Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, TextField, cx } from '../components/ui';
+import { WebhooksSection } from './WebhooksSection';
 
 const API_KEYS_KEY = ['settings', 'api-keys'] as const;
 const OAUTH_CLIENTS_KEY = ['settings', 'oauth-clients'] as const;
@@ -755,6 +756,10 @@ export function ApiAccessPage() {
           </ul>
         )}
       </section>
+
+      <hr className="border-neutral-800" />
+
+      <WebhooksSection />
 
       <hr className="border-neutral-800" />
 

@@ -904,6 +904,77 @@
       "revokeFailed": "Couldn't revoke.",
       "scopeRequired": "Select at least one scope.",
       "scopesLegend": "Scopes",
+      "webhooks": {
+        "sectionTitle": "Webhooks",
+        "sectionDescription": "Send a signed HTTP POST to your own URL whenever one of your events happens. Every delivery is HMAC-signed so you can verify it came from BetterTrack.",
+        "createTitle": "Add a webhook",
+        "urlLabel": "Payload URL",
+        "urlPlaceholder": "https://example.com/webhooks",
+        "urlRequired": "Enter a payload URL.",
+        "descriptionLabel": "Label (optional)",
+        "descriptionPlaceholder": "e.g. Home automation",
+        "eventsLegend": "Events",
+        "eventRequired": "Select at least one event.",
+        "create": "Add webhook",
+        "creating": "Adding…",
+        "createError": "Could not add the webhook. Please try again.",
+        "listTitle": "Your webhooks",
+        "loadError": {
+          "title": "Couldn't load your webhooks"
+        },
+        "empty": {
+          "title": "No webhooks yet",
+          "description": "Add one above to receive signed event deliveries."
+        },
+        "status": {
+          "active": "Active",
+          "pausedManual": "Paused",
+          "disabledAuto": "Auto-disabled"
+        },
+        "disabledAutoHint": "Disabled after {{count}} consecutive failures. Re-enable to resume delivery.",
+        "lastDelivery": "Last delivery {{at}}",
+        "neverDelivered": "No deliveries yet",
+        "pause": "Pause",
+        "pausing": "Pausing…",
+        "enable": "Enable",
+        "enabling": "Enabling…",
+        "delete": "Delete",
+        "confirmDelete": "Confirm delete",
+        "deleting": "Deleting…",
+        "deleteFailed": "Couldn't delete.",
+        "updateFailed": "Couldn't update.",
+        "viewDeliveries": "Deliveries",
+        "hideDeliveries": "Hide deliveries",
+        "deliveries": {
+          "empty": "No deliveries recorded yet.",
+          "loadError": "Couldn't load deliveries.",
+          "success": "Delivered",
+          "failed": "Failed"
+        },
+        "secretModal": {
+          "title": "Your webhook signing secret",
+          "description": "Copy it now — for your security, it won't be shown again.",
+          "storeWarning": "Store this secret somewhere safe. Use it to verify the X-BetterTrack-Signature header on every delivery. You won't be able to see it again — delete this webhook and create a new one if you lose it."
+        },
+        "event": {
+          "alertTriggered": "Price alert triggered",
+          "friendRequest": "Friend request received",
+          "friendAccepted": "Friend request accepted",
+          "portfolioShared": "Portfolio shared with you",
+          "watchlistShared": "Watchlist shared with you",
+          "conglomerateShared": "Conglomerate shared with you",
+          "friendActivity": "Friend activity on a shared item",
+          "followPublished": "Someone you follow published an item",
+          "followAlertCreated": "Someone you follow created an alert",
+          "followAlertFired": "An alert from someone you follow fired",
+          "accountTempPassword": "Temporary password issued",
+          "accountDataExport": "Data export ready",
+          "earningsReminder": "Earnings reminder",
+          "chatMessage": "New chat message",
+          "dividendEvent": "Upcoming dividend",
+          "budgetExceeded": "Budget exceeded"
+        }
+      },
       "scope": {
         "portfolioRead": {
           "label": "Portfolio · read",

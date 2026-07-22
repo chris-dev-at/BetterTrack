@@ -190,8 +190,12 @@ describe('worker job metrics are scraped (guard 4, #632)', () => {
 describe('worker entry registers the durable notification consumer + bridge (guard 2)', () => {
   const workerEntry = read('apps/api/src/scripts/worker.ts');
 
-  it('registers the notifications.dispatch consumer with the fully-built dispatcher', () => {
-    expect(workerEntry).toContain('createNotificationsDispatchJob({ dispatcher })');
+  it('registers the notifications.dispatch consumer with the fully-built dispatcher + webhook bridge', () => {
+    // V5-P10 (#648): the durable dispatch consumer also fans events out to the
+    // webhook bridge — the ONE place every user-scoped event converges.
+    expect(workerEntry).toContain(
+      'createNotificationsDispatchJob({ dispatcher, webhooks: webhookBridge })',
+    );
     expect(workerEntry).toContain('createNotificationDispatcher(');
   });
 

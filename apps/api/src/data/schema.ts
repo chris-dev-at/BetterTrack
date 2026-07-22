@@ -2967,6 +2967,77 @@ export type NewExpenseBudgetRow = typeof expenseBudgets.$inferInsert;
 export type ExpenseBudgetFireRow = typeof expenseBudgetFires.$inferSelect;
 export type NewExpenseBudgetFireRow = typeof expenseBudgetFires.$inferInsert;
 
+// ── Outbound webhooks (§13.5 V5-P10, issue 1/2) ──────────────────────────────
+// User-defined URLs subscribed to user-scoped domain event types. The signing
+// secret is stored ONLY as an AES-256-GCM envelope (secretBox) so deliveries can
+// HMAC-sign — the plaintext is shown once at creation and never persisted. A
+// receiver that fails `consecutive_failures` times in a row auto-disables
+// (disabled_reason = 'auto'); a manual pause sets 'manual'. Deleting a user
+// cascades to their subscriptions and thence their deliveries.
+
+/** A recorded delivery outcome (one row per delivered / permanently-failed event). */
+export const webhookDeliveryStatusEnum = pgEnum('webhook_delivery_status', ['success', 'failed']);
+
+export const webhookSubscriptions = pgTable(
+  'webhook_subscriptions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    url: text('url').notNull(),
+    description: varchar('description', { length: 200 }),
+    // Subscribed event types (validated against the contract catalog at the
+    // service; stored as text[] so appending a new type needs no migration).
+    eventTypes: text('event_types')
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
+    // AES-256-GCM envelope of the signing secret — never the plaintext.
+    secretEncrypted: text('secret_encrypted').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    // 'auto' (N consecutive failures) or 'manual' (paused); null while enabled.
+    disabledReason: text('disabled_reason'),
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+    // Consecutive terminally-failed deliveries; reset to 0 on any success or
+    // manual re-enable, incremented on each permanently-failed delivery.
+    consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+    lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
+    lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('webhook_subscriptions_user_idx').on(t.userId)],
+);
+
+export const webhookDeliveries = pgTable(
+  'webhook_deliveries',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    subscriptionId: uuid('subscription_id')
+      .notNull()
+      .references(() => webhookSubscriptions.id, { onDelete: 'cascade' }),
+    eventType: text('event_type').notNull(),
+    status: webhookDeliveryStatusEnum('status').notNull(),
+    // HTTP status the receiver returned; null on a network/timeout error.
+    responseStatus: integer('response_status'),
+    attempts: integer('attempts').notNull().default(1),
+    // Short, PII-scrubbed failure reason; null on success.
+    error: text('error'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('webhook_deliveries_subscription_idx').on(t.subscriptionId),
+    // The retention-cleanup job prunes by age → index the sort/filter column.
+    index('webhook_deliveries_created_idx').on(t.createdAt),
+  ],
+);
+
+export type WebhookSubscriptionRow = typeof webhookSubscriptions.$inferSelect;
+export type NewWebhookSubscriptionRow = typeof webhookSubscriptions.$inferInsert;
+export type WebhookDeliveryRow = typeof webhookDeliveries.$inferSelect;
+export type NewWebhookDeliveryRow = typeof webhookDeliveries.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -3041,6 +3112,8 @@ export const schema = {
   expenseRules,
   expenseBudgets,
   expenseBudgetFires,
+  webhookSubscriptions,
+  webhookDeliveries,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -3076,4 +3149,5 @@ export const schema = {
   mirrorRowKindEnum,
   expenseDirectionEnum,
   expenseRuleMatchEnum,
+  webhookDeliveryStatusEnum,
 };

@@ -43,6 +43,7 @@ import { createSearchRouter } from './http/routes/searchRoutes';
 import { createStandingOrdersRouter } from './http/routes/standingOrdersRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
 import { createSocialRouter } from './http/routes/socialRoutes';
+import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
 
@@ -171,6 +172,10 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/chat', requireFeature(ctx, 'chat'), createChatRouter(ctx));
   app.use('/api/v1/notifications', createNotificationsRouter(ctx));
   app.use('/api/v1/alerts', requireFeature(ctx, 'alerts'), createAlertsRouter(ctx));
+  // Outbound webhook management (§13.5 V5-P10): mounted at the more specific
+  // `/settings/webhooks` BEFORE the general settings router so it owns that
+  // subtree. Session-only (the bearer scope guard bars key/token access).
+  app.use('/api/v1/settings/webhooks', createWebhooksRouter(ctx));
   app.use('/api/v1/settings', createSettingsRouter(ctx));
   // Session-authenticated OAuth consent endpoints (authorize + authorization-
   // details). The public /oauth/token router above already handled its path.
