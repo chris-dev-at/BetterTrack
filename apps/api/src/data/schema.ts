@@ -2580,6 +2580,214 @@ export type NewItemCommentRow = typeof itemComments.$inferInsert;
 export type ItemReactionRow = typeof itemReactions.$inferSelect;
 export type NewItemReactionRow = typeof itemReactions.$inferInsert;
 
+/**
+ * MIRRORCHAIN — group portfolios (§13.5 V5-P7; `docs/mirrorchain-design.md` §1,
+ * binding). A chain is ONE logical portfolio materialized as a real
+ * {@link portfolios} row (a "copy") in every member's account; any member's
+ * write is recorded as a totally-ordered op and re-applied to every other copy.
+ * These five tables are the additive chain link layer — **no existing table
+ * changes** (design §1): everything portfolio-scoped keeps working per copy with
+ * zero awareness of the chain.
+ *
+ * This is M1 (§12): schema + enums + indexes/invariants only, no behavior. The
+ * `mirrorService` seam, op append, replication and lifecycle land in M2–M4.
+ */
+export const mirrorChainStatusEnum = pgEnum('mirror_chain_status', ['active', 'dissolved']);
+export const mirrorMemberRoleEnum = pgEnum('mirror_member_role', ['owner', 'manager', 'member']);
+export const mirrorMemberStatusEnum = pgEnum('mirror_member_status', [
+  'active',
+  'left',
+  'removed',
+  'dissolved',
+  'account_deleted',
+]);
+export const mirrorInviteStatusEnum = pgEnum('mirror_invite_status', [
+  'pending',
+  'accepted',
+  'declined',
+  'revoked',
+  'expired',
+]);
+export const mirrorRowKindEnum = pgEnum('mirror_row_kind', [
+  'transaction',
+  'dividend',
+  'cash_movement',
+  'cash_source',
+]);
+
+/**
+ * `mirror_chains` — the logical group portfolio. `last_seq` is the per-chain op
+ * counter: appending an op runs `UPDATE … SET last_seq = last_seq + 1 RETURNING
+ * last_seq` under the row lock, which serializes every concurrent writer of one
+ * chain and assigns the op's `seq` (design §2). Chain rows are **never
+ * hard-deleted** (they anchor attribution + history for forks); a chain with no
+ * active members flips to `dissolved`. `created_by` SET-NULLs on account
+ * deletion while `created_by_username` keeps the denormalized display name.
+ */
+export const mirrorChains = pgTable('mirror_chains', {
+  id: uuid('id').primaryKey().$defaultFn(newId),
+  name: text('name').notNull(),
+  status: mirrorChainStatusEnum('status').notNull().default('active'),
+  lastSeq: bigint('last_seq', { mode: 'number' }).notNull().default(0),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdByUsername: text('created_by_username').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  dissolvedAt: timestamp('dissolved_at', { withTimezone: true }),
+});
+
+/**
+ * `mirror_chain_members` — one row per (chain, member), kept forever as a
+ * tombstone once the membership ends (design §6). `applied_seq` is the copy's
+ * watermark (highest op it has applied). `user_id` / `portfolio_id` SET-NULL on
+ * account/portfolio deletion so tombstones and attribution survive the copy,
+ * with `username` denormalized for "alice (account deleted)" rendering (§16
+ * 2026-07-09). The three partial-unique indexes over `status='active'` are the
+ * §1 invariants: ≤1 owner per chain, ≤1 active membership per (chain, user), and
+ * ≤1 chain per portfolio (the same index also identifies a synced copy for the
+ * HTTP routing decision in §1).
+ */
+export const mirrorChainMembers = pgTable(
+  'mirror_chain_members',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    chainId: uuid('chain_id')
+      .notNull()
+      .references(() => mirrorChains.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    username: text('username').notNull(),
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'set null' }),
+    role: mirrorMemberRoleEnum('role').notNull(),
+    status: mirrorMemberStatusEnum('status').notNull().default('active'),
+    appliedSeq: bigint('applied_seq', { mode: 'number' }).notNull().default(0),
+    joinedAt: timestamp('joined_at', { withTimezone: true }).notNull().defaultNow(),
+    invitedBy: uuid('invited_by').references(() => users.id, { onDelete: 'set null' }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('mirror_chain_members_chain_idx').on(t.chainId),
+    index('mirror_chain_members_user_idx').on(t.userId),
+    // Exactly one active owner per chain.
+    uniqueIndex('mirror_chain_members_owner_unique')
+      .on(t.chainId)
+      .where(sql`${t.status} = 'active' and ${t.role} = 'owner'`),
+    // A user has at most one active membership per chain.
+    uniqueIndex('mirror_chain_members_active_user_unique')
+      .on(t.chainId, t.userId)
+      .where(sql`${t.status} = 'active'`),
+    // A portfolio belongs to at most one chain (and identifies a synced copy).
+    uniqueIndex('mirror_chain_members_active_portfolio_unique')
+      .on(t.portfolioId)
+      .where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * `mirror_chain_invites` — a friends-only invite into a chain (design §4).
+ * `to_user` cascades (an invitee's deletion drops their pending invites);
+ * `from_user` SET-NULLs. At most one *pending* invite per (chain, invitee) —
+ * declining allows a later re-invite (resolved rows don't block).
+ */
+export const mirrorChainInvites = pgTable(
+  'mirror_chain_invites',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    chainId: uuid('chain_id')
+      .notNull()
+      .references(() => mirrorChains.id, { onDelete: 'cascade' }),
+    fromUser: uuid('from_user').references(() => users.id, { onDelete: 'set null' }),
+    toUser: uuid('to_user')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: mirrorInviteStatusEnum('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    respondedAt: timestamp('responded_at', { withTimezone: true }),
+  },
+  (t) => [
+    index('mirror_chain_invites_to_user_idx').on(t.toUser),
+    uniqueIndex('mirror_chain_invites_pending_unique')
+      .on(t.chainId, t.toUser)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+
+/**
+ * `mirror_chain_ops` — the append-only oplog, retained forever (chain-level
+ * audit trail + join-replay source, design §2). `seq` is chain-scoped and dense
+ * from 1 (unique `(chain_id, seq)`); every copy applies ops strictly in seq
+ * order. `mirror_id` is the logical entity a ledger op targets (null for
+ * chain/membership ops); `payload` is the full-state, versioned op body
+ * (`opVersion: 1`, validated by `@bettertrack/contracts`). The
+ * `(chain_id, mirror_id, seq)` index backs the §3 conflict guard (latest op per
+ * entity). Actor + origin portfolio SET-NULL on deletion, with the denormalized
+ * `actor_username` surviving.
+ */
+export const mirrorChainOps = pgTable(
+  'mirror_chain_ops',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    chainId: uuid('chain_id')
+      .notNull()
+      .references(() => mirrorChains.id, { onDelete: 'cascade' }),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    kind: text('kind').notNull(),
+    mirrorId: uuid('mirror_id'),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    actorUsername: text('actor_username').notNull(),
+    originPortfolioId: uuid('origin_portfolio_id').references(() => portfolios.id, {
+      onDelete: 'set null',
+    }),
+    payload: jsonb('payload').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('mirror_chain_ops_chain_seq_unique').on(t.chainId, t.seq),
+    index('mirror_chain_ops_entity_idx').on(t.chainId, t.mirrorId, t.seq),
+  ],
+);
+
+/**
+ * `mirror_rows` — the logical↔local identity map + per-row attribution (design
+ * §1). A logical entity's `mirror_id` is minted at the origin as the origin
+ * row's `local_id` (so on the origin copy `local_id = mirror_id`); replicas
+ * store their own `local_id`. Movements/dividends resolve their target source by
+ * `mirror_id` per copy. Rows **survive forks** (they keep "added by alice"
+ * rendering) and die only with their copy (`portfolio_id` CASCADE); `chain_id`
+ * is a plain FK because chains never hard-delete. PK `(kind, mirror_id,
+ * portfolio_id)`; unique `(kind, local_id)`.
+ */
+export const mirrorRows = pgTable(
+  'mirror_rows',
+  {
+    chainId: uuid('chain_id')
+      .notNull()
+      .references(() => mirrorChains.id),
+    kind: mirrorRowKindEnum('kind').notNull(),
+    mirrorId: uuid('mirror_id').notNull(),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    localId: uuid('local_id').notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdByUsername: text('created_by_username').notNull(),
+  },
+  (t) => [
+    primaryKey({ name: 'mirror_rows_pk', columns: [t.kind, t.mirrorId, t.portfolioId] }),
+    uniqueIndex('mirror_rows_kind_local_unique').on(t.kind, t.localId),
+    index('mirror_rows_portfolio_idx').on(t.portfolioId),
+  ],
+);
+
+export type MirrorChainRow = typeof mirrorChains.$inferSelect;
+export type NewMirrorChainRow = typeof mirrorChains.$inferInsert;
+export type MirrorChainMemberRow = typeof mirrorChainMembers.$inferSelect;
+export type NewMirrorChainMemberRow = typeof mirrorChainMembers.$inferInsert;
+export type MirrorChainInviteRow = typeof mirrorChainInvites.$inferSelect;
+export type NewMirrorChainInviteRow = typeof mirrorChainInvites.$inferInsert;
+export type MirrorChainOpRow = typeof mirrorChainOps.$inferSelect;
+export type NewMirrorChainOpRow = typeof mirrorChainOps.$inferInsert;
+export type MirrorRowRow = typeof mirrorRows.$inferSelect;
+export type NewMirrorRowRow = typeof mirrorRows.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -2644,6 +2852,11 @@ export const schema = {
   importRows,
   standingOrders,
   standingOrderRuns,
+  mirrorChains,
+  mirrorChainMembers,
+  mirrorChainInvites,
+  mirrorChainOps,
+  mirrorRows,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -2672,4 +2885,9 @@ export const schema = {
   standingOrderKindEnum,
   standingOrderCadenceEnum,
   standingOrderStatusEnum,
+  mirrorChainStatusEnum,
+  mirrorMemberRoleEnum,
+  mirrorMemberStatusEnum,
+  mirrorInviteStatusEnum,
+  mirrorRowKindEnum,
 };

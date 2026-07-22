@@ -169,6 +169,26 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   friend_group_members: skipped(
     'Friend-group rosters (membership of a user-owned circle); export coverage lands with a later export sweep.',
   ),
+  // V5-P7 MIRRORCHAIN (docs/mirrorchain-design.md §1): the five additive chain
+  // link tables. A member's actual data is their real portfolio COPY — already
+  // exported above via portfolios/transactions/dividends/cash movements/sources;
+  // these tables are the chain link + attribution + oplog bookkeeping layer, not
+  // a second copy of the user's rows.
+  mirror_chains: skipped(
+    'Chain metadata shared across members (name, op counter) — not owned by any one user; the member copy is exported as portfolios/transactions.',
+  ),
+  mirror_chain_members: skipped(
+    'Chain membership + per-copy watermark bookkeeping; the copy itself is exported as portfolios/transactions. Definition export lands with a later export sweep.',
+  ),
+  mirror_chain_invites: skipped(
+    'Transient chain-invite state (friends-only, expiring), not user data to carry out.',
+  ),
+  mirror_chain_ops: skipped(
+    'Chain-level oplog — a shared totally-ordered audit trail retained independently of any one member (actor set-null on delete), not user-owned.',
+  ),
+  mirror_rows: skipped(
+    'Logical↔local identity map + per-row attribution for a copy — derivable bookkeeping that dies with the copy (portfolio_id cascade), not separate user data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
