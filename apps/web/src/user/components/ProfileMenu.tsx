@@ -7,15 +7,19 @@ import { cx } from './ui';
 
 /**
  * Top-right profile dropdown (PROJECTPLAN.md §6.11, §7.2). Compact menu:
- * **My Portfolio · Settings · Invite Others [Coming Soon] · Share Profile
- * [Coming Soon] · Logout**. The two sharing entries are inert placeholders in
- * V1; Logout ends the session. Closes on outside-click and Escape.
+ * **My Portfolio · Settings · Discreet mode toggle · Invite Others [Coming
+ * Soon] · Share Profile [Coming Soon] · Logout**. The two sharing entries are
+ * inert placeholders; Logout ends the session. The discreet-mode toggle
+ * (§13.5 V5-P13 arc (a)) is a quick per-user switch that masks every absolute
+ * money amount app-wide — persists server-side. Closes on outside-click and Escape.
  */
 export function ProfileMenu() {
   const t = useT();
-  const { user, logout } = useAuth();
+  const { user, logout, toggleDiscreetMode } = useAuth();
   const [open, setOpen] = useState(false);
+  const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const discreet = user?.discreetMode === true;
 
   useEffect(() => {
     if (!open) return;
@@ -81,6 +85,43 @@ export function ProfileMenu() {
             >
               {t('nav.settings')}
             </Link>
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={discreet}
+              onClick={async () => {
+                setDiscreetError(false);
+                try {
+                  await toggleDiscreetMode();
+                } catch {
+                  // Optimistic toggle rolled itself back — surface a compact,
+                  // in-menu hint so the user knows the flip didn't persist.
+                  setDiscreetError(true);
+                }
+              }}
+              className={cx(itemClass, 'flex items-center justify-between')}
+            >
+              <span>{t('nav.discreetMode')}</span>
+              <span
+                aria-hidden="true"
+                className={cx(
+                  'inline-flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors',
+                  discreet ? 'bg-sky-500' : 'bg-neutral-700',
+                )}
+              >
+                <span
+                  className={cx(
+                    'inline-block h-4 w-4 rounded-full bg-white transition-transform',
+                    discreet ? 'translate-x-4' : 'translate-x-0',
+                  )}
+                />
+              </span>
+            </button>
+            {discreetError ? (
+              <p role="alert" className="px-3 py-1 text-[0.7rem] text-red-400">
+                {t('nav.discreetModeError')}
+              </p>
+            ) : null}
             <button
               type="button"
               role="menuitem"

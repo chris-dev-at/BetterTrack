@@ -298,6 +298,12 @@ export const meResponseSchema = z.object({
    * always emits it (see `toMeResponse`).
    */
   profileIcon: profileIconIdSchema.nullable().optional(),
+  /**
+   * Discreet mode (§13.5 V5-P13 arc (a)): while true the SPA masks every
+   * absolute money amount app-wide. Optional on the schema so pre-V5-P13
+   * fixtures still parse; the server always emits it (see `toMeResponse`).
+   */
+  discreetMode: z.boolean().optional(),
   lastLoginAt: z.string().datetime().nullable(),
   createdAt: z.string().datetime(),
 });

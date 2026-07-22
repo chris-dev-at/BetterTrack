@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../i18n';
 import { Spinner } from '../../user/components/ui';
 import { cx } from '../../lib/cx';
-import { formatPercent } from '../../lib/format';
+import { DISCREET_MASK, formatPercent, isDiscreetMode } from '../../lib/format';
 import {
   PRICE_RANGES,
   type BenchmarkSeries,
@@ -178,6 +178,9 @@ export function PriceChart({
   const isEmpty = series.length === 0;
   const hasBenchmark = benchmark !== null && benchmark.series.length > 0;
   const overlayCount = overlays.length;
+  // Snapshot the discreet flag at chart-create time so a toggle mid-life
+  // rebuilds the chart with the correct axis formatter (§13.5 V5-P13 arc (a)).
+  const discreet = isDiscreetMode();
 
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
   // of a benchmark, height) rather than the data, so wiggling data is cheap.
@@ -209,10 +212,14 @@ export function PriceChart({
           overlayCount > 0 && !percentValues ? PriceScaleMode.Percentage : PriceScaleMode.Normal,
       },
       // Values arriving pre-expressed in % render as "x.xx %" on the axis and
-      // crosshair instead of looking like absolute prices (#125).
+      // crosshair instead of looking like absolute prices (#125). Discreet mode
+      // (§13.5 V5-P13 arc (a)) overrides absolute-price axes with a masked
+      // label so the axis never paints a real amount; percent axes stay live.
       ...(percentValues
         ? { localization: { priceFormatter: (p: number) => formatPercent(p) } }
-        : {}),
+        : discreet
+          ? { localization: { priceFormatter: () => DISCREET_MASK } }
+          : {}),
       timeScale: { borderColor: GRID, fixLeftEdge: true, fixRightEdge: true },
       handleScale: false,
       handleScroll: false,
@@ -292,7 +299,7 @@ export function PriceChart({
       drawnRef.current = { firstTime: null, length: 0 };
       markersRef.current = null;
     };
-  }, [mode, hasBenchmark, overlayCount, percentValues, height, loading, isEmpty]);
+  }, [mode, hasBenchmark, overlayCount, percentValues, height, loading, isEmpty, discreet]);
 
   // Push data into the existing series instances; refit the visible window.
   useEffect(() => {

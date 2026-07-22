@@ -66,6 +66,7 @@ export function toAuthUser(row: UserRow): AuthUser {
     baseCurrency: row.baseCurrency,
     locale: row.locale,
     profileIcon: coerceProfileIcon(row.profileIcon),
+    discreetMode: row.discreetMode,
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
   };
@@ -84,6 +85,7 @@ export function toMeResponse(user: AuthUser): MeResponse {
     baseCurrency: user.baseCurrency,
     locale: user.locale,
     profileIcon: user.profileIcon,
+    discreetMode: user.discreetMode,
     lastLoginAt: toIso(user.lastLoginAt),
     createdAt: toIsoRequired(user.createdAt),
   };

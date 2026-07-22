@@ -341,6 +341,7 @@ describe('Account settings — locale (§13.3 V3-P1)', () => {
       defaultPortfolioVisibility: 'private',
       locale: 'de',
       baseCurrency: 'EUR',
+      discreetMode: false,
     });
 
     // Change only the visibility — the locale set above is untouched.
@@ -349,6 +350,7 @@ describe('Account settings — locale (§13.3 V3-P1)', () => {
       defaultPortfolioVisibility: 'friends',
       locale: 'de',
       baseCurrency: 'EUR',
+      discreetMode: false,
     });
   });
 
@@ -453,6 +455,7 @@ describe('Account settings — base currency (§5.4, §13.3 V3-P10d)', () => {
       defaultPortfolioVisibility: 'private',
       locale: 'en',
       baseCurrency: 'CHF',
+      discreetMode: false,
     });
 
     expect((await patchAccount(agent, { baseCurrency: 'GBP' })).status).toBe(200);
@@ -469,5 +472,66 @@ describe('Account settings — base currency (§5.4, §13.3 V3-P10d)', () => {
 
     const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
     expect((await getAccount(aliceAgent)).baseCurrency).toBe('EUR');
+  });
+});
+
+describe('Account settings — discreet mode (§13.5 V5-P13 arc (a))', () => {
+  it('defaults a fresh user to OFF, on both /settings/account and /auth/me', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    expect((await getAccount(agent)).discreetMode).toBe(false);
+    expect((await getMe(agent)).discreetMode).toBe(false);
+  });
+
+  it('persists a toggle across sessions and rides /auth/me', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const patched = await patchAccount(agent, { discreetMode: true });
+    expect(patched.status).toBe(200);
+    expect(patched.body.discreetMode).toBe(true);
+    expect((await getMe(agent)).discreetMode).toBe(true);
+
+    // A brand-new session still reads the toggled-on state.
+    const freshAgent = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await getAccount(freshAgent)).discreetMode).toBe(true);
+    expect((await getMe(freshAgent)).discreetMode).toBe(true);
+
+    // Toggling back restores false — the "toggle back restores exactly" invariant.
+    const restored = await patchAccount(freshAgent, { discreetMode: false });
+    expect(restored.status).toBe(200);
+    expect(restored.body.discreetMode).toBe(false);
+    expect((await getMe(freshAgent)).discreetMode).toBe(false);
+  });
+
+  it('is a partial update — leaves other prefs untouched, rejects non-boolean', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+    await patchAccount(agent, { locale: 'de', baseCurrency: 'USD' });
+
+    const patched = await patchAccount(agent, { discreetMode: true });
+    expect(patched.body).toEqual({
+      defaultPortfolioVisibility: 'private',
+      locale: 'de',
+      baseCurrency: 'USD',
+      discreetMode: true,
+    });
+
+    // Wrong type is rejected at the contract.
+    expect((await patchAccount(agent, { discreetMode: 'yes' })).status).toBe(400);
+    // Setting the same value is a no-op success.
+    expect((await patchAccount(agent, { discreetMode: true })).status).toBe(200);
+  });
+
+  it('is strictly session-user scoped — one user cannot change another’s flag', async () => {
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const bob = await harness.seedUser({ email: 'bob@bt.test', username: 'bob' });
+
+    const bobAgent = await loginAgent(harness.app, bob.email, bob.password);
+    await patchAccount(bobAgent, { discreetMode: true });
+
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+    expect((await getAccount(aliceAgent)).discreetMode).toBe(false);
   });
 });

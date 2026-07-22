@@ -175,6 +175,12 @@ export const users = pgTable(
     // account-default has chat disabled starts with this flag set (never applied
     // retroactively to existing accounts).
     chatBanned: boolean('chat_banned').notNull().default(false),
+    // Discreet mode (§13.5 V5-P13 arc (a)). Per-user quick toggle that masks every
+    // absolute money amount in the SPA (balances, values, cash, tx amounts,
+    // tooltips, chart axes) while percentages/relative values keep rendering.
+    // OFF by default so every existing surface renders unchanged; the SPA reads
+    // this on `/auth/me` and every setting-fetch to drive the shared format seam.
+    discreetMode: boolean('discreet_mode').notNull().default(false),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
