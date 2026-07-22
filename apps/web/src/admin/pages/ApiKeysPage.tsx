@@ -133,42 +133,47 @@ function TiersPanel({
       ) : tiers.length === 0 ? (
         <EmptyState>No tiers defined yet.</EmptyState>
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="py-2">Name</th>
-              <th className="py-2">Limit</th>
-              <th className="py-2">Window (s)</th>
-              <th className="py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {tiers.map((tier) => (
-              <tr key={tier.id} className="border-t border-slate-200/60">
-                <td className="py-2">
-                  {tier.name} {tier.isDefault ? <Badge tone="sky">Default</Badge> : null}
-                </td>
-                <td className="py-2">{tier.requestLimit}</td>
-                <td className="py-2">{tier.windowSec}</td>
-                <td className="py-2 text-right">
-                  {!tier.isDefault ? (
-                    <span className="inline-flex gap-2">
-                      <Button variant="ghost" onClick={() => void makeDefault(tier)}>
-                        Make default
-                      </Button>
-                      <Button variant="ghost" onClick={() => void remove(tier)}>
-                        Delete
-                      </Button>
-                    </span>
-                  ) : null}
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[32rem] text-left text-sm">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="py-2 pr-3">Name</th>
+                <th className="py-2 pr-3">Limit</th>
+                <th className="py-2 pr-3">Window (s)</th>
+                <th className="py-2" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {tiers.map((tier) => (
+                <tr key={tier.id} className="border-t border-slate-200/60">
+                  <td className="py-2 pr-3">
+                    {tier.name} {tier.isDefault ? <Badge tone="sky">Default</Badge> : null}
+                  </td>
+                  <td className="py-2 pr-3">{tier.requestLimit}</td>
+                  <td className="py-2 pr-3">{tier.windowSec}</td>
+                  <td className="py-2 text-right">
+                    {!tier.isDefault ? (
+                      <span className="inline-flex flex-wrap justify-end gap-2">
+                        <Button variant="ghost" onClick={() => void makeDefault(tier)}>
+                          Make default
+                        </Button>
+                        <Button variant="ghost" onClick={() => void remove(tier)}>
+                          Delete
+                        </Button>
+                      </span>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
-      <form className="flex flex-wrap items-end gap-3" onSubmit={onCreate}>
+      <form
+        className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_10rem_10rem_auto_auto] sm:items-end"
+        onSubmit={onCreate}
+      >
         <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} />
         <TextField
           label="Limit"
@@ -184,11 +189,12 @@ function TiersPanel({
           value={windowSec}
           onChange={(e) => setWindowSec(e.target.value)}
         />
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 py-2 text-sm">
           <input
             type="checkbox"
             checked={isDefault}
             onChange={(e) => setIsDefault(e.target.checked)}
+            className="h-5 w-5"
           />
           Default
         </label>
@@ -238,49 +244,53 @@ function KeysPanel({
       ) : keys.length === 0 ? (
         <EmptyState>No API keys have been created yet.</EmptyState>
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="py-2">Name</th>
-              <th className="py-2">Owner</th>
-              <th className="py-2">Tier</th>
-              <th className="py-2">Last used</th>
-              <th className="py-2" />
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((key) => (
-              <tr key={key.id} className="border-t border-slate-200/60">
-                <td className="py-2">
-                  {key.name} {key.revokedAt ? <Badge tone="amber">Revoked</Badge> : null}
-                </td>
-                <td className="py-2 font-mono text-xs">{key.userId}</td>
-                <td className="py-2">
-                  <select
-                    className="rounded border border-slate-300 bg-transparent px-2 py-1 text-sm"
-                    value={key.tierId ?? ''}
-                    onChange={(e) => void assign(key, e.target.value)}
-                    disabled={Boolean(key.revokedAt)}
-                    aria-label={`Tier for ${key.name}`}
-                  >
-                    <option value="">Default</option>
-                    {tiers.map((tier) => (
-                      <option key={tier.id} value={tier.id}>
-                        {tier.name}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-                <td className="py-2">{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : '—'}</td>
-                <td className="py-2 text-right">
-                  <Button variant="ghost" onClick={() => setAuditKey(key)}>
-                    View audit
-                  </Button>
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[40rem] text-left text-sm">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="py-2 pr-3">Name</th>
+                <th className="py-2 pr-3">Owner</th>
+                <th className="py-2 pr-3">Tier</th>
+                <th className="py-2 pr-3">Last used</th>
+                <th className="py-2" />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {keys.map((key) => (
+                <tr key={key.id} className="border-t border-slate-200/60">
+                  <td className="py-2 pr-3">
+                    {key.name} {key.revokedAt ? <Badge tone="amber">Revoked</Badge> : null}
+                  </td>
+                  <td className="py-2 pr-3 font-mono text-xs">{key.userId}</td>
+                  <td className="py-2 pr-3">
+                    <select
+                      className="rounded border border-slate-300 bg-transparent px-2 py-1 text-sm"
+                      value={key.tierId ?? ''}
+                      onChange={(e) => void assign(key, e.target.value)}
+                      disabled={Boolean(key.revokedAt)}
+                      aria-label={`Tier for ${key.name}`}
+                    >
+                      <option value="">Default</option>
+                      {tiers.map((tier) => (
+                        <option key={tier.id} value={tier.id}>
+                          {tier.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-2 pr-3">
+                    {key.lastUsedAt ? formatDateTime(key.lastUsedAt) : '—'}
+                  </td>
+                  <td className="py-2 text-right">
+                    <Button variant="ghost" onClick={() => setAuditKey(key)}>
+                      View audit
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {auditKey ? <AuditModal apiKey={auditKey} onClose={() => setAuditKey(null)} /> : null}
@@ -303,26 +313,28 @@ function AuditModal({ apiKey, onClose }: { apiKey: AdminApiKey; onClose: () => v
       ) : !audit.data || audit.data.entries.length === 0 ? (
         <EmptyState>No recorded requests yet.</EmptyState>
       ) : (
-        <table className="w-full text-left text-sm">
-          <thead className="text-slate-500">
-            <tr>
-              <th className="py-2">When</th>
-              <th className="py-2">Method</th>
-              <th className="py-2">Path</th>
-              <th className="py-2">Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {audit.data.entries.map((entry) => (
-              <tr key={entry.id} className="border-t border-slate-200/60">
-                <td className="py-2">{formatDateTime(entry.createdAt)}</td>
-                <td className="py-2 font-mono text-xs">{entry.method}</td>
-                <td className="py-2 font-mono text-xs">{entry.path}</td>
-                <td className="py-2">{entry.status}</td>
+        <div className="-mx-2 overflow-x-auto px-2">
+          <table className="w-full min-w-[32rem] text-left text-sm">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="py-2 pr-3">When</th>
+                <th className="py-2 pr-3">Method</th>
+                <th className="py-2 pr-3">Path</th>
+                <th className="py-2">Status</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {audit.data.entries.map((entry) => (
+                <tr key={entry.id} className="border-t border-slate-200/60">
+                  <td className="whitespace-nowrap py-2 pr-3">{formatDateTime(entry.createdAt)}</td>
+                  <td className="py-2 pr-3 font-mono text-xs">{entry.method}</td>
+                  <td className="py-2 pr-3 font-mono text-xs">{entry.path}</td>
+                  <td className="py-2">{entry.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </Modal>
   );

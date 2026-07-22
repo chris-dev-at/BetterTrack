@@ -20,12 +20,12 @@ export function UsageAnalyticsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <PageHeader
           title={t('admin.usageAnalytics.title')}
           description={t('admin.usageAnalytics.subtitle')}
         />
-        <Button variant="secondary" onClick={reload}>
+        <Button variant="secondary" className="self-start" onClick={reload}>
           {t('admin.usageAnalytics.refresh')}
         </Button>
       </div>

@@ -2,9 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets iOS Safari's standalone mode draw under the
+         notch / home indicator; safe-area insets in index.css keep the shell
+         chrome out of those zones. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0e14" />
     <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- iOS PWA polish (§13.5 V5-P13b): the manifest is ignored by iOS Safari
+         for install/standalone metadata, so name + splash-style + touch icon
+         are declared with meta/link tags. `apple-mobile-web-app-capable`
+         opts into standalone; the black-translucent status bar keeps our
+         dark shell edge-to-edge. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="BetterTrack" />
     <link rel="apple-touch-icon" href="/BT_AppIcon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/BT_AppIcon.png" />
     <title>BetterTrack</title>
   </head>
   <body>

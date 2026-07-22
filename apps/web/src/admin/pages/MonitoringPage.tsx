@@ -82,13 +82,14 @@ export function MonitoringPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <PageHeader
           title={t('admin.monitoring.title')}
           description={t('admin.monitoring.subtitle')}
         />
         <Button
           variant="secondary"
+          className="self-start"
           onClick={() => {
             setOverride(null);
             reload();
@@ -227,7 +228,7 @@ function MonitoringBody({
           <iframe
             src={embedUrl}
             title={t('admin.monitoring.embed.frameTitle')}
-            className="h-[70vh] w-full rounded-md border border-neutral-800 bg-neutral-950"
+            className="h-[60vh] w-full rounded-md border border-neutral-800 bg-neutral-950 sm:h-[70vh]"
           />
         ) : (
           <Alert tone="info">{t('admin.monitoring.embed.hidden')}</Alert>

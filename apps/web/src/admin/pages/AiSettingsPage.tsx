@@ -118,14 +118,14 @@ export function AiSettingsPage() {
       {form ? (
         <div className="flex flex-col gap-6">
           {/* Status */}
-          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <span className="text-sm font-medium text-neutral-300">
               {t('admin.ai.statusLabel')}
             </span>
             <Badge tone={settings?.configured ? 'green' : 'neutral'}>
               {settings?.configured ? t('admin.ai.configured') : t('admin.ai.notConfigured')}
             </Badge>
-            <span className="ml-auto text-xs text-neutral-500">
+            <span className="w-full text-xs text-neutral-500 sm:ml-auto sm:w-auto">
               {settings?.updatedAt
                 ? `${t('admin.ai.lastChanged')}: ${formatDateTime(settings.updatedAt)}`
                 : t('admin.ai.neverChanged')}

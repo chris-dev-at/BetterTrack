@@ -1,6 +1,30 @@
 @import 'tailwindcss';
 
 /**
+ * iOS installable-PWA polish (§13.5 V5-P13b): with `viewport-fit=cover` in the
+ * document meta, standalone-mode iOS draws under the notch / home indicator.
+ * The `safe-*` utilities add `env(safe-area-inset-*)` padding so headers, drawers
+ * and floating hints stay inside the visible viewport on iPhone. Zero effect
+ * on non-iOS or non-standalone browsers — the env() values resolve to 0.
+ */
+@utility safe-pt {
+  padding-top: max(env(safe-area-inset-top, 0px), 0px);
+}
+@utility safe-pb {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 0px);
+}
+@utility safe-pl {
+  padding-left: max(env(safe-area-inset-left, 0px), 0px);
+}
+@utility safe-pr {
+  padding-right: max(env(safe-area-inset-right, 0px), 0px);
+}
+@utility safe-px {
+  padding-left: max(env(safe-area-inset-left, 0px), 0px);
+  padding-right: max(env(safe-area-inset-right, 0px), 0px);
+}
+
+/**
  * Horizontally-scrollable tab strips (primary nav + section subnavs) hide their
  * scrollbar so the row reads as a clean strip on touch devices while still
  * swipe-scrolling. Used by `AppLayout` and `SubNav` for the mobile responsive

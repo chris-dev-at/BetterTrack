@@ -139,7 +139,15 @@ export function AdminLayout() {
   if (status === 'anonymous' || !user) return <Navigate to="/admin/login" replace />;
 
   const renderSidebar = (variant: 'desktop' | 'drawer') => (
-    <div className="flex h-full min-h-0 flex-col gap-4 bg-neutral-900 p-4">
+    <div
+      className={cx(
+        'flex h-full min-h-0 flex-col gap-4 bg-neutral-900 p-4',
+        // Drawer is the shell chrome in standalone iOS — respect the top/bottom
+        // safe-area insets so the sign-out row doesn't sit under the home
+        // indicator.
+        variant === 'drawer' ? 'safe-pt safe-pb' : '',
+      )}
+    >
       <div className="flex shrink-0 items-center justify-between gap-2 px-2">
         <Wordmark edition="Admin" className="text-xl" />
         {variant === 'drawer' ? (
@@ -147,7 +155,7 @@ export function AdminLayout() {
             type="button"
             onClick={closeDrawer}
             aria-label={t('admin.nav.closeMenu')}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="inline-flex h-11 w-11 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
           >
             <svg
               aria-hidden="true"
@@ -202,8 +210,9 @@ export function AdminLayout() {
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 md:flex">
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
-          is persistent. */}
-      <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-3 md:hidden">
+          is persistent. `safe-pt` + `safe-px` respect iOS standalone insets
+          (§13.5 V5-P13b) so the burger and wordmark clear the notch. */}
+      <header className="safe-pt safe-px sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-3 md:hidden">
         <button
           ref={burgerRef}
           type="button"
@@ -211,7 +220,7 @@ export function AdminLayout() {
           aria-label={t('admin.nav.openMenu')}
           aria-expanded={drawerOpen}
           aria-controls="admin-sidebar"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
         >
           <svg
             aria-hidden="true"
@@ -258,7 +267,7 @@ export function AdminLayout() {
       ) : null}
 
       <main className="min-w-0 flex-1">
-        <div className="mx-auto max-w-5xl px-4 py-8">
+        <div className="safe-pb safe-px mx-auto max-w-5xl px-4 py-8">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}
           <ErrorBoundary key={location.pathname}>

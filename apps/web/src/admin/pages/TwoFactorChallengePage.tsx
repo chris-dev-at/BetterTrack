@@ -81,7 +81,7 @@ export function TwoFactorChallengePage() {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center bg-neutral-950 px-4">
+    <div className="safe-pt safe-pb safe-px grid min-h-screen place-items-center bg-neutral-950 px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <Wordmark edition="Admin" className="text-2xl" />

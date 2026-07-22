@@ -5,6 +5,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { I18nProvider, useI18n } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
+import { IosInstallHint } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
@@ -313,6 +314,10 @@ export function UserApp() {
             <AnnouncementBannerRoot />
             <UserShell />
           </RealtimeRoot>
+          {/* iOS Safari "Add to Home Screen" nudge (§13.5 V5-P13b) — self-gates
+              to iOS Safari, non-standalone visitors and hides itself after
+              dismissal. No-op on every other platform. */}
+          <IosInstallHint />
         </AuthProvider>
       </QueryClientProvider>
     </I18nProvider>

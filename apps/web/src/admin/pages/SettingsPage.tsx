@@ -303,7 +303,10 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
         </p>
       </div>
 
-      <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3">
+      <form
+        onSubmit={onCreate}
+        className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_12rem_auto] sm:items-end"
+      >
         <TextField
           label="Label (optional)"
           name="token-label"
@@ -347,10 +350,10 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
           {tokens.data.tokens.map((token) => (
             <li
               key={token.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
+              className="flex flex-col gap-2 rounded-md border border-neutral-800 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
             >
               <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="flex items-center gap-2 text-sm text-neutral-100">
+                <span className="flex flex-wrap items-center gap-2 text-sm text-neutral-100">
                   <span className="truncate">{token.label ?? 'Untitled token'}</span>
                   <Badge tone={TOKEN_STATUS_TONE[token.status]}>{token.status}</Badge>
                 </span>
@@ -362,7 +365,11 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
                 </span>
               </span>
               {token.status === 'active' ? (
-                <Button variant="secondary" onClick={() => void onRevoke(token.id)}>
+                <Button
+                  variant="secondary"
+                  className="self-start sm:self-auto"
+                  onClick={() => void onRevoke(token.id)}
+                >
                   Revoke
                 </Button>
               ) : null}
@@ -423,7 +430,7 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
           {requests.data.requests.map((req) => (
             <li
               key={req.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
+              className="flex flex-col gap-2 rounded-md border border-neutral-800 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
             >
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="truncate text-sm text-neutral-100">{req.username}</span>
@@ -431,7 +438,7 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
                   {req.email} · requested {formatDateTime(req.createdAt)}
                 </span>
               </span>
-              <span className="flex items-center gap-2">
+              <span className="flex flex-wrap gap-2">
                 <Button onClick={() => void act(req.id, 'approve')} disabled={busyId === req.id}>
                   Approve
                 </Button>

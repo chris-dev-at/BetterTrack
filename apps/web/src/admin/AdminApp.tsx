@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { I18nProvider } from '../i18n';
+import { IosInstallHint } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
@@ -85,6 +86,9 @@ export function AdminApp() {
     <I18nProvider>
       <AuthProvider>
         <AdminShell />
+        {/* iOS Safari "Add to Home Screen" nudge (§13.5 V5-P13b) — same self-
+            gating as the user app; a no-op on desktop admin sessions. */}
+        <IosInstallHint />
       </AuthProvider>
     </I18nProvider>
   );

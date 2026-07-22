@@ -12,3 +12,4 @@ export {
   type ScopePickerProps,
   type ScopeSummaryProps,
 } from './ScopePicker';
+export { IosInstallHint } from './IosInstallHint';

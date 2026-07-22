@@ -238,6 +238,11 @@
     "or": "oder"
   },
   "ui": {
+    "iosInstall": {
+      "title": "BetterTrack auf dem iPhone installieren",
+      "description": "Tippe in Safari auf „Teilen“ und dann „Zum Home-Bildschirm“ für ein Vollbild-Erlebnis wie in einer App.",
+      "dismiss": "Schließen"
+    },
     "scopePicker": {
       "legend": "Berechtigungen",
       "read": "Lesen",

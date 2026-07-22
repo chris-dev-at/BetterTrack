@@ -238,6 +238,11 @@
     "or": "or"
   },
   "ui": {
+    "iosInstall": {
+      "title": "Install BetterTrack on your iPhone",
+      "description": "Tap the Share button in Safari, then \"Add to Home Screen\" for a fullscreen, app-like experience.",
+      "dismiss": "Dismiss"
+    },
     "scopePicker": {
       "legend": "Permissions",
       "read": "Read",

@@ -172,18 +172,20 @@ export function OAuthAppsPage() {
               key={app.id}
               className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4"
             >
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-neutral-100">{app.name}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="break-all font-semibold text-neutral-100">{app.name}</span>
                     <Badge tone="green">first-party</Badge>
                     <Badge tone={app.public ? 'neutral' : 'amber'}>
                       {app.public ? 'public / PKCE' : 'confidential'}
                     </Badge>
                   </div>
-                  <div className="mt-1 font-mono text-xs text-neutral-500">{app.clientId}</div>
+                  <div className="mt-1 break-all font-mono text-xs text-neutral-500">
+                    {app.clientId}
+                  </div>
                 </div>
-                <div className="flex shrink-0 gap-2">
+                <div className="flex flex-wrap gap-2 sm:shrink-0">
                   <Button
                     variant="secondary"
                     disabled={busyId === app.id}
@@ -213,7 +215,7 @@ export function OAuthAppsPage() {
                   </span>
                 ))}
               </div>
-              <div className="text-xs text-neutral-500">
+              <div className="break-all text-xs text-neutral-500">
                 Redirect: {app.redirectUris.join(', ')} · Created {formatDateTime(app.createdAt)}
               </div>
             </div>

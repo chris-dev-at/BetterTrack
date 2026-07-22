@@ -146,8 +146,8 @@ export function UsersPage() {
           {search ? 'No users match your search.' : 'No users yet. Create the first one.'}
         </EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-neutral-800">
-          <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto rounded-lg border border-neutral-800">
+          <table className="w-full min-w-[24rem] text-left text-sm">
             <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
               <tr>
                 <th className="w-10 px-3 py-3">
@@ -156,6 +156,7 @@ export function UsersPage() {
                     aria-label="Select all users"
                     checked={allSelected}
                     onChange={toggleAll}
+                    className="h-5 w-5"
                   />
                 </th>
                 <th className="px-4 py-3 font-medium">User</th>
@@ -176,11 +177,12 @@ export function UsersPage() {
                       aria-label={`Select ${u.username}`}
                       checked={selected.has(u.id)}
                       onChange={() => toggleOne(u.id)}
+                      className="h-5 w-5"
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-neutral-200">{u.email}</div>
-                    <div className="text-xs text-neutral-500">{u.username}</div>
+                    <div className="break-all font-medium text-neutral-200">{u.email}</div>
+                    <div className="break-all text-xs text-neutral-500">{u.username}</div>
                   </td>
                   <td className="px-4 py-3">
                     <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>{u.role}</Badge>
