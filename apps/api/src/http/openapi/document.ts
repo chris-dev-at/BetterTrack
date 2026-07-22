@@ -371,6 +371,14 @@ const componentSchemas = {
   ApiKeyListResponse: contracts.apiKeyListResponseSchema,
   CreateApiKeyResponse: contracts.createApiKeyResponseSchema,
 
+  // Outbound webhooks (§13.5 V5-P10)
+  CreateWebhookSubscriptionRequest: contracts.createWebhookSubscriptionRequestSchema,
+  UpdateWebhookSubscriptionRequest: contracts.updateWebhookSubscriptionRequestSchema,
+  WebhookSubscriptionListResponse: contracts.webhookSubscriptionListResponseSchema,
+  WebhookSubscriptionResponse: contracts.webhookSubscriptionResponseSchema,
+  CreateWebhookSubscriptionResponse: contracts.createWebhookSubscriptionResponseSchema,
+  WebhookDeliveryListResponse: contracts.webhookDeliveryListResponseSchema,
+
   // OAuth apps (§6.13, V2-P12)
   CreateOAuthClientRequest: contracts.createOAuthClientRequestSchema,
   UpdateOAuthClientRequest: contracts.updateOAuthClientRequestSchema,
@@ -3369,6 +3377,54 @@ const endpoints: EndpointDef[] = [
     summary: 'Revoke an authorized app; kills its access + refresh tokens instantly.',
     params: contracts.idParamSchema,
     status: 204,
+  },
+
+  // Outbound webhooks (§13.5 V5-P10) — session-only (never reachable by a key).
+  {
+    method: 'get',
+    path: '/settings/webhooks',
+    tag: 'Settings',
+    summary: 'List the caller’s webhook subscriptions (never returns the signing secret).',
+    status: 200,
+    response: R.WebhookSubscriptionListResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/webhooks',
+    tag: 'Settings',
+    summary:
+      'Create a webhook subscription; the signing secret is returned exactly once and only its encrypted form is stored.',
+    body: R.CreateWebhookSubscriptionRequest,
+    status: 201,
+    response: R.CreateWebhookSubscriptionResponse,
+  },
+  {
+    method: 'patch',
+    path: '/settings/webhooks/{id}',
+    tag: 'Settings',
+    summary:
+      'Edit a subscription; flipping enabled true re-enables (resets failures), false pauses.',
+    params: contracts.idParamSchema,
+    body: R.UpdateWebhookSubscriptionRequest,
+    status: 200,
+    response: R.WebhookSubscriptionResponse,
+  },
+  {
+    method: 'delete',
+    path: '/settings/webhooks/{id}',
+    tag: 'Settings',
+    summary: 'Delete a subscription (cascades its delivery log).',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
+  {
+    method: 'get',
+    path: '/settings/webhooks/{id}/deliveries',
+    tag: 'Settings',
+    summary: 'The subscription’s bounded delivery log, newest first.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.WebhookDeliveryListResponse,
   },
 
   // OAuth 2.0 flow (§6.13, V2-P12).

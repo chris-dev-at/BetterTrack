@@ -95,6 +95,12 @@ export const AuditAction = {
    * audit trail is complete and survives forks and actor deletion.
    */
   MirrorOpApplied: 'mirror.op_applied',
+  // Outbound webhooks (§13.5 V5-P10, issue 1/2): subscription lifecycle + the
+  // auto-disable that a dead receiver triggers (the disable is audit-visible).
+  WebhookCreated: 'webhook.created',
+  WebhookUpdated: 'webhook.updated',
+  WebhookDeleted: 'webhook.deleted',
+  WebhookAutoDisabled: 'webhook.auto_disabled',
 } as const;
 
 export interface AuditService {

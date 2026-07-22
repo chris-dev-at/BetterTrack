@@ -29,6 +29,8 @@ import {
   createJobDefinitions,
   createJobWorkers,
   createMirrorReplicateJob,
+  createWebhookDeliverJob,
+  createWebhookDeliveryCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -62,6 +64,16 @@ import { createStandingOrderService } from '../services/standingOrders/standingO
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
+import {
+  createWebhookSubscriptionRepository,
+  createWebhookDeliveryRepository,
+} from '../data/repositories/webhookRepository';
+import {
+  createWebhookBridge,
+  createWebhookDispatcher,
+  createFetchWebhookTransport,
+} from '../services/webhooks';
+import { newId } from '../data/ids';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
 import { createReferenceBackfill } from '../services/assets/referenceBackfill';
@@ -361,6 +373,30 @@ const usageAnalytics = createUsageAnalyticsService({
   startTimer: false,
 });
 
+// V5-P10 outbound webhooks (#648): the worker owns the authoritative delivery
+// core (signs + POSTs + records the log + auto-disable streak) and the bridge
+// that fans a user-scoped event out to that user's subscriptions. The bridge
+// runs from the `notifications.dispatch` job — the ONE place every such event
+// converges — enqueuing a durable `webhooks.deliver` per matching subscription.
+const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
+const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
+const webhookDispatcher = createWebhookDispatcher({
+  subscriptions: webhookSubscriptionRepo,
+  deliveries: webhookDeliveryRepo,
+  transport: createFetchWebhookTransport(),
+  encryptionKey: config.twoFactor.encryptionKey,
+  audit,
+  logger,
+});
+const webhookBridge = createWebhookBridge({
+  subscriptions: webhookSubscriptionRepo,
+  enqueue: async (job) => {
+    await registry.enqueue('webhooks.deliver', job);
+  },
+  generateId: newId,
+  logger,
+});
+
 const definitions = [
   ...createJobDefinitions({
     db,
@@ -371,7 +407,7 @@ const definitions = [
     isLocalProvider: (providerId) =>
       providerRegistry.has(providerId) && providerRegistry.get(providerId).local === true,
   }),
-  createNotificationsDispatchJob({ dispatcher }),
+  createNotificationsDispatchJob({ dispatcher, webhooks: webhookBridge }),
   createDigestDailyJob({ digest: digestService }),
   createDigestWeeklyJob({ digest: digestService }),
   createDeferredDeliveryJob({ digest: digestService }),
@@ -404,6 +440,10 @@ const definitions = [
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
   createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+  // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
+  // job options + auto-disable) and the daily delivery-log retention sweep.
+  createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
+  createWebhookDeliveryCleanupJob({ deliveries: webhookDeliveryRepo }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

@@ -151,6 +151,21 @@ import {
   createExpenseBudgetService,
   type ExpenseBudgetService,
 } from '../services/expenses/budgetService';
+import {
+  createWebhookSubscriptionRepository,
+  createWebhookDeliveryRepository,
+} from '../data/repositories/webhookRepository';
+import {
+  createWebhookService,
+  createWebhookDispatcher,
+  createWebhookBridge,
+  createFetchWebhookTransport,
+  type WebhookService,
+  type WebhookBridge,
+  type WebhookTransport,
+  type WebhookDeliveryJob,
+} from '../services/webhooks';
+import { newId } from '../data/ids';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
@@ -306,6 +321,15 @@ export interface AppContext {
   expenseImports: ExpenseImportService;
   /** Expense dashboards + per-category budgets with matrix-routed alerts (§13.5 V5-P9, issue 3/3). */
   expenseBudgets: ExpenseBudgetService;
+  /** Outbound webhook subscriptions — CRUD + one-time signing secret + delivery log (§13.5 V5-P10). */
+  webhooks: WebhookService;
+  /**
+   * Webhook event-bus bridge (§13.5 V5-P10): fans one user-scoped domain event
+   * out to that user's matching subscriptions. In production the worker calls it
+   * from the `notifications.dispatch` job; held on the context so tests can drive
+   * fan-out synchronously (no BullMQ) and the worker can reuse this instance.
+   */
+  webhookBridge: WebhookBridge;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -497,6 +521,18 @@ export interface BuildContextDeps {
    * clock. Defaults to the real time.
    */
   budgetNow?: () => Date;
+  /**
+   * Test seam (§13.5 V5-P10): the webhook delivery HTTP transport. Defaults to a
+   * `fetch`-based POST; tests inject a recording fake to assert the signed
+   * payload without a real network receiver.
+   */
+  webhookTransport?: WebhookTransport;
+  /**
+   * Test seam (§13.5 V5-P10): the webhook delivery transport seam. Defaults to
+   * the durable `webhooks.deliver` BullMQ enqueue in production and to a direct
+   * single synchronous attempt under test (BullMQ can't run on ioredis-mock).
+   */
+  webhookDeliveryEnqueue?: (job: WebhookDeliveryJob) => Promise<void>;
 }
 
 /** Composition root: repositories → services → context. */
@@ -729,6 +765,49 @@ export function buildContext(deps: BuildContextDeps): AppContext {
             await queues.enqueue('notifications.dispatch', { event });
           }
         : (event) => notificationDispatcher.dispatch(event)),
+    logger,
+  });
+
+  // ── Outbound webhooks (§13.5 V5-P10, issue 1/2) ─────────────────────────────
+  // CRUD service + the delivery dispatcher (signs + POSTs, records the log,
+  // maintains the auto-disable streak) + the event-bus bridge that fans one
+  // user-scoped event out to that user's matching subscriptions. In production
+  // the WORKER runs the authoritative delivery job; this API-side twin backs
+  // synchronous test delivery and the CRUD routes. The signing secret is stored
+  // only as a secretBox envelope, encrypted with the shared 2FA key.
+  const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
+  const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
+  const webhooks = createWebhookService({
+    subscriptions: webhookSubscriptionRepo,
+    deliveries: webhookDeliveryRepo,
+    audit,
+    encryptionKey: config.twoFactor.encryptionKey,
+  });
+  const webhookTransport: WebhookTransport = deps.webhookTransport ?? createFetchWebhookTransport();
+  const webhookDispatcher = createWebhookDispatcher({
+    subscriptions: webhookSubscriptionRepo,
+    deliveries: webhookDeliveryRepo,
+    transport: webhookTransport,
+    encryptionKey: config.twoFactor.encryptionKey,
+    audit,
+    logger,
+  });
+  // Delivery transport: durable BullMQ queue in production; a direct single
+  // attempt under test (BullMQ can't run on ioredis-mock), mirroring the
+  // notification pipeline's enqueue seam.
+  const webhookDeliveryEnqueue: (job: WebhookDeliveryJob) => Promise<void> =
+    deps.webhookDeliveryEnqueue ??
+    (queues
+      ? async (job) => {
+          await queues.enqueue('webhooks.deliver', job);
+        }
+      : async (job) => {
+          await webhookDispatcher.deliver(job, { attempt: 1, maxAttempts: 1 });
+        });
+  const webhookBridge = createWebhookBridge({
+    subscriptions: webhookSubscriptionRepo,
+    enqueue: webhookDeliveryEnqueue,
+    generateId: newId,
     logger,
   });
 
@@ -1451,6 +1530,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     expenses,
     expenseImports,
     expenseBudgets,
+    webhooks,
+    webhookBridge,
     analytics,
     social,
     comments,
