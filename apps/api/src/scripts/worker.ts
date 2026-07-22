@@ -22,11 +22,13 @@ import { createPushSubscriptionRepository } from '../data/repositories/pushSubsc
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
+  createBackfillScheduler,
   createDeadLetter,
   createExportBuildJob,
   createExportCleanupJob,
   createJobDefinitions,
   createJobWorkers,
+  createMirrorReplicateJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -40,20 +42,35 @@ import {
   createStandingOrdersJob,
   dividendNotifyGate,
   jobConnectionFactory,
+  mirrorReplicateJobId,
   registerSchedules,
   type JobContext,
 } from '../jobs';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createCashSourceRepository } from '../data/repositories/cashSourceRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
+import { createFriendGroupRepository } from '../data/repositories/friendGroupRepository';
+import { createFriendshipRepository } from '../data/repositories/friendshipRepository';
+import { createItemFollowsRepository } from '../data/repositories/itemFollowsRepository';
+import { createMirrorchainRepository } from '../data/repositories/mirrorchainRepository';
 import { createPortfolioRepository } from '../data/repositories/portfolioRepository';
+import { createPortfolioSettingsRepository } from '../data/repositories/portfolioSettingsRepository';
 import { createPortfolioSnapshotRepository } from '../data/repositories/portfolioSnapshotRepository';
+import { createProfileRepository } from '../data/repositories/profileRepository';
+import { createShareAudienceRepository } from '../data/repositories/shareAudienceRepository';
 import { createStandingOrderRepository } from '../data/repositories/standingOrderRepository';
 import { createStandingOrderService } from '../services/standingOrders/standingOrderService';
+import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
+import { createUserFollowsRepository } from '../data/repositories/userFollowsRepository';
 import { createCurrencyService } from '../services/currency/currencyService';
 import { createMarketDataFxSource } from '../services/currency/marketDataFxSource';
+import { createReferenceBackfill } from '../services/assets/referenceBackfill';
+import { createAudienceService } from '../services/social/audienceService';
+import { createMirrorService } from '../services/mirror';
+import { createPortfolioService } from '../services/portfolio/portfolioService';
 import { createPortfolioSnapshotService } from '../services/portfolio/portfolioSnapshots';
+import { createTaxService } from '../services/tax/taxService';
 import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
 import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
@@ -242,6 +259,80 @@ const snapshots = createPortfolioSnapshotService({
   logger,
 });
 
+// V5-P7 MIRRORCHAIN (#644, design §2): the worker runs the `mirror.replicate`
+// job, which applies each chain's pending ops to every member's copy THROUGH
+// that member's own portfolio/tax services (force mode) — so it needs the same
+// service stack the API composes, built here on the worker's connections.
+const portfolioRepo = createPortfolioRepository(db);
+const transactionRepo = createTransactionRepository(db);
+const cashMovementRepo = createCashMovementRepository(db);
+const cashSourceRepo = createCashSourceRepository(db);
+const taxRepo = createTaxRepository(db);
+const assetRepo = createAssetRepository(db);
+const friendshipRepo = createFriendshipRepository(db);
+const profileRepo = createProfileRepository(db);
+const currencyService = createCurrencyService({ source: createMarketDataFxSource(marketData) });
+const audience = createAudienceService({
+  repo: createShareAudienceRepository(db),
+  friendship: friendshipRepo,
+  groups: createFriendGroupRepository(db),
+  follows: createUserFollowsRepository(db),
+  itemFollows: createItemFollowsRepository(db),
+  profile: profileRepo,
+  notify,
+  logger,
+});
+const taxService = createTaxService({
+  taxRepo,
+  portfolioSettingsRepo: createPortfolioSettingsRepository(db),
+  transactionRepo,
+  cashMovementRepo,
+  cashSourceRepo,
+  portfolioRepo,
+  currencyService,
+  snapshots,
+  logger,
+});
+const portfolioService = createPortfolioService({
+  portfolioRepo,
+  transactionRepo,
+  cashMovementRepo,
+  cashSourceRepo,
+  marketData,
+  currencyService,
+  referenceBackfill: createReferenceBackfill({
+    assetRepo,
+    backfill: createBackfillScheduler(registry),
+    logger,
+  }),
+  snapshots,
+  taxService,
+  friendshipRepo,
+  audience,
+  profile: profileRepo,
+  notify,
+  logger,
+});
+const enqueueMirrorReplicate = async (chainId: string) => {
+  await registry.enqueue('mirror.replicate', { chainId }, { jobId: mirrorReplicateJobId(chainId) });
+};
+const mirror = createMirrorService({
+  repo: createMirrorchainRepository(db),
+  portfolio: portfolioService,
+  tax: taxService,
+  portfolioRepo,
+  transactionRepo,
+  cashMovementRepo,
+  cashSourceRepo,
+  taxRepo,
+  users: createUserRepository(db),
+  audit,
+  events,
+  redis: deadLetterConnection,
+  enqueueReplicate: enqueueMirrorReplicate,
+  logger,
+});
+
 // V5-P6b standing orders (#593): the worker owns the engine that the daily
 // `standingOrders.process` job drives. It books recurring buys / cash movements
 // through the same transaction/cash repositories the API uses, tagged
@@ -308,6 +399,9 @@ const definitions = [
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once.
   createStandingOrdersJob({ standingOrders }),
+  // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
+  // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
+  createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
 ];
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };

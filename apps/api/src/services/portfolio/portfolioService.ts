@@ -217,12 +217,18 @@ export interface PortfolioService {
    * rows (and their linked cash legs) are stamped with — `manual` by default;
    * the CSV apply path passes `import:<broker>`. Server-assigned only: the HTTP
    * body carries no source field, so a client can never forge a sync/import tag.
+   * `opts.force` is the MIRRORCHAIN replica-apply mode (design §2): the cash
+   * overdraw gate is waived (per-copy balances legitimately skew by copy-local
+   * tax movements, §8) and no friend-activity is emitted for the copy owner
+   * (the write is another member's, attributed via `mirror_rows`). Oversell
+   * validation stays on — holdings derive only from replicated transactions,
+   * so it agrees on every copy.
    */
   createTransactions(
     userId: string,
     portfolioId: string,
     inputs: TransactionInput[],
-    opts?: { source?: string },
+    opts?: { source?: string; force?: boolean },
   ): Promise<TransactionDto[]>;
   updateTransaction(
     userId: string,
@@ -230,7 +236,17 @@ export interface PortfolioService {
     id: string,
     patch: UpdateTransactionRequest,
   ): Promise<TransactionDto>;
-  deleteTransaction(userId: string, portfolioId: string, id: string): Promise<void>;
+  /**
+   * `opts.force` (MIRRORCHAIN replica apply, design §2): waives the
+   * cash-ledger-would-go-negative gate — a replica must follow the chain's
+   * total order even where its copy-local tax skew leaves it short.
+   */
+  deleteTransaction(
+    userId: string,
+    portfolioId: string,
+    id: string,
+    opts?: { force?: boolean },
+  ): Promise<void>;
   /**
    * Holdings + totals (§6.9), denominated in `opts.baseCurrency` (the caller's
    * per-user base, §5.4/V3-P10d; EUR when omitted). Conversion happens at read
@@ -273,8 +289,16 @@ export interface PortfolioService {
    * Soft-archive a source (V3-P3). Main is never archivable, and only a source
    * whose balance is exactly €0.00 can be archived — an archived source never
    * hides money; its history stays queryable and inside every roll-up.
+   * `opts.force` (MIRRORCHAIN, design §8): replicas force-archive — the €0.00
+   * gate holds on the origin copy only; a tax-skewed replica archives with its
+   * own residual balance, which stays fully queryable.
    */
-  archiveCashSource(userId: string, portfolioId: string, sourceId: string): Promise<CashSourceDto>;
+  archiveCashSource(
+    userId: string,
+    portfolioId: string,
+    sourceId: string,
+    opts?: { force?: boolean },
+  ): Promise<CashSourceDto>;
   /** Restore an archived source (V3-P3). */
   restoreCashSource(userId: string, portfolioId: string, sourceId: string): Promise<CashSourceDto>;
   /**
@@ -282,10 +306,15 @@ export interface PortfolioService {
    * `transfer_out`/`transfer_in` movements — both histories carry it, net worth
    * is unchanged, and it is NEVER a TWR external flow.
    */
+  /**
+   * `opts.source` tags both legs (V5-P0c; `manual` default). `opts.force`
+   * (MIRRORCHAIN replica apply) waives the from-source overdraw gate (§8).
+   */
   transferCash(
     userId: string,
     portfolioId: string,
     input: CashTransferRequest,
+    opts?: { source?: string; force?: boolean },
   ): Promise<CashTransferResponse>;
   /**
    * "Set balance to X" (V3-P3, §16 2026-07-07): computes the signed delta from
@@ -308,12 +337,14 @@ export interface PortfolioService {
   /**
    * Record an external cash withdrawal from a source (Main by default);
    * rejects an overdraw of that source (§14/V3-P3, no silent negatives).
+   * `opts.force` (MIRRORCHAIN replica apply, design §2/§8) waives the overdraw
+   * gate — a tax-skewed copy renders its negative balance honestly.
    */
   withdrawCash(
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
-    opts?: { source?: string },
+    opts?: { source?: string; force?: boolean },
   ): Promise<CashMovementResponse>;
   /** Live "available → after" preview against one source's balance (§14, V3-P3). */
   previewCash(
@@ -1356,7 +1387,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         })
         .filter((m): m is SourcedCashMovement => m !== null)
         .concat(taxPlan.proposed);
-      if (proposed.length > 0) {
+      // Force mode (MIRRORCHAIN replica apply, design §2): the overdraw gate is
+      // origin-authoritative; a replica follows the chain's total order even
+      // where its copy-local tax skew leaves the source short (§8).
+      if (proposed.length > 0 && !opts?.force) {
         assertCashSolvent(existingCash, proposed);
       }
 
@@ -1410,15 +1444,19 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
       // Friend-activity (#368): tell opted-in, still-authorized viewers about
       // the new buys/sells on this shared portfolio. Best-effort, after commit.
-      await emitFriendActivity(
-        userId,
-        portfolioId,
-        inserted.map((r) => ({
-          refId: `txn:${r.id}`,
-          side: r.side,
-          symbol: assetsById.get(r.assetId)?.symbol ?? '',
-        })),
-      );
+      // Skipped on a replicated apply — the write is another chain member's,
+      // not activity of the copy owner (MIRRORCHAIN design §2/§10).
+      if (!opts?.force) {
+        await emitFriendActivity(
+          userId,
+          portfolioId,
+          inserted.map((r) => ({
+            refId: `txn:${r.id}`,
+            side: r.side,
+            symbol: assetsById.get(r.assetId)?.symbol ?? '',
+          })),
+        );
+      }
 
       return inserted.map((r) => {
         const asset = assetsById.get(r.assetId);
@@ -1525,7 +1563,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return recordToDto(updated, asset);
     },
 
-    async deleteTransaction(userId, portfolioId, id) {
+    async deleteTransaction(userId, portfolioId, id, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await transactionRepo.findByIdForUser(userId, id);
       if (!existing || existing.portfolioId !== portfolioId) {
@@ -1557,8 +1595,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // replay the ledger (per source, V3-P3) without this txn's movements,
       // with the corrections appended, and refuse the delete if any point
       // would go negative.
+      // Force mode (MIRRORCHAIN replica apply, design §2): the gate below is
+      // origin-authoritative; replicas follow the total order regardless.
       const cashMovements = await cashMovementRepo.listForPortfolio(portfolioId);
-      if (cashMovements.some((m) => m.transactionId === id) || taxCorrections.length > 0) {
+      if (
+        !opts?.force &&
+        (cashMovements.some((m) => m.transactionId === id) || taxCorrections.length > 0)
+      ) {
         const remaining = cashMovements.filter((m) => m.transactionId !== id).map(toDomainMovement);
         const proposedCorrections: SourcedCashMovement[] = taxCorrections.map((c) => ({
           kind: c.kind,
@@ -1737,7 +1780,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return sourceToDto(updated, balanceBySource.get(sourceId) ?? 0);
     },
 
-    async archiveCashSource(userId, portfolioId, sourceId) {
+    async archiveCashSource(userId, portfolioId, sourceId, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const source = await requireSource(portfolioId, sourceId);
       // Main is the guaranteed default target of every cash flow — never
@@ -1752,9 +1795,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Only an exactly-€0.00 source may be archived (owner decision, PR for
       // §16): archived sources leave the active listings, and a hidden source
       // must never hide money — the roll-ups would show cash "from nowhere".
+      // MIRRORCHAIN force mode (design §8): the gate holds on the origin copy
+      // only; replicas force-archive with their copy-local residual balance.
       const { balanceBySource } = await loadCashState(portfolioId);
       const balanceEur = balanceBySource.get(sourceId) ?? 0;
-      if (balanceEur !== 0) {
+      if (balanceEur !== 0 && !opts?.force) {
         throw badRequest(
           'Only a cash source with a balance of exactly €0.00 can be archived. Transfer or withdraw the remaining balance first.',
           'CASH_SOURCE_NOT_EMPTY',
@@ -1781,7 +1826,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       return sourceToDto(restored, balanceBySource.get(sourceId) ?? 0);
     },
 
-    async transferCash(userId, portfolioId, input) {
+    async transferCash(userId, portfolioId, input, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       if (input.fromSourceId === input.toSourceId) {
         throw badRequest(
@@ -1814,13 +1859,19 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
       // No overdraw of the from-source at any point once the (possibly
       // back-dated) pair is replayed — checked per source over both legs.
+      // Waived in MIRRORCHAIN force mode (design §2/§8): replicas follow the
+      // chain's total order even where copy-local tax skew leaves them short.
       const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-      assertCashSolvent(existing, [legs.outgoing, legs.incoming]);
+      if (!opts?.force) {
+        assertCashSolvent(existing, [legs.outgoing, legs.incoming]);
+      }
 
       // One shared transferId pairs the legs; each leg names the other side
       // for display. Written atomically — neither leg can persist alone.
       const transferId = newId();
       const note = input.note ?? null;
+      // Source tag (V5-P0c): `manual` unless a replicated apply stamps its tag.
+      const sourceTag = opts?.source ?? 'manual';
       const [outgoing, incoming] = await cashMovementRepo.insertTransferPair(portfolioId, [
         {
           sourceId: from.id,
@@ -1830,6 +1881,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           note,
           transferId,
           counterpartSourceId: to.id,
+          source: sourceTag,
         },
         {
           sourceId: to.id,
@@ -1839,6 +1891,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           note,
           transferId,
           counterpartSourceId: from.id,
+          source: sourceTag,
         },
       ]);
       // The paired legs cancel in the net-worth curve and are never TWR flows,
@@ -1942,14 +1995,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const existing = await cashMovementRepo.listForPortfolio(portfolioId);
       // Guard against an overdraw of THIS source at *any* point once this
       // (possibly back-dated) withdrawal is replayed — no silent negatives.
-      assertCashSolvent(existing, [
-        {
-          kind: 'withdrawal',
-          amountEur: -amountEur,
-          occurredAt: executedAt.toISOString(),
-          sourceId: source.id,
-        },
-      ]);
+      // Waived in MIRRORCHAIN force mode (design §2/§8): a tax-skewed replica
+      // renders its negative balance honestly rather than diverging.
+      if (!opts?.force) {
+        assertCashSolvent(existing, [
+          {
+            kind: 'withdrawal',
+            amountEur: -amountEur,
+            occurredAt: executedAt.toISOString(),
+            sourceId: source.id,
+          },
+        ]);
+      }
       const movement = await cashMovementRepo.insert(portfolioId, {
         sourceId: source.id,
         kind: 'withdrawal',

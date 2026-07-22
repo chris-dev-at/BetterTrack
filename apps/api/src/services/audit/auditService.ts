@@ -89,6 +89,12 @@ export const AuditAction = {
   ProblemReopened: 'problem.reopened',
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c)).
   FeatureFlagChanged: 'feature_flag.changed',
+  /**
+   * MIRRORCHAIN (§13.5 V5-P7, design §2/§10): one row per applied op per copy —
+   * actor = the acting member, target = the copy-local row — so each copy's
+   * audit trail is complete and survives forks and actor deletion.
+   */
+  MirrorOpApplied: 'mirror.op_applied',
 } as const;
 
 export interface AuditService {

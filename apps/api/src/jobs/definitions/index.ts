@@ -50,6 +50,12 @@ export {
 } from './notificationsJob';
 
 export {
+  createMirrorReplicateJob,
+  mirrorReplicateJobId,
+  type MirrorReplicateJobDeps,
+} from './mirrorJobs';
+
+export {
   createDigestDailyJob,
   createDigestWeeklyJob,
   createDeferredDeliveryJob,

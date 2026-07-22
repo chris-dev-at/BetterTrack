@@ -69,6 +69,33 @@ export interface AppendOpInput {
   actorUsername: string;
   originPortfolioId?: string | null;
   payload: MirrorOpPayload;
+  /**
+   * Optimistic-concurrency base for {@link appendOpsChecked} (design §3): the
+   * entity's latest op seq the writer edited against (0 = no prior op).
+   * `undefined` skips the guard (creates mint fresh ids, so nothing to race).
+   */
+  baseSeq?: number;
+}
+
+/**
+ * Why a guarded append was refused (design §§2–3). The whole append transaction
+ * rolls back — `last_seq` is not consumed and no op row exists.
+ */
+export type AppendRefusal =
+  | { refused: 'NOT_A_MEMBER' }
+  | { refused: 'CONFLICT'; mirrorId: string; expectedSeq: number; actualSeq: number }
+  | { refused: 'ROW_DELETED'; mirrorId: string };
+
+export type CheckedAppendResult = { ops: MirrorChainOpRow[] } | AppendRefusal;
+
+/** Ops whose presence as an entity's latest op make it terminally deleted (§3). */
+const TERMINAL_OP_KINDS: readonly MirrorOpKind[] = ['tx.delete', 'dividend.delete'];
+
+/** Internal control-flow error: rolls the append transaction back on refusal. */
+class AppendRefusedError extends Error {
+  constructor(public readonly refusal: AppendRefusal) {
+    super(`mirror append refused: ${refusal.refused}`);
+  }
 }
 
 export interface InsertMirrorRowInput {
@@ -77,7 +104,8 @@ export interface InsertMirrorRowInput {
   mirrorId: string;
   portfolioId: string;
   localId: string;
-  createdBy: string;
+  /** Nullable: attribution survives the creator's account deletion (§1). */
+  createdBy: string | null;
   createdByUsername: string;
 }
 
@@ -149,6 +177,91 @@ export function createMirrorchainRepository(db: Database) {
         }));
         return tx.insert(mirrorChainOps).values(values).returning();
       });
+    },
+
+    /**
+     * Guarded append (M2, design §§2–3): {@link appendOps} plus, in the SAME
+     * transaction that holds the `mirror_chains` row lock and assigns seqs,
+     *  - the actor's **active membership** check — an op submitted after a
+     *    kick/leave op took an earlier seq is refused (`NOT_A_MEMBER`), so a
+     *    severed member can never race a write past their removal;
+     *  - the §3 **stale-edit guard** — an op carrying `baseSeq` is refused
+     *    (`CONFLICT`) when the entity's current latest-op seq differs; and
+     *  - the **terminal-delete guard** — any op targeting an entity whose
+     *    latest op is a `*.delete` is refused (`ROW_DELETED`).
+     * The version check and the seq assignment share this transaction, so two
+     * concurrent guarded appends against the same base can never both pass
+     * (design §3 Case B). On refusal the transaction rolls back whole.
+     */
+    async appendOpsChecked(
+      chainId: string,
+      actorUserId: string,
+      ops: AppendOpInput[],
+    ): Promise<CheckedAppendResult> {
+      if (ops.length === 0) return { ops: [] };
+      try {
+        const rows = await db.transaction(async (tx) => {
+          const [chain] = await tx
+            .update(mirrorChains)
+            .set({ lastSeq: sql`${mirrorChains.lastSeq} + ${ops.length}` })
+            .where(eq(mirrorChains.id, chainId))
+            .returning({ lastSeq: mirrorChains.lastSeq });
+          if (!chain) throw new Error(`mirror chain ${chainId} not found`);
+
+          const [member] = await tx
+            .select()
+            .from(mirrorChainMembers)
+            .where(
+              and(
+                eq(mirrorChainMembers.chainId, chainId),
+                eq(mirrorChainMembers.userId, actorUserId),
+                eq(mirrorChainMembers.status, 'active'),
+              ),
+            );
+          if (!member) throw new AppendRefusedError({ refused: 'NOT_A_MEMBER' });
+
+          for (const op of ops) {
+            if (op.baseSeq === undefined || !op.mirrorId) continue;
+            const [latest] = await tx
+              .select()
+              .from(mirrorChainOps)
+              .where(
+                and(eq(mirrorChainOps.chainId, chainId), eq(mirrorChainOps.mirrorId, op.mirrorId)),
+              )
+              .orderBy(desc(mirrorChainOps.seq))
+              .limit(1);
+            if (latest && TERMINAL_OP_KINDS.includes(latest.kind as MirrorOpKind)) {
+              throw new AppendRefusedError({ refused: 'ROW_DELETED', mirrorId: op.mirrorId });
+            }
+            const actualSeq = latest?.seq ?? 0;
+            if (actualSeq !== op.baseSeq) {
+              throw new AppendRefusedError({
+                refused: 'CONFLICT',
+                mirrorId: op.mirrorId,
+                expectedSeq: op.baseSeq,
+                actualSeq,
+              });
+            }
+          }
+
+          const startSeq = chain.lastSeq - ops.length + 1;
+          const values = ops.map((op, i) => ({
+            chainId,
+            seq: startSeq + i,
+            kind: op.kind,
+            mirrorId: op.mirrorId ?? null,
+            actorUserId: op.actorUserId,
+            actorUsername: op.actorUsername,
+            originPortfolioId: op.originPortfolioId ?? null,
+            payload: op.payload,
+          }));
+          return tx.insert(mirrorChainOps).values(values).returning();
+        });
+        return { ops: rows };
+      } catch (err) {
+        if (err instanceof AppendRefusedError) return err.refusal;
+        throw err;
+      }
     },
 
     /** Ops with `seq > afterSeq`, ascending — the per-copy replay window. */
@@ -374,6 +487,26 @@ export function createMirrorchainRepository(db: Database) {
     /** All mirror-row links for one copy (attribution overlay on the ledger). */
     async listMirrorRowsForPortfolio(portfolioId: string): Promise<MirrorRowRow[]> {
       return db.select().from(mirrorRows).where(eq(mirrorRows.portfolioId, portfolioId));
+    },
+
+    /**
+     * Drop one copy's link for a deleted logical entity (a replayed `*.delete`
+     * then treats the missing link as already done — design §2 idempotency).
+     */
+    async deleteMirrorRow(
+      kind: MirrorRowKind,
+      mirrorId: string,
+      portfolioId: string,
+    ): Promise<void> {
+      await db
+        .delete(mirrorRows)
+        .where(
+          and(
+            eq(mirrorRows.kind, kind),
+            eq(mirrorRows.mirrorId, mirrorId),
+            eq(mirrorRows.portfolioId, portfolioId),
+          ),
+        );
     },
 
     /** Re-point a mirror row to a new local id — the tax-immutable correction path (§2). */

@@ -50,6 +50,11 @@ describe('mirrorOpPayloadSchema — opVersion + discrimination', () => {
     note: null,
     allowUncovered: false,
     uncoveredEntryPrice: null,
+    // M2 (#644): the replicated cash-link intent — flows identical per copy (§8).
+    payFromCash: false,
+    addProceedsToCash: false,
+    cashSourceMirrorId: null,
+    settleCashAsOfToday: false,
     originSource: 'manual',
   };
 
@@ -87,6 +92,9 @@ describe('mirrorOpPayloadSchema — opVersion + discrimination', () => {
       note: null,
       allowUncovered: false,
       uncoveredEntryPrice: null,
+      payFromCash: false,
+      addProceedsToCash: false,
+      cashSourceMirrorId: null,
     };
     expect(mirrorOpPayloadSchema.safeParse(base).success).toBe(false);
     expect(mirrorOpPayloadSchema.safeParse({ ...base, baseSeq: 40 }).success).toBe(true);
