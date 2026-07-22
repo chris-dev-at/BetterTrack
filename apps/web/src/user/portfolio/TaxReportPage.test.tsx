@@ -104,7 +104,9 @@ describe('TaxReportPage', () => {
     renderPage();
 
     // Header-only disclaimer before expanding.
-    expect(await screen.findByText(/Estimates for your personal overview only/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Estimates for your personal overview only/i),
+    ).toBeInTheDocument();
 
     await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
     await screen.findByText('AAPL');
