@@ -37,6 +37,11 @@ export const NOTIFICATION_TYPES = [
   // V5-P5 market intelligence: an upcoming ex-date for a held asset. Opt-in —
   // default OFF on every channel (see {@link OPT_IN_NOTIFICATION_TYPES}).
   'dividend.event',
+  // V5-P9 expense tracking (issue 3/3): a per-category monthly budget was blown.
+  // A normal (non-opt-in) type — default ON for the in-app bell / push, OFF for
+  // email (the lean-email default); routed through the standard matrix so
+  // instant/digest + quiet hours are honoured automatically.
+  'budget.exceeded',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
@@ -84,6 +89,10 @@ export const NOTIFICATION_CATEGORIES = [
   },
   { key: 'chat', types: ['chat.message'] },
   { key: 'alerts', types: ['alert.triggered'] },
+  // Expense budgets (§13.5 V5-P9): a per-category monthly target was exceeded.
+  // Its own compact category so the setting sits beside the expense area's other
+  // controls rather than muddling the price-alert row.
+  { key: 'budgets', types: ['budget.exceeded'] },
   // Market intelligence (§13.5 V5-P5): opt-in reminders (earnings reports,
   // dividend ex-dates; more event families later). Default OFF on every channel
   // — see {@link isOptInNotificationType} / {@link notificationChannelDefaultEnabled}.

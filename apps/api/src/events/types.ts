@@ -316,6 +316,33 @@ export interface DividendEventNotice {
   occurredAt: string;
 }
 
+/**
+ * `budget.exceeded` → a per-category monthly expense budget was blown (§13.5
+ * V5-P9, issue 3/3). `userId` is the budget's owner. Emitted at most once per
+ * (budget, period): the producer claims the `expense_budget_fires` marker before
+ * emitting, and the dispatcher additionally dedupes per (recipient, budget,
+ * period) via its eventKey — so a blown budget fires exactly one alert per month.
+ * All display strings ride the event (category name, target, spend, period) so
+ * the dispatcher renders the notification without any expense-side lookup —
+ * keeping the notification core free of the strictly-separate expense tables.
+ */
+export interface BudgetExceededEvent {
+  type: 'budget.exceeded';
+  /** Recipient — the budget's owner. */
+  userId: string;
+  budgetId: string;
+  categoryId: string;
+  categoryName: string;
+  /** The month whose spend blew the budget (`YYYY-MM`) — the dedupe period. */
+  period: string;
+  /** The monthly target that was exceeded. */
+  amount: number;
+  /** The recorded spend for the period (`> amount`). */
+  spent: number;
+  currency: string;
+  occurredAt: string;
+}
+
 /** The discriminated union of every domain event (§9). */
 export type DomainEvent =
   | AlertTriggeredEvent
@@ -336,7 +363,8 @@ export type DomainEvent =
   | AccountDataExportEvent
   | EarningsReminderEvent
   | ChatMessageEvent
-  | DividendEventNotice;
+  | DividendEventNotice
+  | BudgetExceededEvent;
 
 /** The `type` discriminant of {@link DomainEvent}. */
 export type DomainEventType = DomainEvent['type'];
@@ -365,4 +393,5 @@ export const DOMAIN_EVENT_TYPES = [
   'earnings.reminder',
   'chat.message',
   'dividend.event',
+  'budget.exceeded',
 ] as const satisfies readonly DomainEventType[];

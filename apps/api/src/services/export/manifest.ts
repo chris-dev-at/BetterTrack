@@ -209,6 +209,17 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   expense_budget_fires: skipped(
     'Expense budget per-period fired-marker (V5-P9) — internal exactly-once alert bookkeeping, not user data.',
   ),
+  // V5-P10 outbound webhooks (#648): the subscription config is user-owned but
+  // carries a stored signing secret (encrypted at rest, shown once) that must
+  // never leave the server — like discord_webhooks; its non-secret config export
+  // lands with a later export sweep (mirrors standing_orders). The delivery log
+  // is a bounded, retention-pruned operational record, not user data.
+  webhook_subscriptions: skipped(
+    'Outbound-webhook subscriptions (V5-P10) — user-owned config carrying a stored signing secret that must not leave the server; non-secret config export lands with a later export sweep.',
+  ),
+  webhook_deliveries: skipped(
+    'Outbound-webhook delivery log (V5-P10) — a bounded, retention-pruned operational record, not user data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */

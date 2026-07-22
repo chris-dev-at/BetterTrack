@@ -2,30 +2,41 @@ import { Router, type RequestHandler } from 'express';
 import multer, { MulterError } from 'multer';
 
 import {
+  createExpenseBudgetRequestSchema,
   createExpenseCategoryRequestSchema,
   createExpenseRuleRequestSchema,
   createExpenseTransactionRequestSchema,
+  expenseBudgetIdParamSchema,
+  expenseBudgetListQuerySchema,
   expenseCategoryIdParamSchema,
   expenseImportApplyFieldsSchema,
   expenseImportOverrideSchema,
   expenseImportPreviewFieldsSchema,
   expenseRuleIdParamSchema,
+  expenseSummaryQuerySchema,
   expenseTransactionIdParamSchema,
   expenseTransactionListQuerySchema,
+  expenseTrendQuerySchema,
   recategorizeExpenseTransactionRequestSchema,
+  updateExpenseBudgetRequestSchema,
   updateExpenseCategoryRequestSchema,
   updateExpenseRuleRequestSchema,
   updateExpenseTransactionRequestSchema,
   IMPORT_MAX_FILE_BYTES,
   IMPORT_MAX_ROWS,
+  type CreateExpenseBudgetRequest,
   type CreateExpenseCategoryRequest,
   type CreateExpenseRuleRequest,
   type CreateExpenseTransactionRequest,
+  type ExpenseBudgetListQuery,
   type ExpenseImportApplyFields,
   type ExpenseImportOverride,
   type ExpenseImportPreviewFields,
+  type ExpenseSummaryQuery,
   type ExpenseTransactionListQuery,
+  type ExpenseTrendQuery,
   type RecategorizeExpenseTransactionRequest,
+  type UpdateExpenseBudgetRequest,
   type UpdateExpenseCategoryRequest,
   type UpdateExpenseRuleRequest,
   type UpdateExpenseTransactionRequest,
@@ -289,6 +300,60 @@ export function createExpensesRouter(ctx: AppContext): Router {
         overrides: parseImportOverrides(fields.overrides),
       });
       res.json(result);
+    },
+  );
+
+  // ── Dashboards + budgets (issue 3/3) ──
+
+  // GET /expenses/summary?month= — spend by category + income-vs-spend for a month.
+  router.get('/summary', validateQuery(expenseSummaryQuerySchema), async (req, res) => {
+    const { month } = req.valid?.query as ExpenseSummaryQuery;
+    const result = await ctx.expenseBudgets.monthlySummary(req.authUser!.id, month);
+    res.json(result);
+  });
+
+  // GET /expenses/trends?months= — income-vs-spend over the trailing months.
+  router.get('/trends', validateQuery(expenseTrendQuerySchema), async (req, res) => {
+    const { months } = req.valid?.query as ExpenseTrendQuery;
+    const result = await ctx.expenseBudgets.trends(req.authUser!.id, months);
+    res.json(result);
+  });
+
+  // GET /expenses/budgets?month= — the caller's budgets with this period's progress.
+  router.get('/budgets', validateQuery(expenseBudgetListQuerySchema), async (req, res) => {
+    const { month } = req.valid?.query as ExpenseBudgetListQuery;
+    const result = await ctx.expenseBudgets.listBudgets(req.authUser!.id, month);
+    res.json(result);
+  });
+
+  // POST /expenses/budgets — set a per-category monthly target (one per category).
+  router.post('/budgets', validateBody(createExpenseBudgetRequestSchema), async (req, res) => {
+    const body = req.valid?.body as CreateExpenseBudgetRequest;
+    const result = await ctx.expenseBudgets.createBudget(req.authUser!.id, body);
+    res.status(201).json(result);
+  });
+
+  // PATCH /expenses/budgets/:budgetId — retarget the amount / currency.
+  router.patch(
+    '/budgets/:budgetId',
+    validateParams(expenseBudgetIdParamSchema),
+    validateBody(updateExpenseBudgetRequestSchema),
+    async (req, res) => {
+      const { budgetId } = req.valid?.params as { budgetId: string };
+      const patch = req.valid?.body as UpdateExpenseBudgetRequest;
+      const result = await ctx.expenseBudgets.updateBudget(req.authUser!.id, budgetId, patch);
+      res.json(result);
+    },
+  );
+
+  // DELETE /expenses/budgets/:budgetId — remove a budget.
+  router.delete(
+    '/budgets/:budgetId',
+    validateParams(expenseBudgetIdParamSchema),
+    async (req, res) => {
+      const { budgetId } = req.valid?.params as { budgetId: string };
+      await ctx.expenseBudgets.deleteBudget(req.authUser!.id, budgetId);
+      res.status(204).send();
     },
   );
 

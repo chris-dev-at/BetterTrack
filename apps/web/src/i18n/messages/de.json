@@ -291,7 +291,9 @@
     "title": "Ausgaben",
     "tagline": "Behalte deine Ausgaben und Einnahmen im Blick — getrennt von deinem Portfolio.",
     "nav": {
+      "dashboard": "Übersicht",
       "transactions": "Transaktionen",
+      "budgets": "Budgets",
       "categories": "Kategorien",
       "rules": "Regeln",
       "import": "Import"
@@ -399,6 +401,42 @@
       "uncategorized": "Ohne Kategorie",
       "applying": "Wird importiert…",
       "apply": "{{count}} Transaktionen importieren"
+    },
+    "dashboard": {
+      "subtitle": "Wohin dein Geld diesen Monat geflossen ist.",
+      "month": "Monat",
+      "loadError": "Übersicht konnte nicht geladen werden.",
+      "income": "Einnahmen",
+      "spend": "Ausgaben",
+      "net": "Saldo",
+      "spendByCategory": "Ausgaben nach Kategorie",
+      "noSpend": "Für diesen Monat sind keine Ausgaben erfasst.",
+      "uncategorized": "Ohne Kategorie",
+      "trend": "Einnahmen vs. Ausgaben",
+      "emptyTitle": "Noch keine Aktivität",
+      "emptyDescription": "Erfasse Transaktionen, um deine monatlichen Trends zu sehen."
+    },
+    "budgets": {
+      "subtitle": "Lege pro Kategorie ein monatliches Ziel fest — wir warnen dich, wenn eines überschritten wird.",
+      "new": "Neues Budget",
+      "loadError": "Budgets konnten nicht geladen werden.",
+      "exceeded": "Überschritten",
+      "over": "{{amount}} über",
+      "left": "{{amount}} übrig",
+      "emptyTitle": "Noch keine Budgets",
+      "emptyDescription": "Lege für eine Kategorie ein monatliches Ziel fest, um deine Ausgaben dagegen zu verfolgen.",
+      "emptyCta": "Budget hinzufügen",
+      "dialog": {
+        "newTitle": "Neues Budget",
+        "editTitle": "Budget bearbeiten",
+        "category": "Kategorie",
+        "categoryRequired": "Wähle eine Kategorie.",
+        "categoryTaken": "Diese Kategorie hat bereits ein Budget.",
+        "noCategories": "Jede Ausgabenkategorie hat bereits ein Budget.",
+        "amount": "Monatliches Ziel",
+        "amountRequired": "Gib einen Betrag größer als 0 ein.",
+        "saveError": "Budget konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
     }
   },
   "nav": {
@@ -544,6 +582,10 @@
         "dividendEvent": {
           "label": "Dividenden-Erinnerungen",
           "description": "Wenn eine Aktie, die du hältst, bald ex Dividende notiert. Standardmäßig aus."
+        },
+        "budgetExceeded": {
+          "label": "Budget-Warnungen",
+          "description": "Wenn deine Ausgaben in einer Kategorie ihr Monatsbudget überschreiten."
         }
       },
       "routing": {
@@ -604,6 +646,7 @@
         "sharing": "Teilen & Aktivität",
         "chat": "Chat",
         "alerts": "Preisalarme",
+        "budgets": "Budgets",
         "markets": "Märkte",
         "account": "Konto"
       },
@@ -861,6 +904,77 @@
       "revokeFailed": "Konnte nicht widerrufen werden.",
       "scopeRequired": "Wähle mindestens einen Berechtigungsbereich.",
       "scopesLegend": "Berechtigungsbereiche",
+      "webhooks": {
+        "sectionTitle": "Webhooks",
+        "sectionDescription": "Sende bei jedem deiner Ereignisse einen signierten HTTP-POST an deine eigene URL. Jede Zustellung ist HMAC-signiert, sodass du prüfen kannst, dass sie von BetterTrack stammt.",
+        "createTitle": "Webhook hinzufügen",
+        "urlLabel": "Payload-URL",
+        "urlPlaceholder": "https://example.com/webhooks",
+        "urlRequired": "Gib eine Payload-URL ein.",
+        "descriptionLabel": "Bezeichnung (optional)",
+        "descriptionPlaceholder": "z. B. Hausautomatisierung",
+        "eventsLegend": "Ereignisse",
+        "eventRequired": "Wähle mindestens ein Ereignis aus.",
+        "create": "Webhook hinzufügen",
+        "creating": "Wird hinzugefügt…",
+        "createError": "Der Webhook konnte nicht hinzugefügt werden. Bitte versuche es erneut.",
+        "listTitle": "Deine Webhooks",
+        "loadError": {
+          "title": "Deine Webhooks konnten nicht geladen werden"
+        },
+        "empty": {
+          "title": "Noch keine Webhooks",
+          "description": "Füge oben einen hinzu, um signierte Ereigniszustellungen zu erhalten."
+        },
+        "status": {
+          "active": "Aktiv",
+          "pausedManual": "Pausiert",
+          "disabledAuto": "Automatisch deaktiviert"
+        },
+        "disabledAutoHint": "Nach {{count}} aufeinanderfolgenden Fehlern deaktiviert. Aktiviere ihn wieder, um die Zustellung fortzusetzen.",
+        "lastDelivery": "Letzte Zustellung {{at}}",
+        "neverDelivered": "Noch keine Zustellungen",
+        "pause": "Pausieren",
+        "pausing": "Wird pausiert…",
+        "enable": "Aktivieren",
+        "enabling": "Wird aktiviert…",
+        "delete": "Löschen",
+        "confirmDelete": "Löschen bestätigen",
+        "deleting": "Wird gelöscht…",
+        "deleteFailed": "Konnte nicht gelöscht werden.",
+        "updateFailed": "Konnte nicht aktualisiert werden.",
+        "viewDeliveries": "Zustellungen",
+        "hideDeliveries": "Zustellungen ausblenden",
+        "deliveries": {
+          "empty": "Noch keine Zustellungen aufgezeichnet.",
+          "loadError": "Zustellungen konnten nicht geladen werden.",
+          "success": "Zugestellt",
+          "failed": "Fehlgeschlagen"
+        },
+        "secretModal": {
+          "title": "Dein Webhook-Signaturschlüssel",
+          "description": "Kopiere ihn jetzt — aus Sicherheitsgründen wird er nicht erneut angezeigt.",
+          "storeWarning": "Bewahre diesen Schlüssel sicher auf. Verwende ihn, um den X-BetterTrack-Signature-Header jeder Zustellung zu prüfen. Er wird nicht erneut angezeigt — lösche diesen Webhook und erstelle einen neuen, falls du ihn verlierst."
+        },
+        "event": {
+          "alertTriggered": "Kursalarm ausgelöst",
+          "friendRequest": "Freundschaftsanfrage erhalten",
+          "friendAccepted": "Freundschaftsanfrage angenommen",
+          "portfolioShared": "Portfolio mit dir geteilt",
+          "watchlistShared": "Watchlist mit dir geteilt",
+          "conglomerateShared": "Konglomerat mit dir geteilt",
+          "friendActivity": "Freund-Aktivität bei einem geteilten Objekt",
+          "followPublished": "Jemand, dem du folgst, hat etwas veröffentlicht",
+          "followAlertCreated": "Jemand, dem du folgst, hat einen Alarm erstellt",
+          "followAlertFired": "Ein Alarm von jemandem, dem du folgst, wurde ausgelöst",
+          "accountTempPassword": "Temporäres Passwort ausgestellt",
+          "accountDataExport": "Datenexport bereit",
+          "earningsReminder": "Erinnerung an Geschäftszahlen",
+          "chatMessage": "Neue Chat-Nachricht",
+          "dividendEvent": "Bevorstehende Dividende",
+          "budgetExceeded": "Budget überschritten"
+        }
+      },
       "scope": {
         "portfolioRead": {
           "label": "Portfolio · lesen",

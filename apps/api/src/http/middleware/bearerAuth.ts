@@ -180,6 +180,12 @@ function resolvePolicy(path: string): PathPolicy {
   if (path === '/settings/oauth-grants' || path.startsWith('/settings/oauth-grants/')) {
     return { kind: 'session-only' };
   }
+  // Outbound webhook management (§13.5 V5-P10) is cookie-session only, like key
+  // management: a delegated token must not create/list/delete webhooks or read
+  // their signing-secret lifecycle. Checked before the `/settings` catch-all.
+  if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
+    return { kind: 'session-only' };
+  }
   // Notification preferences live under /settings but belong to the notifications
   // scope (#361), checked before the coarse `/settings` → social catch-all.
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {
