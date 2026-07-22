@@ -1108,8 +1108,8 @@
                 class="sw"
                 style="background: #c47f18"
               ></span>
-              7-day&nbsp;&nbsp;<span class="sw" style="background: #ab60d9"></span>
-              Fable (weekly)&nbsp;&nbsp;<span
+              7-day&nbsp;&nbsp;<span class="sw" style="background: #ab60d9"></span> Fable
+              (weekly)&nbsp;&nbsp;<span
                 style="border-left: 2px dashed var(--muted); padding-left: 6px"
                 >7d reset</span
               ></span
@@ -2029,7 +2029,8 @@
           tip = $('uh-tip');
         hit.addEventListener('mousemove', (ev) => {
           const box = svg.getBoundingClientRect();
-          const t = t0 + (((ev.clientX - box.left) / box.width) * W - L) / ((W - L - R) / (now - t0));
+          const t =
+            t0 + (((ev.clientX - box.left) / box.width) * W - L) / ((W - L - R) / (now - t0));
           let best = es[0];
           for (const e of es) if (Math.abs(e.at - t) < Math.abs(best.at - t)) best = e;
           cross.setAttribute('x1', X(best.at));
