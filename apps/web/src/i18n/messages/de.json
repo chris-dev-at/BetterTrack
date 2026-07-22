@@ -1831,6 +1831,8 @@
       "restoreAction": "Wiederherstellen",
       "archiveConfirm": "Archivieren?",
       "actionError": "Die Quelle konnte nicht aktualisiert werden. Bitte versuche es erneut.",
+      "mirrorConflict": "Ein anderes Mitglied hat diese Quelle inzwischen geändert. Aktualisiere die Liste und versuche es noch einmal.",
+      "mirrorRowDeleted": "Ein anderes Mitglied hat diese Quelle entfernt. Aktualisiere die Liste, um den aktuellen Stand zu sehen.",
       "type": {
         "bank": "Bank",
         "retirement": "Vorsorge",
@@ -1867,7 +1869,9 @@
         "createSubmit": "Quelle erstellen",
         "saveSubmit": "Änderungen speichern",
         "nameRequired": "Gib einen Namen ein.",
-        "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut."
+        "saveError": "Konnte nicht gespeichert werden. Bitte versuche es erneut.",
+        "mirrorConflict": "Ein anderes Mitglied hat diese Quelle inzwischen geändert. Schließe den Dialog, öffne die Quelle erneut und wende deine Änderung noch einmal an.",
+        "mirrorRowDeleted": "Ein anderes Mitglied hat diese Quelle entfernt. Schließe den Dialog und lade die Liste neu."
       },
       "transfer": {
         "title": "Zwischen Quellen umbuchen",

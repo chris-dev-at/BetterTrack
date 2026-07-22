@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { CASH_SOURCE_TYPES, type CashSource, type CashSourceType } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import { createCashSource, updateCashSource } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
@@ -47,14 +48,34 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
     setError(null);
     try {
       if (isEdit) {
-        await updateCashSource(portfolioId, source.id, { name: trimmed, type });
+        // MIRRORCHAIN §3 stale-edit guard (V5-P7 M5): on a chain source, send the
+        // row's `mirror.version` as `baseSeq` so the server refuses with
+        // `409 MIRROR_CONFLICT` if another member renamed it in the meantime.
+        // Non-chain sources omit the field (source.mirror is undefined) and the
+        // mirror seam skips the guard.
+        await updateCashSource(portfolioId, source.id, {
+          name: trimmed,
+          type,
+          baseSeq: source.mirror?.version,
+        });
       } else {
         await createCashSource(portfolioId, { name: trimmed, type });
       }
       onSaved();
       onClose();
-    } catch {
-      setError(t('portfolio.cashSources.dialog.saveError'));
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        (err.code === 'MIRROR_CONFLICT' || err.code === 'MIRROR_ROW_DELETED')
+      ) {
+        setError(
+          err.code === 'MIRROR_ROW_DELETED'
+            ? t('portfolio.cashSources.dialog.mirrorRowDeleted')
+            : t('portfolio.cashSources.dialog.mirrorConflict'),
+        );
+      } else {
+        setError(t('portfolio.cashSources.dialog.saveError'));
+      }
       setSubmitting(false);
     }
   }

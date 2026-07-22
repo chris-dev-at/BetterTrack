@@ -206,7 +206,76 @@ describe('CashSourcesPage', () => {
     await user.click(within(savings).getByRole('button', { name: 'Yes' }));
 
     await waitFor(() =>
-      expect(portfolioApi.archiveCashSource).toHaveBeenCalledWith('p1', 'src-save'),
+      expect(portfolioApi.archiveCashSource).toHaveBeenCalledWith('p1', 'src-save', {
+        baseSeq: undefined,
+      }),
+    );
+  });
+
+  test('archives a chain-attached source with its baseSeq guard (V5-P7 M5)', async () => {
+    // A synced-copy source carries a `mirror` overlay (design §3/§11) — archive
+    // must send `baseSeq = mirror.version` so the server can refuse `409
+    // MIRROR_CONFLICT` when another member changed the source first.
+    const CHAINED = source({
+      id: 'src-chain',
+      name: 'Chain',
+      type: 'bank',
+      balanceEur: 0,
+      mirror: {
+        mirrorId: '00000000-0000-0000-0000-0000000000e1',
+        version: 42,
+        addedBy: { userId: null, username: 'group member', profileIcon: null },
+      },
+    });
+    vi.mocked(portfolioApi.listCashSources).mockResolvedValue({ sources: [MAIN, CHAINED] });
+    vi.mocked(portfolioApi.archiveCashSource).mockResolvedValue({
+      ...CHAINED,
+      archivedAt: '2024-06-02T00:00:00.000Z',
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Chain');
+
+    const chain = rowFor('Chain');
+    await user.click(within(chain).getByRole('button', { name: 'Archive' }));
+    await user.click(within(chain).getByRole('button', { name: 'Yes' }));
+
+    await waitFor(() =>
+      expect(portfolioApi.archiveCashSource).toHaveBeenCalledWith('p1', 'src-chain', {
+        baseSeq: 42,
+      }),
+    );
+  });
+
+  test('surfaces MIRROR_CONFLICT on archive so the user knows to refresh (V5-P7 M5)', async () => {
+    const CHAINED = source({
+      id: 'src-chain',
+      name: 'Chain',
+      type: 'bank',
+      balanceEur: 0,
+      mirror: {
+        mirrorId: '00000000-0000-0000-0000-0000000000e2',
+        version: 7,
+        addedBy: { userId: null, username: 'group member', profileIcon: null },
+      },
+    });
+    vi.mocked(portfolioApi.listCashSources).mockResolvedValue({ sources: [MAIN, CHAINED] });
+    const { ApiError } = await import('../../lib/apiClient');
+    vi.mocked(portfolioApi.archiveCashSource).mockRejectedValue(
+      new ApiError(409, 'MIRROR_CONFLICT', 'stale'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText('Chain');
+
+    const chain = rowFor('Chain');
+    await user.click(within(chain).getByRole('button', { name: 'Archive' }));
+    await user.click(within(chain).getByRole('button', { name: 'Yes' }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/another member changed this source in the meantime/i),
+      ).toBeInTheDocument(),
     );
   });
 

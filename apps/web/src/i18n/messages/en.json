@@ -1831,6 +1831,8 @@
       "restoreAction": "Restore",
       "archiveConfirm": "Archive?",
       "actionError": "Could not update the source. Please try again.",
+      "mirrorConflict": "Another member changed this source in the meantime. Refresh the list and try again.",
+      "mirrorRowDeleted": "Another member removed this source. Refresh the list to see the current state.",
       "type": {
         "bank": "Bank",
         "retirement": "Retirement",
@@ -1867,7 +1869,9 @@
         "createSubmit": "Create source",
         "saveSubmit": "Save changes",
         "nameRequired": "Enter a name.",
-        "saveError": "Could not save. Please try again."
+        "saveError": "Could not save. Please try again.",
+        "mirrorConflict": "Another member changed this source in the meantime. Close the dialog, reopen the source and re-apply your edit.",
+        "mirrorRowDeleted": "Another member removed this source. Close the dialog and refresh the list."
       },
       "transfer": {
         "title": "Transfer between sources",

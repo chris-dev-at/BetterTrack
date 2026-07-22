@@ -6,6 +6,7 @@ import type { CashMovement, CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import { EM_DASH, formatDate, formatPercent } from '../../lib/format';
 import {
   archiveCashSource,
@@ -415,8 +416,23 @@ export function CashSourcesPage() {
     try {
       await fn();
       refetchAll();
-    } catch {
-      setActionError(t('portfolio.cashSources.actionError'));
+    } catch (err) {
+      // MIRRORCHAIN §3 stale-edit surface (V5-P7 M5): archive/restore on a chain
+      // source send `baseSeq` and the server refuses with `409 MIRROR_CONFLICT`
+      // (or `MIRROR_ROW_DELETED`) if another member changed the source first —
+      // tell the user to refresh instead of a generic "please try again".
+      if (
+        err instanceof ApiError &&
+        (err.code === 'MIRROR_CONFLICT' || err.code === 'MIRROR_ROW_DELETED')
+      ) {
+        setActionError(
+          err.code === 'MIRROR_ROW_DELETED'
+            ? t('portfolio.cashSources.mirrorRowDeleted')
+            : t('portfolio.cashSources.mirrorConflict'),
+        );
+      } else {
+        setActionError(t('portfolio.cashSources.actionError'));
+      }
     } finally {
       setBusy(false);
     }
@@ -527,8 +543,16 @@ export function CashSourcesPage() {
                     onRename={() => setDialog({ kind: 'rename', source: s })}
                     onDeposit={() => setDialog({ kind: 'deposit', sourceId: s.id })}
                     onWithdraw={() => setDialog({ kind: 'withdraw', sourceId: s.id })}
-                    onArchive={() => void runAction(() => archiveCashSource(portfolioId, s.id))}
-                    onRestore={() => void runAction(() => restoreCashSource(portfolioId, s.id))}
+                    onArchive={() =>
+                      void runAction(() =>
+                        archiveCashSource(portfolioId, s.id, { baseSeq: s.mirror?.version }),
+                      )
+                    }
+                    onRestore={() =>
+                      void runAction(() =>
+                        restoreCashSource(portfolioId, s.id, { baseSeq: s.mirror?.version }),
+                      )
+                    }
                   />
                 ))}
               </tbody>
