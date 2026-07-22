@@ -1,4 +1,8 @@
 import {
+  adminApiKeyListResponseSchema,
+  apiKeyAuditResponseSchema,
+  apiKeyTierListResponseSchema,
+  apiKeyTierSchema,
   adminHealthResponseSchema,
   adminInviteListResponseSchema,
   adminStatsSchema,
@@ -96,6 +100,13 @@ import {
   type UpdateOAuthClientRequest,
   type UpdateUserRequest,
   type VersionResponse,
+  type AdminApiKey,
+  type AdminApiKeyListResponse,
+  type ApiKeyAuditResponse,
+  type ApiKeyTier,
+  type ApiKeyTierListResponse,
+  type CreateApiKeyTierRequest,
+  type UpdateApiKeyTierRequest,
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
@@ -592,4 +603,49 @@ export async function updateAnnouncement(
 /** Delete an announcement (cascades per-user dismissals away). */
 export async function deleteAnnouncement(id: string): Promise<void> {
   await apiRequest<unknown>(`/admin/announcements/${id}`, { method: 'DELETE' });
+}
+
+// --- Admin: API-key governance (§13.5 V5-P10, issue 2/2) -------------------
+
+export async function listApiKeyTiers(signal?: AbortSignal): Promise<ApiKeyTierListResponse> {
+  const data = await apiRequest<unknown>('/admin/api-key-tiers', { signal });
+  return apiKeyTierListResponseSchema.parse(data);
+}
+
+export async function createApiKeyTier(body: CreateApiKeyTierRequest): Promise<ApiKeyTier> {
+  const data = await apiRequest<unknown>('/admin/api-key-tiers', { method: 'POST', body });
+  return apiKeyTierSchema.parse(data);
+}
+
+export async function updateApiKeyTier(
+  id: string,
+  body: UpdateApiKeyTierRequest,
+): Promise<ApiKeyTier> {
+  const data = await apiRequest<unknown>(`/admin/api-key-tiers/${id}`, { method: 'PATCH', body });
+  return apiKeyTierSchema.parse(data);
+}
+
+export async function deleteApiKeyTier(id: string): Promise<void> {
+  await apiRequest<unknown>(`/admin/api-key-tiers/${id}`, { method: 'DELETE' });
+}
+
+export async function listAdminApiKeys(signal?: AbortSignal): Promise<AdminApiKeyListResponse> {
+  const data = await apiRequest<unknown>('/admin/api-keys', { signal });
+  return adminApiKeyListResponseSchema.parse(data);
+}
+
+export async function assignApiKeyTier(id: string, tierId: string | null): Promise<AdminApiKey> {
+  const data = await apiRequest<unknown>(`/admin/api-keys/${id}/tier`, {
+    method: 'PATCH',
+    body: { tierId },
+  });
+  return data as AdminApiKey;
+}
+
+export async function getApiKeyAudit(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ApiKeyAuditResponse> {
+  const data = await apiRequest<unknown>(`/admin/api-keys/${id}/audit`, { signal });
+  return apiKeyAuditResponseSchema.parse(data);
 }

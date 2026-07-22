@@ -35,7 +35,16 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
       const keyPrincipal = await ctx.apiKeys.authenticate(token);
       if (keyPrincipal) {
         req.authUser = toAuthUser(keyPrincipal.user);
-        req.apiKey = { id: keyPrincipal.keyId, scopes: keyPrincipal.scopes, kind: 'personal' };
+        req.apiKey = {
+          id: keyPrincipal.keyId,
+          scopes: keyPrincipal.scopes,
+          kind: 'personal',
+          // Carry the resolved per-key tier onto the request so the rate-limit
+          // middleware can read (limit, windowSec) from it — without this the
+          // limiter falls back to the config default and tier assignment has no
+          // effect end-to-end (§13.5 V5-P10).
+          rateLimit: keyPrincipal.rateLimit,
+        };
         next();
         return;
       }

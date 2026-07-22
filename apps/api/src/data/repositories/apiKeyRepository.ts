@@ -1,7 +1,14 @@
 import { and, desc, eq, isNull } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { apiKeys, users, type ApiKeyRow, type UserRow } from '../schema';
+import {
+  apiKeys,
+  apiKeyTiers,
+  users,
+  type ApiKeyRow,
+  type ApiKeyTierRow,
+  type UserRow,
+} from '../schema';
 
 /**
  * Personal API key persistence (PROJECTPLAN.md §6.13, §14, V2-P12). Only the
@@ -49,13 +56,56 @@ export function createApiKeyRepository(db: Database) {
      */
     async findActiveByTokenHash(
       tokenHash: string,
-    ): Promise<{ key: ApiKeyRow; user: UserRow } | undefined> {
+    ): Promise<{ key: ApiKeyRow; user: UserRow; tier: ApiKeyTierRow | null } | undefined> {
       const [row] = await db
-        .select({ key: apiKeys, user: users })
+        .select({ key: apiKeys, user: users, tier: apiKeyTiers })
         .from(apiKeys)
         .innerJoin(users, eq(apiKeys.userId, users.id))
+        .leftJoin(apiKeyTiers, eq(apiKeys.tierId, apiKeyTiers.id))
         .where(and(eq(apiKeys.tokenHash, tokenHash), isNull(apiKeys.revokedAt)))
         .limit(1);
+      return row;
+    },
+
+    /**
+     * Every key across all users for the admin governance surface, newest first,
+     * joined to its tier name. Includes revoked keys (they show a revoked
+     * badge) so the audit view can reach a recently-retired key.
+     */
+    async listAllForAdmin(): Promise<(ApiKeyRow & { tierName: string | null })[]> {
+      const rows = await db
+        .select({ key: apiKeys, tierName: apiKeyTiers.name })
+        .from(apiKeys)
+        .leftJoin(apiKeyTiers, eq(apiKeys.tierId, apiKeyTiers.id))
+        .orderBy(desc(apiKeys.createdAt));
+      return rows.map((r) => ({ ...r.key, tierName: r.tierName ?? null }));
+    },
+
+    async getById(id: string): Promise<ApiKeyRow | undefined> {
+      const [row] = await db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+      return row;
+    },
+
+    /**
+     * One admin-shaped row (key + joined tier name) — the single-row analogue of
+     * {@link listAllForAdmin}, used by `assignTier` to rehydrate the changed key
+     * without an O(N) scan over the full key table.
+     */
+    async findByIdWithTier(
+      id: string,
+    ): Promise<(ApiKeyRow & { tierName: string | null }) | undefined> {
+      const [row] = await db
+        .select({ key: apiKeys, tierName: apiKeyTiers.name })
+        .from(apiKeys)
+        .leftJoin(apiKeyTiers, eq(apiKeys.tierId, apiKeyTiers.id))
+        .where(eq(apiKeys.id, id))
+        .limit(1);
+      return row ? { ...row.key, tierName: row.tierName ?? null } : undefined;
+    },
+
+    /** Admin assigns (or clears → default) a key's tier. Returns the updated row. */
+    async setTier(id: string, tierId: string | null): Promise<ApiKeyRow | undefined> {
+      const [row] = await db.update(apiKeys).set({ tierId }).where(eq(apiKeys.id, id)).returning();
       return row;
     },
 

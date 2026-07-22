@@ -77,6 +77,12 @@ export const AuditAction = {
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',
+  // §13.5 V5-P10 (issue 2/2) key governance: admin rate-tier lifecycle + per-key
+  // tier assignment.
+  ApiKeyTierCreated: 'api_key_tier.created',
+  ApiKeyTierUpdated: 'api_key_tier.updated',
+  ApiKeyTierDeleted: 'api_key_tier.deleted',
+  ApiKeyTierAssigned: 'api_key.tier_assigned',
   OAuthClientRegistered: 'oauth.client_registered',
   OAuthClientUpdated: 'oauth.client_updated',
   OAuthClientDeleted: 'oauth.client_deleted',

@@ -63,6 +63,14 @@ export {
   type WebhookDeliverJobDeps,
   type WebhookCleanupJobDeps,
 } from './webhookJobs';
+export {
+  createApiKeyRequestLogCleanupJob,
+  API_KEY_REQUEST_LOG_RETENTION_DAYS,
+  API_KEY_REQUEST_LOG_CLEANUP_SCHEDULER_ID,
+  API_KEY_REQUEST_LOG_CLEANUP_CRON,
+  API_KEY_REQUEST_LOG_CLEANUP_TZ,
+  type ApiKeyRequestLogCleanupJobDeps,
+} from './apiKeyJobs';
 
 export {
   createDigestDailyJob,

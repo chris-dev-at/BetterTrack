@@ -463,6 +463,20 @@
       "when": 1784489940290,
       "tag": "0065_webhooks",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1784490000290,
+      "tag": "0066_api_key_rate_tiers",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1784490060290,
+      "tag": "0067_api_key_tier_default_unique",
+      "breakpoints": true
     }
   ]
 }

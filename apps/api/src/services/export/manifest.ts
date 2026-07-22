@@ -220,6 +220,15 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   webhook_deliveries: skipped(
     'Outbound-webhook delivery log (V5-P10) — a bounded, retention-pruned operational record, not user data.',
   ),
+  // V5-P10 API-key governance (issue 2/2): admin-owned rate-tier definitions are
+  // deployment config, not user data; the per-key request log is a bounded,
+  // retention-pruned operational record like webhook_deliveries.
+  api_key_tiers: skipped(
+    'API-key rate-tier definitions (V5-P10) — admin-owned deployment config, not user data.',
+  ),
+  api_key_request_log: skipped(
+    'API-key request-log audit trail (V5-P10) — a bounded, retention-pruned operational record, not user data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */

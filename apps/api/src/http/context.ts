@@ -6,6 +6,8 @@ import { createAlertRepository } from '../data/repositories/alertRepository';
 import { createAnnouncementRepository } from '../data/repositories/announcementRepository';
 import { createAppSettingsRepository } from '../data/repositories/appSettingsRepository';
 import { createApiKeyRepository } from '../data/repositories/apiKeyRepository';
+import { createApiKeyRequestLogRepository } from '../data/repositories/apiKeyRequestLogRepository';
+import { createApiKeyTierRepository } from '../data/repositories/apiKeyTierRepository';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createAssetRepository } from '../data/repositories/assetRepository';
 import { createMarketIntelRepository } from '../data/repositories/marketIntelRepository';
@@ -585,7 +587,18 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Personal API keys (§6.13, V2-P12): issuance/list/revoke + bearer-token
   // resolution for the auth middleware. Owns only issuance + audit; scope
   // enforcement lives in the HTTP layer.
-  const apiKeys = createApiKeyService({ repo: createApiKeyRepository(db), audit, redis });
+  const apiKeys = createApiKeyService({
+    repo: createApiKeyRepository(db),
+    tierRepo: createApiKeyTierRepository(db),
+    requestLogRepo: createApiKeyRequestLogRepository(db),
+    audit,
+    redis,
+    logger,
+    defaultRateLimit: {
+      limit: config.rateLimits.apiKey.limit,
+      windowSec: config.rateLimits.apiKey.windowSec,
+    },
+  });
 
   // OAuth 2.0 provider (§6.13, V2-P12): app registration, authorize/consent +
   // token exchange, grant management, and access-token resolution for the bearer

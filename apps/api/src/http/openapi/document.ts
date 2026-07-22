@@ -128,6 +128,15 @@ const componentSchemas = {
   // Admin monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19)
   MonitoringStatusResponse: contracts.monitoringStatusResponseSchema,
   UpdateMonitoringExternalAccessRequest: contracts.updateMonitoringExternalAccessRequestSchema,
+  // Admin API-key governance (§13.5 V5-P10, issue 2/2)
+  ApiKeyTier: contracts.apiKeyTierSchema,
+  ApiKeyTierListResponse: contracts.apiKeyTierListResponseSchema,
+  CreateApiKeyTierRequest: contracts.createApiKeyTierRequestSchema,
+  UpdateApiKeyTierRequest: contracts.updateApiKeyTierRequestSchema,
+  AssignApiKeyTierRequest: contracts.assignApiKeyTierRequestSchema,
+  AdminApiKey: contracts.adminApiKeySchema,
+  AdminApiKeyListResponse: contracts.adminApiKeyListResponseSchema,
+  ApiKeyAuditResponse: contracts.apiKeyAuditResponseSchema,
 
   // Runtime feature kill-switches (§13.5 V5-P2 arc (c))
   FeatureFlagsResponse: contracts.featureFlagsResponseSchema,
@@ -1461,6 +1470,70 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateMonitoringExternalAccessRequest,
     status: 200,
     response: R.MonitoringStatusResponse,
+  },
+
+  // API-key governance (§13.5 V5-P10, issue 2/2)
+  {
+    method: 'get',
+    path: '/admin/api-key-tiers',
+    tag: 'Admin',
+    summary: 'List the admin-configurable API-key rate tiers (name/limit/window).',
+    status: 200,
+    response: R.ApiKeyTierListResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/api-key-tiers',
+    tag: 'Admin',
+    summary: 'Define a new API-key rate tier.',
+    body: R.CreateApiKeyTierRequest,
+    status: 201,
+    response: R.ApiKeyTier,
+  },
+  {
+    method: 'patch',
+    path: '/admin/api-key-tiers/{id}',
+    tag: 'Admin',
+    summary: 'Edit an API-key rate tier (name/limit/window/default).',
+    params: contracts.idParamSchema,
+    body: R.UpdateApiKeyTierRequest,
+    status: 200,
+    response: R.ApiKeyTier,
+  },
+  {
+    method: 'delete',
+    path: '/admin/api-key-tiers/{id}',
+    tag: 'Admin',
+    summary: 'Delete a non-default API-key rate tier (its keys fall back to the default).',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
+  {
+    method: 'get',
+    path: '/admin/api-keys',
+    tag: 'Admin',
+    summary: 'List every user’s API keys with their assigned tier (governance surface).',
+    status: 200,
+    response: R.AdminApiKeyListResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/api-keys/{id}/tier',
+    tag: 'Admin',
+    summary: 'Assign an API key to a tier (null ⇒ the default tier).',
+    params: contracts.idParamSchema,
+    body: R.AssignApiKeyTierRequest,
+    status: 200,
+    response: R.AdminApiKey,
+  },
+  {
+    method: 'get',
+    path: '/admin/api-keys/{id}/audit',
+    tag: 'Admin',
+    summary: 'The bounded, PII-scrubbed per-key request-log audit trail.',
+    params: contracts.idParamSchema,
+    status: 200,
+    response: R.ApiKeyAuditResponse,
   },
 
   // Workboard (§6.4, §13.3 V3-P5)

@@ -31,6 +31,7 @@ const NAV_SECTIONS: Array<{ key: string; items: NavItem[] }> = [
       { to: '/admin/account-defaults', label: 'Account defaults' },
       { to: '/admin/announcements', label: 'Announcements' },
       { to: '/admin/oauth-apps', label: 'OAuth apps' },
+      { to: '/admin/api-keys', labelKey: 'admin.nav.apiKeys' },
     ],
   },
   {
