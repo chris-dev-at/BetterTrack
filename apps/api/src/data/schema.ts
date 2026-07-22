@@ -2790,6 +2790,183 @@ export type NewMirrorChainOpRow = typeof mirrorChainOps.$inferInsert;
 export type MirrorRowRow = typeof mirrorRows.$inferSelect;
 export type NewMirrorRowRow = typeof mirrorRows.$inferInsert;
 
+/**
+ * EXPENSE TRACKING — a NEW top-level product area (§13.5 V5-P9), strictly
+ * separate from portfolio money: **no column here references any portfolio
+ * table**, and nothing portfolio-side references these, so the feature has zero
+ * TWR/tax interaction by construction. This foundation issue (1/3) owns the
+ * ENTIRE P9 schema in one migration — categories, transactions, rules, budgets
+ * and a per-(budget, period) fired-marker — so issues 2/3 (import + rule engine)
+ * and 3/3 (dashboards + budgets) add NO further migration.
+ *
+ * `direction` splits money OUT (`expense`) from money IN (`income`); a
+ * transaction carries its own direction so an uncategorized row is still an
+ * unambiguous spend/income. Everything is owner-scoped and cascades on account
+ * deletion.
+ */
+export const expenseDirectionEnum = pgEnum('expense_direction', ['expense', 'income']);
+export const expenseRuleMatchEnum = pgEnum('expense_rule_match', [
+  'contains',
+  'equals',
+  'starts_with',
+  'regex',
+]);
+
+/**
+ * `expense_categories` — the user's spending/income buckets. Seeded with a
+ * sensible default set on first use (owner-scoped, idempotent). UNIQUE(user,
+ * name) keeps names distinct per owner and makes the default seed race-safe
+ * (`ON CONFLICT DO NOTHING`). Deleting a category SET-NULLs its transactions
+ * (they become uncategorized) — see the FK on `expense_transactions`.
+ */
+export const expenseCategories = pgTable(
+  'expense_categories',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    direction: expenseDirectionEnum('direction').notNull().default('expense'),
+    color: text('color').notNull().default('#64748b'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('expense_categories_user_idx').on(t.userId),
+    uniqueIndex('expense_categories_user_name_unique').on(t.userId, t.name),
+  ],
+);
+
+/**
+ * `expense_transactions` — one spend/income row. `amount` is a positive
+ * magnitude in `numeric(20,2)`; `direction` gives the sign. `description` is the
+ * merchant/memo the auto-categorization rules match against (issue 2/3).
+ * `source` tags provenance (`manual` | `import:<broker>`). `dedup_hash` (nullable)
+ * is the import idempotency key: UNIQUE(user, dedup_hash) lets the CSV importer
+ * (2/3) skip already-imported rows while manual entries — always NULL hash, and
+ * NULLs are distinct in a unique index — never collide.
+ */
+export const expenseTransactions = pgTable(
+  'expense_transactions',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id').references(() => expenseCategories.id, {
+      onDelete: 'set null',
+    }),
+    direction: expenseDirectionEnum('direction').notNull().default('expense'),
+    amount: numeric('amount', { precision: 20, scale: 2 }).notNull(),
+    currency: char('currency', { length: 3 }).notNull().default('EUR'),
+    bookedOn: date('booked_on').notNull(),
+    description: text('description').notNull(),
+    source: text('source').notNull().default('manual'),
+    dedupHash: text('dedup_hash'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('expense_transactions_user_idx').on(t.userId),
+    index('expense_transactions_category_idx').on(t.categoryId),
+    index('expense_transactions_user_booked_idx').on(t.userId, t.bookedOn),
+    uniqueIndex('expense_transactions_user_dedup_unique').on(t.userId, t.dedupHash),
+    check('expense_transactions_amount_positive', sql`${t.amount} > 0`),
+  ],
+);
+
+/**
+ * `expense_rules` — auto-categorization rules (issue 1/3 stores the shape; issue
+ * 2/3 evaluates them). A rule files a matching transaction under `category_id`;
+ * deleting the category cascades its rules away. `priority` orders evaluation
+ * (lower first, first match wins).
+ */
+export const expenseRules = pgTable(
+  'expense_rules',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => expenseCategories.id, { onDelete: 'cascade' }),
+    matchType: expenseRuleMatchEnum('match_type').notNull().default('contains'),
+    pattern: text('pattern').notNull(),
+    priority: integer('priority').notNull().default(0),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('expense_rules_user_idx').on(t.userId),
+    index('expense_rules_category_idx').on(t.categoryId),
+    index('expense_rules_user_priority_idx').on(t.userId, t.priority),
+  ],
+);
+
+/**
+ * `expense_budgets` — a per-category monthly target (issue 3/3 builds the UI +
+ * matrix-routed alerts; the table lands now so 3/3 needs no migration).
+ * UNIQUE(category) enforces one budget per category. Deleting the category
+ * cascades its budget away.
+ */
+export const expenseBudgets = pgTable(
+  'expense_budgets',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    categoryId: uuid('category_id')
+      .notNull()
+      .references(() => expenseCategories.id, { onDelete: 'cascade' }),
+    amount: numeric('amount', { precision: 20, scale: 2 }).notNull(),
+    currency: char('currency', { length: 3 }).notNull().default('EUR'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('expense_budgets_user_idx').on(t.userId),
+    uniqueIndex('expense_budgets_category_unique').on(t.categoryId),
+    check('expense_budgets_amount_positive', sql`${t.amount} > 0`),
+  ],
+);
+
+/**
+ * `expense_budget_fires` — the per-(budget, period) exactly-once marker (issue
+ * 3/3). One row records that a budget's month (`period_key` = `YYYY-MM`) has
+ * already fired its over-budget alert. UNIQUE(budget, period) IS the idempotency
+ * key: the alert job claims a period with `INSERT … ON CONFLICT DO NOTHING`
+ * before notifying, so a blown budget fires exactly one alert per period —
+ * mirrors the `standing_order_runs` ledger. Deleting the budget cascades its
+ * markers away.
+ */
+export const expenseBudgetFires = pgTable(
+  'expense_budget_fires',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    budgetId: uuid('budget_id')
+      .notNull()
+      .references(() => expenseBudgets.id, { onDelete: 'cascade' }),
+    periodKey: varchar('period_key', { length: 7 }).notNull(),
+    firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('expense_budget_fires_period_unique').on(t.budgetId, t.periodKey)],
+);
+
+export type ExpenseCategoryRow = typeof expenseCategories.$inferSelect;
+export type NewExpenseCategoryRow = typeof expenseCategories.$inferInsert;
+export type ExpenseTransactionRow = typeof expenseTransactions.$inferSelect;
+export type NewExpenseTransactionRow = typeof expenseTransactions.$inferInsert;
+export type ExpenseRuleRow = typeof expenseRules.$inferSelect;
+export type NewExpenseRuleRow = typeof expenseRules.$inferInsert;
+export type ExpenseBudgetRow = typeof expenseBudgets.$inferSelect;
+export type NewExpenseBudgetRow = typeof expenseBudgets.$inferInsert;
+export type ExpenseBudgetFireRow = typeof expenseBudgetFires.$inferSelect;
+export type NewExpenseBudgetFireRow = typeof expenseBudgetFires.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -2859,6 +3036,11 @@ export const schema = {
   mirrorChainInvites,
   mirrorChainOps,
   mirrorRows,
+  expenseCategories,
+  expenseTransactions,
+  expenseRules,
+  expenseBudgets,
+  expenseBudgetFires,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -2892,4 +3074,6 @@ export const schema = {
   mirrorMemberStatusEnum,
   mirrorInviteStatusEnum,
   mirrorRowKindEnum,
+  expenseDirectionEnum,
+  expenseRuleMatchEnum,
 };

@@ -21,6 +21,7 @@ const NAV_ITEMS = [
   { to: '/portfolio', labelKey: 'nav.portfolio' },
   { to: '/workboard', labelKey: 'nav.workboard' },
   { to: '/forecast', labelKey: 'nav.forecast' },
+  { to: '/expenses', labelKey: 'nav.expenses' },
   { to: '/assets', labelKey: 'nav.assets' },
   { to: '/social', labelKey: 'nav.social' },
 ] as const;

@@ -27,3 +27,4 @@ export * from './usageAnalytics';
 export * from './featureFlags';
 export * from './standingOrders';
 export * from './mirrorchain';
+export * from './expenses';

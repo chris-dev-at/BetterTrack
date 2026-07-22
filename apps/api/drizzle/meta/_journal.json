@@ -449,6 +449,13 @@
       "when": 1784489820290,
       "tag": "0063_mirrorchain",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1784489880290,
+      "tag": "0064_expenses",
+      "breakpoints": true
     }
   ]
 }
