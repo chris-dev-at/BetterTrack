@@ -36,6 +36,17 @@ export const BETA_MODE_KEY = 'beta_mode';
 /** Admin session absolute lifetime, in hours (§13.5 V5-P13c). */
 export const ADMIN_SESSION_LIFETIME_HOURS_KEY = 'admin_session_lifetime_hours';
 
+/**
+ * Local-AI provider config (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY).
+ * One row each; the value is the plain endpoint URL / model name / daily-cap
+ * number. NO secret ever rides these keys — the endpoint is a URL, not a token.
+ * A stored value overrides the env default; clearing an override (null) reverts
+ * to the env default. Read at request time so an admin switch needs no redeploy.
+ */
+export const AI_OLLAMA_ENDPOINT_KEY = 'ai_ollama_endpoint';
+export const AI_OLLAMA_MODEL_KEY = 'ai_ollama_model';
+export const AI_DAILY_CAP_KEY = 'ai_daily_cap';
+
 /** Account-defaults keys (§13.4 V4-P0d) — one row each; applied at registration. */
 export const ACCOUNT_DEFAULT_CHAT_ENABLED_KEY = 'account_default_chat_enabled';
 export const ACCOUNT_DEFAULT_PORTFOLIO_VISIBILITY_KEY = 'account_default_portfolio_visibility';
@@ -103,6 +114,48 @@ export interface AppSettingsServiceDeps {
    * read, so a bad env value can never widen the window.
    */
   adminSessionLifetimeDefaultHours: number;
+  /**
+   * Env fallbacks for the local-AI provider (§13.5 V5-P12). Used when no runtime
+   * override is stored. `endpoint`/`model` are undefined when the owner set no
+   * env default — the AI layer then stays disabled until an admin configures it.
+   * Optional (defaults to {@link DEFAULT_AI_DAILY_CAP}, no endpoint/model) so a
+   * caller that never touches AI need not wire it.
+   */
+  aiDefaults?: {
+    endpoint?: string;
+    model?: string;
+    dailyCap: number;
+  };
+}
+
+/** Fallback per-user daily AI cap when no env default is wired (mirrors env's 20). */
+export const DEFAULT_AI_DAILY_CAP = 20;
+
+/**
+ * The resolved local-AI provider config (§13.5 V5-P12). Effective values fold a
+ * stored admin override over the env default; `configured` is the single gate
+ * the capability endpoint + registry key off (endpoint AND model both resolve).
+ */
+export interface AiSettings {
+  /** Effective Ollama base URL (stored override else env default); null when neither. */
+  endpoint: string | null;
+  /** Effective model name; null when neither a stored override nor an env default. */
+  model: string | null;
+  /** Effective per-user daily completion cap. */
+  dailyCap: number;
+  /** True iff BOTH an endpoint and a model resolve — the feature can run. */
+  configured: boolean;
+  /** Most-recent `updated_at` across the three AI keys; null while all at defaults. */
+  updatedAt: Date | null;
+  /** `updated_by` of the most-recently-written AI key; null when none are set. */
+  updatedBy: string | null;
+}
+
+/** A partial AI-config write; a null endpoint/model clears that override. */
+export interface UpdateAiSettingsInput {
+  endpoint?: string | null;
+  model?: string | null;
+  dailyCap?: number;
 }
 
 /** The resolved admin session policy, with the stored value (or env fallback). */
@@ -131,6 +184,7 @@ function parseRegistrationMode(value: unknown): RegistrationMode {
 
 export function createAppSettingsService(deps: AppSettingsServiceDeps) {
   const { repo } = deps;
+  const aiDefaults = deps.aiDefaults ?? { dailyCap: DEFAULT_AI_DAILY_CAP };
 
   async function getRegistrationMode(): Promise<RegistrationMode> {
     const row = await repo.get(REGISTRATION_MODE_KEY);
@@ -218,12 +272,58 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
     return (await getAdminSessionPolicy()).sessionLifetimeHours;
   }
 
+  /** A stored jsonb value coerced to a trimmed non-empty string, else null. */
+  function storedString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+  }
+
+  /**
+   * Resolve the local-AI provider config (§13.5 V5-P12): a stored admin override
+   * folded over the env default, per key. Read at request time so an endpoint or
+   * model switch takes effect on the very next request with no redeploy. Never
+   * throws — a malformed stored value simply falls back to its env default.
+   */
+  async function getAiSettings(): Promise<AiSettings> {
+    const rows = await repo.getAll();
+    const byKey = new Map(rows.map((row) => [row.key, row]));
+
+    const endpointRow = byKey.get(AI_OLLAMA_ENDPOINT_KEY);
+    const modelRow = byKey.get(AI_OLLAMA_MODEL_KEY);
+    const capRow = byKey.get(AI_DAILY_CAP_KEY);
+
+    const endpoint = storedString(endpointRow?.value) ?? aiDefaults.endpoint ?? null;
+    const model = storedString(modelRow?.value) ?? aiDefaults.model ?? null;
+    const dailyCap =
+      typeof capRow?.value === 'number' && Number.isFinite(capRow.value) && capRow.value >= 1
+        ? Math.floor(capRow.value)
+        : aiDefaults.dailyCap;
+
+    // Metadata reflects the most-recently-written AI key only (not the whole store).
+    const aiRows = [endpointRow, modelRow, capRow].filter(
+      (row): row is NonNullable<typeof row> => row != null,
+    );
+    const latest = aiRows.reduce<(typeof aiRows)[number] | null>((acc, row) => {
+      if (!acc || row.updatedAt.getTime() > acc.updatedAt.getTime()) return row;
+      return acc;
+    }, null);
+
+    return {
+      endpoint,
+      model,
+      dailyCap,
+      configured: endpoint !== null && model !== null,
+      updatedAt: latest?.updatedAt ?? null,
+      updatedBy: latest?.updatedBy ?? null,
+    };
+  }
+
   return {
     get,
     getRegistrationMode,
     getAccountDefaults,
     getAdminSessionPolicy,
     getAdminSessionLifetimeHours,
+    getAiSettings,
 
     /**
      * Persist the admin session lifetime (§13.5 V5-P13c). The value is clamped to
@@ -272,6 +372,29 @@ export function createAppSettingsService(deps: AppSettingsServiceDeps) {
         );
       }
       return getAccountDefaults();
+    },
+
+    /**
+     * Persist a partial AI-config change (§13.5 V5-P12). Only the supplied keys
+     * are written. A null endpoint/model is stored as an empty string, which
+     * {@link getAiSettings} reads as "unset" and falls back to the env default —
+     * so an admin can revert to the owner's env default. Switching endpoint/model
+     * takes effect on the next request (the registry resolves config live).
+     */
+    async updateAiSettings(
+      input: UpdateAiSettingsInput,
+      updatedBy: string | null,
+    ): Promise<AiSettings> {
+      if (input.endpoint !== undefined) {
+        await repo.upsert(AI_OLLAMA_ENDPOINT_KEY, input.endpoint ?? '', updatedBy);
+      }
+      if (input.model !== undefined) {
+        await repo.upsert(AI_OLLAMA_MODEL_KEY, input.model ?? '', updatedBy);
+      }
+      if (input.dailyCap !== undefined) {
+        await repo.upsert(AI_DAILY_CAP_KEY, Math.floor(input.dailyCap), updatedBy);
+      }
+      return getAiSettings();
     },
 
     /**

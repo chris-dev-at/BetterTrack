@@ -128,6 +128,12 @@ const componentSchemas = {
   // Admin monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19)
   MonitoringStatusResponse: contracts.monitoringStatusResponseSchema,
   UpdateMonitoringExternalAccessRequest: contracts.updateMonitoringExternalAccessRequestSchema,
+  // Local-AI provider layer (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY)
+  AiSettingsResponse: contracts.aiSettingsResponseSchema,
+  UpdateAiSettingsRequest: contracts.updateAiSettingsRequestSchema,
+  AiTestConnectionRequest: contracts.aiTestConnectionRequestSchema,
+  AiTestConnectionResponse: contracts.aiTestConnectionResponseSchema,
+  AiCapabilityResponse: contracts.aiCapabilityResponseSchema,
   // Admin API-key governance (§13.5 V5-P10, issue 2/2)
   ApiKeyTier: contracts.apiKeyTierSchema,
   ApiKeyTierListResponse: contracts.apiKeyTierListResponseSchema,
@@ -1327,6 +1333,42 @@ const endpoints: EndpointDef[] = [
       'Runtime feature kill-switches (realtime/live/chat/alerts/imports/AI) with change metadata.',
     status: 200,
     response: R.AdminFeatureFlagsResponse,
+  },
+  // Local-AI provider settings (§13.5 V5-P12 — LOCAL OLLAMA ONLY; no secrets).
+  {
+    method: 'get',
+    path: '/admin/ai/settings',
+    tag: 'Admin',
+    summary: 'Local-AI provider settings (Ollama endpoint + model + per-user daily cap).',
+    status: 200,
+    response: R.AiSettingsResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/ai/settings',
+    tag: 'Admin',
+    summary: 'Update the local-AI endpoint / model / daily cap (audit-logged; live next request).',
+    body: R.UpdateAiSettingsRequest,
+    status: 200,
+    response: R.AiSettingsResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/ai/test-connection',
+    tag: 'Admin',
+    summary: 'Probe an Ollama endpoint and list the models it serves (feeds the model picker).',
+    body: R.AiTestConnectionRequest,
+    status: 200,
+    response: R.AiTestConnectionResponse,
+  },
+  // User-facing AI capability (§13.5 V5-P12): availability + remaining daily cap.
+  {
+    method: 'get',
+    path: '/ai/capability',
+    tag: 'AI',
+    summary: 'Whether AI is available for the caller and how much of their daily cap remains.',
+    status: 200,
+    response: R.AiCapabilityResponse,
   },
   {
     method: 'patch',

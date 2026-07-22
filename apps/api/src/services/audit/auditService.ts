@@ -74,6 +74,8 @@ export const AuditAction = {
   AdminSessionPolicyUpdated: 'admin_session_policy.updated',
   /** Monitoring external-access runtime kill-switch flipped (§13.5 V5-P2 arc (a)). */
   MonitoringExternalAccessChanged: 'monitoring.external_access_changed',
+  /** Local-AI provider settings (endpoint/model/cap) changed (§13.5 V5-P12). */
+  AiSettingsUpdated: 'ai_settings.updated',
   ApiKeyCreated: 'api_key.created',
   ApiKeyRevoked: 'api_key.revoked',
   ApiKeyScopeDenied: 'api_key.scope_denied',

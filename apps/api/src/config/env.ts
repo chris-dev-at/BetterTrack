@@ -217,6 +217,19 @@ const envSchema = z.object({
   // "unconfigured" shape (`available: false`, empty), so the P5 UI stays
   // invisible. Flips without touching provider wiring.
   MARKET_INTEL_ENABLED: z.string().optional(),
+
+  // ── Local AI provider (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY) ────
+  // The owner's LAN Ollama endpoint + default model. Both are OPTIONAL env
+  // DEFAULTS only — an admin overrides them at runtime (stored in app_settings,
+  // no redeploy). Unset ⇒ the AI layer is simply DISABLED: the capability
+  // endpoint reports `available: false` and nothing AI-related renders. NEVER a
+  // boot failure (owner-provided item, §13.4 preamble). No cloud provider and no
+  // API token exists anywhere — the endpoint is a plain URL, never a secret.
+  BT_OLLAMA_ENDPOINT: optionalUrl,
+  BT_OLLAMA_MODEL: z.string().optional(),
+  // Per-user per-UTC-day completion budget (admin-configurable at runtime; this
+  // is only the fallback default). Kept generous but finite.
+  BT_AI_DAILY_CAP: z.coerce.number().int().min(1).max(100_000).default(20),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -489,6 +502,20 @@ export interface AppConfig {
   marketIntel: {
     enabled: boolean;
   };
+  /**
+   * Local AI provider (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY). These
+   * are env DEFAULTS only; the admin's stored app_settings override them at
+   * request time. When neither the env nor a stored override yields an endpoint
+   * AND a model, the whole AI layer is disabled (capability reports unavailable).
+   */
+  ai: {
+    /** Env-default Ollama base URL; undefined ⇒ no default (admin may still set one). */
+    endpoint?: string;
+    /** Env-default model name; undefined ⇒ no default. */
+    model?: string;
+    /** Fallback per-user daily completion cap when none is stored. */
+    dailyCap: number;
+  };
   /** Error tracking via Sentry (§13.4 V4-P5a). Off (no SDK init) iff `dsn` unset. */
   sentry: {
     enabled: boolean;
@@ -708,6 +735,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // surface via the "unconfigured" endpoint shape without any provider change.
     marketIntel: {
       enabled: boolFrom(e.MARKET_INTEL_ENABLED, true),
+    },
+    // V5-P12 local-AI defaults (LOCAL Ollama ONLY). Blank env ⇒ undefined so the
+    // AI layer stays cleanly disabled until an endpoint + model resolve. The
+    // endpoint tolerates a compose-materialized empty string (optionalUrl).
+    ai: {
+      endpoint: e.BT_OLLAMA_ENDPOINT,
+      model:
+        e.BT_OLLAMA_MODEL && e.BT_OLLAMA_MODEL.trim() !== '' ? e.BT_OLLAMA_MODEL.trim() : undefined,
+      dailyCap: e.BT_AI_DAILY_CAP,
     },
     sentry: {
       enabled: Boolean(e.BT_SENTRY_DSN),

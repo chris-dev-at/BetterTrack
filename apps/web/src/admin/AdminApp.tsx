@@ -5,6 +5,7 @@ import { I18nProvider } from '../i18n';
 import { AuthProvider, useAuth } from './AuthContext';
 import { AdminLayout } from './components/AdminLayout';
 import { AccountDefaultsPage } from './pages/AccountDefaultsPage';
+import { AiSettingsPage } from './pages/AiSettingsPage';
 import { AnnouncementsPage } from './pages/AnnouncementsPage';
 import { AuditPage } from './pages/AuditPage';
 import { EmailPage } from './pages/EmailPage';
@@ -55,6 +56,7 @@ function AdminShell() {
         <Route path="monitoring" element={<MonitoringPage />} />
         <Route path="usage-analytics" element={<UsageAnalyticsPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="ai" element={<AiSettingsPage />} />
         <Route path="feature-flags" element={<FeatureFlagsPage />} />
         <Route path="account-defaults" element={<AccountDefaultsPage />} />
         <Route path="announcements" element={<AnnouncementsPage />} />

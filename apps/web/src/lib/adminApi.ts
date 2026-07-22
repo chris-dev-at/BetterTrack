@@ -30,6 +30,8 @@ import {
   problemSchema,
   problemListResponseSchema,
   monitoringStatusResponseSchema,
+  aiSettingsResponseSchema,
+  aiTestConnectionResponseSchema,
   usageAnalyticsResponseSchema,
   createRegistrationTokenResponseSchema,
   registrationRequestListResponseSchema,
@@ -72,6 +74,10 @@ import {
   type ProblemListResponse,
   type ProblemStatus,
   type MonitoringStatusResponse,
+  type AiSettingsResponse,
+  type AiTestConnectionRequest,
+  type AiTestConnectionResponse,
+  type UpdateAiSettingsRequest,
   type UsageAnalyticsResponse,
   type LoginRequest,
   type LoginResponse,
@@ -388,6 +394,28 @@ export async function setMonitoringExternalAccess(
     body: { enabled },
   });
   return monitoringStatusResponseSchema.parse(data);
+}
+
+// --- Admin: local-AI provider settings (§13.5 V5-P12, LOCAL OLLAMA ONLY) ---
+
+/** The effective Ollama endpoint + model + per-user daily cap (no secrets). */
+export async function getAiSettings(signal?: AbortSignal): Promise<AiSettingsResponse> {
+  const data = await apiRequest<unknown>('/admin/ai/settings', { signal });
+  return aiSettingsResponseSchema.parse(data);
+}
+
+/** Set the endpoint / model / daily cap (audit-logged; live on the next request). */
+export async function updateAiSettings(body: UpdateAiSettingsRequest): Promise<AiSettingsResponse> {
+  const data = await apiRequest<unknown>('/admin/ai/settings', { method: 'PATCH', body });
+  return aiSettingsResponseSchema.parse(data);
+}
+
+/** Probe an endpoint (candidate or stored) and list the models it serves. */
+export async function testAiConnection(
+  body: AiTestConnectionRequest,
+): Promise<AiTestConnectionResponse> {
+  const data = await apiRequest<unknown>('/admin/ai/test-connection', { method: 'POST', body });
+  return aiTestConnectionResponseSchema.parse(data);
 }
 
 // --- Admin: global settings -----------------------------------------------
