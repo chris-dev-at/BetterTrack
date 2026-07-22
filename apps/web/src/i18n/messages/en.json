@@ -1351,8 +1351,8 @@
       },
       "expandYear": "Show {{year}} details",
       "collapseYear": "Hide {{year}} details",
-      "locked": "Locked",
-      "lockedHint": "This year is closed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode; in manual mode tax is instead recorded per trade as entered.",
+      "passed": "Passed",
+      "passedHint": "This year has passed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode; in manual mode tax is instead recorded per trade as entered.",
       "realized": "Realized",
       "tax": "Tax",
       "sell": {

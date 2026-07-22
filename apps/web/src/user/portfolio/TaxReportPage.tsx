@@ -252,6 +252,8 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
       <div className="flex flex-col gap-2 p-3">
         <YearActions portfolioId={portfolioId} year={year} />
         <p className="py-2 text-sm text-neutral-500">{t('portfolio.taxReport.detailEmpty')}</p>
+        {/* Owner-mandated liability framing (#635): repeated under each year block. */}
+        <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
       </div>
     );
   }
@@ -262,6 +264,8 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
       {query.data.positions.map((position) => (
         <PositionBlock key={position.asset.id} position={position} t={t} />
       ))}
+      {/* Owner-mandated liability framing (#635): repeated under each year block. */}
+      <Disclaimer>{t('settings.taxes.disclaimer')}</Disclaimer>
     </div>
   );
 }
@@ -300,10 +304,10 @@ function YearRow({
           </button>
           {summary.locked ? (
             <span
-              title={t('portfolio.taxReport.lockedHint')}
+              title={t('portfolio.taxReport.passedHint')}
               className="ml-2 rounded border border-neutral-800 px-1.5 py-0.5 align-middle text-[0.6rem] uppercase tracking-wide text-neutral-500"
             >
-              {t('portfolio.taxReport.locked')}
+              {t('portfolio.taxReport.passed')}
             </span>
           ) : null}
         </td>
