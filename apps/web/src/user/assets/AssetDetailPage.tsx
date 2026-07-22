@@ -905,7 +905,7 @@ export function AssetDetailPage() {
   const isCustom = detailQuery.data?.asset.isCustom ?? false;
   const liveActive = live && !isCustom && !!id;
   const {
-    points: livePoints,
+    chartPoints: livePoints,
     generation: liveGeneration,
     streaming,
     marketState: liveMarketState,
@@ -918,7 +918,10 @@ export function AssetDetailPage() {
     () => toChartPoints(historyQuery.data?.points ?? [], historyQuery.data?.interval),
     [historyQuery.data?.points, historyQuery.data?.interval],
   );
-  // The hook's epoch-second points → lightweight-charts `ChartPoint`s.
+  // The hook's uniform-density epoch-second points → lightweight-charts
+  // `ChartPoint`s. They are already resampled onto one grid (the hook's
+  // `chartPoints`), so the ordinal axis renders the minute seed and the 1 s tail
+  // in proportional wall-clock space (issue #690 symptom 3).
   const liveChartPoints = useMemo<ChartPoint[]>(
     () => livePoints.map((p) => ({ time: p.time as Time, value: p.value })),
     [livePoints],

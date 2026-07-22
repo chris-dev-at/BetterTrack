@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import {
   LIVE_RATE_MS,
+  LIVE_WINDOW_MS,
   REALTIME_SERVER_EVENTS,
   realtimeLiveFrameSchema,
   type LiveRate,
@@ -11,17 +12,35 @@ import {
   type RealtimeLiveFrame,
 } from '@bettertrack/contracts';
 
-import { framesToPoints, mergePoints, type LivePoint } from './liveSeries';
+import {
+  densify,
+  framesToPoints,
+  liveChartStepSeconds,
+  mergePoints,
+  type LivePoint,
+} from './liveSeries';
 import { useRealtime } from './RealtimeProvider';
 
 export interface LiveSeriesState {
   /**
-   * ONE merged, strictly-increasing, deduped series for the current
-   * (asset, window, rate): seed history bars ⊕ ring backfill ⊕ live ticks,
-   * normalized to `{ time: epochSeconds, value }`. Append-only within a
-   * generation — the chart streams these via `series.update()`.
+   * ONE merged, strictly-increasing, deduped series of the REAL observations for
+   * the current (asset, window, rate): seed history bars ⊕ ring backfill ⊕ live
+   * ticks, normalized to `{ time: epochSeconds, value }`. Kept honest (no
+   * fabricated points) — the source {@link coverageFrom} is drawn from. The chart
+   * draws {@link chartPoints}, its uniform-density resampling, instead.
    */
   points: LivePoint[];
+  /**
+   * {@link points} resampled onto ONE uniform time grid via {@link densify} —
+   * what the chart actually draws. `lightweight-charts` uses an ordinal/index
+   * time axis (no proportional-time mode), so a mixed-density series (minute seed
+   * bars + 1 s live ticks) would render with the seed crushed to its point-count
+   * share, not its time share (issue #690 symptom 3). One density makes ordinal
+   * spacing ≈ wall-clock spacing, so the seed keeps its true share of the pinned
+   * `[now − window, now]` window. Append-only within a generation — the chart
+   * streams the tail via `series.update()`, never a per-tick redraw.
+   */
+  chartPoints: LivePoint[];
   /**
    * Bumps ONLY on a clean rebuild: an asset/window/rate change, a reconnect
    * re-backfill, or a stream↔poll-fallback switch. The chart does exactly one
@@ -86,11 +105,30 @@ export function useLiveSeries(
   const [points, setPoints] = useState<LivePoint[]>([]);
   const [generation, setGeneration] = useState(0);
   const [streaming, setStreaming] = useState(false);
+  // Flips true once the in-flight socket watch concludes without a stream
+  // (rejected or timed out). Gates the poll fallback so it does not seed a
+  // throwaway generation while a watch is still pending — the entering-live-mode
+  // one-point flash. Reset at each watch dispatch (re-armed on reconnect/switch).
+  const [streamRejected, setStreamRejected] = useState(false);
   const [coverageFrom, setCoverageFrom] = useState<number | null>(null);
   const [marketState, setMarketState] = useState<MarketState | null>(null);
   const visible = useDocumentVisible();
   const active = enabled && assetId !== undefined;
   const rateMs = LIVE_RATE_MS[rate];
+
+  // The densify grid for the CURRENT window+rate, recomputed each render but read
+  // through a ref: the generation-bumping effects commit it into `chartStep`
+  // state so the grid changes atomically WITH a rebuild, never mid-stream. Window
+  // and rate change on render, but the re-backfill + generation bump is async —
+  // resampling the still-old series onto a new grid before the rebuild lands
+  // would desync PriceChart's tail-append (a spurious per-tick redraw). Kept in a
+  // ref so those effects don't take window/rate as deps (that is the watch
+  // effect's job, which bumps generation exactly once per switch).
+  const stepRef = useRef(liveChartStepSeconds(LIVE_WINDOW_MS[window], rateMs));
+  stepRef.current = liveChartStepSeconds(LIVE_WINDOW_MS[window], rateMs);
+  const [chartStep, setChartStep] = useState(() =>
+    liveChartStepSeconds(LIVE_WINDOW_MS[window], rateMs),
+  );
 
   // Which source last populated the series, so a stream↔fallback switch is one
   // clean rebuild (generation bump) rather than a silent value swap.
@@ -130,16 +168,19 @@ export function useLiveSeries(
       return;
     }
     let cancelled = false;
+    setStreamRejected(false); // a watch is in flight — hold the fallback below
     void watchLive(assetId, window, rate).then((result) => {
       if (cancelled) return;
       if (result === null) {
-        // Socket path unavailable — the poll fallback below takes over.
+        // Socket path unavailable — release the poll fallback below.
         setStreaming(false);
+        setStreamRejected(true);
         return;
       }
       setStreaming(true);
       modeRef.current = 'stream';
       setGeneration((g) => g + 1);
+      setChartStep(stepRef.current); // commit the grid with this rebuild
       const base = framesToPoints(result.frames, rateMs);
       const cutoff = base.length ? base[base.length - 1]!.time : Number.NEGATIVE_INFINITY;
       // Discard the previous generation; keep only live ticks strictly newer
@@ -166,6 +207,11 @@ export function useLiveSeries(
   // entering/leaving fallback is one clean rebuild.
   useEffect(() => {
     if (!active || streaming) return;
+    // Hold the seed while a socket watch is still in flight, so entering live
+    // mode with a working socket paints the backfill directly instead of a
+    // throwaway one-point generation ahead of it. Once the watch is known
+    // unavailable (rejected/timed out, or no socket at all) the fallback seeds.
+    if (connected && visible && !streamRejected) return;
     const quote = fallbackQuote?.quote;
     const at = fallbackQuote?.asOf;
     if (!quote || !at || assetId === undefined) return;
@@ -182,11 +228,12 @@ export function useLiveSeries(
     if (modeRef.current !== 'fallback') {
       modeRef.current = 'fallback';
       setGeneration((g) => g + 1);
+      setChartStep(stepRef.current); // commit the grid with this rebuild
       setPoints(incoming);
     } else {
       setPoints((prev) => mergePoints(prev, incoming));
     }
-  }, [active, streaming, assetId, fallbackQuote, rateMs]);
+  }, [active, streaming, connected, visible, streamRejected, assetId, fallbackQuote, rateMs]);
 
   // Release the watch on unmount / disable / hide / asset change — NOT on a
   // window or rate switch (the shared loop must keep running through those).
@@ -196,5 +243,10 @@ export function useLiveSeries(
     return () => unwatchLive(watched);
   }, [enabled, assetId, visible, unwatchLive]);
 
-  return { points, generation, streaming, coverageFrom, marketState };
+  // Uniform-density resampling the chart draws. Recomputes only when the source
+  // points grow (a tail append) or the committed grid changes (a rebuild) — both
+  // in lock-step with `generation`, so it never re-grids the old series mid-flight.
+  const chartPoints = useMemo(() => densify(points, chartStep), [points, chartStep]);
+
+  return { points, chartPoints, generation, streaming, coverageFrom, marketState };
 }

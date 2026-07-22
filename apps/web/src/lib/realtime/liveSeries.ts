@@ -68,3 +68,73 @@ export function mergePoints(
     .sort((a, b) => a[0] - b[0])
     .map(([time, value]) => ({ time, value }));
 }
+
+/**
+ * The most points {@link densify} emits per generation. `lightweight-charts`
+ * lays points at ~1 point/px at most on any real chart width, so this is already
+ * generous; the cap only kicks in for a fast rate on a long window (1 s over 12 h
+ * would otherwise be 43 200 points) and coarsens the grid to render identically.
+ * Chosen so every window up to 1 h at a 1 s rate keeps native 1 s resolution.
+ */
+export const MAX_LIVE_CHART_POINTS = 3600;
+
+/**
+ * The uniform grid step (whole seconds) {@link densify} resamples onto for a
+ * given window + rate: the live rate itself, coarsened only when `window / rate`
+ * would exceed {@link MAX_LIVE_CHART_POINTS}. It depends solely on window + rate
+ * (both fixed within a generation — changing either forces a rebuild), so the
+ * densified series stays a stable-prefix, tail-growing series between rebuilds.
+ */
+export function liveChartStepSeconds(windowMs: number, rateMs: number): number {
+  const rateSec = Math.max(1, Math.floor(rateMs / 1000));
+  const windowSec = Math.max(1, Math.floor(windowMs / 1000));
+  return Math.max(rateSec, Math.ceil(windowSec / MAX_LIVE_CHART_POINTS));
+}
+
+/**
+ * Resample a merged series onto a uniform `stepSeconds` grid via step-carry, so
+ * every point shares ONE density.
+ *
+ * WHY THIS EXISTS (issue #690 symptom 3): `lightweight-charts` uses an
+ * ordinal/index time axis — it spaces consecutive points at uniform *index*
+ * intervals regardless of the wall-clock gap between them (the same reason it
+ * collapses weekend gaps), and offers no proportional/linear-time mode. A
+ * mixed-density live series — minute-granularity seed bars followed by 1 s live
+ * ticks — therefore renders with the seed compressed to its *point-count* share,
+ * not its *time* share: dense ticks crush the seeded history against the left
+ * edge even with the viewport pinned to `[now − window, now]` (a pinned viewport
+ * fixes the *jumping*, not the *compression*). Making every point share one
+ * density makes index-spacing ≈ wall-clock-spacing, so the seed keeps its true
+ * time-share of the window — the "proportional horizontal space" acceptance.
+ *
+ * Interior gaps between real points are filled by carrying the previous value
+ * forward (a stepped hold — honest: no interpolated value is invented for a
+ * sub-bar instant we never observed). The newest real point is never
+ * extrapolated past, so the right edge stays honest too (no fabricated "now"
+ * padding). Each point is bucketed to `floor(t / step) * step` with the newest
+ * value per slot winning (mirrors {@link framesToPoints}); the result is strictly
+ * increasing and, for a fixed `stepSeconds`, a stable-prefix / tail-growing
+ * series — only the newest slot mutates or extends, so PriceChart keeps streaming
+ * via `series.update()` and never falls back to a per-tick redraw.
+ */
+export function densify(points: readonly LivePoint[], stepSeconds: number): LivePoint[] {
+  if (points.length === 0) return [];
+  const step = Math.max(1, Math.floor(stepSeconds));
+  // Newest value per grid slot wins; sort first so the result is order-independent
+  // (the hook feeds an ascending series, but densify never relies on that).
+  const bySlot = new Map<number, number>();
+  for (const point of [...points].sort((a, b) => a.time - b.time)) {
+    bySlot.set(Math.floor(point.time / step) * step, point.value);
+  }
+  const slots = [...bySlot.keys()].sort((a, b) => a - b);
+  const firstSlot = slots[0]!;
+  const lastSlot = slots[slots.length - 1]!;
+  const out: LivePoint[] = [];
+  let carry = bySlot.get(firstSlot)!;
+  for (let slot = firstSlot; slot <= lastSlot; slot += step) {
+    const value = bySlot.get(slot);
+    if (value !== undefined) carry = value;
+    out.push({ time: slot, value: carry });
+  }
+  return out;
+}

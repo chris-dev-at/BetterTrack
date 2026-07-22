@@ -84,6 +84,30 @@ describe('useLiveSeries — merged timeline + streaming', () => {
     expect(result.current.generation).toBe(gen);
   });
 
+  test('a working socket + a resolved quote enters in ONE generation (no fallback flash)', async () => {
+    const backfill = [
+      frame('2026-07-08T10:00:00.000Z', 100),
+      frame('2026-07-08T10:00:10.000Z', 101),
+    ];
+    const { value } = makeContext({ watchLive: vi.fn(async () => ackOf(backfill)) });
+    const quote: QuoteResponse = {
+      quote: { price: 99, currency: 'EUR', dayChangePct: null, asOf: '2026-07-08T09:59:00.000Z' },
+      stale: false,
+      asOf: '2026-07-08T09:59:00.000Z',
+    };
+
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '10m', '10s', true, quote), {
+      wrapper: wrapperFor(value),
+    });
+
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+    // The backfill is the FIRST and only content: the pre-watch fallback quote
+    // (99) never seeded a throwaway generation 1 ahead of it while the watch was
+    // in flight — exactly one clean rebuild.
+    expect(result.current.points.map((p) => p.value)).toEqual([100, 101]);
+    expect(result.current.generation).toBe(1);
+  });
+
   test('output is always strictly increasing across a mixed-density stream', async () => {
     const backfill = [
       frame('2026-07-08T10:00:00.000Z', 100), // minute-granularity seed
@@ -253,5 +277,56 @@ describe('useLiveSeries — poll fallback (§4.5)', () => {
     rerender({ quote: quoteResponse(101, '2026-07-08T10:01:00.000Z') });
     await waitFor(() => expect(result.current.points.map((p) => p.value)).toEqual([100, 101]));
     expect(result.current.generation).toBe(gen);
+  });
+});
+
+describe('useLiveSeries — chart grid (densify, issue #690 symptom 3)', () => {
+  test('chartPoints resample the mixed-density series to ONE grid; points stays honest', async () => {
+    const backfill = [
+      frame('2026-07-08T10:00:00.000Z', 100), // minute-granularity seed
+      frame('2026-07-08T10:01:00.000Z', 101),
+    ];
+    const { value, push } = makeContext({ watchLive: vi.fn(async () => ackOf(backfill)) });
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '30m', '1s', true), {
+      wrapper: wrapperFor(value),
+    });
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+
+    act(() => {
+      push(frame('2026-07-08T10:01:37.000Z', 102)); // 1 s live ticks after the seed
+      push(frame('2026-07-08T10:01:38.000Z', 103));
+    });
+
+    // points: the four REAL observations, untouched (the honest source).
+    expect(result.current.points.map((p) => p.value)).toEqual([100, 101, 102, 103]);
+
+    // chartPoints: one uniform 1 s grid from the first seed to the newest tick, so
+    // the minute seed can't be crushed to its point-count share by the dense tail.
+    const chart = result.current.chartPoints;
+    const t0 = Math.floor(Date.parse('2026-07-08T10:00:00.000Z') / 1000);
+    const tEnd = Math.floor(Date.parse('2026-07-08T10:01:38.000Z') / 1000);
+    expect(chart[0]!.time).toBe(t0);
+    expect(chart[chart.length - 1]).toEqual({ time: tEnd, value: 103 });
+    expect(chart).toHaveLength(tEnd - t0 + 1); // one point per second — uniform
+    expect(chart.every((p, i) => i === 0 || p.time - chart[i - 1]!.time === 1)).toBe(true);
+    // The 30 s inside the first minute carry the seed's 100 (a stepped hold).
+    expect(chart.find((p) => p.time === t0 + 30)!.value).toBe(100);
+  });
+
+  test('a long window coarsens the chart grid to stay under the point cap', async () => {
+    const backfill = [
+      frame('2026-07-08T10:00:00.000Z', 100),
+      frame('2026-07-08T10:02:00.000Z', 101),
+    ];
+    const { value } = makeContext({ watchLive: vi.fn(async () => ackOf(backfill)) });
+    const { result } = renderHook(() => useLiveSeries(ASSET_ID, '12h', '1s', true), {
+      wrapper: wrapperFor(value),
+    });
+    await waitFor(() => expect(result.current.streaming).toBe(true));
+
+    // 12 h @ 1 s would be 43 200 points; the grid coarsens to a uniform 12 s.
+    const chart = result.current.chartPoints;
+    expect(chart.length).toBeGreaterThan(1);
+    expect(chart.every((p, i) => i === 0 || p.time - chart[i - 1]!.time === 12)).toBe(true);
   });
 });

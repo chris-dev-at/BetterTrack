@@ -92,8 +92,12 @@ export interface PriceChartProps {
   generation?: number;
   /**
    * Live window span in ms (§13.5 V5-P1 §3). Present ⇒ the chart pins its
-   * visible range to `[now − window, now]` after every push and NEVER auto-fits
-   * — dense live ticks can no longer crush the seeded history off-screen.
+   * visible range to `[now − window, now]` after every push and NEVER auto-fits.
+   * Pinning stops the scale from jumping/re-fitting onto each new bar; keeping the
+   * seed from being *compressed* by the dense tail additionally needs the caller
+   * to feed a uniform-density series (this axis is ordinal — see
+   * {@link applyLiveViewport}), which {@link import('../../lib/realtime').useLiveSeries}
+   * does via its densified `chartPoints`.
    */
   liveWindowMs?: number;
   /** Market is closed ⇒ anchor the live viewport to the newest datum, not `now`. */
@@ -226,11 +230,15 @@ function makeCrosshairFormatter(intlLocale: string): (time: Time) => string {
 
 /**
  * Pin the live viewport to `[now − window, now]` (§13.5 V5-P1 §3) — the ONLY
- * thing that moves the scale in live mode. Dense per-second ticks and a
- * minute-density seed therefore occupy proportional horizontal space on one
- * wall-clock scale; nothing is ever auto-fit or auto-shifted. A closed market
- * (no fresh ticks) anchors to the newest datum so the seeded past window shows
- * instead of an empty right edge.
+ * thing that moves the scale in live mode; nothing is ever auto-fit or
+ * auto-shifted. NOTE this axis is ordinal/index-based (`lightweight-charts` has
+ * no proportional-time mode), so `setVisibleRange` maps times to point *indices*:
+ * it frames the right window but only spaces points proportionally when they are
+ * uniform-density. The caller therefore feeds a densified series (one grid step),
+ * so a minute seed and a per-second tail occupy proportional horizontal space
+ * (issue #690 symptom 3) instead of the seed collapsing to its point-count share.
+ * A closed market (no fresh ticks) anchors to the newest datum so the seeded past
+ * window shows instead of an empty right edge.
  */
 function applyLiveViewport(
   chart: IChartApi,
@@ -365,9 +373,11 @@ export function PriceChart({
         borderColor: GRID,
         tickMarkFormatter: makeTickMarkFormatter(intlLocale),
         // Live mode drives the viewport ONLY via setVisibleRange (§13.5 V5-P1
-        // §3): the scale must never auto-fit or auto-shift on a new bar, or a
-        // dense per-second tail would compress the minute-density seed off the
-        // left edge (symptom 3). History views keep their fixed edges.
+        // §3): the scale must never auto-fit or auto-shift on a new bar, or it
+        // would jump/re-fit onto the dense tail each tick. (Compression of the
+        // seed is prevented upstream, by the caller's uniform-density series —
+        // this ordinal axis spaces by index, not wall-clock.) History views keep
+        // their fixed edges.
         ...(live
           ? {
               fixLeftEdge: false,
