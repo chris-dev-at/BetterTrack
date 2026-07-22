@@ -1047,6 +1047,176 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
   // ── Transaction batch planning ─────────────────────────────────────────────
 
+  /**
+   * #656 round 4: a batch recorded under a NON-ENGINE mode (`none` /
+   * `manual_per_trade`) still reshapes engine-frozen history — its (back)dated
+   * buys re-base the moving average under existing engine-taxed sells, and any
+   * batch trade of a DE/FI/custom-FIFO asset shifts that asset's frozen sells'
+   * lot consumption. The engine write path and the delete path settle such
+   * years append-only; without this pass a non-engine write would silently
+   * drift held away from the frozen decomposition, and the year's next touch
+   * would absorb the drift into the locked residue
+   * ({@link lockedResidueForYear}) permanently.
+   *
+   * Each affected closed-machinery year settles by exactly the CHANGE in its
+   * standalone frozen decomposition: with no active engine steering a
+   * component and no new engine events, the closed-year target
+   * `Σ F_after + residue` minus held reduces algebraically to
+   * `ΔF = Σ F_after − Σ F_before` (held and the pre-mutation residue cancel),
+   * so the year's locked open-era state survives by construction and no
+   * held/residue read is needed. `manual` treats every year as
+   * closed-machinery (`openFrom = ∞`, mirroring
+   * {@link planTransactionDeleteCorrections}); `none` settles closed years
+   * only — its open years re-derive to the tracking-off target on the next
+   * read.
+   */
+  async function planNonEngineReshapeCorrections(
+    portfolioId: string,
+    inputs: readonly TransactionInput[],
+    assetsById: ReadonlyMap<string, AssetRow>,
+    openFrom: number,
+  ): Promise<{ extras: BatchCashMovement[]; proposed: SourcedCashMovement[] }> {
+    const batchAssets = new Set(inputs.map((i) => i.assetId));
+    const allTxns = await transactionRepo.listForPortfolio(portfolioId);
+    // Fast path: every affected-year source below requires an engine-frozen
+    // sell of a batch asset (lots and averages are per asset), so a portfolio
+    // without one skips the remaining loads entirely.
+    const touchesEngineSells = allTxns.some(
+      (t) => t.side === 'sell' && isEngineTaxed(t.taxMode) && batchAssets.has(t.assetId),
+    );
+    if (!touchesEngineSells) return { extras: [], proposed: [] };
+    const dividendRows = await taxRepo.listForPortfolio(portfolioId);
+    const involveDe = portfolioHasDeRows(allTxns, dividendRows);
+    const involveFi = portfolioHasFiRows(allTxns, dividendRows);
+    const involveCustom = portfolioHasCustomRows(allTxns, dividendRows);
+    const involveChain =
+      involveDe || (involveCustom && customChainSensitive(allTxns, dividendRows, null));
+
+    // The affected years, mirroring the engine write path: backdated buys
+    // reshape the moving average under engine-taxed sells; any batch trade of
+    // a chained/FI FIFO asset shifts its frozen sells' lot consumption (plus
+    // the chain's downstream carry ripple).
+    const batchBuyAssets = new Set(inputs.filter((i) => i.side === 'buy').map((i) => i.assetId));
+    const affectedYears = new Set<number>();
+    for (const t of allTxns) {
+      if (t.side === 'sell' && isEngineTaxed(t.taxMode) && batchBuyAssets.has(t.assetId)) {
+        affectedYears.add(viennaYearOfDate(t.executedAt));
+      }
+    }
+    if (involveChain) {
+      for (const t of allTxns) {
+        if ((isDeSell(t) || isCustomFifoSell(t)) && batchAssets.has(t.assetId)) {
+          affectedYears.add(viennaYearOfDate(t.executedAt));
+        }
+      }
+      if (affectedYears.size > 0) {
+        const movements = await cashMovementRepo.listForPortfolio(portfolioId);
+        const minYear = Math.min(...affectedYears);
+        for (const year of engineTaxedYears(allTxns, dividendRows, movements)) {
+          if (year > minYear) affectedYears.add(year);
+        }
+      }
+    }
+    if (involveFi) {
+      for (const t of allTxns) {
+        if (isFiSell(t) && batchAssets.has(t.assetId)) {
+          affectedYears.add(viennaYearOfDate(t.executedAt));
+        }
+      }
+    }
+    const years = [...affectedYears].filter((y) => y < openFrom).sort((a, b) => a - b);
+    if (years.length === 0) return { extras: [], proposed: [] };
+
+    // The EUR replay both sides need: engine sells of the affected years plus
+    // — with a chained regime involved — every DE/custom-sell asset anywhere.
+    const yearsSet = new Set(years);
+    const neededAssetIds = new Set<string>();
+    for (const t of allTxns) {
+      if (t.side !== 'sell' || !isEngineTaxed(t.taxMode)) continue;
+      if (
+        yearsSet.has(viennaYearOfDate(t.executedAt)) ||
+        (involveDe && isDeSell(t)) ||
+        (involveCustom && isCustomSell(t))
+      ) {
+        neededAssetIds.add(t.assetId);
+      }
+    }
+    const mergedAssets = new Map(assetsById);
+    const missingAssetIds = [...neededAssetIds].filter((id) => !mergedAssets.has(id));
+    if (missingAssetIds.length > 0) {
+      for (const [id, row] of await loadAssets(missingAssetIds)) mergedAssets.set(id, row);
+    }
+    // One FX pass serves both sides: the post state includes the pending
+    // trades (they shift lots/averages even though they carry no engine tax),
+    // the baseline filters them back out.
+    const postTaxables = await buildTaxables(
+      allTxns,
+      inputs.map((input, index) => ({ tempId: `pending-${index}`, input })),
+      neededAssetIds,
+      currencyLookup(mergedAssets),
+      createTradeDateConverter(fxWriteError),
+    );
+    const pendingIds = new Set(inputs.map((_, index) => `pending-${index}`));
+    const baselineTaxables = postTaxables.filter((t) => !pendingIds.has(t.id));
+
+    const componentState = (taxables: readonly TaxableTransaction[]): FrozenComponentState => {
+      const realizations = realizationsById(taxables);
+      const fifo =
+        involveDe || involveFi || involveCustom
+          ? realizationsById(taxables, 'fifo')
+          : new Map<string, SellRealizationEur>();
+      return {
+        transactions: allTxns,
+        dividendRows,
+        realizations,
+        fifoRealizations: fifo,
+        deEvents: involveDe
+          ? deEventsByYear(buildDeView(allTxns, dividendRows, fifo, mergedAssets))
+          : new Map<number, DeTaxableEvent[]>(),
+        customGroups: involveCustom
+          ? customGroups(buildCustomView(allTxns, dividendRows, realizations, fifo))
+          : new Map<string, CustomGroup>(),
+        involveDe,
+        involveFi,
+        involveCustom,
+      };
+    };
+    const before = componentState(baselineTaxables);
+    const after = componentState(postTaxables);
+
+    // Labeled like a deleted buy's reshape: by the reshaped rows' regime
+    // (custom over DE over FI over AT when mixed).
+    const reshaped = allTxns.filter(
+      (t) => t.side === 'sell' && isEngineTaxed(t.taxMode) && batchAssets.has(t.assetId),
+    );
+    let noteRegime: SettleRegime = TAX_COUNTRY_AT;
+    if (reshaped.some(isCustomSell)) noteRegime = 'custom';
+    else if (reshaped.some(isDeSell)) noteRegime = TAX_COUNTRY_DE;
+    else if (reshaped.some(isFiSell)) noteRegime = TAX_COUNTRY_FI;
+
+    const extras: BatchCashMovement[] = [];
+    const proposed: SourcedCashMovement[] = [];
+    const nowIso = new Date(now()).toISOString();
+    for (const year of years) {
+      const deltaEur = floorCents(
+        frozenTargetForYear(after, year) - frozenTargetForYear(before, year),
+      );
+      const spec = taxMovementForDelta(deltaEur);
+      if (!spec) continue;
+      const sourceId = await correctionSourceId(portfolioId);
+      extras.push({
+        kind: spec.kind,
+        amountEur: spec.amountEur,
+        sourceId,
+        note: correctionNote(noteRegime),
+        taxYear: year,
+        executedAt: new Date(now()),
+      });
+      proposed.push({ kind: spec.kind, amountEur: spec.amountEur, occurredAt: nowIso, sourceId });
+    }
+    return { extras, proposed };
+  }
+
   async function planTransactionTaxes(
     planInput: TransactionTaxPlanInput,
   ): Promise<TransactionTaxPlan> {
@@ -1069,7 +1239,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       assertManualEntryAllowed(settings, input, input.side);
     }
     if (settings.mode === 'none') {
-      return { rows, extras: [], proposed: [] };
+      // #656 round 4: untaxed rows can still reshape engine-frozen CLOSED
+      // years — settle those by ΔF (open years re-derive on the next read).
+      const reshape = await planNonEngineReshapeCorrections(
+        portfolioId,
+        inputs,
+        assetsById,
+        openFromYearNow(),
+      );
+      return { rows, extras: reshape.extras, proposed: reshape.proposed };
     }
 
     const pendingSells: Array<{ index: number; tempId: string; input: TransactionInput }> = [];
@@ -1154,7 +1332,20 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         }
         rows[index] = row;
       }
-      return { rows, extras: [], proposed };
+      // #656 round 4: manual derives nothing, so EVERY year is closed-
+      // machinery (`openFrom = ∞`, mirroring the delete path) — settle the
+      // batch's engine-frozen reshapes by ΔF before returning.
+      const reshape = await planNonEngineReshapeCorrections(
+        portfolioId,
+        inputs,
+        assetsById,
+        Number.POSITIVE_INFINITY,
+      );
+      return {
+        rows,
+        extras: reshape.extras,
+        proposed: [...proposed, ...reshape.proposed],
+      };
     }
 
     // ── Engine modes: country-specific (AT | DE | FI) or custom (V5-P4c).
