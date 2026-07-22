@@ -7,7 +7,10 @@ import type { CashMovement, CustomTaxParams } from '@bettertrack/contracts';
 import * as schema from '../data/schema';
 import { createCashMovementRepository } from '../data/repositories/cashMovementRepository';
 import { createTaxRepository } from '../data/repositories/taxRepository';
-import { createTransactionRepository } from '../data/repositories/transactionRepository';
+import {
+  createTransactionRepository,
+  type TransactionRecord,
+} from '../data/repositories/transactionRepository';
 import {
   dePotCategoryForAssetType,
   floorCents,
@@ -20,6 +23,7 @@ import {
   buildFrozenComponentState,
   frozenTargetForYear,
   heldForYear,
+  isFifoRealizedSell,
 } from '../services/tax/closedSettlement';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -123,6 +127,18 @@ async function trade(agent: Agent, pid: string, body: Record<string, unknown>) {
   return res;
 }
 
+async function patchTransaction(
+  agent: Agent,
+  pid: string,
+  id: string,
+  body: Record<string, unknown>,
+) {
+  return agent
+    .patch(`/api/v1/portfolios/${pid}/transactions/${id}`)
+    .set(...XRW)
+    .send(body);
+}
+
 async function cashMovements(agent: Agent, pid: string): Promise<CashMovement[]> {
   const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
   expect(res.status).toBe(200);
@@ -147,15 +163,22 @@ interface DecompositionSnapshot {
 
 const CLOSED_YEARS = [2025, 2026];
 
-async function snapshot(pid: string): Promise<DecompositionSnapshot> {
+async function snapshot(
+  pid: string,
+  /** Optional row rewrite — a COUNTERFACTUAL decomposition ("what would ΣF
+   *  become if this edit landed"), used to prove an edit fixture is a real
+   *  reshape threat before asserting how the API answered it. */
+  transform?: (t: TransactionRecord) => TransactionRecord,
+): Promise<DecompositionSnapshot> {
   const txnRepo = createTransactionRepository(harness.db);
   const taxRepo = createTaxRepository(harness.db);
   const cashRepo = createCashMovementRepository(harness.db);
-  const [transactions, dividendRows, movements] = await Promise.all([
+  const [storedTransactions, dividendRows, movements] = await Promise.all([
     txnRepo.listForPortfolio(pid),
     taxRepo.listForPortfolio(pid),
     cashRepo.listForPortfolio(pid),
   ]);
+  const transactions = transform ? storedTransactions.map(transform) : storedTransactions;
   // EUR-only fixtures: the native amounts ARE the EUR taxable view.
   const taxables: TaxableTransaction[] = transactions.map((t) => ({
     id: t.id,
@@ -228,14 +251,27 @@ const REGIMES: Array<{ key: string; settings: Record<string, unknown> }> = [
 /** The recording modes a reshaping batch can arrive under (mutation-path axis). */
 const RECORDING_MODES = ['engine', 'none', 'manual_per_trade'] as const;
 
+/** The fixture rows the mutation-path cells act on. */
+interface FixtureRows {
+  buyFirstLot: string;
+  sell2025: string;
+  sell2026: string;
+}
+
 /**
  * Two engine-frozen closed years with cross-year coupling. 2025: lots
  * 100 @ 20 and 100 @ 30, sell 100 @ 40 (FIFO gain 2,000 / avg 1,500).
- * 2026: sell 50 @ 50 (FIFO consumes the € 30 lot → 1,000 / avg 1,250).
- * Rolls the clock to 2027 so both years are closed.
+ * 2026: sell 50 @ 80 (FIFO consumes the € 30 lot → 2,500 / avg 2,750; priced
+ * so the DE component clears the € 1,000 Sparer-Pauschbetrag with headroom on
+ * both sides of every cell's reshape — an allowance-clamped ΔF of zero would
+ * blind the matrix). Rolls the clock to 2027 so both years are closed.
  */
-async function buildTwoClosedYears(agent: Agent, pid: string, assetId: string): Promise<void> {
-  await trade(agent, pid, {
+async function buildTwoClosedYears(
+  agent: Agent,
+  pid: string,
+  assetId: string,
+): Promise<FixtureRows> {
+  const firstLot = await trade(agent, pid, {
     assetId,
     side: 'buy',
     quantity: 100,
@@ -249,7 +285,7 @@ async function buildTwoClosedYears(agent: Agent, pid: string, assetId: string): 
     price: 30,
     executedAt: '2025-03-01T10:00:00.000Z',
   });
-  await trade(agent, pid, {
+  const sell2025 = await trade(agent, pid, {
     assetId,
     side: 'sell',
     quantity: 100,
@@ -258,15 +294,20 @@ async function buildTwoClosedYears(agent: Agent, pid: string, assetId: string): 
     addProceedsToCash: true,
   });
   clock = Date.parse('2026-04-01T12:00:00.000Z');
-  await trade(agent, pid, {
+  const sell2026 = await trade(agent, pid, {
     assetId,
     side: 'sell',
     quantity: 50,
-    price: 50,
+    price: 80,
     executedAt: '2026-04-10T10:00:00.000Z',
     addProceedsToCash: true,
   });
   clock = Date.parse('2027-01-05T12:00:00.000Z');
+  return {
+    buyFirstLot: firstLot.body.transactions[0].id as string,
+    sell2025: sell2025.body.transactions[0].id as string,
+    sell2026: sell2026.body.transactions[0].id as string,
+  };
 }
 
 describe.each(REGIMES)('closed-year ΔF invariant — frozen regime $key', ({ key, settings }) => {
@@ -304,6 +345,111 @@ describe.each(REGIMES)('closed-year ΔF invariant — frozen regime $key', ({ ke
       }
     },
   );
+
+  it('deleting an engine-frozen sell settles the attached cascade + cross-year lot shift by exactly ΔF', async () => {
+    const { agent, pid, asset } = await setup();
+    await patchSettings(agent, settings);
+    const rows = await buildTwoClosedYears(agent, pid, asset.id);
+
+    // Deleting the 2025 engine sell exercises BOTH non-write terms of the
+    // choke formula at once (#675 review nit): its attached withholding
+    // cascades away with the row (the `held_before − held_after` term), and
+    // under FIFO-realizing regimes the 2026 frozen sell's consumption shifts
+    // onto the freed € 20 lot (a ΔΣF in a year the mutation never wrote to).
+    const pre = await snapshot(pid);
+    const del = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${rows.sell2025}`)
+      .set(...XRW);
+    expect(del.status, JSON.stringify(del.body)).toBe(204);
+    const post = await snapshot(pid);
+    expectDeltaTracked(pre, post, `${key}/delete-frozen-sell`);
+    // The cascade term was live, not a pure reshape: 2025's held really moved.
+    expect(post.heldEur.get(2025)).not.toBe(pre.heldEur.get(2025));
+  });
+
+  it('the edit door rejects-or-settles — a financial edit can never silently reshape a closed year', async () => {
+    const { agent, pid, asset } = await setup();
+    await patchSettings(agent, settings);
+    const rows = await buildTwoClosedYears(agent, pid, asset.id);
+
+    // Row-own immutability: an engine-frozen sell rejects financial edits in
+    // EVERY engine regime — custom included, whose € 0-marginal rows attach
+    // no movement, so no downstream guard would catch them (#675 review).
+    const preGuards = await snapshot(pid);
+    const frozenEdit = await patchTransaction(agent, pid, rows.sell2026, { quantity: 40 });
+    expect(frozenEdit.status, JSON.stringify(frozenEdit.body)).toBe(400);
+    expect(frozenEdit.body.error.code).toBe('TRANSACTION_TAXED');
+
+    // A buy feeding engine-frozen sells re-bases them in every regime.
+    const buyEdit = await patchTransaction(agent, pid, rows.buyFirstLot, { price: 21 });
+    expect(buyEdit.status, JSON.stringify(buyEdit.body)).toBe(400);
+    expect(buyEdit.body.error.code).toBe('TRANSACTION_AFFECTS_TAXED');
+    expect(await snapshot(pid)).toEqual(preGuards);
+
+    // The #675-review blocking door: an UNTAXED sell between the frozen
+    // sells. Its quantity steers how the 2026 frozen sell straddles the
+    // € 30/€ 35 lots under FIFO-realizing regimes; under the moving average
+    // it is inert (a sell never moves another row's average).
+    await patchSettings(agent, { mode: 'none' });
+    await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'buy',
+      quantity: 100,
+      price: 35,
+      executedAt: '2025-06-15T10:00:00.000Z',
+    });
+    const noneSell = await trade(agent, pid, {
+      assetId: asset.id,
+      side: 'sell',
+      quantity: 80,
+      price: 40,
+      executedAt: '2025-08-01T10:00:00.000Z',
+    });
+    const noneSellId = noneSell.body.transactions[0].id as string;
+    const preEdit = await snapshot(pid);
+    // The backdated setup writes reshape the closed years themselves — the
+    // write path settles them (a sell-write-under-none cell for free).
+    expectDeltaTracked(preGuards, preEdit, `${key}/edit-setup-writes`);
+
+    // Counterfactual ΣF if the edit landed: the threat must be real exactly
+    // where the guard's own FIFO classifier says frozen lots are in play.
+    const counterfactual = await snapshot(pid, (t) =>
+      t.id === noneSellId ? { ...t, quantity: 30 } : t,
+    );
+    const wouldMove = CLOSED_YEARS.some(
+      (year) => counterfactual.frozenEur.get(year) !== preEdit.frozenEur.get(year),
+    );
+    const stored = await createTransactionRepository(harness.db).listForPortfolio(pid);
+    expect(wouldMove, `${key}: the fixture threat must match the FIFO classifier`).toBe(
+      stored.some(isFifoRealizedSell),
+    );
+
+    const edit = await patchTransaction(agent, pid, noneSellId, { quantity: 30 });
+    const postEdit = await snapshot(pid);
+    if (edit.status === 200) {
+      // Allowed ⇒ settled: held tracks ΣF exactly (a zero Δ is fine here —
+      // the harmless-edit case; a reshape that lands unsettled is not).
+      for (const year of CLOSED_YEARS) {
+        const deltaHeld = floorCents(postEdit.heldEur.get(year)! - preEdit.heldEur.get(year)!);
+        const deltaFrozen = floorCents(
+          postEdit.frozenEur.get(year)! - preEdit.frozenEur.get(year)!,
+        );
+        expect(deltaHeld, `${key}/edit: year ${year} held must shift by exactly ΔF`).toBe(
+          deltaFrozen,
+        );
+      }
+    } else {
+      // Rejected ⇒ untouched.
+      expect(edit.status, JSON.stringify(edit.body)).toBe(400);
+      expect(edit.body.error.code).toBe('TRANSACTION_AFFECTS_TAXED');
+      expect(postEdit).toEqual(preEdit);
+    }
+    // Today's contract: threatening edits are rejected outright (delete-and-
+    // re-add doctrine); harmless ones stay as permissive as v2. If edits ever
+    // gain their own settlement path, drop this line — the invariant block
+    // above is the one that must keep holding.
+    expect(edit.status).toBe(wouldMove ? 400 : 200);
+  });
 
   it('a backdated dividend and its deletion self-adjust by exactly ΔF', async () => {
     const { agent, pid, asset } = await setup();
