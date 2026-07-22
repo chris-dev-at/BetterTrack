@@ -2,6 +2,7 @@ import { type Request, type Router } from 'express';
 
 import {
   adminApiKeyListResponseSchema,
+  adminApiKeySchema,
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
@@ -73,7 +74,7 @@ export function registerAdminApiKeyRoutes(router: Router, ctx: AppContext): void
       const { id } = req.valid?.params as { id: string };
       const { tierId } = req.valid?.body as AssignApiKeyTierRequest;
       const key = await ctx.apiKeys.assignTier(id, tierId, actorOf(req));
-      res.json(key);
+      res.json(adminApiKeySchema.parse(key));
     },
   );
 

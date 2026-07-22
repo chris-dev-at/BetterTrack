@@ -86,6 +86,23 @@ export function createApiKeyRepository(db: Database) {
       return row;
     },
 
+    /**
+     * One admin-shaped row (key + joined tier name) — the single-row analogue of
+     * {@link listAllForAdmin}, used by `assignTier` to rehydrate the changed key
+     * without an O(N) scan over the full key table.
+     */
+    async findByIdWithTier(
+      id: string,
+    ): Promise<(ApiKeyRow & { tierName: string | null }) | undefined> {
+      const [row] = await db
+        .select({ key: apiKeys, tierName: apiKeyTiers.name })
+        .from(apiKeys)
+        .leftJoin(apiKeyTiers, eq(apiKeys.tierId, apiKeyTiers.id))
+        .where(eq(apiKeys.id, id))
+        .limit(1);
+      return row ? { ...row.key, tierName: row.tierName ?? null } : undefined;
+    },
+
     /** Admin assigns (or clears → default) a key's tier. Returns the updated row. */
     async setTier(id: string, tierId: string | null): Promise<ApiKeyRow | undefined> {
       const [row] = await db.update(apiKeys).set({ tierId }).where(eq(apiKeys.id, id)).returning();

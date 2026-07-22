@@ -346,7 +346,8 @@ export function createApiKeyService(deps: ApiKeyServiceDeps): ApiKeyService {
       }
       const row = await repo.setTier(id, tierId);
       if (!row) throw notFound('API key not found.', 'API_KEY_NOT_FOUND');
-      const [withTier] = (await repo.listAllForAdmin()).filter((k) => k.id === id);
+      // One targeted joined read to rehydrate the tier name — no O(N) scan.
+      const withTier = await repo.findByIdWithTier(id);
       await audit.record({
         actorId: actor.id,
         action: AuditAction.ApiKeyTierAssigned,

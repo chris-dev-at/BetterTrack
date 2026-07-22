@@ -249,3 +249,46 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     expect(remaining[0]!.path).toBe('/fresh');
   });
 });
+
+describe('per-key rate tier — full HTTP stack (§13.5 V5-P10, issue 2/2)', () => {
+  // Regression fence for the bearerAuth → rateLimit wiring: the earlier unit
+  // test in `http/middleware/__tests__/apiKeyTierRateLimit.test.ts` synthesises
+  // `req.apiKey.rateLimit` before invoking the limiter, so it cannot catch the
+  // bearerAuth handler dropping the resolved tier on the floor. This test hits
+  // the app with a real `Authorization: Bearer …` header and asserts a low-tier
+  // key gets 429 back — the done-when clause for tier assignment.
+  it('a low-tier key over its limit gets a 429 back over the wire', async () => {
+    // Fresh harness with the HTTP limiter actually enabled (default is off in
+    // test mode). Also swap NODE_ENV isn't necessary — the option flips the
+    // one flag the limiter reads, leaving BullMQ + logger unchanged.
+    const httpHarness = await createTestApp({ rateLimitsEnabled: true });
+
+    const user = await httpHarness.seedUser();
+    const { key, token } = await httpHarness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'wire test',
+      scopes: ['portfolio:read'],
+    });
+
+    const actor = { id: user.id, ip: null };
+    const tier = await httpHarness.ctx.apiKeys.createTier(
+      { name: 'Trickle', requestLimit: 2, windowSec: 60 },
+      actor,
+    );
+    await httpHarness.ctx.apiKeys.assignTier(key.id, tier.id, actor);
+
+    const hit = () =>
+      request(httpHarness.app).get('/api/v1/portfolios').set('Authorization', `Bearer ${token}`);
+
+    // First two requests fit within the tier's allowance.
+    for (let i = 0; i < 2; i += 1) {
+      const res = await hit();
+      expect(res.status).toBe(200);
+    }
+    // The third trips the per-key limiter — 429 with a Retry-After header, and
+    // NOT because the general/burst counters (4500/15m, 60/10s) tripped.
+    const over = await hit();
+    expect(over.status).toBe(429);
+    expect(over.headers['retry-after']).toBeDefined();
+  });
+});

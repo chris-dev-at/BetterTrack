@@ -227,6 +227,13 @@ export interface CreateTestAppOptions {
    * attempt through the dispatcher (no BullMQ under test).
    */
   webhookTransport?: WebhookTransport;
+  /**
+   * Force `rateLimits.enabled` on (default: off under `NODE_ENV=test`). Set on
+   * the specific tests that need to exercise the HTTP limiter end-to-end
+   * (§13.5 V5-P10 — bearer→apiKey wiring), while leaving every other test on
+   * the deterministic no-limiter path.
+   */
+  rateLimitsEnabled?: boolean;
 }
 
 export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestHarness> {
@@ -249,6 +256,9 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
   }
 
   const config = loadConfig({ ...BASE_TEST_ENV, ...options.env });
+  if (options.rateLimitsEnabled) {
+    config.rateLimits.enabled = true;
+  }
   const logger = createLogger(config);
   const ctx = buildContext({
     config,

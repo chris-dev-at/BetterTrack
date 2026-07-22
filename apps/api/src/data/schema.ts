@@ -235,15 +235,27 @@ export const apiKeys = pgTable(
  * transactional clear-then-set) rather than a DB constraint so re-marking a
  * default stays a single service call.
  */
-export const apiKeyTiers = pgTable('api_key_tiers', {
-  id: uuid('id').primaryKey().$defaultFn(newId),
-  name: varchar('name', { length: 80 }).notNull(),
-  requestLimit: integer('request_limit').notNull(),
-  windowSec: integer('window_sec').notNull(),
-  isDefault: boolean('is_default').notNull().default(false),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const apiKeyTiers = pgTable(
+  'api_key_tiers',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    name: varchar('name', { length: 80 }).notNull(),
+    requestLimit: integer('request_limit').notNull(),
+    windowSec: integer('window_sec').notNull(),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Exactly one default tier — enforced at the DB layer so concurrent
+    // create/update mutations under READ COMMITTED can't both leave two rows
+    // with `is_default = true` (the transactional clear-then-set in the repo
+    // is not race-safe on its own).
+    uniqueIndex('api_key_tiers_one_default')
+      .on(t.isDefault)
+      .where(sql`${t.isDefault}`),
+  ],
+);
 
 /**
  * Bounded per-key request-log audit trail (§13.5 V5-P10, issue 2/2). One row per
