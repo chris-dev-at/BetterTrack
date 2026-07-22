@@ -495,9 +495,7 @@ describe('TransactionDialog — edit mode patches only what changed', () => {
     await user.type(screen.getByLabelText(/note for btc/i), 'DCA');
     await user.click(screen.getByRole('button', { name: /save changes/i }));
 
-    expect(
-      await screen.findByText(/another member deleted this entry/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/another member deleted this entry/i)).toBeInTheDocument();
     expect(screen.queryByText(/could not save/i)).not.toBeInTheDocument();
   });
 });
