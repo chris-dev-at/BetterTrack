@@ -57,12 +57,15 @@ function deView(
 }
 
 describe('rowEngineCountry', () => {
-  it('maps DE/FI to themselves and everything else (legacy/unknown/null) to AT', () => {
+  it('maps DE/FI to themselves and legacy null/AT to AT', () => {
     expect(rowEngineCountry('DE')).toBe(TAX_COUNTRY_DE);
     expect(rowEngineCountry('FI')).toBe(TAX_COUNTRY_FI);
     expect(rowEngineCountry('AT')).toBe(TAX_COUNTRY_AT);
     expect(rowEngineCountry(null)).toBe(TAX_COUNTRY_AT);
-    expect(rowEngineCountry('US')).toBe(TAX_COUNTRY_AT);
+  });
+
+  it('fails LOUD on an unwired country instead of falling through to the AT pool (#669)', () => {
+    expect(() => rowEngineCountry('US')).toThrow(/no settlement component/);
   });
 });
 

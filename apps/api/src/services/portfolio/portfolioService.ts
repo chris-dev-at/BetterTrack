@@ -85,6 +85,7 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
+import { isEngineTaxed } from '../tax/closedSettlement';
 import type { TaxService } from '../tax/taxService';
 import {
   buildIntradayEurValuePoints,
@@ -1489,10 +1490,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (financialEdit) {
         // A row carrying recorded tax is financially immutable (V3-P4): its
         // frozen tax and settlement movement mirror the numbers it was
-        // recorded with, and the AT year ledger settled on them append-only.
+        // recorded with, and the year ledger settled on them append-only.
+        // Engine modes count even when the frozen marginal is € 0 — a custom
+        // loss sell attaches no movement yet still anchors its parameter
+        // group's settled target, so no later guard would catch it (#675).
         // Note edits stay allowed; to change the numbers, delete and re-add
         // (the delete re-settles the year with a correction movement).
-        if (existing.taxMode === 'manual_per_trade' || existing.taxMode === 'country_specific') {
+        if (existing.taxMode === 'manual_per_trade' || isEngineTaxed(existing.taxMode)) {
           throw badRequest(
             'This transaction carries recorded tax. Delete and re-add it to change the numbers.',
             'TRANSACTION_TAXED',
@@ -1510,24 +1514,31 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Build the asset's set with the edited row swapped in, then re-validate.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
 
-      // Editing a BUY re-shapes the moving average every later sell realized
-      // against — and engine-taxed sells' gains (country-specific AND custom
-      // rules, V5-P4c) are year-settled money (V3-P4). Reject rather than
-      // silently un-anchor a settled year; deleting and re-adding routes
-      // through the append-only correction path instead. (Sells never move
-      // another row's average, so editing an untaxed sell stays as permissive
-      // as v2.)
-      if (
-        financialEdit &&
-        existing.side === 'buy' &&
-        siblings.some(
-          (s) => s.side === 'sell' && (s.taxMode === 'country_specific' || s.taxMode === 'custom'),
-        )
-      ) {
-        throw badRequest(
-          'Editing this buy would change the realized gains of tax-settled sells. Delete and re-add it instead.',
-          'TRANSACTION_AFFECTS_TAXED',
+      // While the asset carries engine-frozen sells (year-settled money,
+      // V3-P4), ANY financial edit is rejected — no side or regime carve-out
+      // is sound (#669/#675). A BUY re-shapes the moving average every later
+      // sell realized against; under FIFO-realizing regimes (DE, FI, FIFO
+      // custom sets) EVERY trade steers later lot consumption (the #656
+      // round-3 class through the edit door); and even an untaxed SELL sets
+      // the held quantity a later buy re-averages with — plus the
+      // covered/uncovered basis split — so the moving average is only inert
+      // when no buy ever follows the row, an ordering the same patch can
+      // break via `executedAt`. This path performs no settlement, so a
+      // leaked reshape would become permanent drift absorbed as fake locked
+      // residue; deleting and re-adding routes through the append-only
+      // correction path instead. Deliberately date-agnostic: a row dated
+      // after every frozen sell cannot reshape them, yet is rejected too —
+      // recorded as a conservative choice (#675 round 2).
+      if (financialEdit) {
+        const hasFrozenSells = siblings.some(
+          (s) => s.id !== id && s.side === 'sell' && isEngineTaxed(s.taxMode),
         );
+        if (hasFrozenSells) {
+          throw badRequest(
+            'Editing this transaction could change the realized gains of tax-settled sells. Delete and re-add it instead.',
+            'TRANSACTION_AFFECTS_TAXED',
+          );
+        }
       }
       const merged: TransactionRecord = {
         ...existing,

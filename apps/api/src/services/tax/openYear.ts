@@ -58,9 +58,18 @@ export type OpenRegime =
   | { kind: 'country'; country: SupportedTaxCountry }
   | { kind: 'custom'; params: CustomTaxParams };
 
-/** Narrow the stored country to a supported engine (legacy/unknown ⇒ AT). */
+/**
+ * Narrow the stored country to a supported engine. Legacy `null` ⇒ AT; any
+ * other unrecognized value fails LOUD instead of silently running the AT
+ * engine (#669 hardening — same rationale as `rowEngineCountry`).
+ */
 export function openCountryOf(country: string | null): SupportedTaxCountry {
-  return country === TAX_COUNTRY_DE || country === TAX_COUNTRY_FI ? country : TAX_COUNTRY_AT;
+  if (country === null || country === TAX_COUNTRY_AT) return TAX_COUNTRY_AT;
+  if (country === TAX_COUNTRY_DE || country === TAX_COUNTRY_FI) return country;
+  throw new Error(
+    `Tax engine: no open-year engine for tax country "${country}" — ` +
+      'wire it in (see the adding-a-country checklist above) before settings can select it',
+  );
 }
 
 /** The open-year regime of the resolved per-portfolio settings. */
