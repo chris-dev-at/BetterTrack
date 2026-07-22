@@ -174,8 +174,8 @@ export const TAX_MODES = ['none', 'manual_per_trade', 'country_specific', 'custo
 export const taxModeSchema = z.enum(TAX_MODES);
 export type TaxMode = z.infer<typeof taxModeSchema>;
 
-/** Countries `country_specific` mode ships for (V3-P4: Austria; V5-P4: Germany). */
-export const TAX_COUNTRIES = ['AT', 'DE'] as const;
+/** Countries `country_specific` mode ships for (V3-P4: Austria; V5-P4: Germany; #635: Finland). */
+export const TAX_COUNTRIES = ['AT', 'DE', 'FI'] as const;
 export const taxCountrySchema = z.enum(TAX_COUNTRIES);
 export type TaxCountry = z.infer<typeof taxCountrySchema>;
 
@@ -1179,6 +1179,13 @@ export const taxYearSummarySchema = z
     taxNetEur: z.number(),
     /** German year-end block (V5-P4) — present exactly when the year has DE-taxed rows. */
     de: taxYearDeSummarySchema.optional(),
+    /**
+     * Closed-year marker (#635): true for Vienna years before the current one,
+     * which keep their recording-time settlements and are never re-derived by
+     * settings changes. Open years (key omitted) re-derive live under the
+     * portfolio's CURRENT tax settings and self-heal on every read.
+     */
+    locked: z.boolean().optional(),
   })
   .strict();
 export type TaxYearSummary = z.infer<typeof taxYearSummarySchema>;

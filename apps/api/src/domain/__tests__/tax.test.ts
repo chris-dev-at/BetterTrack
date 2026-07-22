@@ -4,10 +4,16 @@ import { floorCents as ledgerFloorCents } from '../cashLedger';
 import {
   AT_KEST_RATE,
   atYearTargetEur,
+  costBasisStrategyForCountry,
+  FI_CAPITAL_INCOME_HIGH_RATE,
+  FI_CAPITAL_INCOME_RATE,
+  FI_HIGH_RATE_THRESHOLD_EUR,
+  fiYearTargetEur,
   manualTaxEur,
   realizedSellsEur,
   floorCents,
   settleAtYear,
+  settleFiYear,
   TaxComputationError,
   taxMovementForDelta,
   viennaYearOf,
@@ -439,5 +445,98 @@ describe('manualTaxEur', () => {
     expect(() => manualTaxEur({ taxRatePct: 10, baseEur: Number.NaN })).toThrow(
       TaxComputationError,
     );
+  });
+});
+
+// ─── FI (#635): progressive pääomatulovero over the shared pool settlement ────
+
+describe('fiYearTargetEur', () => {
+  it('worked example: 30 % to €30,000, 34 % above (TVL 124 §)', () => {
+    expect(FI_CAPITAL_INCOME_RATE).toBe(0.3);
+    expect(FI_CAPITAL_INCOME_HIGH_RATE).toBe(0.34);
+    expect(FI_HIGH_RATE_THRESHOLD_EUR).toBe(30_000);
+    // 40,000 pool → 30 % × 30,000 + 34 % × 10,000 = 9,000 + 3,400 = 12,400.
+    expect(fiYearTargetEur(40_000)).toBe(12_400);
+    // Exactly at the threshold: base rate only.
+    expect(fiYearTargetEur(30_000)).toBe(9_000);
+    // Below: flat 30 %.
+    expect(fiYearTargetEur(1_000)).toBe(300);
+  });
+
+  it('clamps a net-loss year to exactly zero (no negative tax, no carry v1)', () => {
+    expect(fiYearTargetEur(-500)).toBe(0);
+    expect(fiYearTargetEur(0)).toBe(0);
+  });
+
+  it('floors to whole cents (#370 — never rounds up)', () => {
+    // 30 % × 0.03 = 0.009 → floors to 0.00.
+    expect(fiYearTargetEur(0.03)).toBe(0);
+    // 30 % × 0.5 = 0.15 exactly.
+    expect(fiYearTargetEur(0.5)).toBe(0.15);
+  });
+});
+
+describe('settleFiYear', () => {
+  it('a marginal gain crossing the threshold is taxed at 34 % on the excess', () => {
+    const settlement = settleFiYear({
+      existingGainsEur: [25_000],
+      existingDividendsEur: [],
+      heldEur: 7_500,
+      newEvents: [{ kind: 'sell_gain', amountEur: 10_000 }],
+    });
+    expect(settlement.correctionDeltaEur).toBe(0);
+    // Pool 25,000 → 35,000: target 9,000 + 34 % × 5,000 = 10,700; held was
+    // 7,500 → the event's marginal delta is 3,200 (1,500 at 30 % + 1,700 at 34 %).
+    expect(settlement.newEventDeltasEur).toEqual([3_200]);
+    expect(settlement.heldAfterEur).toBe(10_700);
+  });
+
+  it('a same-year loss refunds down to the shrunken progressive target', () => {
+    const settlement = settleFiYear({
+      existingGainsEur: [35_000],
+      existingDividendsEur: [],
+      heldEur: 10_700,
+      newEvents: [{ kind: 'sell_gain', amountEur: -5_000 }],
+    });
+    // Pool 30,000 → target 9,000 → refund 1,700.
+    expect(settlement.newEventDeltasEur).toEqual([-1_700]);
+    expect(settlement.heldAfterEur).toBe(9_000);
+  });
+
+  it('a loss-first year parks at €0.00 and later gains tax only the net', () => {
+    const settlement = settleFiYear({
+      existingGainsEur: [],
+      existingDividendsEur: [],
+      heldEur: 0,
+      newEvents: [
+        { kind: 'sell_gain', amountEur: -1_000 },
+        { kind: 'sell_gain', amountEur: 1_500 },
+        { kind: 'dividend', amountEur: 500 },
+      ],
+    });
+    // −1,000 → 0 held; +1,500 → pool 500 → 150; +500 dividend → pool 1,000 → 300.
+    expect(settlement.newEventDeltasEur).toEqual([0, 150, 150]);
+    expect(settlement.heldAfterEur).toBe(300);
+  });
+
+  it('reconciles reshaped history like the AT settlement (signed correction)', () => {
+    const settlement = settleFiYear({
+      existingGainsEur: [1_000],
+      existingDividendsEur: [],
+      heldEur: 500,
+      newEvents: [],
+    });
+    // Recomputed target 300 vs held 500 → −200 correction.
+    expect(settlement.correctionDeltaEur).toBe(-200);
+    expect(settlement.heldAfterEur).toBe(300);
+  });
+});
+
+describe('costBasisStrategyForCountry (#635)', () => {
+  it('FI mandates FIFO like DE; AT keeps the moving average', () => {
+    expect(costBasisStrategyForCountry('FI')).toBe('fifo');
+    expect(costBasisStrategyForCountry('DE')).toBe('fifo');
+    expect(costBasisStrategyForCountry('AT')).toBe('moving-average');
+    expect(costBasisStrategyForCountry(null)).toBe('moving-average');
   });
 });

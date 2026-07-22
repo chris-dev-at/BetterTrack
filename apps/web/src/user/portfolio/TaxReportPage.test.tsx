@@ -78,6 +78,13 @@ beforeEach(() => {
 });
 
 describe('TaxReportPage', () => {
+  test('shows the owner-mandated estimates disclaimer in every state (#635)', async () => {
+    renderPage();
+    expect(
+      await screen.findByText(/Estimates for your personal overview only/i),
+    ).toBeInTheDocument();
+  });
+
   test('with this portfolio inheriting `none`, shows the off state + a default editor link, never queries the report', async () => {
     vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue({
       effective: { mode: 'none', country: null },

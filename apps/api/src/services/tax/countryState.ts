@@ -3,9 +3,12 @@ import type { DividendRecord } from '../../data/repositories/taxRepository';
 import type { TransactionRecord } from '../../data/repositories/transactionRepository';
 import {
   deCarryPots,
+  fiYearTargetEur,
+  floorCents,
   settleDeYear,
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
+  TAX_COUNTRY_FI,
   type DePotCategory,
   type DePots,
   type DeTaxableEvent,
@@ -31,16 +34,18 @@ import {
 
 /**
  * The engine country a frozen `country_specific` row belongs to. Legacy rows
- * (V3-P4) always carry `AT`; anything that is not `DE` settles as AT so an
- * unexpected value can never silently drop a row from both pools.
+ * (V3-P4) always carry `AT`; anything that is not `DE`/`FI` settles as AT so
+ * an unexpected value can never silently drop a row from every pool.
  */
 export function rowEngineCountry(
   taxCountry: string | null,
-): typeof TAX_COUNTRY_AT | typeof TAX_COUNTRY_DE {
-  return taxCountry === TAX_COUNTRY_DE ? TAX_COUNTRY_DE : TAX_COUNTRY_AT;
+): typeof TAX_COUNTRY_AT | typeof TAX_COUNTRY_DE | typeof TAX_COUNTRY_FI {
+  return taxCountry === TAX_COUNTRY_DE || taxCountry === TAX_COUNTRY_FI
+    ? taxCountry
+    : TAX_COUNTRY_AT;
 }
 
-/** A sell taxed under `country_specific` mode (either country). */
+/** A sell taxed under `country_specific` mode (any country). */
 export const isCountrySpecificSell = (t: TransactionRecord): boolean =>
   t.side === 'sell' && t.taxMode === 'country_specific';
 
@@ -51,6 +56,51 @@ export const isDeSell = (t: TransactionRecord): boolean =>
 /** A dividend frozen under the DE engine. */
 export const isDeDividend = (d: DividendRecord): boolean =>
   d.taxMode === 'country_specific' && rowEngineCountry(d.taxCountry) === TAX_COUNTRY_DE;
+
+/** A sell frozen under the FI engine (#635). */
+export const isFiSell = (t: TransactionRecord): boolean =>
+  isCountrySpecificSell(t) && rowEngineCountry(t.taxCountry) === TAX_COUNTRY_FI;
+
+/** A dividend frozen under the FI engine (#635). */
+export const isFiDividend = (d: DividendRecord): boolean =>
+  d.taxMode === 'country_specific' && rowEngineCountry(d.taxCountry) === TAX_COUNTRY_FI;
+
+/** Whether any row of the portfolio is frozen under FI (drives the FI machinery). */
+export function portfolioHasFiRows(
+  transactions: readonly TransactionRecord[],
+  dividendRows: readonly DividendRecord[],
+): boolean {
+  return transactions.some(isFiSell) || dividendRows.some(isFiDividend);
+}
+
+/**
+ * The FI component of a closed year's held-tax target (#635): the progressive
+ * {@link fiYearTargetEur} over the year's FI-frozen rows — sells with their
+ * recomputed FIFO gains (FI mandates FIFO like DE), dividends with their
+ * gross. 0 for a year without FI rows; no cross-year carry (v1).
+ */
+export function fiTargetForYear(
+  transactions: readonly TransactionRecord[],
+  dividendRows: readonly DividendRecord[],
+  fifoRealizations: ReadonlyMap<string, SellRealizationEur>,
+  year: number,
+  yearOf: (at: Date) => number,
+): number {
+  let poolEur = 0;
+  for (const t of transactions) {
+    if (!isFiSell(t) || yearOf(t.executedAt) !== year) continue;
+    const realization = fifoRealizations.get(t.id);
+    if (!realization) {
+      throw new Error(`Tax engine: no FIFO realization for FI sell ${t.id} (year ${year})`);
+    }
+    poolEur += realization.realizedPnlEur;
+  }
+  for (const d of dividendRows) {
+    if (!isFiDividend(d) || yearOf(d.executedAt) !== year) continue;
+    poolEur += d.grossAmountEur;
+  }
+  return floorCents(fiYearTargetEur(poolEur));
+}
 
 /** Whether any row of the portfolio is frozen under DE (drives the DE machinery). */
 export function portfolioHasDeRows(
