@@ -292,7 +292,9 @@
     "tagline": "Behalte deine Ausgaben und Einnahmen im Blick — getrennt von deinem Portfolio.",
     "nav": {
       "transactions": "Transaktionen",
-      "categories": "Kategorien"
+      "categories": "Kategorien",
+      "rules": "Regeln",
+      "import": "Import"
     },
     "direction": {
       "expense": "Ausgabe",
@@ -340,6 +342,63 @@
         "color": "Farbe",
         "saveError": "Kategorie konnte nicht gespeichert werden. Bitte versuche es erneut."
       }
+    },
+    "rules": {
+      "subtitle": "Regeln kategorisieren importierte Transaktionen automatisch anhand ihres Textes.",
+      "new": "Neue Regel",
+      "loadError": "Deine Regeln konnten nicht geladen werden.",
+      "deleteError": "Regel konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "emptyTitle": "Noch keine Regeln",
+      "emptyDescription": "Lege eine Regel an, um Transaktionen beim Import automatisch zu kategorisieren.",
+      "unknownCategory": "Unbekannte Kategorie",
+      "disabled": "Aus",
+      "matchType": {
+        "contains": "Enthält",
+        "equals": "Ist gleich",
+        "starts_with": "Beginnt mit",
+        "regex": "Regex"
+      },
+      "dialog": {
+        "newTitle": "Neue Regel",
+        "editTitle": "Regel bearbeiten",
+        "category": "Kategorie",
+        "categoryRequired": "Wähle eine Kategorie.",
+        "matchType": "Vergleichsart",
+        "pattern": "Muster",
+        "patternPlaceholder": "z. B. SPOTIFY",
+        "patternRequired": "Gib ein Muster ein.",
+        "priority": "Priorität",
+        "enabled": "Aktiv",
+        "saveError": "Regel konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
+    },
+    "import": {
+      "subtitle": "Importiere einen Kontoauszug (CSV) — Zeilen werden automatisch kategorisiert, Duplikate übersprungen.",
+      "uploadTitle": "Auszug hochladen",
+      "chooseFile": "CSV-Datei auswählen",
+      "bank": "Bank",
+      "bankAuto": "Automatisch erkennen",
+      "preview": "Vorschau",
+      "previewing": "Wird gelesen…",
+      "uploadHint": "Unterstützt werden CSV-Exporte von Erste/George, Raiffeisen ELBA, N26 und Revolut.",
+      "previewError": "Die Datei konnte nicht gelesen werden. Prüfe, ob es ein unterstützter Bank-Export ist.",
+      "applyError": "Die Transaktionen konnten nicht importiert werden. Bitte versuche es erneut.",
+      "applied": "{{applied}} importiert · {{duplicate}} Duplikate · {{error}} übersprungen.",
+      "importAnother": "Weiteren Auszug importieren",
+      "previewTitle": "{{bank}} erkannt",
+      "counts": "{{new}} neu · {{duplicate}} Duplikate · {{error}} Fehler",
+      "colDate": "Datum",
+      "colDescription": "Beschreibung",
+      "colAmount": "Betrag",
+      "colCategory": "Kategorie",
+      "flag": {
+        "new": "Neu",
+        "duplicate": "Dupl.",
+        "error": "Fehler"
+      },
+      "uncategorized": "Ohne Kategorie",
+      "applying": "Wird importiert…",
+      "apply": "{{count}} Transaktionen importieren"
     }
   },
   "nav": {

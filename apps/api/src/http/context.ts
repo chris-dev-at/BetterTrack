@@ -142,6 +142,11 @@ import { createTwoFactorService, type TwoFactorService } from '../services/auth/
 import { createChatService, type ChatService } from '../services/chat';
 import { createIdeasService, type IdeasService } from '../services/ideas/ideasService';
 import { createExpenseService, type ExpenseService } from '../services/expenses/expenseService';
+import {
+  createExpenseImportService,
+  type ExpenseImportService,
+} from '../services/expenses/expenseImportService';
+import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
 import {
   createStandingOrderService,
@@ -292,6 +297,8 @@ export interface AppContext {
   standingOrders: StandingOrderService;
   /** Expense tracking — categories/transactions/rules CRUD, separate from portfolio money (§13.5 V5-P9). */
   expenses: ExpenseService;
+  /** Bank-statement CSV import + rule-based auto-categorization for the expense area (§13.5 V5-P9, issue 2/3). */
+  expenseImports: ExpenseImportService;
   /** Analytics deep-dive: configurable series, contributions, compare, inflation (§13.3 V3-P9). */
   analytics: AnalyticsService;
   /** Friend requests + friendships — the V1 social graph (§6.9). */
@@ -1119,14 +1126,25 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     logger,
   });
 
-  // Expense tracking (§13.5 V5-P9, foundation 1/3): a NEW top-level area,
-  // strictly separate from portfolio money (its repositories touch no portfolio
-  // table). CRUD over categories/transactions/rules; the category manager seeds
+  // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from
+  // portfolio money (its repositories touch no portfolio table). CRUD over
+  // categories/transactions/rules (foundation 1/3); the category manager seeds
   // sensible defaults on first use.
+  const expenseCategoryRepo = createExpenseCategoryRepository(db);
+  const expenseTransactionRepo = createExpenseTransactionRepository(db);
+  const expenseRuleRepo = createExpenseRuleRepository(db);
   const expenses = createExpenseService({
-    categories: createExpenseCategoryRepository(db),
-    transactions: createExpenseTransactionRepository(db),
-    rules: createExpenseRuleRepository(db),
+    categories: expenseCategoryRepo,
+    transactions: expenseTransactionRepo,
+    rules: expenseRuleRepo,
+  });
+  // Bank-statement CSV import + rule-based auto-categorization (issue 2/3): a
+  // stateless preview → apply over the same owner-scoped repos.
+  const expenseImports = createExpenseImportService({
+    categories: expenseCategoryRepo,
+    transactions: expenseTransactionRepo,
+    rules: expenseRuleRepo,
+    mappers: ALL_BANK_MAPPERS,
   });
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
@@ -1400,6 +1418,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     imports,
     standingOrders,
     expenses,
+    expenseImports,
     analytics,
     social,
     comments,
