@@ -287,10 +287,66 @@
       }
     }
   },
+  "expenses": {
+    "title": "Ausgaben",
+    "tagline": "Behalte deine Ausgaben und Einnahmen im Blick — getrennt von deinem Portfolio.",
+    "nav": {
+      "transactions": "Transaktionen",
+      "categories": "Kategorien"
+    },
+    "direction": {
+      "expense": "Ausgabe",
+      "income": "Einnahme",
+      "expensePlural": "Ausgaben",
+      "incomePlural": "Einnahmen"
+    },
+    "transactions": {
+      "subtitle": "Deine Ausgaben und Einnahmen, neueste zuerst.",
+      "new": "Neue Transaktion",
+      "loadError": "Transaktionen konnten nicht geladen werden.",
+      "recategorize": "Kategorie ändern",
+      "uncategorized": "Ohne Kategorie",
+      "emptyTitle": "Noch keine Transaktionen",
+      "emptyDescription": "Füge deine erste Ausgabe oder Einnahme hinzu, um zu starten.",
+      "emptyCta": "Transaktion hinzufügen",
+      "dialog": {
+        "newTitle": "Neue Transaktion",
+        "editTitle": "Transaktion bearbeiten",
+        "direction": "Richtung",
+        "amount": "Betrag",
+        "amountRequired": "Gib einen Betrag größer als 0 ein.",
+        "date": "Datum",
+        "dateRequired": "Wähle ein Datum.",
+        "description": "Beschreibung",
+        "descriptionPlaceholder": "z. B. BILLA Lebensmittel",
+        "descriptionRequired": "Gib eine Beschreibung ein.",
+        "category": "Kategorie",
+        "saveError": "Transaktion konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
+    },
+    "categories": {
+      "subtitle": "Ordne deine Ausgaben und Einnahmen in Kategorien.",
+      "new": "Neue Kategorie",
+      "loadError": "Kategorien konnten nicht geladen werden.",
+      "deleteError": "Kategorie konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "dialog": {
+        "newTitle": "Neue Kategorie",
+        "editTitle": "Kategorie bearbeiten",
+        "name": "Name",
+        "namePlaceholder": "z. B. Lebensmittel",
+        "nameRequired": "Gib einen Namen ein.",
+        "nameTaken": "Du hast bereits eine Kategorie mit diesem Namen.",
+        "direction": "Richtung",
+        "color": "Farbe",
+        "saveError": "Kategorie konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
+    }
+  },
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workboard",
     "forecast": "Prognose",
+    "expenses": "Ausgaben",
     "assets": "Anlagen",
     "social": "Sozial",
     "primary": "Primär",

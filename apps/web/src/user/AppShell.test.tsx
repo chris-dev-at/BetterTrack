@@ -66,16 +66,17 @@ beforeEach(() => {
 
 // ─── Top nav ──────────────────────────────────────────────────────────────────
 
-test('the primary nav shows exactly the five section tabs — no sixth item', async () => {
+test('the primary nav shows exactly the six section tabs — no seventh item', async () => {
   renderAt('/portfolio');
 
   const nav = await screen.findByRole('navigation', { name: 'Primary' });
   const labels = within(nav)
     .getAllByRole('link')
     .map((el) => el.textContent);
-  // V5-P6b adds a single new nav entry — Forecast — between Workboard and
-  // Assets (anti-bloat: exactly one new item, no other nav additions).
-  expect(labels).toEqual(['Portfolio', 'Workboard', 'Forecast', 'Assets', 'Social']);
+  // V5-P6b added Forecast (between Workboard and Assets); V5-P9 adds Expenses as
+  // its own top-level area, after Forecast (anti-bloat: one nav entry per new
+  // product area, nothing else).
+  expect(labels).toEqual(['Portfolio', 'Workboard', 'Forecast', 'Expenses', 'Assets', 'Social']);
 
   // The V1 shell tabs that were removed must not reappear in the primary nav.
   for (const gone of ['Dashboard', 'Search', 'Conglomerates', 'Settings']) {

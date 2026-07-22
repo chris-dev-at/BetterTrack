@@ -189,6 +189,26 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   mirror_rows: skipped(
     'Logical↔local identity map + per-row attribution for a copy — derivable bookkeeping that dies with the copy (portfolio_id cascade), not separate user data.',
   ),
+  // V5-P9 expense tracking: a NEW top-level area, strictly separate from
+  // portfolio money. The categories/transactions/rules/budgets are user-owned
+  // config + data whose own export coverage lands with a later export sweep
+  // (mirrors standing_orders / item_comments / friend_groups); the per-period
+  // fired-marker is internal exactly-once alert bookkeeping, not user data.
+  expense_categories: skipped(
+    'Expense categories (V5-P9, a new area separate from portfolio money); user-owned config, export coverage lands with a later export sweep.',
+  ),
+  expense_transactions: skipped(
+    'Expense transactions (V5-P9); user-owned spend/income data separate from portfolio, export coverage lands with a later export sweep.',
+  ),
+  expense_rules: skipped(
+    'Expense auto-categorization rules (V5-P9); user-owned config, export coverage lands with a later export sweep.',
+  ),
+  expense_budgets: skipped(
+    'Expense per-category budgets (V5-P9); user-owned config, export coverage lands with a later export sweep.',
+  ),
+  expense_budget_fires: skipped(
+    'Expense budget per-period fired-marker (V5-P9) — internal exactly-once alert bookkeeping, not user data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */

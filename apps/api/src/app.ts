@@ -31,6 +31,7 @@ import { createAuthRouter } from './http/routes/authRoutes';
 import { createBacktestRouter } from './http/routes/backtestRoutes';
 import { createChatRouter } from './http/routes/chatRoutes';
 import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
+import { createExpensesRouter } from './http/routes/expensesRoutes';
 import { createIdeasRouter } from './http/routes/ideasRoutes';
 import { createImportsRouter } from './http/routes/importsRoutes';
 import { createCustomAssetsRouter } from './http/routes/customAssetsRoutes';
@@ -158,6 +159,9 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
   app.use('/api/v1/ideas', createIdeasRouter(ctx));
+  // Expense tracking (§13.5 V5-P9): a NEW top-level area, strictly separate from
+  // portfolio money — session-only CRUD, no bearer scope mapped.
+  app.use('/api/v1/expenses', createExpensesRouter(ctx));
   // Runtime kill-switches (§13.5 V5-P2 arc (c)): `requireFeature` refuses the
   // whole router (clean 404) the moment an admin flips the flag OFF — evaluated
   // per request, no redeploy.

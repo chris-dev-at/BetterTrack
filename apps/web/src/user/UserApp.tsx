@@ -19,6 +19,9 @@ import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { ForecastPage } from './forecast/ForecastPage';
+import { ExpensesLayout } from './expenses/ExpensesSection';
+import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
+import { CategoriesPage as ExpenseCategoriesPage } from './expenses/CategoriesPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
 import { CashSourcesPage } from './portfolio/CashSourcesPage';
@@ -169,6 +172,13 @@ function UserShell() {
 
           {/* ── Forecast (§13.5 V5-P6b arc (c)) ── */}
           <Route path="forecast" element={<ForecastPage />} />
+
+          {/* ── Expenses (§13.5 V5-P9) — a NEW top-level area, separate from
+              portfolio money. Foundation: transactions + category manager. ── */}
+          <Route path="expenses" element={<ExpensesLayout />}>
+            <Route index element={<ExpenseTransactionsPage />} />
+            <Route path="categories" element={<ExpenseCategoriesPage />} />
+          </Route>
 
           {/* ── Assets ── */}
           <Route path="assets" element={<AssetsLayout />}>
