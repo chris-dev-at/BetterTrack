@@ -2,7 +2,11 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { aiCapabilityResponseSchema, aiSettingsResponseSchema } from '@bettertrack/contracts';
+import {
+  aiCapabilityResponseSchema,
+  aiSettingsResponseSchema,
+  aiTestRequestResponseSchema,
+} from '@bettertrack/contracts';
 
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -147,5 +151,121 @@ describe('admin AI settings (§13.5 V5-P12)', () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(false);
     expect(res.body.models).toEqual([]);
+  });
+});
+
+describe('admin AI test request (§13.5 V5-P12)', () => {
+  /** A canned local provider: records the URLs it is asked to reach + one chat reply. */
+  function cannedAiFetch(content: string) {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const impl = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      calls.push({
+        url: String(input),
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+      });
+      return new Response(JSON.stringify({ message: { role: 'assistant', content } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    return { impl, calls };
+  }
+
+  it('404s an anonymous caller (no leak)', async () => {
+    const harness = await createTestApp();
+    const res = await request(harness.app)
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({ prompt: 'Reply with one word: ready' });
+    expect(res.status).toBe(404);
+  });
+
+  it('404s a signed-in non-admin user', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const agent = await loginUser(harness.app, user.email, user.password);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({ prompt: 'Reply with one word: ready' });
+    expect(res.status).toBe(404);
+  });
+
+  it('renders the model reply + latency for an unsaved candidate, spending no cap', async () => {
+    const { impl, calls } = cannedAiFetch('  ready  ');
+    const harness = await createTestApp({ aiFetch: impl });
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({
+        endpoint: 'http://ollama.test:11434',
+        model: 'qwen2.5:14b',
+        prompt: 'Reply with one word: ready',
+      });
+    expect(res.status).toBe(200);
+    const body = aiTestRequestResponseSchema.parse(res.body);
+    expect(body).toMatchObject({ ok: true, model: 'qwen2.5:14b', reply: 'ready', error: null });
+    expect(body.latencyMs).toBeGreaterThanOrEqual(0);
+
+    // The candidate was reached (and only it) — nothing was saved.
+    expect(calls.map((c) => c.url)).toEqual(['http://ollama.test:11434/api/chat']);
+    expect((calls[0]?.body as { model: string }).model).toBe('qwen2.5:14b');
+    const settings = aiSettingsResponseSchema.parse(
+      (await agent.get('/api/v1/admin/ai/settings')).body,
+    );
+    expect(settings.configured).toBe(false);
+
+    // The diagnostic burns nobody's daily budget.
+    const user = await harness.seedUser();
+    const userAgent = await loginUser(harness.app, user.email, user.password);
+    expect((await userAgent.get('/api/v1/ai/capability')).body.used).toBe(0);
+  });
+
+  it('fails soft against an unreachable endpoint', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      // A refused local port ⇒ deterministic, network-free failure.
+      .send({ endpoint: 'http://127.0.0.1:1', model: 'llama3.1:8b', prompt: 'ping' });
+    expect(res.status).toBe(200);
+    const body = aiTestRequestResponseSchema.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.reply).toBeNull();
+    expect(body.error).toBeTruthy();
+  });
+
+  it('fails soft when nothing is configured and no candidate is given', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({ prompt: 'ping' });
+    expect(res.status).toBe(200);
+    expect(aiTestRequestResponseSchema.parse(res.body)).toEqual({
+      ok: false,
+      model: null,
+      reply: null,
+      latencyMs: 0,
+      error: 'no endpoint',
+    });
+  });
+
+  it('rejects an empty prompt with a 400', async () => {
+    const harness = await createTestApp();
+    const admin = await harness.seedAdmin();
+    const agent = await harness.loginAdmin(admin);
+    const res = await agent
+      .post('/api/v1/admin/ai/test-request')
+      .set(...XRW)
+      .send({ prompt: '   ' });
+    expect(res.status).toBe(400);
   });
 });

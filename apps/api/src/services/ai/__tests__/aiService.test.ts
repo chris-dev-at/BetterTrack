@@ -311,6 +311,98 @@ describe('AI test-connection', () => {
   });
 });
 
+describe('AI test request — the admin round-trip diagnostic', () => {
+  it('returns the model reply + a latency reading from a candidate endpoint/model', async () => {
+    const { service, fetch } = makeService();
+    const result = await service.testRequest({
+      endpoint: ENDPOINT,
+      model: 'qwen2.5:14b',
+      prompt: 'Reply with one word: ready',
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      model: 'qwen2.5:14b',
+      reply: 'Hello there.',
+      error: null,
+    });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+    // The unsaved candidate is what was reached — nothing was persisted.
+    const chat = fetch.calls.find((c) => c.url.endsWith('/api/chat'));
+    expect(chat?.url).toBe(`${ENDPOINT}/api/chat`);
+    expect((chat?.body as { model: string }).model).toBe('qwen2.5:14b');
+    expect((await service.getSettings()).configured).toBe(false);
+  });
+
+  it('spends NO daily cap unit (a diagnostic must never eat a user budget)', async () => {
+    const { service } = makeService({
+      aiDefaults: { endpoint: ENDPOINT, model: 'llama3.1:8b', dailyCap: 1 },
+    });
+    await service.testRequest({ prompt: 'ping' });
+    await service.testRequest({ prompt: 'ping' });
+    expect((await service.capability('user-1')).used).toBe(0);
+    // …and the user's single allowance is still there to spend.
+    await expect(service.complete('user-1', { prompt: 'a' })).resolves.toMatchObject({
+      provider: 'ollama',
+    });
+  });
+
+  it('falls back to the stored endpoint/model when no candidate is given', async () => {
+    const { service, fetch } = makeService({
+      aiDefaults: { endpoint: ENDPOINT, model: 'llama3.1:8b', dailyCap: 20 },
+    });
+    expect(await service.testRequest({ prompt: 'ping' })).toMatchObject({
+      ok: true,
+      model: 'llama3.1:8b',
+    });
+    expect(fetch.calls.at(-1)?.url).toBe(`${ENDPOINT}/api/chat`);
+  });
+
+  it('fails soft with the reason when the model errors', async () => {
+    const { service } = makeService({
+      aiDefaults: { endpoint: ENDPOINT, model: 'llama3.1:8b', dailyCap: 20 },
+      chatStatus: 404,
+    });
+    const result = await service.testRequest({ prompt: 'ping' });
+    expect(result).toMatchObject({
+      ok: false,
+      model: 'llama3.1:8b',
+      reply: null,
+      error: 'http 404',
+    });
+  });
+
+  it('fails soft with no endpoint (and never fetches)', async () => {
+    const { service, fetch } = makeService();
+    expect(await service.testRequest({ prompt: 'ping' })).toEqual({
+      ok: false,
+      model: null,
+      reply: null,
+      latencyMs: 0,
+      error: 'no endpoint',
+    });
+    expect(fetch.calls).toHaveLength(0);
+  });
+
+  it('fails soft with an endpoint but no model (and never fetches)', async () => {
+    const { service, fetch } = makeService();
+    expect(await service.testRequest({ endpoint: ENDPOINT, prompt: 'ping' })).toMatchObject({
+      ok: false,
+      model: null,
+      error: 'no model',
+    });
+    expect(fetch.calls).toHaveLength(0);
+  });
+
+  it('never reaches any host but the given endpoint (local-only)', async () => {
+    const { service, fetch } = makeService();
+    await service.testRequest({ endpoint: ENDPOINT, model: 'llama3.1:8b', prompt: 'ping' });
+    expect(fetch.calls.length).toBeGreaterThan(0);
+    for (const call of fetch.calls) {
+      expect(call.url.startsWith(`${ENDPOINT}/`)).toBe(true);
+    }
+  });
+});
+
 describe('Ollama adapter — health fails soft', () => {
   it('returns ok:false rather than throwing when the endpoint errors', async () => {
     const provider = createOllamaProvider({

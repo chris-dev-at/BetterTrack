@@ -3267,7 +3267,17 @@
       "saveError": "Could not save the AI settings.",
       "testOkModels": "Endpoint reachable — {{count}} model(s) found.",
       "testOkNoModels": "Endpoint reachable, but no models are installed yet.",
-      "testFailed": "Endpoint not reachable."
+      "testFailed": "Endpoint not reachable.",
+      "testRequestTitle": "Test request",
+      "testRequestHint": "Sends a real prompt to the endpoint and model above — unsaved values included — so you can check the full round trip and how long it takes before saving. Diagnostic only: it never counts towards anyone's daily limit.",
+      "testRequestPromptLabel": "Prompt",
+      "testRequestPromptHint": "Keep it short. A large model can need 10–60 s on hardware where a small one answers in about a second.",
+      "testRequestButton": "Send test request",
+      "testRequestSending": "Sending…",
+      "testRequestWait": "Waiting for the model — this can take up to a minute.",
+      "testRequestOk": "{{model}} replied in {{latencyMs}} ms.",
+      "testRequestFailed": "No reply after {{latencyMs}} ms.",
+      "testRequestError": "Could not send the test request."
     },
     "security": {
       "title": "Security",

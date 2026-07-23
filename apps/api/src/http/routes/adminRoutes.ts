@@ -6,6 +6,8 @@ import {
   aiSettingsResponseSchema,
   aiTestConnectionRequestSchema,
   aiTestConnectionResponseSchema,
+  aiTestRequestSchema,
+  aiTestRequestResponseSchema,
   updateAiSettingsRequestSchema,
   auditQuerySchema,
   bulkUserActionRequestSchema,
@@ -31,6 +33,7 @@ import {
   type CreateAnnouncementRequest,
   type UpdateAccountDefaultsRequest,
   type AiTestConnectionRequest,
+  type AiTestRequest,
   type UpdateAiSettingsRequest,
   type CreateInviteRequest,
   type CreateOAuthClientRequest,
@@ -327,7 +330,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // routes (the endpoint is a URL, never a token) and there is no cloud provider.
   // Writes are audit-logged in the service and take effect on the next request
   // (the registry resolves the active config live — no redeploy). test-connection
-  // probes an endpoint and lists the models it serves (the model picker).
+  // probes an endpoint and lists the models it serves (the model picker);
+  // test-request goes one step further and actually generates, so the round trip
+  // (endpoint + model + generation) and its latency are provable from the panel.
+  // Both are read-only diagnostics against a candidate config: neither is
+  // audit-logged, and test-request never spends a user's daily cap.
   router.get('/ai/settings', async (_req, res) => {
     res.json(aiSettingsResponseSchema.parse(await ctx.ai.getSettings()));
   });
@@ -349,6 +356,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       res.json(aiTestConnectionResponseSchema.parse(result));
     },
   );
+
+  router.post('/ai/test-request', validateBody(aiTestRequestSchema), async (req, res) => {
+    const result = await ctx.ai.testRequest(req.valid?.body as AiTestRequest);
+    res.json(aiTestRequestResponseSchema.parse(result));
+  });
 
   router.get('/email/status', async (_req, res) => {
     res.json(ctx.admin.emailStatus());

@@ -93,6 +93,57 @@ test('saves the endpoint / model / cap and reflects "Configured"', async () => {
   await waitFor(() => expect(screen.getByText('Configured')).toBeInTheDocument());
 });
 
+test('sends a test request against the unsaved candidate and renders the reply + latency', async () => {
+  vi.mocked(api.getAiSettings).mockResolvedValue(unconfigured);
+  vi.mocked(api.sendAiTestRequest).mockResolvedValue({
+    ok: true,
+    model: 'qwen2.5:14b',
+    reply: 'ready',
+    latencyMs: 1234,
+    error: null,
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByLabelText('Ollama endpoint')).toBeInTheDocument());
+  await userEvent.type(screen.getByLabelText('Ollama endpoint'), 'http://ollama.local:11434');
+  await userEvent.type(screen.getByLabelText('Model'), 'qwen2.5:14b');
+  await userEvent.click(screen.getByRole('button', { name: 'Send test request' }));
+
+  // The candidate values in the form are what get probed — no save in between.
+  expect(api.sendAiTestRequest).toHaveBeenCalledWith({
+    endpoint: 'http://ollama.local:11434',
+    model: 'qwen2.5:14b',
+    prompt: 'Reply with one word: ready',
+  });
+  await waitFor(() =>
+    expect(screen.getByText('qwen2.5:14b replied in 1234 ms.')).toBeInTheDocument(),
+  );
+  expect(screen.getByText('ready')).toBeInTheDocument();
+});
+
+test('renders the failure reason and the elapsed time when the model does not answer', async () => {
+  vi.mocked(api.getAiSettings).mockResolvedValue({
+    ...unconfigured,
+    endpoint: 'http://ollama.local:11434',
+    model: 'llama3.1:8b',
+    configured: true,
+  });
+  vi.mocked(api.sendAiTestRequest).mockResolvedValue({
+    ok: false,
+    model: 'llama3.1:8b',
+    reply: null,
+    latencyMs: 60000,
+    error: 'timeout',
+  });
+  renderPage();
+
+  await waitFor(() => expect(screen.getByLabelText('Ollama endpoint')).toBeInTheDocument());
+  await userEvent.click(screen.getByRole('button', { name: 'Send test request' }));
+
+  await waitFor(() => expect(screen.getByText(/No reply after 60000 ms/)).toBeInTheDocument());
+  expect(screen.getByText('(timeout)')).toBeInTheDocument();
+});
+
 test('test-connection lists the models the endpoint serves', async () => {
   vi.mocked(api.getAiSettings).mockResolvedValue({
     ...unconfigured,

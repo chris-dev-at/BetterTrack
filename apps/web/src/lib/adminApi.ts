@@ -32,6 +32,7 @@ import {
   monitoringStatusResponseSchema,
   aiSettingsResponseSchema,
   aiTestConnectionResponseSchema,
+  aiTestRequestResponseSchema,
   usageAnalyticsResponseSchema,
   createRegistrationTokenResponseSchema,
   registrationRequestListResponseSchema,
@@ -77,6 +78,8 @@ import {
   type AiSettingsResponse,
   type AiTestConnectionRequest,
   type AiTestConnectionResponse,
+  type AiTestRequest,
+  type AiTestRequestResponse,
   type UpdateAiSettingsRequest,
   type UsageAnalyticsResponse,
   type LoginRequest,
@@ -416,6 +419,12 @@ export async function testAiConnection(
 ): Promise<AiTestConnectionResponse> {
   const data = await apiRequest<unknown>('/admin/ai/test-connection', { method: 'POST', body });
   return aiTestConnectionResponseSchema.parse(data);
+}
+
+/** Generate against a candidate endpoint/model and return the reply + latency. */
+export async function sendAiTestRequest(body: AiTestRequest): Promise<AiTestRequestResponse> {
+  const data = await apiRequest<unknown>('/admin/ai/test-request', { method: 'POST', body });
+  return aiTestRequestResponseSchema.parse(data);
 }
 
 // --- Admin: global settings -----------------------------------------------

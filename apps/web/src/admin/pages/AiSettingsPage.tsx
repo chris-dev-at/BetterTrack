@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 
-import { AI_DAILY_CAP_MAX, AI_DAILY_CAP_MIN } from '@bettertrack/contracts';
-import type { AiSettingsResponse, AiTestConnectionResponse } from '@bettertrack/contracts';
+import {
+  AI_DAILY_CAP_MAX,
+  AI_DAILY_CAP_MIN,
+  AI_TEST_REQUEST_DEFAULT_PROMPT,
+} from '@bettertrack/contracts';
+import type {
+  AiSettingsResponse,
+  AiTestConnectionResponse,
+  AiTestRequestResponse,
+} from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
@@ -15,7 +23,10 @@ import { Alert, Badge, Button, PageHeader, Spinner, TextField } from '../compone
  * a model name, and a per-user daily cap. There is NO cloud provider, NO API
  * token, and no secret input anywhere — by design. A test-connection probe lists
  * the models the endpoint serves (autocomplete for the model field), and a save
- * takes effect on the next request with no redeploy.
+ * takes effect on the next request with no redeploy. A separate test request
+ * actually generates against the candidate endpoint/model and renders the reply
+ * with its round-trip latency — the number that decides whether a given model is
+ * usable on this hardware. It is a diagnostic and spends no user's daily cap.
  */
 
 interface FormState {
@@ -41,6 +52,9 @@ export function AiSettingsPage() {
   const [settings, setSettings] = useState<AiSettingsResponse | null>(null);
   const [testResult, setTestResult] = useState<AiTestConnectionResponse | null>(null);
   const [testing, setTesting] = useState(false);
+  const [prompt, setPrompt] = useState(AI_TEST_REQUEST_DEFAULT_PROMPT);
+  const [promptResult, setPromptResult] = useState<AiTestRequestResponse | null>(null);
+  const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -79,6 +93,28 @@ export function AiSettingsPage() {
       setTesting(false);
     }
   }, [form, t]);
+
+  const sendTestRequest = useCallback(async () => {
+    if (!form || prompt.trim() === '') return;
+    setSending(true);
+    setActionError(null);
+    setPromptResult(null);
+    try {
+      // Same candidate semantics as the connection probe: whatever sits in the
+      // form right now, saved or not, so a model can be trialled before saving.
+      setPromptResult(
+        await api.sendAiTestRequest({
+          endpoint: form.endpoint.trim() === '' ? undefined : form.endpoint.trim(),
+          model: form.model.trim() === '' ? undefined : form.model.trim(),
+          prompt: prompt.trim(),
+        }),
+      );
+    } catch {
+      setActionError(t('admin.ai.testRequestError'));
+    } finally {
+      setSending(false);
+    }
+  }, [form, prompt, t]);
 
   const save = useCallback(async () => {
     if (!form || !capValid) return;
@@ -211,6 +247,58 @@ export function AiSettingsPage() {
                   {t('admin.ai.testFailed')}
                   {testResult.error ? (
                     <span className="ml-1 font-mono text-xs">({testResult.error})</span>
+                  ) : null}
+                </Alert>
+              )
+            ) : null}
+          </div>
+
+          {/* Real generation against the candidate endpoint/model */}
+          <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <div className="flex flex-col gap-1">
+              <h2 className="text-sm font-semibold text-neutral-200">
+                {t('admin.ai.testRequestTitle')}
+              </h2>
+              <p className="text-xs text-neutral-500">{t('admin.ai.testRequestHint')}</p>
+            </div>
+
+            <TextField
+              label={t('admin.ai.testRequestPromptLabel')}
+              hint={t('admin.ai.testRequestPromptHint')}
+              name="ai-test-prompt"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="secondary"
+                disabled={sending || prompt.trim() === ''}
+                onClick={sendTestRequest}
+              >
+                {sending ? t('admin.ai.testRequestSending') : t('admin.ai.testRequestButton')}
+              </Button>
+              {sending ? (
+                <span className="text-xs text-neutral-500">{t('admin.ai.testRequestWait')}</span>
+              ) : null}
+            </div>
+
+            {promptResult ? (
+              promptResult.ok ? (
+                <Alert tone="success">
+                  {t('admin.ai.testRequestOk', {
+                    model: promptResult.model ?? '',
+                    latencyMs: promptResult.latencyMs,
+                  })}
+                  <span className="mt-1 block whitespace-pre-wrap font-mono text-xs text-emerald-300/80">
+                    {promptResult.reply}
+                  </span>
+                </Alert>
+              ) : (
+                <Alert tone="error">
+                  {t('admin.ai.testRequestFailed', { latencyMs: promptResult.latencyMs })}
+                  {promptResult.error ? (
+                    <span className="ml-1 font-mono text-xs">({promptResult.error})</span>
                   ) : null}
                 </Alert>
               )
