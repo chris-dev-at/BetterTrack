@@ -94,6 +94,42 @@ export const aiTestConnectionResponseSchema = z
   .strict();
 export type AiTestConnectionResponse = z.infer<typeof aiTestConnectionResponseSchema>;
 
+/** The prompt the admin diagnostic starts from — short, so any model answers fast. */
+export const AI_TEST_REQUEST_DEFAULT_PROMPT = 'Reply with one word: ready';
+
+/**
+ * `POST /admin/ai/test-request` — send a REAL prompt to an endpoint/model and get
+ * the generated reply back. Where test-connection only proves reachability, this
+ * proves the whole round trip (endpoint + model + generation) and reports how long
+ * it took, which is the number that decides whether a model is usable on the host.
+ * Omit `endpoint`/`model` to use the stored/effective ones; pass candidates to
+ * trial them before saving. A diagnostic only: it never spends a user's daily cap.
+ */
+export const aiTestRequestSchema = z
+  .object({
+    endpoint: endpointField.optional(),
+    model: modelField.optional(),
+    prompt: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export type AiTestRequest = z.infer<typeof aiTestRequestSchema>;
+
+export const aiTestRequestResponseSchema = z
+  .object({
+    /** Whether the model generated a reply. */
+    ok: z.boolean(),
+    /** The model that answered (candidate else effective); null when none resolved. */
+    model: z.string().nullable(),
+    /** The model's reply text; null on failure. */
+    reply: z.string().nullable(),
+    /** Round-trip time of the generation call in ms (0 when nothing was sent). */
+    latencyMs: z.number().int().nonnegative(),
+    /** Short, non-sensitive failure detail (e.g. `timeout`, `http 404`); null on success. */
+    error: z.string().nullable(),
+  })
+  .strict();
+export type AiTestRequestResponse = z.infer<typeof aiTestRequestResponseSchema>;
+
 /**
  * `GET /ai/capability` — the user-facing availability + remaining daily budget.
  * `available` is false whenever no provider is configured (or the `ai` feature

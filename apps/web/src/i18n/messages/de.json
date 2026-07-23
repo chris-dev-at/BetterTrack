@@ -3267,7 +3267,17 @@
       "saveError": "Die KI-Einstellungen konnten nicht gespeichert werden.",
       "testOkModels": "Endpunkt erreichbar — {{count}} Modell(e) gefunden.",
       "testOkNoModels": "Endpunkt erreichbar, aber es sind noch keine Modelle installiert.",
-      "testFailed": "Endpunkt nicht erreichbar."
+      "testFailed": "Endpunkt nicht erreichbar.",
+      "testRequestTitle": "Testanfrage",
+      "testRequestHint": "Schickt einen echten Prompt an den Endpunkt und das Modell von oben — auch ungespeicherte Werte —, sodass du den kompletten Durchlauf und seine Dauer schon vor dem Speichern prüfen kannst. Nur zur Diagnose: zählt nie auf das Tageslimit.",
+      "testRequestPromptLabel": "Prompt",
+      "testRequestPromptHint": "Halte ihn kurz. Ein großes Modell kann 10–60 s brauchen, wo ein kleines auf derselben Hardware in etwa einer Sekunde antwortet.",
+      "testRequestButton": "Testanfrage senden",
+      "testRequestSending": "Wird gesendet…",
+      "testRequestWait": "Warte auf das Modell — das kann bis zu einer Minute dauern.",
+      "testRequestOk": "{{model}} hat in {{latencyMs}} ms geantwortet.",
+      "testRequestFailed": "Keine Antwort nach {{latencyMs}} ms.",
+      "testRequestError": "Die Testanfrage konnte nicht gesendet werden."
     },
     "security": {
       "title": "Sicherheit",

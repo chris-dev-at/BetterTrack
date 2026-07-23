@@ -133,6 +133,8 @@ const componentSchemas = {
   UpdateAiSettingsRequest: contracts.updateAiSettingsRequestSchema,
   AiTestConnectionRequest: contracts.aiTestConnectionRequestSchema,
   AiTestConnectionResponse: contracts.aiTestConnectionResponseSchema,
+  AiTestRequest: contracts.aiTestRequestSchema,
+  AiTestRequestResponse: contracts.aiTestRequestResponseSchema,
   AiCapabilityResponse: contracts.aiCapabilityResponseSchema,
   // User-facing AI features (§13.5 V5-P12 2/2 — insights + NL conglomerate builder)
   AiInsightsRequest: contracts.aiInsightsRequestSchema,
@@ -1379,6 +1381,16 @@ const endpoints: EndpointDef[] = [
     body: R.AiTestConnectionRequest,
     status: 200,
     response: R.AiTestConnectionResponse,
+  },
+  {
+    method: 'post',
+    path: '/admin/ai/test-request',
+    tag: 'Admin',
+    summary:
+      'Send a real prompt to an Ollama endpoint/model and return the reply + round-trip latency (diagnostic; no daily cap spend).',
+    body: R.AiTestRequest,
+    status: 200,
+    response: R.AiTestRequestResponse,
   },
   // User-facing AI capability (§13.5 V5-P12): availability + remaining daily cap.
   {

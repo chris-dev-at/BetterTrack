@@ -2,6 +2,8 @@ import type {
   AiCapabilityResponse,
   AiSettingsResponse,
   AiTestConnectionResponse,
+  AiTestRequest,
+  AiTestRequestResponse,
   UpdateAiSettingsRequest,
 } from '@bettertrack/contracts';
 
@@ -56,6 +58,21 @@ export interface AiService {
   ): Promise<AiSettingsResponse>;
   /** Admin: probe an endpoint (candidate or stored) and list its models. */
   testConnection(endpoint?: string): Promise<AiTestConnectionResponse>;
+  /**
+   * Admin: send a real prompt to an endpoint/model and return the generated reply
+   * plus its round-trip latency. A diagnostic — it deliberately does NOT go
+   * through {@link AiService.complete}, so it never spends a user's daily cap.
+   */
+  testRequest(input: AiTestRequest): Promise<AiTestRequestResponse>;
+}
+
+/** Short, non-sensitive detail for a failed diagnostic (mirrors the health probe). */
+function errorDetail(err: unknown): string {
+  if (err instanceof Error) {
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') return 'timeout';
+    return err.message || err.name || 'error';
+  }
+  return 'error';
 }
 
 export function createAiService(deps: AiServiceDeps): AiService {
@@ -154,5 +171,40 @@ export function createAiService(deps: AiServiceDeps): AiService {
     return { ok: result.ok, models: result.models, error: result.error };
   }
 
-  return { capability, complete, getSettings, updateSettings, testConnection };
+  async function testRequest(input: AiTestRequest): Promise<AiTestRequestResponse> {
+    const settings = await appSettings.getAiSettings();
+    const endpoint = input.endpoint ?? settings.endpoint;
+    const model = input.model ?? settings.model;
+    if (!endpoint)
+      return { ok: false, model: null, reply: null, latencyMs: 0, error: 'no endpoint' };
+    if (!model) return { ok: false, model: null, reply: null, latencyMs: 0, error: 'no model' };
+
+    // Straight to the candidate provider — no cap consumption and no feature-flag
+    // gate: this is the admin's way to verify a model (or trial an unsaved one)
+    // and it must never eat into anybody's daily budget. Failures come back as a
+    // soft result, like the health probe, so the page can render the reason.
+    const provider = registry.resolveFor(endpoint, model);
+    const startedAt = Date.now();
+    try {
+      const result = await provider.complete({ prompt: input.prompt });
+      return {
+        ok: true,
+        model: result.model,
+        reply: result.text,
+        latencyMs: Date.now() - startedAt,
+        error: null,
+      };
+    } catch (err) {
+      logger.warn({ err, endpoint }, 'ai test request failed');
+      return {
+        ok: false,
+        model,
+        reply: null,
+        latencyMs: Date.now() - startedAt,
+        error: errorDetail(err),
+      };
+    }
+  }
+
+  return { capability, complete, getSettings, updateSettings, testConnection, testRequest };
 }
