@@ -14,6 +14,7 @@ import { readFile, writeFile, readdir, stat, rename, mkdir, appendFile } from 'n
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { buildUsageAnalytics, parseUsageRange } from './usage-analytics.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MF_DIR = resolve(__dirname, '..');
@@ -360,8 +361,14 @@ const MODELS_FILE = join(CONTROL, 'models.json');
 const DIFFS = ['easy', 'normal', 'intermediate', 'hard', 'max'];
 const PROVIDER_EFFORTS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['low', 'medium', 'high', 'xhigh'],
+  codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   gemini: [], // effort is baked into the agy model name, e.g. "Gemini 3.1 Pro (High)"
+};
+// Confirmed from the installed Codex 0.145.0 model catalog on 2026-07-24.
+const CODEX_MODEL_EFFORTS = {
+  'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
 };
 const MODEL_DEFAULTS = {
   version: 1,
@@ -380,7 +387,10 @@ const validEntry = (e) =>
   typeof e.model === 'string' &&
   e.model.trim().length > 0 &&
   e.model.length <= 120 &&
-  (!e.effort || PROVIDER_EFFORTS[e.provider].includes(e.effort));
+  (!e.effort ||
+    (e.provider === 'codex' && CODEX_MODEL_EFFORTS[e.model]
+      ? CODEX_MODEL_EFFORTS[e.model].includes(e.effort)
+      : PROVIDER_EFFORTS[e.provider].includes(e.effort)));
 async function readModels() {
   const raw = (await readJson(MODELS_FILE)) || {};
   const out = { version: 1, difficulties: {}, roles: { ...MODEL_DEFAULTS.roles } };
@@ -523,9 +533,16 @@ async function evalTriggers() {
 setInterval(evalTriggers, 15000);
 
 // ---- usage analytics (ledger aggregations for the Usage tab) --------------------------
-let analyticsCache = { at: 0, data: null };
-async function usageAnalytics() {
-  if (Date.now() - analyticsCache.at < 60000 && analyticsCache.data) return analyticsCache.data;
+const analyticsCache = new Map();
+async function usageAnalytics(options = {}) {
+  const codexRange = parseUsageRange(options.codexRange ?? 14);
+  const codexModel =
+    typeof options.codexModel === 'string' && options.codexModel.length <= 120
+      ? options.codexModel
+      : 'all';
+  const cacheKey = `${codexRange ?? 'all'}|${codexModel}`;
+  const cached = analyticsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < 60000) return cached.data;
   let rows = [];
   try {
     rows = (await readFile(LEDGER, 'utf8'))
@@ -542,60 +559,11 @@ async function usageAnalytics() {
   } catch {
     /* no ledger yet */
   }
-  const r2 = (v) => Math.round(v * 100) / 100;
-  const today = new Date().toISOString().slice(0, 10);
-  const days = [];
-  for (let i = 13; i >= 0; i--)
-    days.push(new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
-  const byDay = Object.fromEntries(days.map((d) => [d, { multi: 0, single: 0 }]));
-  const byModel = {};
-  const byRole = {};
-  const byIssue = {};
-  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  let total = 0;
-  for (const r of rows) {
-    const c = r.cost_usd || 0;
-    total += c;
-    const d = (r.ts || '').slice(0, 10);
-    if (byDay[d]) byDay[d][r.factory === 'multi' ? 'multi' : 'single'] += c;
-    const model = (r.model || '?').replace('claude-', '').replace(/-[0-9-]+$/, '');
-    byModel[model] = (byModel[model] || 0) + c;
-    byRole[r.role || '?'] = (byRole[r.role || '?'] || 0) + c;
-    byIssue[r.issue || '-'] = (byIssue[r.issue || '-'] || 0) + c;
-    tokens.input += r.input_tokens || 0;
-    tokens.output += r.output_tokens || 0;
-    tokens.cacheRead += r.cache_read_tokens || 0;
-    tokens.cacheWrite += r.cache_creation_tokens || 0;
-  }
-  const issues = Object.keys(byIssue).filter((k) => k !== '-');
-  const data = {
-    days: days.map((d) => ({ date: d, multi: r2(byDay[d].multi), single: r2(byDay[d].single) })),
-    byModel: Object.entries(byModel)
-      .map(([k, v]) => ({ k, v: r2(v) }))
-      .sort((a, b) => b.v - a.v),
-    byRole: Object.entries(byRole)
-      .map(([k, v]) => ({ k, v: r2(v) }))
-      .sort((a, b) => b.v - a.v),
-    topIssues: Object.entries(byIssue)
-      .map(([k, v]) => ({ k: k === '-' ? 'planning' : k, v: r2(v) }))
-      .sort((a, b) => b.v - a.v)
-      .slice(0, 12),
-    tokens,
-    totals: {
-      cost: r2(total),
-      records: rows.length,
-      issues: issues.length,
-      avgPerIssue: issues.length
-        ? r2(issues.reduce((a, k) => a + byIssue[k], 0) / issues.length)
-        : 0,
-      today: r2(
-        rows
-          .filter((r) => (r.ts || '').startsWith(today))
-          .reduce((a, r) => a + (r.cost_usd || 0), 0),
-      ),
-    },
-  };
-  analyticsCache = { at: Date.now(), data };
+  const data = buildUsageAnalytics(rows, {
+    codexRange: codexRange ?? 'all',
+    codexModel,
+  });
+  analyticsCache.set(cacheKey, { at: Date.now(), data });
   return data;
 }
 
@@ -753,13 +721,28 @@ async function doAction(action, payload = {}) {
       return { ok: true, message: 'model routing saved — applies from the next agent run' };
     }
     case 'test-provider': {
-      // One tiny prompt through the HOST CLI — the same auth the containers get.
+      // Probe the selected route, not a hard-coded cheap model. Autorun syncs
+      // these host credentials into the containers.
       const p = String(payload.provider || '');
+      const routes = await readModels();
+      const selected =
+        DIFFS.map((d) => routes.difficulties[d]).find((e) => e.provider === p) ||
+        (p === 'claude'
+          ? { model: 'claude-sonnet-5', effort: 'high' }
+          : p === 'codex'
+            ? { model: 'gpt-5.6-terra', effort: 'medium' }
+            : { model: 'Gemini 3.5 Flash (Low)' });
       let r;
       if (p === 'claude')
         r = await run(
           'claude',
-          ['-p', 'Reply with exactly: ok', '--model', 'claude-haiku-4-5', '--effort', 'low'],
+          [
+            '-p',
+            'Reply with exactly: ok',
+            '--model',
+            selected.model,
+            ...(selected.effort ? ['--effort', selected.effort] : []),
+          ],
           { timeout: 90000, cwd: MF_DIR },
         );
       else if (p === 'codex')
@@ -768,14 +751,15 @@ async function doAction(action, payload = {}) {
           [
             'exec',
             '--skip-git-repo-check',
+            '--ephemeral',
+            '--json',
             '-s',
             'read-only',
             '-C',
             MF_DIR,
             '-m',
-            'gpt-5.4-mini',
-            '-c',
-            'model_reasoning_effort=low',
+            selected.model,
+            ...(selected.effort ? ['-c', `model_reasoning_effort=${selected.effort}`] : []),
             'Reply with exactly: ok',
           ],
           { timeout: 90000 },
@@ -783,14 +767,35 @@ async function doAction(action, payload = {}) {
       else if (p === 'gemini')
         r = await run(
           'agy',
-          ['-p', 'Reply with exactly: ok', '--model', 'Gemini 3.5 Flash (Low)'],
+          ['-p', 'Reply with exactly: ok', '--model', selected.model],
           { timeout: 120000, cwd: MF_DIR },
         );
       else return { ok: false, message: 'unknown provider' };
-      await clog(`test-provider ${p} → ${r.ok ? 'ok' : 'FAILED'}`);
+      if (p === 'codex' && r.ok) {
+        const events = r.stdout
+          .split('\n')
+          .map((line) => {
+            try {
+              return JSON.parse(line);
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        r.ok =
+          events.some((e) => e.type === 'turn.completed') &&
+          !events.some((e) => e.type === 'error' || /\.failed$|\.cancelled$/.test(e.type || ''));
+        if (!r.ok) r.stderr = 'Codex stream had no clean turn.completed event';
+      }
+      await clog(
+        `test-provider ${p} ${selected.model}${selected.effort ? '@' + selected.effort : ''} → ${r.ok ? 'ok' : 'FAILED'}`,
+      );
       const last = (r.stdout || '').trim().split('\n').filter(Boolean).pop() || '';
       return r.ok
-        ? { ok: true, message: `${p} works — replied: ${last.slice(0, 60)}` }
+        ? {
+            ok: true,
+            message: `${p} works via ${selected.model}${selected.effort ? '@' + selected.effort : ''}${p === 'codex' ? '' : ` — replied: ${last.slice(0, 40)}`}`,
+          }
         : {
             ok: false,
             message: `${p} test failed: ${(r.stderr || r.err || 'no output').slice(0, 160)}`,
@@ -913,7 +918,14 @@ const server = createServer(async (req, res) => {
       res.end(readFileSync(join(__dirname, 'index.html')));
     } else if (req.method === 'GET' && url.pathname === '/api/usage') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(await usageAnalytics()));
+      res.end(
+        JSON.stringify(
+          await usageAnalytics({
+            codexRange: url.searchParams.get('range') || '14',
+            codexModel: url.searchParams.get('model') || 'all',
+          }),
+        ),
+      );
     } else if (req.method === 'GET' && url.pathname === '/api/state') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(await snapshot()));
