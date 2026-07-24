@@ -4885,8 +4885,11 @@
           .join('');
         const composerDifficulty = s.models?.roles?.composer || 'hard';
         const composerRoute = routeForDifficulty(s.models, composerDifficulty);
+        const composerElapsed = p.masterActivity?.updated_at
+          ? tago(p.masterActivity.updated_at).replace(/ ago$/, '') + ' elapsed'
+          : 'elapsed time pending';
         $('flowcols').innerHTML =
-          `<div class="fcol"><div class="fnode${activity === 'composing' ? ' pulse' : ''}" id="fn-composer"><b>🧠 Composer</b><span class="sub" title="${esc(routeCaption(composerRoute))}">${activity === 'composing' ? 'planning issues…' : esc(routeCaption(composerRoute))}</span></div></div>` +
+          `<div class="fcol"><div class="fnode${activity === 'composing' ? ' pulse' : ''}" id="fn-composer"><b>🧠 Composer</b><span class="sub" title="${esc(routeCaption(composerRoute))}">${activity === 'composing' ? `planning · ${esc(composerElapsed)}` : esc(routeCaption(composerRoute))}</span></div></div>` +
           `<div class="fcol"><div class="fnode" id="fn-sched"><b>🗂 Scheduler</b><span class="sub">${(s.github?.issues || []).length} open · deterministic</span></div></div>` +
           `<div class="fcol" id="fn-workers">${wnodes}</div>` +
           `<div class="fcol"><div class="fnode" id="fn-queue"><b>📥 Merge queue</b><div class="fq">${queue.map((q) => `<span class="qi">PR #${q.pr} ← #${q.issue}</span>`).join('') || '<span class="sub">empty</span>'}</div></div></div>` +
