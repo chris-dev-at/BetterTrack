@@ -149,6 +149,68 @@ describe('CashSourcesPage', () => {
     expect(within(main).getByText('83,33 %')).toBeInTheDocument();
   });
 
+  test('attributes a chain cash source without changing non-chain source rows (V5-P7 M5)', async () => {
+    const CHAINED = source({
+      id: 'src-chain',
+      name: 'Chain',
+      type: 'bank',
+      balanceEur: 100,
+      mirror: {
+        mirrorId: '00000000-0000-0000-0000-0000000000e0',
+        version: 41,
+        addedBy: {
+          userId: '00000000-0000-0000-0000-0000000000a1',
+          username: 'alice',
+          profileIcon: null,
+        },
+      },
+    });
+    vi.mocked(portfolioApi.listCashSources).mockResolvedValue({
+      sources: [MAIN, BANK, CHAINED],
+    });
+
+    renderPage();
+    await screen.findByText('Chain');
+
+    expect(within(rowFor('Chain')).getByTitle('Added by alice')).toBeInTheDocument();
+    expect(within(rowFor('Bank')).queryByTitle(/^Added by /)).not.toBeInTheDocument();
+  });
+
+  test('attributes a chain cash movement without changing non-chain movement rows (V5-P7 M5)', async () => {
+    const CHAINED_DEPOSIT = movement({
+      id: 'm-chain',
+      kind: 'deposit',
+      amountEur: 125,
+      sourceId: 'src-bank',
+      executedAt: '2024-04-04T00:00:00.000Z',
+      mirror: {
+        mirrorId: '00000000-0000-0000-0000-0000000000e0',
+        version: 43,
+        addedBy: {
+          userId: null,
+          username: 'group member',
+          profileIcon: null,
+        },
+      },
+    });
+    vi.mocked(portfolioApi.getCashMovements).mockResolvedValue({
+      balanceEur: 6125,
+      movements: [CHAINED_DEPOSIT, DEPOSIT],
+      sources: [MAIN, BANK, SAVINGS],
+    });
+
+    renderPage();
+    await screen.findAllByText('Deposit');
+
+    const chainedRow = screen.getByText(/\+125,00\s*€/).closest('tr');
+    const nonChainRow = screen.getByText(/\+300,00\s*€/).closest('tr');
+    if (!chainedRow || !nonChainRow) throw new Error('cash movement row missing');
+
+    expect(within(chainedRow).getByTitle('Added by Group member')).toBeInTheDocument();
+    expect(within(chainedRow).getByText('Group member')).toBeInTheDocument();
+    expect(within(nonChainRow).queryByTitle(/^Added by /)).not.toBeInTheDocument();
+  });
+
   test('creates a named source', async () => {
     vi.mocked(portfolioApi.createCashSource).mockResolvedValue(
       source({ id: 'src-new', name: 'Broker', type: 'bank' }),

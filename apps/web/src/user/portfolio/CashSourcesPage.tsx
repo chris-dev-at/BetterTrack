@@ -21,6 +21,7 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitc
 import { activeSources, sortSourcesMainFirst } from './cashSourceUtils';
 import { CashDialog } from './CashDialog';
 import { CashSourceDialog } from './CashSourceDialog';
+import { MirrorAttributionChip } from './MirrorchainPanel';
 import { SetBalanceDialog } from './SetBalanceDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { TransferDialog } from './TransferDialog';
@@ -147,6 +148,7 @@ function SourceRow({
               {t('portfolio.cashSources.archivedBadge')}
             </span>
           ) : null}
+          {source.mirror ? <MirrorAttributionChip attribution={source.mirror.addedBy} /> : null}
         </div>
       </td>
       <td className="px-3 py-3 text-neutral-400">{typeLabel(t, source)}</td>
@@ -329,6 +331,7 @@ function HistorySection({
                     <span className="inline-flex flex-wrap items-center gap-1.5">
                       <span>{kindLabel(t, m.kind)}</span>
                       <SourceBadge source={m.source} />
+                      {m.mirror ? <MirrorAttributionChip attribution={m.mirror.addedBy} /> : null}
                     </span>
                     {m.counterpartSourceId ? (
                       <span className="ml-1 text-neutral-500">
