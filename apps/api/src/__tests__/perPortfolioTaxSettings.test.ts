@@ -154,6 +154,23 @@ describe('Per-portfolio tax settings scoping (#636)', () => {
     });
   });
 
+  it('preserves an FI portfolio override when the user default is AT', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    await setUserDefault(agent, { mode: 'country_specific', country: 'AT' });
+
+    const put = await putOverride(agent, pid, { mode: 'country_specific', country: 'FI' });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+
+    expect(await getTaxView(agent, pid)).toEqual({
+      effective: { mode: 'country_specific', country: 'FI' },
+      override: { mode: 'country_specific', country: 'FI' },
+      userDefault: { mode: 'country_specific', country: 'AT' },
+      source: 'portfolio',
+    });
+  });
+
   it('overrides are isolated per portfolio — one portfolio overriding never moves another', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
