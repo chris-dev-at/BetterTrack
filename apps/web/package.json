@@ -12,8 +12,9 @@
   },
   "dependencies": {
     "@bettertrack/contracts": "workspace:*",
-    "@simplewebauthn/browser": "^13.3.0",
+    "@bettertrack/domain": "workspace:*",
     "@sentry/react": "^10.65.0",
+    "@simplewebauthn/browser": "^13.3.0",
     "@tanstack/react-query": "^5.101.1",
     "lightweight-charts": "^5.2.0",
     "qrcode.react": "^4.2.0",

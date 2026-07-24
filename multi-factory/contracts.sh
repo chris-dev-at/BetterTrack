@@ -129,7 +129,7 @@ mf_manifest_validate(){ # $1=manifest $2=before JSON $3=after JSON $4=run $5=exp
 
   local lines new_ids
   lines=$(sed '/^[[:space:]]*$/d' "$manifest")
-  new_ids=$(mf_new_issue_numbers "$before" "$after")
+  new_ids=$(mf_new_issue_numbers "$before" "$after") || return 1
   if [ "$lines" = NONE ]; then
     [ -z "$new_ids" ] || return 1
     MF_MANIFEST_KIND=none
@@ -279,7 +279,29 @@ mf_issue_json_by_number(){ # $1=issue number; direct reads avoid list eventual c
 }
 
 mf_new_issue_numbers(){ # $1=before JSON $2=after JSON
-  jq -r --argjson before "$1" '
-    .[] | .number as $n | select(($before | map(.number) | index($n)) == null) | .number
-  ' <<<"$2" 2>/dev/null | sort -un
+  local before=$1 after=$2 before_file after_file numbers_file
+  before_file=$(mktemp "${TMPDIR:-/tmp}/mf-issues-before.XXXXXX") || return 1
+  after_file=$(mktemp "${TMPDIR:-/tmp}/mf-issues-after.XXXXXX") || {
+    rm -f -- "$before_file"
+    return 1
+  }
+  numbers_file=$(mktemp "${TMPDIR:-/tmp}/mf-issue-numbers.XXXXXX") || {
+    rm -f -- "$before_file" "$after_file"
+    return 1
+  }
+  (
+    trap 'rm -f -- "$before_file" "$after_file" "$numbers_file"' EXIT HUP INT TERM
+    printf '%s\n' "$before" >"$before_file" || exit 1
+    printf '%s\n' "$after" >"$after_file" || exit 1
+    jq -e 'type == "array"' "$before_file" >/dev/null 2>&1 || exit 1
+    jq -e 'type == "array"' "$after_file" >/dev/null 2>&1 || exit 1
+    jq -nr --slurpfile before "$before_file" --slurpfile after "$after_file" '
+      ($before[0] | map(.number)) as $before_numbers
+      | $after[0][]
+      | .number as $n
+      | select($before_numbers | index($n) == null)
+      | $n
+    ' >"$numbers_file" 2>/dev/null || exit 1
+    sort -un "$numbers_file"
+  )
 }

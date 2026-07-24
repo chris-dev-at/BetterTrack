@@ -229,6 +229,17 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   api_key_request_log: skipped(
     'API-key request-log audit trail (V5-P10) — a bounded, retention-pruned operational record, not user data.',
   ),
+  // V5-P13 paranoid mode (docs/paranoid-design.md §2/§12): the server `blob`
+  // medium of a client-encrypted vault. Opaque ciphertext + CAS/version metadata
+  // ONLY — never cleartext portfolio data, never key material. Export of the
+  // current ciphertext blob (only when the media set includes `server`) rides
+  // the PD3 export interplay (§12), not this collector.
+  paranoid_vaults: skipped(
+    'Paranoid-vault ciphertext (V5-P13) — an opaque encrypted blob + CAS/version metadata, never cleartext; ciphertext export lands with the PD3 export interplay (§12).',
+  ),
+  paranoid_vault_history: skipped(
+    'Paranoid-vault bounded ciphertext history (V5-P13) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -251,3 +262,151 @@ export function schemaTableNames(): string[] {
     .map((t) => getTableName(t))
     .sort();
 }
+
+/**
+ * Paranoid-mode data-home axis (§13.5 V5-P13 arc b, `docs/paranoid-design.md`
+ * §1) — a SECOND binding classification alongside {@link EXPORT_TABLE_CLASSIFICATION},
+ * in the same file and style, decided **mechanically per table**: does the row
+ * contain portfolio/money content?
+ *
+ *  - `vault` — client-only, client-encrypted. Hard-deleted server-side (for the
+ *    owning user) when paranoid mode is enabled and never rebuilt there; the
+ *    enable-time purge sweep, the zero-cleartext probe test and disable
+ *    rehydration all iterate this set (PD3). Some `vault` tables (`assets`,
+ *    `price_history`) are SHARED with the global market catalog — the purge/probe
+ *    are scoped to the owner's own rows exactly like the export collector, but
+ *    the TABLE is classified `vault` because it holds the user's portfolio data.
+ *  - `server` — kept unchanged (identity/auth, friends + chat, private
+ *    watchlists/conglomerates/ideas, price alerts, notifications, and the vault
+ *    ciphertext rows themselves).
+ *
+ * The completeness test enforces the SAME "every table classified, CI fails
+ * otherwise" contract as the export axis — so a future table cannot silently
+ * leak: adding it to the schema forces the author to classify it, and
+ * classifying it `vault` automatically enrolls it in purge + probe + rehydration.
+ * That is the rule that keeps the "zero portfolio rows server-side" guarantee
+ * durable as the schema grows.
+ */
+export type ParanoidClassification = 'vault' | 'server';
+
+export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassification> = {
+  // ── vault: portfolio / money content (client-encrypted, purged at enable) ──
+  portfolios: 'vault',
+  transactions: 'vault',
+  dividends: 'vault',
+  portfolio_cash_sources: 'vault',
+  portfolio_cash_movements: 'vault',
+  portfolio_settings: 'vault',
+  user_tax_settings: 'vault',
+  // Shared with the global catalog — purge/probe scope to owner_id rows (the
+  // user's house/car/unlisted-stock ARE portfolio data, §1).
+  assets: 'vault',
+  price_history: 'vault',
+  standing_orders: 'vault',
+  // Per-(order, period) exactly-once ledger for a vault standing order — dies
+  // with it; server-side standing-order execution is killed for paranoid (§8).
+  standing_order_runs: 'vault',
+  import_batches: 'vault',
+  import_rows: 'vault',
+  // Derived series cache — purged, recomputed client-side, never rebuilt
+  // server-side (§1, §10).
+  portfolio_daily_snapshots: 'vault',
+  portfolio_snapshot_state: 'vault',
+  // V5-P9 expense tables — a portfolio-adjacent money area, vault-classified so
+  // a paranoid account leaks none of it (§1, binding forward).
+  expense_categories: 'vault',
+  expense_transactions: 'vault',
+  expense_rules: 'vault',
+  expense_budgets: 'vault',
+  expense_budget_fires: 'vault',
+
+  // ── server: identity + auth (kept, unchanged) ──────────────────────────────
+  users: 'server',
+  api_keys: 'server',
+  api_key_tiers: 'server',
+  api_key_request_log: 'server',
+  external_identities: 'server',
+  oauth_clients: 'server',
+  oauth_grants: 'server',
+  oauth_auth_codes: 'server',
+  oauth_access_tokens: 'server',
+  oauth_refresh_tokens: 'server',
+  invites: 'server',
+  registration_tokens: 'server',
+  registration_requests: 'server',
+  password_reset_tokens: 'server',
+  two_factor_recovery_codes: 'server',
+  passkeys: 'server',
+  device_tokens: 'server',
+  push_subscriptions: 'server',
+
+  // ── server: operational / global records (kept) ────────────────────────────
+  audit_log: 'server',
+  email_log: 'server',
+  problems: 'server',
+  usage_events: 'server',
+  usage_daily: 'server',
+  app_settings: 'server',
+  idempotency_keys: 'server',
+  export_jobs: 'server',
+  announcements: 'server',
+  announcement_dismissals: 'server',
+
+  // ── server: kept product surfaces (no portfolio content, §8 "kept" list) ───
+  // Private watchlists/conglomerates/ideas/backtest configs (hypothetical
+  // baskets — interest, not holdings; only their SHARING dies, §8).
+  watchlists: 'server',
+  workboard_items: 'server',
+  conglomerates: 'server',
+  conglomerate_positions: 'server',
+  share_links: 'server',
+  ideas: 'server',
+  // Price alerts stay ordinary server rows — asset-price predicates with zero
+  // portfolio reference (§9).
+  alerts: 'server',
+  notifications: 'server',
+  notification_settings: 'server',
+  notification_cadences: 'server',
+  notification_digest_queue: 'server',
+  // Friendships + chat REMAIN — they carry no portfolio data (§8, §16).
+  friend_requests: 'server',
+  friendships: 'server',
+  friend_groups: 'server',
+  friend_group_members: 'server',
+  user_follows: 'server',
+  item_follows: 'server',
+  share_audiences: 'server',
+  share_audience_members: 'server',
+  share_audience_links: 'server',
+  shared_item_activity_prefs: 'server',
+  item_comments: 'server',
+  item_reactions: 'server',
+  chat_conversations: 'server',
+  chat_messages: 'server',
+  telegram_links: 'server',
+  discord_webhooks: 'server',
+  // MIRRORCHAIN link/attribution tables — mutually exclusive with paranoid, so
+  // empty for these accounts anyway (§7 precondition, §8 item 5); a member's
+  // actual copy is real portfolios/transactions (vault-classified above).
+  mirror_chains: 'server',
+  mirror_chain_members: 'server',
+  mirror_chain_invites: 'server',
+  mirror_chain_ops: 'server',
+  mirror_rows: 'server',
+  // Outbound webhooks — never fire portfolio-content events for paranoid
+  // accounts (none exist server-side to fire, §8 item 8).
+  webhook_subscriptions: 'server',
+  webhook_deliveries: 'server',
+  // The vault ciphertext rows themselves — ciphertext + version metadata only,
+  // explicitly server-classified (§1).
+  paranoid_vaults: 'server',
+  paranoid_vault_history: 'server',
+};
+
+/** The `vault`-classified table names (purge/probe/rehydration iterate these). */
+export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
+  PARANOID_TABLE_CLASSIFICATION,
+)
+  .filter(([, c]) => c === 'vault')
+  .map(([table]) => table)
+  .sort();

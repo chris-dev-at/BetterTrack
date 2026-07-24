@@ -327,6 +327,363 @@ mf_manifest_validate "$T/stale-list-manifest" '[]' \
   && bad "direct reconciliation must not hide a delayed unmanifested issue" \
   || ok "full discovery window rejects a delayed unmanifested issue"
 
+echo "— composer discovery and manifest validation exceed Linux argv limits"
+LARGE_BEFORE_FILE=$T/large-before.json
+jq -n '
+  [range(1; 101) as $n | {
+    number: $n,
+    title: ("existing-" + ($n | tostring)),
+    body: ("x" * 12000),
+    labels: ["autopilot", "diff:normal"],
+    created_at: "before"
+  }]
+' >"$LARGE_BEFORE_FILE"
+LARGE_BEFORE_BYTES=$(wc -c <"$LARGE_BEFORE_FILE" | tr -d ' ')
+if [ "$LARGE_BEFORE_BYTES" -gt 1048576 ]; then
+  ok "large issue snapshot fixture exceeds 1 MiB"
+else
+  bad "large issue snapshot fixture must exceed 1 MiB (got $LARGE_BEFORE_BYTES bytes)"
+fi
+LARGE_BEFORE=$(<"$LARGE_BEFORE_FILE")
+LARGE_DIRECT=$(jq '.number=1201 | .title="direct-only"' <<<"$VALID")
+printf 'ISSUE 1201 autopilot\n' >"$T/large-manifest"
+mf_recent_issues_json(){ cat "$LARGE_BEFORE_FILE"; }
+mf_issue_json_by_number(){
+  [ "$1" = 1201 ] && printf '%s\n' "$LARGE_DIRECT"
+}
+LARGE_DISCOVERED=$(composer_discovery_after "$T/large-manifest")
+check "large collection merge keeps every existing issue plus the direct ID" 101 \
+  "$(jq 'length' <<<"$LARGE_DISCOVERED")"
+check "large direct-manifest reconciliation retains its issue" 1201 \
+  "$(jq -r 'map(select(.number == 1201)) | .[0].number' <<<"$LARGE_DISCOVERED")"
+LARGE_NEW_IDS=$(mf_new_issue_numbers "$LARGE_BEFORE" "$LARGE_DISCOVERED")
+check "large before/after comparison returns only the direct issue" 1201 \
+  "$(xargs <<<"$LARGE_NEW_IDS")"
+if mf_new_issue_numbers '{"not":"an array"}' "$LARGE_DISCOVERED" >/dev/null; then
+  bad "issue comparison must reject a non-array snapshot"
+else
+  ok "issue comparison rejects a non-array snapshot"
+fi
+mf_manifest_validate "$T/large-manifest" "$LARGE_BEFORE" \
+  "$LARGE_DISCOVERED" "$RUN" autopilot \
+  && ok "large snapshot manifest validates without snapshot-sized argv" \
+  || bad "large snapshot manifest should validate"
+
+echo "— failed composer discovery persistently fences scheduling and reconciles"
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests"
+rm -f "$CONTROL"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff} \
+  "$CONTROL/composer-quarantine" "$ASSIGN/worker-1.json"
+mkdir -p "$CONTROL/composer-manifests"
+printf 'run\n' >"$CONTROL/mode"
+printf '[]\n' >"$TICK_ISSUES"
+MF_PROMPTS=$(pwd)/prompts
+MF_COMPOSER_COOLDOWN=0
+MF_COMPOSER_PROTOCOL_ATTEMPTS=1
+DISCOVERY_BROKEN=1
+FENCE_MODEL_CALLS_FILE=$T/fence-model.calls
+FENCE_SCHEDULER_CALLS_FILE=$T/fence-scheduler.calls
+FENCE_ISSUE_FILE=$T/fence-issue.json
+FENCE_NOTIFICATIONS=$T/fence-notifications
+printf '0\n' >"$FENCE_MODEL_CALLS_FILE"
+printf '0\n' >"$FENCE_SCHEDULER_CALLS_FILE"
+: >"$FENCE_NOTIFICATIONS"
+runnable_issues(){ printf '686\n'; }
+mf_recent_issues_json(){
+  if [ -d "$CONTROL/composer-discovery-fence" ] \
+    && [ "$DISCOVERY_BROKEN" -eq 1 ]; then
+    return 1
+  fi
+  printf '[]\n'
+}
+mf_issue_json_by_number(){
+  [ "$1" = 901 ] && cat "$FENCE_ISSUE_FILE"
+}
+mf_cc(){
+  local calls run manifest body
+  calls=$(<"$FENCE_MODEL_CALLS_FILE")
+  printf '%s\n' "$((calls + 1))" >"$FENCE_MODEL_CALLS_FILE"
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' \
+    <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  body=$(printf '## Context\nquoted spec\n\n## Scope\nfiles\n\n## Acceptance criteria\n- [ ] works\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: apps/api/src/fenced.ts\n-->' "$run")
+  jq -cn --arg body "$body" \
+    '{number:901,title:"fenced",body:$body,
+      labels:["autopilot","diff:normal"],created_at:"now"}' >"$FENCE_ISSUE_FILE"
+  printf 'ISSUE 901 autopilot\n' >"$manifest"
+  return 0
+}
+role_diff(){ echo hard; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+process_acks(){ :; }
+stall_check(){ :; }
+scheduler(){
+  local calls
+  calls=$(<"$FENCE_SCHEDULER_CALLS_FILE")
+  printf '%s\n' "$((calls + 1))" >"$FENCE_SCHEDULER_CALLS_FILE"
+  printf '{"issue":686}\n' >"$ASSIGN/worker-1.json"
+}
+merger_step(){ :; }
+drained_check(){ :; }
+mstatus(){ :; }
+notify(){ printf '%s\n' "$*" >>"$FENCE_NOTIFICATIONS"; }
+
+tick
+check "initial discovery failure invokes the model exactly once" 1 \
+  "$(<"$FENCE_MODEL_CALLS_FILE")"
+check "initial discovery failure does not invoke the scheduler" 0 \
+  "$(<"$FENCE_SCHEDULER_CALLS_FILE")"
+check "initial discovery failure creates no assignment" 0 \
+  "$([ -e "$ASSIGN/worker-1.json" ] && echo 1 || echo 0)"
+check "initial discovery failure leaves a durable fence" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+grep -q -- 'scheduler fenced; automatic reconciliation will retry without replaying the model' \
+  "$FENCE_NOTIFICATIONS" \
+  && ok "discovery failure notification describes the durable scheduler fence" \
+  || bad "discovery failure notification must describe the durable scheduler fence"
+
+tick
+check "failed reconciliation never replays the model" 1 \
+  "$(<"$FENCE_MODEL_CALLS_FILE")"
+check "failed reconciliation keeps the scheduler blocked" 0 \
+  "$(<"$FENCE_SCHEDULER_CALLS_FILE")"
+check "failed reconciliation keeps the fence across ticks" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+
+DISCOVERY_BROKEN=0
+tick
+check "successful direct reconciliation still never replays the model" 1 \
+  "$(<"$FENCE_MODEL_CALLS_FILE")"
+check "scheduler runs only after the validated fence clears" 1 \
+  "$(<"$FENCE_SCHEDULER_CALLS_FILE")"
+check "scheduler assignment appears only after reconciliation" 1 \
+  "$([ -e "$ASSIGN/worker-1.json" ] && echo 1 || echo 0)"
+check "successful reconciliation clears the durable fence" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "valid directly reconciled issue is not dropped into quarantine" 0 \
+  "$(grep -qx 901 "$CONTROL/composer-quarantine" 2>/dev/null && echo 1 || echo 0)"
+
+# Restore production functions after the focused tick stubs.
+log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
+MF_SOURCE_ONLY=1 . ./master.sh
+rm -f "$ASSIGN/worker-1.json"
+
+echo "— composer fence commits outcome/protocol state before clearing"
+eval "$(declare -f composer_record_outcome \
+  | sed '1s/composer_record_outcome/composer_record_outcome_real/')"
+eval "$(declare -f composer_record_protocol_failure \
+  | sed '1s/composer_record_protocol_failure/composer_record_protocol_failure_real/')"
+OUTCOME_WRITE_FAIL=0
+PROTOCOL_WRITE_FAIL=0
+composer_record_outcome(){
+  [ "$OUTCOME_WRITE_FAIL" -eq 0 ] || return 1
+  composer_record_outcome_real "$@"
+}
+composer_record_protocol_failure(){
+  [ "$PROTOCOL_WRITE_FAIL" -eq 0 ] || return 1
+  composer_record_protocol_failure_real "$@"
+}
+composer_tx_reset(){
+  rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests" \
+    "$CONTROL/.composer-request-claim" "$CONTROL/composer-request-archive"
+  rm -f "$CONTROL"/.composer-{last,backoff,snapshot,protocol-last,protocol-backoff} \
+    "$CONTROL/composer-quarantine" "$CONTROL/composer-request.json" \
+    "$CONTROL/.composer-request-active.json"
+  mkdir -p "$CONTROL/composer-manifests"
+  printf 'run\n' >"$CONTROL/mode"
+  printf '[]\n' >"$TICK_ISSUES"
+  COMPOSER_REQUEST_LOADED=0
+  COMPOSER_REQUEST_ID=
+  COMPOSER_REQUEST_EXACT_COUNT=
+  COMPOSER_REQUEST_BRIEF=
+  COMPOSER_TX_CALLS=0
+  COMPOSER_TX_AFTER='[]'
+}
+MF_PROMPTS=$(pwd)/prompts
+MF_COMPOSER_COOLDOWN=0
+MF_COMPOSER_PROTOCOL_ATTEMPTS=1
+COMPOSER_TX_CASE=valid
+runnable_issues(){ :; }
+mf_recent_issues_json(){ printf '%s\n' "$COMPOSER_TX_AFTER"; }
+mf_issue_json_by_number(){ return 1; }
+mf_cc(){
+  local run manifest body
+  COMPOSER_TX_CALLS=$((COMPOSER_TX_CALLS + 1))
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' \
+    <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  case "$COMPOSER_TX_CASE" in
+    none)
+      printf 'NONE\n' >"$manifest"
+      COMPOSER_TX_AFTER='[]'
+      ;;
+    valid)
+      body=$(printf '## Context\nquoted\n\n## Scope\nvalid\n\n## Acceptance criteria\n- [ ] valid\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: valid\n-->' "$run")
+      printf 'ISSUE 911 autopilot\n' >"$manifest"
+      COMPOSER_TX_AFTER=$(jq -cn --arg body "$body" \
+        '[{number:911,title:"valid",body:$body,
+          labels:["autopilot","diff:normal"],created_at:"now"}]')
+      ;;
+    invalid)
+      body=$(printf '## Context\nquoted\n\n## Scope\ninvalid\n\n## Acceptance criteria\n- [ ] invalid\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: invalid\n-->' "$run")
+      printf 'ISSUE 913 autopilot\n' >"$manifest"
+      COMPOSER_TX_AFTER=$(jq -cn --arg body "$body" \
+        '[{number:913,title:"invalid",body:$body,
+          labels:["diff:normal"],created_at:"now"}]')
+      ;;
+  esac
+  return 0
+}
+role_diff(){ echo hard; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+
+composer_tx_reset
+COMPOSER_TX_CASE=valid
+OUTCOME_WRITE_FAIL=1
+TX_RC=0
+composer_step run || TX_RC=$?
+check "created outcome write failure is fail-closed" 2 "$TX_RC"
+check "created outcome write failure retains the fence" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "created outcome write failure invokes the model once" 1 "$COMPOSER_TX_CALLS"
+OUTCOME_WRITE_FAIL=0
+MF_MASTER_SESSION=tx-created-restart
+composer_step run
+check "created outcome restart reconciles without model replay" 1 "$COMPOSER_TX_CALLS"
+check "created outcome restart clears only after persistence" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "created outcome restart persists its cooldown" 1 \
+  "$([ -f "$CONTROL/.composer-last" ] && echo 1 || echo 0)"
+
+composer_tx_reset
+COMPOSER_TX_CASE=none
+OUTCOME_WRITE_FAIL=1
+TX_RC=0
+composer_step run || TX_RC=$?
+check "NONE outcome write failure is fail-closed" 2 "$TX_RC"
+check "NONE outcome write failure retains the fence" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+OUTCOME_WRITE_FAIL=0
+MF_MASTER_SESSION=tx-none-restart
+composer_step run
+check "NONE outcome restart reconciles without model replay" 1 "$COMPOSER_TX_CALLS"
+check "NONE outcome restart persists before clearing" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+
+composer_tx_reset
+COMPOSER_TX_CASE=invalid
+PROTOCOL_WRITE_FAIL=1
+TX_RC=0
+composer_step run || TX_RC=$?
+check "invalid artifact protocol write failure is fail-closed" 2 "$TX_RC"
+check "invalid artifact is quarantined before failed persistence" 913 \
+  "$(<"$CONTROL/composer-quarantine")"
+check "invalid artifact write failure retains the fence" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+PROTOCOL_WRITE_FAIL=0
+MF_MASTER_SESSION=tx-invalid-restart
+TX_RC=0
+composer_step run || TX_RC=$?
+check "invalid artifact restart finishes as a protocol failure" 1 "$TX_RC"
+check "invalid artifact restart never replays the model" 1 "$COMPOSER_TX_CALLS"
+check "invalid artifact restart persists protocol cooldown" 1 \
+  "$([ -f "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
+check "invalid artifact restart clears only after persistence" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+
+composer_tx_reset
+OUTCOME_WRITE_FAIL=0
+touch(){
+  [ "${1:-}" != "$CONTROL/.composer-last" ] || return 1
+  command touch "$@"
+}
+if composer_record_outcome created "touch-failure" 0; then
+  bad "composer outcome must fail when its cooldown timestamp cannot be touched"
+else
+  ok "composer outcome propagates cooldown timestamp failure"
+fi
+unset -f touch
+
+# Restore production state writers and orchestration functions.
+log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
+MF_SOURCE_ONLY=1 . ./master.sh
+
+echo "— inconsistent persisted composer fences fail closed"
+composer_corrupt_reset(){
+  rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests" \
+    "$CONTROL/.composer-request-claim" "$CONTROL/composer-request-archive"
+  rm -f "$CONTROL/composer-request.json" "$CONTROL/.composer-request-active.json"
+  mkdir -p "$CONTROL/composer-manifests"
+  CORRUPT_RUN=composer-corrupt-1
+  CORRUPT_MANIFEST="$CONTROL/composer-manifests/$CORRUPT_RUN"
+  printf 'NONE\n' >"$CORRUPT_MANIFEST"
+  COMPOSER_REQUEST_LOADED=0
+  composer_discovery_fence_begin '[]' "$CORRUPT_MANIFEST" \
+    "$CORRUPT_RUN" "snapshot" 0 0 1
+  composer_discovery_fence_set_transport 0
+}
+composer_corrupt_meta(){
+  local filter=$1 tmp
+  tmp=$(mktemp "$CONTROL/.corrupt-meta.XXXXXX")
+  jq "$filter" "$CONTROL/composer-discovery-fence/meta.json" >"$tmp" \
+    && mv -f "$tmp" "$CONTROL/composer-discovery-fence/meta.json"
+}
+
+composer_corrupt_reset
+composer_corrupt_meta '.exact_count = 2'
+if composer_discovery_fence_load; then
+  bad "empty owner id with a positive exact count must be rejected"
+else
+  ok "empty owner id with a positive exact count is rejected"
+fi
+CORRUPT_RC=0
+composer_step run || CORRUPT_RC=$?
+check "inconsistent exact-count fence keeps fail-closed return" 2 "$CORRUPT_RC"
+
+composer_corrupt_reset
+composer_corrupt_meta '.request_id = "owner-without-count"'
+if composer_discovery_fence_load; then
+  bad "owner id with zero exact count must be rejected"
+else
+  ok "owner id with zero exact count is rejected"
+fi
+
+composer_corrupt_reset
+mkdir -p "$CONTROL/.composer-request-claim"
+printf 'foreign-session\n' >"$CONTROL/.composer-request-claim/session"
+jq -cn '{version:1,approved:true,id:"owner-downgrade",exact_count:1,brief:"owner"}' \
+  >"$CONTROL/.composer-request-active.json"
+if composer_discovery_fence_load; then
+  bad "ordinary metadata must not downgrade coexisting active owner state"
+else
+  ok "ordinary metadata cannot downgrade coexisting active owner state"
+fi
+CORRUPT_SCHEDULER_CALLS=0
+fetch_issues(){ :; }
+process_acks(){ :; }
+stall_check(){ :; }
+scheduler(){ CORRUPT_SCHEDULER_CALLS=$((CORRUPT_SCHEDULER_CALLS + 1)); }
+merger_step(){ :; }
+drained_check(){ :; }
+mstatus(){ :; }
+tick
+check "corrupt owner-downgrade fence never reaches scheduler" 0 \
+  "$CORRUPT_SCHEDULER_CALLS"
+
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/.composer-request-active.json"
+log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
+MF_SOURCE_ONLY=1 . ./master.sh
+
 echo "— composer protocol backoff cadence"
 MF_PROMPTS=$(pwd)/prompts
 MF_COMPOSER_COOLDOWN=0
@@ -461,6 +818,203 @@ check "successful request archives exactly once" 1 \
   "$(find "$MFSTATE/control/composer-request-archive" -type f | wc -l | tr -d ' ')"
 check "archived request retains its id" exact-two \
   "$(jq -r .id "$MFSTATE"/control/composer-request-archive/*.json)"
+
+echo "— owner discovery fence survives a fresh session and archive crash window"
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/composer-request.json" "$CONTROL/.composer-request-active.json" \
+  "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff"
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  1 "$REQUEST_BRIEF" fresh-reconcile >/dev/null
+MF_MASTER_SESSION=owner-original-session
+OWNER_FENCE_CALLS=0
+OWNER_DISCOVERY_BROKEN=1
+AFTER_ISSUES='[]'
+mf_recent_issues_json(){
+  if [ -d "$CONTROL/composer-discovery-fence" ] \
+    && [ "$OWNER_DISCOVERY_BROKEN" -eq 1 ]; then
+    return 1
+  fi
+  printf '%s\n' "$AFTER_ISSUES"
+}
+mf_cc(){
+  local run manifest body
+  OWNER_FENCE_CALLS=$((OWNER_FENCE_CALLS + 1))
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' \
+    <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  body=$(printf '## Context\nowner brief\n\n## Scope\nfresh\n\n## Acceptance criteria\n- [ ] fresh\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: fresh\n-->' "$run")
+  printf 'ISSUE 814 autopilot\n' >"$manifest"
+  AFTER_ISSUES=$(jq -cn --arg body "$body" \
+    '[{number:814,title:"fresh",body:$body,
+      labels:["autopilot","diff:normal"],created_at:"now"}]')
+  return 0
+}
+runnable_issues(){ :; }
+OWNER_FENCE_RC=0
+composer_step run || OWNER_FENCE_RC=$?
+check "owner discovery failure is retained for reconciliation" 2 "$OWNER_FENCE_RC"
+check "owner discovery failure calls the model once" 1 "$OWNER_FENCE_CALLS"
+check "owner discovery failure preserves active request" fresh-reconcile \
+  "$(jq -r .id "$CONTROL/.composer-request-active.json")"
+
+eval "$(declare -f composer_discovery_fence_clear \
+  | sed '1s/composer_discovery_fence_clear/composer_discovery_fence_clear_real/')"
+RETAIN_OWNER_FENCE=1
+composer_discovery_fence_clear(){
+  [ "$RETAIN_OWNER_FENCE" -eq 0 ] || return 1
+  composer_discovery_fence_clear_real "$@"
+}
+MF_MASTER_SESSION=owner-fresh-session
+OWNER_DISCOVERY_BROKEN=0
+OWNER_FENCE_RC=0
+composer_step run || OWNER_FENCE_RC=$?
+check "fresh session reconciles and archives before retained-fence failure" 2 \
+  "$OWNER_FENCE_RC"
+check "fresh session archives owner request exactly once" 1 \
+  "$(find "$CONTROL/composer-request-archive" -type f \
+    -name 'fresh-reconcile-*' | wc -l | tr -d ' ')"
+check "post-archive crash window retains the discovery fence" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+
+RETAIN_OWNER_FENCE=0
+composer_step run
+check "already-archived remaining fence never replays the model" 1 \
+  "$OWNER_FENCE_CALLS"
+check "already-archived remaining fence does not archive twice" 1 \
+  "$(find "$CONTROL/composer-request-archive" -type f \
+    -name 'fresh-reconcile-*' | wc -l | tr -d ' ')"
+check "already-archived remaining fence clears idempotently" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+composer_discovery_fence_clear(){
+  composer_discovery_fence_clear_real "$@"
+}
+
+echo "— owner replay block writes fail closed and retain discovery"
+eval "$(declare -f atomic_write \
+  | sed '1s/atomic_write/atomic_write_before_block_fault/')"
+BLOCK_GUARD_WRITE_MODE=none
+atomic_write(){
+  if [ "$BLOCK_GUARD_WRITE_MODE" = both ] \
+    && { [ "$1" = "$CONTROL/.composer-request-claim/blocked" ] \
+      || [ "$1" = "$CONTROL/.composer-request-claim/session" ]; }; then
+    return 1
+  fi
+  if [ "$BLOCK_GUARD_WRITE_MODE" = blocked ] \
+    && [ "$1" = "$CONTROL/.composer-request-claim/blocked" ]; then
+    return 1
+  fi
+  atomic_write_before_block_fault "$@"
+}
+
+# The primitive itself must not report success when neither durable guard
+# changed. A session poison remains a valid fallback when only blocked fails.
+rm -rf "$CONTROL/.composer-request-claim"
+mkdir -p "$CONTROL/.composer-request-claim"
+MF_MASTER_SESSION=block-fault-direct
+printf '%s\n' "$MF_MASTER_SESSION" >"$CONTROL/.composer-request-claim/session"
+BLOCK_GUARD_WRITE_MODE=both
+BLOCK_MARK_RC=0
+composer_request_mark_blocked injected-write-failure || BLOCK_MARK_RC=$?
+check "block marker reports failure when both durable guards fail" 1 "$BLOCK_MARK_RC"
+check "failed block marker creates no blocked guard" 0 \
+  "$([ -f "$CONTROL/.composer-request-claim/blocked" ] && echo 1 || echo 0)"
+check "failed block marker leaves the replayable session unpoisoned" \
+  "$MF_MASTER_SESSION" "$(<"$CONTROL/.composer-request-claim/session")"
+
+rm -f "$CONTROL/.composer-request-claim/blocked" \
+  "$CONTROL/.composer-request-claim/alerted"
+printf '%s\n' "$MF_MASTER_SESSION" >"$CONTROL/.composer-request-claim/session"
+BLOCK_GUARD_WRITE_MODE=blocked
+BLOCK_MARK_RC=0
+composer_request_mark_blocked fallback-session-poison || BLOCK_MARK_RC=$?
+check "session poison is an accepted durable fallback" 0 "$BLOCK_MARK_RC"
+check "fallback poison makes the current session foreign" \
+  "blocked-$MF_MASTER_SESSION" "$(<"$CONTROL/.composer-request-claim/session")"
+
+# Exercise both orchestration callers. The final-invalid path must retain its
+# fence when both writes fail; same-session reconciliation must do the same.
+# Once writes recover after a restart, reconciliation blocks the request and
+# clears the fence without invoking the model again.
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests" \
+  "$CONTROL/.composer-request-claim" "$CONTROL/composer-request-archive"
+rm -f "$CONTROL/composer-request.json" "$CONTROL/.composer-request-active.json" \
+  "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff"
+mkdir -p "$CONTROL/composer-manifests"
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  1 "$REQUEST_BRIEF" block-write-restart >/dev/null
+MF_MASTER_SESSION=block-fault-owner
+COMPOSER_REQUEST_LOADED=0
+COMPOSER_REQUEST_ID=
+COMPOSER_REQUEST_EXACT_COUNT=
+COMPOSER_REQUEST_BRIEF=
+MF_COMPOSER_PROTOCOL_ATTEMPTS=1
+BLOCK_GUARD_WRITE_MODE=none
+BLOCK_GUARD_MODEL_CALLS=0
+AFTER_ISSUES='[]'
+runnable_issues(){ :; }
+mf_recent_issues_json(){ printf '%s\n' "$AFTER_ISSUES"; }
+mf_cc(){
+  local manifest
+  BLOCK_GUARD_MODEL_CALLS=$((BLOCK_GUARD_MODEL_CALLS + 1))
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  printf 'NONE\n' >"$manifest"
+  BLOCK_GUARD_WRITE_MODE=both
+  return 0
+}
+role_diff(){ echo max; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+
+BLOCK_DIRECT_RC=0
+composer_step run || BLOCK_DIRECT_RC=$?
+check "direct invalid path carries fail-closed rc when block writes fail" 2 "$BLOCK_DIRECT_RC"
+check "direct invalid path retains discovery fence on block-write failure" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "direct invalid path invokes the owner request once" 1 "$BLOCK_GUARD_MODEL_CALLS"
+check "direct invalid path did not claim a durable blocked guard" 0 \
+  "$([ -f "$CONTROL/.composer-request-claim/blocked" ] && echo 1 || echo 0)"
+check "direct invalid path did not poison the session after injected failures" \
+  "$MF_MASTER_SESSION" "$(<"$CONTROL/.composer-request-claim/session")"
+
+BLOCK_RECON_RC=0
+composer_step run || BLOCK_RECON_RC=$?
+check "same-session reconciliation carries fail-closed rc" 2 "$BLOCK_RECON_RC"
+check "reconciliation retains fence when block writes still fail" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "same-session reconciliation never replays the model" 1 "$BLOCK_GUARD_MODEL_CALLS"
+
+MF_MASTER_SESSION=block-fault-restart
+BLOCK_GUARD_WRITE_MODE=none
+BLOCK_RESTART_RC=0
+composer_step run || BLOCK_RESTART_RC=$?
+check "restart reconciliation keeps the owner request fail closed" 2 "$BLOCK_RESTART_RC"
+check "restart reconciliation clears fence only after durable blocking" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "restart reconciliation persists the blocked guard" \
+  discovery-reconciliation-invalid "$(<"$CONTROL/.composer-request-claim/blocked")"
+check "restart reconciliation does not replay the model" 1 "$BLOCK_GUARD_MODEL_CALLS"
+composer_step run || true
+check "blocked request remains non-replayable after fence cleanup" 1 "$BLOCK_GUARD_MODEL_CALLS"
+
+atomic_write(){
+  atomic_write_before_block_fault "$@"
+}
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/composer-request.json" "$CONTROL/.composer-request-active.json" \
+  "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff"
+COMPOSER_REQUEST_LOADED=0
+COMPOSER_REQUEST_ID=
+COMPOSER_REQUEST_EXACT_COUNT=
+COMPOSER_REQUEST_BRIEF=
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
 
 # Composition-disabled modes must never claim a brand-new ready request. run-out
 # can continue assigning ordinary queued issues; close-down cannot assign, but
