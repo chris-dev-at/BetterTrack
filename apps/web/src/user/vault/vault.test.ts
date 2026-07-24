@@ -63,8 +63,8 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function failingDeterministicRandom(failAtCall: number): RandomBytes {
-  const random = deterministicRandom();
+function failingDeterministicRandom(failAtCall: number, start = 0): RandomBytes {
+  const random = deterministicRandom(start);
   let calls = 0;
   return (length) => {
     calls += 1;
@@ -291,6 +291,33 @@ describe('BTVAULT1 envelope and content crypto', () => {
       ),
     ).rejects.toMatchObject({ code: 'authentication-failed' });
 
+    const wrongSecretKek = await deriveVaultKek(vector.wrongSecret.passphrase, vector.kdf);
+    expect(bytesToBase64(wrongSecretKek)).toBe(vector.wrongSecret.kekBase64);
+    await expect(
+      unwrapVaultKey(
+        vector.initial.header.wrappedKeys[0]!,
+        vector.initial.header.keyId,
+        wrongSecretKek,
+      ),
+    ).rejects.toMatchObject({ code: vector.wrongSecret.expectedErrorCode });
+    wrongSecretKek.fill(0);
+
+    const updateRequiredEnvelope = new Uint8Array(
+      Buffer.from(vector.updateRequired.envelopeBase64, 'base64'),
+    );
+    expect(bytesToBase64(updateRequiredEnvelope)).toBe(vector.updateRequired.envelopeBase64);
+    expect(bytesToBase64(decodeContractEnvelope(updateRequiredEnvelope).headerBytes)).toBe(
+      vector.updateRequired.headerBytesBase64,
+    );
+    expect(inspectVaultEnvelope(updateRequiredEnvelope)).toEqual({
+      status: vector.updateRequired.expectedStatus,
+      formatVersion: vector.updateRequired.formatVersion,
+      schemaVersion: vector.updateRequired.schemaVersion,
+    });
+    expect(() => decodeVaultEnvelope(updateRequiredEnvelope)).toThrow(
+      expect.objectContaining({ code: 'update-required' }),
+    );
+
     const passphraseChanged = await changeVaultPassphrase({
       envelope: initialEnvelope,
       oldPassphrase: vector.passphrase,
@@ -336,17 +363,31 @@ describe('BTVAULT1 envelope and content crypto', () => {
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
 
+    const rollback = vector.rollback;
+    expect(bytesToBase64(initialEnvelope)).toBe(rollback.expectedEnvelopeBase64);
+    expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
+      rollback.expectedHeaderBytesBase64,
+    );
+    expect(bytesToBase64(vaultKey)).toBe(rollback.expectedVaultKeyBase64);
+    expect(vector.initial.header.keyId).toBe(rollback.expectedKeyId);
+
     const passphraseChangeFailure = changeVaultPassphrase({
       envelope: initialEnvelope,
-      oldPassphrase: vector.passphrase,
-      newPassphrase: vector.newPassphrase,
-      metadata: vector.passphraseChanged.header,
-      randomBytes: failingDeterministicRandom(vector.rollback.passphraseChangeFailAtRandomCall),
+      oldPassphrase: rollback.passphraseChange.oldPassphrase,
+      newPassphrase: rollback.passphraseChange.newPassphrase!,
+      metadata: rollback.passphraseChange.metadata,
+      randomBytes: failingDeterministicRandom(
+        rollback.passphraseChange.failAtRandomCall,
+        rollback.passphraseChange.randomStart,
+      ),
     });
     await expect(passphraseChangeFailure).rejects.toThrow(
-      `Deterministic random failure at call ${vector.rollback.passphraseChangeFailAtRandomCall}.`,
+      rollback.passphraseChange.expectedErrorMessage,
     );
-    expect(bytesToBase64(initialEnvelope)).toBe(vector.rollback.expectedEnvelopeBase64);
+    expect(bytesToBase64(initialEnvelope)).toBe(rollback.expectedEnvelopeBase64);
+    expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
+      rollback.expectedHeaderBytesBase64,
+    );
     await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
       document: vaultVectorDocument,
       header: vector.initial.header,
@@ -354,15 +395,19 @@ describe('BTVAULT1 envelope and content crypto', () => {
 
     const rotationFailure = rotateVaultKey({
       envelope: initialEnvelope,
-      passphrase: vector.passphrase,
-      metadata: vector.rotated.header,
-      randomBytes: failingDeterministicRandom(vector.rollback.rotationFailAtRandomCall),
-      keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
+      passphrase: rollback.rotation.oldPassphrase,
+      metadata: rollback.rotation.metadata,
+      randomBytes: failingDeterministicRandom(
+        rollback.rotation.failAtRandomCall,
+        rollback.rotation.randomStart,
+      ),
+      keyIdGenerator: () => rollback.rotation.keyId,
     });
-    await expect(rotationFailure).rejects.toThrow(
-      `Deterministic random failure at call ${vector.rollback.rotationFailAtRandomCall}.`,
+    await expect(rotationFailure).rejects.toThrow(rollback.rotation.expectedErrorMessage);
+    expect(bytesToBase64(initialEnvelope)).toBe(rollback.expectedEnvelopeBase64);
+    expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
+      rollback.expectedHeaderBytesBase64,
     );
-    expect(bytesToBase64(initialEnvelope)).toBe(vector.rollback.expectedEnvelopeBase64);
     await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
       document: vaultVectorDocument,
       header: vector.initial.header,

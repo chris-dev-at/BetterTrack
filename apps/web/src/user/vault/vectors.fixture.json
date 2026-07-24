@@ -4,6 +4,18 @@
   "vaultKeyBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
   "kdf": { "alg": "argon2id", "m": 65536, "t": 3, "p": 1, "salt": "ICEiIyQlJicoKSorLC0uLw==" },
   "kekBase64": "nWG6TWCJ+9DULaeGfAsdSYM7chXJChXFWekUEAW1N2w=",
+  "wrongSecret": {
+    "passphrase": "wrong passphrase",
+    "kekBase64": "iIYU/0a78EnuM720CEEYQ6EOmf3ZUwks6V8bLbLSKfU=",
+    "expectedErrorCode": "authentication-failed"
+  },
+  "updateRequired": {
+    "formatVersion": 1,
+    "schemaVersion": 2,
+    "headerBytesBase64": "eyJrZXlJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYSIsIndyYXBwZWRLZXlzIjpbeyJrZXlJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYSIsImtkZiI6eyJhbGciOiJhcmdvbjJpZCIsIm0iOjY1NTM2LCJ0IjozLCJwIjoxLCJzYWx0IjoiSUNFaUl5UWxKaWNvS1NvckxDMHVMdz09In0sIndyYXBwZWRWayI6Ik1ERXlNelExTmpjNE9Ubzdvbk9QVlJEK0JvWVdGMm9MV2RyYktxWHFycmtrdWFlREROM2JNRmViSkc3SzBkYmgxYmY0Si9vOEUrYW1lWDV4In1dLCJ2YXVsdFZlcnNpb24iOjIsImRldmljZUlkIjoiMDE4ZjAwMDAtMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDBiIiwid3JpdGVJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwZCIsIndyaXR0ZW5BdCI6IjIwMjYtMDctMjRUMTA6MDA6MDAuMDAwWiIsImZvcm1hdFZlcnNpb24iOjEsInNjaGVtYVZlcnNpb24iOjIsImNpcGhlciI6IkEyNTZHQ00iLCJpdiI6IlBEMCtQMEJCUWtORVJVWkgiLCJmdXR1cmVTY2hlbWFGaWVsZCI6InYyIn0=",
+    "envelopeBase64": "QlRWQVVMVDEAAAIkeyJrZXlJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYSIsIndyYXBwZWRLZXlzIjpbeyJrZXlJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYSIsImtkZiI6eyJhbGciOiJhcmdvbjJpZCIsIm0iOjY1NTM2LCJ0IjozLCJwIjoxLCJzYWx0IjoiSUNFaUl5UWxKaWNvS1NvckxDMHVMdz09In0sIndyYXBwZWRWayI6Ik1ERXlNelExTmpjNE9Ubzdvbk9QVlJEK0JvWVdGMm9MV2RyYktxWHFycmtrdWFlREROM2JNRmViSkc3SzBkYmgxYmY0Si9vOEUrYW1lWDV4In1dLCJ2YXVsdFZlcnNpb24iOjIsImRldmljZUlkIjoiMDE4ZjAwMDAtMDAwMC03MDAwLTgwMDAtMDAwMDAwMDAwMDBiIiwid3JpdGVJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwZCIsIndyaXR0ZW5BdCI6IjIwMjYtMDctMjRUMTA6MDA6MDAuMDAwWiIsImZvcm1hdFZlcnNpb24iOjEsInNjaGVtYVZlcnNpb24iOjIsImNpcGhlciI6IkEyNTZHQ00iLCJpdiI6IlBEMCtQMEJCUWtORVJVWkgiLCJmdXR1cmVTY2hlbWFGaWVsZCI6InYyIn0AAAAAAAAAAAAAAAAAAAAA",
+    "expectedStatus": "update-required"
+  },
   "initial": {
     "header": {
       "keyId": "018f0000-0000-7000-8000-00000000000a",
@@ -95,8 +107,35 @@
     "priorVaultVersion": 1,
     "rejectedVaultVersion": 1,
     "nextVaultVersion": 2,
-    "passphraseChangeFailAtRandomCall": 3,
-    "rotationFailAtRandomCall": 4,
-    "expectedEnvelopeBase64": "QlRWQVVMVDEAAAILeyJmb3JtYXRWZXJzaW9uIjoxLCJjaXBoZXIiOiJBMjU2R0NNIiwiaXYiOiJQRDArUDBCQlFrTkVSVVpIIiwia2V5SWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGEiLCJ3cmFwcGVkS2V5cyI6W3sia2V5SWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGEiLCJrZGYiOnsiYWxnIjoiYXJnb24yaWQiLCJtIjo2NTUzNiwidCI6MywicCI6MSwic2FsdCI6IklDRWlJeVFsSmljb0tTb3JMQzB1THc9PSJ9LCJ3cmFwcGVkVmsiOiJNREV5TXpRMU5qYzRPVG83b25PUFZSRCtCb1lXRjJvTFdkcmJLcVhxcnJra3VhZURETjNiTUZlYkpHN0swZGJoMWJmNEovbzhFK2FtZVg1eCJ9XSwidmF1bHRWZXJzaW9uIjoxLCJzY2hlbWFWZXJzaW9uIjoxLCJkZXZpY2VJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYiIsIndyaXRlSWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGMiLCJ3cml0dGVuQXQiOiIyMDI2LTA3LTI0VDEwOjAwOjAwLjAwMFoiffqRePo2f8VLJk7WuZrCUZhMxTiBgnkw0k8LAE+MUjB1nF9KribgaL/vUG6RZ++me9Kx29jBPQ2NiWtyv9xrWehyrDwP2MGQrZ6xsttyAdUXKsBRvxOk44r8+nwvLZzLJhzSYLf0lidthJVjnZumj6qC2sAnCXN9URzY6eRIdA9Xjv1ozTGbI4D3+Kofrk6F1Ukhq4U7zRvNibXFmwePYXJMWSHb5VdmPa97wKhPLa2/"
+    "expectedEnvelopeBase64": "QlRWQVVMVDEAAAILeyJmb3JtYXRWZXJzaW9uIjoxLCJjaXBoZXIiOiJBMjU2R0NNIiwiaXYiOiJQRDArUDBCQlFrTkVSVVpIIiwia2V5SWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGEiLCJ3cmFwcGVkS2V5cyI6W3sia2V5SWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGEiLCJrZGYiOnsiYWxnIjoiYXJnb24yaWQiLCJtIjo2NTUzNiwidCI6MywicCI6MSwic2FsdCI6IklDRWlJeVFsSmljb0tTb3JMQzB1THc9PSJ9LCJ3cmFwcGVkVmsiOiJNREV5TXpRMU5qYzRPVG83b25PUFZSRCtCb1lXRjJvTFdkcmJLcVhxcnJra3VhZURETjNiTUZlYkpHN0swZGJoMWJmNEovbzhFK2FtZVg1eCJ9XSwidmF1bHRWZXJzaW9uIjoxLCJzY2hlbWFWZXJzaW9uIjoxLCJkZXZpY2VJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYiIsIndyaXRlSWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGMiLCJ3cml0dGVuQXQiOiIyMDI2LTA3LTI0VDEwOjAwOjAwLjAwMFoiffqRePo2f8VLJk7WuZrCUZhMxTiBgnkw0k8LAE+MUjB1nF9KribgaL/vUG6RZ++me9Kx29jBPQ2NiWtyv9xrWehyrDwP2MGQrZ6xsttyAdUXKsBRvxOk44r8+nwvLZzLJhzSYLf0lidthJVjnZumj6qC2sAnCXN9URzY6eRIdA9Xjv1ozTGbI4D3+Kofrk6F1Ukhq4U7zRvNibXFmwePYXJMWSHb5VdmPa97wKhPLa2/",
+    "expectedHeaderBytesBase64": "eyJmb3JtYXRWZXJzaW9uIjoxLCJjaXBoZXIiOiJBMjU2R0NNIiwiaXYiOiJQRDArUDBCQlFrTkVSVVpIIiwia2V5SWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGEiLCJ3cmFwcGVkS2V5cyI6W3sia2V5SWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGEiLCJrZGYiOnsiYWxnIjoiYXJnb24yaWQiLCJtIjo2NTUzNiwidCI6MywicCI6MSwic2FsdCI6IklDRWlJeVFsSmljb0tTb3JMQzB1THc9PSJ9LCJ3cmFwcGVkVmsiOiJNREV5TXpRMU5qYzRPVG83b25PUFZSRCtCb1lXRjJvTFdkcmJLcVhxcnJra3VhZURETjNiTUZlYkpHN0swZGJoMWJmNEovbzhFK2FtZVg1eCJ9XSwidmF1bHRWZXJzaW9uIjoxLCJzY2hlbWFWZXJzaW9uIjoxLCJkZXZpY2VJZCI6IjAxOGYwMDAwLTAwMDAtNzAwMC04MDAwLTAwMDAwMDAwMDAwYiIsIndyaXRlSWQiOiIwMThmMDAwMC0wMDAwLTcwMDAtODAwMC0wMDAwMDAwMDAwMGMiLCJ3cml0dGVuQXQiOiIyMDI2LTA3LTI0VDEwOjAwOjAwLjAwMFoifQ==",
+    "expectedVaultKeyBase64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "expectedKeyId": "018f0000-0000-7000-8000-00000000000a",
+    "passphraseChange": {
+      "randomStart": 0,
+      "failAtRandomCall": 3,
+      "oldPassphrase": "correct horse battery staple",
+      "newPassphrase": "new secret",
+      "metadata": {
+        "vaultVersion": 2,
+        "deviceId": "018f0000-0000-7000-8000-00000000000b",
+        "writeId": "018f0000-0000-7000-8000-00000000000d",
+        "writtenAt": "2026-07-24T10:00:00.000Z"
+      },
+      "expectedErrorMessage": "Deterministic random failure at call 3."
+    },
+    "rotation": {
+      "randomStart": 0,
+      "failAtRandomCall": 4,
+      "oldPassphrase": "correct horse battery staple",
+      "keyId": "018f0000-0000-7000-8000-00000000000d",
+      "metadata": {
+        "vaultVersion": 2,
+        "deviceId": "018f0000-0000-7000-8000-00000000000b",
+        "writeId": "018f0000-0000-7000-8000-00000000000d",
+        "writtenAt": "2026-07-24T10:00:00.000Z"
+      },
+      "expectedErrorMessage": "Deterministic random failure at call 4."
+    }
   }
 }

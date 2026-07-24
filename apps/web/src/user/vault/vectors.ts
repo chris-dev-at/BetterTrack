@@ -33,6 +33,18 @@ export interface VaultInteroperabilityFixture {
   kdf: VaultKdfParams;
   kekBase64: string;
   initial: VaultFixtureEnvelope;
+  wrongSecret: {
+    passphrase: string;
+    kekBase64: string;
+    expectedErrorCode: 'authentication-failed';
+  };
+  updateRequired: {
+    formatVersion: number;
+    schemaVersion: number;
+    headerBytesBase64: string;
+    envelopeBase64: string;
+    expectedStatus: 'update-required';
+  };
   passphraseChanged: VaultFixtureEnvelope;
   rotated: VaultFixtureEnvelope & { keyId: string };
   recoveryKitBase64: string;
@@ -40,9 +52,12 @@ export interface VaultInteroperabilityFixture {
     priorVaultVersion: number;
     rejectedVaultVersion: number;
     nextVaultVersion: number;
-    passphraseChangeFailAtRandomCall: number;
-    rotationFailAtRandomCall: number;
     expectedEnvelopeBase64: string;
+    expectedHeaderBytesBase64: string;
+    expectedVaultKeyBase64: string;
+    expectedKeyId: string;
+    passphraseChange: VaultRollbackCase;
+    rotation: VaultRollbackCase & { keyId: string };
   };
 }
 
@@ -51,6 +66,20 @@ interface VaultFixtureEnvelope {
   headerBytesBase64: string;
   envelopeBase64: string;
   tamperedEnvelopeBase64?: string;
+}
+
+interface VaultRollbackCase {
+  randomStart: number;
+  failAtRandomCall: number;
+  oldPassphrase: string;
+  newPassphrase?: string;
+  metadata: {
+    vaultVersion: number;
+    deviceId: string;
+    writeId: string;
+    writtenAt: string;
+  };
+  expectedErrorMessage: string;
 }
 
 /**
