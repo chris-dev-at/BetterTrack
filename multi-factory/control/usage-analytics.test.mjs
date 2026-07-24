@@ -32,6 +32,23 @@ const base = (overrides = {}) => ({
   ...overrides,
 });
 
+const claudexBase = (overrides = {}) => ({
+  ts: '2026-07-24T11:00:00Z',
+  issue: '11',
+  role: 'reviewer',
+  factory: 'multi',
+  provider: 'claudex',
+  provider_family: 'openai',
+  harness: 'claude-code',
+  model: 'gpt-5.6-terra',
+  input_tokens: 10,
+  output_tokens: 5,
+  cost_usd: 0,
+  api_equivalent_usd: 0.2,
+  api_equivalent_coverage: 'complete',
+  ...overrides,
+});
+
 test('official standard/base rates include 1.25x cache-write input', () => {
   assert.deepEqual(CODEX_STANDARD_PRICING['gpt-5.6-sol'], {
     input: 5,
@@ -374,6 +391,131 @@ test('OpenAI filters cover provider, harness, model, role and issue', () => {
   assert.equal(data.byProvider[0].k, 'claudex');
   assert.equal(data.byIssue[0].k, '41');
   assert.equal(data.filters.issue, '41');
+});
+
+test('OpenAI API issue buckets expose Sol, Terra and Luna route dimensions', () => {
+  const response = buildUsageAnalytics(
+    [
+      base({ issue: '60', model: 'gpt-5.6-sol' }),
+      claudexBase({ issue: '61', model: 'codex-api/gpt-5.6-terra' }),
+      claudexBase({ issue: '62', model: 'gpt-5.6-luna' }),
+    ],
+    {
+      now: '2026-07-24T12:00:00Z',
+      openAiRange: 14,
+    },
+  );
+  const issues = Object.fromEntries(response.openai.byIssue.map((row) => [row.k, row]));
+  assert.deepEqual(
+    {
+      model: issues['60'].model,
+      models: issues['60'].models,
+      provider: issues['60'].provider,
+      providers: issues['60'].providers,
+      harness: issues['60'].harness,
+      harnesses: issues['60'].harnesses,
+    },
+    {
+      model: 'gpt-5.6-sol',
+      models: ['gpt-5.6-sol'],
+      provider: 'codex',
+      providers: ['codex'],
+      harness: 'codex-cli',
+      harnesses: ['codex-cli'],
+    },
+  );
+  assert.deepEqual(issues['61'].models, ['gpt-5.6-terra']);
+  assert.deepEqual(issues['61'].providers, ['claudex']);
+  assert.deepEqual(issues['61'].harnesses, ['claude-code']);
+  assert.deepEqual(issues['62'].models, ['gpt-5.6-luna']);
+});
+
+test('OpenAI API issue routes are lossless, deduplicated and deterministic for mixed issues', () => {
+  const response = buildUsageAnalytics(
+    [
+      claudexBase({ issue: '70', model: 'gpt-5.6-terra' }),
+      base({ issue: '70', model: 'gpt-5.6-sol' }),
+      claudexBase({ issue: '70', model: 'codex-api/gpt-5.6-luna' }),
+      base({ issue: '70', model: 'gpt-5.6-sol', role: 'checker' }),
+    ],
+    {
+      now: '2026-07-24T12:00:00Z',
+      openAiRange: 14,
+    },
+  );
+  const issue = response.openai.byIssue.find((row) => row.k === '70');
+  assert.equal(issue.label, '70');
+  assert.equal(issue.records, 4);
+  assert.deepEqual(issue.models, ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra']);
+  assert.deepEqual(issue.providers, ['claudex', 'codex']);
+  assert.deepEqual(issue.harnesses, ['claude-code', 'codex-cli']);
+  assert.equal(issue.model, null);
+  assert.equal(issue.provider, null);
+  assert.equal(issue.harness, null);
+  assert.ok(issue.tokens);
+  assert.ok(Object.hasOwn(issue, 'coverage'));
+});
+
+test('OpenAI issue route dimensions never invent provider or harness for legacy rows', () => {
+  const legacy = base({ issue: 'legacy', provider: undefined, model: 'gpt-5.6-sol' });
+  delete legacy.codex_usage_schema;
+  delete legacy.output_tokens_semantics;
+  delete legacy.codex_telemetry_complete;
+  const missingModel = base({ issue: 'unknown-model', model: '' });
+  const response = buildUsageAnalytics([legacy, missingModel], {
+    now: '2026-07-24T12:00:00Z',
+    openAiRange: 14,
+  });
+  const issues = Object.fromEntries(response.openai.byIssue.map((row) => [row.k, row]));
+
+  assert.deepEqual(issues.legacy.models, ['gpt-5.6-sol']);
+  assert.deepEqual(issues.legacy.providers, []);
+  assert.deepEqual(issues.legacy.harnesses, []);
+  assert.equal(issues.legacy.provider, null);
+  assert.equal(issues.legacy.harness, null);
+
+  assert.deepEqual(issues['unknown-model'].models, []);
+  assert.equal(issues['unknown-model'].model, null);
+  assert.deepEqual(issues['unknown-model'].providers, ['codex']);
+  assert.deepEqual(issues['unknown-model'].harnesses, ['codex-cli']);
+});
+
+test('OpenAI filters constrain issue route arrays to the selected route', () => {
+  const rows = [
+    base({ issue: '80', model: 'gpt-5.6-sol', role: 'writer' }),
+    claudexBase({ issue: '80', model: 'gpt-5.6-terra', role: 'reviewer' }),
+    claudexBase({ issue: '80', model: 'gpt-5.6-luna', role: 'checker' }),
+  ];
+  const response = buildUsageAnalytics(rows, {
+    now: '2026-07-24T12:00:00Z',
+    openAiRange: 14,
+    provider: 'claudex',
+    harness: 'claude-code',
+    model: 'gpt-5.6-luna',
+    role: 'checker',
+    issue: '80',
+  });
+  const issue = response.openai.byIssue[0];
+  assert.equal(response.openai.totals.records, 1);
+  assert.deepEqual(issue.models, ['gpt-5.6-luna']);
+  assert.deepEqual(issue.providers, ['claudex']);
+  assert.deepEqual(issue.harnesses, ['claude-code']);
+  assert.equal(issue.model, 'gpt-5.6-luna');
+  assert.equal(issue.provider, 'claudex');
+  assert.equal(issue.harness, 'claude-code');
+
+  const nativeResponse = buildUsageAnalytics(rows, {
+    now: '2026-07-24T12:00:00Z',
+    openAiRange: 14,
+    provider: 'codex',
+    harness: 'codex-cli',
+    issue: '80',
+  });
+  const nativeIssue = nativeResponse.openai.byIssue[0];
+  assert.equal(nativeResponse.openai.totals.records, 1);
+  assert.deepEqual(nativeIssue.models, ['gpt-5.6-sol']);
+  assert.deepEqual(nativeIssue.providers, ['codex']);
+  assert.deepEqual(nativeIssue.harnesses, ['codex-cli']);
 });
 
 test('missing or explicitly incomplete ClaudeX estimates stay null instead of fabricated zero', () => {

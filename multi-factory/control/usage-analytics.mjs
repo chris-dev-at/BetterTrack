@@ -83,6 +83,32 @@ export function ledgerHarness(row) {
   return null;
 }
 
+const knownOpenAiRoute = (row, { provider, harness, model }) => {
+  const explicitProvider =
+    Object.hasOwn(row, 'provider') && typeof row.provider === 'string' && row.provider === provider
+      ? provider
+      : null;
+  const explicitHarness =
+    Object.hasOwn(row, 'harness') && typeof row.harness === 'string' && row.harness.trim()
+      ? row.harness
+      : null;
+  const explicitModel =
+    Object.hasOwn(row, 'model') &&
+    typeof row.model === 'string' &&
+    row.model.trim() &&
+    model !== 'unknown'
+      ? model
+      : null;
+  return {
+    model: explicitModel,
+    provider: explicitProvider,
+    // Harness is a deterministic property of an explicitly recorded factory
+    // provider. Do not derive it when provider itself was inferred from a
+    // legacy model-only row.
+    harness: explicitHarness || (explicitProvider ? harness : null),
+  };
+};
+
 export function normalizeCodexLedgerRow(row) {
   if (ledgerProvider(row) !== 'codex') return null;
   const model = String(row.model || '');
@@ -166,6 +192,11 @@ export function normalizeOpenAiLedgerRow(row) {
       provider,
       providerFamily,
       harness,
+      route: knownOpenAiRoute(row, {
+        provider,
+        harness,
+        model: codex.model,
+      }),
       actualUsd: actual.known ? actual.value : null,
     };
   }
@@ -205,6 +236,11 @@ export function normalizeOpenAiLedgerRow(row) {
     providerFamily,
     harness,
     model: model || 'unknown',
+    route: knownOpenAiRoute(row, {
+      provider,
+      harness,
+      model: model || 'unknown',
+    }),
     usage,
     estimateUsd,
     actualUsd: actual.known ? actual.value : null,
@@ -281,6 +317,32 @@ const finishMap = (map) =>
 const addToMap = (map, key, info) => {
   if (!map.has(key)) map.set(key, emptyBucket(key));
   addInfo(map.get(key), info);
+};
+const addIssueRoute = (map, key, info) => {
+  if (!map.has(key))
+    map.set(key, {
+      models: new Set(),
+      providers: new Set(),
+      harnesses: new Set(),
+    });
+  const route = map.get(key);
+  if (info.route?.model) route.models.add(info.route.model);
+  if (info.route?.provider) route.providers.add(info.route.provider);
+  if (info.route?.harness) route.harnesses.add(info.route.harness);
+};
+const finishIssueRoute = (route) => {
+  const sorted = (values) => [...(values || [])].sort();
+  const models = sorted(route?.models);
+  const providers = sorted(route?.providers);
+  const harnesses = sorted(route?.harnesses);
+  return {
+    model: models.length === 1 ? models[0] : null,
+    models,
+    provider: providers.length === 1 ? providers[0] : null,
+    providers,
+    harness: harnesses.length === 1 ? harnesses[0] : null,
+    harnesses,
+  };
 };
 
 const utcDay = (date) => new Date(`${date}T00:00:00.000Z`);
@@ -408,6 +470,7 @@ export function aggregateOpenAiUsage(rows, options = {}) {
   const byModel = new Map();
   const byRole = new Map();
   const byIssue = new Map();
+  const byIssueRoute = new Map();
   const byDay = new Map(dayList(start, today).map((date) => [date, emptyBucket(date)]));
   let actualSpendUsd = 0;
   let actualSpendRecords = 0;
@@ -418,7 +481,9 @@ export function aggregateOpenAiUsage(rows, options = {}) {
     addToMap(byHarness, info.harness, info);
     addToMap(byModel, info.model, info);
     addToMap(byRole, String(info.row.role || '?'), info);
-    addToMap(byIssue, String(info.row.issue || '-'), info);
+    const issue = String(info.row.issue || '-');
+    addToMap(byIssue, issue, info);
+    addIssueRoute(byIssueRoute, issue, info);
     const day = dateKey(info.row.ts);
     if (byDay.has(day)) addInfo(byDay.get(day), info);
     if (info.actualUsd != null) {
@@ -454,6 +519,7 @@ export function aggregateOpenAiUsage(rows, options = {}) {
     byIssue: finishMap(byIssue).map((row) => ({
       ...row,
       label: row.k === '-' ? 'planning' : row.k,
+      ...finishIssueRoute(byIssueRoute.get(row.k)),
     })),
   };
 }
