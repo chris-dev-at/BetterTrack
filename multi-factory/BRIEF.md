@@ -126,7 +126,9 @@ The active claim carries a master-session guard. After a master restart, an
 unresolved claim is not replayed automatically because the previous process may
 already have created GitHub issues; new scheduling pauses and the owner must
 reconcile the retained active request and manifest first. This is deliberately
-fail-closed.
+fail-closed. A ready request is claimed only in `run` mode. An already-active
+request also pauses `run-out` scheduling; `close-down` reports the same
+unresolved state even though that mode independently forbids new assignments.
 
 ## 5. The scheduler (deterministic — this is the core novelty)
 

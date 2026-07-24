@@ -419,6 +419,21 @@ check "successful request archives exactly once" 1 \
 check "archived request retains its id" exact-two \
   "$(jq -r .id "$MFSTATE"/control/composer-request-archive/*.json)"
 
+# Composition-disabled modes must never claim a brand-new ready request. run-out
+# can continue assigning ordinary queued issues; close-down cannot assign, but
+# both modes leave the request ready for a future run-mode tick.
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  1 "$REQUEST_BRIEF" ready-non-run >/dev/null
+composer_step run-out
+check "run-out does not claim a brand-new owner request" ready-non-run \
+  "$(jq -r .id "$MFSTATE/control/composer-request.json")"
+check "run-out creates no replay guard for a ready request" 0 \
+  "$([ -d "$MFSTATE/control/.composer-request-claim" ] && echo 1 || echo 0)"
+composer_step close-down
+check "close-down does not claim a brand-new owner request" ready-non-run \
+  "$(jq -r .id "$MFSTATE/control/composer-request.json")"
+rm -f "$MFSTATE/control/composer-request.json"
+
 # NONE is valid for an ordinary composer run, but never satisfies an exact-count
 # owner request. It gets the designed corrective attempt and remains active.
 rm -rf "$MFSTATE/control/.composer-request-claim"
@@ -520,7 +535,16 @@ FOREIGN_RC=$?
 check "foreign master session refuses active-request replay" 2 "$FOREIGN_RC"
 check "foreign replay refusal preserves the active request" partial-retained \
   "$(jq -r .id "$MFSTATE/control/.composer-request-active.json")"
-printf 'run\n' >"$MFSTATE/control/mode"
+# Reproduce the reviewed crash window: an unquarantined issue is runnable while
+# run-out would normally keep assigning. The foreign active claim must be
+# reconciled before the mode gate and suppress the scheduler entirely.
+if grep -qx '806' "$MFSTATE/control/composer-quarantine" 2>/dev/null; then
+  bad "run-out crash-window fixture must remain unquarantined"
+else
+  ok "run-out crash-window fixture is unquarantined"
+fi
+runnable_issues(){ printf '806\n'; }
+printf 'run-out\n' >"$MFSTATE/control/mode"
 SCHEDULER_CALLS=0
 fetch_issues(){ :; }
 process_acks(){ :; }
@@ -530,7 +554,10 @@ merger_step(){ :; }
 drained_check(){ :; }
 mstatus(){ :; }
 tick
-check "unresolved restart claim pauses new scheduling" 0 "$SCHEDULER_CALLS"
+check "run-out foreign claim pauses crash-window artifact scheduling" 0 "$SCHEDULER_CALLS"
+CLOSE_DOWN_RC=0
+composer_step close-down || CLOSE_DOWN_RC=$?
+check "close-down also reports an unresolved foreign claim" 2 "$CLOSE_DOWN_RC"
 MF_MASTER_SESSION=test-master-session
 # Restore the production master functions replaced by the focused tick stubs.
 MF_SOURCE_ONLY=1 . ./master.sh

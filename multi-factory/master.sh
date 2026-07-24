@@ -371,7 +371,8 @@ composer_request_mark_blocked(){ # $1=terminal reason after bounded attempts
     "composer request retained for owner review after $reason — automatic replay disabled"
 }
 
-composer_request_prepare(){ # 0=none/loaded, 2=unsafe or foreign active request
+composer_request_prepare(){ # $1=allow ready→active claim (default 1); 0=none/loaded, 2=unsafe
+  local allow_ready_claim=${1:-1}
   local ready active claim session_file
   ready="$CONTROL/composer-request.json"
   active="$CONTROL/.composer-request-active.json"
@@ -428,6 +429,11 @@ composer_request_prepare(){ # 0=none/loaded, 2=unsafe or foreign active request
       rmdir "$claim" 2>/dev/null || true
       return 0
     fi
+    if [ "$allow_ready_claim" != 1 ]; then
+      composer_request_alert_once composition-disabled \
+        "composer request remains ready — refusing to claim while composition is disabled"
+      return 2
+    fi
     mv "$ready" "$active" || {
       log "composer request blocked: cannot claim ready request"
       return 2
@@ -469,18 +475,34 @@ composer_request_archive(){ # $1=validated composer run id
 }
 
 composer_step(){ # $1=mode
-  [ "$1" = run ] || return 0
-  # Reconcile an already-active request before doing anything else; a foreign
-  # restart claim must suppress scheduling even if the normal queue is full.
+  local mode=$1 allow_ready_claim=0
+  [ "$mode" = run ] && allow_ready_claim=1
+  # Reconcile an already-active request before the mode gate. run-out still
+  # assigns queued issues, so it must not expose crash-window artifacts from an
+  # unresolved request. close-down does not assign, but returns the same
+  # fail-closed signal in case the mode changes before tick() reaches scheduler.
   if [ "$MF_DRY_RUN" != 1 ] \
     && { [ -f "$CONTROL/.composer-request-active.json" ] \
       || [ -d "$CONTROL/.composer-request-claim" ]; }; then
-    composer_request_prepare
+    composer_request_prepare "$allow_ready_claim"
     case "$?" in
       0) ;;
       2) return 2;;
       *) return 1;;
     esac
+  else
+    # Keep the in-memory view aligned when an owner has reconciled retained
+    # state without restarting this master process.
+    COMPOSER_REQUEST_LOADED=0
+    COMPOSER_REQUEST_ID=
+    COMPOSER_REQUEST_EXACT_COUNT=
+    COMPOSER_REQUEST_BRIEF=
+  fi
+  if [ "$mode" != run ]; then
+    # A valid same-session active request was loaded but cannot be resumed while
+    # composition is disabled. It remains unresolved, so scheduling must pause.
+    [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
+    return 0
   fi
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
@@ -490,7 +512,7 @@ composer_step(){ # $1=mode
   # holding a request across an unrelated backlog drain/backoff (and turning an
   # otherwise harmless restart into a replay lock).
   if [ "$MF_DRY_RUN" != 1 ] && [ "$COMPOSER_REQUEST_LOADED" -ne 1 ]; then
-    composer_request_prepare
+    composer_request_prepare 1
     case "$?" in
       0) ;;
       2) return 2;;
@@ -505,7 +527,7 @@ composer_step(){ # $1=mode
     [ "$(file_age "$CONTROL/.composer-last")" -ge "$backoff" ] || return 0
   fi
 
-  local snap; snap=$(composer_snapshot "$1")
+  local snap; snap=$(composer_snapshot "$mode")
 
   if [ "$MF_DRY_RUN" = 1 ]; then
     log "DRY: composer would run (runnable=$count)"
