@@ -7,6 +7,7 @@ ALTER TABLE "users" ADD CONSTRAINT "users_paranoid_media_state" CHECK (
   ("privacy_mode" = 'normal' AND "paranoid_media_set" IS NULL AND "paranoid_drive_attested_version" IS NULL)
   OR (
     "privacy_mode" = 'paranoid'
+    AND "paranoid_media_set" IS NOT NULL
     AND (
       "paranoid_media_set" = ARRAY['server']::text[]
       OR "paranoid_media_set" = ARRAY['drive']::text[]

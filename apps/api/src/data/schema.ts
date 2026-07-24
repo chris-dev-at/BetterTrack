@@ -215,6 +215,7 @@ export const users = pgTable(
       sql`(${t.privacyMode} = 'normal' and ${t.paranoidMediaSet} is null and ${t.paranoidDriveAttestedVersion} is null)
         or (
           ${t.privacyMode} = 'paranoid'
+          and ${t.paranoidMediaSet} is not null
           and (
             ${t.paranoidMediaSet} = array['server']::text[]
             or ${t.paranoidMediaSet} = array['drive']::text[]

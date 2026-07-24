@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { VAULT_ENTITY_SCHEMAS } from '@bettertrack/contracts';
+
 import {
   EXPORT_TABLE_CLASSIFICATION,
   EXPORTED_ENTITY_NAMES,
+  PARANOID_REHYDRATION_HANDLERS,
   PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
   schemaTableNames,
@@ -78,6 +81,32 @@ describe('account-export completeness', () => {
       .map(([table]) => table)
       .sort();
     expect(Object.keys(PARANOID_REHYDRATION_POLICY).sort()).toEqual(vaultTables);
+  });
+
+  it('requires every restorable table to name a strict payload schema and restore handler', () => {
+    const handlers = new Set(PARANOID_REHYDRATION_HANDLERS);
+    for (const [table, policy] of Object.entries(PARANOID_REHYDRATION_POLICY)) {
+      if (policy.kind !== 'restore') continue;
+      expect(
+        VAULT_ENTITY_SCHEMAS[policy.entity],
+        `${table} restores ${policy.entity} without a strict vault payload schema`,
+      ).toBeDefined();
+      expect(
+        handlers.has(policy.entity),
+        `${table} restores ${policy.entity} without a rehydration insertion branch`,
+      ).toBe(true);
+    }
+  });
+
+  it('has one restore policy for each handler and schema entity', () => {
+    const entities = Object.values(PARANOID_REHYDRATION_POLICY)
+      .filter(
+        (policy): policy is Extract<typeof policy, { kind: 'restore' }> =>
+          policy.kind === 'restore',
+      )
+      .map((policy) => policy.entity)
+      .sort();
+    expect([...PARANOID_REHYDRATION_HANDLERS].sort()).toEqual(entities);
   });
 
   it('does not classify rehydration metadata as vault content', () => {

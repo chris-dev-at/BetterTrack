@@ -4,7 +4,11 @@ import {
   type ParanoidRehydrationPostCommitPlan,
   vaultDocumentV1Schema,
 } from '@bettertrack/contracts';
-import { cashBalancesBySource, projectCashLedgerBySource } from '@bettertrack/domain/cashLedger';
+import {
+  cashBalancesBySource,
+  floorCents,
+  projectCashLedgerBySource,
+} from '@bettertrack/domain/cashLedger';
 import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import { expenseDedupHash } from '../../data/expenseDedup';
@@ -20,6 +24,7 @@ import {
 import {
   assets,
   expenseCategories,
+  expenseTransactions,
   portfolios,
   standingOrders,
   userTaxSettings,
@@ -55,6 +60,8 @@ export class ParanoidRehydrationError extends Error {
 export interface ParanoidRehydrationServiceDeps {
   db: Database;
   now?: () => Date;
+  /** Converts a native trade amount into the EUR cash ledger at the trade day. */
+  toCashEur?: (amount: number, currency: string, day: string) => Promise<number>;
   /** Test-only stage hook proving each transaction-stage rolls back completely. */
   afterStage?: (stage: ParanoidRehydrationStage) => void | Promise<void>;
 }
@@ -267,20 +274,18 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     'expense budget',
   );
 
-  const mainByPortfolio = new Map<string, number>();
+  const sourcesByPortfolio = new Map<string, EntityOf<'cashSource'>[]>();
   for (const source of rows(entities, 'cashSource')) {
-    if (source.data.isMain) {
-      mainByPortfolio.set(
-        source.data.portfolioId,
-        (mainByPortfolio.get(source.data.portfolioId) ?? 0) + 1,
-      );
-    }
+    const group = sourcesByPortfolio.get(source.data.portfolioId) ?? [];
+    group.push(source);
+    sourcesByPortfolio.set(source.data.portfolioId, group);
   }
-  for (const portfolioId of portfolioIds) {
-    if (mainByPortfolio.get(portfolioId) !== 1) {
+  for (const [portfolioId, sources] of sourcesByPortfolio) {
+    const mains = sources.filter((source) => source.data.isMain);
+    if (mains.length !== 1 || mains[0]!.data.archivedAt !== null) {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
-        `portfolio ${portfolioId} must have exactly one main cash source`,
+        `portfolio ${portfolioId} must have exactly one active main cash source`,
       );
     }
   }
@@ -573,23 +578,31 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     budgetCategoryIds.add(budget.data.categoryId);
   }
 
+  // The repository's persisted replay order is `(executed_at, id)`, not the
+  // arbitrary client array order. Preserve that ordering here so solvency checks
+  // accept exactly the ledger history normal reads will replay after restore.
+  const orderedMovements = [...movements].sort(
+    (a, b) =>
+      Date.parse(a.data.executedAt) - Date.parse(b.data.executedAt) || a.id.localeCompare(b.id),
+  );
+  const ledgerMovements = orderedMovements.map((entity) => ({
+    sourceId: entity.data.sourceId,
+    kind: entity.data.kind,
+    amountEur: entity.data.amountEur,
+    occurredAt: entity.data.executedAt,
+  }));
+
   try {
-    projectCashLedgerBySource(
-      movements.map((entity) => ({
-        sourceId: entity.data.sourceId,
-        kind: entity.data.kind,
-        amountEur: entity.data.amountEur,
-        occurredAt: entity.data.executedAt,
-      })),
-    );
-    cashBalancesBySource(
-      movements.map((entity) => ({
-        sourceId: entity.data.sourceId,
-        kind: entity.data.kind,
-        amountEur: entity.data.amountEur,
-        occurredAt: entity.data.executedAt,
-      })),
-    );
+    projectCashLedgerBySource(ledgerMovements);
+    const balancesBySource = cashBalancesBySource(ledgerMovements);
+    for (const source of rows(entities, 'cashSource')) {
+      if (source.data.archivedAt !== null && (balancesBySource.get(source.id) ?? 0) !== 0) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'an archived cash source must have an exactly zero balance',
+        );
+      }
+    }
     const transactionsByPortfolioAsset = new Map<string, EntityOf<'transaction'>[]>();
     for (const transaction of rows(entities, 'transaction')) {
       const key = `${transaction.data.portfolioId}\u0000${transaction.data.assetId}`;
@@ -612,6 +625,7 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       );
     }
   } catch (error) {
+    if (error instanceof ParanoidRehydrationError) throw error;
     throw new ParanoidRehydrationError(
       'INVALID_CASH_LEDGER',
       error instanceof Error ? error.message : 'cash ledger is invalid',
@@ -619,11 +633,14 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
   }
 }
 
-async function validateReferencedMarketAssets(
+async function resolveReferencedAssetCurrencies(
   tx: Database,
   entities: readonly Entity[],
-): Promise<void> {
-  const customAssetIds = ids(entities, 'customAsset');
+): Promise<ReadonlyMap<string, string>> {
+  const currencies = new Map(
+    rows(entities, 'customAsset').map((entity) => [entity.id, entity.data.currency]),
+  );
+  const customAssetIds = new Set(currencies.keys());
   const referencedAssetIds = new Set([
     ...rows(entities, 'transaction').map((entity) => entity.data.assetId),
     ...rows(entities, 'dividend').map((entity) => entity.data.assetId),
@@ -632,12 +649,62 @@ async function validateReferencedMarketAssets(
       .filter((assetId): assetId is string => assetId !== null),
   ]);
   const marketAssetIds = [...referencedAssetIds].filter((id) => !customAssetIds.has(id));
-  if (marketAssetIds.length === 0) return;
+  if (marketAssetIds.length === 0) return currencies;
   const found = await tx
-    .select({ id: assets.id })
+    .select({ id: assets.id, currency: assets.currency })
     .from(assets)
     .where(and(inArray(assets.id, marketAssetIds), isNull(assets.ownerId)));
   requireSubset(marketAssetIds, new Set(found.map((asset) => asset.id)), 'restore source');
+  for (const asset of found) currencies.set(asset.id, asset.currency);
+  return currencies;
+}
+
+/**
+ * Normal transaction writes derive a linked gross movement from the immutable
+ * trade facts. A decrypted document may not substitute its own amount: doing so
+ * would manufacture cash while retaining an otherwise valid transaction.
+ */
+async function validateTradeCashLinks(
+  entities: readonly Entity[],
+  assetCurrencies: ReadonlyMap<string, string>,
+  toCashEur: (amount: number, currency: string, day: string) => Promise<number>,
+): Promise<void> {
+  const movementsByTransactionId = new Map<string, EntityOf<'cashMovement'>[]>();
+  for (const movement of rows(entities, 'cashMovement')) {
+    if (!movement.data.transactionId) continue;
+    const linked = movementsByTransactionId.get(movement.data.transactionId) ?? [];
+    linked.push(movement);
+    movementsByTransactionId.set(movement.data.transactionId, linked);
+  }
+
+  for (const transaction of rows(entities, 'transaction')) {
+    const grossKind = transaction.data.side === 'buy' ? 'buy' : 'sell_proceeds';
+    const gross = (movementsByTransactionId.get(transaction.id) ?? []).filter(
+      (movement) => movement.data.kind === grossKind,
+    );
+    if (gross.length === 0) continue;
+    const currency = assetCurrencies.get(transaction.data.assetId);
+    if (!currency) {
+      throw new ParanoidRehydrationError('INVALID_REFERENCE', 'transaction asset is unavailable');
+    }
+    const nativeAmount =
+      transaction.data.side === 'buy'
+        ? transaction.data.quantity * transaction.data.price + transaction.data.fee
+        : transaction.data.quantity * transaction.data.price - transaction.data.fee;
+    const day = new Date(transaction.data.executedAt).toISOString().slice(0, 10);
+    const expectedMagnitude = floorCents(await toCashEur(nativeAmount, currency, day));
+    const expectedAmount = transaction.data.side === 'buy' ? -expectedMagnitude : expectedMagnitude;
+    if (
+      expectedMagnitude <= 0 ||
+      gross.length !== 1 ||
+      gross[0]!.data.amountEur !== expectedAmount
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'linked transaction cash movement does not match normal trade economics',
+      );
+    }
+  }
 }
 
 async function ownedAssetIds(tx: Database, userId: string): Promise<Set<string>> {
@@ -664,6 +731,11 @@ async function ensureNoExistingRestorableRows(tx: Database, userId: string): Pro
       .where(eq(expenseCategories.userId, userId))
       .limit(1),
     tx
+      .select({ id: expenseTransactions.id })
+      .from(expenseTransactions)
+      .where(eq(expenseTransactions.userId, userId))
+      .limit(1),
+    tx
       .select({ id: standingOrders.id })
       .from(standingOrders)
       .where(eq(standingOrders.userId, userId))
@@ -679,7 +751,8 @@ async function ensureNoExistingRestorableRows(tx: Database, userId: string): Pro
     present[1] !== 0 ||
     present[2].length ||
     present[3].length ||
-    present[4].length
+    present[4].length ||
+    present[5].length
   ) {
     throw new ParanoidRehydrationError(
       'REHYDRATION_CONFLICT',
@@ -692,6 +765,17 @@ export function createParanoidRehydrationService(
   deps: ParanoidRehydrationServiceDeps,
 ): ParanoidRehydrationService {
   const now = deps.now ?? (() => new Date());
+  const toCashEur =
+    deps.toCashEur ??
+    (async (amount, currency) => {
+      if (currency !== 'EUR') {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'non-EUR trade cash links require a historical EUR conversion',
+        );
+      }
+      return amount;
+    });
   const stage = async (name: ParanoidRehydrationStage): Promise<void> => {
     await deps.afterStage?.(name);
   };
@@ -735,7 +819,8 @@ export function createParanoidRehydrationService(
         }
 
         await ensureNoExistingRestorableRows(tx, userId);
-        await validateReferencedMarketAssets(tx, entities);
+        const assetCurrencies = await resolveReferencedAssetCurrencies(tx, entities);
+        await validateTradeCashLinks(entities, assetCurrencies, toCashEur);
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await sourceRows.restoreCustomAssets(userId, rows(entities, 'customAsset'));

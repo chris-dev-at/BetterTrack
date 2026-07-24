@@ -210,6 +210,93 @@ describe('vault document v1', () => {
     ).toBe(false);
   });
 
+  it('rejects restore money that would be silently rounded or overflow storage', () => {
+    const base = {
+      id: UUID_A,
+      kind: 'expenseTransaction',
+      rev: 0,
+      editedAt: '2026-07-24T10:00:00.000Z',
+      editedBy: UUID_B,
+      deletedAt: null,
+      data: {
+        categoryId: null,
+        direction: 'expense',
+        amount: 1.001,
+        currency: 'EUR',
+        bookedOn: '2026-07-24',
+        description: 'Rounded by storage',
+        source: 'manual',
+        createdAt: '2026-07-24T10:00:00.000Z',
+        updatedAt: '2026-07-24T10:00:00.000Z',
+      },
+    };
+    expect(vaultDocumentV1Schema.safeParse({ schemaVersion: 1, entities: [base] }).success).toBe(
+      false,
+    );
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        schemaVersion: 1,
+        entities: [{ ...base, data: { ...base.data, amount: 1e50 } }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects non-cent cash and negative manual tax facts', () => {
+    const cash = {
+      id: UUID_A,
+      kind: 'cashMovement',
+      rev: 0,
+      editedAt: '2026-07-24T10:00:00.000Z',
+      editedBy: UUID_B,
+      deletedAt: null,
+      data: {
+        portfolioId: UUID_A,
+        sourceId: UUID_B,
+        kind: 'deposit',
+        amountEur: 1.001,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T10:00:00.000Z',
+        note: null,
+        source: 'manual',
+      },
+    };
+    expect(vaultDocumentV1Schema.safeParse({ schemaVersion: 1, entities: [cash] }).success).toBe(
+      false,
+    );
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        schemaVersion: 1,
+        entities: [
+          {
+            id: UUID_A,
+            kind: 'dividend',
+            rev: 0,
+            editedAt: '2026-07-24T10:00:00.000Z',
+            editedBy: UUID_B,
+            deletedAt: null,
+            data: {
+              portfolioId: UUID_A,
+              assetId: UUID_B,
+              cashSourceId: UUID_C,
+              grossAmountEur: 10,
+              executedAt: '2026-07-24T10:00:00.000Z',
+              note: null,
+              source: 'manual',
+              taxMode: 'manual_per_trade',
+              taxCountry: null,
+              taxAmountEur: -1,
+              taxParams: null,
+            },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects a malformed graph-shaped source row before a service sees it', () => {
     expect(
       vaultDocumentV1Schema.safeParse({

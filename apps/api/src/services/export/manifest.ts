@@ -1,3 +1,4 @@
+import type { VaultEntityKind } from '@bettertrack/contracts';
 import { getTableName, is } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 
@@ -298,7 +299,15 @@ export type ParanoidClassification = 'vault' | 'server';
  * means the table is derived, staging, or operational state and is deliberately
  * rebuilt/discarded rather than trusting it as encrypted source data.
  */
-export type ParanoidRehydrationPolicy = 'restore' | 'purge-only';
+export type ParanoidRehydrationPolicy =
+  | { readonly kind: 'restore'; readonly entity: VaultEntityKind }
+  | { readonly kind: 'purge-only' };
+
+const restore = (entity: VaultEntityKind): ParanoidRehydrationPolicy => ({
+  kind: 'restore',
+  entity,
+});
+const purgeOnly = (): ParanoidRehydrationPolicy => ({ kind: 'purge-only' });
 
 export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassification> = {
   // ── vault: portfolio / money content (client-encrypted, purged at enable) ──
@@ -422,27 +431,49 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
  * cannot enter the enable/disable sweep without choosing restore or discard.
  */
 export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPolicy> = {
-  portfolios: 'restore',
-  transactions: 'restore',
-  dividends: 'restore',
-  portfolio_cash_sources: 'restore',
-  portfolio_cash_movements: 'restore',
-  portfolio_settings: 'restore',
-  user_tax_settings: 'restore',
-  assets: 'restore',
-  price_history: 'restore',
-  standing_orders: 'restore',
-  expense_categories: 'restore',
-  expense_transactions: 'restore',
-  expense_rules: 'restore',
-  expense_budgets: 'restore',
-  standing_order_runs: 'purge-only',
-  import_batches: 'purge-only',
-  import_rows: 'purge-only',
-  portfolio_daily_snapshots: 'purge-only',
-  portfolio_snapshot_state: 'purge-only',
-  expense_budget_fires: 'purge-only',
+  portfolios: restore('portfolio'),
+  transactions: restore('transaction'),
+  dividends: restore('dividend'),
+  portfolio_cash_sources: restore('cashSource'),
+  portfolio_cash_movements: restore('cashMovement'),
+  portfolio_settings: restore('portfolioSetting'),
+  user_tax_settings: restore('taxSetting'),
+  assets: restore('customAsset'),
+  price_history: restore('customAssetValue'),
+  standing_orders: restore('standingOrder'),
+  expense_categories: restore('expenseCategory'),
+  expense_transactions: restore('expenseTransaction'),
+  expense_rules: restore('expenseRule'),
+  expense_budgets: restore('expenseBudget'),
+  standing_order_runs: purgeOnly(),
+  import_batches: purgeOnly(),
+  import_rows: purgeOnly(),
+  portfolio_daily_snapshots: purgeOnly(),
+  portfolio_snapshot_state: purgeOnly(),
+  expense_budget_fires: purgeOnly(),
 };
+
+/**
+ * Rehydration branches intentionally mirror the table-to-entity restore policy.
+ * Keep this as an exportable contract so the completeness gate proves that every
+ * future `restore` table has an insertion branch as well as a payload schema.
+ */
+export const PARANOID_REHYDRATION_HANDLERS = [
+  'portfolio',
+  'transaction',
+  'dividend',
+  'cashSource',
+  'cashMovement',
+  'portfolioSetting',
+  'taxSetting',
+  'customAsset',
+  'customAssetValue',
+  'standingOrder',
+  'expenseCategory',
+  'expenseTransaction',
+  'expenseRule',
+  'expenseBudget',
+] as const satisfies readonly VaultEntityKind[];
 
 /** The `vault`-classified table names (purge/probe/rehydration iterate these). */
 export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(

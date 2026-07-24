@@ -8,6 +8,7 @@ import {
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaults,
+  portfolioCashMovements,
   portfolios,
   standingOrderRuns,
   standingOrders,
@@ -358,6 +359,69 @@ describe('paranoid rehydration service', () => {
     expect(await db.select().from(transactions)).toEqual([]);
   });
 
+  it('accepts an untouched holdings-only portfolio with no cash sources', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities = input.document.entities.filter(
+      (entry) => entry.kind !== 'cashSource' && entry.kind !== 'cashMovement',
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    expect(await db.select().from(portfolios).where(eq(portfolios.id, PORTFOLIO_ID))).toHaveLength(
+      1,
+    );
+  });
+
+  it('rejects an archived Main source before it can write', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const source = input.document.entities.find((entry) => entry.kind === 'cashSource')!;
+    if (source.kind !== 'cashSource') throw new Error('expected cash source');
+    source.data.archivedAt = editedAt;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects an archived non-Main source with a nonzero balance before it can write', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
+        portfolioId: PORTFOLIO_ID,
+        name: 'Archived savings',
+        type: 'cash',
+        isMain: false,
+        archivedAt: editedAt,
+        createdAt: editedAt,
+      }),
+      entity(TRANSFER_OUT_ID, 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: SECOND_CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 10,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
   it('rebuilds imported expense deduplication markers from restored facts', async () => {
     const { db, user } = await makeParanoid();
     const input = request();
@@ -490,6 +554,178 @@ describe('paranoid rehydration service', () => {
 
     await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
       code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects an untrusted linked trade cash amount before it can write', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement')!;
+    if (movement.kind !== 'cashMovement') throw new Error('expected cash movement');
+    movement.data.kind = 'buy';
+    movement.data.amountEur = -1;
+    movement.data.transactionId = TRANSACTION_ID;
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 1,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T09:59:59.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('uses the historical conversion and normal cash rounding for a linked foreign-currency trade', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const asset = input.document.entities.find((entry) => entry.kind === 'customAsset')!;
+    const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement')!;
+    if (asset.kind !== 'customAsset' || movement.kind !== 'cashMovement') {
+      throw new Error('expected custom asset and cash movement');
+    }
+    asset.data.currency = 'USD';
+    movement.data.kind = 'buy';
+    movement.data.amountEur = -75;
+    movement.data.transactionId = TRANSACTION_ID;
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 75,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T09:59:59.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const conversion = async (amount: number, currency: string, day: string) => {
+      expect({ amount, currency, day }).toEqual({
+        amount: 100,
+        currency: 'USD',
+        day: '2026-07-24',
+      });
+      return 75.009;
+    };
+    const service = createParanoidRehydrationService({ db, toCashEur: conversion });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+  });
+
+  it('rejects a linked foreign-currency trade when the historical conversion is unavailable', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const asset = input.document.entities.find((entry) => entry.kind === 'customAsset')!;
+    const movement = input.document.entities.find((entry) => entry.kind === 'cashMovement')!;
+    if (asset.kind !== 'customAsset' || movement.kind !== 'cashMovement') {
+      throw new Error('expected custom asset and cash movement');
+    }
+    asset.data.currency = 'USD';
+    movement.data.kind = 'buy';
+    movement.data.amountEur = -75;
+    movement.data.transactionId = TRANSACTION_ID;
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 75,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: '2026-07-24T09:59:59.000Z',
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('replays equal-time cash movements in persisted id order', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities = input.document.entities.filter(
+      (entry) => entry.kind !== 'cashMovement',
+    );
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'deposit',
+        amountEur: 100,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+      entity('018f0000-0000-7000-8000-000000000000', 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'withdrawal',
+        amountEur: -100,
+        transactionId: null,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+    });
+    expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  it('rejects existing uncategorized expense rows before it can write', async () => {
+    const { db, user } = await makeParanoid();
+    await db.insert(expenseTransactions).values({
+      userId: user.id,
+      direction: 'expense',
+      amount: '1.00',
+      currency: 'EUR',
+      bookedOn: '2026-07-23',
+      description: 'Existing manual expense',
+      source: 'manual',
+    });
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, request())).rejects.toMatchObject({
+      code: 'REHYDRATION_CONFLICT',
     });
     expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });

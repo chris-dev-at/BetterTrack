@@ -11,8 +11,9 @@ import {
   taxModeSchema,
   transactionSideSchema,
 } from './portfolio';
-import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
+import { EXPENSE_AMOUNT_MAX, expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
+  STANDING_ORDER_AMOUNT_MAX,
   standingOrderCadenceSchema,
   standingOrderKindSchema,
   standingOrderStatusSchema,
@@ -174,8 +175,36 @@ export type VaultEntityMeta = z.infer<typeof vaultEntityMetaSchema>;
 
 const uuidSchema = z.string().uuid();
 const finiteNumberSchema = z.number().finite();
-const positiveNumberSchema = finiteNumberSchema.positive();
-const nonnegativeNumberSchema = finiteNumberSchema.nonnegative();
+const MAX_STORAGE_MAGNITUDE = 1_000_000_000_000;
+
+/**
+ * Enforce the exact scale of a numeric column before the rehydration transaction
+ * begins. The epsilon tolerates IEEE-754 representation of ordinary decimal
+ * literals without accepting a real excess digit (for example 1.001 at scale 2).
+ */
+function decimalSchema(scale: number, min: number, max = MAX_STORAGE_MAGNITUDE) {
+  const factor = 10 ** scale;
+  return finiteNumberSchema
+    .min(min)
+    .max(max)
+    .refine((value) => Math.abs(value * factor - Math.round(value * factor)) < 1e-7, {
+      message: `must have at most ${scale} decimal places`,
+    });
+}
+
+const quantitySchema = decimalSchema(8, Number.MIN_VALUE);
+const storageAmountSchema = decimalSchema(6, 0);
+const signedStorageAmountSchema = decimalSchema(6, -MAX_STORAGE_MAGNITUDE);
+const positiveStorageAmountSchema = decimalSchema(6, Number.MIN_VALUE);
+const signedCashAmountSchema = finiteNumberSchema
+  .min(-MAX_STORAGE_MAGNITUDE)
+  .max(MAX_STORAGE_MAGNITUDE)
+  .refine((value) => value !== 0, 'must not be zero')
+  .refine((value) => Math.abs(value * 100 - Math.round(value * 100)) < 1e-7, {
+    message: 'must be a whole-cent EUR amount',
+  });
+const expenseAmountSchema = decimalSchema(2, Number.MIN_VALUE, EXPENSE_AMOUNT_MAX);
+const standingOrderAmountSchema = decimalSchema(8, Number.MIN_VALUE, STANDING_ORDER_AMOUNT_MAX);
 const isoDaySchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, 'must be an ISO YYYY-MM-DD date')
@@ -205,7 +234,7 @@ const vaultJsonSchema: z.ZodType<VaultJson> = z.lazy(() =>
 const taxFactsShape = {
   taxMode: taxModeSchema.nullable(),
   taxCountry: taxCountrySchema.nullable(),
-  taxAmountEur: finiteNumberSchema.nullable(),
+  taxAmountEur: signedStorageAmountSchema.nullable(),
   taxParams: customTaxParamsSchema.nullable(),
 } as const;
 
@@ -241,6 +270,17 @@ function validateTaxFacts(
       message: 'custom parameters are required exactly for custom tax mode',
     });
   }
+  if (
+    value.taxMode === 'manual_per_trade' &&
+    value.taxAmountEur !== null &&
+    value.taxAmountEur < 0
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['taxAmountEur'],
+      message: 'manual per-trade tax amounts must not be negative',
+    });
+  }
 }
 
 const portfolioDataSchema = z
@@ -258,13 +298,13 @@ const transactionDataSchema = z
     portfolioId: uuidSchema,
     assetId: uuidSchema,
     side: transactionSideSchema,
-    quantity: positiveNumberSchema,
-    price: nonnegativeNumberSchema,
-    fee: nonnegativeNumberSchema,
+    quantity: quantitySchema,
+    price: storageAmountSchema,
+    fee: storageAmountSchema,
     executedAt: z.string().datetime(),
     note: z.string().max(1000).nullable(),
     allowUncovered: z.boolean(),
-    uncoveredEntryPrice: nonnegativeNumberSchema.nullable(),
+    uncoveredEntryPrice: storageAmountSchema.nullable(),
     source: sourceTagSchema,
     ...taxFactsShape,
   })
@@ -302,7 +342,7 @@ const dividendDataSchema = z
     portfolioId: uuidSchema,
     assetId: uuidSchema,
     cashSourceId: uuidSchema,
-    grossAmountEur: positiveNumberSchema,
+    grossAmountEur: positiveStorageAmountSchema,
     executedAt: z.string().datetime(),
     note: z.string().max(1000).nullable(),
     source: sourceTagSchema,
@@ -317,7 +357,7 @@ const cashMovementDataSchema = z
     portfolioId: uuidSchema,
     sourceId: uuidSchema,
     kind: cashMovementKindSchema,
-    amountEur: finiteNumberSchema.refine((value) => value !== 0, 'must not be zero'),
+    amountEur: signedCashAmountSchema,
     transactionId: uuidSchema.nullable(),
     transferId: uuidSchema.nullable(),
     counterpartSourceId: uuidSchema.nullable(),
@@ -382,7 +422,7 @@ const taxSettingDataSchema = z
   .object({
     mode: taxModeSchema,
     country: taxCountrySchema.nullable(),
-    manualDefaultAmountEur: nonnegativeNumberSchema.nullable(),
+    manualDefaultAmountEur: storageAmountSchema.nullable(),
     manualDefaultRatePct: z.number().min(0).max(100).finite().nullable(),
     customParams: customTaxParamsSchema.nullable(),
     updatedAt: z.string().datetime(),
@@ -435,7 +475,7 @@ const customAssetValueDataSchema = z
   .object({
     assetId: uuidSchema,
     date: isoDaySchema,
-    close: nonnegativeNumberSchema,
+    close: storageAmountSchema,
   })
   .strict();
 
@@ -444,7 +484,7 @@ const standingOrderDataSchema = z
     portfolioId: uuidSchema,
     kind: standingOrderKindSchema,
     assetId: uuidSchema.nullable(),
-    amount: positiveNumberSchema,
+    amount: standingOrderAmountSchema,
     currency: currencyCodeSchema,
     label: z.string().trim().min(1).max(120).nullable(),
     cadence: standingOrderCadenceSchema,
@@ -496,7 +536,7 @@ const expenseTransactionDataSchema = z
   .object({
     categoryId: uuidSchema.nullable(),
     direction: expenseDirectionSchema,
-    amount: positiveNumberSchema,
+    amount: expenseAmountSchema,
     currency: currencyCodeSchema,
     bookedOn: isoDaySchema,
     description: z.string().trim().min(1).max(500),
@@ -521,7 +561,7 @@ const expenseRuleDataSchema = z
 const expenseBudgetDataSchema = z
   .object({
     categoryId: uuidSchema,
-    amount: positiveNumberSchema,
+    amount: expenseAmountSchema,
     currency: currencyCodeSchema,
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),

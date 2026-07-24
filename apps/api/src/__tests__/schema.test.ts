@@ -48,6 +48,24 @@ describe('schema (§5.5)', () => {
     await h.ctx.redis.quit?.();
   });
 
+  it('rejects a paranoid account without a selected media set', async () => {
+    const user = await h.seedUser({
+      email: 'paranoid-media@bettertrack.test',
+      username: 'paranoid-media',
+    });
+
+    await expect(
+      h.db
+        .update(schema.users)
+        .set({
+          privacyMode: 'paranoid',
+          paranoidMediaSet: null,
+          paranoidDriveAttestedVersion: null,
+        })
+        .where(eq(schema.users.id, user.id)),
+    ).rejects.toThrow();
+  });
+
   it('enforces the transactions CHECK constraints', async () => {
     const portfolio = one(await h.db.insert(schema.portfolios).values({ userId }).returning());
 
