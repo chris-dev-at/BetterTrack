@@ -498,6 +498,12 @@ interface EndpointDef {
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
   /**
+   * Success response media type; defaults to JSON. The paranoid vault (§13.5
+   * V5-P13) is the one `application/octet-stream` read — its opaque ciphertext
+   * body is described with a binary schema.
+   */
+  responseContentType?: string;
+  /**
    * Accepts the opt-in `Idempotency-Key` header (§13.4 V4-P2a, #417) — documents
    * the header + its 409 conflict semantics. Kept in lockstep with the routes the
    * idempotency middleware is actually mounted on.
@@ -3772,6 +3778,36 @@ const endpoints: EndpointDef[] = [
     status: 200,
     response: R.OAuthTokenResponse,
   },
+
+  // Paranoid vault (§13.5 V5-P13 arc b) — the BLIND server blob store.
+  {
+    method: 'get',
+    path: '/vault',
+    tag: 'Vault',
+    summary:
+      'Read the account’s opaque encrypted vault blob (application/octet-stream) with an ETag of its version. 404 when no vault exists; 304 when If-None-Match already holds the current version. The server never decrypts or parses the ciphertext.',
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque AES-256-GCM vault envelope bytes (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vault',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of the opaque vault blob. If-None-Match: * creates the first blob; If-Match: "<version>" replaces the matching one. A stale/missing precondition returns 412/428 and never overwrites newer ciphertext; an oversized payload is 413.',
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque AES-256-GCM vault envelope bytes (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 204,
+  },
 ];
 
 const jsonContent = (schema: z.ZodTypeAny) => ({ 'application/json': { schema } });
@@ -3783,7 +3819,12 @@ const errorResponse = (description: string) => ({
 for (const ep of endpoints) {
   const responses: Record<string, ResponseConfig> = {};
   responses[ep.status] = ep.response
-    ? { description: 'Success.', content: jsonContent(ep.response) }
+    ? {
+        description: 'Success.',
+        content: ep.responseContentType
+          ? { [ep.responseContentType]: { schema: ep.response } }
+          : jsonContent(ep.response),
+      }
     : { description: 'No content.' };
   if (ep.body || ep.query || ep.params) {
     responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).');
