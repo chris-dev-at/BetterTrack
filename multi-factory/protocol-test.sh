@@ -867,6 +867,14 @@ check "relocation publication retried idempotently" 2 "$RELOC_PUBLISH_CALLS"
 echo "— queue write acknowledgement + CI-fix approval invalidation"
 # Restore production worker helpers after the stage-resume stubs above.
 . ./worker.sh
+check "pending check with empty conclusion keeps its live status" IN_PROGRESS \
+  "$(ci_rollup_join <<<'[{"conclusion":"","status":"IN_PROGRESS"}]')"
+check "completed check uses its terminal conclusion" SUCCESS \
+  "$(ci_rollup_join <<<'[{"conclusion":"SUCCESS","status":"COMPLETED"}]')"
+check "legacy status context state is preserved" PENDING \
+  "$(ci_rollup_join <<<'[{"state":"PENDING"}]')"
+malformed_rollup(){ ci_rollup_join <<<'not-an-array' >/dev/null 2>&1; }
+expect_fail "malformed check rollup fails closed" malformed_rollup
 AF=$MFSTATE/assignments/worker-9.json
 printf '%s\n' '{"issue":9,"touches":[]}' >"$AF"
 rm -f "$MFSTATE/merge-queue"/*
@@ -886,7 +894,10 @@ printf '%s\n' '{"pr":10,"issue":9,"touches":[],"approved_head":"abc","approval_k
 MERGES=0; CIFIX_CALLS=0; HUMANS=0; PR10_HEAD=abc; PR13_HEAD=abc
 gh(){
   if [ "$1 $2" = "pr view" ]; then
-    case "$5" in state) echo OPEN;; statusCheckRollup) echo FAILURE;; esac
+    case "$5" in
+      state) echo OPEN;;
+      statusCheckRollup) echo '[{"conclusion":"FAILURE","status":"COMPLETED"}]';;
+    esac
     return 0
   fi
   [ "$1 $2" = "pr merge" ] && { MERGES=$((MERGES+1)); return 0; }

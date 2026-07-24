@@ -864,6 +864,22 @@ queue_approval_check(){ # $1=queue JSON; sets QUEUE_APPROVAL_STATE
   return 0
 }
 
+ci_rollup_join(){ # stdin=statusCheckRollup JSON; stdout=comma-separated effective states
+  jq -er '
+    if type != "array" then error("statusCheckRollup must be an array") else
+      [
+        .[] |
+        (.conclusion // "") as $conclusion |
+        (.status // .state // "") as $status |
+        if ($conclusion | length) > 0 then $conclusion
+        elif ($status | length) > 0 then $status
+        else "PENDING"
+        end
+      ] | join(",")
+    end
+  '
+}
+
 merger_step(){
   local head; head=$(ls "$QUEUE" 2>/dev/null | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -1)
   [ -n "$head" ] || return 0
@@ -894,10 +910,16 @@ merger_step(){
   esac
 
   # CI rollup, non-blocking (empty rollup = checks not reported yet = pending).
-  local rollup
-  rollup=$(gh pr view "$pr" --json statusCheckRollup \
-    -q '[.statusCheckRollup[]| .conclusion // .status // "PENDING"]|join(",")' 2>/dev/null || echo QUERY_FAILED)
-  [ "$rollup" = QUERY_FAILED ] && { log "merger: rollup read failed for PR #$pr — retrying next tick"; return 0; }
+  local rollup rollup_json
+  rollup_json=$(gh pr view "$pr" --json statusCheckRollup \
+    -q '.statusCheckRollup' 2>/dev/null) || {
+    log "merger: rollup read failed for PR #$pr — retrying next tick"
+    return 0
+  }
+  rollup=$(ci_rollup_join <<<"$rollup_json" 2>/dev/null) || {
+    log "merger: malformed rollup for PR #$pr — retrying next tick"
+    return 0
+  }
   if grep -qE 'FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED' <<<"$rollup"; then
     ci_fix_red_step "$f" "$n" "$pr" "$approved_head"
     return 0
