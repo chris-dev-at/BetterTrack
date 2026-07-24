@@ -47,6 +47,7 @@ test('runtime, GitHub and control failures stay distinct from a healthy stopped 
       reportedAmount,
       fmtCliUsd,
       ledgerAmount,
+      validSnapshot,
       setControlFresh(value) { controlFresh = value; },
     };
   `)();
@@ -80,6 +81,16 @@ test('runtime, GitHub and control failures stay distinct from a healthy stopped 
     helpers.controlPlaneState({ control: { error: 'snapshot failed' } }).available,
     false,
   );
+  assert.equal(
+    helpers.validSnapshot({
+      protocol: {},
+      docker: { multi: {}, single: {} },
+      github: {},
+    }),
+    true,
+  );
+  assert.equal(helpers.validSnapshot({ protocol: {}, docker: {}, github: {} }), false);
+  assert.equal(helpers.validSnapshot({}), false);
 
   assert.match(script, /Control plane unavailable/);
   assert.match(script, /Docker runtime status unavailable/);
@@ -165,15 +176,21 @@ test('legacy control APIs cannot offer a new ClaudeX route but preserve an exist
 });
 
 test('OpenAI issue rows identify Sol, Terra and Luna for model or models payloads', () => {
-  const { openAIModelLabel } = new Function(`
+  const { openAIModelLabel, openAIProviderLabel, openAIHarnessLabel } = new Function(`
     ${between(script, 'const openAIModelLabel =', 'function codexIssueRows')}
-    return { openAIModelLabel };
+    return { openAIModelLabel, openAIProviderLabel, openAIHarnessLabel };
   `)();
 
   assert.equal(openAIModelLabel('gpt-5.6-sol'), 'Sol (gpt-5.6-sol)');
   assert.equal(openAIModelLabel('codex-api/gpt-5.6-terra'), 'Terra (codex-api/gpt-5.6-terra)');
   assert.equal(openAIModelLabel('gpt-5.6-luna'), 'Luna (gpt-5.6-luna)');
+  assert.equal(openAIProviderLabel('claudex'), 'ClaudeX');
+  assert.equal(openAIProviderLabel('codex'), 'Native Codex');
+  assert.equal(openAIHarnessLabel('claude-code'), 'Claude Code + CCR');
+  assert.equal(openAIHarnessLabel('codex-cli'), 'Codex CLI');
   assert.match(script, /Array\.isArray\(r\.models\) \? r\.models : r\.model/);
+  assert.match(script, /Array\.isArray\(r\.providers\) \? r\.providers : r\.provider/);
+  assert.match(script, /Array\.isArray\(r\.harnesses\) \? r\.harnesses : r\.harness/);
   assert.match(script, /\.\.\.models\.map\(openAIModelLabel\)/);
 });
 

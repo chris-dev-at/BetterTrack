@@ -519,8 +519,9 @@
         padding: 26px 18px;
         min-height: 430px;
       }
-      #flowwrap.off::after {
-        content: 'factory stopped — start it to see the pipeline live';
+      #flowwrap.off::after,
+      #flowwrap.unavailable::after,
+      #flowwrap.stale::after {
         position: absolute;
         inset: 0;
         display: flex;
@@ -530,6 +531,17 @@
         font-size: 14px;
         background: rgba(19, 19, 18, 0.55);
         border-radius: 12px;
+      }
+      #flowwrap.off::after {
+        content: 'factory stopped — start it to see the pipeline live';
+      }
+      #flowwrap.unavailable::after {
+        content: 'runtime unavailable — Docker status could not be read';
+        color: var(--warn);
+      }
+      #flowwrap.stale::after {
+        content: 'control data unavailable — reconnecting';
+        color: var(--warn);
       }
       #flowsvg {
         position: absolute;
@@ -1508,6 +1520,10 @@
         background: var(--surface);
         font-size: 12px;
       }
+      #capacity-card.runtime-unavailable,
+      #workergrid.runtime-unavailable .card {
+        border-color: rgba(242, 189, 104, 0.42);
+      }
       .warnbox {
         border-color: rgba(242, 189, 104, 0.42);
         border-radius: 12px;
@@ -1604,10 +1620,16 @@
         padding: 28px 20px;
         overflow: hidden;
       }
-      #flowwrap.off::after {
+      #flowwrap.off::after,
+      #flowwrap.unavailable::after,
+      #flowwrap.stale::after {
         background: rgba(7, 16, 18, 0.72);
         color: var(--ink2);
         backdrop-filter: blur(3px);
+      }
+      #flowwrap.unavailable::after,
+      #flowwrap.stale::after {
+        color: var(--warn);
       }
       .fnode {
         min-width: 112px;
@@ -2236,7 +2258,9 @@
     <div id="sfwarn" class="warnbox" style="display: none">
       ⚠️ <b>Single factory is running/paused</b> — the multi-factory refuses to start until it
       stops.
-      <button class="danger" onclick="act('single-stop', this, true)">Stop single factory</button>
+      <button id="b-single-stop" class="danger" onclick="act('single-stop', this, true)" disabled>
+        Stop single factory
+      </button>
     </div>
 
     <div class="bar">
@@ -2264,10 +2288,11 @@
         id="b-pause"
         title="docker compose pause — freeze all containers"
         onclick="act('pause', this)"
+        disabled
       >
         ⏸ Pause
       </button>
-      <button id="b-unpause" title="docker compose unpause" onclick="act('unpause', this)">
+      <button id="b-unpause" title="docker compose unpause" onclick="act('unpause', this)" disabled>
         ⏵ Resume
       </button>
       <div class="sep"></div>
@@ -2276,6 +2301,7 @@
         id="b-run"
         title="Normal operation: composer keeps the queue full"
         onclick="act('mode-run', this)"
+        disabled
       >
         🟢 Run
       </button>
@@ -2283,6 +2309,7 @@
         id="b-runout"
         title="No NEW composed issues; drains until every open autopilot issue is done, then shuts down"
         onclick="act('mode-run-out', this, true)"
+        disabled
       >
         🌗 Run out
       </button>
@@ -2290,6 +2317,7 @@
         id="b-close"
         title="Takes no more issues; finishes only what's in flight, then shuts down"
         onclick="act('mode-close-down', this, true)"
+        disabled
       >
         🌙 Close down
       </button>
@@ -2300,6 +2328,7 @@
         class="danger"
         title="Hard stop (containers kept, resumable)"
         onclick="act('stop', this, true)"
+        disabled
       >
         ⏹ Stop
       </button>
@@ -2308,6 +2337,7 @@
         class="danger"
         title="Stop and remove containers (state + clones persist)"
         onclick="act('down', this, true)"
+        disabled
       >
         🗑 Remove containers
       </button>
@@ -2358,17 +2388,23 @@
               <label class="cb" id="tg-repeatwrap"
                 ><input type="checkbox" id="tg-repeat" checked />repeat</label
               >
-              <button onclick="tgAdd(this)">＋ Add</button>
+              <button id="tg-add" onclick="tgAdd(this)" disabled>＋ Add</button>
             </div>
           </div>
           <div class="card" id="capacity-card">
             <h2>Workers <span class="hint" id="wk-running"></span></h2>
             <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
               <span class="stepper"
-                ><button onclick="wkStep(-1, this)">−</button><span id="wk-n">2</span
-                ><button onclick="wkStep(1, this)">＋</button></span
+                ><button id="wk-minus" onclick="wkStep(-1, this)" disabled>−</button
+                ><span id="wk-n">2</span
+                ><button id="wk-plus" onclick="wkStep(1, this)" disabled>＋</button></span
               >
-              <button id="wk-apply" style="display: none" onclick="act('restart', this, true)">
+              <button
+                id="wk-apply"
+                style="display: none"
+                onclick="act('restart', this, true)"
+                disabled
+              >
                 ↻ Apply &amp; restart
               </button>
               <span class="hint" id="wk-note"></span>
@@ -2427,6 +2463,9 @@
           <span class="pill" id="work-summary">waiting for state</span>
         </div>
         <div id="flowwrap">
+          <div id="flow-state" class="sr-only" aria-live="polite">
+            Waiting for Docker runtime status.
+          </div>
           <svg id="flowsvg"></svg>
           <div id="flowcols"></div>
         </div>
@@ -2496,7 +2535,9 @@
             </div>
           </div>
           <div class="addrow" style="margin-top: 12px">
-            <button class="primary" onclick="mSave(this)">💾 Save routing</button>
+            <button id="m-save" class="primary" onclick="mSave(this)" disabled>
+              💾 Save routing
+            </button>
             <button
               onclick="
                 mDirty = false;
@@ -2944,6 +2985,10 @@
       /* ---- actions ---- */
       const armed = new Map();
       async function act(action, btn, confirm = false, payload = {}) {
+        if (!controlPlaneState(S).available) {
+          toast('Control plane unavailable; action was not sent.', false);
+          return { ok: false, message: 'control unavailable' };
+        }
         if (confirm && armed.get(action) !== true) {
           armed.set(action, true);
           const old = btn.textContent;
@@ -3024,6 +3069,7 @@
         stop: 'Hard stop',
       };
       function renderTriggers(list) {
+        const writable = controlPlaneState(S).available;
         $('triggers').innerHTML =
           (list || [])
             .map((t) => {
@@ -3040,7 +3086,7 @@
                 : t.waitingReset
                   ? ' — fired, waiting for new window…'
                   : ` — fired ${tago(t.firedAt)}${t.note ? ' (' + esc(t.note) + ')' : ''}`;
-              return `<div class="trow${t.armed || t.waitingReset ? '' : ' fired'}"><span>${what} → <b>${ACTION_LABEL[t.action] || esc(t.action)}</b>${extra}${state}</span><button class="x" title="remove" onclick="act('trigger-remove',this,false,{id:'${esc(t.id)}'})">✕</button></div>`;
+              return `<div class="trow${t.armed || t.waitingReset ? '' : ' fired'}"><span>${what} → <b>${ACTION_LABEL[t.action] || esc(t.action)}</b>${extra}${state}</span><button class="x" title="remove" onclick="act('trigger-remove',this,false,{id:'${esc(t.id)}'})"${writable ? '' : ' disabled'}>✕</button></div>`;
             })
             .join('') ||
           '<div class="hint">no triggers — add one below (e.g. 5h ≥ 40% → Close down, start on new window)</div>';
@@ -3377,7 +3423,12 @@
         if (activeTab !== 'models' || !s) return;
         syncProviderDefs(s);
         const pv = s.providers || {};
-        const pj = JSON.stringify({ pv, registry: registryEntries(s), models: s.models });
+        const pj = JSON.stringify({
+          pv,
+          registry: registryEntries(s),
+          models: s.models,
+          controlAvailable: controlPlaneState(s).available,
+        });
         if (pj !== pLast) {
           pLast = pj;
           $('provs').innerHTML = providerDefs
@@ -3386,7 +3437,14 @@
               const route = Object.values(s.models?.difficulties || {}).find(
                 (entry) => entry.provider === def.id,
               );
-              const canTest = def.selectable !== false && (!!pv[def.id] || registryAdvertised);
+              const controlAvailable = controlPlaneState(s).available;
+              const canTest =
+                controlAvailable &&
+                def.selectable !== false &&
+                (!!pv[def.id] || registryAdvertised);
+              const disabledTitle = controlAvailable
+                ? 'Control API upgrade required'
+                : 'Control plane unavailable';
               return `<article class="provider-card">
                 <div class="provider-top">
                   <div><h3>${esc(def.label)} ${def.experimental ? '<span class="exp-tag">experimental</span>' : ''}</h3><div class="hint">${esc(def.harness || '')}</div></div>
@@ -3395,7 +3453,7 @@
                 <div class="provider-sub">${esc(state.detail || def.description)}</div>
                 <div class="provider-meta">
                   <span class="provider-model" title="${esc(route?.model || def.defaultModel || 'No route selected')}">${esc(route?.model || def.defaultModel || 'No route selected')}</span>
-                  <button class="small" ${canTest ? '' : 'disabled title="Control API upgrade required"'} onclick="testProvider('${def.id}',this)">Test route</button>
+                  <button class="small" ${canTest ? '' : `disabled title="${disabledTitle}"`} onclick="testProvider('${def.id}',this)">Test route</button>
                 </div>
               </article>`;
             })
@@ -3681,6 +3739,15 @@
                 : 'No fresh control snapshot is available. Reconnecting…'),
         };
       };
+      const recordValue = (value) =>
+        value !== null && typeof value === 'object' && !Array.isArray(value);
+      const validSnapshot = (value) =>
+        recordValue(value) &&
+        recordValue(value.protocol) &&
+        recordValue(value.docker) &&
+        recordValue(value.docker.multi) &&
+        recordValue(value.docker.single) &&
+        recordValue(value.github);
       function renderHead(s, state, health) {
         const p = s.protocol || {};
         const node = $('head-factory');
@@ -4021,6 +4088,13 @@
         $('b-down').disabled = !control.available || !state.available || !multiC.length;
         for (const id of ['b-run', 'b-runout', 'b-close'])
           $(id).disabled = !control.available || !state.available || !on;
+        $('tg-add').disabled = !control.available;
+        $('m-save').disabled = !control.available;
+        for (const id of ['wk-minus', 'wk-plus'])
+          $(id).disabled = !control.available || !state.available;
+        $('wk-apply').disabled = !control.available || !state.available || !on;
+        if (!control.available)
+          document.querySelectorAll('#provs button').forEach((button) => (button.disabled = true));
         renderHead(s, state, { control, github });
         renderSubscriptionUsage(u);
 
@@ -4060,15 +4134,25 @@
         const liveWorkers = multiC.filter(
           (c) => /^worker-/.test(c.service) && /running|paused/i.test(c.state),
         ).length;
-        $('wk-running').textContent =
-          running || paused ? `running: ${liveWorkers}` : 'factory stopped';
-        const mismatch = (running || paused) && liveWorkers !== desired;
+        $('capacity-card').classList.toggle('runtime-unavailable', !state.available);
+        $('wk-running').textContent = !state.available
+          ? 'runtime unavailable'
+          : !control.available
+            ? 'control data stale'
+            : running || paused
+              ? `running: ${liveWorkers}`
+              : 'factory stopped';
+        const mismatch = state.available && on && liveWorkers !== desired;
         $('wk-apply').style.display = mismatch ? '' : 'none';
-        $('wk-note').textContent = mismatch
-          ? `restart applies ${desired} workers`
-          : running || paused
-            ? ''
-            : 'applies on next start';
+        $('wk-note').textContent = !state.available
+          ? 'Docker worker status unavailable'
+          : !control.available
+            ? 'Waiting for a fresh control snapshot'
+            : mismatch
+              ? `restart applies ${desired} workers`
+              : on
+                ? ''
+                : 'applies on next start';
 
         /* --- unified issues --- */
         const joined = github.available ? joinIssues(s) : [];
@@ -4121,7 +4205,7 @@
 
         renderEvents();
 
-        if (activeTab === 'flow') renderFlow(s, running || paused);
+        if (activeTab === 'flow') renderFlow(s, state);
         renderDetail(s, multiC, state, github);
         if (activeTab === 'models') renderModels(s);
       }
@@ -4153,10 +4237,21 @@
         const def = providerDef(route.provider);
         return `${def.label} · ${route.model}${route.effort ? ` @ ${route.effort}` : ''}`;
       }
-      function renderFlow(s, on) {
+      function renderFlow(s, state = runtimeState(s?.docker?.multi)) {
         const p = s.protocol || {};
         const wrap = $('flowwrap');
-        wrap.classList.toggle('off', !on);
+        const control = controlPlaneState(s);
+        const on = state.on;
+        wrap.classList.toggle('off', state.available && control.available && !on);
+        wrap.classList.toggle('unavailable', !state.available);
+        wrap.classList.toggle('stale', state.available && !control.available);
+        $('flow-state').textContent = !state.available
+          ? `Docker runtime unavailable: ${state.detail}`
+          : !control.available
+            ? `Control data unavailable: ${control.detail}`
+            : on
+              ? 'Factory pipeline is live.'
+              : 'Factory is stopped.';
         const activity = p.masterActivity?.activity || 'idle';
         const workers = p.workers || [];
         const queue = p.queue || [];
@@ -4259,6 +4354,13 @@
         const p = s.protocol || {},
           gh = s.github || {},
           led = s.ledger || {};
+        $('workergrid').classList.toggle('runtime-unavailable', !state.available);
+        $('workergrid').setAttribute(
+          'aria-label',
+          state.available
+            ? 'Master and worker runtime status'
+            : 'Worker runtime status unavailable',
+        );
         $('kpis').innerHTML =
           kpi(
             state.available
@@ -4618,6 +4720,13 @@
               : '';
         return family ? `${family} (${raw})` : raw;
       };
+      const openAIProviderLabel = (provider) =>
+        ({ claudex: 'ClaudeX', codex: 'Native Codex' })[provider] || String(provider);
+      const openAIHarnessLabel = (harness) =>
+        ({
+          'claude-code': 'Claude Code + CCR',
+          'codex-cli': 'Codex CLI',
+        })[harness] || String(harness);
       function codexIssueRows(rows) {
         $('ua-codex-issues').innerHTML =
           rows
@@ -4629,9 +4738,15 @@
               const models = listOfStrings(
                 Array.isArray(r.models) ? r.models : r.model ? [r.model] : [],
               );
+              const providers = listOfStrings(
+                Array.isArray(r.providers) ? r.providers : r.provider ? [r.provider] : [],
+              );
+              const harnesses = listOfStrings(
+                Array.isArray(r.harnesses) ? r.harnesses : r.harness ? [r.harness] : [],
+              );
               const route = [
-                ...(Array.isArray(r.providers) ? r.providers : r.provider ? [r.provider] : []),
-                ...(Array.isArray(r.harnesses) ? r.harnesses : r.harness ? [r.harness] : []),
+                ...providers.map(openAIProviderLabel),
+                ...harnesses.map(openAIHarnessLabel),
                 ...models.map(openAIModelLabel),
               ]
                 .filter(Boolean)
@@ -4848,37 +4963,49 @@
       }
 
       /* ---- live ---- */
+      function showControlUnavailable(label = 'reconnecting…') {
+        const changed = controlFresh;
+        controlFresh = false;
+        $('livedot').className = 'dot stale';
+        $('livetxt').textContent = label;
+        if (changed && S) render(S);
+      }
       function connect() {
         const es = new EventSource('/api/events');
         es.onmessage = (e) => {
-          lastEvent = Date.now();
-          controlFresh = true;
+          const previous = S;
           try {
-            render(JSON.parse(e.data));
+            const payload = JSON.parse(e.data);
+            if (!validSnapshot(payload)) throw new Error('invalid snapshot shape');
+            controlFresh = true;
+            render(payload);
+            lastEvent = Date.now();
+            $('livedot').className = 'dot live';
+            $('livetxt').textContent = 'live';
           } catch {
-            /* skip bad frame */
+            controlFresh = false;
+            S = previous;
+            if (S)
+              try {
+                render(S);
+              } catch {
+                /* retain the fail-closed static controls */
+              }
+            $('livedot').className = 'dot stale';
+            $('livetxt').textContent = 'invalid snapshot';
           }
         };
         es.onerror = () => {
           es.close();
-          if (controlFresh) {
-            controlFresh = false;
-            if (S) render(S);
-          }
+          showControlUnavailable();
           setTimeout(connect, 3000);
         };
       }
       setInterval(() => {
-        const fresh = Date.now() - lastEvent < 6000;
-        if (fresh !== controlFresh) {
-          controlFresh = fresh;
-          if (S) render(S);
-        }
-        $('livedot').className = 'dot ' + (fresh ? 'live' : 'stale');
-        $('livetxt').textContent = fresh ? 'live' : 'reconnecting…';
+        if (controlFresh && Date.now() - lastEvent >= 6000) showControlUnavailable();
       }, 1000);
       window.addEventListener('resize', () => {
-        if (S && activeTab === 'flow') renderFlow(S, runtimeState(S.docker?.multi).on);
+        if (S && activeTab === 'flow') renderFlow(S, runtimeState(S.docker?.multi));
       });
       organizeWorkspace();
       setTab(activeTab);
