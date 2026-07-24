@@ -257,7 +257,8 @@ mf_latest_approval_for_head(){ # $1=comments JSON $2=head; sets MF_APPROVAL_*
 
 mf_pr_comments_json(){ # $1=PR number
   local out
-  out=$(gh api --paginate "repos/$REPO/issues/$1/comments?per_page=100" \
+  out=$(gh api -H 'Cache-Control: no-cache' --paginate \
+    "repos/$REPO/issues/$1/comments?per_page=100" \
     --jq '.[] | {id,body,created_at}' 2>/dev/null) || return 1
   jq -cs '.' <<<"$out"
 }
