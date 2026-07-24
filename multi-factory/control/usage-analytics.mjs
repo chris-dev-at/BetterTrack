@@ -1,7 +1,7 @@
 // Pure ledger pricing/aggregation used by the dashboard and deterministic tests.
-// `cost_usd` remains actual CLI-reported/subscription spend. The separate Codex
-// estimate below answers: what would the same measured tokens cost at standard
-// OpenAI API rates?
+// `cost_usd` remains separate from OpenAI-family estimates. Native Codex is
+// derived from the standard-rate table; ClaudeX preserves Claude Code's recorded
+// per-call estimate and never substitutes that table.
 
 export const CODEX_STANDARD_PRICING = Object.freeze({
   'gpt-5.6-sol': Object.freeze({ input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 }),
@@ -27,7 +27,7 @@ export const CODEX_PRICING_META = Object.freeze({
 
 export const OPENAI_FAMILY_PRICING_META = Object.freeze({
   basis:
-    'API-equivalent estimates only; native Codex uses the pricing table and ClaudeX uses its ledger estimate',
+    'API-equivalent estimates only; native Codex uses the pricing table and ClaudeX uses Claude Code CLI estimates recorded in the ledger',
   effectiveDate: '2026-07-24',
   ratesPerMillionTokens: CODEX_STANDARD_PRICING,
   actualSpend: false,
@@ -198,6 +198,7 @@ export function normalizeOpenAiLedgerRow(row) {
         model: codex.model,
       }),
       actualUsd: actual.known ? actual.value : null,
+      estimateKind: 'derived',
     };
   }
 
@@ -222,6 +223,13 @@ export function normalizeOpenAiLedgerRow(row) {
   usage.total = usage.input + usage.cachedInput + usage.cacheWrite + usage.output;
 
   const apiEquivalent = ownNumber(row, ['api_equivalent_usd']);
+  const cliEstimateSource = row.api_equivalent_source === 'claude-code-total_cost_usd';
+  const cliEstimatePricing =
+    row.api_equivalent_pricing == null ||
+    row.api_equivalent_pricing === 'claude-code-local-estimate';
+  const conflictingLedgerProvenance =
+    (row.api_equivalent_source != null && !cliEstimateSource) || !cliEstimatePricing;
+  const cliEstimateRecorded = cliEstimateSource && cliEstimatePricing;
   const explicitlyIncomplete = [
     'missing-telemetry',
     'partial-telemetry',
@@ -229,7 +237,9 @@ export function normalizeOpenAiLedgerRow(row) {
     'unpriced',
   ].includes(row.api_equivalent_coverage);
   const estimateUsd =
-    apiEquivalent.known && !explicitlyIncomplete ? round(apiEquivalent.value) : null;
+    apiEquivalent.known && cliEstimateRecorded && !explicitlyIncomplete
+      ? round(apiEquivalent.value)
+      : null;
   return {
     row,
     provider,
@@ -243,8 +253,16 @@ export function normalizeOpenAiLedgerRow(row) {
     }),
     usage,
     estimateUsd,
+    estimateKind: 'cli',
     actualUsd: actual.known ? actual.value : null,
-    pricingStatus: estimateUsd == null ? 'missing-ledger-estimate' : 'complete',
+    pricingStatus:
+      estimateUsd != null
+        ? 'complete'
+        : conflictingLedgerProvenance
+          ? 'conflicting-ledger-provenance'
+          : apiEquivalent.known && !cliEstimateRecorded
+            ? 'unattributed-ledger-estimate'
+            : 'missing-ledger-estimate',
     telemetryComplete: estimateUsd != null,
     cacheWriteRecorded:
       estimateUsd != null ||
@@ -270,8 +288,14 @@ const emptyBucket = (key) => ({
   unknownModelRecords: 0,
   legacyOutputAmbiguousRecords: 0,
   missingLedgerEstimateRecords: 0,
+  unattributedLedgerEstimateRecords: 0,
+  conflictingLedgerProvenanceRecords: 0,
   cacheWriteUnreportedRecords: 0,
   estimatedUsdKnown: 0,
+  cliEstimateUsdKnown: 0,
+  derivedEstimateUsdKnown: 0,
+  cliEstimateRecords: 0,
+  derivedEstimateRecords: 0,
   tokens: { input: 0, cachedInput: 0, cacheWrite: 0, output: 0, total: 0 },
 });
 const addInfo = (bucket, info) => {
@@ -282,15 +306,26 @@ const addInfo = (bucket, info) => {
     else if (info.pricingStatus === 'unknown-model') bucket.unknownModelRecords += 1;
     else if (info.pricingStatus === 'missing-ledger-estimate')
       bucket.missingLedgerEstimateRecords += 1;
+    else if (info.pricingStatus === 'unattributed-ledger-estimate')
+      bucket.unattributedLedgerEstimateRecords += 1;
+    else if (info.pricingStatus === 'conflicting-ledger-provenance')
+      bucket.conflictingLedgerProvenanceRecords += 1;
     else bucket.partialTelemetryRecords += 1;
   } else {
     bucket.pricedRecords += 1;
     bucket.estimatedUsdKnown += info.estimateUsd;
+    if (info.estimateKind === 'cli') {
+      bucket.cliEstimateRecords += 1;
+      bucket.cliEstimateUsdKnown += info.estimateUsd;
+    } else if (info.estimateKind === 'derived') {
+      bucket.derivedEstimateRecords += 1;
+      bucket.derivedEstimateUsdKnown += info.estimateUsd;
+    }
   }
   if (!info.cacheWriteRecorded) bucket.cacheWriteUnreportedRecords += 1;
 };
 const finishBucket = (bucket) => {
-  const { estimatedUsdKnown, ...rest } = bucket;
+  const { estimatedUsdKnown, cliEstimateUsdKnown, derivedEstimateUsdKnown, ...rest } = bucket;
   const coverage =
     bucket.records === 0
       ? 'none'
@@ -302,6 +337,8 @@ const finishBucket = (bucket) => {
   return {
     ...rest,
     estimatedUsd: bucket.pricedRecords ? round(estimatedUsdKnown) : null,
+    cliEstimateUsd: bucket.cliEstimateRecords ? round(cliEstimateUsdKnown) : null,
+    derivedEstimateUsd: bucket.derivedEstimateRecords ? round(derivedEstimateUsdKnown) : null,
     coverage,
   };
 };

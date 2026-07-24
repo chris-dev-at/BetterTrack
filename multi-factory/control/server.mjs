@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { buildUsageAnalytics, parseUsageRange } from './usage-analytics.mjs';
 import {
   DIFFICULTIES,
+  composerRouteAllowed,
   defaultRouteForProvider,
   normalizeModelRouting,
   normalizeRouteEntry,
@@ -310,7 +311,7 @@ let ghCache = { at: 0, data: null };
 async function github() {
   if (Date.now() - ghCache.at < 30000 && ghCache.data) return ghCache.data;
   const gh = (args) => run('gh', args, { cwd: REPO_ROOT });
-  const [issues, prs, merged, needsHuman] = await Promise.all([
+  const [issues, prs, merged, needsHuman, awaitingOwner] = await Promise.all([
     gh([
       'issue',
       'list',
@@ -329,7 +330,7 @@ async function github() {
       '--state',
       'open',
       '--json',
-      'number,title,headRefName,statusCheckRollup',
+      'number,title,headRefName,statusCheckRollup,mergeStateStatus,isDraft',
       '--limit',
       '30',
     ]),
@@ -348,6 +349,18 @@ async function github() {
       'list',
       '--label',
       'needs-human',
+      '--state',
+      'open',
+      '--json',
+      'number,title',
+      '--limit',
+      '30',
+    ]),
+    gh([
+      'issue',
+      'list',
+      '--label',
+      'awaiting-owner',
       '--state',
       'open',
       '--json',
@@ -402,9 +415,21 @@ async function github() {
         title: p.title,
         branch: p.headRefName,
         checks: rollup(p),
+        mergeState: p.isDraft ? 'draft' : String(p.mergeStateStatus || 'unknown').toLowerCase(),
       })),
       merged: parse(merged, []),
       needsHuman: parse(needsHuman, []),
+      awaitingOwner: parse(awaitingOwner, []),
+      sources: {
+        needsHuman: {
+          available: needsHuman.ok,
+          error: needsHuman.ok ? null : needsHuman.stderr.slice(0, 200) || 'query failed',
+        },
+        awaitingOwner: {
+          available: awaitingOwner.ok,
+          error: awaitingOwner.ok ? null : awaitingOwner.stderr.slice(0, 200) || 'query failed',
+        },
+      },
       error: [issues, prs].find((r) => !r.ok)?.stderr?.slice(0, 200) || null,
     },
   };
@@ -896,6 +921,11 @@ async function doAction(action, payload = {}) {
         checker: DIFFS.includes(roles.checker) ? roles.checker : 'hard',
         reviewFloor: DIFFS.includes(roles.reviewFloor) ? roles.reviewFloor : 'intermediate',
       };
+      if (!composerRouteAllowed(out.difficulties[out.roles.composer]))
+        return {
+          ok: false,
+          message: 'composer route must use Claude Fable, Claude Opus, or GPT-5.6 Sol',
+        };
       await mkdir(CONTROL, { recursive: true });
       const tmp = `${MODELS_FILE}.tmp${Date.now()}`;
       await writeFile(tmp, JSON.stringify(out, null, 2));

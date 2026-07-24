@@ -175,6 +175,20 @@ export function normalizeRouteEntry(entry) {
   };
 }
 
+// Composer planning is a top-tier role. Keep this policy independent from the
+// owner-selected difficulty slot so changing a slot cannot silently downgrade
+// composition to a smaller model.
+export function composerRouteAllowed(entry) {
+  const normalized = normalizeRouteEntry(entry);
+  if (!normalized) return false;
+  if (normalized.provider === 'claude')
+    return /^claude-(?:fable|opus)-[A-Za-z0-9._:-]+$/.test(normalized.model);
+  return (
+    (normalized.provider === 'claudex' || normalized.provider === 'codex') &&
+    normalized.model === 'gpt-5.6-sol'
+  );
+}
+
 export function defaultRouteForProvider(provider) {
   const definition = providerDefinition(provider);
   if (!definition) return null;

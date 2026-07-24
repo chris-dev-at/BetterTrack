@@ -98,6 +98,20 @@ test('runtime, GitHub and control failures stay distinct from a healthy stopped 
     }),
     false,
   );
+  assert.equal(
+    helpers.validSnapshot({
+      protocol: { workers: [], queue: [], events: [] },
+      docker: { multi: { containers: [] }, single: { containers: [] } },
+      github: {
+        issues: [],
+        prs: [],
+        merged: [],
+        needsHuman: [],
+        awaitingOwner: {},
+      },
+    }),
+    false,
+  );
   assert.equal(helpers.validSnapshot({ protocol: {}, docker: {}, github: {} }), false);
   assert.equal(helpers.validSnapshot({}), false);
 
@@ -135,6 +149,46 @@ test('missing estimates are unreported while a confirmed numeric zero remains ze
   assert.doesNotMatch(script, /\$\{led\.multi(?:Today|Total) \?\? 0\}/);
   assert.match(script, /\$\('ua-cli-estimate'\)\.textContent = 'Not reported'/);
   assert.match(script, /\$\('ua-api-estimate'\)\.textContent = 'unavailable'/);
+});
+
+test('OpenAI estimate labels preserve CLI, derived, mixed, and unavailable provenance', () => {
+  const helpers = new Function(`
+    ${between(script, 'const finiteNumber =', 'const sourceError =')}
+    ${between(script, 'const fmtEstimate =', 'const coverageText =')}
+    return { estimateSourceText };
+  `)();
+
+  assert.equal(
+    helpers.estimateSourceText({
+      cliEstimateUsd: 13.377569,
+      cliEstimateRecords: 1,
+    }),
+    'CLI est. $13.38',
+  );
+  assert.equal(
+    helpers.estimateSourceText({
+      derivedEstimateUsd: 0.517693,
+      derivedEstimateRecords: 2,
+    }),
+    'derived est. $0.52',
+  );
+  assert.equal(
+    helpers.estimateSourceText({
+      cliEstimateUsd: 13.377569,
+      cliEstimateRecords: 1,
+      derivedEstimateUsd: 0.517693,
+      derivedEstimateRecords: 2,
+    }),
+    'combined $13.90 · CLI $13.38 + derived $0.52',
+  );
+  assert.equal(
+    helpers.estimateSourceText({
+      estimatedUsd: 9.99,
+      records: 1,
+      pricedRecords: 1,
+    }),
+    'estimate unavailable',
+  );
 });
 
 test('legacy control APIs cannot offer a new ClaudeX route but preserve an existing one', () => {

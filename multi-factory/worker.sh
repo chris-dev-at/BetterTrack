@@ -54,14 +54,51 @@ HB_PID=""
 # The toucher ignores HUP/PIPE so a closing parent stream can't silently take it
 # down (issue #497: a dead toucher beside a live writer let the master call a FALSE
 # stall on a healthy worker at 00:32, 2026-07-16).
-hb_start(){ ( trap '' HUP PIPE; while :; do date -Is >"$HB" 2>/dev/null || true; sleep 300; done ) & HB_PID=$!; }
+hb_start(){
+  local exit_trap launch_rc
+  exit_trap=$(trap -p EXIT) || return 1
+  # Clear the caller's EXIT trap before forking: a child killed before its first
+  # instruction cannot inherit parent cleanup. Restore the exact trap immediately
+  # after the fork; the child-side clear below remains defense in depth.
+  trap - EXIT
+  (
+    trap - EXIT
+    trap '' HUP PIPE
+    while :; do date -Is >"$HB" 2>/dev/null || true; sleep 300; done
+  ) &
+  launch_rc=$?
+  if [ "$launch_rc" -eq 0 ]; then
+    HB_PID=$!
+  else
+    HB_PID=""
+  fi
+  if [ -n "$exit_trap" ] && ! eval "$exit_trap"; then
+    [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null || true
+    [ -n "$HB_PID" ] && wait "$HB_PID" 2>/dev/null || true
+    HB_PID=""
+    return 1
+  fi
+  if [ "$launch_rc" -ne 0 ] || [ -z "$HB_PID" ]; then
+    HB_PID=""
+    return 1
+  fi
+}
 # Is the toucher process actually running right now?
 hb_alive(){ [ -n "$HB_PID" ] && kill -0 "$HB_PID" 2>/dev/null; }
 # (Re)spawn the toucher whenever it is not alive. Called at the top of run_cycle and
 # before every role attempt so a dead toucher can never coexist with a live role run
 # beyond a single attempt window ("verified alive each attempt loop iteration").
-hb_ensure(){ hb_alive || hb_start; }
-hb_stop(){ [ -n "$HB_PID" ] && kill "$HB_PID" 2>/dev/null; HB_PID=""; return 0; }
+hb_ensure(){ hb_alive || { hb_stop; hb_start; }; }
+hb_stop(){
+  local pid=$HB_PID
+  case "$pid" in ''|0*|*[!0-9]*) HB_PID=""; return 0;; esac
+  # Target and reap this shell only. Its current nested sleep may outlive it;
+  # broad process-group signaling could kill unrelated work.
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  HB_PID=""
+  return 0
+}
 [ "${MF_SOURCE_ONLY:-0}" = 1 ] || trap 'hb_stop' EXIT
 
 enqueue_merge(){ # $1=pr $2=issue $3=approved head $4=reviewer|checker $5=comment id

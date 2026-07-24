@@ -10,7 +10,20 @@ set -uo pipefail
 TEST_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$TEST_SCRIPT_DIR"
 
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d)
+TEST_ROOT_BASHPID=${BASHPID:-}
+TEST_ROOT_SUBSHELL=${BASH_SUBSHELL:-0}
+test_cleanup(){
+  if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+    [ -n "$TEST_ROOT_BASHPID" ] || return 0
+    [ "${BASHPID:-}" = "$TEST_ROOT_BASHPID" ] || return 0
+  else
+    # Best-effort Bash 3.2 guard for the parenthesized-child regression below.
+    [ "${BASH_SUBSHELL:-0}" -eq "$TEST_ROOT_SUBSHELL" ] || return 0
+  fi
+  rm -rf "$T"
+}
+trap test_cleanup EXIT
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✓ %s\n' "$1"; }
 bad(){ FAIL=$((FAIL+1)); printf '  ✗ %s\n' "$1"; }
@@ -229,8 +242,56 @@ hb_alive; check "hb_alive false after the toucher is killed" "1" "$?"
 hb_ensure
 hb_alive; check "hb_ensure respawns a dead toucher" "0" "$?"
 [ -n "$HB_PID" ] && [ "$HB_PID" != "$HB_FIRST" ] && ok "respawn has a fresh pid" || bad "respawn should have a fresh pid"
+
+# Bash 4+ can enforce cleanup ownership with process-unique BASHPID. macOS Bash
+# 3.2 lacks it, so BASH_SUBSHELL only guards this parenthesized-child regression;
+# hb_start's parent-side trap suspension is the deterministic heartbeat invariant.
+HB_PARENT_STATE=$T/heartbeat-parent-state
+: >"$HB_PARENT_STATE"
+( trap test_cleanup EXIT )
+[ -f "$HB_PARENT_STATE" ] \
+  && ok "parenthesized child EXIT cannot run parent test cleanup" \
+  || bad "parenthesized child EXIT ran parent test cleanup"
+
+# Stop a brand-new toucher immediately, maximizing the child-first-instruction
+# race window. A harmless caller EXIT trap proves hb_start restores it byte for
+# byte while withholding it from the forked child. Wrapping wait records that
+# hb_stop waits for the exact heartbeat shell PID.
 hb_stop
+HB_INHERITED_EXIT=$T/heartbeat-inherited-exit
+trap 'printf inherited >"$HB_INHERITED_EXIT"' EXIT
+HB_CALLER_EXIT_TRAP=$(trap -p EXIT)
+hb_start
+HB_RESTORED_EXIT_TRAP=$(trap -p EXIT)
+HB_STOP_PID=$HB_PID
+HB_WAITED_PID=
+wait(){ HB_WAITED_PID=${1:-}; builtin wait "$@"; }
+hb_stop
+unset -f wait
+trap test_cleanup EXIT
+check "hb_start restores the caller EXIT trap exactly" "$HB_CALLER_EXIT_TRAP" "$HB_RESTORED_EXIT_TRAP"
+[ ! -e "$HB_INHERITED_EXIT" ] \
+  && ok "heartbeat child cannot inherit caller EXIT cleanup" \
+  || bad "heartbeat child inherited caller EXIT cleanup"
+check "hb_stop waits for the exact toucher" "$HB_STOP_PID" "$HB_WAITED_PID"
 check "hb_stop clears the pid" "" "$HB_PID"
+[ -d "$T/state/control" ] \
+  && ok "immediate heartbeat stop preserves parent test state" \
+  || bad "immediate heartbeat stop corrupted parent test state"
+kill -0 "$HB_STOP_PID" 2>/dev/null \
+  && bad "hb_stop should reap its heartbeat shell" \
+  || ok "hb_stop reaps its heartbeat shell"
+
+# A separate child remains alive while hb_stop targets only its recorded toucher.
+sleep 300 &
+HB_BYSTANDER=$!
+hb_start
+hb_stop
+kill -0 "$HB_BYSTANDER" 2>/dev/null \
+  && ok "hb_stop leaves unrelated child processes alone" \
+  || bad "hb_stop killed an unrelated child process"
+kill "$HB_BYSTANDER" 2>/dev/null || true
+wait "$HB_BYSTANDER" 2>/dev/null || true
 
 echo "— difficulty routing (mflib.sh pure helpers)"
 . ./mflib.sh
@@ -245,6 +306,118 @@ check "labels: legacy tier:sonnet → easy" "easy" "$(diff_from_labels 'tier:son
 check "labels: legacy tier:opus → intermediate" "intermediate" "$(diff_from_labels 'tier:opus')"
 check "labels: unlabeled → intermediate" "intermediate" "$(diff_from_labels 'autopilot')"
 check "labels: invalid diff value falls back" "intermediate" "$(diff_from_labels 'diff:banana')"
+for ROUTE in \
+  "claude claude-fable-5" \
+  "claude claude-opus-4-8" \
+  "claudex gpt-5.6-sol" \
+  "claudex codex-api/gpt-5.6-sol" \
+  "codex gpt-5.6-sol"; do
+  ROUTE_PROVIDER=${ROUTE%% *}
+  ROUTE_MODEL=${ROUTE#* }
+  mf_composer_route_allowed "$ROUTE_PROVIDER" "$ROUTE_MODEL" \
+    && ok "composer route allows $ROUTE_PROVIDER/$ROUTE_MODEL" \
+    || bad "composer route should allow $ROUTE_PROVIDER/$ROUTE_MODEL"
+done
+for ROUTE in \
+  "claude claude-sonnet-5" \
+  "claude claude-haiku-4-5" \
+  "claude claude-opus-" \
+  "claude claude-opus-/haiku" \
+  "claude claude-opus-4-8 extra" \
+  "claudex gpt-5.6-terra" \
+  "codex gpt-5.6-luna" \
+  "gemini Gemini-3.1-Pro"; do
+  ROUTE_PROVIDER=${ROUTE%% *}
+  ROUTE_MODEL=${ROUTE#* }
+  mf_composer_route_allowed "$ROUTE_PROVIDER" "$ROUTE_MODEL" \
+    && bad "composer route should reject $ROUTE_PROVIDER/$ROUTE_MODEL" \
+    || ok "composer route rejects $ROUTE_PROVIDER/$ROUTE_MODEL"
+done
+unset ROUTE ROUTE_PROVIDER ROUTE_MODEL
+
+mf_sol_composer_route claudex gpt-5.6-sol \
+  && ok "Sol composer route receives provider-specific guardrails" \
+  || bad "Sol composer route should receive provider-specific guardrails"
+mf_sol_composer_route claude claude-fable-5 \
+  && bad "Fable composer route must not receive Sol guardrails" \
+  || ok "Fable composer prompt remains on the shared unchanged path"
+mf_sol_composer_route claude claude-opus-4-8 \
+  && bad "Opus composer route must not receive Sol guardrails" \
+  || ok "Opus composer prompt remains on the shared unchanged path"
+SOL_COMPOSER_RULES=$(mf_sol_composer_instructions)
+case "$SOL_COMPOSER_RULES" in
+  *"NEVER use Agent"*"at most 20 tool calls"*"owner-approved brief"*)
+    ok "Sol composer guardrails bound delegation, discovery, and brief handling";;
+  *) bad "Sol composer guardrails are incomplete";;
+esac
+unset SOL_COMPOSER_RULES
+
+FABLE_PROMPT='shared composer prompt — byte-identical sentinel'
+FABLE_CAPTURE=$T/fable-composer-prompt
+FABLE_LIMITS=$T/fable-composer-limits
+FABLE_MODELS=$T/fable-composer-models.json
+printf '%s\n' \
+  '{"difficulties":{"max":{"provider":"claude","model":"claude-fable-5","effort":"max"}}}' \
+  >"$FABLE_MODELS"
+(
+  MF_MODELS_FILE=$FABLE_MODELS
+  MF_ROLE_TIMEOUT=777
+  CC_MAX_TURNS=23
+  cc(){
+    printf '%s' "$2" >"$FABLE_CAPTURE"
+    printf '%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" >"$FABLE_LIMITS"
+  }
+  mf_cc composer max "$FABLE_PROMPT"
+)
+check "Fable receives the shared composer prompt byte-identically" \
+  "$FABLE_PROMPT" "$(<"$FABLE_CAPTURE")"
+check "Fable keeps its existing timeout/turn settings untouched" \
+  "777|23" "$(<"$FABLE_LIMITS")"
+
+SOL_CAPTURE=$T/sol-composer-prompt
+SOL_LIMITS=$T/sol-composer-limits
+SOL_MODELS=$T/sol-composer-models.json
+printf '%s\n' \
+  '{"difficulties":{"max":{"provider":"claudex","model":"gpt-5.6-sol","effort":"high"}}}' \
+  >"$SOL_MODELS"
+(
+  MF_MODELS_FILE=$SOL_MODELS
+  MF_ROLE_TIMEOUT=777
+  CC_MAX_TURNS=23
+  cc_claudex(){
+    printf '%s' "$3" >"$SOL_CAPTURE"
+    printf '%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" >"$SOL_LIMITS"
+  }
+  mf_cc composer max "$FABLE_PROMPT"
+)
+grep -q 'SOL-SPECIFIC COMPOSER EXECUTION CONTRACT' "$SOL_CAPTURE" \
+  && ok "Sol receives the provider-specific composer contract" \
+  || bad "Sol composer contract was not appended"
+check "Sol composer gets bounded timeout and turn cap" \
+  "1200|40" "$(<"$SOL_LIMITS")"
+unset FABLE_PROMPT FABLE_CAPTURE FABLE_LIMITS FABLE_MODELS
+unset SOL_CAPTURE SOL_LIMITS SOL_MODELS
+
+for BAD_MODEL in "claude-opus-" "claude-opus-/haiku" "claude-opus-4-8 extra"; do
+  BAD_CAPTURE=$T/rejected-composer-dispatch
+  BAD_MODELS=$T/rejected-composer-models.json
+  rm -f "$BAD_CAPTURE"
+  printf '{"difficulties":{"max":{"provider":"claude","model":"%s","effort":"high"}}}\n' \
+    "$BAD_MODEL" >"$BAD_MODELS"
+  if (
+    MF_MODELS_FILE=$BAD_MODELS
+    cc(){ : >"$BAD_CAPTURE"; }
+    mf_cc composer max 'must not dispatch'
+  ); then
+    bad "malformed composer route should fail closed: $BAD_MODEL"
+  else
+    ok "malformed composer route fails closed: $BAD_MODEL"
+  fi
+  [ ! -e "$BAD_CAPTURE" ] \
+    && ok "malformed composer route makes no provider call: $BAD_MODEL" \
+    || bad "malformed composer route reached provider: $BAD_MODEL"
+done
+unset BAD_MODEL BAD_CAPTURE BAD_MODELS
 
 echo "— difficulty → model config (state/control/models.json)"
 cat >"$MFSTATE/control/models.json" <<'JSON'
