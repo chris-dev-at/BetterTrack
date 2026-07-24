@@ -236,10 +236,22 @@ review_comment_discover(){ # $1=before comments JSON $2=PR $3=expected head
 }
 
 run_reviewer(){ # $1=issue $2=pr $3=difficulty
-  local n=$1 pr=$2 difficulty=$3 attempt before head transport prompt
+  local n=$1 pr=$2 difficulty=$3 attempt before="" head="" transport prompt
   for attempt in $(seq 1 "$MF_PROTOCOL_ATTEMPTS"); do
     pr_snapshot "$pr" || { log "review protocol: pre-read failed"; continue; }
-    before=$PR_SNAPSHOT_COMMENTS; head=$PR_SNAPSHOT_HEAD
+    if [ -z "$head" ] || [ "$PR_SNAPSHOT_HEAD" != "$head" ]; then
+      # A changed head is a genuinely new review target. For an unchanged head,
+      # retain the original baseline across protocol attempts so a valid comment
+      # that converges during the outer retry delay is still considered fresh.
+      before=$PR_SNAPSHOT_COMMENTS
+      head=$PR_SNAPSHOT_HEAD
+    elif mf_new_canonical_comment "$before" "$PR_SNAPSHOT_COMMENTS" review "$head"; then
+      LAST_REVIEW_VERDICT=$MF_COMMENT_MARKER
+      LAST_REVIEW_BODY=$MF_COMMENT_BODY
+      LAST_REVIEW_COMMENT_ID=$MF_COMMENT_ID
+      LAST_REVIEW_HEAD=$head
+      return 0
+    fi
     prompt=$(sed \
       -e "s/{{PR}}/$pr/g" -e "s/{{N}}/$n/g" -e "s/{{HEAD}}/$head/g" \
       "$MF_PROMPTS/reviewer.md")

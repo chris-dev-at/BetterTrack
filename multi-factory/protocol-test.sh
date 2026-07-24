@@ -1216,6 +1216,32 @@ review_comment_discover '[]' 10 abc \
 check "changed head aborts discovery immediately" 1 "$DISCOVERY_READS"
 check "changed head has an explicit discovery state" head-changed "$REVIEW_DISCOVERY_STATE"
 
+MF_PROMPTS=$T/reviewer-prompts
+mkdir -p "$MF_PROMPTS"
+printf 'review {{PR}} for {{N}} at {{HEAD}}\n' >"$MF_PROMPTS/reviewer.md"
+MF_PROTOCOL_ATTEMPTS=2
+MF_PROTOCOL_RETRY_SLEEP=0
+MF_COMMENT_DISCOVERY_ATTEMPTS=4
+MF_COMMENT_DISCOVERY_SLEEP=0
+MODEL_CALLS=0
+DISCOVERY_READS=0
+pr_snapshot(){
+  DISCOVERY_READS=$((DISCOVERY_READS+1))
+  PR_SNAPSHOT_HEAD=abc
+  if [ "$DISCOVERY_READS" -lt 6 ]; then
+    PR_SNAPSHOT_COMMENTS='[]'
+  else
+    PR_SNAPSHOT_COMMENTS=$after_ok
+  fi
+}
+mf_cc(){ MODEL_CALLS=$((MODEL_CALLS+1)); return 0; }
+with_pack(){ printf '%s' "$1"; }
+run_reviewer 9 10 hard \
+  && ok "late first-attempt verdict is accepted before a second model turn" \
+  || bad "late first-attempt verdict was lost across the outer retry boundary"
+check "late verdict does not rerun the reviewer" 1 "$MODEL_CALLS"
+check "late verdict retains its canonical comment id" 2 "$LAST_REVIEW_COMMENT_ID"
+
 review_floor(){ echo intermediate; }
 CYCLE_DIFF=easy
 wstatus(){ :; }
