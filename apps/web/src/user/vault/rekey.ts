@@ -93,6 +93,9 @@ export async function changeVaultPassphrase(input: PassphraseChangeInput): Promi
 /** Fully re-encrypts under a fresh VK after a suspected key compromise. */
 export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<RekeyResult> {
   const decoded = decodeVaultEnvelope(input.envelope);
+  if (input.nextKeyId.toLowerCase() === decoded.header.keyId.toLowerCase()) {
+    throw new VaultCryptoError('envelope-invalid', 'Vault key rotation requires a new key id.');
+  }
   const currentWrapper = activeWrapper(decoded.header);
   const oldKek = await deriveVaultKek(input.passphrase, currentWrapper.kdf, input.cryptoDeps);
   let oldVaultKey: Uint8Array | undefined;
@@ -147,6 +150,12 @@ async function reencrypt(
   randomBytes?: RandomBytes,
   keyId = priorHeader.keyId,
 ): Promise<RekeyResult> {
+  if (metadata.vaultVersion <= priorHeader.vaultVersion) {
+    throw new VaultCryptoError(
+      'envelope-invalid',
+      'Re-encryption requires a vault version greater than the prior version.',
+    );
+  }
   const encrypted = await encryptVaultDocument({
     document,
     vaultKey,

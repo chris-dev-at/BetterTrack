@@ -6,3 +6,4 @@ export * from './lock';
 export * from './migration';
 export * from './recovery';
 export * from './rekey';
+export * from './vectors';

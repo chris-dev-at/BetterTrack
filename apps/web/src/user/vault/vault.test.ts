@@ -31,9 +31,10 @@ import {
   deterministicRandom,
   VECTOR_DEVICE_ID,
   VECTOR_KEY_ID,
+  VECTOR_NEXT_KEY_ID,
   VECTOR_WRITE_ID,
+  vaultInteroperabilityFixture,
   vaultVectorDocument,
-  vectorKdf,
 } from './vectors';
 
 const headerMetadata = {
@@ -51,7 +52,7 @@ async function fixture() {
   const random = deterministicRandom();
   const vaultKey = generateVaultKey(random);
   const kdf = newKdfParams(random);
-  const kek = await deriveVaultKek('correct horse battery staple', kdf, vectorKdf);
+  const kek = await deriveVaultKek('correct horse battery staple', kdf);
   const wrapped = await wrapVaultKey(vaultKey, kek, VECTOR_KEY_ID, kdf, random);
   const encrypted = await encryptVaultDocument({
     document: vaultVectorDocument,
@@ -121,6 +122,12 @@ describe('BTVAULT1 envelope and content crypto', () => {
       writtenAt: '2026-07-24T10:00:00.000Z',
     };
     const raw = new TextEncoder().encode(JSON.stringify(header));
+    const truncated = new Uint8Array(8 + 4 + raw.length + 15);
+    truncated.set(new TextEncoder().encode('BTVAULT1'));
+    new DataView(truncated.buffer).setUint32(8, raw.length, false);
+    truncated.set(raw, 12);
+    expect(() => decodeVaultEnvelope(truncated)).toThrow(VaultCryptoError);
+
     const bytes = new Uint8Array(8 + 4 + raw.length + 16);
     bytes.set(new TextEncoder().encode('BTVAULT1'));
     new DataView(bytes.buffer).setUint32(8, raw.length, false);
@@ -132,6 +139,66 @@ describe('BTVAULT1 envelope and content crypto', () => {
     });
   });
 
+  it('matches public fixed Argon2id envelope, tamper, passphrase, rotation, recovery, and rollback vectors', async () => {
+    const vector = vaultInteroperabilityFixture;
+    const vaultKey = new Uint8Array(Buffer.from(vector.vaultKeyBase64, 'base64'));
+    const initialEnvelope = new Uint8Array(Buffer.from(vector.initial.envelopeBase64, 'base64'));
+    expect(bytesToBase64(await deriveVaultKek(vector.passphrase, vector.kdf))).toBe(
+      vector.kekBase64,
+    );
+    expect(bytesToBase64(initialEnvelope)).toBe(vector.initial.envelopeBase64);
+    expect(bytesToBase64(decodeVaultEnvelope(initialEnvelope).headerBytes)).toBe(
+      vector.initial.headerBytesBase64,
+    );
+    await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
+      document: vaultVectorDocument,
+      header: vector.initial.header,
+    });
+    await expect(
+      decryptVaultDocument(
+        new Uint8Array(Buffer.from(vector.initial.tamperedEnvelopeBase64!, 'base64')),
+        vaultKey,
+      ),
+    ).rejects.toMatchObject({ code: 'authentication-failed' });
+
+    const passphraseChanged = await changeVaultPassphrase({
+      envelope: initialEnvelope,
+      oldPassphrase: vector.passphrase,
+      newPassphrase: vector.newPassphrase,
+      metadata: vector.passphraseChanged.header,
+      randomBytes: deterministicRandom(),
+    });
+    expect(bytesToBase64(passphraseChanged.envelope)).toBe(vector.passphraseChanged.envelopeBase64);
+    expect(bytesToBase64(decodeVaultEnvelope(passphraseChanged.envelope).headerBytes)).toBe(
+      vector.passphraseChanged.headerBytesBase64,
+    );
+
+    const rotated = await rotateVaultKey({
+      envelope: initialEnvelope,
+      passphrase: vector.passphrase,
+      nextKeyId: VECTOR_NEXT_KEY_ID,
+      metadata: vector.rotated.header,
+      randomBytes: deterministicRandom(96),
+    });
+    expect(bytesToBase64(rotated.envelope)).toBe(vector.rotated.envelopeBase64);
+    expect(bytesToBase64(decodeVaultEnvelope(rotated.envelope).headerBytes)).toBe(
+      vector.rotated.headerBytesBase64,
+    );
+    expect(
+      bytesToBase64(
+        serializeRecoveryKit({ keyId: VECTOR_KEY_ID, vaultKey, formatVersion: 1 }).bytes,
+      ),
+    ).toBe(vector.recoveryKitBase64);
+    await expect(
+      changeVaultPassphrase({
+        envelope: initialEnvelope,
+        oldPassphrase: vector.passphrase,
+        newPassphrase: vector.newPassphrase,
+        metadata: { ...vector.initial.header, vaultVersion: vector.rollback.rejectedVaultVersion },
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+  });
+
   it('pins the required Argon2id profile and fails closed if WASM fails', async () => {
     const params = {
       alg: 'argon2id' as const,
@@ -140,10 +207,8 @@ describe('BTVAULT1 envelope and content crypto', () => {
       p: 1,
       salt: bytesToBase64(new Uint8Array(16)),
     };
-    await expect(deriveVaultKek('passphrase', params, vectorKdf)).resolves.toHaveLength(32);
-    await expect(
-      deriveVaultKek('passphrase', { ...params, m: 1024 }, vectorKdf),
-    ).rejects.toMatchObject({
+    await expect(deriveVaultKek('passphrase', params)).resolves.toHaveLength(32);
+    await expect(deriveVaultKek('passphrase', { ...params, m: 1024 })).rejects.toMatchObject({
       code: 'kdf-failed',
     });
     await expect(
@@ -157,7 +222,7 @@ describe('BTVAULT1 envelope and content crypto', () => {
 
   it('rejects wrong passphrases and modified wrapped vault keys', async () => {
     const { wrapped, kdf } = await fixture();
-    const wrongKek = await deriveVaultKek('wrong passphrase', kdf, vectorKdf);
+    const wrongKek = await deriveVaultKek('wrong passphrase', kdf);
     await expect(unwrapVaultKey(wrapped, VECTOR_KEY_ID, wrongKek)).rejects.toMatchObject({
       code: 'authentication-failed',
     });
@@ -185,18 +250,13 @@ describe('passphrase and key lifecycle', () => {
         writeId: '018f0000-0000-7000-8000-00000000000d',
       },
       randomBytes: deterministicRandom(),
-      cryptoDeps: vectorKdf,
     });
     expect(changed.document).toEqual(vaultVectorDocument);
     expect(changed.header.iv).not.toBe(original.header.iv);
     expect(bytesToBase64(changed.envelope)).not.toBe(bytesToBase64(original.envelope));
     const changedWrapper = changed.header.wrappedKeys[0];
     expect(changedWrapper).toBeDefined();
-    const oldKek = await deriveVaultKek(
-      'correct horse battery staple',
-      changedWrapper!.kdf,
-      vectorKdf,
-    );
+    const oldKek = await deriveVaultKek('correct horse battery staple', changedWrapper!.kdf);
     await expect(
       unwrapVaultKey(changedWrapper!, changed.header.keyId, oldKek),
     ).rejects.toMatchObject({
@@ -213,14 +273,13 @@ describe('passphrase and key lifecycle', () => {
     const rotated = await rotateVaultKey({
       envelope: original.envelope,
       passphrase: 'correct horse battery staple',
-      nextKeyId: '018f0000-0000-7000-8000-00000000000d',
+      nextKeyId: VECTOR_NEXT_KEY_ID,
       metadata: {
         ...headerMetadata,
         vaultVersion: 2,
         writeId: '018f0000-0000-7000-8000-00000000000d',
       },
       randomBytes: deterministicRandom(96),
-      cryptoDeps: vectorKdf,
     });
     expect(rotated.header.keyId).not.toBe(original.header.keyId);
     await expect(decryptVaultDocument(rotated.envelope, original.vaultKey)).rejects.toMatchObject({
@@ -233,10 +292,17 @@ describe('passphrase and key lifecycle', () => {
     await expect(
       rotateVaultKey({
         envelope: original.envelope,
+        passphrase: 'correct horse battery staple',
+        nextKeyId: VECTOR_KEY_ID.toUpperCase(),
+        metadata: { ...headerMetadata, vaultVersion: 2 },
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    await expect(
+      rotateVaultKey({
+        envelope: original.envelope,
         passphrase: 'wrong',
-        nextKeyId: '018f0000-0000-7000-8000-00000000000d',
+        nextKeyId: VECTOR_NEXT_KEY_ID,
         metadata: headerMetadata,
-        cryptoDeps: vectorKdf,
       }),
     ).rejects.toBeInstanceOf(VaultCryptoError);
     expect(await decryptVaultDocument(original.envelope, original.vaultKey)).toMatchObject({
@@ -268,24 +334,41 @@ describe('recovery kit and custody lock core', () => {
     const core = new VaultLockCore();
     expect(core.state).toEqual({ status: 'locked' });
     await expect(core.withVaultKey(() => 'nope')).rejects.toMatchObject({ code: 'locked' });
-    await core.unlockWithPassphrase(original.envelope, 'correct horse battery staple', vectorKdf);
+    await core.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
     expect(core.state).toEqual({ status: 'unlocked', keyId: VECTOR_KEY_ID });
     await core.handleIdle(true);
     expect(core.state).toEqual({ status: 'locked' });
 
     const custody = createIndexedDbVaultCustody();
-    await custody.persist(VECTOR_DEVICE_ID, original.vaultKey);
-    const persisted = await custody.read(VECTOR_DEVICE_ID);
-    expect(persisted).toMatchObject({ extractable: false, type: 'secret' });
     const deviceCore = new VaultLockCore({ custody });
+    await deviceCore.unlockWithPassphrase(
+      original.envelope,
+      'correct horse battery staple',
+      undefined,
+      true,
+      VECTOR_DEVICE_ID,
+    );
+    expect(await custody.read(VECTOR_DEVICE_ID)).toMatchObject({
+      extractable: false,
+      type: 'secret',
+    });
+    await deviceCore.lock();
+    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+
+    await custody.persist(VECTOR_DEVICE_ID, original.vaultKey);
     await deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope);
     expect(
       await deviceCore.withVaultKey((key) => decryptVaultDocument(original.envelope, key)),
     ).toMatchObject({
       document: vaultVectorDocument,
     });
-    await custody.clear(VECTOR_DEVICE_ID);
+    await deviceCore.handleIdle(true);
     await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+    await expect(
+      deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope),
+    ).rejects.toMatchObject({
+      code: 'locked',
+    });
   });
 
   it('fails closed when device-key persistence is unsupported', async () => {
@@ -305,9 +388,7 @@ describe('recovery kit and custody lock core', () => {
   it('does not unlock after a wrong passphrase', async () => {
     const original = await fixture();
     const core = new VaultLockCore();
-    await expect(
-      core.unlockWithPassphrase(original.envelope, 'wrong', vectorKdf),
-    ).rejects.toMatchObject({
+    await expect(core.unlockWithPassphrase(original.envelope, 'wrong')).rejects.toMatchObject({
       code: 'authentication-failed',
     });
     expect(core.state).toEqual({ status: 'locked' });

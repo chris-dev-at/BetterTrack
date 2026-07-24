@@ -24,6 +24,8 @@ export interface VaultLockCoreOptions {
 export class VaultLockCore {
   private vaultKey: VaultKeyMaterial | null = null;
   private keyId: string | null = null;
+  /** Device custody must be cleared by every lock, even when the caller has no id. */
+  private custodyDeviceId: string | null = null;
 
   constructor(private readonly options: VaultLockCoreOptions = {}) {}
 
@@ -82,7 +84,7 @@ export class VaultLockCore {
     }
     try {
       const { header } = await decryptVaultDocument(envelope, key);
-      await this.setUnlocked(key, header.keyId, false);
+      await this.setUnlocked(key, header.keyId, false, deviceId);
     } catch (cause) {
       await this.options.custody.clear(deviceId);
       throw cause;
@@ -90,11 +92,17 @@ export class VaultLockCore {
   }
 
   async lock(deviceId?: string): Promise<void> {
+    const custodyDeviceIds = new Set(
+      [this.custodyDeviceId, deviceId].filter((value): value is string => value != null),
+    );
     if (this.vaultKey instanceof Uint8Array) disposeVaultKey(this.vaultKey);
     this.vaultKey = null;
     this.keyId = null;
-    if (deviceId != null && this.options.custody != null)
-      await this.options.custody.clear(deviceId);
+    this.custodyDeviceId = null;
+    if (this.options.custody != null) {
+      for (const activeDeviceId of custodyDeviceIds)
+        await this.options.custody.clear(activeDeviceId);
+    }
     this.options.onLock?.();
   }
 
@@ -133,6 +141,8 @@ export class VaultLockCore {
     if (this.vaultKey instanceof Uint8Array) disposeVaultKey(this.vaultKey);
     this.vaultKey = vaultKey;
     this.keyId = keyId;
+    this.custodyDeviceId =
+      keepUnlocked || !(vaultKey instanceof Uint8Array) ? (deviceId ?? null) : null;
   }
 }
 

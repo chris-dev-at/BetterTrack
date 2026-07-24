@@ -10,6 +10,7 @@ import { VaultCryptoError } from './errors';
 
 const MAGIC_BYTES = utf8(VAULT_MAGIC);
 const PREFIX_BYTES = MAGIC_BYTES.length + 4;
+const AES_GCM_TAG_BYTES = 16;
 
 export interface DecodedEnvelope {
   header: VaultEnvelopeHeader;
@@ -65,7 +66,11 @@ export function decodeVaultEnvelope(bytes: Uint8Array): DecodedEnvelope {
   );
   const headerStart = PREFIX_BYTES;
   const headerEnd = headerStart + headerLength;
-  if (headerLength === 0 || headerEnd > bytes.length || headerEnd === bytes.length) {
+  if (
+    headerLength === 0 ||
+    headerEnd > bytes.length ||
+    bytes.length - headerEnd < AES_GCM_TAG_BYTES
+  ) {
     throw new VaultCryptoError(
       'envelope-invalid',
       'Vault envelope has an invalid structural length.',
