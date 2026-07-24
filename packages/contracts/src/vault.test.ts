@@ -143,27 +143,102 @@ describe('vault document v1', () => {
   it('parses a minimal document and defaults the merge log', () => {
     const doc = vaultDocumentV1Schema.parse({
       schemaVersion: 1,
-      entities: {
-        portfolio: [
+      entities: [
+        {
+          id: UUID_A,
+          kind: 'portfolio',
+          rev: 0,
+          editedAt: '2026-07-24T10:00:00.000Z',
+          editedBy: UUID_B,
+          deletedAt: null,
+          data: {
+            name: 'Main',
+            visibility: 'private',
+            sortOrder: 0,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        },
+      ],
+    });
+    expect(doc.mergeLog).toEqual([]);
+    expect(doc.entities[0]?.kind).toBe('portfolio');
+    const [portfolio] = doc.entities;
+    expect(portfolio?.kind === 'portfolio' && portfolio.data.name).toBe('Main');
+  });
+
+  it('rejects unknown kinds, unknown fields, duplicate ids, and wrong schema versions', () => {
+    const valid = {
+      schemaVersion: 1,
+      entities: [
+        {
+          id: UUID_A,
+          kind: 'portfolio',
+          rev: 0,
+          editedAt: '2026-07-24T10:00:00.000Z',
+          editedBy: UUID_B,
+          deletedAt: null,
+          data: {
+            name: 'Main',
+            visibility: 'private',
+            sortOrder: 0,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        },
+      ],
+    };
+    expect(vaultDocumentV1Schema.safeParse({ ...valid, schemaVersion: 2 }).success).toBe(false);
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        ...valid,
+        entities: [{ ...valid.entities[0]!, kind: 'bogus' }],
+      }).success,
+    ).toBe(false);
+    const first = valid.entities[0]!;
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        ...valid,
+        entities: [{ ...first, data: { ...first.data, extra: true } }],
+      }).success,
+    ).toBe(false);
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        ...valid,
+        entities: [valid.entities[0], valid.entities[0]],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a malformed graph-shaped source row before a service sees it', () => {
+    expect(
+      vaultDocumentV1Schema.safeParse({
+        schemaVersion: 1,
+        entities: [
           {
             id: UUID_A,
+            kind: 'cashMovement',
             rev: 0,
             editedAt: '2026-07-24T10:00:00.000Z',
             editedBy: UUID_B,
             deletedAt: null,
-            data: { name: 'Main' },
+            data: {
+              portfolioId: UUID_A,
+              sourceId: UUID_B,
+              kind: 'deposit',
+              amountEur: -1,
+              transactionId: null,
+              transferId: null,
+              counterpartSourceId: null,
+              dividendId: null,
+              taxYear: null,
+              executedAt: '2026-07-24T10:00:00.000Z',
+              note: null,
+              source: 'manual',
+            },
           },
         ],
-      },
-    });
-    expect(doc.mergeLog).toEqual([]);
-    expect(doc.entities.portfolio?.[0]?.data.name).toBe('Main');
-  });
-
-  it('rejects an unknown entity kind and a wrong schema version', () => {
-    expect(vaultDocumentV1Schema.safeParse({ schemaVersion: 2, entities: {} }).success).toBe(false);
-    expect(
-      vaultDocumentV1Schema.safeParse({ schemaVersion: 1, entities: { bogus: [] } }).success,
+      }).success,
     ).toBe(false);
   });
 });

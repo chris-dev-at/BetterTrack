@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { EXPORT_TABLE_CLASSIFICATION, EXPORTED_ENTITY_NAMES, schemaTableNames } from '../manifest';
+import {
+  EXPORT_TABLE_CLASSIFICATION,
+  EXPORTED_ENTITY_NAMES,
+  PARANOID_REHYDRATION_POLICY,
+  PARANOID_TABLE_CLASSIFICATION,
+  schemaTableNames,
+} from '../manifest';
 
 /**
  * Completeness sweep vs the Drizzle schema (§13.4 V4-P6a "done-when", #494). The
@@ -64,5 +70,17 @@ describe('account-export completeness', () => {
         .map((c) => (c as { entity: string }).entity),
     );
     expect(new Set(EXPORTED_ENTITY_NAMES)).toEqual(fromMap);
+  });
+
+  it('makes every vault table explicitly restorable or purge-only', () => {
+    const vaultTables = Object.entries(PARANOID_TABLE_CLASSIFICATION)
+      .filter(([, classification]) => classification === 'vault')
+      .map(([table]) => table)
+      .sort();
+    expect(Object.keys(PARANOID_REHYDRATION_POLICY).sort()).toEqual(vaultTables);
+  });
+
+  it('does not classify rehydration metadata as vault content', () => {
+    expect(PARANOID_TABLE_CLASSIFICATION['paranoid_rehydration_receipts']).toBe('server');
   });
 });

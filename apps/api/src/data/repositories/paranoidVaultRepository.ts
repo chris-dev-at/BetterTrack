@@ -2,11 +2,86 @@ import { and, desc, eq, lt, lte } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
+  paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaults,
+  users,
   type ParanoidVaultHistoryRow,
   type ParanoidVaultRow,
 } from '../schema';
+
+/**
+ * Transaction-bound rehydration primitives. The service receives this executor
+ * from its sole `db.transaction` callback, so none of these operations can open
+ * an independent transaction or emit an external effect.
+ */
+export interface ParanoidRehydrationTransactionRepository {
+  getState(userId: string): Promise<{
+    privacyMode: 'normal' | 'paranoid';
+    receipt: { rehydrationId: string; completedAt: Date } | null;
+  } | null>;
+  insertReceipt(userId: string, rehydrationId: string, completedAt: Date): Promise<void>;
+  setNormalAndClearMedia(userId: string): Promise<void>;
+  deleteServerCiphertext(userId: string): Promise<void>;
+}
+
+export function createParanoidRehydrationTransactionRepository(
+  executor: Pick<Database, 'select' | 'insert' | 'update' | 'delete'>,
+): ParanoidRehydrationTransactionRepository {
+  return {
+    async getState(userId) {
+      const [user] = await executor
+        .select({ privacyMode: users.privacyMode })
+        .from(users)
+        .where(eq(users.id, userId))
+        .for('update');
+      if (!user) return null;
+      const [receipt] = await executor
+        .select({
+          rehydrationId: paranoidRehydrationReceipts.rehydrationId,
+          completedAt: paranoidRehydrationReceipts.completedAt,
+        })
+        .from(paranoidRehydrationReceipts)
+        .where(eq(paranoidRehydrationReceipts.userId, userId));
+      return { privacyMode: user.privacyMode, receipt: receipt ?? null };
+    },
+
+    async insertReceipt(userId, rehydrationId, completedAt) {
+      await executor
+        .insert(paranoidRehydrationReceipts)
+        .values({ userId, rehydrationId, completedAt });
+    },
+
+    async setNormalAndClearMedia(userId) {
+      await executor
+        .update(users)
+        .set({
+          privacyMode: 'normal',
+          paranoidMediaSet: null,
+          paranoidDriveAttestedVersion: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, userId));
+    },
+
+    async deleteServerCiphertext(userId) {
+      await executor.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+      await executor.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+    },
+  };
+}
+
+/**
+ * Full transaction entry point for the rehydration service. It intentionally
+ * exposes the raw executor only to its caller, keeping the service's scope to one
+ * database transaction while the normal write services remain unchanged.
+ */
+export async function withParanoidRehydrationTransaction<T>(
+  db: Database,
+  run: (tx: Database) => Promise<T>,
+): Promise<T> {
+  return db.transaction((tx) => run(tx as unknown as Database));
+}
 
 /**
  * Paranoid-vault persistence (§13.5 V5-P13 arc b, `docs/paranoid-design.md` §2,

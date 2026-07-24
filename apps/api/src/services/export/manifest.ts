@@ -240,6 +240,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_vault_history: skipped(
     'Paranoid-vault bounded ciphertext history (V5-P13) — the corruption/bad-write safety net; opaque superseded blobs, not user data to carry out.',
   ),
+  paranoid_rehydration_receipts: skipped(
+    'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -288,6 +291,14 @@ export function schemaTableNames(): string[] {
  * durable as the schema grows.
  */
 export type ParanoidClassification = 'vault' | 'server';
+
+/**
+ * The second compulsory policy for each `vault` table. `restore` means an entity
+ * schema and an insert branch must exist in the rehydration service; `purge-only`
+ * means the table is derived, staging, or operational state and is deliberately
+ * rebuilt/discarded rather than trusting it as encrypted source data.
+ */
+export type ParanoidRehydrationPolicy = 'restore' | 'purge-only';
 
 export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassification> = {
   // ── vault: portfolio / money content (client-encrypted, purged at enable) ──
@@ -401,6 +412,36 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // explicitly server-classified (§1).
   paranoid_vaults: 'server',
   paranoid_vault_history: 'server',
+  // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
+  paranoid_rehydration_receipts: 'server',
+};
+
+/**
+ * Explicit restore policy for every table on the encrypted vault axis. This map
+ * intentionally keys table names (not entity kinds), so a future vault table
+ * cannot enter the enable/disable sweep without choosing restore or discard.
+ */
+export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPolicy> = {
+  portfolios: 'restore',
+  transactions: 'restore',
+  dividends: 'restore',
+  portfolio_cash_sources: 'restore',
+  portfolio_cash_movements: 'restore',
+  portfolio_settings: 'restore',
+  user_tax_settings: 'restore',
+  assets: 'restore',
+  price_history: 'restore',
+  standing_orders: 'restore',
+  expense_categories: 'restore',
+  expense_transactions: 'restore',
+  expense_rules: 'restore',
+  expense_budgets: 'restore',
+  standing_order_runs: 'purge-only',
+  import_batches: 'purge-only',
+  import_rows: 'purge-only',
+  portfolio_daily_snapshots: 'purge-only',
+  portfolio_snapshot_state: 'purge-only',
+  expense_budget_fires: 'purge-only',
 };
 
 /** The `vault`-classified table names (purge/probe/rehydration iterate these). */
