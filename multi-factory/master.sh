@@ -365,13 +365,32 @@ composer_request_alert_once(){ # $1=reason key $2=message
 
 composer_request_mark_blocked(){ # $1=terminal reason after bounded attempts
   local reason=$1 claim="$CONTROL/.composer-request-claim"
-  if ! atomic_write "$claim/blocked" "$reason"; then
-    # Poison the session owner as a second fail-closed guard. The current master
-    # then looks foreign on its next tick rather than replaying the request.
-    atomic_write "$claim/session" "blocked-$MF_MASTER_SESSION" 2>/dev/null || true
+  local blocked="$claim/blocked" session="$claim/session"
+  local poison="blocked-$MF_MASTER_SESSION" owner=""
+
+  # The return value is a safety contract: success means prepare() will observe
+  # at least one durable replay guard. A failed write must never be laundered by
+  # the best-effort alert below.
+  atomic_write "$blocked" "$reason" 2>/dev/null || true
+  if [ -f "$blocked" ]; then
+    composer_request_alert_once "blocked:$reason" \
+      "composer request retained for owner review after $reason — automatic replay disabled"
+    return 0
   fi
-  composer_request_alert_once "blocked:$reason" \
-    "composer request retained for owner review after $reason — automatic replay disabled"
+
+  # Poison the session owner as a second fail-closed guard. The current master
+  # then looks foreign on its next tick rather than replaying the request.
+  atomic_write "$session" "$poison" 2>/dev/null || true
+  [ -f "$session" ] && owner=$(<"$session")
+  if [ -f "$session" ] && [ "$owner" != "$MF_MASTER_SESSION" ]; then
+    composer_request_alert_once "blocked:$reason" \
+      "composer request retained for owner review after $reason — automatic replay disabled"
+    return 0
+  fi
+
+  composer_request_alert_once "block-write-failed:$reason" \
+    "composer request block persistence failed after $reason — scheduler remains fenced for owner reconciliation"
+  return 1
 }
 
 composer_request_prepare(){ # $1=allow ready→active claim (default 1); 0=none/loaded, 2=unsafe
@@ -444,7 +463,7 @@ composer_request_prepare(){ # $1=allow ready→active claim (default 1); 0=none/
   fi
 
   if ! composer_request_validate "$active"; then
-    composer_request_mark_blocked invalid-request
+    composer_request_mark_blocked invalid-request || return 2
     return 2
   fi
 
@@ -724,7 +743,11 @@ composer_discovery_fence_reconcile(){
         "composer request discovery was invalid — scheduler remains fenced for owner reconciliation"
       return 2
     }
-    composer_request_mark_blocked discovery-reconciliation-invalid
+    composer_request_mark_blocked discovery-reconciliation-invalid || {
+      composer_discovery_fence_alert_once request-block-write-failed \
+        "composer request discovery was invalid but its replay block could not be persisted — scheduler remains fenced"
+      return 2
+    }
   fi
   composer_discovery_fence_clear || return 2
   notify "composer discovery reconciled but its artifact contract was invalid — discovered issues quarantined when present"
@@ -1012,7 +1035,11 @@ finish the manifest contract this time."
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
       && [ "$attempt" -eq "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
-      composer_request_mark_blocked protocol-failure
+      composer_request_mark_blocked protocol-failure || {
+        composer_discovery_fence_alert_once request-block-write-failed \
+          "composer request exhausted its attempts but its replay block could not be persisted — scheduler remains fenced"
+        return 2
+      }
       owner_blocked=1
     fi
     composer_discovery_fence_clear || {
@@ -1031,7 +1058,10 @@ finish the manifest contract this time."
       return 1
     fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
-      [ "$owner_blocked" -eq 1 ] || composer_request_mark_blocked protocol-failure
+      if [ "$owner_blocked" -ne 1 ] \
+        && ! composer_request_mark_blocked protocol-failure; then
+        return 2
+      fi
       return 2
     fi
     notify "composer protocol failed — discovered artifacts quarantined when present; bounded retry remains armed"

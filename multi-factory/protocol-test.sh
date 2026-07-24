@@ -893,6 +893,129 @@ composer_discovery_fence_clear(){
   composer_discovery_fence_clear_real "$@"
 }
 
+echo "— owner replay block writes fail closed and retain discovery"
+eval "$(declare -f atomic_write \
+  | sed '1s/atomic_write/atomic_write_before_block_fault/')"
+BLOCK_GUARD_WRITE_MODE=none
+atomic_write(){
+  if [ "$BLOCK_GUARD_WRITE_MODE" = both ] \
+    && { [ "$1" = "$CONTROL/.composer-request-claim/blocked" ] \
+      || [ "$1" = "$CONTROL/.composer-request-claim/session" ]; }; then
+    return 1
+  fi
+  if [ "$BLOCK_GUARD_WRITE_MODE" = blocked ] \
+    && [ "$1" = "$CONTROL/.composer-request-claim/blocked" ]; then
+    return 1
+  fi
+  atomic_write_before_block_fault "$@"
+}
+
+# The primitive itself must not report success when neither durable guard
+# changed. A session poison remains a valid fallback when only blocked fails.
+rm -rf "$CONTROL/.composer-request-claim"
+mkdir -p "$CONTROL/.composer-request-claim"
+MF_MASTER_SESSION=block-fault-direct
+printf '%s\n' "$MF_MASTER_SESSION" >"$CONTROL/.composer-request-claim/session"
+BLOCK_GUARD_WRITE_MODE=both
+BLOCK_MARK_RC=0
+composer_request_mark_blocked injected-write-failure || BLOCK_MARK_RC=$?
+check "block marker reports failure when both durable guards fail" 1 "$BLOCK_MARK_RC"
+check "failed block marker creates no blocked guard" 0 \
+  "$([ -f "$CONTROL/.composer-request-claim/blocked" ] && echo 1 || echo 0)"
+check "failed block marker leaves the replayable session unpoisoned" \
+  "$MF_MASTER_SESSION" "$(<"$CONTROL/.composer-request-claim/session")"
+
+rm -f "$CONTROL/.composer-request-claim/blocked" \
+  "$CONTROL/.composer-request-claim/alerted"
+printf '%s\n' "$MF_MASTER_SESSION" >"$CONTROL/.composer-request-claim/session"
+BLOCK_GUARD_WRITE_MODE=blocked
+BLOCK_MARK_RC=0
+composer_request_mark_blocked fallback-session-poison || BLOCK_MARK_RC=$?
+check "session poison is an accepted durable fallback" 0 "$BLOCK_MARK_RC"
+check "fallback poison makes the current session foreign" \
+  "blocked-$MF_MASTER_SESSION" "$(<"$CONTROL/.composer-request-claim/session")"
+
+# Exercise both orchestration callers. The final-invalid path must retain its
+# fence when both writes fail; same-session reconciliation must do the same.
+# Once writes recover after a restart, reconciliation blocks the request and
+# clears the fence without invoking the model again.
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/composer-manifests" \
+  "$CONTROL/.composer-request-claim" "$CONTROL/composer-request-archive"
+rm -f "$CONTROL/composer-request.json" "$CONTROL/.composer-request-active.json" \
+  "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff"
+mkdir -p "$CONTROL/composer-manifests"
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  1 "$REQUEST_BRIEF" block-write-restart >/dev/null
+MF_MASTER_SESSION=block-fault-owner
+COMPOSER_REQUEST_LOADED=0
+COMPOSER_REQUEST_ID=
+COMPOSER_REQUEST_EXACT_COUNT=
+COMPOSER_REQUEST_BRIEF=
+MF_COMPOSER_PROTOCOL_ATTEMPTS=1
+BLOCK_GUARD_WRITE_MODE=none
+BLOCK_GUARD_MODEL_CALLS=0
+AFTER_ISSUES='[]'
+runnable_issues(){ :; }
+mf_recent_issues_json(){ printf '%s\n' "$AFTER_ISSUES"; }
+mf_cc(){
+  local manifest
+  BLOCK_GUARD_MODEL_CALLS=$((BLOCK_GUARD_MODEL_CALLS + 1))
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  printf 'NONE\n' >"$manifest"
+  BLOCK_GUARD_WRITE_MODE=both
+  return 0
+}
+role_diff(){ echo max; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+
+BLOCK_DIRECT_RC=0
+composer_step run || BLOCK_DIRECT_RC=$?
+check "direct invalid path carries fail-closed rc when block writes fail" 2 "$BLOCK_DIRECT_RC"
+check "direct invalid path retains discovery fence on block-write failure" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "direct invalid path invokes the owner request once" 1 "$BLOCK_GUARD_MODEL_CALLS"
+check "direct invalid path did not claim a durable blocked guard" 0 \
+  "$([ -f "$CONTROL/.composer-request-claim/blocked" ] && echo 1 || echo 0)"
+check "direct invalid path did not poison the session after injected failures" \
+  "$MF_MASTER_SESSION" "$(<"$CONTROL/.composer-request-claim/session")"
+
+BLOCK_RECON_RC=0
+composer_step run || BLOCK_RECON_RC=$?
+check "same-session reconciliation carries fail-closed rc" 2 "$BLOCK_RECON_RC"
+check "reconciliation retains fence when block writes still fail" 1 \
+  "$([ -d "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "same-session reconciliation never replays the model" 1 "$BLOCK_GUARD_MODEL_CALLS"
+
+MF_MASTER_SESSION=block-fault-restart
+BLOCK_GUARD_WRITE_MODE=none
+BLOCK_RESTART_RC=0
+composer_step run || BLOCK_RESTART_RC=$?
+check "restart reconciliation keeps the owner request fail closed" 2 "$BLOCK_RESTART_RC"
+check "restart reconciliation clears fence only after durable blocking" 0 \
+  "$([ -e "$CONTROL/composer-discovery-fence" ] && echo 1 || echo 0)"
+check "restart reconciliation persists the blocked guard" \
+  discovery-reconciliation-invalid "$(<"$CONTROL/.composer-request-claim/blocked")"
+check "restart reconciliation does not replay the model" 1 "$BLOCK_GUARD_MODEL_CALLS"
+composer_step run || true
+check "blocked request remains non-replayable after fence cleanup" 1 "$BLOCK_GUARD_MODEL_CALLS"
+
+atomic_write(){
+  atomic_write_before_block_fault "$@"
+}
+rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/.composer-request-claim"
+rm -f "$CONTROL/composer-request.json" "$CONTROL/.composer-request-active.json" \
+  "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff"
+COMPOSER_REQUEST_LOADED=0
+COMPOSER_REQUEST_ID=
+COMPOSER_REQUEST_EXACT_COUNT=
+COMPOSER_REQUEST_BRIEF=
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
+
 # Composition-disabled modes must never claim a brand-new ready request. run-out
 # can continue assigning ordinary queued issues; close-down cannot assign, but
 # both modes leave the request ready for a future run-mode tick.
