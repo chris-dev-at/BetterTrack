@@ -1,4 +1,5 @@
 import {
+  VAULT_DOCUMENT_VERSION,
   VAULT_FORMAT_VERSION,
   VAULT_MAGIC,
   type VaultEnvelopeHeader,
@@ -102,27 +103,21 @@ export function decodeVaultEnvelope(bytes: Uint8Array): DecodedEnvelope {
     });
   }
 
+  const version = readVersions(untrustedHeader);
+  if (
+    version != null &&
+    (version.formatVersion > VAULT_FORMAT_VERSION || version.schemaVersion > VAULT_DOCUMENT_VERSION)
+  ) {
+    throw new VaultCryptoError('update-required', 'This vault was written by a newer app version.');
+  }
+
   const parsed = exactHeaderShape(untrustedHeader)
     ? vaultEnvelopeHeaderSchema.safeParse(untrustedHeader)
     : { success: false as const };
   if (!parsed.success) {
-    const version = readVersions(untrustedHeader);
-    if (version != null && version.formatVersion > VAULT_FORMAT_VERSION) {
-      throw new VaultCryptoError(
-        'update-required',
-        'This vault was written by a newer app version.',
-      );
-    }
     throw new VaultCryptoError(
       'envelope-invalid',
       'Vault envelope header does not match the contract.',
-    );
-  }
-
-  if (parsed.data.schemaVersion > 1) {
-    throw new VaultCryptoError(
-      'update-required',
-      'This vault document was written by a newer app version.',
     );
   }
 
@@ -139,7 +134,10 @@ export function inspectVaultEnvelope(bytes: Uint8Array): EnvelopeVersionResult {
   if (versions == null) {
     throw new VaultCryptoError('envelope-invalid', 'Vault envelope has no valid version fields.');
   }
-  if (versions.formatVersion > VAULT_FORMAT_VERSION || versions.schemaVersion > 1) {
+  if (
+    versions.formatVersion > VAULT_FORMAT_VERSION ||
+    versions.schemaVersion > VAULT_DOCUMENT_VERSION
+  ) {
     return { status: 'update-required', ...versions };
   }
   return { status: 'supported', envelope: decodeVaultEnvelope(bytes) };

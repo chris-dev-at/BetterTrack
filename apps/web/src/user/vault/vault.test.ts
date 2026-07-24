@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   decodeVaultEnvelope as decodeContractEnvelope,
   encodeVaultEnvelope as encodeContractEnvelope,
+  VAULT_DOCUMENT_VERSION,
   VAULT_FORMAT_VERSION,
   type VaultEnvelopeHeader,
   vaultEnvelopeHeaderSchema,
@@ -182,16 +183,17 @@ describe('BTVAULT1 envelope and content crypto', () => {
   it('rejects invalid structural input and leaves newer versions read-only', () => {
     expect(() => decodeVaultEnvelope(new Uint8Array([1, 2, 3]))).toThrow(VaultCryptoError);
     const header = {
-      formatVersion: 2,
+      formatVersion: VAULT_FORMAT_VERSION,
       cipher: 'A256GCM',
       iv: 'AAAAAAAAAAAAAAAA',
       keyId: VECTOR_KEY_ID,
       wrappedKeys: [],
       vaultVersion: 1,
-      schemaVersion: 2,
+      schemaVersion: VAULT_DOCUMENT_VERSION + 1,
       deviceId: VECTOR_DEVICE_ID,
       writeId: VECTOR_WRITE_ID,
       writtenAt: '2026-07-24T10:00:00.000Z',
+      futureSchemaField: 'v2',
     };
     const raw = new TextEncoder().encode(JSON.stringify(header));
     const truncated = new Uint8Array(8 + 4 + raw.length + 15);
@@ -204,10 +206,17 @@ describe('BTVAULT1 envelope and content crypto', () => {
     bytes.set(new TextEncoder().encode('BTVAULT1'));
     new DataView(bytes.buffer).setUint32(8, raw.length, false);
     bytes.set(raw, 12);
+    let decodeError: unknown;
+    try {
+      decodeVaultEnvelope(bytes);
+    } catch (cause) {
+      decodeError = cause;
+    }
+    expect(decodeError).toMatchObject({ code: 'update-required' });
     expect(inspectVaultEnvelope(bytes)).toEqual({
       status: 'update-required',
-      formatVersion: 2,
-      schemaVersion: 2,
+      formatVersion: VAULT_FORMAT_VERSION,
+      schemaVersion: VAULT_DOCUMENT_VERSION + 1,
     });
   });
 
