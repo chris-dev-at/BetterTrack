@@ -45,6 +45,8 @@ const claudexBase = (overrides = {}) => ({
   output_tokens: 5,
   cost_usd: 0,
   api_equivalent_usd: 0.2,
+  api_equivalent_pricing: 'claude-code-local-estimate',
+  api_equivalent_source: 'claude-code-total_cost_usd',
   api_equivalent_coverage: 'complete',
   ...overrides,
 });
@@ -306,6 +308,8 @@ test('ClaudeX ledger estimates are OpenAI-family subscription estimates, not act
     cache_creation_tokens: 10,
     cost_usd: 0,
     api_equivalent_usd: 0.123456,
+    api_equivalent_pricing: 'claude-code-local-estimate',
+    api_equivalent_source: 'claude-code-total_cost_usd',
     api_equivalent_coverage: 'complete',
   };
   assert.equal(ledgerProvider(row), 'claudex');
@@ -315,6 +319,7 @@ test('ClaudeX ledger estimates are OpenAI-family subscription estimates, not act
   const info = normalizeOpenAiLedgerRow(row);
   assert.equal(info.model, 'gpt-5.6-sol');
   assert.equal(info.estimateUsd, 0.123456);
+  assert.equal(info.estimateKind, 'cli');
   assert.equal(info.actualUsd, 0);
   assert.equal(info.usage.total, 170);
 
@@ -324,6 +329,8 @@ test('ClaudeX ledger estimates are OpenAI-family subscription estimates, not act
   });
   assert.equal(data.totals.actualSpendUsd, 0);
   assert.equal(data.totals.estimatedUsd, 0.123456);
+  assert.equal(data.totals.cliEstimateUsd, 0.123456);
+  assert.equal(data.totals.derivedEstimateUsd, null);
   assert.deepEqual(data.availableProviders, ['claudex']);
   assert.deepEqual(data.availableHarnesses, ['claude-code']);
   assert.equal(data.byIssue[0].k, '88');
@@ -344,6 +351,8 @@ test('OpenAI family combines native Codex and ClaudeX while legacy codex stays n
     output_tokens: 5,
     cost_usd: 0,
     api_equivalent_usd: 0.2,
+    api_equivalent_pricing: 'claude-code-local-estimate',
+    api_equivalent_source: 'claude-code-total_cost_usd',
     api_equivalent_coverage: 'complete',
   };
   const response = buildUsageAnalytics([native, claudex], {
@@ -355,6 +364,16 @@ test('OpenAI family combines native Codex and ClaudeX while legacy codex stays n
   assert.equal(response.codex.totals.estimatedUsd, 5);
   assert.equal(response.openai.totals.records, 2);
   assert.equal(response.openai.totals.estimatedUsd, 5.2);
+  assert.equal(response.openai.totals.cliEstimateUsd, 0.2);
+  assert.equal(response.openai.totals.derivedEstimateUsd, 5);
+  assert.equal(
+    response.openai.byProvider.find((entry) => entry.k === 'claudex').cliEstimateUsd,
+    0.2,
+  );
+  assert.equal(
+    response.openai.byProvider.find((entry) => entry.k === 'codex').derivedEstimateUsd,
+    5,
+  );
   assert.deepEqual(response.openai.byProvider.map((entry) => entry.k).sort(), ['claudex', 'codex']);
   assert.deepEqual(response.openai.byHarness.map((entry) => entry.k).sort(), [
     'claude-code',
@@ -375,6 +394,8 @@ test('OpenAI filters cover provider, harness, model, role and issue', () => {
       model: 'gpt-5.6-terra',
       cost_usd: 0,
       api_equivalent_usd: 0.2,
+      api_equivalent_pricing: 'claude-code-local-estimate',
+      api_equivalent_source: 'claude-code-total_cost_usd',
       api_equivalent_coverage: 'complete',
     },
   ];
@@ -532,6 +553,7 @@ test('missing or explicitly incomplete ClaudeX estimates stay null instead of fa
   const partial = {
     ...missing,
     api_equivalent_usd: 0,
+    api_equivalent_source: 'claude-code-total_cost_usd',
     api_equivalent_coverage: 'partial-telemetry',
   };
   assert.equal(normalizeOpenAiLedgerRow(missing).estimateUsd, null);
@@ -543,6 +565,24 @@ test('missing or explicitly incomplete ClaudeX estimates stay null instead of fa
   assert.equal(data.totals.estimatedUsd, null);
   assert.equal(data.totals.unpricedRecords, 2);
   assert.equal(data.totals.missingLedgerEstimateRecords, 2);
+});
+
+test('unattributed ClaudeX ledger values are unavailable rather than mislabeled as CLI estimates', () => {
+  const row = claudexBase({
+    api_equivalent_source: undefined,
+    api_equivalent_pricing: undefined,
+  });
+  const info = normalizeOpenAiLedgerRow(row);
+  assert.equal(info.estimateUsd, null);
+  assert.equal(info.estimateKind, 'cli');
+  assert.equal(info.pricingStatus, 'unattributed-ledger-estimate');
+  const data = aggregateOpenAiUsage([row], {
+    now: '2026-07-24T12:00:00Z',
+    range: 14,
+  });
+  assert.equal(data.totals.estimatedUsd, null);
+  assert.equal(data.totals.cliEstimateUsd, null);
+  assert.equal(data.totals.unattributedLedgerEstimateRecords, 1);
 });
 
 test('null, empty-string and boolean estimate fields are never coerced into false zero prices', () => {
@@ -571,8 +611,10 @@ test('dashboard JavaScript parses and carries explicit estimate disclosure', asy
   const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
   assert.ok(script);
   assert.doesNotThrow(() => new Function(script));
-  assert.match(html, /API-equivalent estimate · not billed subscription spend/);
-  assert.match(html, /not an invoice or actual billed spend/);
+  assert.match(html, /API-equivalent estimates · not billed subscription spend/);
+  assert.match(html, /ClaudeX uses the[\s\S]*total_cost_usd[\s\S]*CLI estimate/);
+  assert.match(html, /Native\s+Codex[\s\S]*derived estimate/);
+  assert.match(html, /actual subscription[\s\S]*\$0 when reported/);
   assert.match(html, /long-context multiplier is not applied/);
   assert.match(html, /ua-codex-issues/);
 });

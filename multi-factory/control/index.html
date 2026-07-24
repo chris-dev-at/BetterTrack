@@ -1195,10 +1195,8 @@
       .kpi,
       #flowwrap {
         border-color: rgba(100, 137, 142, 0.27);
-        background:
-          linear-gradient(145deg, rgba(255, 255, 255, 0.018), transparent 48%),
-          rgba(13, 24, 28, 0.94);
-        box-shadow: 0 1px rgba(255, 255, 255, 0.025);
+        background: var(--surface);
+        box-shadow: none;
       }
       .card {
         border-radius: var(--radius);
@@ -1227,22 +1225,15 @@
       }
       .tile {
         position: relative;
-        min-height: 112px;
+        min-height: 94px;
         justify-content: center;
         gap: 4px;
         overflow: hidden;
-        border-radius: 14px;
-        padding: 14px 15px;
+        border-radius: 10px;
+        padding: 12px 14px;
       }
       .tile::after {
-        content: '';
-        position: absolute;
-        right: -24px;
-        bottom: -38px;
-        width: 90px;
-        height: 90px;
-        border-radius: 50%;
-        background: rgba(114, 213, 255, 0.03);
+        content: none;
       }
       .tile .l,
       .kpi .l {
@@ -1273,7 +1264,7 @@
         background: #071114;
       }
       .meter i {
-        background: linear-gradient(90deg, #48bce8, var(--accent));
+        background: var(--accent);
       }
       .grid2,
       .grid {
@@ -1448,7 +1439,7 @@
         overflow: hidden;
         border: 1px solid var(--border);
         border-radius: var(--radius);
-        background: linear-gradient(115deg, rgba(242, 189, 104, 0.06), rgba(13, 24, 28, 0.92));
+        background: var(--surface);
       }
       .attention-head {
         display: flex;
@@ -1510,6 +1501,166 @@
         display: block;
         color: var(--muted);
         font-size: 10.5px;
+      }
+      .open-work-card {
+        margin-bottom: 14px;
+        overflow: hidden;
+        padding: 0;
+      }
+      .open-work-head {
+        display: flex;
+        min-height: 48px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .open-work-title {
+        display: flex;
+        min-width: 0;
+        align-items: baseline;
+        gap: 9px;
+      }
+      .open-work-title h2 {
+        min-height: 0;
+        margin: 0;
+        color: var(--ink);
+        font-size: 13px;
+        letter-spacing: 0.02em;
+        text-transform: none;
+      }
+      .open-work-title .hint {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .open-work-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+      }
+      .open-work-actions button {
+        min-height: 28px;
+        padding: 4px 8px;
+        font-size: 10.5px;
+      }
+      .open-work-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        background: var(--border);
+        gap: 1px;
+      }
+      .open-work-lane {
+        min-width: 0;
+        background: var(--surface);
+      }
+      .open-work-lane-head {
+        display: flex;
+        min-height: 36px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 11px;
+        border-bottom: 1px solid var(--border);
+        color: var(--ink2);
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .open-work-lane-head .chip {
+        font-variant-numeric: tabular-nums;
+      }
+      .open-work-list {
+        min-height: 112px;
+      }
+      .open-work-item {
+        display: grid;
+        min-height: 37px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 11px;
+        border-bottom: 1px solid rgba(100, 137, 142, 0.18);
+      }
+      .open-work-item:last-child {
+        border-bottom: 0;
+      }
+      .open-work-primary {
+        min-width: 0;
+      }
+      .open-work-primary a,
+      .open-work-primary b {
+        display: block;
+        overflow: hidden;
+        color: var(--ink2);
+        font-size: 11.5px;
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .open-work-primary small {
+        display: block;
+        overflow: hidden;
+        margin-top: 1px;
+        color: var(--muted);
+        font-size: 9.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .open-work-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--muted);
+        font-size: 9.5px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+      .open-work-status::before {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: currentColor;
+        content: '';
+      }
+      .open-work-status.good {
+        color: var(--good);
+      }
+      .open-work-status.warn {
+        color: var(--warn);
+      }
+      .open-work-status.bad {
+        color: var(--crit);
+      }
+      .open-work-empty,
+      .open-work-more {
+        display: flex;
+        min-height: 37px;
+        align-items: center;
+        padding: 7px 11px;
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+      .open-work-more {
+        min-height: 30px;
+        border-top: 1px solid var(--border);
+      }
+      .open-work-message {
+        min-height: 116px;
+        padding: 18px;
+      }
+      .open-work-message b {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--ink2);
+        font-size: 12px;
+      }
+      .open-work-message span {
+        color: var(--muted);
+        font-size: 11px;
       }
       .attention-empty {
         display: flex;
@@ -1916,6 +2067,9 @@
         .strip {
           grid-template-columns: repeat(3, minmax(0, 1fr));
         }
+        .open-work-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
         .kpis {
           grid-template-columns: repeat(3, minmax(0, 1fr));
         }
@@ -2072,6 +2226,15 @@
         }
         .strip {
           grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .open-work-grid {
+          grid-template-columns: 1fr;
+        }
+        .open-work-title .hint {
+          display: none;
+        }
+        .open-work-list {
+          min-height: 0;
         }
         .tile {
           min-height: 102px;
@@ -2352,6 +2515,25 @@
         aria-labelledby="page-title"
         tabindex="-1"
       >
+        <div class="strip" id="strip"></div>
+        <section class="card open-work-card" id="open-work-card" aria-labelledby="open-work-title">
+          <div class="open-work-head">
+            <div class="open-work-title">
+              <h2 id="open-work-title">Open Work</h2>
+              <span class="hint">active, ready, merging, and waiting for a decision</span>
+            </div>
+            <div class="open-work-actions">
+              <span class="chip" id="open-work-count">checking</span>
+              <button type="button" onclick="setTab('flow')">View full work</button>
+            </div>
+          </div>
+          <div id="open-work" aria-live="polite" aria-busy="true">
+            <div class="open-work-message">
+              <b>Loading open work</b>
+              <span>Waiting for the first GitHub and worker snapshot.</span>
+            </div>
+          </div>
+        </section>
         <div class="attention-panel" id="attention-panel">
           <div class="attention-head">
             <div>
@@ -2364,7 +2546,6 @@
             <div class="attention-empty">Waiting for the first factory snapshot…</div>
           </div>
         </div>
-        <div class="strip" id="strip"></div>
         <div class="grid2">
           <div class="card" id="automation-card">
             <h2>Triggers <span class="hint">automation rules</span></h2>
@@ -2593,14 +2774,18 @@
             </div>
           </div>
           <div class="billing-card estimate">
-            <div class="label">OpenAI API-equivalent estimate</div>
+            <div class="label">OpenAI API-equivalent estimates</div>
             <div class="amount" id="ua-api-estimate">Unavailable</div>
-            <div class="note">What equivalent token traffic would cost at standard API rates.</div>
+            <div class="note">
+              ClaudeX CLI estimate + native Codex derived estimate; never billed.
+            </div>
           </div>
           <div class="billing-card">
-            <div class="label">CLI-reported estimate</div>
+            <div class="label">General harness estimate</div>
             <div class="amount" id="ua-cli-estimate">Loading…</div>
-            <div class="note">Historical local estimate; not proof of a provider invoice.</div>
+            <div class="note">
+              Legacy cost_usd ledger field; ClaudeX estimates are separated below.
+            </div>
           </div>
         </div>
         <div class="card" style="margin-bottom: 12px">
@@ -2641,7 +2826,7 @@
         <div class="grid2">
           <div class="card" style="grid-column: 1/-1">
             <h2>
-              CLI-reported estimate per day — last 14 days
+              General harness estimate per day — last 14 days
               <span class="hint"
                 ><span class="sw" style="background: var(--accent)"></span>
                 multi-factory&nbsp;&nbsp;<span class="sw" style="background: #8a8878"></span> single
@@ -2653,11 +2838,11 @@
         </div>
         <div class="grid2">
           <div class="card">
-            <h2>CLI estimate by model</h2>
+            <h2>General estimate by model</h2>
             <div id="ua-model"></div>
           </div>
           <div class="card">
-            <h2>CLI estimate by role</h2>
+            <h2>General estimate by role</h2>
             <div id="ua-role"></div>
           </div>
         </div>
@@ -2672,14 +2857,14 @@
           </div>
         </div>
         <div class="hint" style="margin-top: 2px">
-          Source: factory/usage/ledger.jsonl — one record per agent run. CLI-reported estimates,
-          actual metered charges, and API-equivalent estimates remain separate. Refreshes every 60s
-          while this area is open.
+          Source: factory/usage/ledger.jsonl — one record per agent run. The general cost_usd
+          history, actual metered charges, ClaudeX CLI estimates, and native Codex derived estimates
+          remain separate. Refreshes every 60s while this area is open.
         </div>
         <div class="card" style="margin-top: 14px; margin-bottom: 10px">
           <h2>
-            OpenAI-family API-equivalent usage
-            <span class="hint">native Codex + ClaudeX · estimate, never an invoice</span>
+            OpenAI-family estimates
+            <span class="hint">ClaudeX CLI-reported + native Codex derived · never an invoice</span>
           </h2>
           <div class="addrow" style="margin-bottom: 10px">
             <label class="hint" for="ua-codex-range">time range</label>
@@ -2707,9 +2892,11 @@
         </div>
         <div class="card" style="margin-bottom: 10px">
           <h2>
-            OpenAI-family tokens + API-equivalent USD
+            OpenAI-family tokens + separated estimates
             <span class="hint"
-              ><span class="sw" style="background: var(--accent)"></span> estimate&nbsp;&nbsp;<span
+              ><span class="sw" style="background: var(--accent)"></span> ClaudeX CLI
+              estimate&nbsp;&nbsp;<span class="sw" style="background: var(--muted)"></span> native
+              derived&nbsp;&nbsp;<span
                 class="sw"
                 style="height: 2px; background: var(--warn)"
               ></span>
@@ -2720,36 +2907,39 @@
         </div>
         <div class="grid2">
           <div class="card">
-            <h2>Estimate by model</h2>
+            <h2>Estimate source by model</h2>
             <div id="ua-codex-models"></div>
           </div>
           <div class="card">
-            <h2>Estimate by harness</h2>
+            <h2>Estimate source by harness</h2>
             <div id="ua-openai-harnesses"></div>
           </div>
         </div>
         <div class="grid2">
           <div class="card">
-            <h2>Estimate by provider</h2>
+            <h2>Estimate source by provider</h2>
             <div id="ua-openai-providers"></div>
           </div>
           <div class="card">
-            <h2>Estimate by role</h2>
+            <h2>Estimate source by role</h2>
             <div id="ua-codex-roles"></div>
           </div>
         </div>
         <div class="card" style="margin-bottom: 10px">
-          <h2>API-equivalent usage by issue</h2>
+          <h2>Estimate source by issue</h2>
           <div id="ua-codex-issues"></div>
         </div>
         <div class="hint estimate-note">
-          <b>API-equivalent estimate · not billed subscription spend.</b> Native Codex and ClaudeX
-          use the existing ChatGPT subscription/login route; no OpenAI API key is required, and
-          these values are not an invoice or actual billed spend. Standard/base OpenAI API rates per
-          1M tokens (effective 2026-07-24): Sol $5.00 input / $0.50 cached input / $30.00 output;
-          Terra $2.50 / $0.25 / $15.00; Luna $1.00 / $0.10 / $6.00. Unknown models or incomplete
-          historical telemetry are unavailable/partial, never presented as $0. Legacy rows whose
-          output may double-count reasoning are also left unpriced. The &gt;272K
+          <b>API-equivalent estimates · not billed subscription spend.</b> ClaudeX uses the per-call
+          <code>total_cost_usd</code> estimate reported by Claude Code and preserved in the ledger;
+          it is labeled <b>CLI estimate</b> and is never recalculated from the table below. Native
+          Codex has no CLI cost field, so its values are labeled <b>derived estimate</b> and use
+          standard/base OpenAI API rates per 1M tokens (effective 2026-07-24): Sol $5.00 input /
+          $0.50 cached input / $30.00 output; Terra $2.50 / $0.25 / $15.00; Luna $1.00 / $0.10 /
+          $6.00. Both routes use the existing ChatGPT subscription/login; the actual subscription
+          charge remains separate and is $0 when reported by the ledger. Unknown, unattributed, or
+          incomplete telemetry is unavailable/partial, never presented as a false $0. Legacy native
+          rows whose output may double-count reasoning are also left unpriced. The &gt;272K
           <span>long-context multiplier is not applied</span> because aggregate CLI telemetry cannot
           identify qualifying requests reliably.
           <a target="_blank" href="https://openai.com/api/pricing/">Pricing source</a>.
@@ -2793,7 +2983,7 @@
             <div class="list" id="needshuman"></div>
           </div>
           <div class="card">
-            <h2>CLI estimate (multi-factory) by issue</h2>
+            <h2>General ledger cost by issue</h2>
             <div class="list" id="costs"></div>
           </div>
         </div>
@@ -3654,6 +3844,268 @@
           })
           .sort((a, b) => a.rank - b.rank || a.number - b.number);
       }
+      const openWorkSource = (github, key) => {
+        const source = github?.sources?.[key];
+        if (source?.available === false)
+          return {
+            available: false,
+            detail: String(source.error || `${key} query unavailable`).slice(0, 160),
+          };
+        if (Array.isArray(github?.[key])) return { available: true, detail: '' };
+        return { available: false, detail: `${key} was not included in this snapshot` };
+      };
+      function openWorkModel(s, health = githubState(s)) {
+        const github = s?.github || {};
+        if (!health?.available)
+          return {
+            state: 'error',
+            detail: health?.detail || 'GitHub open-work data is unavailable.',
+            lanes: [],
+            trackedCount: 0,
+          };
+
+        const protocol = s?.protocol || {};
+        const joined = joinIssues(s);
+        const issueByNumber = new Map(joined.map((issue) => [issue.number, issue]));
+        const decisionBoundNumbers = new Set(
+          [...(github.needsHuman || []), ...(github.awaitingOwner || [])].map(
+            (issue) => issue.number,
+          ),
+        );
+        const activeByNumber = new Map();
+        for (const issue of joined) {
+          if (!issue.w) continue;
+          activeByNumber.set(issue.number, {
+            number: issue.number,
+            title: issue.title,
+            worker: issue.w.id,
+            phase: issue.w.status?.phase || 'working',
+          });
+        }
+        for (const worker of protocol.workers || []) {
+          const phase = worker.status?.phase || 'idle';
+          if (['idle', 'done', 'failed'].includes(phase)) continue;
+          const number = worker.status?.issue ?? worker.assignment?.issue;
+          if (!number || activeByNumber.has(number)) continue;
+          activeByNumber.set(number, {
+            number,
+            title: `Issue #${number}`,
+            worker: worker.id,
+            phase,
+          });
+        }
+        const active = [...activeByNumber.values()].sort(
+          (a, b) => Number(a.worker) - Number(b.worker) || a.number - b.number,
+        );
+
+        const ready = joined
+          .filter(
+            (issue) =>
+              !issue.w &&
+              !decisionBoundNumbers.has(issue.number) &&
+              !(issue.labels || []).includes('awaiting-owner') &&
+              (issue.queuePos || (!issue.deps.length && !issue.conflict && !issue.queuePos)),
+          )
+          .map((issue) => ({
+            number: issue.number,
+            title: issue.title,
+            queuePos: issue.queuePos,
+            merging: issue.merging,
+          }))
+          .sort(
+            (a, b) =>
+              Number(Boolean(b.merging)) - Number(Boolean(a.merging)) ||
+              (a.queuePos ?? Number.MAX_SAFE_INTEGER) - (b.queuePos ?? Number.MAX_SAFE_INTEGER) ||
+              a.number - b.number,
+          );
+
+        const prs = (github.prs || [])
+          .map((pr) => {
+            const number = /^task\/(\d+)$/.exec(pr.branch || '')?.[1];
+            const issue = number ? issueByNumber.get(Number(number)) : null;
+            return {
+              number: pr.number,
+              title: pr.title,
+              issue: number ? Number(number) : null,
+              checks: ['passing', 'pending', 'failing'].includes(pr.checks) ? pr.checks : 'pending',
+              mergeState: [
+                'behind',
+                'blocked',
+                'clean',
+                'dirty',
+                'draft',
+                'has_hooks',
+                'unknown',
+                'unstable',
+              ].includes(pr.mergeState)
+                ? pr.mergeState
+                : 'unknown',
+              queuePos: issue?.queuePos || null,
+              merging: Boolean(issue?.merging),
+            };
+          })
+          .sort((a, b) => {
+            const rank = (pr) =>
+              pr.merging
+                ? 0
+                : pr.checks === 'failing'
+                  ? 1
+                  : ['blocked', 'dirty'].includes(pr.mergeState)
+                    ? 2
+                    : pr.queuePos
+                      ? 3
+                      : ['behind', 'draft', 'unstable'].includes(pr.mergeState)
+                        ? 4
+                        : pr.checks === 'pending'
+                          ? 5
+                          : 6;
+            return rank(a) - rank(b) || (a.queuePos ?? 9999) - (b.queuePos ?? 9999);
+          });
+
+        const decisions = new Map();
+        const addDecision = (issue, kind, tone, detail) => {
+          if (!issue?.number) return;
+          if (!decisions.has(issue.number))
+            decisions.set(issue.number, {
+              number: issue.number,
+              title: issue.title || `Issue #${issue.number}`,
+              signals: [],
+            });
+          const entry = decisions.get(issue.number);
+          if (!entry.title || /^Issue #/.test(entry.title))
+            entry.title = issue.title || entry.title;
+          if (!entry.signals.some((signal) => signal.kind === kind))
+            entry.signals.push({ kind, tone, detail });
+        };
+        for (const issue of joined) {
+          if (issue.deps.length)
+            addDecision(
+              issue,
+              'blocked',
+              'warn',
+              `waiting for ${issue.deps.map((number) => `#${number}`).join(', ')}`,
+            );
+          else if (issue.conflict)
+            addDecision(issue, 'blocked', 'warn', `path conflict with #${issue.conflict}`);
+        }
+        const needsHumanSource = openWorkSource(github, 'needsHuman');
+        if (needsHumanSource.available)
+          for (const issue of github.needsHuman)
+            addDecision(issue, 'needs human', 'bad', 'manual review or intervention');
+        const awaitingOwnerSource = openWorkSource(github, 'awaitingOwner');
+        if (awaitingOwnerSource.available)
+          for (const issue of github.awaitingOwner)
+            addDecision(issue, 'awaiting owner', 'warn', 'owner decision required');
+
+        const decisionRows = [...decisions.values()].sort((a, b) => {
+          const severity = (entry) =>
+            entry.signals.some((signal) => signal.tone === 'bad') ? 0 : 1;
+          return severity(a) - severity(b) || a.number - b.number;
+        });
+        const partialSources = [
+          ['needs-human', needsHumanSource],
+          ['awaiting-owner', awaitingOwnerSource],
+        ]
+          .filter(([, source]) => !source.available)
+          .map(([label, source]) => ({ label, detail: source.detail }));
+        const tracked = new Set();
+        for (const issue of [...active, ...ready, ...decisionRows])
+          tracked.add(`issue:${issue.number}`);
+        for (const pr of prs) tracked.add(pr.issue ? `issue:${pr.issue}` : `pr:${pr.number}`);
+        return {
+          state: 'ready',
+          trackedCount: tracked.size,
+          partialSources,
+          lanes: [
+            { id: 'active', label: 'Active workers', rows: active },
+            { id: 'ready', label: 'Ready & queued', rows: ready },
+            { id: 'prs', label: 'Pull requests', rows: prs },
+            { id: 'decisions', label: 'Decisions', rows: decisionRows },
+          ],
+        };
+      }
+      const openWorkStatus = (label, tone = '') =>
+        `<span class="open-work-status ${tone}">${esc(label)}</span>`;
+      function openWorkRows(lane) {
+        const visible = lane.rows.slice(0, 3);
+        const row = (item) => {
+          if (lane.id === 'active')
+            return `<div class="open-work-item"><div class="open-work-primary"><a target="_blank" rel="noreferrer" href="${REPO}/issues/${esc(item.number)}">#${esc(item.number)} ${esc(item.title)}</a><small>worker ${esc(item.worker)}</small></div>${openWorkStatus(item.phase, 'good')}</div>`;
+          if (lane.id === 'ready') {
+            const status = item.merging
+              ? ['merging', 'good']
+              : item.queuePos
+                ? [`queue ${item.queuePos}`, 'warn']
+                : ['ready', 'good'];
+            return `<div class="open-work-item"><div class="open-work-primary"><a target="_blank" rel="noreferrer" href="${REPO}/issues/${esc(item.number)}">#${esc(item.number)} ${esc(item.title)}</a><small>${item.queuePos ? 'approved for merge' : 'scheduler can assign'}</small></div>${openWorkStatus(status[0], status[1])}</div>`;
+          }
+          if (lane.id === 'prs') {
+            const status = item.merging
+              ? ['merging', 'good']
+              : item.checks === 'failing'
+                ? ['CI failing', 'bad']
+                : item.queuePos
+                  ? [`queue ${item.queuePos}`, 'warn']
+                  : ['blocked', 'dirty'].includes(item.mergeState)
+                    ? [`merge ${item.mergeState}`, 'bad']
+                    : ['behind', 'draft', 'unstable'].includes(item.mergeState)
+                      ? [`merge ${item.mergeState}`, 'warn']
+                      : item.checks === 'passing'
+                        ? ['CI passing', 'good']
+                        : ['CI pending', 'warn'];
+            const mergeDetail =
+              item.mergeState === 'unknown' ? '' : ` · merge ${item.mergeState.replace('_', ' ')}`;
+            return `<div class="open-work-item"><div class="open-work-primary"><a target="_blank" rel="noreferrer" href="${REPO}/pull/${esc(item.number)}">PR #${esc(item.number)} ${esc(item.title)}</a><small>${item.issue ? `issue #${esc(item.issue)}` : 'open pull request'}${item.queuePos ? ` · merge queue ${esc(item.queuePos)}` : mergeDetail}</small></div>${openWorkStatus(status[0], status[1])}</div>`;
+          }
+          const primary = item.signals[0] || {
+            kind: 'decision',
+            tone: 'warn',
+            detail: 'review required',
+          };
+          return `<div class="open-work-item"><div class="open-work-primary"><a target="_blank" rel="noreferrer" href="${REPO}/issues/${esc(item.number)}">#${esc(item.number)} ${esc(item.title)}</a><small>${esc(item.signals.map((signal) => signal.detail).join(' · '))}</small></div>${openWorkStatus(item.signals.map((signal) => signal.kind).join(' + '), primary.tone)}</div>`;
+        };
+        let html =
+          visible.map(row).join('') ||
+          `<div class="open-work-empty">${
+            lane.id === 'decisions' && lane.partialSources?.length
+              ? 'Decision source unavailable'
+              : {
+                  active: 'No workers active',
+                  ready: 'Nothing ready or queued',
+                  prs: 'No open pull requests',
+                  decisions: 'No blocked or decision-bound work',
+                }[lane.id]
+          }</div>`;
+        if (lane.rows.length > visible.length)
+          html += `<div class="open-work-more">+${lane.rows.length - visible.length} more · view full work</div>`;
+        if (lane.id === 'decisions' && lane.partialSources?.length)
+          html += `<div class="open-work-more">${esc(lane.partialSources.map((source) => `${source.label} unavailable`).join(' · '))}</div>`;
+        return html;
+      }
+      function renderOpenWork(s, health = githubState(s)) {
+        const node = $('open-work');
+        const count = $('open-work-count');
+        const model = openWorkModel(s, health);
+        node.setAttribute('aria-busy', 'false');
+        if (model.state === 'error') {
+          count.textContent = 'unavailable';
+          node.innerHTML = `<div class="open-work-message"><b>Open work unavailable</b><span>${esc(model.detail)}</span></div>`;
+          return;
+        }
+        count.textContent = `${model.trackedCount} tracked`;
+        if (!model.trackedCount && !model.partialSources.length) {
+          node.innerHTML =
+            '<div class="open-work-message"><b>No open work</b><span>No active workers, runnable issues, open pull requests, blockers, or owner decisions.</span></div>';
+          return;
+        }
+        node.innerHTML = `<div class="open-work-grid">${model.lanes
+          .map((lane) => {
+            const enriched =
+              lane.id === 'decisions' ? { ...lane, partialSources: model.partialSources } : lane;
+            return `<section class="open-work-lane" aria-labelledby="open-work-${lane.id}"><div class="open-work-lane-head"><span id="open-work-${lane.id}">${esc(lane.label)}</span><span class="chip">${lane.rows.length}</span></div><div class="open-work-list">${openWorkRows(enriched)}</div></section>`;
+          })
+          .join('')}</div>`;
+      }
       const PHASE_ICON = { writing: '✍️', reviewing: '🔍', fixing: '🔧', triage: '⚖️' };
 
       /* ---- renderers ---- */
@@ -3810,6 +4262,10 @@
           !optionalArray(github.prs, recordValue) ||
           !optionalArray(github.merged, recordValue) ||
           !optionalArray(github.needsHuman, recordValue) ||
+          !optionalArray(github.awaitingOwner, recordValue) ||
+          !optionalRecord(github.sources) ||
+          (github.sources &&
+            !Object.values(github.sources).every((source) => optionalRecord(source))) ||
           !optionalArray(value.triggers, recordValue) ||
           !optionalArray(value.inflight) ||
           !optionalRecord(value.ledger) ||
@@ -3910,11 +4366,40 @@
             action: 'Open work',
           });
         const needs = gh.needsHuman || [];
-        if (github.available && needs.length) {
+        const needsSource = openWorkSource(gh, 'needsHuman');
+        if (github.available && !needsSource.available)
+          items.push({
+            tone: 'warn',
+            title: 'Needs-human status unavailable',
+            detail: needsSource.detail,
+            tab: 'flow',
+            action: 'Open work',
+          });
+        else if (github.available && needs.length) {
           const first = needs[0];
           items.push({
             tone: 'bad',
             title: `${needs.length} issue${needs.length === 1 ? '' : 's'} need a human decision`,
+            detail: first ? `First: #${first.number} ${first.title || ''}` : 'Open the work queue.',
+            href: first ? `${REPO}/issues/${Number(first.number)}` : null,
+            action: 'Open issue',
+          });
+        }
+        const awaiting = gh.awaitingOwner || [];
+        const awaitingSource = openWorkSource(gh, 'awaitingOwner');
+        if (github.available && !awaitingSource.available)
+          items.push({
+            tone: 'warn',
+            title: 'Awaiting-owner status unavailable',
+            detail: awaitingSource.detail,
+            tab: 'flow',
+            action: 'Open work',
+          });
+        else if (github.available && awaiting.length) {
+          const first = awaiting[0];
+          items.push({
+            tone: 'warn',
+            title: `${awaiting.length} issue${awaiting.length === 1 ? '' : 's'} await an owner decision`,
             detail: first ? `First: #${first.number} ${first.title || ''}` : 'Open the work queue.',
             href: first ? `${REPO}/issues/${Number(first.number)}` : null,
             action: 'Open issue',
@@ -4207,7 +4692,7 @@
           `${p.mode || '–'} · ${p.phase || '–'} · master hb ${ago(p.masterHeartbeatAge)}`;
         $('strip').innerHTML =
           `<div class="tile"><span class="l">Factory</span><span class="v">${esc(factoryLabel)}</span><span class="s">${esc(factoryDetail)}</span></div>` +
-          `<div class="tile"><span class="l">CLI estimate (multi)</span><span class="v">${fmtCliUsd(ledgerAmount(s.ledger, 'multiToday'))} today</span><span class="s">${fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal'))} total · not an invoice</span></div>` +
+          `<div class="tile"><span class="l">General ledger cost</span><span class="v">${fmtCliUsd(ledgerAmount(s.ledger, 'multiToday'))} today</span><span class="s">${fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal'))} total · ClaudeX split in Usage</span></div>` +
           (u5
             ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
             : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
@@ -4245,6 +4730,7 @@
 
         /* --- unified issues --- */
         const joined = github.available ? joinIssues(s) : [];
+        renderOpenWork(s, github);
         renderAttention(s, state, joined, singleState);
         $('icount').textContent = `${joined.length} open`;
         $('ilist').innerHTML =
@@ -4460,8 +4946,8 @@
           kpi((p.queue || []).length, 'merge queue') +
           kpi(github.available ? (gh.issues || []).length : 'Unavailable', 'open autopilot') +
           kpi(github.available ? (gh.needsHuman || []).length : 'Unavailable', 'needs human') +
-          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiToday')), 'CLI est. today') +
-          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal')), 'CLI est. total');
+          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiToday')), 'ledger cost today') +
+          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal')), 'ledger cost total');
         let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
     <div class="row"><span class="k">activity</span><span class="val">${esc(p.masterActivity?.activity || '–')}${p.masterActivity?.pr ? ' PR #' + p.masterActivity.pr : ''}</span></div>
     <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
@@ -4756,6 +5242,27 @@
         finiteNumber(n) == null
           ? 'unavailable'
           : '$' + (n === 0 ? '0.000000' : n < 0.01 ? Number(n).toFixed(6) : Number(n).toFixed(2));
+      const estimateParts = (bucket) => {
+        const cli = reportedAmount(bucket?.cliEstimateUsd, {
+          records: bucket?.cliEstimateRecords,
+          pricedRecords: bucket?.cliEstimateRecords,
+        });
+        const derived = reportedAmount(bucket?.derivedEstimateUsd, {
+          records: bucket?.derivedEstimateRecords,
+          pricedRecords: bucket?.derivedEstimateRecords,
+        });
+        return { cli, derived };
+      };
+      const estimateSourceText = (bucket, compact = false) => {
+        const { cli, derived } = estimateParts(bucket);
+        if (cli != null && derived != null)
+          return compact
+            ? `combined ${fmtEstimate(cli + derived)}`
+            : `combined ${fmtEstimate(cli + derived)} · CLI ${fmtEstimate(cli)} + derived ${fmtEstimate(derived)}`;
+        if (cli != null) return `CLI est. ${fmtEstimate(cli)}`;
+        if (derived != null) return `derived est. ${fmtEstimate(derived)}`;
+        return 'estimate unavailable';
+      };
       const coverageText = (bucket) =>
         !bucket || bucket.records === 0 || (bucket.records == null && bucket.coverage == null)
           ? 'no OpenAI-family rows'
@@ -4790,11 +5297,7 @@
                   : esc(r.label || r.k);
               const status = r.coverage === 'complete' ? '' : ` · ${coverageText(r)}`;
               const tokenTitle = `input ${fmtTok(r.tokens?.input || 0)} · cached ${fmtTok(r.tokens?.cachedInput || 0)} · cache-write ${fmtTok(r.tokens?.cacheWrite || 0)} · output ${fmtTok(r.tokens?.output || 0)}`;
-              const estimate = reportedAmount(r.estimatedUsd, {
-                records: r.records,
-                pricedRecords: r.pricedRecords,
-              });
-              return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${fmtEstimate(estimate)} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
+              return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${esc(estimateSourceText(r))} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
             })
             .join('') || '<div class="empty-state">No OpenAI-family data in this range.</div>';
       }
@@ -4840,11 +5343,7 @@
               ]
                 .filter(Boolean)
                 .join(' · ');
-              const estimate = reportedAmount(r.estimatedUsd, {
-                records: r.records,
-                pricedRecords: r.pricedRecords,
-              });
-              return `<div class="irow"><span class="num">${issue}</span><span class="title" title="${esc(route)}">${route ? `<b>${esc(route)}</b> · ` : ''}input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(estimate)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
+              return `<div class="irow"><span class="num">${issue}</span><span class="title" title="${esc(route)}">${route ? `<b>${esc(route)}</b> · ` : ''}input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${esc(estimateSourceText(r))}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
             })
             .join('') ||
           '<div class="empty-state">No per-issue OpenAI-family usage in this range.</div>';
@@ -4862,29 +5361,21 @@
       function renderOpenAIUsage(c) {
         const totals = c.totals || {};
         const tk = totals.tokens || {};
-        const status = coverageText(totals);
-        const todayBucket = (c.days || []).find(
-          (day) => String(day.k || day.date || '') === c.rangeEnd,
-        );
         const totalEstimate = reportedAmount(totals.estimatedUsd, {
           records: totals.records,
           pricedRecords: totals.pricedRecords,
         });
-        const todayEstimate = todayBucket
-          ? reportedAmount(totals.todayEstimatedUsd ?? todayBucket.estimatedUsd, {
-              records: todayBucket.records,
-              pricedRecords: todayBucket.pricedRecords,
-            })
-          : reportedAmount(totals.todayEstimatedUsd, {
-              records: totals.todayRecords,
-              pricedRecords: totals.todayPricedRecords,
-            });
+        const actualCharge = reportedAmount(totals.actualSpendUsd, {
+          records: totals.actualSpendRecords,
+        });
+        const { cli: cliEstimate, derived: derivedEstimate } = estimateParts(totals);
         $('ua-api-estimate').textContent = fmtEstimate(totalEstimate);
         $('ua-codex-kpis').innerHTML =
-          `<div class="tile"><span class="l">API-equivalent estimate</span><span class="v">${fmtEstimate(totalEstimate)}</span><span class="s">not billed subscription spend · ${status}</span></div>` +
-          `<div class="tile"><span class="l">Today’s estimate</span><span class="v">${fmtEstimate(todayEstimate)}</span><span class="s">standard/base API price</span></div>` +
+          `<div class="tile"><span class="l">Actual OpenAI charge</span><span class="v">${fmtCliUsd(actualCharge)}</span><span class="s">${totals.actualSpendRecords || 0} subscription run${totals.actualSpendRecords === 1 ? '' : 's'} reported</span></div>` +
+          `<div class="tile"><span class="l">Combined estimate</span><span class="v">${fmtEstimate(totalEstimate)}</span><span class="s">${esc(estimateSourceText(totals))} · not billed</span></div>` +
+          `<div class="tile"><span class="l">ClaudeX CLI estimate</span><span class="v">${fmtEstimate(cliEstimate)}</span><span class="s">${totals.cliEstimateRecords || 0} Claude Code run${totals.cliEstimateRecords === 1 ? '' : 's'} · recorded total_cost_usd</span></div>` +
+          `<div class="tile"><span class="l">Native Codex derived</span><span class="v">${fmtEstimate(derivedEstimate)}</span><span class="s">${totals.derivedEstimateRecords || 0} run${totals.derivedEstimateRecords === 1 ? '' : 's'} · standard/base rates</span></div>` +
           `<div class="tile"><span class="l">OpenAI-family tokens</span><span class="v">${fmtTok(tk.total || 0)}</span><span class="s">input ${fmtTok(tk.input || 0)} · output ${fmtTok(tk.output || 0)}</span></div>` +
-          `<div class="tile"><span class="l">Cached input</span><span class="v">${fmtTok(tk.cachedInput || 0)}</span><span class="s">cache-write ${fmtTok(tk.cacheWrite || 0)}${totals.cacheWriteUnreportedRecords ? ` · ${totals.cacheWriteUnreportedRecords} run${totals.cacheWriteUnreportedRecords === 1 ? '' : 's'} unreported` : ''}</span></div>` +
           `<div class="tile"><span class="l">Coverage</span><span class="v">${totals.pricedRecords || 0}/${totals.records || 0}</span><span class="s">priced runs · ${totals.unpricedRecords || 0} unavailable</span></div>`;
 
         const filters = c.filters || {};
@@ -4940,12 +5431,20 @@
           const cx = padL + i * bw + bw * 0.2;
           const w = Math.max(1, bw * 0.6);
           const cost = finiteNumber(day.estimatedUsd);
-          const h = ((H - padB - padT) * (cost || 0)) / maxCost;
-          const y = H - padB - h;
+          const { cli: cliCost, derived: derivedCost } = estimateParts(day);
+          const cliHeight = ((H - padB - padT) * (cliCost || 0)) / maxCost;
+          const derivedHeight = ((H - padB - padT) * (derivedCost || 0)) / maxCost;
+          let stackY = H - padB;
           const dayLabel = String(day.k || day.date || '');
-          if (h > 0.3)
-            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="2" fill="var(--accent)"><title>${esc(dayLabel)}: ${fmtEstimate(day.estimatedUsd)}${day.coverage === 'complete' ? '' : ' (' + esc(coverageText(day)) + ')'}</title></rect>`;
-          else if (day.records > 0 && day.estimatedUsd == null)
+          if (derivedHeight > 0.3) {
+            stackY -= derivedHeight;
+            svg += `<rect x="${cx}" y="${stackY}" width="${w}" height="${derivedHeight}" rx="2" fill="var(--muted)"><title>${esc(dayLabel)}: derived estimate ${fmtEstimate(derivedCost)}</title></rect>`;
+          }
+          if (cliHeight > 0.3) {
+            stackY -= cliHeight;
+            svg += `<rect x="${cx}" y="${stackY}" width="${w}" height="${cliHeight}" rx="2" fill="var(--accent)"><title>${esc(dayLabel)}: CLI estimate ${fmtEstimate(cliCost)}</title></rect>`;
+          }
+          if (day.records > 0 && cost == null)
             svg += `<rect x="${cx}" y="${H - padB - 2}" width="${w}" height="2" fill="var(--muted)"><title>${esc(dayLabel)}: estimate unavailable</title></rect>`;
           const tokenY = H - padB - ((H - padB - padT) * (day.tokens?.total || 0)) / maxTokens;
           points.push(`${cx + w / 2},${tokenY}`);
@@ -4980,11 +5479,11 @@
         const cliIssues = finiteNumber(t.records) === 0 ? null : finiteNumber(t.issues);
         const cliAverage = reportedAmount(t.avgPerIssue, { records: t.issues });
         const cliRecords = finiteNumber(t.records);
-        $('ua-actual-cost').textContent = actual == null ? 'Not reported' : fmtEstimate(actual);
+        $('ua-actual-cost').textContent = fmtCliUsd(actual);
         $('ua-cli-estimate').textContent = fmtCliUsd(cliTotal);
         $('ua-kpis').innerHTML =
-          `<div class="tile"><span class="l">CLI estimate total</span><span class="v">${fmtCliUsd(cliTotal)}</span><span class="s">${cliRecords == null ? 'run count not reported' : `${cliRecords} agent runs`} · not an invoice</span></div>` +
-          `<div class="tile"><span class="l">CLI estimate today</span><span class="v">${fmtCliUsd(cliToday)}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
+          `<div class="tile"><span class="l">General estimate total</span><span class="v">${fmtCliUsd(cliTotal)}</span><span class="s">${cliRecords == null ? 'run count not reported' : `${cliRecords} agent runs`} · legacy cost_usd</span></div>` +
+          `<div class="tile"><span class="l">General estimate today</span><span class="v">${fmtCliUsd(cliToday)}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
           `<div class="tile"><span class="l">Issues represented</span><span class="v">${cliIssues == null ? 'Not reported' : cliIssues}</span><span class="s">avg estimate ${fmtCliUsd(cliAverage)} per issue</span></div>` +
           `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;

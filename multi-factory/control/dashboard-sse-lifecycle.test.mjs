@@ -81,6 +81,7 @@ function lifecycleHarness() {
     const syncProviderDefs = () => {};
     const captureLocalUsage = () => {};
     const renderSubscriptionUsage = () => {};
+    const renderOpenWork = () => {};
     const renderAttention = () => {};
     const renderEvents = () => {};
     const renderFlow = () => {};
