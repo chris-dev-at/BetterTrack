@@ -220,6 +220,25 @@ grep -q -- '--dangerously-skip-permissions' "$CCR_ARGS_FILE" \
 check "ClaudeX subprocess receives no provider API/OAuth env" 0 \
   "$([ -e "$CCR_ENV_LEAK_FILE" ] && echo 1 || echo 0)"
 
+echo "— ClaudeX optional turn cap"
+reset_case
+CLAUDEX_CASE=ok
+MF_PROVIDER_ATTEMPTS=1
+CC_MAX_TURNS=40
+export CLAUDEX_CASE MF_PROVIDER_ATTEMPTS CC_MAX_TURNS
+cc_claudex gpt-5.6-sol high prompt
+grep -q -- '--max-turns 40' "$CCR_ARGS_FILE" \
+  && ok "ClaudeX forwards a valid role-specific turn cap" \
+  || bad "ClaudeX role-specific turn cap missing"
+reset_case
+CC_MAX_TURNS='not-a-number'
+export CC_MAX_TURNS
+cc_claudex gpt-5.6-sol high prompt
+grep -q -- '--max-turns' "$CCR_ARGS_FILE" \
+  && bad "ClaudeX should discard an invalid turn cap" \
+  || ok "ClaudeX discards an invalid turn cap"
+unset CC_MAX_TURNS
+
 echo "— ClaudeX durable-log secret redaction"
 reset_case
 CLAUDEX_CASE=secrets

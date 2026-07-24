@@ -354,32 +354,49 @@ unset SOL_COMPOSER_RULES
 
 FABLE_PROMPT='shared composer prompt — byte-identical sentinel'
 FABLE_CAPTURE=$T/fable-composer-prompt
+FABLE_LIMITS=$T/fable-composer-limits
 FABLE_MODELS=$T/fable-composer-models.json
 printf '%s\n' \
   '{"difficulties":{"max":{"provider":"claude","model":"claude-fable-5","effort":"max"}}}' \
   >"$FABLE_MODELS"
 (
   MF_MODELS_FILE=$FABLE_MODELS
-  cc(){ printf '%s' "$2" >"$FABLE_CAPTURE"; }
+  MF_ROLE_TIMEOUT=777
+  CC_MAX_TURNS=23
+  cc(){
+    printf '%s' "$2" >"$FABLE_CAPTURE"
+    printf '%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" >"$FABLE_LIMITS"
+  }
   mf_cc composer max "$FABLE_PROMPT"
 )
 check "Fable receives the shared composer prompt byte-identically" \
   "$FABLE_PROMPT" "$(<"$FABLE_CAPTURE")"
+check "Fable keeps its existing timeout/turn settings untouched" \
+  "777|23" "$(<"$FABLE_LIMITS")"
 
 SOL_CAPTURE=$T/sol-composer-prompt
+SOL_LIMITS=$T/sol-composer-limits
 SOL_MODELS=$T/sol-composer-models.json
 printf '%s\n' \
   '{"difficulties":{"max":{"provider":"claudex","model":"gpt-5.6-sol","effort":"high"}}}' \
   >"$SOL_MODELS"
 (
   MF_MODELS_FILE=$SOL_MODELS
-  cc_claudex(){ printf '%s' "$3" >"$SOL_CAPTURE"; }
+  MF_ROLE_TIMEOUT=777
+  CC_MAX_TURNS=23
+  cc_claudex(){
+    printf '%s' "$3" >"$SOL_CAPTURE"
+    printf '%s|%s' "$MF_ROLE_TIMEOUT" "$CC_MAX_TURNS" >"$SOL_LIMITS"
+  }
   mf_cc composer max "$FABLE_PROMPT"
 )
 grep -q 'SOL-SPECIFIC COMPOSER EXECUTION CONTRACT' "$SOL_CAPTURE" \
   && ok "Sol receives the provider-specific composer contract" \
   || bad "Sol composer contract was not appended"
-unset FABLE_PROMPT FABLE_CAPTURE FABLE_MODELS SOL_CAPTURE SOL_MODELS
+check "Sol composer gets bounded timeout and turn cap" \
+  "1200|40" "$(<"$SOL_LIMITS")"
+unset FABLE_PROMPT FABLE_CAPTURE FABLE_LIMITS FABLE_MODELS
+unset SOL_CAPTURE SOL_LIMITS SOL_MODELS
 
 for BAD_MODEL in "claude-opus-" "claude-opus-/haiku" "claude-opus-4-8 extra"; do
   BAD_CAPTURE=$T/rejected-composer-dispatch

@@ -329,6 +329,7 @@ codex_failure_signal(){
 cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
   local model=$1 effort=$2 prompt=$3 selector raw_model
   local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--}
+  local max_turns=${CC_MAX_TURNS:-}
   local tries=0 transient_tries=0 rebootstrap_done=0
   local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
   local empty_res='{"provider":"claudex","provider_family":"openai","harness":"claude-code","billing":"subscription","total_cost_usd":0,"claudex_usage_schema":1,"claudex_telemetry_complete":false,"api_equivalent_usd":null,"api_equivalent_pricing":"claude-code-local-estimate","api_equivalent_source":"claude-code-total_cost_usd","api_equivalent_coverage":"missing-telemetry"}'
@@ -343,6 +344,9 @@ cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
     return 1
   }
   raw_model=${selector#codex-api/}
+  case "$max_turns" in
+    ''|*[!0-9]*|0) max_turns=;;
+  esac
 
   if ! claudex_ensure; then
     rebootstrap_done=1
@@ -379,6 +383,7 @@ cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
       --model "$selector"
     )
     [ -n "$effort" ] && cmd+=(--effort "$effort")
+    [ -n "$max_turns" ] && cmd+=(--max-turns "$max_turns")
     cmd+=(
       -p "$prompt"
       --output-format stream-json
@@ -655,6 +660,7 @@ EOF
 
 mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
   local role=$1 d=$2 prompt=$3 cfg provider model effort
+  local sol_composer=0 sol_timeout=1200 sol_max_turns=40
   cfg=$(diff_cfg "$d")
   IFS='|' read -r provider model effort <<<"$cfg"
   if [ "$role" = composer ] && ! mf_composer_route_allowed "$provider" "$model"; then
@@ -663,6 +669,13 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
     return 1
   fi
   if [ "$role" = composer ] && mf_sol_composer_route "$provider" "$model"; then
+    sol_composer=1
+    sol_timeout=${MF_SOL_COMPOSER_TIMEOUT:-1200}
+    sol_max_turns=${MF_SOL_COMPOSER_MAX_TURNS:-40}
+    case "$sol_timeout" in ''|*[!0-9]*) sol_timeout=1200;; esac
+    case "$sol_max_turns" in ''|*[!0-9]*) sol_max_turns=40;; esac
+    [ "$sol_timeout" -ge 60 ] && [ "$sol_timeout" -le 7200 ] || sol_timeout=1200
+    [ "$sol_max_turns" -ge 1 ] && [ "$sol_max_turns" -le 200 ] || sol_max_turns=40
     prompt="$prompt
 
 $(mf_sol_composer_instructions)"
@@ -670,8 +683,21 @@ $(mf_sol_composer_instructions)"
   log "$role @ diff:$d → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
     claude)  CC_ROLE=$role CC_EFFORT=$effort cc "$model" "$prompt";;
-    claudex) CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt";;
-    codex)   CC_ROLE=$role cc_codex "$model" "$effort" "$prompt";;
+    claudex)
+      if [ "$sol_composer" -eq 1 ]; then
+        MF_ROLE_TIMEOUT=$sol_timeout CC_MAX_TURNS=$sol_max_turns \
+          CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
+      else
+        CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt"
+      fi
+      ;;
+    codex)
+      if [ "$sol_composer" -eq 1 ]; then
+        MF_ROLE_TIMEOUT=$sol_timeout CC_ROLE=$role cc_codex "$model" "$effort" "$prompt"
+      else
+        CC_ROLE=$role cc_codex "$model" "$effort" "$prompt"
+      fi
+      ;;
     gemini)  CC_ROLE=$role cc_gemini "$model" "$prompt";;
     *)
       log "  ↳ unsupported provider '$provider' — refusing implicit Claude fallback"
