@@ -76,8 +76,11 @@ isolated auth/CCR mounts, direct gateway, and Claude Code route rather than a
 host-only CLI shortcut.
 Claude capacity gating (`wait_for_capacity`) only blocks startup while some
 difficulty actually routes to claude — a claudex/codex/gemini-only config starts fine
-during a claude outage. Non-claude runs land in the ledger with `cost_usd: 0`
-(subscription) and whatever token counts the CLI reports.
+during a claude outage. Non-Claude subscription runs retain `cost_usd: 0` as the
+billing field and record token counts plus `api_equivalent_usd` when pricing is
+known. Dashboard money totals, model/role/issue breakdowns, and daily charts use
+that API-equivalent value for OpenAI-family rows, so ClaudeX/native Codex are not
+displayed as free work.
 
 ClaudeX bootstrap is idempotent and runs inside the selected service. It pins
 CCR `3.0.7`, imports only the local `codex-api` candidate, requires provider ID
@@ -90,7 +93,11 @@ service's isolated CCR configuration; their native factory routes are unchanged.
 The official OpenAI billing systems for ChatGPT subscriptions and API projects
 are separate. ClaudeX therefore records actual `cost_usd: 0` for this
 subscription route. Claude Code's pre-normalization local `total_cost_usd`
-estimate is retained separately as `api_equivalent_usd`; it is not an invoice.
+estimate is retained separately as `api_equivalent_usd`; per-model `costUSD`
+values are retained in the sanitized `model_usage` map. Analytics prefer those
+CLI estimates, fall back to complete token telemetry plus the public standard
+rate table when necessary, and label every result API-equivalent. They are
+treated as money for internal economics, but they are not an invoice.
 See [OpenAI's billing explanation](https://help.openai.com/en/articles/8156019).
 
 ## Scheduling in one paragraph
@@ -204,4 +211,6 @@ text.
 Ledger: same `factory/usage/ledger.jsonl`; multi-factory records carry extra
 `factory`/`worker` fields; `factory/usage-report.sh` works unchanged. Token
 capacity: all containers share the subscription; each `cc()` waits limits out
-independently (`LIMIT_SLEEP`), scheduler and merger stay token-free.
+independently (`LIMIT_SLEEP`), scheduler and merger stay token-free. The
+dashboard's general daily chart groups economic estimates by Claude versus
+Codex provider family, not by single- versus multi-factory harness.

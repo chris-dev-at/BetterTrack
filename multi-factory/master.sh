@@ -647,6 +647,68 @@ composer_request_restore_from_fence(){
   COMPOSER_REQUEST_LOADED=1
 }
 
+# Sol can occasionally complete every helper-backed issue mutation and then
+# damage or replace the manifest before the turn ends. Recover only when the
+# repository itself proves one exact, closed artifact set: every post-snapshot
+# issue is new, canonical, tagged with this unpredictable run id, and carries a
+# recognized composer mode. Any extra/invalid/prior-attempt artifact still fails
+# closed and follows the normal quarantine path.
+composer_manifest_repair(){ # $1=manifest $2=before $3=after $4=run $5=exact-count-or-0 $6=invalid-prior
+  local manifest=$1 before=$2 after=$3 run_id=$4 expected_count=$5 invalid_prior=$6
+  local newnums count n issue mode tmp
+  case "$expected_count:$invalid_prior" in
+    *[!0-9:]*|:*|*::*|*:) return 1;;
+  esac
+  [ "$invalid_prior" -eq 0 ] || return 1
+  newnums=$(mf_new_issue_numbers "$before" "$after") || return 1
+  newnums=$(xargs <<<"$newnums")
+  [ -n "$newnums" ] || return 1
+  count=$(wc -w <<<"$newnums" | tr -d ' ')
+  [ "$count" -ge 1 ] && [ "$count" -le "$COMPOSER_BATCH" ] || return 1
+  [ "$expected_count" -eq 0 ] || [ "$count" -eq "$expected_count" ] || return 1
+
+  tmp=$(mktemp "${manifest}.repair.XXXXXX") || return 1
+  for n in $newnums; do
+    issue=$(jq -c --argjson n "$n" \
+      '[.[] | select(.number==$n)] | if length==1 then .[0] else empty end' \
+      <<<"$after" 2>/dev/null) || {
+      rm -f -- "$tmp"
+      return 1
+    }
+    [ -n "$issue" ] || {
+      rm -f -- "$tmp"
+      return 1
+    }
+    if mf_issue_json_valid "$issue" "$run_id" false required forbidden; then
+      mode=autopilot
+    elif mf_issue_json_valid "$issue" "$run_id" false forbidden required; then
+      mode=awaiting-owner
+    else
+      rm -f -- "$tmp"
+      return 1
+    fi
+    printf 'ISSUE %s %s\n' "$n" "$mode" >>"$tmp" || {
+      rm -f -- "$tmp"
+      return 1
+    }
+  done
+  if ! mf_manifest_validate "$tmp" "$before" "$after" "$run_id" ""; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  mv -f -- "$tmp" "$manifest" || {
+    rm -f -- "$tmp"
+    return 1
+  }
+  log "composer protocol: reconstructed canonical manifest for issues [$MF_MANIFEST_ISSUES]"
+}
+
+composer_manifest_validate_or_repair(){ # validate args + $6=exact-count-or-0 $7=invalid-prior
+  mf_manifest_validate "$1" "$2" "$3" "$4" "$5" && return 0
+  composer_manifest_repair "$1" "$2" "$3" "$4" "$6" "$7" || return 1
+  mf_manifest_validate "$1" "$2" "$3" "$4" "$5"
+}
+
 composer_discovery_fence_reconcile(){
   local fence="$CONTROL/composer-discovery-fence" before after newnums snapshot
   local manifest_count valid=0 outcome=protocol archive
@@ -669,8 +731,9 @@ composer_discovery_fence_reconcile(){
   newnums=$(xargs <<<"$newnums")
   log "composer fence discovery ($COMPOSER_FENCE_RUN_ID): new repository issues [${newnums:-none}]"
 
-  if mf_manifest_validate "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
-    "$COMPOSER_FENCE_RUN_ID" ""; then
+  if composer_manifest_validate_or_repair "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
+    "$COMPOSER_FENCE_RUN_ID" "" "$COMPOSER_FENCE_EXACT_COUNT" \
+    "$COMPOSER_FENCE_INVALID_NEW_SEEN"; then
     case "$MF_MANIFEST_KIND" in
       issues)
         outcome=created
@@ -945,7 +1008,11 @@ finish the manifest contract this time."
     fi
     newnums=$(xargs <<<"$newnums")
     log "composer discovery ($run_id): new repository issues [${newnums:-none}]"
-    if mf_manifest_validate "$manifest" "$before" "$after" "$run_id" ""; then
+    local repair_expected_count=0
+    [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
+      && repair_expected_count=$COMPOSER_REQUEST_EXACT_COUNT
+    if composer_manifest_validate_or_repair "$manifest" "$before" "$after" "$run_id" "" \
+      "$repair_expected_count" "$invalid_new_seen"; then
       case "$MF_MANIFEST_KIND" in
         issues)
           if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then

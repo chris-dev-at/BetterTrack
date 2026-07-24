@@ -160,17 +160,15 @@ issue_cost(){
         | ( group_by(.role)
             | map({role:.[0].role, c:(map(.cost_usd)|add)})
             | sort_by(-.c) | map("\(.role) $\(.c|usd)") | join(", ") ) as $bd
-        | ([.[].api_equivalent_usd | select(type=="number")] | add // null) as $api
+        | (map(if (.api_equivalent_usd|type)=="number"
+                  then .api_equivalent_usd else (.cost_usd // 0) end) | add) as $equiv
         | ( group_by(.role)
             | map({role:.[0].role,
-                   c:([.[].api_equivalent_usd | select(type=="number")] | add // null)})
-            | map(select(.c != null))
+                   c:(map(if (.api_equivalent_usd|type)=="number"
+                           then .api_equivalent_usd else (.cost_usd // 0) end) | add)})
             | sort_by(-.c)
-            | map("\(.role) $\(.c|usd)") | join(", ") ) as $api_bd
-        | if $api == null
-          then "COST: issue #\($n) — $\($tot|usd) total (\($bd))"
-          else "COST: issue #\($n) — $\($tot|usd) actual (\($bd)); $\($api|usd) API-equivalent (\($api_bd))"
-          end
+            | map("\(.role) $\(.c|usd)") | join(", ") ) as $equiv_bd
+        | "COST: issue #\($n) — $\($equiv|usd) API-equivalent total (\($equiv_bd)); $\($tot|usd) recorded billing field (\($bd))"
       end') || return 0
   [ -n "$line" ] && log "$line"
 }
