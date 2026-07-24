@@ -67,6 +67,7 @@ export async function changeVaultPassphrase(input: PassphraseChangeInput): Promi
     );
   }
   const decoded = decodeVaultEnvelope(input.envelope);
+  assertFreshRekeyMetadata(decoded.header, input.metadata);
   const currentWrapper = activeWrapper(decoded.header);
   const oldKek = await deriveVaultKek(input.oldPassphrase, currentWrapper.kdf, input.cryptoDeps);
   let vaultKey: Uint8Array | undefined;
@@ -102,6 +103,8 @@ export async function changeVaultPassphrase(input: PassphraseChangeInput): Promi
 /** Fully re-encrypts under a fresh VK and a core-generated key ID after a compromise. */
 export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<RekeyResult> {
   const decoded = decodeVaultEnvelope(input.envelope);
+  assertFreshRekeyMetadata(decoded.header, input.metadata);
+  const nextKeyId = generateFreshKeyId(decoded.header.keyId, input.keyIdGenerator);
   const currentWrapper = activeWrapper(decoded.header);
   const oldKek = await deriveVaultKek(input.passphrase, currentWrapper.kdf, input.cryptoDeps);
   let oldVaultKey: Uint8Array | undefined;
@@ -109,7 +112,6 @@ export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<Reke
   try {
     oldVaultKey = await unwrapActiveKey(decoded.header, currentWrapper, oldKek);
     const { document } = await decryptVaultDocument(input.envelope, oldVaultKey);
-    const nextKeyId = generateFreshKeyId(decoded.header.keyId, input.keyIdGenerator);
     nextVaultKey = generateVaultKey(input.randomBytes);
     const kdf = newKdfParams(input.randomBytes);
     const nextKek = await deriveVaultKek(input.passphrase, kdf, input.cryptoDeps);
@@ -177,15 +179,10 @@ async function unwrapActiveKey(
   return unwrapVaultKey(wrapped, header.keyId, kek);
 }
 
-async function reencrypt(
-  document: VaultDocumentV1,
-  vaultKey: Uint8Array,
+function assertFreshRekeyMetadata(
   priorHeader: VaultEnvelopeHeader,
-  wrappedKeys: VaultWrappedKey[],
   metadata: RekeyHeaderMetadata,
-  randomBytes?: RandomBytes,
-  keyId = priorHeader.keyId,
-): Promise<RekeyResult> {
+): void {
   if (metadata.vaultVersion <= priorHeader.vaultVersion) {
     throw new VaultCryptoError(
       'envelope-invalid',
@@ -195,6 +192,18 @@ async function reencrypt(
   if (metadata.writeId.toLowerCase() === priorHeader.writeId.toLowerCase()) {
     throw new VaultCryptoError('envelope-invalid', 'Re-encryption requires a fresh write id.');
   }
+}
+
+async function reencrypt(
+  document: VaultDocumentV1,
+  vaultKey: Uint8Array,
+  priorHeader: VaultEnvelopeHeader,
+  wrappedKeys: VaultWrappedKey[],
+  metadata: RekeyHeaderMetadata,
+  randomBytes?: RandomBytes,
+  keyId = priorHeader.keyId,
+): Promise<RekeyResult> {
+  assertFreshRekeyMetadata(priorHeader, metadata);
   const encrypted = await encryptVaultDocument({
     document,
     vaultKey,

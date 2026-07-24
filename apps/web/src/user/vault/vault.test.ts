@@ -49,6 +49,8 @@ const headerMetadata = {
   writeId: VECTOR_WRITE_ID,
   writtenAt: '2026-07-24T10:00:00.000Z',
 };
+const firstRekeyWriteId = '018f0000-0000-7000-8000-00000000000d';
+const unexpectedArgon2 = async () => Promise.reject(new Error('KDF must not run'));
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
@@ -350,7 +352,7 @@ describe('passphrase and key lifecycle', () => {
       metadata: {
         ...headerMetadata,
         vaultVersion: 2,
-        writeId: '018f0000-0000-7000-8000-00000000000d',
+        writeId: firstRekeyWriteId,
       },
       randomBytes: deterministicRandom(),
     });
@@ -382,7 +384,7 @@ describe('passphrase and key lifecycle', () => {
         newPassphrase: 'correct horse battery staple',
         metadata: {
           ...staleWriteMetadata,
-          writeId: '018f0000-0000-7000-8000-00000000000d',
+          writeId: firstRekeyWriteId,
         },
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
@@ -392,6 +394,7 @@ describe('passphrase and key lifecycle', () => {
         oldPassphrase: 'correct horse battery staple',
         newPassphrase: 'new secret',
         metadata: staleWriteMetadata,
+        cryptoDeps: { argon2: unexpectedArgon2 },
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
     await expect(
@@ -399,6 +402,7 @@ describe('passphrase and key lifecycle', () => {
         envelope: original.envelope,
         passphrase: 'correct horse battery staple',
         metadata: staleWriteMetadata,
+        cryptoDeps: { argon2: unexpectedArgon2 },
         keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
@@ -412,7 +416,7 @@ describe('passphrase and key lifecycle', () => {
       metadata: {
         ...headerMetadata,
         vaultVersion: 2,
-        writeId: '018f0000-0000-7000-8000-00000000000d',
+        writeId: firstRekeyWriteId,
       },
       randomBytes: deterministicRandom(96),
       keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
@@ -429,7 +433,12 @@ describe('passphrase and key lifecycle', () => {
       rotateVaultKey({
         envelope: original.envelope,
         passphrase: 'correct horse battery staple',
-        metadata: { ...headerMetadata, vaultVersion: 2 },
+        metadata: {
+          ...headerMetadata,
+          vaultVersion: 2,
+          writeId: firstRekeyWriteId,
+        },
+        cryptoDeps: { argon2: unexpectedArgon2 },
         keyIdGenerator: () => original.header.keyId.toUpperCase(),
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
@@ -437,7 +446,12 @@ describe('passphrase and key lifecycle', () => {
       rotateVaultKey({
         envelope: original.envelope,
         passphrase: 'correct horse battery staple',
-        metadata: { ...headerMetadata, vaultVersion: 2 },
+        metadata: {
+          ...headerMetadata,
+          vaultVersion: 2,
+          writeId: firstRekeyWriteId,
+        },
+        cryptoDeps: { argon2: unexpectedArgon2 },
         keyIdGenerator: () => 'not-a-uuid',
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
@@ -459,14 +473,18 @@ describe('passphrase and key lifecycle', () => {
       rotateVaultKey({
         envelope: original.envelope,
         passphrase: 'wrong',
-        metadata: headerMetadata,
+        metadata: {
+          ...headerMetadata,
+          vaultVersion: 2,
+          writeId: firstRekeyWriteId,
+        },
         keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
       }),
     ).rejects.toBeInstanceOf(VaultCryptoError);
     expect(await decryptVaultDocument(original.envelope, original.vaultKey)).toMatchObject({
       document: vaultVectorDocument,
     });
-  });
+  }, 15_000);
 });
 
 describe('recovery kit and custody lock core', () => {
