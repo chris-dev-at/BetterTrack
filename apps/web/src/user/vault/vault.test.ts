@@ -21,6 +21,7 @@ import {
   generateVaultKey,
   newKdfParams,
   VAULT_IV_BYTES,
+  type RandomBytes,
   unwrapVaultKey,
   wrapVaultKey,
 } from './crypto';
@@ -60,6 +61,16 @@ function deferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function failingDeterministicRandom(failAtCall: number): RandomBytes {
+  const random = deterministicRandom();
+  let calls = 0;
+  return (length) => {
+    calls += 1;
+    if (calls === failAtCall) throw new Error(`Deterministic random failure at call ${calls}.`);
+    return random(length);
+  };
 }
 
 beforeEach(() => {
@@ -324,6 +335,38 @@ describe('BTVAULT1 envelope and content crypto', () => {
         metadata: { ...vector.initial.header, vaultVersion: vector.rollback.rejectedVaultVersion },
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
+
+    const passphraseChangeFailure = changeVaultPassphrase({
+      envelope: initialEnvelope,
+      oldPassphrase: vector.passphrase,
+      newPassphrase: vector.newPassphrase,
+      metadata: vector.passphraseChanged.header,
+      randomBytes: failingDeterministicRandom(vector.rollback.passphraseChangeFailAtRandomCall),
+    });
+    await expect(passphraseChangeFailure).rejects.toThrow(
+      `Deterministic random failure at call ${vector.rollback.passphraseChangeFailAtRandomCall}.`,
+    );
+    expect(bytesToBase64(initialEnvelope)).toBe(vector.rollback.expectedEnvelopeBase64);
+    await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
+      document: vaultVectorDocument,
+      header: vector.initial.header,
+    });
+
+    const rotationFailure = rotateVaultKey({
+      envelope: initialEnvelope,
+      passphrase: vector.passphrase,
+      metadata: vector.rotated.header,
+      randomBytes: failingDeterministicRandom(vector.rollback.rotationFailAtRandomCall),
+      keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
+    });
+    await expect(rotationFailure).rejects.toThrow(
+      `Deterministic random failure at call ${vector.rollback.rotationFailAtRandomCall}.`,
+    );
+    expect(bytesToBase64(initialEnvelope)).toBe(vector.rollback.expectedEnvelopeBase64);
+    await expect(decryptVaultDocument(initialEnvelope, vaultKey)).resolves.toMatchObject({
+      document: vaultVectorDocument,
+      header: vector.initial.header,
+    });
   });
 
   it('rejects producer headers without an active wrapper or the required Argon2id profile', async () => {

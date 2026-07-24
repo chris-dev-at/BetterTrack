@@ -36,7 +36,14 @@ export interface VaultInteroperabilityFixture {
   passphraseChanged: VaultFixtureEnvelope;
   rotated: VaultFixtureEnvelope & { keyId: string };
   recoveryKitBase64: string;
-  rollback: { priorVaultVersion: number; rejectedVaultVersion: number; nextVaultVersion: number };
+  rollback: {
+    priorVaultVersion: number;
+    rejectedVaultVersion: number;
+    nextVaultVersion: number;
+    passphraseChangeFailAtRandomCall: number;
+    rotationFailAtRandomCall: number;
+    expectedEnvelopeBase64: string;
+  };
 }
 
 interface VaultFixtureEnvelope {
