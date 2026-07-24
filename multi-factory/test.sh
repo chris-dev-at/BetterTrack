@@ -293,6 +293,19 @@ kill -0 "$HB_BYSTANDER" 2>/dev/null \
 kill "$HB_BYSTANDER" 2>/dev/null || true
 wait "$HB_BYSTANDER" 2>/dev/null || true
 
+echo "— headless fixer routing authority"
+FIXER_PROMPT=../factory/prompts/fixer.md
+grep -q 'tier-and-delegation rules do NOT apply here' "$FIXER_PROMPT" \
+  && ok "fixer prompt overrides interactive tier/delegation rules" \
+  || bad "fixer prompt must override interactive tier/delegation rules"
+grep -q 'Do not refuse the fix or request a model switch' "$FIXER_PROMPT" \
+  && ok "fixer prompt forbids model-switch refusal" \
+  || bad "fixer prompt must forbid model-switch refusal"
+grep -q 'NEVER spawn subagents' "$FIXER_PROMPT" \
+  && ok "fixer prompt keeps work in its routed session" \
+  || bad "fixer prompt must forbid delegation"
+unset FIXER_PROMPT
+
 echo "— difficulty routing (mflib.sh pure helpers)"
 . ./mflib.sh
 check "diff_next easy→normal" "normal" "$(diff_next easy)"
