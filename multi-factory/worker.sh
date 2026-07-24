@@ -18,6 +18,7 @@ HB=$STATUS/worker-$WORKER_ID.hb
 : "${MF_DRY_RUN:=0}"; : "${MF_DRY_SECS:=8}"
 : "${MF_PROTOCOL_ATTEMPTS:=2}"; : "${MF_PROTOCOL_RETRY_SLEEP:=20}"
 : "${MF_GH_READ_ATTEMPTS:=3}"; : "${MF_GH_READ_RETRY_SLEEP:=10}"
+: "${MF_COMMENT_DISCOVERY_ATTEMPTS:=4}"; : "${MF_COMMENT_DISCOVERY_SLEEP:=5}"
 export LOG_TAG="[w$WORKER_ID]"
 export MF_EVENTLOG=$LOGS/events.log
 export WORKER_ID
@@ -208,25 +209,63 @@ pr_snapshot(){
   return 1
 }
 
+review_comment_discover(){ # $1=before comments JSON $2=PR $3=expected head
+  local before=$1 pr=$2 head=$3 try after
+  REVIEW_DISCOVERY_STATE=missing
+  for try in $(seq 1 "$MF_COMMENT_DISCOVERY_ATTEMPTS"); do
+    if pr_snapshot "$pr"; then
+      after=$PR_SNAPSHOT_COMMENTS
+      if [ "$PR_SNAPSHOT_HEAD" != "$head" ]; then
+        REVIEW_DISCOVERY_STATE=head-changed
+        return 1
+      fi
+      if mf_new_canonical_comment "$before" "$after" review "$head"; then
+        REVIEW_DISCOVERY_STATE=accepted
+        return 0
+      fi
+      REVIEW_DISCOVERY_STATE=missing
+    else
+      REVIEW_DISCOVERY_STATE=read-failed
+    fi
+    if [ "$try" -lt "$MF_COMMENT_DISCOVERY_ATTEMPTS" ]; then
+      log "review protocol: canonical comment not visible yet (discovery $try/$MF_COMMENT_DISCOVERY_ATTEMPTS)"
+      sleep "$MF_COMMENT_DISCOVERY_SLEEP"
+    fi
+  done
+  return 1
+}
+
 run_reviewer(){ # $1=issue $2=pr $3=difficulty
-  local n=$1 pr=$2 difficulty=$3 attempt before head after transport prompt
+  local n=$1 pr=$2 difficulty=$3 attempt before="" head="" transport prompt
   for attempt in $(seq 1 "$MF_PROTOCOL_ATTEMPTS"); do
     pr_snapshot "$pr" || { log "review protocol: pre-read failed"; continue; }
-    before=$PR_SNAPSHOT_COMMENTS; head=$PR_SNAPSHOT_HEAD
-    prompt=$(sed \
-      -e "s/{{PR}}/$pr/g" -e "s/{{N}}/$n/g" -e "s/{{HEAD}}/$head/g" \
-      "$MF_PROMPTS/reviewer.md")
-    if mf_cc reviewer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
-    pr_snapshot "$pr" || { log "review protocol: post-read failed"; continue; }
-    after=$PR_SNAPSHOT_COMMENTS
-    if [ "$PR_SNAPSHOT_HEAD" != "$head" ]; then
-      log "review protocol: PR head changed during review; discarding comment and reviewing fresh"
-    elif mf_new_canonical_comment "$before" "$after" review "$head"; then
+    if [ -z "$head" ] || [ "$PR_SNAPSHOT_HEAD" != "$head" ]; then
+      # A changed head is a genuinely new review target. For an unchanged head,
+      # retain the original baseline across protocol attempts so a valid comment
+      # that converges during the outer retry delay is still considered fresh.
+      before=$PR_SNAPSHOT_COMMENTS
+      head=$PR_SNAPSHOT_HEAD
+    elif mf_new_canonical_comment "$before" "$PR_SNAPSHOT_COMMENTS" review "$head"; then
       LAST_REVIEW_VERDICT=$MF_COMMENT_MARKER
       LAST_REVIEW_BODY=$MF_COMMENT_BODY
       LAST_REVIEW_COMMENT_ID=$MF_COMMENT_ID
       LAST_REVIEW_HEAD=$head
       return 0
+    fi
+    prompt=$(sed \
+      -e "s/{{PR}}/$pr/g" -e "s/{{N}}/$n/g" -e "s/{{HEAD}}/$head/g" \
+      "$MF_PROMPTS/reviewer.md")
+    if mf_cc reviewer "$difficulty" "$(with_pack "$prompt")"; then transport=0; else transport=$?; fi
+    if review_comment_discover "$before" "$pr" "$head"; then
+      LAST_REVIEW_VERDICT=$MF_COMMENT_MARKER
+      LAST_REVIEW_BODY=$MF_COMMENT_BODY
+      LAST_REVIEW_COMMENT_ID=$MF_COMMENT_ID
+      LAST_REVIEW_HEAD=$head
+      return 0
+    elif [ "$REVIEW_DISCOVERY_STATE" = head-changed ]; then
+      log "review protocol: PR head changed during review; discarding comment and reviewing fresh"
+    elif [ "$REVIEW_DISCOVERY_STATE" = read-failed ]; then
+      log "review protocol: post-read failed"
     else
       log "review protocol: no unique new canonical comment"
     fi
