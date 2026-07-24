@@ -610,11 +610,47 @@ cc_gemini(){ # $1=model (agy model string, effort baked in) $2=prompt
 
 mf_composer_route_allowed(){ # $1=provider $2=model
   local provider=$1 model=$2
-  case "$provider/$model" in
-    claude/claude-fable-*|claude/claude-opus-*|\
+  case "$provider" in
+    claude)
+      [[ "$model" =~ ^claude-(fable|opus)-[A-Za-z0-9._:-]+$ ]]
+      ;;
+    claudex)
+      [ "$model" = gpt-5.6-sol ] || [ "$model" = codex-api/gpt-5.6-sol ]
+      ;;
+    codex)
+      [ "$model" = gpt-5.6-sol ]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+mf_sol_composer_route(){ # $1=provider $2=model
+  case "$1/$2" in
     claudex/gpt-5.6-sol|claudex/codex-api/gpt-5.6-sol|codex/gpt-5.6-sol) return 0;;
     *) return 1;;
   esac
+}
+
+mf_sol_composer_instructions(){
+  cat <<'EOF'
+=== SOL-SPECIFIC COMPOSER EXECUTION CONTRACT ===
+This is a bounded planning run, not a repository audit.
+- Work as one agent. NEVER use Agent, TaskCreate, TaskUpdate, TaskList,
+  TaskGet, TaskOutput, SendMessage, or any delegation/task-tracking tool.
+- Trust closed issues and merged commits in LIVE STATE as shipped evidence.
+  Do not re-review them unless an open bug or needs-human item disputes them.
+- Do not run tests, builds, linters, broad history queries, recursive tree
+  exploration, or general-purpose code audits.
+- Before the first create-issue.sh call, use at most 20 tool calls total,
+  including at most 6 file reads and 8 shell calls. Use only MAP/graph lookups
+  and targeted duplicate searches. If the safe frontier remains unclear inside
+  that budget, write NONE; never keep investigating.
+- An owner-approved brief already supplies the frontier. In that mode, skip
+  milestone discovery: preflight only its named candidates, then use the helper.
+=== END SOL-SPECIFIC COMPOSER EXECUTION CONTRACT ===
+EOF
 }
 
 mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
@@ -625,6 +661,11 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
     log "composer @ diff:$d → $provider/$model${effort:+ ($effort)}"
     log "  ↳ composer route rejected — only Claude Fable, Claude Opus, or GPT-5.6 Sol may compose"
     return 1
+  fi
+  if [ "$role" = composer ] && mf_sol_composer_route "$provider" "$model"; then
+    prompt="$prompt
+
+$(mf_sol_composer_instructions)"
   fi
   log "$role @ diff:$d → $provider/$model${effort:+ ($effort)}"
   case "$provider" in

@@ -321,6 +321,9 @@ done
 for ROUTE in \
   "claude claude-sonnet-5" \
   "claude claude-haiku-4-5" \
+  "claude claude-opus-" \
+  "claude claude-opus-/haiku" \
+  "claude claude-opus-4-8 extra" \
   "claudex gpt-5.6-terra" \
   "codex gpt-5.6-luna" \
   "gemini Gemini-3.1-Pro"; do
@@ -331,6 +334,73 @@ for ROUTE in \
     || ok "composer route rejects $ROUTE_PROVIDER/$ROUTE_MODEL"
 done
 unset ROUTE ROUTE_PROVIDER ROUTE_MODEL
+
+mf_sol_composer_route claudex gpt-5.6-sol \
+  && ok "Sol composer route receives provider-specific guardrails" \
+  || bad "Sol composer route should receive provider-specific guardrails"
+mf_sol_composer_route claude claude-fable-5 \
+  && bad "Fable composer route must not receive Sol guardrails" \
+  || ok "Fable composer prompt remains on the shared unchanged path"
+mf_sol_composer_route claude claude-opus-4-8 \
+  && bad "Opus composer route must not receive Sol guardrails" \
+  || ok "Opus composer prompt remains on the shared unchanged path"
+SOL_COMPOSER_RULES=$(mf_sol_composer_instructions)
+case "$SOL_COMPOSER_RULES" in
+  *"NEVER use Agent"*"at most 20 tool calls"*"owner-approved brief"*)
+    ok "Sol composer guardrails bound delegation, discovery, and brief handling";;
+  *) bad "Sol composer guardrails are incomplete";;
+esac
+unset SOL_COMPOSER_RULES
+
+FABLE_PROMPT='shared composer prompt — byte-identical sentinel'
+FABLE_CAPTURE=$T/fable-composer-prompt
+FABLE_MODELS=$T/fable-composer-models.json
+printf '%s\n' \
+  '{"difficulties":{"max":{"provider":"claude","model":"claude-fable-5","effort":"max"}}}' \
+  >"$FABLE_MODELS"
+(
+  MF_MODELS_FILE=$FABLE_MODELS
+  cc(){ printf '%s' "$2" >"$FABLE_CAPTURE"; }
+  mf_cc composer max "$FABLE_PROMPT"
+)
+check "Fable receives the shared composer prompt byte-identically" \
+  "$FABLE_PROMPT" "$(<"$FABLE_CAPTURE")"
+
+SOL_CAPTURE=$T/sol-composer-prompt
+SOL_MODELS=$T/sol-composer-models.json
+printf '%s\n' \
+  '{"difficulties":{"max":{"provider":"claudex","model":"gpt-5.6-sol","effort":"high"}}}' \
+  >"$SOL_MODELS"
+(
+  MF_MODELS_FILE=$SOL_MODELS
+  cc_claudex(){ printf '%s' "$3" >"$SOL_CAPTURE"; }
+  mf_cc composer max "$FABLE_PROMPT"
+)
+grep -q 'SOL-SPECIFIC COMPOSER EXECUTION CONTRACT' "$SOL_CAPTURE" \
+  && ok "Sol receives the provider-specific composer contract" \
+  || bad "Sol composer contract was not appended"
+unset FABLE_PROMPT FABLE_CAPTURE FABLE_MODELS SOL_CAPTURE SOL_MODELS
+
+for BAD_MODEL in "claude-opus-" "claude-opus-/haiku" "claude-opus-4-8 extra"; do
+  BAD_CAPTURE=$T/rejected-composer-dispatch
+  BAD_MODELS=$T/rejected-composer-models.json
+  rm -f "$BAD_CAPTURE"
+  printf '{"difficulties":{"max":{"provider":"claude","model":"%s","effort":"high"}}}\n' \
+    "$BAD_MODEL" >"$BAD_MODELS"
+  if (
+    MF_MODELS_FILE=$BAD_MODELS
+    cc(){ : >"$BAD_CAPTURE"; }
+    mf_cc composer max 'must not dispatch'
+  ); then
+    bad "malformed composer route should fail closed: $BAD_MODEL"
+  else
+    ok "malformed composer route fails closed: $BAD_MODEL"
+  fi
+  [ ! -e "$BAD_CAPTURE" ] \
+    && ok "malformed composer route makes no provider call: $BAD_MODEL" \
+    || bad "malformed composer route reached provider: $BAD_MODEL"
+done
+unset BAD_MODEL BAD_CAPTURE BAD_MODELS
 
 echo "— difficulty → model config (state/control/models.json)"
 cat >"$MFSTATE/control/models.json" <<'JSON'
