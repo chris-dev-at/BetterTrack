@@ -1,7 +1,8 @@
 // Pure ledger pricing/aggregation used by the dashboard and deterministic tests.
-// `cost_usd` remains separate from OpenAI-family estimates. Native Codex is
-// derived from the standard-rate table; ClaudeX preserves Claude Code's recorded
-// per-call estimate and never substitutes that table.
+// Provider invoices remain unavailable, but every known API-equivalent estimate
+// participates in the general money views. Native Codex is derived from the
+// standard-rate table; ClaudeX prefers Claude Code's per-call/per-model estimate
+// and falls back to the same public table only when complete token telemetry exists.
 
 export const CODEX_STANDARD_PRICING = Object.freeze({
   'gpt-5.6-sol': Object.freeze({ input: 5, cachedInput: 0.5, cacheWrite: 6.25, output: 30 }),
@@ -27,7 +28,7 @@ export const CODEX_PRICING_META = Object.freeze({
 
 export const OPENAI_FAMILY_PRICING_META = Object.freeze({
   basis:
-    'API-equivalent estimates only; native Codex uses the pricing table and ClaudeX uses Claude Code CLI estimates recorded in the ledger',
+    'API-equivalent estimates only; native Codex uses the pricing table and ClaudeX prefers Claude Code CLI estimates with complete-token fallback',
   effectiveDate: '2026-07-24',
   ratesPerMillionTokens: CODEX_STANDARD_PRICING,
   actualSpend: false,
@@ -52,6 +53,58 @@ const round = (value, places = 6) => {
   return Math.round((value + Number.EPSILON) * scale) / scale;
 };
 const dateKey = (value) => (typeof value === 'string' ? value.slice(0, 10) : '');
+const emptyUsage = () => ({ input: 0, cachedInput: 0, cacheWrite: 0, output: 0, total: 0 });
+const finishUsage = (usage) => ({
+  ...usage,
+  total: usage.input + usage.cachedInput + usage.cacheWrite + usage.output,
+});
+const addUsage = (left, right) => {
+  for (const key of ['input', 'cachedInput', 'cacheWrite', 'output']) left[key] += right[key] || 0;
+  left.total = left.input + left.cachedInput + left.cacheWrite + left.output;
+  return left;
+};
+const standardEstimate = (model, usage) => {
+  const rates = CODEX_STANDARD_PRICING[model];
+  if (!rates) return null;
+  return round(
+    (usage.input * rates.input +
+      usage.cachedInput * rates.cachedInput +
+      usage.cacheWrite * rates.cacheWrite +
+      usage.output * rates.output) /
+      1_000_000,
+  );
+};
+const claudexModelUsageParts = (row) => {
+  if (!row?.model_usage || typeof row.model_usage !== 'object' || Array.isArray(row.model_usage))
+    return [];
+  return Object.entries(row.model_usage)
+    .filter(
+      ([selector, value]) =>
+        /^codex-api\/[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(selector) &&
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value),
+    )
+    .map(([selector, value]) => {
+      const input = ownNumber(value, ['inputTokens']);
+      const cachedInput = ownNumber(value, ['cacheReadInputTokens']);
+      const cacheWrite = ownNumber(value, ['cacheCreationInputTokens']);
+      const output = ownNumber(value, ['outputTokens']);
+      const cliEstimate = ownNumber(value, ['costUSD', 'costUsd']);
+      return {
+        model: selector.replace(/^codex-api\//, ''),
+        usage: finishUsage({
+          input: input.value,
+          cachedInput: cachedInput.value,
+          cacheWrite: cacheWrite.value,
+          output: output.value,
+        }),
+        cliEstimateUsd: cliEstimate.known ? round(cliEstimate.value) : null,
+        telemetryComplete: input.known && output.known,
+        cacheWriteRecorded: cacheWrite.known,
+      };
+    });
+};
 
 export function ledgerProvider(row) {
   if (typeof row?.provider === 'string' && row.provider) return row.provider;
@@ -203,6 +256,7 @@ export function normalizeOpenAiLedgerRow(row) {
   }
 
   const model = String(row.model || '').replace(/^codex-api\//, '');
+  const modelUsageParts = claudexModelUsageParts(row);
   const rawInput = ownNumber(row, ['input_tokens']);
   const cachedInput = ownNumber(row, ['cached_input_tokens', 'cache_read_tokens']);
   const cacheWrite = ownNumber(row, ['cache_write_input_tokens', 'cache_creation_tokens']);
@@ -214,13 +268,18 @@ export function normalizeOpenAiLedgerRow(row) {
   const uncachedInput = inclusive
     ? Math.max(rawInput.value - cachedInput.value - cacheWrite.value, 0)
     : rawInput.value;
-  const usage = {
+  const rowUsage = finishUsage({
     input: uncachedInput,
     cachedInput: cachedInput.value,
     cacheWrite: cacheWrite.value,
     output: output.value,
-  };
-  usage.total = usage.input + usage.cachedInput + usage.cacheWrite + usage.output;
+  });
+  // Claude Code's top-level usage can omit small/fast subagent models. The
+  // sanitized model_usage map is therefore authoritative for both the total and
+  // per-model dashboard whenever it is present.
+  const usage = modelUsageParts.length
+    ? modelUsageParts.reduce((sum, part) => addUsage(sum, part.usage), emptyUsage())
+    : rowUsage;
 
   const apiEquivalent = ownNumber(row, ['api_equivalent_usd']);
   const cliEstimateSource = row.api_equivalent_source === 'claude-code-total_cost_usd';
@@ -236,10 +295,73 @@ export function normalizeOpenAiLedgerRow(row) {
     'unknown-model',
     'unpriced',
   ].includes(row.api_equivalent_coverage);
+  const completeModelCliEstimate =
+    modelUsageParts.length > 0 &&
+    modelUsageParts.every((part) => part.cliEstimateUsd != null) &&
+    !explicitlyIncomplete
+      ? round(modelUsageParts.reduce((sum, part) => sum + part.cliEstimateUsd, 0))
+      : null;
+  const tokenFallbackComplete =
+    !explicitlyIncomplete &&
+    (row.claudex_telemetry_complete === true ||
+      (modelUsageParts.length > 0 && modelUsageParts.every((part) => part.telemetryComplete))) &&
+    usage.total > 0;
+  const modelDerivedFallback =
+    modelUsageParts.length > 0 &&
+    modelUsageParts.every((part) => part.telemetryComplete && CODEX_STANDARD_PRICING[part.model])
+      ? round(
+          modelUsageParts.reduce((sum, part) => sum + standardEstimate(part.model, part.usage), 0),
+        )
+      : null;
+  const derivedFallback =
+    !apiEquivalent.known && !conflictingLedgerProvenance && tokenFallbackComplete
+      ? modelUsageParts.length
+        ? modelDerivedFallback
+        : standardEstimate(model, usage)
+      : null;
   const estimateUsd =
     apiEquivalent.known && cliEstimateRecorded && !explicitlyIncomplete
       ? round(apiEquivalent.value)
-      : null;
+      : !apiEquivalent.known && !conflictingLedgerProvenance && completeModelCliEstimate != null
+        ? completeModelCliEstimate
+        : derivedFallback;
+  const estimateKind =
+    estimateUsd != null && derivedFallback != null && completeModelCliEstimate == null
+      ? 'derived'
+      : 'cli';
+  let modelBreakdown = [];
+  if (modelUsageParts.length) {
+    const pricedParts = modelUsageParts.map((part) => {
+      const partEstimate =
+        part.cliEstimateUsd ??
+        (part.telemetryComplete ? standardEstimate(part.model, part.usage) : null);
+      return {
+        model: part.model,
+        usage: part.usage,
+        estimateUsd: partEstimate,
+        estimateKind: part.cliEstimateUsd == null ? 'derived' : 'cli',
+        pricingStatus:
+          partEstimate == null
+            ? CODEX_STANDARD_PRICING[part.model]
+              ? 'partial-telemetry'
+              : 'unknown-model'
+            : 'complete',
+        telemetryComplete: part.telemetryComplete,
+        cacheWriteRecorded: part.cacheWriteRecorded,
+      };
+    });
+    if (estimateUsd != null && pricedParts.every((part) => part.estimateUsd != null)) {
+      const partsTotal = round(pricedParts.reduce((sum, part) => sum + part.estimateUsd, 0));
+      const delta = round(estimateUsd - partsTotal);
+      const target = pricedParts.find((part) => part.model === model) || pricedParts[0];
+      // Claude Code's aggregate can differ from its per-model values by tiny
+      // rounding residue. Preserve the authoritative run total exactly.
+      if (Math.abs(delta) <= Math.max(0.01, estimateUsd * 0.001)) {
+        target.estimateUsd = round(target.estimateUsd + delta);
+        modelBreakdown = pricedParts;
+      }
+    }
+  }
   return {
     row,
     provider,
@@ -253,11 +375,14 @@ export function normalizeOpenAiLedgerRow(row) {
     }),
     usage,
     estimateUsd,
-    estimateKind: 'cli',
+    estimateKind,
+    modelBreakdown,
     actualUsd: actual.known ? actual.value : null,
     pricingStatus:
       estimateUsd != null
-        ? 'complete'
+        ? derivedFallback != null && completeModelCliEstimate == null
+          ? 'token-derived-fallback'
+          : 'complete'
         : conflictingLedgerProvenance
           ? 'conflicting-ledger-provenance'
           : apiEquivalent.known && !cliEstimateRecorded
@@ -364,8 +489,18 @@ const addIssueRoute = (map, key, info) => {
     });
   const route = map.get(key);
   if (info.route?.model) route.models.add(info.route.model);
+  for (const part of info.modelBreakdown || []) route.models.add(part.model);
   if (info.route?.provider) route.providers.add(info.route.provider);
   if (info.route?.harness) route.harnesses.add(info.route.harness);
+};
+const modelInfos = (info) => {
+  if (!info.modelBreakdown?.length) return [info];
+  return info.modelBreakdown.map((part) => ({
+    ...info,
+    ...part,
+    route: { ...(info.route || {}), model: part.model },
+    modelBreakdown: [],
+  }));
 };
 const finishIssueRoute = (route) => {
   const sorted = (values) => [...(values || [])].sort();
@@ -474,7 +609,9 @@ export function aggregateOpenAiUsage(rows, options = {}) {
   const availableProviders = available((info) => info.provider);
   const availableProviderFamilies = available((info) => info.providerFamily);
   const availableHarnesses = available((info) => info.harness);
-  const availableModels = available((info) => info.model);
+  const availableModels = [
+    ...new Set(all.flatMap((info) => modelInfos(info).map((part) => part.model)).filter(Boolean)),
+  ].sort();
   const availableRoles = available((info) => String(info.row.role || '?'));
   const availableIssues = available((info) => String(info.row.issue || '-'));
   let filtered = all.filter(
@@ -482,10 +619,13 @@ export function aggregateOpenAiUsage(rows, options = {}) {
       (requested.provider === 'all' || info.provider === requested.provider) &&
       (requested.providerFamily === 'all' || info.providerFamily === requested.providerFamily) &&
       (requested.harness === 'all' || info.harness === requested.harness) &&
-      (requested.model === 'all' || info.model === requested.model) &&
       (requested.role === 'all' || String(info.row.role || '?') === requested.role) &&
       (requested.issue === 'all' || String(info.row.issue || '-') === requested.issue),
   );
+  if (requested.model !== 'all')
+    filtered = filtered.flatMap((info) =>
+      modelInfos(info).filter((part) => part.model === requested.model),
+    );
   const dated = filtered.filter((info) => /^\d{4}-\d{2}-\d{2}$/.test(dateKey(info.row.ts)));
   let start;
   if (rangeDays == null) {
@@ -516,7 +656,7 @@ export function aggregateOpenAiUsage(rows, options = {}) {
     addToMap(byProvider, info.provider, info);
     addToMap(byProviderFamily, info.providerFamily, info);
     addToMap(byHarness, info.harness, info);
-    addToMap(byModel, info.model, info);
+    for (const part of modelInfos(info)) addToMap(byModel, part.model, part);
     addToMap(byRole, String(info.row.role || '?'), info);
     const issue = String(info.row.issue || '-');
     addToMap(byIssue, issue, info);
@@ -561,6 +701,13 @@ export function aggregateOpenAiUsage(rows, options = {}) {
   };
 }
 
+export function ledgerEquivalentUsd(row) {
+  const openai = normalizeOpenAiLedgerRow(row);
+  if (openai) return openai.estimateUsd;
+  const recorded = ownNumber(row || {}, ['cost_usd']);
+  return recorded.known ? round(recorded.value) : null;
+}
+
 export function buildUsageAnalytics(rows, options = {}) {
   const r2 = (v) => Math.round(v * 100) / 100;
   const now = options.now instanceof Date ? options.now : new Date(options.now || Date.now());
@@ -568,36 +715,64 @@ export function buildUsageAnalytics(rows, options = {}) {
   const days = [];
   for (let i = 13; i >= 0; i--)
     days.push(new Date(now.getTime() - i * 86_400_000).toISOString().slice(0, 10));
-  const byDay = Object.fromEntries(days.map((d) => [d, { multi: 0, single: 0 }]));
+  const byDay = Object.fromEntries(
+    days.map((d) => [d, { claude: 0, codex: 0, other: 0, pricedRecords: 0 }]),
+  );
   const byModel = {};
+  const byProvider = {};
   const byRole = {};
   const byIssue = {};
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   let total = 0;
+  let pricedRecords = 0;
   for (const row of rows) {
-    const cost = Number(row.cost_usd) || 0;
-    total += cost;
+    const openai = normalizeOpenAiLedgerRow(row);
+    const cost = openai ? openai.estimateUsd : ledgerEquivalentUsd(row);
+    const family = ledgerProviderFamily(row);
+    const provider = family === 'openai' ? 'codex' : family === 'anthropic' ? 'claude' : 'other';
     const day = dateKey(row.ts);
-    if (byDay[day]) byDay[day][row.factory === 'multi' ? 'multi' : 'single'] += cost;
-    const model = String(row.model || '?')
-      .replace('claude-', '')
-      .replace(/-[0-9-]+$/, '');
-    byModel[model] = (byModel[model] || 0) + cost;
-    byRole[row.role || '?'] = (byRole[row.role || '?'] || 0) + cost;
-    byIssue[row.issue || '-'] = (byIssue[row.issue || '-'] || 0) + cost;
-    tokens.input += Number(row.input_tokens) || 0;
-    tokens.output += Number(row.output_tokens) || 0;
-    tokens.cacheRead += Number(row.cache_read_tokens ?? row.cached_input_tokens) || 0;
-    tokens.cacheWrite += Number(row.cache_creation_tokens ?? row.cache_write_input_tokens) || 0;
+    if (cost != null) {
+      total += cost;
+      pricedRecords += 1;
+      if (byDay[day]) {
+        byDay[day][provider] += cost;
+        byDay[day].pricedRecords += 1;
+      }
+      byProvider[provider] = (byProvider[provider] || 0) + cost;
+      byRole[row.role || '?'] = (byRole[row.role || '?'] || 0) + cost;
+      byIssue[row.issue || '-'] = (byIssue[row.issue || '-'] || 0) + cost;
+      const parts = openai ? modelInfos(openai) : [];
+      if (parts.length) {
+        for (const part of parts)
+          byModel[part.model] = (byModel[part.model] || 0) + (part.estimateUsd || 0);
+      } else {
+        const model = String(row.model || '?')
+          .replace('claude-', '')
+          .replace(/-[0-9-]+$/, '');
+        byModel[model] = (byModel[model] || 0) + cost;
+      }
+    }
+    const usage = openai?.usage;
+    tokens.input += (usage?.input ?? Number(row.input_tokens)) || 0;
+    tokens.output += (usage?.output ?? Number(row.output_tokens)) || 0;
+    tokens.cacheRead +=
+      (usage?.cachedInput ?? Number(row.cache_read_tokens ?? row.cached_input_tokens)) || 0;
+    tokens.cacheWrite +=
+      (usage?.cacheWrite ?? Number(row.cache_creation_tokens ?? row.cache_write_input_tokens)) || 0;
   }
   const issues = Object.keys(byIssue).filter((key) => key !== '-');
   return {
     days: days.map((date) => ({
       date,
-      multi: r2(byDay[date].multi),
-      single: r2(byDay[date].single),
+      claude: r2(byDay[date].claude),
+      codex: r2(byDay[date].codex),
+      other: r2(byDay[date].other),
+      pricedRecords: byDay[date].pricedRecords,
     })),
     byModel: Object.entries(byModel)
+      .map(([k, v]) => ({ k, v: r2(v) }))
+      .sort((a, b) => b.v - a.v),
+    byProvider: Object.entries(byProvider)
       .map(([k, v]) => ({ k, v: r2(v) }))
       .sort((a, b) => b.v - a.v),
     byRole: Object.entries(byRole)
@@ -611,6 +786,8 @@ export function buildUsageAnalytics(rows, options = {}) {
     totals: {
       cost: r2(total),
       records: rows.length,
+      pricedRecords,
+      unpricedRecords: rows.length - pricedRecords,
       issues: issues.length,
       avgPerIssue: issues.length
         ? r2(issues.reduce((sum, key) => sum + byIssue[key], 0) / issues.length)
@@ -618,7 +795,7 @@ export function buildUsageAnalytics(rows, options = {}) {
       today: r2(
         rows
           .filter((row) => dateKey(row.ts) === today)
-          .reduce((sum, row) => sum + (Number(row.cost_usd) || 0), 0),
+          .reduce((sum, row) => sum + (ledgerEquivalentUsd(row) ?? 0), 0),
       ),
     },
     codex: aggregateCodexUsage(rows, {

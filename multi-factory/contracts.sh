@@ -188,8 +188,13 @@ mf_comment_marker_valid(){ # $1=review|triage $2=expected head SHA $3=body
 # Select exactly one newly-added comment that satisfies the canonical contract.
 # Results are returned in MF_COMMENT_ID / MF_COMMENT_BODY / MF_COMMENT_MARKER.
 mf_new_canonical_comment(){ # $1=before comments JSON $2=after JSON $3=kind $4=head
-  local before=$1 after=$2 kind=$3 head=$4 obj body count=0
+  local before=$1 after=$2 kind=$3 head=$4 before_ids obj body count=0
   MF_COMMENT_ID=""; MF_COMMENT_BODY=""; MF_COMMENT_MARKER=""
+  # PR threads can contain megabyte-scale writer/fixer verification logs. Passing
+  # the complete pre-review snapshot through jq --argjson crosses ARG_MAX and
+  # makes a valid reviewer verdict look absent. IDs are the only baseline data
+  # needed here, so compact the snapshot before starting the selector process.
+  before_ids=$(jq -c '[.[].id]' <<<"$before" 2>/dev/null) || return 1
   while IFS= read -r obj; do
     [ -n "$obj" ] || continue
     body=$(jq -r '.body // ""' <<<"$obj")
@@ -198,9 +203,9 @@ mf_new_canonical_comment(){ # $1=before comments JSON $2=after JSON $3=kind $4=h
       MF_COMMENT_ID=$(jq -r '.id' <<<"$obj")
       MF_COMMENT_BODY=$body
     fi
-  done < <(jq -c --argjson before "$before" '
+  done < <(jq -c --argjson before_ids "$before_ids" '
     .[] | . as $c
-    | select(($before | map(.id) | index($c.id)) == null)
+    | select(($before_ids | index($c.id)) == null)
   ' <<<"$after" 2>/dev/null)
   [ "$count" -eq 1 ] || return 1
   MF_COMMENT_MARKER=$(awk 'NF { line=$0; sub(/\r$/, "", line); last=line } END { print last }' \

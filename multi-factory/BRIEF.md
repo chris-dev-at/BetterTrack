@@ -344,6 +344,11 @@ as `api_equivalent_usd`, with source and coverage metadata and sanitized
 per-model numeric usage. ChatGPT subscription billing and OpenAI API billing
 are officially separate systems:
 https://help.openai.com/en/articles/8156019.
+The dashboard nevertheless uses the API-equivalent value as the economic cost
+for totals and model/role/issue breakdowns. ClaudeX per-model `costUSD` values
+are preferred, native Codex is derived from public standard token rates, and the
+general daily chart groups Claude versus Codex rather than factory topology.
+Every such dollar value remains explicitly disclosed as an estimate, not a bill.
 
 For clean deployment/acceptance work, `MF_COMPOSE_OVERRIDE` accepts one
 additional existing Compose file across every lifecycle command, and

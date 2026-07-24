@@ -6,6 +6,7 @@ import {
   aggregateCodexUsage,
   aggregateOpenAiUsage,
   buildUsageAnalytics,
+  ledgerEquivalentUsd,
   ledgerHarness,
   ledgerProvider,
   ledgerProviderFamily,
@@ -285,7 +286,10 @@ test('API analytics preserves existing spend while adding Codex issue-level resp
     ],
     { now: '2026-07-24T12:00:00Z', codexRange: 14 },
   );
-  assert.equal(response.totals.cost, 3.25);
+  assert.equal(response.totals.cost, 8.25);
+  assert.equal(response.totals.pricedRecords, 2);
+  assert.equal(response.byProvider.find((entry) => entry.k === 'claude').v, 3.25);
+  assert.equal(response.byProvider.find((entry) => entry.k === 'codex').v, 5);
   assert.equal(response.tokens.input, 1_000_010);
   assert.equal(response.codex.byIssue[0].k, '8');
   assert.equal(response.codex.byIssue[0].estimatedUsd, 5);
@@ -334,6 +338,104 @@ test('ClaudeX ledger estimates are OpenAI-family subscription estimates, not act
   assert.deepEqual(data.availableProviders, ['claudex']);
   assert.deepEqual(data.availableHarnesses, ['claude-code']);
   assert.equal(data.byIssue[0].k, '88');
+});
+
+test('ClaudeX per-model CLI estimates populate general totals and model rows', () => {
+  const row = claudexBase({
+    api_equivalent_usd: 0.3,
+    model_usage: {
+      'codex-api/gpt-5.6-terra': {
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadInputTokens: 40,
+        cacheCreationInputTokens: 0,
+        costUSD: 0.2,
+      },
+      'codex-api/gpt-5.6-luna': {
+        inputTokens: 20,
+        outputTokens: 2,
+        cacheReadInputTokens: 5,
+        cacheCreationInputTokens: 0,
+        costUSD: 0.1,
+      },
+    },
+  });
+  const info = normalizeOpenAiLedgerRow(row);
+  assert.equal(info.estimateUsd, 0.3);
+  assert.equal(info.usage.total, 177);
+  assert.deepEqual(
+    info.modelBreakdown.map(({ model, estimateUsd }) => ({ model, estimateUsd })),
+    [
+      { model: 'gpt-5.6-terra', estimateUsd: 0.2 },
+      { model: 'gpt-5.6-luna', estimateUsd: 0.1 },
+    ],
+  );
+
+  const response = buildUsageAnalytics([row], {
+    now: '2026-07-24T12:00:00Z',
+    openAiRange: 14,
+  });
+  assert.equal(response.totals.cost, 0.3);
+  assert.equal(response.days.at(-1).codex, 0.3);
+  assert.equal(response.days.at(-1).claude, 0);
+  assert.deepEqual(Object.fromEntries(response.byModel.map((entry) => [entry.k, entry.v])), {
+    'gpt-5.6-terra': 0.2,
+    'gpt-5.6-luna': 0.1,
+  });
+  assert.deepEqual(
+    Object.fromEntries(response.openai.byModel.map((entry) => [entry.k, entry.estimatedUsd])),
+    {
+      'gpt-5.6-terra': 0.2,
+      'gpt-5.6-luna': 0.1,
+    },
+  );
+  const luna = aggregateOpenAiUsage([row], {
+    now: '2026-07-24T12:00:00Z',
+    range: 14,
+    model: 'gpt-5.6-luna',
+  });
+  assert.equal(luna.totals.estimatedUsd, 0.1);
+  assert.equal(luna.totals.tokens.total, 27);
+});
+
+test('complete ClaudeX tokens backfill a missing CLI estimate at public rates', () => {
+  const row = claudexBase({
+    input_tokens: 1_000_000,
+    output_tokens: 0,
+    claudex_telemetry_complete: true,
+  });
+  delete row.api_equivalent_usd;
+  delete row.api_equivalent_pricing;
+  delete row.api_equivalent_source;
+  delete row.api_equivalent_coverage;
+  const info = normalizeOpenAiLedgerRow(row);
+  assert.equal(info.estimateUsd, 2.5);
+  assert.equal(info.estimateKind, 'derived');
+  assert.equal(info.pricingStatus, 'token-derived-fallback');
+  assert.equal(ledgerEquivalentUsd(row), 2.5);
+});
+
+test('mixed ClaudeX model telemetry never prices an unknown model at the main-model rate', () => {
+  const row = claudexBase({
+    claudex_telemetry_complete: true,
+    model_usage: {
+      'codex-api/gpt-5.6-terra': {
+        inputTokens: 100,
+        outputTokens: 10,
+      },
+      'codex-api/gpt-5.5': {
+        inputTokens: 100,
+        outputTokens: 10,
+      },
+    },
+  });
+  delete row.api_equivalent_usd;
+  delete row.api_equivalent_pricing;
+  delete row.api_equivalent_source;
+  delete row.api_equivalent_coverage;
+  const info = normalizeOpenAiLedgerRow(row);
+  assert.equal(info.estimateUsd, null);
+  assert.equal(ledgerEquivalentUsd(row), null);
 });
 
 test('OpenAI family combines native Codex and ClaudeX while legacy codex stays native-only', () => {
