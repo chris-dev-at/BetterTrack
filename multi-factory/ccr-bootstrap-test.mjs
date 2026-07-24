@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { buildFactoryConfig } from './ccr-bootstrap.mjs';
-import { sanitizedStatus, validateConfig } from './ccr-common.mjs';
+import { hasApiOpenAiHost, sanitizedStatus, validateConfig } from './ccr-common.mjs';
 
 const imported = {
   provider: {
@@ -39,6 +39,25 @@ const base = {
       id: 'other',
       name: 'other',
     },
+    {
+      api_key: 'must-be-removed',
+      baseurl: 'https://api.openai.com/v1',
+      id: 'openai-lower-alias',
+      name: 'OpenAI lower alias',
+    },
+    {
+      api_base_url: 'https://example.invalid',
+      api_key: 'must-be-removed',
+      baseUrl: 'https://api.openai.com/v1',
+      id: 'openai-masked-alias',
+      name: 'OpenAI masked alias',
+    },
+    {
+      api_key: 'must-be-removed',
+      BaseURL: 'https://api.openai.com./v1',
+      id: 'openai-case-alias',
+      name: 'OpenAI case alias',
+    },
   ],
   profile: {
     profiles: [
@@ -60,10 +79,17 @@ const base = {
 
 const config = buildFactoryConfig(base, imported);
 assert.equal(validateConfig(config), true);
+assert.equal(config.Providers.some(hasApiOpenAiHost), false);
 assert.equal(
-  config.Providers.some((provider) =>
-    String(provider.api_base_url || '').includes('api.openai.com'),
-  ),
+  config.Providers.some((provider) => provider.id === 'openai-lower-alias'),
+  false,
+);
+assert.equal(
+  config.Providers.some((provider) => provider.id === 'openai-masked-alias'),
+  false,
+);
+assert.equal(
+  config.Providers.some((provider) => provider.id === 'openai-case-alias'),
   false,
 );
 assert.equal(config.Providers.find((entry) => entry.id === 'codex-api').name, 'codex-api');
@@ -101,6 +127,27 @@ assert.deepEqual(
 assert.equal(JSON.stringify(status).includes('api_key'), false);
 assert.equal(JSON.stringify(status).includes('backend-api'), false);
 
+const tainted = structuredClone(config);
+const taintedCodexProvider = tainted.Providers.find((entry) => entry.id === 'codex-api');
+taintedCodexProvider.baseurl = 'https://api.openai.com/v1';
+assert.equal(hasApiOpenAiHost(taintedCodexProvider), true);
+assert.equal(validateConfig(tainted), false);
+const taintedStatus = sanitizedStatus(tainted, '3.0.7');
+assert.equal(taintedStatus.directOpenAiProvider, true);
+assert.equal(taintedStatus.configured, false);
+assert.equal(taintedStatus.runtimeReady, false);
+
+const idTainted = structuredClone(config);
+idTainted.Providers.push({
+  api_base_url: 'https://example.invalid',
+  id: 'openai-api',
+  name: 'OpenAI API',
+});
+assert.equal(validateConfig(idTainted), false);
+const idTaintedStatus = sanitizedStatus(idTainted, '3.0.7');
+assert.equal(idTaintedStatus.directOpenAiProvider, true);
+assert.equal(idTaintedStatus.runtimeReady, false);
+
 assert.throws(
   () =>
     buildFactoryConfig(base, {
@@ -132,4 +179,4 @@ assert.throws(
   /upstream/,
 );
 
-process.stdout.write('CCR bootstrap tests: 13 passed\n');
+process.stdout.write('CCR bootstrap tests: passed\n');

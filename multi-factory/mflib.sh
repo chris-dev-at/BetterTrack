@@ -143,6 +143,8 @@ MF_CCR_PROBE_SCRIPT=${MF_CCR_PROBE_SCRIPT:-/work/mf/claudex-direct-probe.mjs}
 MF_CCR_PROFILE=${CCR_FACTORY_PROFILE:-bettertrack-factory-claudex}
 MF_NODE_BIN=${MF_NODE_BIN:-node}
 MF_CCR_BIN=${MF_CCR_BIN:-ccr}
+MF_CLAUDEX_REDACTOR_SCRIPT=${MF_CLAUDEX_REDACTOR_SCRIPT:-/work/mf/claudex-redact.mjs}
+MF_REDACTOR_NODE_BIN=${MF_REDACTOR_NODE_BIN:-node}
 
 # Run a provider command, mirror its combined stream to the role log, retain the
 # full stream for classification, and return the provider command's exit code.
@@ -159,11 +161,7 @@ mf_capture_command(){ # $1=output file, remaining args=command
 # Keep the raw capture private for result parsing, but redact credentials before
 # appending the stream to the durable role log.
 claudex_sanitize_stream(){
-  sed -E \
-    -e 's/(ccr_web_token=)[^&"[:space:]]+/\1[redacted]/g' \
-    -e 's/(Bearer )[A-Za-z0-9._~+\/=-]+/\1[redacted]/g' \
-    -e 's/(x-api-key["=: ]+)[^,"[:space:]]+/\1[redacted]/Ig' \
-    -e 's/(api[_-]?key["=: ]+)[^,"[:space:]]+/\1[redacted]/Ig'
+  "$MF_REDACTOR_NODE_BIN" "$MF_CLAUDEX_REDACTOR_SCRIPT"
 }
 
 mf_capture_claudex_command(){ # $1=private output file, remaining args=command

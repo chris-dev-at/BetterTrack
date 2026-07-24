@@ -43,6 +43,7 @@ services:
       - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
       - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
@@ -69,6 +70,7 @@ services:
       - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
       - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
@@ -95,6 +97,7 @@ services:
       - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
       - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro

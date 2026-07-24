@@ -349,6 +349,9 @@ For clean deployment/acceptance work, `MF_COMPOSE_OVERRIDE` accepts one
 additional existing Compose file across every lifecycle command, and
 `MF_MODELS_FILE` passes an alternate mounted routing file into all services.
 Neither mechanism edits owner-managed `state/control/models.json`.
+The launcher always pins Compose to `bettertrack-multifactory`; overlay
+`name:` values and inherited `COMPOSE_PROJECT_NAME` values cannot retarget a
+lifecycle command.
 
 Offline acceptance is part of CI:
 
@@ -360,7 +363,8 @@ Offline acceptance is part of CI:
 - no-secret durable logs/status/output;
 - no CCR/model call in dry-run;
 - independent CCR mounts for master plus workers 1–4;
-- overlay propagation through build/up/dry/log/login/stop/down paths.
+- overlay propagation through build/up/dry/log/login/stop/down paths;
+- immutable Compose project targeting despite hostile overlay/environment names.
 
 Live acceptance still requires two proofs after image rebuild: the direct
 gateway request must return `DIRECT_OK`, then `provider-test.sh` must obtain

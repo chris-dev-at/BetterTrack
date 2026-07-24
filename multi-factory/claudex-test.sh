@@ -84,6 +84,23 @@ case "${CLAUDEX_CASE:-ok}" in
     fi
     ok_result
     exit 0;;
+  secrets)
+    printf '%s\n' \
+      'X-CCR-Web-Auth: HEADER_AUTH_SENTINEL' \
+      'AUTHORIZATION: Bearer BEARER_SENTINEL' \
+      'Access_Token: ACCESS_HEADER_SENTINEL' \
+      'Refresh-Token=REFRESH_HEADER_SENTINEL' \
+      'x-api-key: X_API_SENTINEL' \
+      'api_key=API_KEY_SENTINEL' \
+      'http://127.0.0.1:3458/?ccr_web_token=CCR_URL_SENTINEL&safe=1' \
+      'https://example.invalid/callback?access_token=REMOTE_URL_SENTINEL' \
+      'https://example.invalid/callback?X-CCR-WEB-AUTH=QUERY_AUTH_SENTINEL' \
+      'https://example.invalid/callback?Authorization=Bearer%20QUERY_BEARER_SENTINEL' \
+      '{"ACCESS_TOKEN":"JSON_ACCESS_SENTINEL","refreshToken":"JSON_REFRESH_SENTINEL","echo":"JSON_ACCESS_SENTINEL","modelUsage":{"codex-api/gpt-5.6-sol":{"inputTokens":22}}}' \
+      '"{\"X-CCR-Web-Auth\":\"ESCAPED_AUTH_SENTINEL\",\"result\":\"benign-escaped-telemetry\"}"' \
+      'nested={\\\"refresh_token\\\":\\\"DOUBLE_ESCAPE_SENTINEL\\\"}'
+    ok_result
+    exit 0;;
   limit-then-ok)
     if [ "$count" -eq 1 ]; then
       printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Codex usage limit reached HTTP 429","terminal_reason":"api_error","api_error_status":429,"modelUsage":{"codex-api/gpt-5.6-sol":{}}}'
@@ -104,6 +121,8 @@ export REPO=stub/repo MF_DRY_RUN=0
 export MF_NODE_BIN=node MF_CCR_BIN=ccr
 export MF_CCR_ENSURE_SCRIPT=$T/ccr-ensure.mjs
 export MF_CCR_PROBE_SCRIPT=$T/claudex-direct-probe.mjs
+export MF_CLAUDEX_REDACTOR_SCRIPT=$PWD/claudex-redact.mjs
+export MF_REDACTOR_NODE_BIN=$REAL_NODE
 export MF_CCR_PROFILE=bettertrack-factory-claudex
 export NODE_CALLS=$T/node.calls CCR_COUNT_FILE=$T/ccr.count
 export CCR_ARGS_FILE=$T/ccr.args CCR_ENV_LEAK_FILE=$T/env.leak
@@ -180,6 +199,30 @@ grep -q -- '--dangerously-skip-permissions' "$CCR_ARGS_FILE" \
   && ok "ClaudeX keeps factory permission mode" || bad "ClaudeX permission mode missing"
 check "ClaudeX subprocess receives no provider API/OAuth env" 0 \
   "$([ -e "$CCR_ENV_LEAK_FILE" ] && echo 1 || echo 0)"
+
+echo "— ClaudeX durable-log secret redaction"
+reset_case
+CLAUDEX_CASE=secrets
+MF_PROVIDER_ATTEMPTS=1
+export CLAUDEX_CASE MF_PROVIDER_ATTEMPTS
+cc_claudex gpt-5.6-sol high prompt
+check "adversarial secret fixture still yields a valid result" 0 "$?"
+check "no literal secret sentinel survives in the durable log" 0 \
+  "$(grep -Ec \
+    'HEADER_AUTH_SENTINEL|BEARER_SENTINEL|ACCESS_HEADER_SENTINEL|REFRESH_HEADER_SENTINEL|X_API_SENTINEL|API_KEY_SENTINEL|CCR_URL_SENTINEL|REMOTE_URL_SENTINEL|QUERY_AUTH_SENTINEL|QUERY_BEARER_SENTINEL|JSON_ACCESS_SENTINEL|JSON_REFRESH_SENTINEL|ESCAPED_AUTH_SENTINEL|DOUBLE_ESCAPE_SENTINEL' \
+    "$LOG" 2>/dev/null || true)"
+grep -q '\[redacted-url\]' "$LOG" \
+  && ok "token-bearing and CCR service URLs are redacted" \
+  || bad "sensitive URLs survived or were not marked"
+grep -q 'codex-api/gpt-5.6-sol' "$LOG" \
+  && ok "benign model telemetry survives redaction" \
+  || bad "benign model telemetry was destroyed"
+grep -q 'inputTokens' "$LOG" \
+  && ok "benign token-count telemetry survives redaction" \
+  || bad "benign token-count telemetry was destroyed"
+grep -q 'benign-escaped-telemetry' "$LOG" \
+  && ok "benign escaped JSON content survives redaction" \
+  || bad "benign escaped JSON content was destroyed"
 
 rm -f "$T/claudex-ledger.jsonl"
 CLAUDEX_LEDGER_RES=$LAST_LEDGER_RES LEDGER=$T/claudex-ledger.jsonl \
@@ -342,11 +385,13 @@ if "$REAL_NODE" ./ccr-bootstrap-test.mjs >"$T/bootstrap-test.out" 2>"$T/bootstra
   ok "bootstrap pure tests pass"
 else
   bad "bootstrap pure tests failed"
+  sed 's/^/    /' "$T/bootstrap-test.err"
 fi
 if "$REAL_NODE" ./ccr-ensure-test.mjs >"$T/ensure-test.out" 2>"$T/ensure-test.err"; then
   ok "status command is sanitized and makes no model request"
 else
   bad "status command offline proof failed"
+  sed 's/^/    /' "$T/ensure-test.err"
 fi
 
 echo "— Compose auth isolation, override and generated workers"
@@ -356,11 +401,12 @@ cp autorun.sh compose.yml "$L/multi-factory/"
 touch "$L/factory/.env"
 printf '%s\n' '{"auth_mode":"fixture"}' >"$L/home/.codex/auth.json"
 printf '%s\n' '{"models":[]}' >"$L/home/.codex/models_cache.json"
-printf '%s\n' 'services: {}' >"$L/overlay dir/runtime.yml"
+printf '%s\n' 'name: hostile-overlay' 'services: {}' >"$L/overlay dir/runtime.yml"
 cat >"$T/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = info ] && exit 0
 printf '%s' "$1" >>"$DOCKER_CALLS"
+printf '<project-env:%s>' "${COMPOSE_PROJECT_NAME-__unset__}" >>"$DOCKER_CALLS"
 shift
 for arg in "$@"; do printf '<%s>' "$arg" >>"$DOCKER_CALLS"; done
 printf '\n' >>"$DOCKER_CALLS"
@@ -372,7 +418,8 @@ OVERRIDE="$L/overlay dir/runtime.yml"
 OVERRIDE_CANON=$(cd "$(dirname "$OVERRIDE")" && pwd -P)/$(basename "$OVERRIDE")
 (
   cd "$L"
-  HOME="$L/home" PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
+  COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
+    PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
     MF_COMPOSE_OVERRIDE="$OVERRIDE" \
     MF_MODELS_FILE=/work/mfstate/control/acceptance-models.json \
     ./multi-factory/autorun.sh --dry >/dev/null
@@ -394,6 +441,11 @@ check "base Compose defines three independent CCR mounts" 3 \
   "$(grep -c ':/home/factory/.claude-code-router' compose.yml)"
 check "generated Compose defines worker 3/4 CCR mounts" 2 \
   "$(grep -c ':/home/factory/.claude-code-router' "$L/multi-factory/compose.extra.yml")"
+check "base Compose mounts the redactor into every service" 3 \
+  "$(grep -c './claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro' compose.yml)"
+check "generated Compose mounts the redactor into worker 3/4" 2 \
+  "$(grep -c './claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro' \
+    "$L/multi-factory/compose.extra.yml")"
 grep -q 'MF_MODELS_FILE:' compose.yml \
   && ok "base Compose plumbs MF_MODELS_FILE" || bad "base MF_MODELS_FILE missing"
 grep -q 'MF_MODELS_FILE:' "$L/multi-factory/compose.extra.yml" \
@@ -402,13 +454,35 @@ check "override is preserved for dry build/up/ps" 3 \
   "$(grep -Fc "<$OVERRIDE_CANON>" "$DOCKER_CALLS")"
 (
   cd "$L"
-  HOME="$L/home" PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
+  COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
+    PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
     MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --stop >/dev/null
-  HOME="$L/home" PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
+  COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
+    PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
     MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --down >/dev/null
+  COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
+    PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
+    MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --logs >/dev/null
+  COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
+    PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
+    MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --fresh >/dev/null
+  COMPOSE_PROJECT_NAME=hostile-env HOME="$L/home" \
+    PATH="$T/bin:$ORIGINAL_PATH" WORKERS=4 \
+    MF_COMPOSE_OVERRIDE="$OVERRIDE" ./multi-factory/autorun.sh --login-gemini >/dev/null
 )
-check "override is preserved for stop/down too" 5 \
-  "$(grep -Fc "<$OVERRIDE_CANON>" "$DOCKER_CALLS")"
+COMPOSE_CALLS=$(grep '^compose' "$DOCKER_CALLS" || true)
+check "every Compose lifecycle call pins the canonical project" 0 \
+  "$(printf '%s\n' "$COMPOSE_CALLS" |
+    grep -vc '<--project-name><bettertrack-multifactory>' || true)"
+check "every Compose lifecycle call clears the inherited project env" 0 \
+  "$(printf '%s\n' "$COMPOSE_CALLS" | grep -vc '<project-env:__unset__>' || true)"
+check "hostile project names never reach a Compose invocation" 0 \
+  "$(printf '%s\n' "$COMPOSE_CALLS" | grep -Ec 'hostile-env|hostile-overlay' || true)"
+for verb in build up down stop logs config ps; do
+  grep -q "<$verb>" <<<"$COMPOSE_CALLS" \
+    && ok "canonical Compose helper covers $verb" \
+    || bad "canonical Compose helper missed $verb"
+done
 if (
   cd "$L"
   HOME="$L/home" PATH="$T/bin:$ORIGINAL_PATH" \

@@ -178,6 +178,9 @@ MF_COMPOSE_OVERRIDE=/absolute/path/runtime.yml ./multi-factory/autorun.sh
 
 Exactly one additional Compose file is accepted and is retained for build, up,
 dry-run, login, logs, stop, down, fresh, and generated worker 3/4 operations.
+Every lifecycle command explicitly targets the `bettertrack-multifactory`
+project; an inherited `COMPOSE_PROJECT_NAME` or an overlay's top-level `name:`
+cannot redirect those operations to another Compose project.
 For isolated acceptance routing, `MF_MODELS_FILE` is passed through to every
 service; the overlay must mount that file at the same container path. The normal
 default remains `/work/mfstate/control/models.json`.

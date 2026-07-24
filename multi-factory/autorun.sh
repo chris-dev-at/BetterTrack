@@ -22,6 +22,7 @@ if docker info >/dev/null 2>&1; then DOCKER=docker; else DOCKER="sudo docker"; f
 WORKERS=${WORKERS:-$(cat state/control/workers 2>/dev/null || echo 2)}
 case "$WORKERS" in 1|2|3|4) ;; *) echo "! invalid workers '$WORKERS' — using 2"; WORKERS=2;; esac
 export WORKERS
+MF_COMPOSE_PROJECT=bettertrack-multifactory
 COMPOSE_FILES=(-f compose.yml)
 if [ -n "${MF_COMPOSE_OVERRIDE:-}" ]; then
   [ -f "$MF_COMPOSE_OVERRIDE" ] || {
@@ -62,6 +63,7 @@ if [ "$WORKERS" -gt 2 ]; then
       - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
       - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
       - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./claudex-redact.mjs:/work/mf/claudex-redact.mjs:ro
       - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
@@ -79,9 +81,14 @@ EXTRA
   } > compose.extra.yml
   COMPOSE_FILES+=(-f compose.extra.yml)
 fi
-dc(){ $DOCKER compose "${COMPOSE_FILES[@]}" "$@"; }
-# Project-scoped compose retains the selected override for every lifecycle path.
-dcp(){ $DOCKER compose "${COMPOSE_FILES[@]}" -p bettertrack-multifactory "$@"; }
+# Every lifecycle path goes through one helper. The explicit project name wins
+# over both a Compose file's top-level `name:` and an inherited
+# COMPOSE_PROJECT_NAME; unsetting the latter also keeps it out of interpolation.
+dc(){
+  env -u COMPOSE_PROJECT_NAME \
+    $DOCKER compose --project-name "$MF_COMPOSE_PROJECT" \
+    "${COMPOSE_FILES[@]}" "$@"
+}
 
 require_env(){
   [ -f ../factory/.env ] || { echo "✗ factory/.env missing. Copy .env.example → .env and fill the tokens."; exit 1; }
@@ -196,10 +203,10 @@ prepare_state(){
 }
 
 case "${1:-up}" in
-  --logs)  dcp logs -f; exit $? ;;
+  --logs)  dc logs -f; exit $? ;;
   --login-gemini) login_gemini; exit 0 ;;
-  --stop)  echo "→ stopping multi-factory"; dcp stop; echo "✓ stopped. Resume with: ./multi-factory/autorun.sh"; exit 0 ;;
-  --down)  echo "→ downing multi-factory"; dcp down --remove-orphans; echo "✓ removed (state/ and clone volumes kept)"; exit 0 ;;
+  --stop)  echo "→ stopping multi-factory"; dc stop; echo "✓ stopped. Resume with: ./multi-factory/autorun.sh"; exit 0 ;;
+  --down)  echo "→ downing multi-factory"; dc down --remove-orphans; echo "✓ removed (state/ and clone volumes kept)"; exit 0 ;;
   --fresh) require_env; guard_single_factory
            echo "→ wiping multi-factory state + clone volumes"
            dc down -v --remove-orphans 2>/dev/null || true

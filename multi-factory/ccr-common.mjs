@@ -87,12 +87,35 @@ export function sanitizeModels(models) {
   ];
 }
 
+const PROVIDER_URL_KEYS = new Set(['apibaseurl', 'baseurl']);
+
+function normalizedProviderKey(key) {
+  return String(key)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+export function providerBaseUrls(entry) {
+  if (!entry || typeof entry !== 'object') return [];
+  return [
+    ...new Set(
+      Object.entries(entry)
+        .filter(([key]) => PROVIDER_URL_KEYS.has(normalizedProviderKey(key)))
+        .map(([, value]) => value)
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => value.trim()),
+    ),
+  ];
+}
+
 export function hasApiOpenAiHost(entry) {
-  try {
-    return new URL(entry?.api_base_url || entry?.baseUrl || '').hostname === 'api.openai.com';
-  } catch {
-    return false;
-  }
+  return providerBaseUrls(entry).some((value) => {
+    try {
+      return new URL(value).hostname.replace(/\.$/, '') === 'api.openai.com';
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function isCodexOAuthUpstream(url) {
@@ -155,6 +178,14 @@ export function validateConfig(config) {
   } catch {
     return false;
   }
+  const providerUrls = providerBaseUrls(provider);
+  const aliasesAreCodexOAuth = providerUrls.every((value) => {
+    try {
+      return isCodexOAuthUpstream(new URL(value));
+    } catch {
+      return false;
+    }
+  });
 
   const models = sanitizeModels(provider.models);
   const profile = (config.profile?.profiles || []).find((entry) => entry.id === FACTORY_PROFILE);
@@ -167,6 +198,8 @@ export function validateConfig(config) {
     provider.type === 'openai_responses' &&
     provider.api_key === PROVIDER_MARKER &&
     isCodexOAuthUpstream(upstream) &&
+    providerUrls.length > 0 &&
+    aliasesAreCodexOAuth &&
     REQUIRED_MODELS.every((model) => models.includes(model)) &&
     !providers.some((entry) => entry.id === 'openai-api' || hasApiOpenAiHost(entry)) &&
     flatOAuthPlugins(config) &&
@@ -261,20 +294,31 @@ export async function gatewayHealthy() {
 }
 
 export function sanitizedStatus(config, version = installedCcrVersion()) {
-  const provider = (config?.Providers || []).find((entry) => entry.id === PROVIDER_ID);
+  const providers = Array.isArray(config?.Providers) ? config.Providers : [];
+  const provider = providers.find((entry) => entry.id === PROVIDER_ID);
+  const directOpenAiProvider = providers.some(
+    (entry) => entry.id === 'openai-api' || hasApiOpenAiHost(entry),
+  );
+  const configured = validateConfig(config);
+  let upstreamHost = null;
+  try {
+    upstreamHost = new URL(provider?.api_base_url || '').hostname;
+  } catch {
+    // Invalid provider configuration is reflected by configured/runtimeReady.
+  }
   return {
-    configured: true,
-    providerId: PROVIDER_ID,
-    providerName: PROVIDER_ID,
-    authMode: 'codex-oauth',
-    upstreamHost: 'chatgpt.com',
+    configured,
+    providerId: provider?.id === PROVIDER_ID ? PROVIDER_ID : null,
+    providerName: provider?.name === PROVIDER_ID ? PROVIDER_ID : null,
+    authMode: provider?.api_key === PROVIDER_MARKER ? 'codex-oauth' : null,
+    upstreamHost,
     oauthPluginCount: Array.isArray(config?.providerPlugins) ? config.providerPlugins.length : 0,
-    directOpenAiProvider: false,
-    runtimeReady: true,
+    directOpenAiProvider,
+    runtimeReady: configured && !directOpenAiProvider,
     models: sanitizeModels(provider?.models),
     version,
     modelCacheSha256: modelCacheFingerprint(),
-    requestLogging: false,
+    requestLogging: config?.observability?.requestLogs === true,
     updatedAt: new Date().toISOString(),
   };
 }
