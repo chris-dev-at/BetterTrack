@@ -292,6 +292,7 @@ kill -0 "$HB_BYSTANDER" 2>/dev/null \
   || bad "hb_stop killed an unrelated child process"
 kill "$HB_BYSTANDER" 2>/dev/null || true
 wait "$HB_BYSTANDER" 2>/dev/null || true
+
 echo "— headless fixer routing authority"
 FIXER_PROMPT=../factory/prompts/fixer.md
 grep -q 'tier-and-delegation rules do NOT apply here' "$FIXER_PROMPT" \

@@ -151,6 +151,15 @@ test('missing estimates are unreported while a confirmed numeric zero remains ze
   assert.match(script, /\$\('ua-api-estimate'\)\.textContent = 'unavailable'/);
 });
 
+test('general economics use API-equivalent money split by Claude and Codex', () => {
+  assert.match(html, /All-model API-equivalent total/);
+  assert.match(html, /API-equivalent estimate per day — last 14 days/);
+  assert.match(script, /x\.claude \+ x\.codex \+ \(x\.other \|\| 0\)/);
+  assert.match(script, /title>\$\{x\.date\} Claude:/);
+  assert.match(script, /title>\$\{x\.date\} Codex:/);
+  assert.doesNotMatch(script, /x\.multi \+ x\.single/);
+});
+
 test('OpenAI estimate labels preserve CLI, derived, mixed, and unavailable provenance', () => {
   const helpers = new Function(`
     ${between(script, 'const finiteNumber =', 'const sourceError =')}
