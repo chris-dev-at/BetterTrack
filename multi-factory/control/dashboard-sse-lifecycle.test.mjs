@@ -4,23 +4,6 @@ import test from 'node:test';
 
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
-const mutationIds = [
-  'b-start',
-  'b-dry',
-  'b-pause',
-  'b-unpause',
-  'b-run',
-  'b-runout',
-  'b-close',
-  'b-stop',
-  'b-down',
-  'b-single-stop',
-  'wk-apply',
-  'wk-minus',
-  'wk-plus',
-  'tg-add',
-  'm-save',
-];
 
 function between(source, start, end) {
   const from = source.indexOf(start);
