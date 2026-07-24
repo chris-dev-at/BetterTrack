@@ -10,7 +10,20 @@ set -uo pipefail
 TEST_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$TEST_SCRIPT_DIR"
 
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d)
+TEST_ROOT_BASHPID=${BASHPID:-}
+TEST_ROOT_SUBSHELL=${BASH_SUBSHELL:-0}
+test_cleanup(){
+  if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+    [ -n "$TEST_ROOT_BASHPID" ] || return 0
+    [ "${BASHPID:-}" = "$TEST_ROOT_BASHPID" ] || return 0
+  else
+    # Best-effort Bash 3.2 guard for the parenthesized-child regression below.
+    [ "${BASH_SUBSHELL:-0}" -eq "$TEST_ROOT_SUBSHELL" ] || return 0
+  fi
+  rm -rf "$T"
+}
+trap test_cleanup EXIT
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✓ %s\n' "$1"; }
 bad(){ FAIL=$((FAIL+1)); printf '  ✗ %s\n' "$1"; }
@@ -229,8 +242,56 @@ hb_alive; check "hb_alive false after the toucher is killed" "1" "$?"
 hb_ensure
 hb_alive; check "hb_ensure respawns a dead toucher" "0" "$?"
 [ -n "$HB_PID" ] && [ "$HB_PID" != "$HB_FIRST" ] && ok "respawn has a fresh pid" || bad "respawn should have a fresh pid"
+
+# Bash 4+ can enforce cleanup ownership with process-unique BASHPID. macOS Bash
+# 3.2 lacks it, so BASH_SUBSHELL only guards this parenthesized-child regression;
+# hb_start's parent-side trap suspension is the deterministic heartbeat invariant.
+HB_PARENT_STATE=$T/heartbeat-parent-state
+: >"$HB_PARENT_STATE"
+( trap test_cleanup EXIT )
+[ -f "$HB_PARENT_STATE" ] \
+  && ok "parenthesized child EXIT cannot run parent test cleanup" \
+  || bad "parenthesized child EXIT ran parent test cleanup"
+
+# Stop a brand-new toucher immediately, maximizing the child-first-instruction
+# race window. A harmless caller EXIT trap proves hb_start restores it byte for
+# byte while withholding it from the forked child. Wrapping wait records that
+# hb_stop waits for the exact heartbeat shell PID.
 hb_stop
+HB_INHERITED_EXIT=$T/heartbeat-inherited-exit
+trap 'printf inherited >"$HB_INHERITED_EXIT"' EXIT
+HB_CALLER_EXIT_TRAP=$(trap -p EXIT)
+hb_start
+HB_RESTORED_EXIT_TRAP=$(trap -p EXIT)
+HB_STOP_PID=$HB_PID
+HB_WAITED_PID=
+wait(){ HB_WAITED_PID=${1:-}; builtin wait "$@"; }
+hb_stop
+unset -f wait
+trap test_cleanup EXIT
+check "hb_start restores the caller EXIT trap exactly" "$HB_CALLER_EXIT_TRAP" "$HB_RESTORED_EXIT_TRAP"
+[ ! -e "$HB_INHERITED_EXIT" ] \
+  && ok "heartbeat child cannot inherit caller EXIT cleanup" \
+  || bad "heartbeat child inherited caller EXIT cleanup"
+check "hb_stop waits for the exact toucher" "$HB_STOP_PID" "$HB_WAITED_PID"
 check "hb_stop clears the pid" "" "$HB_PID"
+[ -d "$T/state/control" ] \
+  && ok "immediate heartbeat stop preserves parent test state" \
+  || bad "immediate heartbeat stop corrupted parent test state"
+kill -0 "$HB_STOP_PID" 2>/dev/null \
+  && bad "hb_stop should reap its heartbeat shell" \
+  || ok "hb_stop reaps its heartbeat shell"
+
+# A separate child remains alive while hb_stop targets only its recorded toucher.
+sleep 300 &
+HB_BYSTANDER=$!
+hb_start
+hb_stop
+kill -0 "$HB_BYSTANDER" 2>/dev/null \
+  && ok "hb_stop leaves unrelated child processes alone" \
+  || bad "hb_stop killed an unrelated child process"
+kill "$HB_BYSTANDER" 2>/dev/null || true
+wait "$HB_BYSTANDER" 2>/dev/null || true
 
 echo "— difficulty routing (mflib.sh pure helpers)"
 . ./mflib.sh
