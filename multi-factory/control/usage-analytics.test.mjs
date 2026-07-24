@@ -415,6 +415,29 @@ test('complete ClaudeX tokens backfill a missing CLI estimate at public rates', 
   assert.equal(ledgerEquivalentUsd(row), 2.5);
 });
 
+test('mixed ClaudeX model telemetry never prices an unknown model at the main-model rate', () => {
+  const row = claudexBase({
+    claudex_telemetry_complete: true,
+    model_usage: {
+      'codex-api/gpt-5.6-terra': {
+        inputTokens: 100,
+        outputTokens: 10,
+      },
+      'codex-api/gpt-5.5': {
+        inputTokens: 100,
+        outputTokens: 10,
+      },
+    },
+  });
+  delete row.api_equivalent_usd;
+  delete row.api_equivalent_pricing;
+  delete row.api_equivalent_source;
+  delete row.api_equivalent_coverage;
+  const info = normalizeOpenAiLedgerRow(row);
+  assert.equal(info.estimateUsd, null);
+  assert.equal(ledgerEquivalentUsd(row), null);
+});
+
 test('OpenAI family combines native Codex and ClaudeX while legacy codex stays native-only', () => {
   const native = base({ issue: '40', input_tokens: 1_000_000 });
   const claudex = {

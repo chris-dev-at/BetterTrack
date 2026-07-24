@@ -315,7 +315,9 @@ export function normalizeOpenAiLedgerRow(row) {
       : null;
   const derivedFallback =
     !apiEquivalent.known && !conflictingLedgerProvenance && tokenFallbackComplete
-      ? (modelDerivedFallback ?? standardEstimate(model, usage))
+      ? modelUsageParts.length
+        ? modelDerivedFallback
+        : standardEstimate(model, usage)
       : null;
   const estimateUsd =
     apiEquivalent.known && cliEstimateRecorded && !explicitlyIncomplete
