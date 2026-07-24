@@ -162,6 +162,8 @@ issues/PRs, event stream, per-issue cost — plus Start / Pause / Resume /
 Run-out / Close-down / Stop controls. It writes `control/mode`, runs the
 compose commands, and automatically downs the project when `phase=drained`.
 Without the dashboard the drained factory just idles token-free until stopped.
+The current console is served at `/`; the frozen pre-redesign console remains
+available at `/legacy` (and `/legacy/`) against the same live control APIs.
 
 ## Ops crib sheet
 

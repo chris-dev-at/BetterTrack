@@ -1237,6 +1237,15 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(join(__dirname, 'index.html')));
+    } else if (
+      req.method === 'GET' &&
+      (url.pathname === '/legacy' || url.pathname === '/legacy/')
+    ) {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+      });
+      res.end(readFileSync(join(__dirname, 'legacy.html')));
     } else if (req.method === 'GET' && url.pathname === '/api/usage/history') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
