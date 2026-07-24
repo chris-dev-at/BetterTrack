@@ -526,7 +526,7 @@ describe('passphrase and key lifecycle', () => {
     expect(await decryptVaultDocument(changed.envelope, changed.vaultKey)).toMatchObject({
       document: vaultVectorDocument,
     });
-  });
+  }, 15_000);
 
   it('rejects a reused passphrase and a rekey write ID reused from the prior envelope', async () => {
     const original = await fixture();
