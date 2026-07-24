@@ -125,7 +125,7 @@ export async function wrapVaultKey(
 ): Promise<VaultWrappedKey> {
   requireKeyLength(vaultKey, 'Vault key');
   requireKeyLength(kek, 'KEK');
-  const iv = randomBytes(VAULT_IV_BYTES);
+  const iv = newVaultIv(randomBytes, 'Wrapped vault key');
   try {
     const encrypted = await aesGcmEncrypt(kek, iv, vaultKey, utf8(keyId));
     return {
@@ -188,18 +188,20 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
     );
   }
   const randomBytes = input.randomBytes ?? secureRandomBytes;
-  const iv = randomBytes(VAULT_IV_BYTES);
-  const header: VaultEnvelopeHeader = {
-    ...input.header,
-    formatVersion: VAULT_FORMAT_VERSION,
-    schemaVersion: VAULT_DOCUMENT_VERSION,
-    cipher: VAULT_CONTENT_CIPHER,
-    iv: bytesToBase64(iv),
-  };
-  const headerBytes = serializeVaultHeader(header);
-  const plaintext = utf8(JSON.stringify(parsedDocument.data));
-  const compressed = deflateSync(plaintext);
+  const iv = newVaultIv(randomBytes, 'Vault content');
+  let plaintext: Uint8Array | undefined;
+  let compressed: Uint8Array | undefined;
   try {
+    const header: VaultEnvelopeHeader = {
+      ...input.header,
+      formatVersion: VAULT_FORMAT_VERSION,
+      schemaVersion: VAULT_DOCUMENT_VERSION,
+      cipher: VAULT_CONTENT_CIPHER,
+      iv: bytesToBase64(iv),
+    };
+    const headerBytes = serializeVaultHeader(header);
+    plaintext = utf8(JSON.stringify(parsedDocument.data));
+    compressed = deflateSync(plaintext);
     const ciphertext = await aesGcmEncrypt(input.vaultKey, iv, compressed, headerBytes);
     return { header, envelope: encodeVaultEnvelope(header, ciphertext) };
   } catch (cause) {
@@ -210,8 +212,8 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
     );
   } finally {
     zeroBytes(iv);
-    zeroBytes(plaintext);
-    zeroBytes(compressed);
+    if (plaintext != null) zeroBytes(plaintext);
+    if (compressed != null) zeroBytes(compressed);
   }
 }
 
@@ -330,6 +332,15 @@ function requireKeyLength(bytes: Uint8Array, name: string): void {
   if (bytes.length !== VAULT_KEY_BYTES) {
     throw new VaultCryptoError('authentication-failed', `${name} must be 256 bits.`);
   }
+}
+
+function newVaultIv(randomBytes: RandomBytes, name: string): Uint8Array {
+  const iv = randomBytes(VAULT_IV_BYTES);
+  if (iv.length !== VAULT_IV_BYTES) {
+    zeroBytes(iv);
+    throw new VaultCryptoError('envelope-invalid', `${name} IV must be 96 bits.`);
+  }
+  return iv;
 }
 
 function requireKeyMaterial(key: VaultKeyMaterial, name: string): void {

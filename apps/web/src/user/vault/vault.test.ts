@@ -19,6 +19,7 @@ import {
   encryptVaultDocument,
   generateVaultKey,
   newKdfParams,
+  VAULT_IV_BYTES,
   unwrapVaultKey,
   wrapVaultKey,
 } from './crypto';
@@ -323,6 +324,31 @@ describe('BTVAULT1 envelope and content crypto', () => {
     ).rejects.toMatchObject({
       code: 'kdf-failed',
     });
+  });
+
+  it('rejects non-96-bit random IVs before producing vault content or wrappers', async () => {
+    const { header, kdf, vaultKey } = await fixture();
+    const invalidIvRandom = () => new Uint8Array(VAULT_IV_BYTES - 4);
+    const encryptionHeader = {
+      keyId: header.keyId,
+      wrappedKeys: header.wrappedKeys,
+      vaultVersion: header.vaultVersion,
+      deviceId: header.deviceId,
+      writeId: header.writeId,
+      writtenAt: header.writtenAt,
+    };
+
+    await expect(
+      wrapVaultKey(vaultKey, new Uint8Array(32), VECTOR_KEY_ID, kdf, invalidIvRandom),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    await expect(
+      encryptVaultDocument({
+        document: vaultVectorDocument,
+        vaultKey,
+        header: encryptionHeader,
+        randomBytes: invalidIvRandom,
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
   });
 
   it('rejects 128-bit and 192-bit AES-GCM CryptoKeys for encryption and decryption', async () => {
