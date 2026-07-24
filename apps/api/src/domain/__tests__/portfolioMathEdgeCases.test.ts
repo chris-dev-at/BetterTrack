@@ -13,7 +13,7 @@ import {
   type Transaction,
   type ValueOverTimeAsset,
   type ValuePoint,
-} from '../holdings';
+} from '@bettertrack/domain/holdings';
 
 /**
  * Deepened edge-case coverage for the portfolio domain math (issue #629):
