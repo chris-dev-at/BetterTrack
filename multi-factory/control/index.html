@@ -2776,18 +2776,18 @@
               Subscription fees and invoices are not exposed by the factory ledger.
             </div>
           </div>
-          <div class="billing-card estimate">
+          <div class="billing-card">
             <div class="label">OpenAI API-equivalent estimates</div>
             <div class="amount" id="ua-api-estimate">Unavailable</div>
             <div class="note">
-              ClaudeX CLI estimate + native Codex derived estimate; never billed.
+              ClaudeX CLI estimate + native Codex derived estimate; included in totals.
             </div>
           </div>
-          <div class="billing-card">
-            <div class="label">General harness estimate</div>
+          <div class="billing-card estimate">
+            <div class="label">All-model API-equivalent total</div>
             <div class="amount" id="ua-cli-estimate">Loading…</div>
             <div class="note">
-              Legacy cost_usd ledger field; ClaudeX estimates are separated below.
+              Claude and Codex estimates use one money basis; subscription, not an invoice.
             </div>
           </div>
         </div>
@@ -2829,11 +2829,13 @@
         <div class="grid2">
           <div class="card" style="grid-column: 1/-1">
             <h2>
-              General harness estimate per day — last 14 days
+              API-equivalent estimate per day — last 14 days
               <span class="hint"
-                ><span class="sw" style="background: var(--accent)"></span>
-                multi-factory&nbsp;&nbsp;<span class="sw" style="background: #8a8878"></span> single
-                factory</span
+                ><span class="sw" style="background: #bd9cff"></span> Claude&nbsp;&nbsp;<span
+                  class="sw"
+                  style="background: #55c7ee"
+                ></span>
+                Codex</span
               >
             </h2>
             <svg id="ua-days" viewBox="0 0 720 180" style="width: 100%; height: auto"></svg>
@@ -2860,9 +2862,10 @@
           </div>
         </div>
         <div class="hint" style="margin-top: 2px">
-          Source: factory/usage/ledger.jsonl — one record per agent run. The general cost_usd
-          history, actual metered charges, ClaudeX CLI estimates, and native Codex derived estimates
-          remain separate. Refreshes every 60s while this area is open.
+          Source: factory/usage/ledger.jsonl — one record per agent run. Dashboard money totals use
+          Claude Code estimates plus OpenAI API-equivalent estimates, including per-model ClaudeX
+          usage; these are economic estimates, not subscription invoices. Refreshes every 60s while
+          this area is open.
         </div>
         <div class="card" style="margin-top: 14px; margin-bottom: 10px">
           <h2>
@@ -2986,7 +2989,7 @@
             <div class="list" id="needshuman"></div>
           </div>
           <div class="card">
-            <h2>General ledger cost by issue</h2>
+            <h2>API-equivalent estimate by issue</h2>
             <div class="list" id="costs"></div>
           </div>
         </div>
@@ -4718,7 +4721,7 @@
           `${p.mode || '–'} · ${p.phase || '–'} · master hb ${ago(p.masterHeartbeatAge)}`;
         $('strip').innerHTML =
           `<div class="tile"><span class="l">Factory</span><span class="v">${esc(factoryLabel)}</span><span class="s">${esc(factoryDetail)}</span></div>` +
-          `<div class="tile"><span class="l">General ledger cost</span><span class="v">${fmtCliUsd(ledgerAmount(s.ledger, 'multiToday'))} today</span><span class="s">${fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal'))} total · ClaudeX split in Usage</span></div>` +
+          `<div class="tile"><span class="l">API-equivalent cost</span><span class="v">${fmtCliUsd(ledgerAmount(s.ledger, 'multiToday'))} today</span><span class="s">${fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal'))} total · Claude + Codex estimates</span></div>` +
           (u5
             ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
             : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
@@ -4975,8 +4978,8 @@
           kpi((p.queue || []).length, 'merge queue') +
           kpi(github.available ? (gh.issues || []).length : 'Unavailable', 'open autopilot') +
           kpi(github.available ? (gh.needsHuman || []).length : 'Unavailable', 'needs human') +
-          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiToday')), 'ledger cost today') +
-          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal')), 'ledger cost total');
+          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiToday')), 'API-equivalent today') +
+          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal')), 'API-equivalent total');
         let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
     <div class="row"><span class="k">activity</span><span class="val">${esc(p.masterActivity?.activity || '–')}${p.masterActivity?.pr ? ' PR #' + p.masterActivity.pr : ''}</span></div>
     <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
@@ -5497,35 +5500,35 @@
         if (!d) return;
         const t = d.totals || {};
         const openai = d.openai || d.openaiFamily || d.codex || {};
-        const actualSpendRecords = finiteNumber(openai.totals?.actualSpendRecords);
-        const openaiActual =
-          actualSpendRecords != null && actualSpendRecords > 0
-            ? (finiteNumber(openai.totals?.actualSpendUsd) ??
-              finiteNumber(openai.totals?.actualUsd))
-            : null;
-        const actual =
-          finiteNumber(d.billing?.actualUsd) ?? finiteNumber(t.actualCostUsd) ?? openaiActual;
-        const cliTotal = reportedAmount(t.cost, { records: t.records });
-        const cliToday = reportedAmount(t.today, { records: t.records });
+        const actual = finiteNumber(d.billing?.actualUsd) ?? finiteNumber(t.actualCostUsd);
+        const cliTotal = reportedAmount(t.cost, {
+          records: t.records,
+          pricedRecords: t.pricedRecords,
+        });
+        const cliToday = reportedAmount(t.today, {
+          records: t.records,
+          pricedRecords: t.pricedRecords,
+        });
         const cliIssues = finiteNumber(t.records) === 0 ? null : finiteNumber(t.issues);
         const cliAverage = reportedAmount(t.avgPerIssue, { records: t.issues });
         const cliRecords = finiteNumber(t.records);
         $('ua-actual-cost').textContent = fmtCliUsd(actual);
         $('ua-cli-estimate').textContent = fmtCliUsd(cliTotal);
         $('ua-kpis').innerHTML =
-          `<div class="tile"><span class="l">General estimate total</span><span class="v">${fmtCliUsd(cliTotal)}</span><span class="s">${cliRecords == null ? 'run count not reported' : `${cliRecords} agent runs`} · legacy cost_usd</span></div>` +
-          `<div class="tile"><span class="l">General estimate today</span><span class="v">${fmtCliUsd(cliToday)}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
+          `<div class="tile"><span class="l">API-equivalent total</span><span class="v">${fmtCliUsd(cliTotal)}</span><span class="s">${cliRecords == null ? 'run count not reported' : `${t.pricedRecords || 0}/${cliRecords} priced runs`} · Claude + Codex</span></div>` +
+          `<div class="tile"><span class="l">API-equivalent today</span><span class="v">${fmtCliUsd(cliToday)}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
           `<div class="tile"><span class="l">Issues represented</span><span class="v">${cliIssues == null ? 'Not reported' : cliIssues}</span><span class="s">avg estimate ${fmtCliUsd(cliAverage)} per issue</span></div>` +
           `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;
-        // daily stacked bars
+        // Daily provider-family bars: harness/factory topology is intentionally
+        // irrelevant to economics, so Claude and Codex stay comparable.
         const W = 720,
           H = 180,
           padL = 34,
           padB = 20,
           padT = 8;
         const days = d.days || [];
-        const max = Math.max(...days.map((x) => x.multi + x.single), 1) * 1.14;
+        const max = Math.max(...days.map((x) => x.claude + x.codex + (x.other || 0)), 1) * 1.14;
         const bw = days.length ? (W - padL - 8) / days.length : W - padL - 8;
         let svg = '';
         for (const frac of [0.5, 1]) {
@@ -5537,19 +5540,25 @@
         days.forEach((x, i) => {
           const cx = padL + i * bw + bw * 0.18;
           const w = bw * 0.64;
-          const hMulti = ((H - padB - padT) * x.multi) / max;
-          const hSingle = ((H - padB - padT) * x.single) / max;
+          const hClaude = ((H - padB - padT) * x.claude) / max;
+          const hCodex = ((H - padB - padT) * x.codex) / max;
+          const hOther = ((H - padB - padT) * (x.other || 0)) / max;
           let y = H - padB;
-          if (hSingle > 0.5) {
-            y -= hSingle;
-            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hSingle}" rx="2" fill="#8a8878"><title>${x.date} single: $${x.single}</title></rect>`;
+          if (hOther > 0.5) {
+            y -= hOther;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hOther}" rx="2" fill="#8a8878"><title>${x.date} other: $${x.other}</title></rect>`;
             y -= 2;
           }
-          if (hMulti > 0.5) {
-            y -= hMulti;
-            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hMulti}" rx="2" fill="var(--accent)"><title>${x.date} multi: $${x.multi}</title></rect>`;
+          if (hClaude > 0.5) {
+            y -= hClaude;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hClaude}" rx="2" fill="#bd9cff"><title>${x.date} Claude: $${x.claude}</title></rect>`;
+            y -= 2;
           }
-          const tot = x.multi + x.single;
+          if (hCodex > 0.5) {
+            y -= hCodex;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${hCodex}" rx="2" fill="#55c7ee"><title>${x.date} Codex: $${x.codex}</title></rect>`;
+          }
+          const tot = x.claude + x.codex + (x.other || 0);
           if (tot > 0)
             svg += `<text x="${cx + w / 2}" y="${y - 4}" text-anchor="middle" font-size="9" fill="var(--ink2)">$${tot.toFixed(0)}</text>`;
           if (i % 2 === (days.length - 1) % 2)
@@ -5561,7 +5570,7 @@
         hbars(
           'ua-model',
           (d.byModel || []).map((r) => ({ ...r, label: r.k })),
-          (k) => MODEL_COLOR[k] || 'var(--accent)',
+          (k) => (String(k).startsWith('gpt-') ? '#55c7ee' : MODEL_COLOR[k] || '#bd9cff'),
         );
         hbars('ua-role', d.byRole || []);
         hbars(
