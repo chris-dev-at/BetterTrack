@@ -90,6 +90,10 @@ function rows<K extends Entity['kind']>(
   return entities.filter((entity): entity is EntityOf<K> => entity.kind === kind);
 }
 
+function liveEntities(document: ParanoidDisableRehydrationRequest['document']): readonly Entity[] {
+  return document.entities.filter((entity) => entity.deletedAt === null);
+}
+
 function ids<K extends Entity['kind']>(entities: readonly Entity[], kind: K): Set<string> {
   return new Set(rows(entities, kind).map((entity) => entity.id));
 }
@@ -111,17 +115,27 @@ function requireSubset(
  * Database checks remain defense in depth; this reports malformed decrypted vaults
  * as one clean failure and makes the no-write guarantee directly testable.
  */
-function validateGraph(
-  userId: string,
-  document: ParanoidDisableRehydrationRequest['document'],
-): void {
-  const entities = document.entities;
+function validateGraph(userId: string, entities: readonly Entity[]): void {
   const portfolioIds = ids(entities, 'portfolio');
   const customAssetIds = ids(entities, 'customAsset');
   const sourceIds = ids(entities, 'cashSource');
   const transactionIds = ids(entities, 'transaction');
   const dividendIds = ids(entities, 'dividend');
   const categoryIds = ids(entities, 'expenseCategory');
+  const sourcesById = new Map(rows(entities, 'cashSource').map((entity) => [entity.id, entity]));
+  const transactionsById = new Map(
+    rows(entities, 'transaction').map((entity) => [entity.id, entity]),
+  );
+  const dividendsById = new Map(rows(entities, 'dividend').map((entity) => [entity.id, entity]));
+
+  for (const asset of rows(entities, 'customAsset')) {
+    if (asset.data.providerRef !== asset.id) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a manual asset provider reference must equal its entity id',
+      );
+    }
+  }
 
   requireSubset(
     rows(entities, 'transaction').map((entity) => entity.data.portfolioId),
@@ -214,6 +228,16 @@ function validateGraph(
     sourceNameKeys.add(key);
   }
 
+  for (const dividend of rows(entities, 'dividend')) {
+    const source = sourcesById.get(dividend.data.cashSourceId)!;
+    if (source.data.portfolioId !== dividend.data.portfolioId) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'dividend cash source belongs to another portfolio',
+      );
+    }
+  }
+
   const movements = rows(entities, 'cashMovement');
   requireSubset(
     movements.map((entity) => entity.data.portfolioId),
@@ -243,14 +267,115 @@ function validateGraph(
     'cash movement',
   );
 
+  const transfersById = new Map<string, EntityOf<'cashMovement'>[]>();
   for (const movement of movements) {
-    const source = rows(entities, 'cashSource').find(
-      (entity) => entity.id === movement.data.sourceId,
-    )!;
+    const source = sourcesById.get(movement.data.sourceId)!;
     if (source.data.portfolioId !== movement.data.portfolioId) {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'cash movement source belongs to another portfolio',
+      );
+    }
+    if (movement.data.transactionId && movement.data.dividendId) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'cash movement cannot link both a transaction and a dividend',
+      );
+    }
+    if (movement.data.transactionId) {
+      const transaction = transactionsById.get(movement.data.transactionId)!;
+      const isValidTransactionMovement =
+        (movement.data.kind === 'buy' && transaction.data.side === 'buy') ||
+        (movement.data.kind === 'sell_proceeds' && transaction.data.side === 'sell') ||
+        ((movement.data.kind === 'tax_withholding' || movement.data.kind === 'tax_refund') &&
+          transaction.data.side === 'sell');
+      if (!isValidTransactionMovement) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement kind does not match its transaction',
+        );
+      }
+      if (transaction.data.portfolioId !== movement.data.portfolioId) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement transaction belongs to another portfolio',
+        );
+      }
+      if (transaction.data.source !== movement.data.source) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement source tag must match its transaction',
+        );
+      }
+    }
+    if (movement.data.dividendId) {
+      const dividend = dividendsById.get(movement.data.dividendId)!;
+      const isValidDividendMovement =
+        movement.data.kind === 'dividend' ||
+        movement.data.kind === 'tax_withholding' ||
+        movement.data.kind === 'tax_refund';
+      if (!isValidDividendMovement) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement kind does not match its dividend',
+        );
+      }
+      if (dividend.data.portfolioId !== movement.data.portfolioId) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement dividend belongs to another portfolio',
+        );
+      }
+      if (dividend.data.cashSourceId !== movement.data.sourceId) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement source does not match its dividend',
+        );
+      }
+      if (dividend.data.source !== movement.data.source) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement source tag must match its dividend',
+        );
+      }
+    }
+    if (movement.data.counterpartSourceId) {
+      const counterpart = sourcesById.get(movement.data.counterpartSourceId)!;
+      if (counterpart.data.portfolioId !== movement.data.portfolioId) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'cash movement counterpart source belongs to another portfolio',
+        );
+      }
+    }
+    if (movement.data.transferId) {
+      const transfer = transfersById.get(movement.data.transferId) ?? [];
+      transfer.push(movement);
+      transfersById.set(movement.data.transferId, transfer);
+    }
+  }
+
+  for (const transfer of transfersById.values()) {
+    const outgoing = transfer.filter((movement) => movement.data.kind === 'transfer_out');
+    const incoming = transfer.filter((movement) => movement.data.kind === 'transfer_in');
+    const [out] = outgoing;
+    const [inbound] = incoming;
+    if (
+      transfer.length !== 2 ||
+      outgoing.length !== 1 ||
+      incoming.length !== 1 ||
+      !out ||
+      !inbound ||
+      out.data.portfolioId !== inbound.data.portfolioId ||
+      out.data.sourceId === inbound.data.sourceId ||
+      out.data.counterpartSourceId !== inbound.data.sourceId ||
+      inbound.data.counterpartSourceId !== out.data.sourceId ||
+      out.data.amountEur + inbound.data.amountEur !== 0 ||
+      Date.parse(out.data.executedAt) !== Date.parse(inbound.data.executedAt)
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'transfer movements do not form a valid pair',
       );
     }
   }
@@ -283,16 +408,17 @@ function validateGraph(
         occurredAt: entity.data.executedAt,
       })),
     );
-    const transactionsByAsset = new Map<string, EntityOf<'transaction'>[]>();
+    const transactionsByPortfolioAsset = new Map<string, EntityOf<'transaction'>[]>();
     for (const transaction of rows(entities, 'transaction')) {
-      const group = transactionsByAsset.get(transaction.data.assetId) ?? [];
+      const key = `${transaction.data.portfolioId}\u0000${transaction.data.assetId}`;
+      const group = transactionsByPortfolioAsset.get(key) ?? [];
       group.push(transaction);
-      transactionsByAsset.set(transaction.data.assetId, group);
+      transactionsByPortfolioAsset.set(key, group);
     }
-    for (const [assetId, transactions] of transactionsByAsset) {
+    for (const transactions of transactionsByPortfolioAsset.values()) {
       reducePosition(
         transactions.map((transaction) => ({
-          assetId,
+          assetId: transaction.data.assetId,
           side: transaction.data.side,
           quantity: transaction.data.quantity,
           price: transaction.data.price,
@@ -313,9 +439,8 @@ function validateGraph(
 
 async function validateReferencedMarketAssets(
   tx: Database,
-  document: ParanoidDisableRehydrationRequest['document'],
+  entities: readonly Entity[],
 ): Promise<void> {
-  const entities = document.entities;
   const customAssetIds = ids(entities, 'customAsset');
   const referencedAssetIds = new Set([
     ...rows(entities, 'transaction').map((entity) => entity.data.assetId),
@@ -399,7 +524,10 @@ export function createParanoidRehydrationService(
         );
       }
       const normalizedRequest = { ...request, document: parsed.data };
-      validateGraph(userId, normalizedRequest.document);
+      // Tombstones exist for client-side merge convergence only. Construct and
+      // validate the restore graph from live facts before any database mutation.
+      const entities = liveEntities(normalizedRequest.document);
+      validateGraph(userId, entities);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -425,8 +553,7 @@ export function createParanoidRehydrationService(
         }
 
         await ensureNoExistingRestorableRows(tx, userId);
-        await validateReferencedMarketAssets(tx, normalizedRequest.document);
-        const entities = normalizedRequest.document.entities;
+        await validateReferencedMarketAssets(tx, entities);
 
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await sourceRows.restoreCustomAssets(userId, rows(entities, 'customAsset'));

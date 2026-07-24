@@ -8,6 +8,7 @@ import {
   paranoidVaultHistory,
   paranoidVaults,
   portfolios,
+  transactions,
   users,
 } from '../../../data/schema';
 import { createTestApp } from '../../../testing/createTestApp';
@@ -23,6 +24,11 @@ const CASH_SOURCE_ID = '018f0000-0000-7000-8000-000000000004';
 const ASSET_ID = '018f0000-0000-7000-8000-000000000005';
 const TRANSACTION_ID = '018f0000-0000-7000-8000-000000000006';
 const MOVEMENT_ID = '018f0000-0000-7000-8000-000000000007';
+const SECOND_PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000008';
+const SECOND_CASH_SOURCE_ID = '018f0000-0000-7000-8000-000000000009';
+const SECOND_TRANSACTION_ID = '018f0000-0000-7000-8000-00000000000a';
+const TRANSFER_ID = '018f0000-0000-7000-8000-00000000000b';
+const TRANSFER_OUT_ID = '018f0000-0000-7000-8000-00000000000c';
 const editedAt = '2026-07-24T10:00:00.000Z';
 
 function entity<
@@ -269,5 +275,159 @@ describe('paranoid rehydration service', () => {
     expect(
       await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
     ).toHaveLength(1);
+  });
+
+  it('ignores tombstones and validates references against live entities only', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const deletedPortfolio = input.document.entities.find((entry) => entry.kind === 'portfolio')!;
+    deletedPortfolio.deletedAt = editedAt;
+    input.document.entities = input.document.entities.filter(
+      (entry) =>
+        entry.kind !== 'cashSource' &&
+        entry.kind !== 'transaction' &&
+        entry.kind !== 'cashMovement',
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toHaveLength(1);
+  });
+
+  it('rejects a manual asset whose provider reference is not its entity id', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const asset = input.document.entities.find((entry) => entry.kind === 'customAsset')!;
+    if (asset.kind !== 'customAsset') throw new Error('expected custom asset');
+    asset.data.providerRef = PORTFOLIO_ID;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+  });
+
+  it('replays positions per portfolio and rejects an oversell in a separate portfolio', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        name: 'Second',
+        visibility: 'private',
+        sortOrder: 1,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      }),
+      entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
+        portfolioId: SECOND_PORTFOLIO_ID,
+        name: 'Main',
+        type: 'cash',
+        isMain: true,
+        archivedAt: null,
+        createdAt: editedAt,
+      }),
+      entity(SECOND_TRANSACTION_ID, 'transaction', {
+        portfolioId: SECOND_PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        side: 'sell',
+        quantity: 1,
+        price: 100,
+        fee: 0,
+        executedAt: editedAt,
+        note: null,
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        allowUncovered: false,
+        uncoveredEntryPrice: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_CASH_LEDGER',
+    });
+    expect(await db.select().from(transactions)).toEqual([]);
+  });
+
+  it('rejects a cash movement linked to a transaction in another portfolio', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        name: 'Second',
+        visibility: 'private',
+        sortOrder: 1,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      }),
+      entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
+        portfolioId: SECOND_PORTFOLIO_ID,
+        name: 'Main',
+        type: 'cash',
+        isMain: true,
+        archivedAt: null,
+        createdAt: editedAt,
+      }),
+      entity(TRANSFER_OUT_ID, 'cashMovement', {
+        portfolioId: SECOND_PORTFOLIO_ID,
+        sourceId: SECOND_CASH_SOURCE_ID,
+        kind: 'buy',
+        amountEur: -100,
+        transactionId: TRANSACTION_ID,
+        transferId: null,
+        counterpartSourceId: null,
+        dividendId: null,
+        taxYear: null,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects a lone transfer even when its counterpart source exists', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
+        portfolioId: PORTFOLIO_ID,
+        name: 'Savings',
+        type: 'cash',
+        isMain: false,
+        archivedAt: null,
+        createdAt: editedAt,
+      }),
+      entity(TRANSFER_OUT_ID, 'cashMovement', {
+        portfolioId: PORTFOLIO_ID,
+        sourceId: CASH_SOURCE_ID,
+        kind: 'transfer_out',
+        amountEur: -100,
+        transactionId: null,
+        transferId: TRANSFER_ID,
+        counterpartSourceId: SECOND_CASH_SOURCE_ID,
+        dividendId: null,
+        taxYear: null,
+        executedAt: editedAt,
+        note: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 });

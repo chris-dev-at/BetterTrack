@@ -62,7 +62,10 @@ export function createParanoidRehydrationSourceRepository(
           id: entity.id,
           ownerId: userId,
           providerId: entity.data.providerId,
-          providerRef: entity.data.providerRef,
+          // Manual-provider lookup is globally keyed by this ref. Keep the
+          // normal custom-asset invariant even if a future caller bypasses
+          // restore-graph validation.
+          providerRef: entity.id,
           type: entity.data.type,
           symbol: entity.data.symbol,
           name: entity.data.name,
