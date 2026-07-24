@@ -39,6 +39,7 @@ test('dashboard JavaScript parses', () => {
 test('runtime, GitHub and control failures stay distinct from a healthy stopped state', () => {
   const helpers = new Function(`
     let controlFresh = true;
+    let renderingFresh = false;
     ${between(script, 'const finiteNumber =', 'function renderHead')}
     return {
       runtimeState,
@@ -83,11 +84,19 @@ test('runtime, GitHub and control failures stay distinct from a healthy stopped 
   );
   assert.equal(
     helpers.validSnapshot({
-      protocol: {},
-      docker: { multi: {}, single: {} },
-      github: {},
+      protocol: { workers: [], queue: [], events: [] },
+      docker: { multi: { containers: [] }, single: { containers: [] } },
+      github: { issues: [], prs: [], merged: [], needsHuman: [] },
     }),
     true,
+  );
+  assert.equal(
+    helpers.validSnapshot({
+      protocol: { workers: {}, queue: [], events: [] },
+      docker: { multi: { containers: [] }, single: { containers: [] } },
+      github: { issues: [], prs: [], merged: [], needsHuman: [] },
+    }),
+    false,
   );
   assert.equal(helpers.validSnapshot({ protocol: {}, docker: {}, github: {} }), false);
   assert.equal(helpers.validSnapshot({}), false);
@@ -96,6 +105,12 @@ test('runtime, GitHub and control failures stay distinct from a healthy stopped 
   assert.match(script, /Docker runtime status unavailable/);
   assert.match(script, /GitHub status unavailable/);
   assert.match(script, /startupProblems\.length > 0/);
+  assert.match(
+    script,
+    /renderingFresh = true;[\s\S]*?render\(payload\);[\s\S]*?controlFresh = true;/,
+  );
+  assert.match(script, /announceInvalidSnapshot\(previous\)/);
+  assert.match(script, /disableMutationControls\(\)/);
 });
 
 test('missing estimates are unreported while a confirmed numeric zero remains zero', () => {

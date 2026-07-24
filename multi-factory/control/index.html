@@ -2857,7 +2857,8 @@
         rcExpanded = false,
         activeTab = localStorage.getItem('mf-tab') || 'overview',
         lastEvent = 0,
-        controlFresh = false;
+        controlFresh = false,
+        renderingFresh = false;
 
       /* ---- tabs ---- */
       $('tabs').addEventListener('click', (e) => {
@@ -2984,8 +2985,37 @@
 
       /* ---- actions ---- */
       const armed = new Map();
+      const MUTATING_CONTROL_IDS = [
+        'b-start',
+        'b-dry',
+        'b-pause',
+        'b-unpause',
+        'b-run',
+        'b-runout',
+        'b-close',
+        'b-stop',
+        'b-down',
+        'b-single-stop',
+        'wk-apply',
+        'wk-minus',
+        'wk-plus',
+        'tg-add',
+        'm-save',
+      ];
+      function disableMutationControls() {
+        for (const id of MUTATING_CONTROL_IDS) {
+          const control = $(id);
+          if (control) {
+            control.disabled = true;
+            control.removeAttribute('aria-busy');
+          }
+        }
+        document
+          .querySelectorAll('#triggers button, #provs button')
+          .forEach((control) => (control.disabled = true));
+      }
       async function act(action, btn, confirm = false, payload = {}) {
-        if (!controlPlaneState(S).available) {
+        if (!controlFresh || !controlPlaneState(S).available) {
           toast('Control plane unavailable; action was not sent.', false);
           return { ok: false, message: 'control unavailable' };
         }
@@ -3723,31 +3753,90 @@
       const controlPlaneState = (s) => {
         const control = s?.control;
         const error = sourceError(control) || (s?.error ? String(s.error).slice(0, 200) : '');
+        const fresh = controlFresh || renderingFresh;
         const explicitlyUnavailable =
           control?.available === false ||
           control?.connected === false ||
           ['error', 'unavailable', 'offline'].includes(String(control?.state || '').toLowerCase());
         return {
-          available: controlFresh && !error && !explicitlyUnavailable,
+          available: fresh && !error && !explicitlyUnavailable,
           error,
           detail:
             error ||
             (explicitlyUnavailable
               ? 'The control plane reported that it is unavailable.'
-              : controlFresh
+              : fresh
                 ? ''
                 : 'No fresh control snapshot is available. Reconnecting…'),
         };
       };
       const recordValue = (value) =>
         value !== null && typeof value === 'object' && !Array.isArray(value);
-      const validSnapshot = (value) =>
-        recordValue(value) &&
-        recordValue(value.protocol) &&
-        recordValue(value.docker) &&
-        recordValue(value.docker.multi) &&
-        recordValue(value.docker.single) &&
-        recordValue(value.github);
+      const optionalRecord = (value) => value == null || recordValue(value);
+      const optionalArray = (value, predicate = () => true) =>
+        value == null || (Array.isArray(value) && value.every(predicate));
+      const validWorker = (worker) =>
+        recordValue(worker) &&
+        optionalRecord(worker.status) &&
+        optionalRecord(worker.assignment) &&
+        optionalArray(worker.assignment?.touches, (touch) => typeof touch === 'string');
+      const validQueueItem = (item) =>
+        recordValue(item) && optionalArray(item.touches, (touch) => typeof touch === 'string');
+      const validIssue = (issue) =>
+        recordValue(issue) &&
+        optionalArray(issue.labels, (label) => typeof label === 'string') &&
+        optionalRecord(issue.meta) &&
+        optionalArray(issue.meta?.dependsOn) &&
+        optionalArray(issue.meta?.touches, (touch) => typeof touch === 'string');
+      const validSnapshot = (value) => {
+        if (
+          !recordValue(value) ||
+          !recordValue(value.protocol) ||
+          !recordValue(value.docker) ||
+          !recordValue(value.docker.multi) ||
+          !recordValue(value.docker.single) ||
+          !recordValue(value.github)
+        )
+          return false;
+        const { protocol, docker, github } = value;
+        if (
+          !optionalArray(protocol.workers, validWorker) ||
+          !optionalArray(protocol.queue, validQueueItem) ||
+          !optionalArray(protocol.events) ||
+          !optionalRecord(protocol.masterActivity) ||
+          !optionalArray(docker.multi.containers, recordValue) ||
+          !optionalArray(docker.single.containers, recordValue) ||
+          !optionalArray(github.issues, validIssue) ||
+          !optionalArray(github.prs, recordValue) ||
+          !optionalArray(github.merged, recordValue) ||
+          !optionalArray(github.needsHuman, recordValue) ||
+          !optionalArray(value.triggers, recordValue) ||
+          !optionalArray(value.inflight) ||
+          !optionalRecord(value.ledger) ||
+          !optionalRecord(value.usage) ||
+          !optionalArray(value.usage?.scoped, recordValue) ||
+          !optionalRecord(value.workers) ||
+          !optionalRecord(value.models) ||
+          !optionalRecord(value.models?.difficulties) ||
+          !optionalRecord(value.models?.roles) ||
+          !optionalRecord(value.providers) ||
+          !optionalRecord(value.control)
+        )
+          return false;
+        if (
+          value.models?.difficulties &&
+          !Object.values(value.models.difficulties).every(recordValue)
+        )
+          return false;
+        const referencedProviders = new Set(
+          Object.values(value.models?.difficulties || {})
+            .map((entry) => entry.provider)
+            .filter((id) => typeof id === 'string'),
+        );
+        return [...referencedProviders].every(
+          (id) => value.providers?.[id] === undefined || recordValue(value.providers[id]),
+        );
+      };
       function renderHead(s, state, health) {
         const p = s.protocol || {};
         const node = $('head-factory');
@@ -4963,12 +5052,28 @@
       }
 
       /* ---- live ---- */
-      function showControlUnavailable(label = 'reconnecting…') {
-        const changed = controlFresh;
+      function restoreReadOnlySnapshot(snapshot) {
         controlFresh = false;
+        renderingFresh = false;
+        S = snapshot;
+        if (snapshot)
+          try {
+            render(snapshot);
+          } catch {
+            S = snapshot;
+          }
+        disableMutationControls();
+      }
+      function announceInvalidSnapshot(previous) {
+        restoreReadOnlySnapshot(previous);
+        $('livedot').className = 'dot stale';
+        $('livetxt').textContent = 'invalid snapshot';
+      }
+      function showControlUnavailable(label = 'reconnecting…') {
+        const snapshot = S;
+        restoreReadOnlySnapshot(snapshot);
         $('livedot').className = 'dot stale';
         $('livetxt').textContent = label;
-        if (changed && S) render(S);
       }
       function connect() {
         const es = new EventSource('/api/events');
@@ -4977,22 +5082,18 @@
           try {
             const payload = JSON.parse(e.data);
             if (!validSnapshot(payload)) throw new Error('invalid snapshot shape');
+            renderingFresh = true;
+            try {
+              render(payload);
+            } finally {
+              renderingFresh = false;
+            }
             controlFresh = true;
-            render(payload);
             lastEvent = Date.now();
             $('livedot').className = 'dot live';
             $('livetxt').textContent = 'live';
           } catch {
-            controlFresh = false;
-            S = previous;
-            if (S)
-              try {
-                render(S);
-              } catch {
-                /* retain the fail-closed static controls */
-              }
-            $('livedot').className = 'dot stale';
-            $('livetxt').textContent = 'invalid snapshot';
+            announceInvalidSnapshot(previous);
           }
         };
         es.onerror = () => {
@@ -5010,6 +5111,7 @@
       organizeWorkspace();
       setTab(activeTab);
       tgTypeChanged();
+      disableMutationControls();
       connect();
     </script>
   </body>
