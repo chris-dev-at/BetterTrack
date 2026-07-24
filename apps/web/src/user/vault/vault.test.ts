@@ -204,6 +204,36 @@ describe('BTVAULT1 envelope and content crypto', () => {
     });
   });
 
+  it('rejects cleartext fields outside the exact header, wrapper, and KDF contract', async () => {
+    const { header } = await fixture();
+    const wrapper = header.wrappedKeys[0]!;
+    const leakedHeaders = [
+      { ...header, portfolioBalance: '123456.78' },
+      {
+        ...header,
+        wrappedKeys: [{ ...wrapper, portfolioBalance: '123456.78' }],
+      },
+      {
+        ...header,
+        wrappedKeys: [
+          {
+            ...wrapper,
+            kdf: { ...wrapper.kdf, portfolioBalance: '123456.78' },
+          },
+        ],
+      },
+    ];
+
+    for (const leakedHeader of leakedHeaders) {
+      const headerBytes = new TextEncoder().encode(JSON.stringify(leakedHeader));
+      const envelope = new Uint8Array(12 + headerBytes.length + 16);
+      envelope.set(new TextEncoder().encode('BTVAULT1'));
+      new DataView(envelope.buffer).setUint32(8, headerBytes.length, false);
+      envelope.set(headerBytes, 12);
+      expect(() => decodeVaultEnvelope(envelope)).toThrow(VaultCryptoError);
+    }
+  });
+
   it('matches public fixed Argon2id envelope, tamper, passphrase, rotation, recovery, and rollback vectors', async () => {
     const vector = vaultInteroperabilityFixture;
     const vaultKey = new Uint8Array(Buffer.from(vector.vaultKeyBase64, 'base64'));
@@ -458,6 +488,66 @@ describe('recovery kit and custody lock core', () => {
     Object.defineProperty(globalThis, 'indexedDB', {
       configurable: true,
       value: originalIndexedDb,
+    });
+  });
+
+  it('clears an existing unlock when every replacement unlock path fails', async () => {
+    const original = await fixture();
+    const recoveryKit = serializeRecoveryKit({
+      keyId: VECTOR_KEY_ID,
+      vaultKey: original.vaultKey,
+      formatVersion: VAULT_FORMAT_VERSION,
+    }).bytes;
+    const core = new VaultLockCore();
+    const expectLocked = async () => {
+      expect(core.state).toEqual({ status: 'locked' });
+      await expect(core.withVaultKey(() => 'still unlocked')).rejects.toMatchObject({
+        code: 'locked',
+      });
+    };
+
+    await core.unlockWithRecoveryKit(original.envelope, recoveryKit);
+    await expect(core.unlockWithPassphrase(original.envelope, 'wrong passphrase')).rejects.toThrow(
+      VaultCryptoError,
+    );
+    await expectLocked();
+
+    await core.unlockWithRecoveryKit(original.envelope, recoveryKit);
+    await expect(
+      core.unlockWithPassphrase(original.envelope, 'correct horse battery staple', {
+        argon2: async () => Promise.reject(new Error('KDF unavailable')),
+      }),
+    ).rejects.toThrow(VaultCryptoError);
+    await expectLocked();
+
+    await core.unlockWithRecoveryKit(original.envelope, recoveryKit);
+    const tamperedEnvelope = original.envelope.slice();
+    tamperedEnvelope[tamperedEnvelope.length - 1] =
+      tamperedEnvelope[tamperedEnvelope.length - 1]! ^ 1;
+    await expect(core.unlockWithRecoveryKit(tamperedEnvelope, recoveryKit)).rejects.toThrow(
+      VaultCryptoError,
+    );
+    await expectLocked();
+
+    await core.unlockWithRecoveryKit(original.envelope, recoveryKit);
+    await expect(
+      core.unlockWithRecoveryKit(original.envelope, new TextEncoder().encode('invalid kit')),
+    ).rejects.toThrow(VaultCryptoError);
+    await expectLocked();
+
+    const failingCustody = {
+      persist: async () => undefined,
+      read: async () => Promise.reject(new Error('IndexedDB read failed')),
+      clear: async () => undefined,
+    };
+    const custodyCore = new VaultLockCore({ custody: failingCustody });
+    await custodyCore.unlockWithRecoveryKit(original.envelope, recoveryKit);
+    await expect(custodyCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope)).rejects.toThrow(
+      'IndexedDB read failed',
+    );
+    expect(custodyCore.state).toEqual({ status: 'locked' });
+    await expect(custodyCore.withVaultKey(() => 'still unlocked')).rejects.toMatchObject({
+      code: 'locked',
     });
   });
 

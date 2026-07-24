@@ -11,6 +11,20 @@ import { VaultCryptoError } from './errors';
 const MAGIC_BYTES = utf8(VAULT_MAGIC);
 const PREFIX_BYTES = MAGIC_BYTES.length + 4;
 const AES_GCM_TAG_BYTES = 16;
+const HEADER_FIELDS = new Set([
+  'formatVersion',
+  'cipher',
+  'iv',
+  'keyId',
+  'wrappedKeys',
+  'vaultVersion',
+  'schemaVersion',
+  'deviceId',
+  'writeId',
+  'writtenAt',
+]);
+const WRAPPED_KEY_FIELDS = new Set(['keyId', 'kdf', 'wrappedVk']);
+const KDF_FIELDS = new Set(['alg', 'm', 't', 'p', 'salt']);
 
 export interface DecodedEnvelope {
   header: VaultEnvelopeHeader;
@@ -88,7 +102,9 @@ export function decodeVaultEnvelope(bytes: Uint8Array): DecodedEnvelope {
     });
   }
 
-  const parsed = vaultEnvelopeHeaderSchema.safeParse(untrustedHeader);
+  const parsed = exactHeaderShape(untrustedHeader)
+    ? vaultEnvelopeHeaderSchema.safeParse(untrustedHeader)
+    : { success: false as const };
   if (!parsed.success) {
     const version = readVersions(untrustedHeader);
     if (version != null && version.formatVersion > VAULT_FORMAT_VERSION) {
@@ -170,4 +186,26 @@ function readVersions(value: unknown): { formatVersion: number; schemaVersion: n
         schemaVersion: header.schemaVersion as number,
       }
     : null;
+}
+
+function exactHeaderShape(value: unknown): boolean {
+  if (!hasOnlyFields(value, HEADER_FIELDS)) return false;
+  const wrappedKeys = (value as Record<string, unknown>).wrappedKeys;
+  if (!Array.isArray(wrappedKeys)) return false;
+  return wrappedKeys.every((wrappedKey) => {
+    if (!hasOnlyFields(wrappedKey, WRAPPED_KEY_FIELDS)) return false;
+    return hasOnlyFields((wrappedKey as Record<string, unknown>).kdf, KDF_FIELDS);
+  });
+}
+
+function hasOnlyFields(
+  value: unknown,
+  fields: ReadonlySet<string>,
+): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).every((key) => fields.has(key))
+  );
 }

@@ -42,13 +42,13 @@ export class VaultLockCore {
     keepUnlocked = false,
     deviceId?: string,
   ): Promise<void> {
-    const key = await keyForPassphrase(envelope, passphrase, deps);
+    let key: Uint8Array | undefined;
     try {
+      key = await keyForPassphrase(envelope, passphrase, deps);
       const { header } = await decryptVaultDocument(envelope, key);
       await this.setUnlocked(key, header.keyId, keepUnlocked, deviceId);
     } catch (cause) {
-      disposeVaultKey(key);
-      throw cause;
+      await this.failUnlock(cause, key, deviceId);
     }
   }
 
@@ -58,36 +58,37 @@ export class VaultLockCore {
     keepUnlocked = false,
     deviceId?: string,
   ): Promise<void> {
-    const kit = importRecoveryKit(recoveryKit);
+    let key: Uint8Array | undefined;
     try {
-      const { header } = await decryptVaultDocument(envelope, kit.vaultKey);
+      const kit = importRecoveryKit(recoveryKit);
+      key = kit.vaultKey;
+      const { header } = await decryptVaultDocument(envelope, key);
       if (kit.keyId !== header.keyId) {
         throw new VaultCryptoError(
           'recovery-kit-invalid',
           'Recovery kit does not match this vault key id.',
         );
       }
-      await this.setUnlocked(kit.vaultKey, header.keyId, keepUnlocked, deviceId);
+      await this.setUnlocked(key, header.keyId, keepUnlocked, deviceId);
     } catch (cause) {
-      disposeVaultKey(kit.vaultKey);
-      throw cause;
+      await this.failUnlock(cause, key, deviceId);
     }
   }
 
   async unlockFromDevice(deviceId: string, envelope: Uint8Array): Promise<void> {
-    if (this.options.custody == null) {
-      throw new VaultCryptoError('custody-failed', 'Device custody is unavailable.');
-    }
-    const key = await this.options.custody.read(deviceId);
-    if (key == null) {
-      throw new VaultCryptoError('locked', 'No device vault key is available.');
-    }
+    let key: CryptoKey | null | undefined;
     try {
+      if (this.options.custody == null) {
+        throw new VaultCryptoError('custody-failed', 'Device custody is unavailable.');
+      }
+      key = await this.options.custody.read(deviceId);
+      if (key == null) {
+        throw new VaultCryptoError('locked', 'No device vault key is available.');
+      }
       const { header } = await decryptVaultDocument(envelope, key);
       await this.setUnlocked(key, header.keyId, false, deviceId);
     } catch (cause) {
-      await this.options.custody.clear(deviceId);
-      throw cause;
+      await this.failUnlock(cause, key, deviceId);
     }
   }
 
@@ -153,6 +154,18 @@ export class VaultLockCore {
     this.vaultKey = vaultKey;
     this.keyId = keyId;
     this.custodyDeviceId = nextCustodyDeviceId;
+  }
+
+  private async failUnlock(
+    cause: unknown,
+    candidateKey?: VaultKeyMaterial | null,
+    deviceId?: string,
+  ): Promise<never> {
+    if (candidateKey instanceof Uint8Array && candidateKey !== this.vaultKey) {
+      disposeVaultKey(candidateKey);
+    }
+    await this.lock(deviceId);
+    throw cause;
   }
 }
 
