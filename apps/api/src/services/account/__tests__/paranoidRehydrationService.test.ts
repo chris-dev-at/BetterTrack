@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assets,
   expenseTransactions,
+  priceHistory,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaults,
@@ -194,6 +195,26 @@ describe('paranoid rehydration service', () => {
           ),
         ),
     ).toHaveLength(1);
+  });
+
+  it('restores a custom-asset value point with precision beyond transaction money', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'customAssetValue', {
+        assetId: ASSET_ID,
+        date: '2026-07-24',
+        close: 0.1234567,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    const [valuePoint] = await db
+      .select({ close: priceHistory.close })
+      .from(priceHistory)
+      .where(eq(priceHistory.assetId, ASSET_ID));
+    expect(valuePoint?.close).toBe('0.1234567');
   });
 
   it('returns the original receipt after an uncertain response retry', async () => {

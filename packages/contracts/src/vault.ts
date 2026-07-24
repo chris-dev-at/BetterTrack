@@ -471,11 +471,16 @@ const customAssetDataSchema = z
   })
   .strict();
 
+// `price_history.close` is an unscaled numeric column, and the normal custom-asset
+// value-point API accepts every finite non-negative number. Do not apply the
+// transaction-money precision cap here or a valid vault could not be restored.
+const customAssetValueCloseSchema = finiteNumberSchema.nonnegative();
+
 const customAssetValueDataSchema = z
   .object({
     assetId: uuidSchema,
     date: isoDaySchema,
-    close: storageAmountSchema,
+    close: customAssetValueCloseSchema,
   })
   .strict();
 
