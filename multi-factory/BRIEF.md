@@ -101,6 +101,35 @@ Rules for the composer prompt:
   frontend slice), so the workers actually parallelize.
 - Tier labels per MODELUSE, same as today. When unsure, higher tier.
 
+### One-shot owner composition brief
+
+For a bounded owner-requested batch, place the brief in gitignored control state
+with the helper:
+
+```bash
+./multi-factory/request-compose.sh 2 /absolute/path/to/brief.md acceptance-20260724
+```
+
+The requested exact count becomes the effective composer batch for that one
+invocation, without changing `state/control/models.json` or restarting the
+factory. It may not exceed the master's `COMPOSER_BATCH` ceiling. The master
+atomically claims the request, appends its text verbatim between visible
+owner-brief delimiters, and archives it under
+`state/control/composer-request-archive/` only after the normal manifest
+contract validates with exactly that many issues. `NONE`, a partial batch, a
+malformed manifest, or an archive failure retains the active request and never
+publishes its artifacts to the scheduler. After the invocation's bounded
+protocol attempts are spent, the retained request is marked blocked and is not
+automatically replayed.
+
+The active claim carries a master-session guard. After a master restart, an
+unresolved claim is not replayed automatically because the previous process may
+already have created GitHub issues; new scheduling pauses and the owner must
+reconcile the retained active request and manifest first. This is deliberately
+fail-closed. A ready request is claimed only in `run` mode. An already-active
+request also pauses `run-out` scheduling; `close-down` reports the same
+unresolved state even though that mode independently forbids new assignments.
+
 ## 5. The scheduler (deterministic — this is the core novelty)
 
 Bash only. The scheduler **never infers** compatibility; it checks claims:

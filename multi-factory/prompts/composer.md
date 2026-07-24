@@ -11,15 +11,44 @@ This invocation is `{{RUN_ID}}`. Issue creation has a hard protocol:
 - If—and only if—there is genuinely no issue to create, write exactly `NONE` followed by a newline to `{{MANIFEST}}`. Never mix `NONE` with issue entries.
 - Do not claim, relabel, or repair issues that lack this invocation's marker. They may belong to a concurrent human or another process.
 
+An optional one-shot `OWNER-APPROVED COMPOSITION BRIEF` may be appended after
+these standing instructions. When present:
+
+- It narrows the work for this invocation and gives an exact issue count. Preflight
+  every requested candidate, including every targeted duplicate search, BEFORE
+  calling the helper for any of them. Then create exactly that many issues; do not
+  substitute unrelated work to fill the batch.
+- It may explicitly authorize a named, tightly-scoped maintenance task outside the
+  current product milestone, or a canonical replacement for a specifically named
+  malformed issue. That exception applies only to the named work. A replacement
+  must say which issue it supersedes and must not edit, relabel, close, or claim the
+  malformed issue.
+- It never overrides the helper-only creation protocol, manifest completeness,
+  labels, body sections, terminal `mf-meta`, dependency/touch accuracy, safety
+  rules, or the ban on editing issues from another invocation.
+- If the exact requested batch cannot be created safely, create NOTHING and write
+  `NONE`. The orchestrator deliberately rejects `NONE` for an exact-count request
+  and retains the brief for owner review; partial batches are also rejected and
+  quarantined.
+
 Do, in order:
 
 1. Read current reality from the pack's LIVE STATE block — recent commits on main plus the open autopilot / awaiting-owner / needs-human issues and open PRs are the queue and merge state. Do NOT re-list everything with `gh issue list`. Use MAP.md/graph.json to see which modules already exist.
-2. Determine the current phase: the earliest §13 milestone (P0–P10) whose acceptance criteria the code does not yet meet. The phase digest and each phase's "done when" essence are in the pack.
+2. Read the pack's explicit **current milestone** declaration. Within that
+   milestone's phase digest, determine the earliest phase whose acceptance
+   criteria the code does not yet meet. Never assume a release number, section
+   number, phase prefix, or numeric phase range: those all evolve. Treat blocked
+   open work as incomplete rather than silently skipping the milestone, while
+   still allowing genuinely lane-independent current-milestone work and
+   bug-fix/hardening work that is actionable now.
 3. Create up to {{BATCH}} new issues — only work that is actionable RIGHT NOW or actionable once another issue IN THIS BATCH closes (declare that with depends-on). Before creating each candidate, confirm it is not a duplicate with a TARGETED search — `gh issue list --state all --search "<keywords>"` per candidate — never a full listing. Each issue:
 
-   - Title: "[P<phase>] <verb> <thing>" — one coherent work package a single agent run can finish.
+   - Title: `"[<phase-id>] <verb> <thing>"`, using the phase identifier exactly as
+     the current milestone digest gives it (for example `V5-P14`) — one coherent
+     work package a single agent run can finish. A brief-authorized maintenance
+     exception may instead use the exact title/prefix requested by the owner.
    - Body: ## Context · ## Scope (exact files/dirs) · ## Acceptance criteria (testable checkboxes — these are what the reviewer grades against) · ## Out of scope.
-   - **## Context MUST QUOTE VERBATIM the exact PROJECTPLAN spec excerpt(s) the writer needs to implement** — the precise subsections, each with its § number — so the writer never has to open PROJECTPLAN.md. Open only those specific subsections to copy them (that is content extraction, not re-orientation); if a spec detail is not quoted, the writer cannot use it.
+   - **## Context MUST QUOTE VERBATIM the exact PROJECTPLAN spec excerpt(s) the writer needs to implement** — the precise subsections, each with its § number — so the writer never has to open PROJECTPLAN.md. Open only those specific subsections to copy them (that is content extraction, not re-orientation); if a spec detail is not quoted, the writer cannot use it. For a brief-authorized maintenance exception that has no PROJECTPLAN subsection, quote the applicable owner-brief text verbatim and identify its request id instead; never invent a plan citation.
    - Select exactly one DIFFICULTY value for the helper. Difficulty describes how demanding the work is — the owner maps each difficulty to a concrete model/provider in the dashboard, so never think in models, only in difficulty:
      - `diff:easy` — trivial/mechanical: docs, config/CI, copy tweaks, Coming-Soon placeholders, tiny isolated CRUD.
      - `diff:normal` — standard well-scoped feature work: plain UI pages, simple endpoints, templates, e2e specs.
@@ -44,5 +73,19 @@ Do, in order:
      - `touches`: one line per path prefix the implementation is expected to modify (use `**` glob suffixes for directories). Claim EVERY path the writer will plausibly touch — shared contracts, migrations, config, tests included. Over-claiming is safe (it only serializes); under-claiming costs a painful rebase round. Any issue whose implementation will add a DB migration MUST include `touches: apps/api/drizzle/**` — the migration journal is one global sequence, so two parallel branches that each add a migration ALWAYS collide at merge time (it cost two manual rebases on 2026-07-16 alone). Two issues may run in parallel ONLY if none of their touches prefixes overlap.
 
 4. **Shape the batch for parallelism**: whenever the build order allows, make at least 2 issues of the batch lane-independent (non-overlapping touches, no dependency between them) — e.g. a backend slice plus an unrelated frontend slice — so the workers actually run concurrently. Never invent artificial splits that break a coherent work package; correctness of the decomposition beats parallelism.
-5. If ALL of P0–P10 is complete: first create ONE issue titled "check v1" in guarded awaiting-owner mode — if it doesn't already exist — and pause feature planning until the owner responds (bug-fix/hardening issues remain allowed). Then draft the next 5 issues from PROJECTPLAN §14 in its leverage order in the same mode and say so in a comment on the newest one. Use the exact helper command above but replace `--mode autopilot` with `--mode awaiting-owner`. These issues still require one difficulty and the full terminal metadata contract; the helper applies `awaiting-owner`, never `autopilot`, so the scheduler can never pick them up.
-6. Never create issues outside PROJECTPLAN v1 + §14. Never re-open or duplicate existing ones.
+5. If every phase listed for the pack's current milestone is complete, follow the
+   pack's explicit after-milestone gate. Derive the gate title from that current
+   milestone (for example, current milestone `V5` yields `"check v5"`), create it
+   only if it does not already exist, and use guarded awaiting-owner mode. Use
+   the exact helper command above but replace `--mode autopilot` with
+   `--mode awaiting-owner`. The issue still requires one difficulty and the full
+   terminal metadata contract; the helper applies `awaiting-owner`, never
+   `autopilot`, so the scheduler can never pick it up. Do not draft work for a
+   later release or parking-lot section unless the pack's current after-milestone
+   instruction explicitly authorizes that action. Bug-fix/hardening work remains
+   allowed.
+6. Never create issues outside the pack's current milestone and its explicitly
+   authorized after-milestone scope, except for a named owner-brief maintenance
+   exception as defined above. Never re-open or duplicate existing issues; only
+   the brief's explicit canonical-replacement exception may supersede a named
+   malformed issue.

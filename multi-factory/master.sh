@@ -9,6 +9,7 @@
 #   merge-queue/<epoch>-prNN.json  FIFO of reviewer-approved PRs
 #   control/mode                run | run-out | close-down   (owner/dashboard-written)
 #   control/phase               running | draining | drained (master-written)
+#   control/composer-request.json  optional one-shot owner composition brief
 #   logs/events.log             shared factory event lines (all containers)
 #
 # Modes: run = normal. run-out = composer off; keep scheduling until every open
@@ -33,8 +34,19 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=900}"
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
 : "${MF_DRY_RUN:=0}"
+if [ -z "${MF_MASTER_SESSION:-}" ]; then
+  MF_MASTER_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+  [ -n "$MF_MASTER_NONCE" ] || MF_MASTER_NONCE="${RANDOM:-0}-${RANDOM:-0}"
+  MF_MASTER_SESSION="${HOSTNAME:-master}-$(date +%s)-$$-$MF_MASTER_NONCE"
+  unset MF_MASTER_NONCE
+fi
 export LOG_TAG="[master]"
 export MF_EVENTLOG=$LOGS/events.log
+
+COMPOSER_REQUEST_LOADED=0
+COMPOSER_REQUEST_ID=
+COMPOSER_REQUEST_EXACT_COUNT=
+COMPOSER_REQUEST_BRIEF=
 
 MF_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$MF_SCRIPT_DIR/contracts.sh"
@@ -312,16 +324,210 @@ composer_quarantine(){ # space-separated issue ids
   log "composer quarantine: issues [$ids] are not schedulable"
 }
 
+# One-shot owner composition requests live entirely in gitignored control state:
+#   composer-request.json                  ready (owner-written atomically)
+#   .composer-request-active.json          claimed, original request preserved
+#   .composer-request-claim/session        process/session replay guard
+#   composer-request-archive/<id>-<run>.json  consumed only after exact success
+#
+# The claim directory is the cross-process mutex. A different master session
+# encountering an active claim fails closed: it must not replay a request whose
+# first process may already have created GitHub issues. tick() also suppresses
+# scheduling in that state so unvalidated crash-window artifacts cannot run.
+composer_request_validate(){ # $1=request file
+  local file=$1 max=$COMPOSER_BATCH
+  case "$max" in ''|*[!0-9]*|0) return 1;; esac
+  jq -e --argjson max "$max" '
+    type == "object"
+    and ((keys_unsorted - ["approved","brief","exact_count","id","version"]) | length == 0)
+    and .version == 1
+    and .approved == true
+    and (.id | type == "string"
+      and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"))
+    and (.brief | type == "string" and length > 0 and length <= 20000)
+    and (.exact_count | type == "number" and . == floor and . >= 1)
+    and .exact_count <= $max
+  ' "$file" >/dev/null 2>&1
+}
+
+composer_request_alert_once(){ # $1=reason key $2=message
+  local key=$1 message=$2 claim="$CONTROL/.composer-request-claim"
+  local marker="$claim/alerted" previous=""
+  [ -f "$marker" ] && previous=$(<"$marker")
+  [ "$previous" = "$key" ] && return 0
+  atomic_write "$marker" "$key" 2>/dev/null || true
+  log "$message"
+  notify "$message"
+}
+
+composer_request_mark_blocked(){ # $1=terminal reason after bounded attempts
+  local reason=$1 claim="$CONTROL/.composer-request-claim"
+  if ! atomic_write "$claim/blocked" "$reason"; then
+    # Poison the session owner as a second fail-closed guard. The current master
+    # then looks foreign on its next tick rather than replaying the request.
+    atomic_write "$claim/session" "blocked-$MF_MASTER_SESSION" 2>/dev/null || true
+  fi
+  composer_request_alert_once "blocked:$reason" \
+    "composer request retained for owner review after $reason — automatic replay disabled"
+}
+
+composer_request_prepare(){ # $1=allow ready→active claim (default 1); 0=none/loaded, 2=unsafe
+  local allow_ready_claim=${1:-1}
+  local ready active claim session_file
+  ready="$CONTROL/composer-request.json"
+  active="$CONTROL/.composer-request-active.json"
+  claim="$CONTROL/.composer-request-claim"
+  session_file="$claim/session"
+  local owner=""
+  COMPOSER_REQUEST_LOADED=0
+  COMPOSER_REQUEST_ID=
+  COMPOSER_REQUEST_EXACT_COUNT=
+  COMPOSER_REQUEST_BRIEF=
+
+  # An active file without its mutex is an indeterminate crash window. Never
+  # adopt/replay it automatically.
+  if [ -f "$active" ] && [ ! -d "$claim" ]; then
+    # There is no claim dir in which to persist an alert marker, so only log.
+    log "composer request needs owner reconciliation — active request has no replay guard"
+    return 2
+  fi
+
+  if [ -d "$claim" ]; then
+    [ -f "$session_file" ] && owner=$(<"$session_file")
+    if [ "$owner" != "$MF_MASTER_SESSION" ]; then
+      # A completed archive can leave only an empty/stale claim if the process
+      # died between mv and rmdir. With no ready/active request, cleanup is safe.
+      if [ ! -f "$active" ] && [ ! -f "$ready" ]; then
+        rm -f "$session_file" "$claim/alerted" "$claim/blocked"
+        rmdir "$claim" 2>/dev/null || true
+        return 0
+      fi
+      composer_request_alert_once foreign-session \
+        "composer request needs owner reconciliation — refusing restart replay (${owner:-unknown})"
+      return 2
+    fi
+    if [ -f "$claim/blocked" ]; then
+      composer_request_alert_once "blocked:$(<"$claim/blocked")" \
+        "composer request is retained for owner review — automatic replay disabled"
+      return 2
+    fi
+  else
+    mkdir "$claim" 2>/dev/null || {
+      log "composer request blocked: concurrent claim acquisition"
+      return 2
+    }
+    atomic_write "$session_file" "$MF_MASTER_SESSION" || {
+      log "composer request blocked: cannot persist replay guard"
+      return 2
+    }
+    rm -f "$claim/alerted"
+  fi
+
+  if [ ! -f "$active" ]; then
+    if [ ! -f "$ready" ]; then
+      rm -f "$session_file" "$claim/alerted" "$claim/blocked"
+      rmdir "$claim" 2>/dev/null || true
+      return 0
+    fi
+    if [ "$allow_ready_claim" != 1 ]; then
+      composer_request_alert_once composition-disabled \
+        "composer request remains ready — refusing to claim while composition is disabled"
+      return 2
+    fi
+    mv "$ready" "$active" || {
+      log "composer request blocked: cannot claim ready request"
+      return 2
+    }
+  fi
+
+  if ! composer_request_validate "$active"; then
+    composer_request_mark_blocked invalid-request
+    return 2
+  fi
+
+  COMPOSER_REQUEST_ID=$(jq -r '.id' "$active")
+  COMPOSER_REQUEST_EXACT_COUNT=$(jq -r '.exact_count' "$active")
+  # The sentinel prevents command substitution from stripping trailing newlines
+  # out of the owner text. Strip only the sentinel we appended ourselves.
+  COMPOSER_REQUEST_BRIEF=$(jq -jr '.brief, "__MF_BRIEF_SENTINEL__"' "$active")
+  COMPOSER_REQUEST_BRIEF=${COMPOSER_REQUEST_BRIEF%__MF_BRIEF_SENTINEL__}
+  COMPOSER_REQUEST_LOADED=1
+  return 0
+}
+
+composer_request_archive(){ # $1=validated composer run id
+  local run_id=$1 active claim archive_dir archive
+  active="$CONTROL/.composer-request-active.json"
+  claim="$CONTROL/.composer-request-claim"
+  archive_dir="$CONTROL/composer-request-archive"
+  archive="$archive_dir/${COMPOSER_REQUEST_ID}-${run_id}.json"
+  [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && [ -f "$active" ] || return 1
+  mkdir -p "$archive_dir" || return 1
+  [ ! -e "$archive" ] || return 1
+  mv "$active" "$archive" || return 1
+  rm -f "$claim/session" "$claim/alerted" "$claim/blocked"
+  rmdir "$claim" 2>/dev/null || {
+    log "composer request archived but stale claim directory remains: $claim"
+  }
+  log "composer request $COMPOSER_REQUEST_ID archived after exact manifest success"
+  COMPOSER_REQUEST_LOADED=0
+  return 0
+}
+
 composer_step(){ # $1=mode
-  [ "$1" = run ] || return 0
+  local mode=$1 allow_ready_claim=0
+  [ "$mode" = run ] && allow_ready_claim=1
+  # Reconcile an already-active request before the mode gate. run-out still
+  # assigns queued issues, so it must not expose crash-window artifacts from an
+  # unresolved request. close-down does not assign, but returns the same
+  # fail-closed signal in case the mode changes before tick() reaches scheduler.
+  if [ "$MF_DRY_RUN" != 1 ] \
+    && { [ -f "$CONTROL/.composer-request-active.json" ] \
+      || [ -d "$CONTROL/.composer-request-claim" ]; }; then
+    composer_request_prepare "$allow_ready_claim"
+    case "$?" in
+      0) ;;
+      2) return 2;;
+      *) return 1;;
+    esac
+  else
+    # Keep the in-memory view aligned when an owner has reconciled retained
+    # state without restarting this master process.
+    COMPOSER_REQUEST_LOADED=0
+    COMPOSER_REQUEST_ID=
+    COMPOSER_REQUEST_EXACT_COUNT=
+    COMPOSER_REQUEST_BRIEF=
+  fi
+  if [ "$mode" != run ]; then
+    # A valid same-session active request was loaded but cannot be resumed while
+    # composition is disabled. It remains unresolved, so scheduling must pause.
+    [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
+    return 0
+  fi
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
+  composer_protocol_ready || return 0
+  # Claim a new ready request only once the normal composer capacity gate says
+  # this tick can run it and its protocol cooldown has elapsed. This avoids
+  # holding a request across an unrelated backlog drain/backoff (and turning an
+  # otherwise harmless restart into a replay lock).
+  if [ "$MF_DRY_RUN" != 1 ] && [ "$COMPOSER_REQUEST_LOADED" -ne 1 ]; then
+    composer_request_prepare 1
+    case "$?" in
+      0) ;;
+      2) return 2;;
+      *) return 1;;
+    esac
+  fi
   local backoff; backoff=$(cat "$CONTROL/.composer-backoff" 2>/dev/null)
   case "$backoff" in ''|*[!0-9]*) backoff=$MF_COMPOSER_COOLDOWN;; esac
-  [ "$(file_age "$CONTROL/.composer-last")" -ge "$backoff" ] || return 0
-  composer_protocol_ready || return 0
+  # A freshly owner-approved request is an explicit re-arm and carries its own
+  # exact per-run batch. Normal composition retains the idle cooldown unchanged.
+  if [ "$COMPOSER_REQUEST_LOADED" -ne 1 ]; then
+    [ "$(file_age "$CONTROL/.composer-last")" -ge "$backoff" ] || return 0
+  fi
 
-  local snap; snap=$(composer_snapshot "$1")
+  local snap; snap=$(composer_snapshot "$mode")
 
   if [ "$MF_DRY_RUN" = 1 ]; then
     log "DRY: composer would run (runnable=$count)"
@@ -334,6 +540,10 @@ composer_step(){ # $1=mode
     && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
     && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "composer pre-sync failed (non-fatal)"
   local attempt before after manifest run_id transport outcome=protocol newnums prompt
+  local prompt_batch=$COMPOSER_BATCH manifest_issue_count
+  local outcome_recorded=0
+  [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
+    && prompt_batch=$COMPOSER_REQUEST_EXACT_COUNT
   local invalid_new_seen=0
   mkdir -p "$CONTROL/composer-manifests"
   for attempt in $(seq 1 "$MF_COMPOSER_PROTOCOL_ATTEMPTS"); do
@@ -345,10 +555,17 @@ composer_step(){ # $1=mode
     manifest="$CONTROL/composer-manifests/$run_id"
     : >"$manifest"
     prompt=$(sed \
-      -e "s/{{BATCH}}/$COMPOSER_BATCH/g" \
+      -e "s/{{BATCH}}/$prompt_batch/g" \
       -e "s|{{RUN_ID}}|$run_id|g" \
       -e "s|{{MANIFEST}}|$manifest|g" \
       "$MF_PROMPTS/composer.md")
+    if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+      prompt="$prompt
+
+<<< OWNER-APPROVED COMPOSITION BRIEF BEGIN: $COMPOSER_REQUEST_ID (EXACT_COUNT=$COMPOSER_REQUEST_EXACT_COUNT) >>>
+$COMPOSER_REQUEST_BRIEF
+<<< OWNER-APPROVED COMPOSITION BRIEF END: $COMPOSER_REQUEST_ID >>>"
+    fi
     [ "$attempt" -gt 1 ] && prompt="$prompt
 
 PROTOCOL CORRECTION RETRY: the previous invocation did not produce a valid
@@ -369,11 +586,46 @@ finish the manifest contract this time."
     if mf_manifest_validate "$manifest" "$before" "$after" "$run_id" ""; then
       case "$MF_MANIFEST_KIND" in
         issues)
-          outcome=created
-          log "composer contract accepted issues: $MF_MANIFEST_ISSUES"
-          break;;
+          if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+            manifest_issue_count=$(grep -cE '^ISSUE [0-9]+ (autopilot|awaiting-owner|relocated)$' \
+              "$manifest" || true)
+            if [ "$manifest_issue_count" -ne "$COMPOSER_REQUEST_EXACT_COUNT" ]; then
+              log "composer request $COMPOSER_REQUEST_ID: expected $COMPOSER_REQUEST_EXACT_COUNT issues, got $manifest_issue_count"
+              notify "composer request exact-count mismatch — artifacts quarantined; brief retained"
+            elif [ "$invalid_new_seen" -ne 0 ]; then
+              log "composer request $COMPOSER_REQUEST_ID: earlier attempt created invalid artifacts"
+              notify "composer request had prior artifacts — current issues quarantined; brief retained"
+            elif composer_record_outcome created "$snap" "$backoff"; then
+              # Persist the cooldown BEFORE consuming the request. If the master
+              # dies immediately after the archive move, the next process sees
+              # the new issues but cannot compose an accidental extra batch.
+              outcome_recorded=1
+              if composer_request_archive "$run_id"; then
+                outcome=created
+                log "composer contract accepted issues: $MF_MANIFEST_ISSUES"
+                break
+              fi
+              log "composer request $COMPOSER_REQUEST_ID: exact result valid but archive failed"
+              notify "composer request archive failed — artifacts quarantined; brief retained"
+            else
+              log "composer request $COMPOSER_REQUEST_ID: cannot persist exact result"
+              notify "composer request outcome persistence failed — artifacts quarantined; brief retained"
+            fi
+          else
+            outcome=created
+            log "composer contract accepted issues: $MF_MANIFEST_ISSUES"
+            break
+          fi
+          ;;
         none)
-          if [ "$transport" -eq 0 ] && [ "$invalid_new_seen" -eq 0 ]; then outcome=idle; break; fi;;
+          if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+            log "composer request $COMPOSER_REQUEST_ID: NONE rejected for exact-count request"
+            notify "composer request returned NONE — brief retained for bounded retry"
+          elif [ "$transport" -eq 0 ] && [ "$invalid_new_seen" -eq 0 ]; then
+            outcome=idle
+            break
+          fi
+          ;;
       esac
     fi
     if [ -n "$newnums" ]; then
@@ -387,13 +639,19 @@ finish the manifest contract this time."
     # A malformed run does not advance the valid-empty cooldown, but it has its
     # own bounded backoff so a bad provider cannot fire twice every 15-second tick.
     composer_record_protocol_failure || true
+    if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+      composer_request_mark_blocked protocol-failure
+      return 2
+    fi
     notify "composer protocol failed — artifacts quarantined; bounded retry remains armed"
     return 1
   fi
-  composer_record_outcome "$outcome" "$snap" "$backoff" || {
-    log "composer: failed to persist cooldown outcome"
-    return 1
-  }
+  if [ "$outcome_recorded" -ne 1 ]; then
+    composer_record_outcome "$outcome" "$snap" "$backoff" || {
+      log "composer: failed to persist cooldown outcome"
+      return 1
+    }
+  fi
   [ "$outcome" = created ] && fetch_issues
 }
 
@@ -676,13 +934,18 @@ tick(){
   rm -rf "$TICK_DEPS"; mkdir -p "$TICK_DEPS"
   process_acks
   stall_check
-  composer_step "$mode"
+  local composer_rc=0
+  composer_step "$mode" || composer_rc=$?
   # The composer (and merger LLM/regate paths) can block this tick for minutes;
   # re-read the mode so a close-down/run-out issued meanwhile is honored BEFORE
   # the scheduler hands out new work (caught live: stale 'run' assigned an issue
   # 6 minutes into close-down).
   mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
-  scheduler "$mode"
+  if [ "$composer_rc" -eq 2 ]; then
+    log "scheduler paused: unresolved one-shot composer request"
+  else
+    scheduler "$mode"
+  fi
   merger_step
   drained_check "$mode"
   mstatus idle

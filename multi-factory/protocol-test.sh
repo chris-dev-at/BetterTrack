@@ -268,6 +268,21 @@ printf '%s\n' "[
 check "scheduler never infers difficulty for bare autopilot issue" "101" "$(runnable_issues | xargs)"
 grep -q -- '--mode awaiting-owner' prompts/composer.md \
   && ok "composer prompt uses guarded awaiting-owner mode" || bad "composer prompt missing awaiting-owner mode"
+grep -q -- 'P0–P10' prompts/composer.md \
+  && bad "composer prompt must not hard-code the legacy P0–P10 range" \
+  || ok "composer prompt has no stale P0–P10 range"
+grep -qi -- 'check v1' prompts/composer.md \
+  && bad "composer prompt must not hard-code the legacy check-v1 gate" \
+  || ok "composer prompt has no stale check-v1 gate"
+grep -Fq -- 'explicit **current milestone** declaration' prompts/composer.md \
+  && ok "composer prompt selects the milestone from the knowledge pack" \
+  || bad "composer prompt must select the current milestone from the pack"
+grep -q -- 'Derive the gate title from that current' prompts/composer.md \
+  && ok "composer prompt derives the milestone gate dynamically" \
+  || bad "composer prompt must derive the current milestone gate"
+grep -q -- 'OWNER-APPROVED COMPOSITION BRIEF' prompts/composer.md \
+  && ok "composer prompt defines the one-shot owner brief contract" \
+  || bad "composer prompt missing owner brief contract"
 
 echo "— composer protocol backoff cadence"
 MF_PROMPTS=$(pwd)/prompts
@@ -299,6 +314,253 @@ composer_step run
 check "composer retries only after protocol cooldown" 4 "$COMPOSER_CALLS"
 check "repeated protocol failure backs off independently" 240 \
   "$(cat "$MFSTATE/control/.composer-protocol-backoff")"
+
+echo "— exact-count one-shot owner composition request"
+REQUEST_BRIEF=$T/owner-composer-brief.md
+cat >"$REQUEST_BRIEF" <<'BRIEF'
+Create exactly these two owner-approved tasks.
+Keep this literal shell-looking text untouched: $HOME `not-a-command` "quotes".
+BRIEF
+
+# The host helper creates the request atomically and uses exact_count as the
+# one-run batch without changing models.json or restarting the factory.
+REQUEST_STATE=$T/request-helper-state
+MFSTATE=$REQUEST_STATE COMPOSER_BATCH=2 ./request-compose.sh \
+  2 "$REQUEST_BRIEF" exact-two >/dev/null
+check "request helper records exact count" 2 \
+  "$(jq -r .exact_count "$REQUEST_STATE/control/composer-request.json")"
+check "request helper records explicit owner approval" true \
+  "$(jq -r .approved "$REQUEST_STATE/control/composer-request.json")"
+check "request helper preserves brief bytes as JSON text" "$(<"$REQUEST_BRIEF")" \
+  "$(jq -r .brief "$REQUEST_STATE/control/composer-request.json")"
+if MFSTATE=$T/request-too-large COMPOSER_BATCH=1 ./request-compose.sh \
+  2 "$REQUEST_BRIEF" too-large >/dev/null 2>&1; then
+  bad "request helper must reject exact count above COMPOSER_BATCH"
+else
+  ok "request helper rejects exact count above COMPOSER_BATCH"
+fi
+if MFSTATE=$REQUEST_STATE COMPOSER_BATCH=2 ./request-compose.sh \
+  1 "$REQUEST_BRIEF" replay >/dev/null 2>&1; then
+  bad "request helper must not overwrite a ready request"
+else
+  ok "request helper refuses to overwrite ready/active state"
+fi
+
+# Drive the real composer_step with a synthetic valid two-issue GitHub result.
+# A recent 3600-second idle backoff proves the owner request explicitly re-arms
+# composition; prompt capture proves the batch and brief delivered to the role.
+rm -rf "$MFSTATE/control/.composer-request-claim" \
+  "$MFSTATE/control/composer-request-archive"
+rm -f "$MFSTATE/control/composer-request.json" \
+  "$MFSTATE/control/.composer-request-active.json" \
+  "$MFSTATE/control/.composer-protocol-last" \
+  "$MFSTATE/control/.composer-protocol-backoff"
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  2 "$REQUEST_BRIEF" exact-two >/dev/null
+MF_MASTER_SESSION=test-master-session
+COMPOSER_BATCH=10
+MF_COMPOSER_COOLDOWN=900
+MF_COMPOSER_PROTOCOL_ATTEMPTS=2
+printf '3600\n' >"$MFSTATE/control/.composer-backoff"
+touch "$MFSTATE/control/.composer-last"
+COMPOSER_CALLS=0
+CAPTURED_COMPOSER_PROMPT=
+AFTER_ISSUES='[]'
+runnable_issues(){ printf '701\n702\n703\n'; }
+mf_recent_issues_json(){ printf '%s\n' "$AFTER_ISSUES"; }
+mf_cc(){
+  local run manifest body_one body_two
+  COMPOSER_CALLS=$((COMPOSER_CALLS+1))
+  CAPTURED_COMPOSER_PROMPT=$3
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  body_one=$(printf '## Context\nquoted current spec\n\n## Scope\none\n\n## Acceptance criteria\n- [ ] one\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: apps/api/src/services/tax/taxService.ts\n-->' "$run")
+  body_two=$(printf '## Context\nquoted owner maintenance brief\n\n## Scope\ntwo\n\n## Acceptance criteria\n- [ ] two\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: multi-factory/autorun.sh\n-->' "$run")
+  printf 'ISSUE 801 autopilot\nISSUE 802 autopilot\n' >"$manifest"
+  AFTER_ISSUES=$(jq -cn \
+    --arg one "$body_one" --arg two "$body_two" \
+    '[
+      {number:801,title:"one",body:$one,labels:["autopilot","diff:normal"],created_at:"now"},
+      {number:802,title:"two",body:$two,labels:["autopilot","diff:normal"],created_at:"now"}
+    ]')
+  return 0
+}
+role_diff(){ echo max; }
+with_pack(){ printf '%s' "$1"; }
+fetch_issues(){ :; }
+composer_step run
+check "full normal queue does not claim a waiting owner request" 1 \
+  "$([ -f "$MFSTATE/control/composer-request.json" ] && echo 1 || echo 0)"
+check "full normal queue leaves no request replay lock" 0 \
+  "$([ -d "$MFSTATE/control/.composer-request-claim" ] && echo 1 || echo 0)"
+runnable_issues(){ :; }
+composer_step run
+check "owner request bypasses an existing idle cooldown" 1 "$COMPOSER_CALLS"
+grep -q -- 'Create up to 2 new issues' <<<"$CAPTURED_COMPOSER_PROMPT" \
+  && ok "exact count becomes the effective one-run composer batch" \
+  || bad "owner exact count did not replace the rendered batch"
+EXTRACTED_BRIEF=$(awk '
+  /^<<< OWNER-APPROVED COMPOSITION BRIEF BEGIN:/ { inside=1; next }
+  /^<<< OWNER-APPROVED COMPOSITION BRIEF END:/ { inside=0; exit }
+  inside { print }
+' <<<"$CAPTURED_COMPOSER_PROMPT")
+check "owner brief is appended verbatim between visible delimiters" \
+  "$(<"$REQUEST_BRIEF")" "$EXTRACTED_BRIEF"
+check "successful request removes ready state" 0 \
+  "$([ -e "$MFSTATE/control/composer-request.json" ] && echo 1 || echo 0)"
+check "successful request removes active state" 0 \
+  "$([ -e "$MFSTATE/control/.composer-request-active.json" ] && echo 1 || echo 0)"
+check "successful request archives exactly once" 1 \
+  "$(find "$MFSTATE/control/composer-request-archive" -type f | wc -l | tr -d ' ')"
+check "archived request retains its id" exact-two \
+  "$(jq -r .id "$MFSTATE"/control/composer-request-archive/*.json)"
+
+# Composition-disabled modes must never claim a brand-new ready request. run-out
+# can continue assigning ordinary queued issues; close-down cannot assign, but
+# both modes leave the request ready for a future run-mode tick.
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  1 "$REQUEST_BRIEF" ready-non-run >/dev/null
+composer_step run-out
+check "run-out does not claim a brand-new owner request" ready-non-run \
+  "$(jq -r .id "$MFSTATE/control/composer-request.json")"
+check "run-out creates no replay guard for a ready request" 0 \
+  "$([ -d "$MFSTATE/control/.composer-request-claim" ] && echo 1 || echo 0)"
+composer_step close-down
+check "close-down does not claim a brand-new owner request" ready-non-run \
+  "$(jq -r .id "$MFSTATE/control/composer-request.json")"
+rm -f "$MFSTATE/control/composer-request.json"
+
+# NONE is valid for an ordinary composer run, but never satisfies an exact-count
+# owner request. It gets the designed corrective attempt and remains active.
+rm -rf "$MFSTATE/control/.composer-request-claim"
+rm -f "$MFSTATE/control/.composer-request-active.json" \
+  "$MFSTATE/control/composer-request.json" \
+  "$MFSTATE/control/.composer-protocol-last" \
+  "$MFSTATE/control/.composer-protocol-backoff"
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  2 "$REQUEST_BRIEF" none-retained >/dev/null
+COMPOSER_CALLS=0
+AFTER_ISSUES='[]'
+mf_cc(){
+  local manifest
+  COMPOSER_CALLS=$((COMPOSER_CALLS+1))
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  printf 'NONE\n' >"$manifest"
+  return 0
+}
+composer_step run
+NONE_RC=$?
+check "NONE fails closed for an exact-count owner request" 2 "$NONE_RC"
+check "NONE receives only the bounded corrective attempt" 2 "$COMPOSER_CALLS"
+check "NONE retains active request for owner review" 1 \
+  "$([ -f "$MFSTATE/control/.composer-request-active.json" ] && echo 1 || echo 0)"
+check "NONE never archives the exact-count request" 0 \
+  "$(find "$MFSTATE/control/composer-request-archive" -type f -name 'none-retained-*' | wc -l | tr -d ' ')"
+
+# A partial first attempt cannot be laundered by creating an exact second
+# manifest: all artifacts remain quarantined and the request stays active.
+rm -rf "$MFSTATE/control/.composer-request-claim"
+rm -f "$MFSTATE/control/.composer-request-active.json" \
+  "$MFSTATE/control/composer-request.json" \
+  "$MFSTATE/control/.composer-protocol-last" \
+  "$MFSTATE/control/.composer-protocol-backoff" \
+  "$MFSTATE/control/composer-quarantine"
+COMPOSER_REQUEST_LOADED=0
+COMPOSER_REQUEST_ID=
+COMPOSER_REQUEST_EXACT_COUNT=
+COMPOSER_REQUEST_BRIEF=
+MFSTATE=$MFSTATE COMPOSER_BATCH=10 ./request-compose.sh \
+  2 "$REQUEST_BRIEF" partial-retained >/dev/null
+COMPOSER_CALLS=0
+AFTER_ISSUES='[]'
+mf_cc(){
+  local run manifest body_three body_four body_five
+  COMPOSER_CALLS=$((COMPOSER_CALLS+1))
+  run=$(sed -n 's/^This invocation is `\([^`]*\)`. Issue creation.*/\1/p' <<<"$3" | head -1)
+  manifest=$(awk '
+    index($0, "/work/mf/create-issue.sh --run-id ") {
+      for (i=1; i<=NF; i++) if ($i == "--manifest") { print $(i+1); exit }
+    }
+  ' <<<"$3")
+  body_three=$(printf '## Context\nquoted\n\n## Scope\nthree\n\n## Acceptance criteria\n- [ ] three\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: three\n-->' "$run")
+  body_four=$(printf '## Context\nquoted\n\n## Scope\nfour\n\n## Acceptance criteria\n- [ ] four\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: four\n-->' "$run")
+  body_five=$(printf '## Context\nquoted\n\n## Scope\nfive\n\n## Acceptance criteria\n- [ ] five\n\n## Out of scope\nnone\n\n<!-- mf-meta\nfactory-run: %s\ntouches: five\n-->' "$run")
+  if [ "$COMPOSER_CALLS" -eq 1 ]; then
+    printf 'ISSUE 803 autopilot\n' >"$manifest"
+    AFTER_ISSUES=$(jq -cn --arg body "$body_three" \
+      '[{number:803,title:"three",body:$body,labels:["autopilot","diff:normal"],created_at:"now"}]')
+  else
+    printf 'ISSUE 804 autopilot\nISSUE 805 autopilot\n' >"$manifest"
+    AFTER_ISSUES=$(jq -cn \
+      --arg three "$(jq -r '.[0].body' <<<"$AFTER_ISSUES")" \
+      --arg four "$body_four" --arg five "$body_five" \
+      '[
+        {number:803,title:"three",body:$three,labels:["autopilot","diff:normal"],created_at:"now"},
+        {number:804,title:"four",body:$four,labels:["autopilot","diff:normal"],created_at:"now"},
+        {number:805,title:"five",body:$five,labels:["autopilot","diff:normal"],created_at:"now"}
+      ]')
+  fi
+  return 0
+}
+composer_step run
+PARTIAL_RC=$?
+check "partial request remains a fail-closed protocol error" 2 "$PARTIAL_RC"
+check "partial request uses only the bounded attempts" 2 "$COMPOSER_CALLS"
+check "later exact manifest cannot launder earlier artifacts" partial-retained \
+  "$(jq -r .id "$MFSTATE/control/.composer-request-active.json")"
+check "all partial/retry artifacts stay quarantined" "803
+804
+805" "$(<"$MFSTATE/control/composer-quarantine")"
+check "partial request is never archived" 0 \
+  "$(find "$MFSTATE/control/composer-request-archive" -type f -name 'partial-retained-*' | wc -l | tr -d ' ')"
+composer_request_prepare
+SAME_SESSION_RC=$?
+check "bounded failure disables same-session automatic replay" 2 "$SAME_SESSION_RC"
+check "bounded failure records a durable blocked reason" protocol-failure \
+  "$(<"$MFSTATE/control/.composer-request-claim/blocked")"
+
+# A restarted/concurrent master gets a different session token. It must neither
+# replay the active request nor schedule potentially unvalidated artifacts.
+MF_MASTER_SESSION=other-master-session
+composer_request_prepare
+FOREIGN_RC=$?
+check "foreign master session refuses active-request replay" 2 "$FOREIGN_RC"
+check "foreign replay refusal preserves the active request" partial-retained \
+  "$(jq -r .id "$MFSTATE/control/.composer-request-active.json")"
+# Reproduce the reviewed crash window: an unquarantined issue is runnable while
+# run-out would normally keep assigning. The foreign active claim must be
+# reconciled before the mode gate and suppress the scheduler entirely.
+if grep -qx '806' "$MFSTATE/control/composer-quarantine" 2>/dev/null; then
+  bad "run-out crash-window fixture must remain unquarantined"
+else
+  ok "run-out crash-window fixture is unquarantined"
+fi
+runnable_issues(){ printf '806\n'; }
+printf 'run-out\n' >"$MFSTATE/control/mode"
+SCHEDULER_CALLS=0
+fetch_issues(){ :; }
+process_acks(){ :; }
+stall_check(){ :; }
+scheduler(){ SCHEDULER_CALLS=$((SCHEDULER_CALLS+1)); }
+merger_step(){ :; }
+drained_check(){ :; }
+mstatus(){ :; }
+tick
+check "run-out foreign claim pauses crash-window artifact scheduling" 0 "$SCHEDULER_CALLS"
+CLOSE_DOWN_RC=0
+composer_step close-down || CLOSE_DOWN_RC=$?
+check "close-down also reports an unresolved foreign claim" 2 "$CLOSE_DOWN_RC"
+MF_MASTER_SESSION=test-master-session
+# Restore the production master functions replaced by the focused tick stubs.
+MF_SOURCE_ONLY=1 . ./master.sh
 
 echo "— queue approval head/comment binding"
 QUEUE_FILE=$MFSTATE/merge-queue/1-pr10.json
