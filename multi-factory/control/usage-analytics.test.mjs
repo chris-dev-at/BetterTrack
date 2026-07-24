@@ -4,9 +4,13 @@ import { readFile } from 'node:fs/promises';
 import {
   CODEX_STANDARD_PRICING,
   aggregateCodexUsage,
+  aggregateOpenAiUsage,
   buildUsageAnalytics,
+  ledgerHarness,
   ledgerProvider,
+  ledgerProviderFamily,
   normalizeCodexLedgerRow,
+  normalizeOpenAiLedgerRow,
   parseUsageRange,
 } from './usage-analytics.mjs';
 
@@ -160,6 +164,14 @@ test('an explicit non-Codex provider is never inferred as Codex from a GPT-like 
   });
   assert.equal(data.totals.cost, 2.5);
   assert.equal(data.codex.totals.records, 0);
+  assert.equal(
+    normalizeOpenAiLedgerRow({
+      ...row,
+      provider: 'openai-api',
+      provider_family: 'openai',
+    }),
+    null,
+  );
 });
 
 test('historical rows without explicit cache-write telemetry are priced but marked partial', () => {
@@ -259,6 +271,157 @@ test('API analytics preserves existing spend while adding Codex issue-level resp
   assert.equal(response.codex.byIssue[0].k, '8');
   assert.equal(response.codex.byIssue[0].estimatedUsd, 5);
   assert.doesNotThrow(() => JSON.stringify(response));
+});
+
+test('ClaudeX ledger estimates are OpenAI-family subscription estimates, not actual spend', () => {
+  const row = {
+    ts: '2026-07-24T10:00:00Z',
+    issue: '88',
+    role: 'writer',
+    factory: 'multi',
+    provider: 'claudex',
+    provider_family: 'openai',
+    harness: 'claude-code',
+    model: 'codex-api/gpt-5.6-sol',
+    input_tokens: 100,
+    output_tokens: 20,
+    cache_read_tokens: 40,
+    cache_creation_tokens: 10,
+    cost_usd: 0,
+    api_equivalent_usd: 0.123456,
+    api_equivalent_coverage: 'complete',
+  };
+  assert.equal(ledgerProvider(row), 'claudex');
+  assert.equal(ledgerProviderFamily(row), 'openai');
+  assert.equal(ledgerHarness(row), 'claude-code');
+  assert.equal(normalizeCodexLedgerRow(row), null);
+  const info = normalizeOpenAiLedgerRow(row);
+  assert.equal(info.model, 'gpt-5.6-sol');
+  assert.equal(info.estimateUsd, 0.123456);
+  assert.equal(info.actualUsd, 0);
+  assert.equal(info.usage.total, 170);
+
+  const data = aggregateOpenAiUsage([row], {
+    now: '2026-07-24T12:00:00Z',
+    range: 14,
+  });
+  assert.equal(data.totals.actualSpendUsd, 0);
+  assert.equal(data.totals.estimatedUsd, 0.123456);
+  assert.deepEqual(data.availableProviders, ['claudex']);
+  assert.deepEqual(data.availableHarnesses, ['claude-code']);
+  assert.equal(data.byIssue[0].k, '88');
+});
+
+test('OpenAI family combines native Codex and ClaudeX while legacy codex stays native-only', () => {
+  const native = base({ issue: '40', input_tokens: 1_000_000 });
+  const claudex = {
+    ts: '2026-07-24T11:00:00Z',
+    issue: '41',
+    role: 'reviewer',
+    factory: 'multi',
+    provider: 'claudex',
+    provider_family: 'openai',
+    harness: 'claude-code',
+    model: 'gpt-5.6-terra',
+    input_tokens: 10,
+    output_tokens: 5,
+    cost_usd: 0,
+    api_equivalent_usd: 0.2,
+    api_equivalent_coverage: 'complete',
+  };
+  const response = buildUsageAnalytics([native, claudex], {
+    now: '2026-07-24T12:00:00Z',
+    codexRange: 14,
+    openAiRange: 14,
+  });
+  assert.equal(response.codex.totals.records, 1);
+  assert.equal(response.codex.totals.estimatedUsd, 5);
+  assert.equal(response.openai.totals.records, 2);
+  assert.equal(response.openai.totals.estimatedUsd, 5.2);
+  assert.deepEqual(response.openai.byProvider.map((entry) => entry.k).sort(), ['claudex', 'codex']);
+  assert.deepEqual(response.openai.byHarness.map((entry) => entry.k).sort(), [
+    'claude-code',
+    'codex-cli',
+  ]);
+});
+
+test('OpenAI filters cover provider, harness, model, role and issue', () => {
+  const rows = [
+    base({ issue: '40', role: 'writer', input_tokens: 1_000_000 }),
+    {
+      ts: '2026-07-24T11:00:00Z',
+      issue: '41',
+      role: 'reviewer',
+      provider: 'claudex',
+      provider_family: 'openai',
+      harness: 'claude-code',
+      model: 'gpt-5.6-terra',
+      cost_usd: 0,
+      api_equivalent_usd: 0.2,
+      api_equivalent_coverage: 'complete',
+    },
+  ];
+  const data = aggregateOpenAiUsage(rows, {
+    now: '2026-07-24T12:00:00Z',
+    range: 14,
+    provider: 'claudex',
+    harness: 'claude-code',
+    model: 'gpt-5.6-terra',
+    role: 'reviewer',
+    issue: '41',
+  });
+  assert.equal(data.totals.records, 1);
+  assert.equal(data.byProvider[0].k, 'claudex');
+  assert.equal(data.byIssue[0].k, '41');
+  assert.equal(data.filters.issue, '41');
+});
+
+test('missing or explicitly incomplete ClaudeX estimates stay null instead of fabricated zero', () => {
+  const missing = {
+    ts: '2026-07-24T11:00:00Z',
+    provider: 'claudex',
+    provider_family: 'openai',
+    harness: 'claude-code',
+    model: 'gpt-5.6-luna',
+    input_tokens: 0,
+    output_tokens: 0,
+    cost_usd: 0,
+  };
+  const partial = {
+    ...missing,
+    api_equivalent_usd: 0,
+    api_equivalent_coverage: 'partial-telemetry',
+  };
+  assert.equal(normalizeOpenAiLedgerRow(missing).estimateUsd, null);
+  assert.equal(normalizeOpenAiLedgerRow(partial).estimateUsd, null);
+  const data = aggregateOpenAiUsage([missing, partial], {
+    now: '2026-07-24T12:00:00Z',
+    range: 14,
+  });
+  assert.equal(data.totals.estimatedUsd, null);
+  assert.equal(data.totals.unpricedRecords, 2);
+  assert.equal(data.totals.missingLedgerEstimateRecords, 2);
+});
+
+test('null, empty-string and boolean estimate fields are never coerced into false zero prices', () => {
+  for (const api_equivalent_usd of [null, '', false, true]) {
+    const row = {
+      ts: '2026-07-24T11:00:00Z',
+      provider: 'claudex',
+      provider_family: 'openai',
+      harness: 'claude-code',
+      model: 'gpt-5.6-luna',
+      input_tokens: null,
+      output_tokens: '',
+      cost_usd: false,
+      api_equivalent_usd,
+      api_equivalent_coverage: 'complete',
+    };
+    const info = normalizeOpenAiLedgerRow(row);
+    assert.equal(info.estimateUsd, null);
+    assert.equal(info.actualUsd, null);
+    assert.equal(info.usage.total, 0);
+  }
 });
 
 test('dashboard JavaScript parses and carries explicit estimate disclosure', async () => {
