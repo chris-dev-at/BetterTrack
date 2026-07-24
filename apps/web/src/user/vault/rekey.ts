@@ -60,6 +60,12 @@ export interface RekeyResult {
  * The caller replaces active state only after this promise succeeds.
  */
 export async function changeVaultPassphrase(input: PassphraseChangeInput): Promise<RekeyResult> {
+  if (input.oldPassphrase === input.newPassphrase) {
+    throw new VaultCryptoError(
+      'envelope-invalid',
+      'Vault passphrase change requires a different passphrase.',
+    );
+  }
   const decoded = decodeVaultEnvelope(input.envelope);
   const currentWrapper = activeWrapper(decoded.header);
   const oldKek = await deriveVaultKek(input.oldPassphrase, currentWrapper.kdf, input.cryptoDeps);
@@ -185,6 +191,9 @@ async function reencrypt(
       'envelope-invalid',
       'Re-encryption requires a vault version greater than the prior version.',
     );
+  }
+  if (metadata.writeId.toLowerCase() === priorHeader.writeId.toLowerCase()) {
+    throw new VaultCryptoError('envelope-invalid', 'Re-encryption requires a fresh write id.');
   }
   const encrypted = await encryptVaultDocument({
     document,

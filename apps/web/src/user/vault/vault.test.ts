@@ -288,6 +288,14 @@ describe('BTVAULT1 envelope and content crypto', () => {
       changeVaultPassphrase({
         envelope: initialEnvelope,
         oldPassphrase: vector.passphrase,
+        newPassphrase: vector.passphrase,
+        metadata: vector.passphraseChanged.header,
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    await expect(
+      changeVaultPassphrase({
+        envelope: initialEnvelope,
+        oldPassphrase: vector.passphrase,
         newPassphrase: vector.newPassphrase,
         metadata: { ...vector.initial.header, vaultVersion: vector.rollback.rejectedVaultVersion },
       }),
@@ -361,6 +369,39 @@ describe('passphrase and key lifecycle', () => {
     expect(await decryptVaultDocument(changed.envelope, changed.vaultKey)).toMatchObject({
       document: vaultVectorDocument,
     });
+  });
+
+  it('rejects a reused passphrase and a rekey write ID reused from the prior envelope', async () => {
+    const original = await fixture();
+    const staleWriteMetadata = { ...headerMetadata, vaultVersion: 2 };
+
+    await expect(
+      changeVaultPassphrase({
+        envelope: original.envelope,
+        oldPassphrase: 'correct horse battery staple',
+        newPassphrase: 'correct horse battery staple',
+        metadata: {
+          ...staleWriteMetadata,
+          writeId: '018f0000-0000-7000-8000-00000000000d',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    await expect(
+      changeVaultPassphrase({
+        envelope: original.envelope,
+        oldPassphrase: 'correct horse battery staple',
+        newPassphrase: 'new secret',
+        metadata: staleWriteMetadata,
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    await expect(
+      rotateVaultKey({
+        envelope: original.envelope,
+        passphrase: 'correct horse battery staple',
+        metadata: staleWriteMetadata,
+        keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
   });
 
   it('rotates a VK and does not replace the last decryptable state on failure', async () => {
