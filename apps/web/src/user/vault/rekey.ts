@@ -10,6 +10,7 @@ import {
   encryptVaultDocument,
   generateVaultKey,
   newKdfParams,
+  secureRandomBytes,
   type RandomBytes,
   type VaultCryptoDeps,
   unwrapVaultKey,
@@ -38,11 +39,13 @@ export interface PassphraseChangeInput {
 export interface VaultKeyRotationInput {
   envelope: Uint8Array;
   passphrase: string;
-  nextKeyId: string;
   metadata: RekeyHeaderMetadata;
   randomBytes?: RandomBytes;
   cryptoDeps?: VaultCryptoDeps;
+  keyIdGenerator?: VaultKeyIdGenerator;
 }
+
+export type VaultKeyIdGenerator = () => string;
 
 export interface RekeyResult {
   envelope: Uint8Array;
@@ -90,12 +93,9 @@ export async function changeVaultPassphrase(input: PassphraseChangeInput): Promi
   }
 }
 
-/** Fully re-encrypts under a fresh VK after a suspected key compromise. */
+/** Fully re-encrypts under a fresh VK and a core-generated key ID after a compromise. */
 export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<RekeyResult> {
   const decoded = decodeVaultEnvelope(input.envelope);
-  if (input.nextKeyId.toLowerCase() === decoded.header.keyId.toLowerCase()) {
-    throw new VaultCryptoError('envelope-invalid', 'Vault key rotation requires a new key id.');
-  }
   const currentWrapper = activeWrapper(decoded.header);
   const oldKek = await deriveVaultKek(input.passphrase, currentWrapper.kdf, input.cryptoDeps);
   let oldVaultKey: Uint8Array | undefined;
@@ -103,6 +103,7 @@ export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<Reke
   try {
     oldVaultKey = await unwrapActiveKey(decoded.header, currentWrapper, oldKek);
     const { document } = await decryptVaultDocument(input.envelope, oldVaultKey);
+    const nextKeyId = generateFreshKeyId(decoded.header.keyId, input.keyIdGenerator);
     nextVaultKey = generateVaultKey(input.randomBytes);
     const kdf = newKdfParams(input.randomBytes);
     const nextKek = await deriveVaultKek(input.passphrase, kdf, input.cryptoDeps);
@@ -110,7 +111,7 @@ export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<Reke
       const wrappedKey = await wrapVaultKey(
         nextVaultKey,
         nextKek,
-        input.nextKeyId,
+        nextKeyId,
         kdf,
         input.randomBytes,
       );
@@ -121,7 +122,7 @@ export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<Reke
         [wrappedKey],
         input.metadata,
         input.randomBytes,
-        input.nextKeyId,
+        nextKeyId,
       );
     } finally {
       zeroBytes(nextKek);
@@ -131,6 +132,35 @@ export async function rotateVaultKey(input: VaultKeyRotationInput): Promise<Reke
     if (oldVaultKey != null) zeroBytes(oldVaultKey);
     if (nextVaultKey != null) zeroBytes(nextVaultKey);
   }
+}
+
+function generateFreshKeyId(
+  currentKeyId: string,
+  keyIdGenerator: VaultKeyIdGenerator = generateVaultKeyId,
+): string {
+  const nextKeyId = keyIdGenerator();
+  if (!isUuid(nextKeyId) || nextKeyId.toLowerCase() === currentKeyId.toLowerCase()) {
+    throw new VaultCryptoError('envelope-invalid', 'Vault key rotation requires a fresh key id.');
+  }
+  return nextKeyId;
+}
+
+function generateVaultKeyId(): string {
+  const bytes = secureRandomBytes(16);
+  let milliseconds = Date.now();
+  for (let index = 5; index >= 0; index -= 1) {
+    bytes[index] = milliseconds & 0xff;
+    milliseconds = Math.floor(milliseconds / 256);
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .replace(/^(........)(....)(....)(....)(............)$/, '$1-$2-$3-$4-$5');
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 async function unwrapActiveKey(

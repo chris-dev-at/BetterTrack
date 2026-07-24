@@ -271,9 +271,9 @@ describe('BTVAULT1 envelope and content crypto', () => {
     const rotated = await rotateVaultKey({
       envelope: initialEnvelope,
       passphrase: vector.passphrase,
-      nextKeyId: VECTOR_NEXT_KEY_ID,
       metadata: vector.rotated.header,
       randomBytes: deterministicRandom(96),
+      keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
     });
     expect(bytesToBase64(rotated.envelope)).toBe(vector.rotated.envelopeBase64);
     expect(bytesToBase64(decodeVaultEnvelope(rotated.envelope).headerBytes)).toBe(
@@ -368,13 +368,13 @@ describe('passphrase and key lifecycle', () => {
     const rotated = await rotateVaultKey({
       envelope: original.envelope,
       passphrase: 'correct horse battery staple',
-      nextKeyId: VECTOR_NEXT_KEY_ID,
       metadata: {
         ...headerMetadata,
         vaultVersion: 2,
         writeId: '018f0000-0000-7000-8000-00000000000d',
       },
       randomBytes: deterministicRandom(96),
+      keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
     });
     expect(rotated.header.keyId).not.toBe(original.header.keyId);
     await expect(decryptVaultDocument(rotated.envelope, original.vaultKey)).rejects.toMatchObject({
@@ -388,16 +388,38 @@ describe('passphrase and key lifecycle', () => {
       rotateVaultKey({
         envelope: original.envelope,
         passphrase: 'correct horse battery staple',
-        nextKeyId: VECTOR_KEY_ID.toUpperCase(),
         metadata: { ...headerMetadata, vaultVersion: 2 },
+        keyIdGenerator: () => original.header.keyId.toUpperCase(),
       }),
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
     await expect(
       rotateVaultKey({
         envelope: original.envelope,
+        passphrase: 'correct horse battery staple',
+        metadata: { ...headerMetadata, vaultVersion: 2 },
+        keyIdGenerator: () => 'not-a-uuid',
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    const secondRotation = await rotateVaultKey({
+      envelope: rotated.envelope,
+      passphrase: 'correct horse battery staple',
+      metadata: {
+        ...headerMetadata,
+        vaultVersion: 3,
+        writeId: '018f0000-0000-7000-8000-00000000000e',
+      },
+    });
+    expect(secondRotation.header.keyId).not.toBe(original.header.keyId);
+    expect(secondRotation.header.keyId).not.toBe(rotated.header.keyId);
+    expect(secondRotation.header.keyId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    await expect(
+      rotateVaultKey({
+        envelope: original.envelope,
         passphrase: 'wrong',
-        nextKeyId: VECTOR_NEXT_KEY_ID,
         metadata: headerMetadata,
+        keyIdGenerator: () => VECTOR_NEXT_KEY_ID,
       }),
     ).rejects.toBeInstanceOf(VaultCryptoError);
     expect(await decryptVaultDocument(original.envelope, original.vaultKey)).toMatchObject({
