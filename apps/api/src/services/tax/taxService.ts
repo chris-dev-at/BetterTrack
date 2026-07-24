@@ -418,7 +418,9 @@ function parseTaxOverride(raw: unknown): UserTaxSettingsRecord | null {
   }
   const rawCountry = (raw as { country?: unknown }).country;
   const country =
-    rawCountry === TAX_COUNTRY_AT || rawCountry === TAX_COUNTRY_DE ? rawCountry : null;
+    rawCountry === TAX_COUNTRY_AT || rawCountry === TAX_COUNTRY_DE || rawCountry === TAX_COUNTRY_FI
+      ? rawCountry
+      : null;
   if (mode === 'custom') {
     // An override without a valid parameter set is unusable — treat as absent.
     const parsed = customTaxParamsSchema.safeParse((raw as { custom?: unknown }).custom);
