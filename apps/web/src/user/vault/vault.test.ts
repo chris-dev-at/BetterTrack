@@ -1,5 +1,6 @@
 import { webcrypto } from 'node:crypto';
 
+import { deflateSync } from 'fflate';
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -11,7 +12,7 @@ import {
   vaultEnvelopeHeaderSchema,
 } from '@bettertrack/contracts';
 
-import { bytesToBase64 } from './bytes';
+import { base64ToBytes, bytesToBase64 } from './bytes';
 import {
   decryptVaultDocument,
   deriveVaultKek,
@@ -22,7 +23,12 @@ import {
   wrapVaultKey,
 } from './crypto';
 import { createIndexedDbVaultCustody } from './custody';
-import { decodeVaultEnvelope, encodeVaultEnvelope, inspectVaultEnvelope } from './envelope';
+import {
+  decodeVaultEnvelope,
+  encodeVaultEnvelope,
+  inspectVaultEnvelope,
+  serializeVaultHeader,
+} from './envelope';
 import { VaultCryptoError } from './errors';
 import { VaultLockCore } from './lock';
 import { importRecoveryKit, serializeRecoveryKit } from './recovery';
@@ -103,6 +109,65 @@ describe('BTVAULT1 envelope and content crypto', () => {
     const last = changedCiphertext.length - 1;
     changedCiphertext[last] = changedCiphertext[last]! ^ 1;
     await expect(decryptVaultDocument(changedCiphertext, vaultKey)).rejects.toMatchObject({
+      code: 'authentication-failed',
+    });
+  });
+
+  it('decrypts a valid PD2 envelope whose header has noncanonical JSON member order', async () => {
+    const { header, vaultKey } = await fixture();
+    const noncanonicalHeader: VaultEnvelopeHeader = {
+      vaultVersion: header.vaultVersion,
+      deviceId: header.deviceId,
+      writeId: header.writeId,
+      writtenAt: header.writtenAt,
+      keyId: header.keyId,
+      wrappedKeys: header.wrappedKeys,
+      formatVersion: header.formatVersion,
+      schemaVersion: header.schemaVersion,
+      cipher: header.cipher,
+      iv: header.iv,
+    };
+    const headerBytes = new TextEncoder().encode(JSON.stringify(noncanonicalHeader));
+    expect(Array.from(headerBytes)).not.toEqual(
+      Array.from(serializeVaultHeader(noncanonicalHeader)),
+    );
+
+    const plaintext = new TextEncoder().encode(JSON.stringify(vaultVectorDocument));
+    const compressed = deflateSync(plaintext);
+    const ciphertext = new Uint8Array(
+      await globalThis.crypto.subtle.encrypt(
+        {
+          name: 'AES-GCM',
+          iv: base64ToBytes(noncanonicalHeader.iv, 'envelope-invalid'),
+          additionalData: headerBytes,
+          tagLength: 128,
+        },
+        await globalThis.crypto.subtle.importKey('raw', vaultKey, { name: 'AES-GCM' }, false, [
+          'encrypt',
+        ]),
+        compressed,
+      ),
+    );
+    const envelope = encodeContractEnvelope(noncanonicalHeader, ciphertext);
+
+    expect(Array.from(decodeVaultEnvelope(envelope).headerBytes)).toEqual(Array.from(headerBytes));
+    await expect(decryptVaultDocument(envelope, vaultKey)).resolves.toMatchObject({
+      document: vaultVectorDocument,
+      header: noncanonicalHeader,
+    });
+
+    const headerMutation = encodeContractEnvelope(
+      { ...noncanonicalHeader, vaultVersion: noncanonicalHeader.vaultVersion + 1 },
+      ciphertext,
+    );
+    await expect(decryptVaultDocument(headerMutation, vaultKey)).rejects.toMatchObject({
+      code: 'authentication-failed',
+    });
+
+    const ciphertextMutation = envelope.slice();
+    ciphertextMutation[ciphertextMutation.length - 1] =
+      ciphertextMutation[ciphertextMutation.length - 1]! ^ 1;
+    await expect(decryptVaultDocument(ciphertextMutation, vaultKey)).rejects.toMatchObject({
       code: 'authentication-failed',
     });
   });

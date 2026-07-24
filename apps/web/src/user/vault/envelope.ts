@@ -23,8 +23,8 @@ export type EnvelopeVersionResult =
   | { status: 'update-required'; formatVersion: number; schemaVersion: number };
 
 /**
- * Canonically serializes header fields in the order pinned by the PD2 contract.
- * The exact returned bytes are authenticated as AES-GCM additional data.
+ * Canonically serializes headers produced by this client. The exact returned bytes
+ * are authenticated as AES-GCM additional data.
  */
 export function serializeVaultHeader(header: VaultEnvelopeHeader): Uint8Array {
   const parsed = vaultEnvelopeHeaderSchema.safeParse(header);
@@ -110,14 +110,9 @@ export function decodeVaultEnvelope(bytes: Uint8Array): DecodedEnvelope {
     );
   }
 
-  const canonicalHeader = serializeVaultHeader(parsed.data);
-  if (!sameBytes(headerBytes, canonicalHeader)) {
-    throw new VaultCryptoError(
-      'envelope-invalid',
-      'Vault envelope header is not canonically serialized.',
-    );
-  }
-
+  // The wire header is AES-GCM additional authenticated data. Validate its parsed
+  // shape, but preserve its exact serialized bytes: contract producers may use a
+  // different valid JSON member order than this client's canonical encoder.
   return { header: parsed.data, headerBytes, ciphertext: bytes.slice(headerEnd) };
 }
 
@@ -175,9 +170,4 @@ function readVersions(value: unknown): { formatVersion: number; schemaVersion: n
         schemaVersion: header.schemaVersion as number,
       }
     : null;
-}
-
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.length !== right.length) return false;
-  return left.every((value, index) => value === right[index]);
 }
