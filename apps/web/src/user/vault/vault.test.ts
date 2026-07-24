@@ -54,6 +54,14 @@ const headerMetadata = {
 const firstRekeyWriteId = '018f0000-0000-7000-8000-00000000000d';
 const unexpectedArgon2 = async () => Promise.reject(new Error('KDF must not run'));
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
 });
@@ -627,6 +635,119 @@ describe('recovery kit and custody lock core', () => {
     ).rejects.toMatchObject({
       code: 'locked',
     });
+  });
+
+  it('keeps every delayed unlock path locked after manual and PIN idle locks', async () => {
+    const original = await fixture();
+    const recoveryKit = serializeRecoveryKit({
+      keyId: VECTOR_KEY_ID,
+      vaultKey: original.vaultKey,
+      formatVersion: VAULT_FORMAT_VERSION,
+    }).bytes;
+    for (const lock of [
+      (core: VaultLockCore) => core.lock(),
+      (core: VaultLockCore) => core.handleIdle(true),
+    ]) {
+      const passphraseKdfStarted = deferred<void>();
+      const passphraseKdf = deferred<Uint8Array>();
+      const passphrasePersisted = new Set<string>();
+      const passphraseCore = new VaultLockCore({
+        custody: {
+          persist: async (deviceId) => void passphrasePersisted.add(deviceId),
+          read: async () => null,
+          clear: async (deviceId) => void passphrasePersisted.delete(deviceId),
+        },
+      });
+      const passphraseUnlock = passphraseCore.unlockWithPassphrase(
+        original.envelope,
+        'correct horse battery staple',
+        {
+          argon2: async () => {
+            passphraseKdfStarted.resolve();
+            return passphraseKdf.promise;
+          },
+        },
+        true,
+        VECTOR_DEVICE_ID,
+      );
+      await passphraseKdfStarted.promise;
+      const passphraseLock = lock(passphraseCore);
+      expect(passphraseCore.state).toEqual({ status: 'locked' });
+      passphraseKdf.resolve(await deriveVaultKek('correct horse battery staple', original.kdf));
+      await passphraseLock;
+      await expect(passphraseUnlock).rejects.toMatchObject({ code: 'locked' });
+      expect(passphraseCore.state).toEqual({ status: 'locked' });
+      expect(passphrasePersisted).toEqual(new Set());
+      await expect(passphraseCore.withVaultKey(() => 'unavailable')).rejects.toMatchObject({
+        code: 'locked',
+      });
+
+      const recoveryPersistStarted = deferred<void>();
+      const releaseRecoveryPersist = deferred<void>();
+      const recoveryPersisted = new Set<string>();
+      const recoveryCore = new VaultLockCore({
+        custody: {
+          persist: async (deviceId) => {
+            recoveryPersistStarted.resolve();
+            await releaseRecoveryPersist.promise;
+            recoveryPersisted.add(deviceId);
+          },
+          read: async () => null,
+          clear: async (deviceId) => void recoveryPersisted.delete(deviceId),
+        },
+      });
+      const recoveryUnlock = recoveryCore.unlockWithRecoveryKit(
+        original.envelope,
+        recoveryKit,
+        true,
+        VECTOR_DEVICE_ID,
+      );
+      await recoveryPersistStarted.promise;
+      const recoveryLock = lock(recoveryCore);
+      expect(recoveryCore.state).toEqual({ status: 'locked' });
+      releaseRecoveryPersist.resolve();
+      await recoveryLock;
+      await expect(recoveryUnlock).rejects.toMatchObject({ code: 'locked' });
+      expect(recoveryCore.state).toEqual({ status: 'locked' });
+      expect(recoveryPersisted).toEqual(new Set());
+      await expect(recoveryCore.withVaultKey(() => 'unavailable')).rejects.toMatchObject({
+        code: 'locked',
+      });
+
+      const deviceReadStarted = deferred<void>();
+      const deviceRead = deferred<CryptoKey | null>();
+      const devicePersisted = new Set([VECTOR_DEVICE_ID]);
+      const deviceCore = new VaultLockCore({
+        custody: {
+          persist: async (deviceId) => void devicePersisted.add(deviceId),
+          read: async () => {
+            deviceReadStarted.resolve();
+            return deviceRead.promise;
+          },
+          clear: async (deviceId) => void devicePersisted.delete(deviceId),
+        },
+      });
+      const deviceUnlock = deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope);
+      await deviceReadStarted.promise;
+      const deviceLock = lock(deviceCore);
+      expect(deviceCore.state).toEqual({ status: 'locked' });
+      deviceRead.resolve(
+        await globalThis.crypto.subtle.importKey(
+          'raw',
+          original.vaultKey,
+          { name: 'AES-GCM' },
+          false,
+          ['encrypt', 'decrypt'],
+        ),
+      );
+      await deviceLock;
+      await expect(deviceUnlock).rejects.toMatchObject({ code: 'locked' });
+      expect(deviceCore.state).toEqual({ status: 'locked' });
+      expect(devicePersisted).toEqual(new Set());
+      await expect(deviceCore.withVaultKey(() => 'unavailable')).rejects.toMatchObject({
+        code: 'locked',
+      });
+    }
   });
 
   it('fails closed when device-key persistence is unsupported', async () => {
