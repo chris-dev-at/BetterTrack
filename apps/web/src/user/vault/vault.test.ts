@@ -85,6 +85,10 @@ describe('BTVAULT1 envelope and content crypto', () => {
     const contractRoundTrip = decodeContractEnvelope(contractEnvelope);
     expect(contractRoundTrip.header).toEqual(header);
     expect(Array.from(contractRoundTrip.ciphertext)).toEqual(Array.from(decoded.ciphertext));
+    await expect(decryptVaultDocument(contractEnvelope, vaultKey)).resolves.toMatchObject({
+      document: vaultVectorDocument,
+      header,
+    });
     expect(Array.from(envelope.subarray(0, 8))).toEqual(
       Array.from(new TextEncoder().encode('BTVAULT1')),
     );

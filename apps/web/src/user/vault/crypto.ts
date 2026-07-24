@@ -11,6 +11,7 @@ import {
   type VaultKdfParams,
   type VaultWrappedKey,
   vaultDocumentV1Schema,
+  vaultEnvelopeHeaderSchema,
 } from '@bettertrack/contracts';
 
 import { base64ToBytes, bytesToBase64, decodeUtf8, utf8, zeroBytes } from './bytes';
@@ -192,13 +193,13 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
   let plaintext: Uint8Array | undefined;
   let compressed: Uint8Array | undefined;
   try {
-    const header: VaultEnvelopeHeader = {
+    const header = canonicalVaultHeader({
       ...input.header,
       formatVersion: VAULT_FORMAT_VERSION,
       schemaVersion: VAULT_DOCUMENT_VERSION,
       cipher: VAULT_CONTENT_CIPHER,
       iv: bytesToBase64(iv),
-    };
+    });
     const headerBytes = serializeVaultHeader(header);
     plaintext = utf8(JSON.stringify(parsedDocument.data));
     compressed = deflateSync(plaintext);
@@ -326,6 +327,17 @@ function requireSubtle(): SubtleCrypto {
     throw new VaultCryptoError('unsupported-crypto', 'WebCrypto AES-GCM is unavailable.');
   }
   return globalThis.crypto.subtle;
+}
+
+function canonicalVaultHeader(header: VaultEnvelopeHeader): VaultEnvelopeHeader {
+  const parsed = vaultEnvelopeHeaderSchema.safeParse(header);
+  if (!parsed.success) {
+    throw new VaultCryptoError(
+      'envelope-invalid',
+      'Vault header does not match the envelope contract.',
+    );
+  }
+  return parsed.data;
 }
 
 function requireKeyLength(bytes: Uint8Array, name: string): void {
