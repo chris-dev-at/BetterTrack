@@ -200,6 +200,7 @@ export async function encryptVaultDocument(input: EncryptVaultInput): Promise<En
       cipher: VAULT_CONTENT_CIPHER,
       iv: bytesToBase64(iv),
     });
+    assertEncryptableWrappedKeys(header.keyId, header.wrappedKeys);
     const headerBytes = serializeVaultHeader(header);
     plaintext = utf8(JSON.stringify(parsedDocument.data));
     compressed = deflateSync(plaintext);
@@ -338,6 +339,42 @@ function canonicalVaultHeader(header: VaultEnvelopeHeader): VaultEnvelopeHeader 
     );
   }
   return parsed.data;
+}
+
+function assertEncryptableWrappedKeys(
+  activeKeyId: string,
+  wrappedKeys: VaultEnvelopeHeader['wrappedKeys'],
+): void {
+  const activeWrappers = wrappedKeys.filter((wrappedKey) => wrappedKey.keyId === activeKeyId);
+  if (activeWrappers.length === 0) {
+    throw new VaultCryptoError(
+      'envelope-invalid',
+      'Vault header must contain a wrapper for its active key.',
+    );
+  }
+  for (const wrappedKey of wrappedKeys) {
+    const { kdf } = wrappedKey;
+    if (
+      kdf.alg !== VAULT_ARGON2_PARAMS.alg ||
+      kdf.m !== VAULT_ARGON2_PARAMS.m ||
+      kdf.t !== VAULT_ARGON2_PARAMS.t ||
+      kdf.p !== VAULT_ARGON2_PARAMS.p
+    ) {
+      throw new VaultCryptoError(
+        'envelope-invalid',
+        'Vault wrappers must use the required Argon2id profile.',
+      );
+    }
+    let salt: Uint8Array | undefined;
+    try {
+      salt = base64ToBytes(kdf.salt, 'envelope-invalid');
+      if (salt.length !== VAULT_SALT_BYTES) {
+        throw new VaultCryptoError('envelope-invalid', 'Vault KDF salt has an invalid length.');
+      }
+    } finally {
+      if (salt != null) zeroBytes(salt);
+    }
+  }
 }
 
 function requireKeyLength(bytes: Uint8Array, name: string): void {

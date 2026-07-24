@@ -326,6 +326,39 @@ describe('BTVAULT1 envelope and content crypto', () => {
     ).rejects.toMatchObject({ code: 'envelope-invalid' });
   });
 
+  it('rejects producer headers without an active wrapper or the required Argon2id profile', async () => {
+    const { header, vaultKey } = await fixture();
+    const wrapper = header.wrappedKeys[0]!;
+    const encryptionHeader = {
+      keyId: header.keyId,
+      vaultVersion: header.vaultVersion,
+      deviceId: header.deviceId,
+      writeId: header.writeId,
+      writtenAt: header.writtenAt,
+    };
+
+    await expect(
+      encryptVaultDocument({
+        document: vaultVectorDocument,
+        vaultKey,
+        header: {
+          ...encryptionHeader,
+          wrappedKeys: [{ ...wrapper, keyId: VECTOR_NEXT_KEY_ID }],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+    await expect(
+      encryptVaultDocument({
+        document: vaultVectorDocument,
+        vaultKey,
+        header: {
+          ...encryptionHeader,
+          wrappedKeys: [{ ...wrapper, kdf: { ...wrapper.kdf, m: 1024 } }],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'envelope-invalid' });
+  });
+
   it('pins the required Argon2id profile and fails closed if WASM fails', async () => {
     const params = {
       alg: 'argon2id' as const,
