@@ -38,6 +38,9 @@ importers:
       '@bettertrack/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@bettertrack/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@bull-board/api':
         specifier: ^6.21.3
         version: 6.21.3(@bull-board/ui@6.21.3)
@@ -174,6 +177,9 @@ importers:
       '@bettertrack/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@bettertrack/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@sentry/react':
         specifier: ^10.65.0
         version: 10.65.0(react@19.2.7)
@@ -268,6 +274,18 @@ importers:
       zod:
         specifier: ^3.24.1
         version: 3.25.76
+    devDependencies:
+      '@bettertrack/config':
+        specifier: workspace:*
+        version: link:../config
+      typescript:
+        specifier: ~5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.6(@types/node@22.19.21)(jiti@2.7.0)(jsdom@26.1.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
+
+  packages/domain:
     devDependencies:
       '@bettertrack/config':
         specifier: workspace:*
