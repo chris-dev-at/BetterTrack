@@ -210,6 +210,14 @@ check "ClaudeX per-model numeric telemetry preserved" 1050000 \
   "$(jq -r '.model_usage["codex-api/gpt-5.6-sol"].contextWindow' <<<"$LAST_LEDGER_RES")"
 check "ClaudeX per-model string/account metadata scrubbed" null \
   "$(jq -r '.model_usage["codex-api/gpt-5.6-sol"].account // null' <<<"$LAST_LEDGER_RES")"
+MULTI_MODEL_RESULT='{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","api_error_status":null,"total_cost_usd":0.3,"usage":{"input_tokens":100,"output_tokens":10},"modelUsage":{"codex-api/gpt-5.6-terra":{"inputTokens":100,"outputTokens":10,"cacheReadInputTokens":40,"cacheCreationInputTokens":0,"costUSD":0.2},"codex-api/gpt-5.6-luna":{"inputTokens":20,"outputTokens":2,"cacheReadInputTokens":5,"cacheCreationInputTokens":0,"costUSD":0.1}}}'
+MULTI_MODEL_LEDGER=$(claudex_ledger_result "$MULTI_MODEL_RESULT")
+check "ClaudeX ledger sums input across main and fast models" 120 \
+  "$(jq -r .usage.input_tokens <<<"$MULTI_MODEL_LEDGER")"
+check "ClaudeX ledger sums output across main and fast models" 12 \
+  "$(jq -r .usage.output_tokens <<<"$MULTI_MODEL_LEDGER")"
+check "ClaudeX ledger sums cache reads across main and fast models" 45 \
+  "$(jq -r .usage.cache_read_input_tokens <<<"$MULTI_MODEL_LEDGER")"
 grep -q -- 'bettertrack-factory-claudex cli' "$CCR_ARGS_FILE" \
   && ok "ClaudeX uses isolated CCR profile" || bad "ClaudeX profile missing"
 grep -q -- '--model codex-api/gpt-5.6-sol' "$CCR_ARGS_FILE" \
@@ -298,10 +306,10 @@ check "persisted ClaudeX estimate remains separate" 0.121905 \
   "$(jq -r .api_equivalent_usd <<<"$LEDGER_ROW")"
 LEDGER=$T/claudex-ledger.jsonl LOG=$T/cost.log \
   /bin/bash -c '. ../factory/lib.sh; log(){ printf "%s\n" "$*" >>"$LOG"; }; issue_cost 42'
-grep -q '0.00 actual' "$T/cost.log" \
-  && ok "issue cost labels actual spend separately" || bad "actual cost label missing"
-grep -q '0.12 API-equivalent' "$T/cost.log" \
-  && ok "issue cost labels API-equivalent separately" || bad "API-equivalent label missing"
+grep -q '0.12 API-equivalent total' "$T/cost.log" \
+  && ok "issue cost leads with API-equivalent economics" || bad "API-equivalent total missing"
+grep -q '0.00 recorded billing field' "$T/cost.log" \
+  && ok "issue cost preserves the billing field separately" || bad "billing-field label missing"
 
 echo "— ClaudeX retry/result contracts"
 reset_case

@@ -257,6 +257,19 @@ mf_new_canonical_comment '[]' "$after_nonfinal" review abc \
 mf_new_canonical_comment '[]' "$after_ok" review abc \
   && ok "one fresh final reviewer marker accepted" || bad "valid reviewer marker rejected"
 
+# Real PR threads can contain formatter/test logs larger than the OS process
+# argument limit. The selector must compare only compact IDs, never pass the
+# complete baseline JSON to jq as an argv value.
+arg_max=$(getconf ARG_MAX 2>/dev/null || printf '262144')
+large_payload=$(LC_ALL=C head -c "$((arg_max + 4096))" /dev/zero | tr '\0' x)
+large_before='[{"id":1,"body":"'"$large_payload"'"}]'
+review_obj=$(jq -cn --arg body "$REVIEW_OK" '{id:2,body:$body}')
+large_after="${large_before%]},$review_obj]"
+mf_new_canonical_comment "$large_before" "$large_after" review abc \
+  && ok "large PR history does not hide a fresh reviewer marker" \
+  || bad "large PR history exceeded the reviewer selector argument limit"
+unset arg_max large_payload large_before review_obj large_after
+
 TRIAGE_MULTI='FACTORY-TRIAGE-HEAD: abc
 FACTORY-TRIAGE: RETRY_ESCALATED
 FACTORY-TRIAGE: NEEDS_HUMAN'
@@ -269,6 +282,35 @@ export MF_SOURCE_ONLY=1 TICK_ISSUES=$T/issues.json TICK_DEPS=$T/deps
 export MF_COMPOSER_DISCOVERY_ATTEMPTS=4 MF_COMPOSER_DISCOVERY_SLEEP=0
 mkdir -p "$T/deps"
 . ./master.sh
+
+echo "— composer canonical manifest reconstruction"
+printf 'NONE\n' >"$T/repair-manifest"
+composer_manifest_validate_or_repair "$T/repair-manifest" '[]' "[$VALID]" "$RUN" "" 1 0 \
+  && ok "canonical exact-count artifact repairs a damaged manifest" \
+  || bad "canonical exact-count artifact should repair its manifest"
+check "repaired manifest records the canonical issue" "ISSUE 101 autopilot" \
+  "$(<"$T/repair-manifest")"
+
+printf 'garbled\n' >"$T/repair-mixed-manifest"
+composer_manifest_validate_or_repair "$T/repair-mixed-manifest" '[]' "[$VALID,$AWAITING]" \
+  "$RUN" "" 2 0 \
+  && ok "repair derives guarded modes from canonical labels" \
+  || bad "repair should derive canonical artifact modes"
+check "repair emits the complete exact artifact set" "ISSUE 101 autopilot
+ISSUE 103 awaiting-owner" "$(<"$T/repair-mixed-manifest")"
+
+printf 'keep-invalid\n' >"$T/repair-reject"
+composer_manifest_validate_or_repair "$T/repair-reject" '[]' "[$VALID]" "$RUN" "" 2 0 \
+  && bad "repair must reject an exact-count mismatch" \
+  || ok "repair rejects an exact-count mismatch"
+check "failed repair never overwrites the original manifest" keep-invalid "$(<"$T/repair-reject")"
+composer_manifest_validate_or_repair "$T/repair-reject" '[]' "[$VALID]" "$RUN" "" 1 1 \
+  && bad "repair must not launder an earlier-attempt artifact" \
+  || ok "repair rejects a run with prior invalid artifacts"
+composer_manifest_validate_or_repair "$T/repair-reject" '[]' "[$VALID,$EXTRA_BARE]" \
+  "$RUN" "" 0 0 \
+  && bad "repair must reject an extra noncanonical issue" \
+  || ok "repair rejects an extra noncanonical issue"
 
 printf '%s\n' "[
   $(issue_json "$VALID_BODY" '["autopilot","diff:hard"]'),

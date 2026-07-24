@@ -256,6 +256,11 @@ claudex_ledger_result(){ # $1=validated result json
     | def model_sum($key):
         ([$models[]? | .[$key] // 0 | select(type=="number")] | add // 0);
       ($result.usage // {}) as $usage
+    | (($models | length) > 0) as $has_models
+    | ($has_models
+       and all($models[]?;
+         ((.inputTokens // null) | type) == "number"
+         and ((.outputTokens // null) | type) == "number")) as $models_complete
     | {
         provider:"claudex",
         provider_family:"openai",
@@ -264,23 +269,26 @@ claudex_ledger_result(){ # $1=validated result json
         total_cost_usd:0,
         claudex_usage_schema:1,
         claudex_telemetry_complete:
-          ((($usage.input_tokens // null) | type) == "number"
-           and (($usage.output_tokens // null) | type) == "number"),
+          ($models_complete
+           or ((($usage.input_tokens // null) | type) == "number"
+               and (($usage.output_tokens // null) | type) == "number")),
         usage:{
           input_tokens:
-            (if (($usage.input_tokens // null) | type) == "number"
-             then $usage.input_tokens else model_sum("inputTokens") end),
+            (if $has_models then model_sum("inputTokens")
+             elif (($usage.input_tokens // null) | type) == "number"
+             then $usage.input_tokens else 0 end),
           output_tokens:
-            (if (($usage.output_tokens // null) | type) == "number"
-             then $usage.output_tokens else model_sum("outputTokens") end),
+            (if $has_models then model_sum("outputTokens")
+             elif (($usage.output_tokens // null) | type) == "number"
+             then $usage.output_tokens else 0 end),
           cache_read_input_tokens:
-            (if (($usage.cache_read_input_tokens // null) | type) == "number"
-             then $usage.cache_read_input_tokens
-             else model_sum("cacheReadInputTokens") end),
+            (if $has_models then model_sum("cacheReadInputTokens")
+             elif (($usage.cache_read_input_tokens // null) | type) == "number"
+             then $usage.cache_read_input_tokens else 0 end),
           cache_creation_input_tokens:
-            (if (($usage.cache_creation_input_tokens // null) | type) == "number"
-             then $usage.cache_creation_input_tokens
-             else model_sum("cacheCreationInputTokens") end)
+            (if $has_models then model_sum("cacheCreationInputTokens")
+             elif (($usage.cache_creation_input_tokens // null) | type) == "number"
+             then $usage.cache_creation_input_tokens else 0 end)
         },
         model_usage:$models,
         api_equivalent_usd:

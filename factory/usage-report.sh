@@ -5,9 +5,10 @@
 #
 # Reads the JSONL ledger written by run.sh (default: factory/usage/ledger.jsonl,
 # the host side of the compose bind-mount) and prints a per-issue breakdown —
-# tokens by kind, total cost, and per-role spend WITH retries/failures folded in —
-# plus a grand total. Cost is whatever run.sh recorded per run: total_cost_usd from
-# the claude CLI when present, else tokens × the fallback pricing table in run.sh.
+# tokens by kind, API-equivalent cost, and per-role spend WITH retries/failures
+# folded in — plus a grand total. OpenAI subscription rows use
+# api_equivalent_usd; other rows use cost_usd. These are internal economics, not
+# provider invoices.
 set -uo pipefail
 
 LEDGER=${1:-"$(cd "$(dirname "$0")" && pwd)/usage/ledger.jsonl"}
@@ -36,6 +37,9 @@ jq -R 'fromjson?' "$LEDGER" 2>/dev/null | jq -rs '
            else tostring end;
     (floor|c);
   def pad($w): tostring | . + (($w - length) as $p | if $p>0 then " "*$p else "" end);
+  def equivalent:
+    if (.api_equivalent_usd|type)=="number" then .api_equivalent_usd
+    else (.cost_usd // 0) end;
   def row($i;$c;$in;$out;$cr;$cw;$r;$roles):
     ($i|pad(9)) + ($c|pad(10)) + ($in|pad(13)) + ($out|pad(12))
     + ($cr|pad(15)) + ($cw|pad(13)) + ($r|pad(6)) + $roles;
@@ -43,20 +47,20 @@ jq -R 'fromjson?' "$LEDGER" 2>/dev/null | jq -rs '
   (group_by(.issue)
    | map({
        issue: .[0].issue,
-       cost:  (map(.cost_usd)|add),
+       cost:  (map(equivalent)|add),
        it:    (map(.input_tokens)|add),
        ot:    (map(.output_tokens)|add),
        crt:   (map(.cache_read_tokens)|add),
        cwt:   (map(.cache_creation_tokens)|add),
        runs:  length,
        roles: (group_by(.role)
-               | map({role:.[0].role, c:(map(.cost_usd)|add), n:length})
+               | map({role:.[0].role, c:(map(equivalent)|add), n:length})
                | sort_by(-.c)
                | map(.role + (if .n>1 then "×\(.n)" else "" end) + " " + (.c|usd))
                | join(", "))
      })
    | sort_by(.issue | (tonumber? // 1e18))) as $rows
-  | ( row("Issue";"Cost";"Input";"Output";"Cache-rd";"Cache-wr";"Runs";"Roles (cost incl. retries/fails)"),
+  | ( row("Issue";"API-eq";"Input";"Output";"Cache-rd";"Cache-wr";"Runs";"Roles (estimate incl. retries/fails)"),
       row("─────";"────";"─────";"──────";"────────";"────────";"────";"───────────────────────────────"),
       ( $rows[]
         | row(( if (.issue|test("^[0-9]+$")) then "#"+.issue else .issue end );
@@ -75,3 +79,4 @@ jq -R 'fromjson?' "$LEDGER" 2>/dev/null | jq -rs '
 
 echo
 echo "Rows with a non-numeric issue (e.g. \"-\") are factory overhead not tied to one issue (planner)."
+echo "Dollar values are API-equivalent estimates; subscription invoices are not reported."

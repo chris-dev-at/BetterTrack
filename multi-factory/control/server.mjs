@@ -14,7 +14,7 @@ import { readFile, writeFile, readdir, stat, rename, mkdir, appendFile } from 'n
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { buildUsageAnalytics, parseUsageRange } from './usage-analytics.mjs';
+import { buildUsageAnalytics, ledgerEquivalentUsd, parseUsageRange } from './usage-analytics.mjs';
 import {
   DIFFICULTIES,
   composerRouteAllowed,
@@ -450,17 +450,23 @@ async function ledger() {
       })
       .filter(Boolean);
     const today = new Date().toISOString().slice(0, 10);
-    const sum = (rs) => Math.round(rs.reduce((a, r) => a + (r.cost_usd || 0), 0) * 100) / 100;
+    const sum = (rs) =>
+      Math.round(rs.reduce((total, row) => total + (ledgerEquivalentUsd(row) ?? 0), 0) * 100) / 100;
     const multi = rows.filter((r) => r.factory === 'multi');
     const byIssue = {};
-    for (const r of multi)
-      byIssue[r.issue] = Math.round(((byIssue[r.issue] || 0) + (r.cost_usd || 0)) * 100) / 100;
+    for (const r of multi) {
+      const estimate = ledgerEquivalentUsd(r);
+      if (estimate == null) continue;
+      byIssue[r.issue] = Math.round(((byIssue[r.issue] || 0) + estimate) * 100) / 100;
+    }
     return {
       todayAll: sum(rows.filter((r) => (r.ts || '').startsWith(today))),
       multiTotal: sum(multi),
       multiToday: sum(multi.filter((r) => (r.ts || '').startsWith(today))),
       multiByIssue: byIssue,
       records: rows.length,
+      pricedRecords: rows.filter((row) => ledgerEquivalentUsd(row) != null).length,
+      basis: 'api-equivalent',
     };
   } catch {
     return null;
