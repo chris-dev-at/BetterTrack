@@ -306,6 +306,31 @@ check "labels: legacy tier:sonnet → easy" "easy" "$(diff_from_labels 'tier:son
 check "labels: legacy tier:opus → intermediate" "intermediate" "$(diff_from_labels 'tier:opus')"
 check "labels: unlabeled → intermediate" "intermediate" "$(diff_from_labels 'autopilot')"
 check "labels: invalid diff value falls back" "intermediate" "$(diff_from_labels 'diff:banana')"
+for ROUTE in \
+  "claude claude-fable-5" \
+  "claude claude-opus-4-8" \
+  "claudex gpt-5.6-sol" \
+  "claudex codex-api/gpt-5.6-sol" \
+  "codex gpt-5.6-sol"; do
+  ROUTE_PROVIDER=${ROUTE%% *}
+  ROUTE_MODEL=${ROUTE#* }
+  mf_composer_route_allowed "$ROUTE_PROVIDER" "$ROUTE_MODEL" \
+    && ok "composer route allows $ROUTE_PROVIDER/$ROUTE_MODEL" \
+    || bad "composer route should allow $ROUTE_PROVIDER/$ROUTE_MODEL"
+done
+for ROUTE in \
+  "claude claude-sonnet-5" \
+  "claude claude-haiku-4-5" \
+  "claudex gpt-5.6-terra" \
+  "codex gpt-5.6-luna" \
+  "gemini Gemini-3.1-Pro"; do
+  ROUTE_PROVIDER=${ROUTE%% *}
+  ROUTE_MODEL=${ROUTE#* }
+  mf_composer_route_allowed "$ROUTE_PROVIDER" "$ROUTE_MODEL" \
+    && bad "composer route should reject $ROUTE_PROVIDER/$ROUTE_MODEL" \
+    || ok "composer route rejects $ROUTE_PROVIDER/$ROUTE_MODEL"
+done
+unset ROUTE ROUTE_PROVIDER ROUTE_MODEL
 
 echo "— difficulty → model config (state/control/models.json)"
 cat >"$MFSTATE/control/models.json" <<'JSON'

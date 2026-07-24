@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { buildUsageAnalytics, parseUsageRange } from './usage-analytics.mjs';
 import {
   DIFFICULTIES,
+  composerRouteAllowed,
   defaultRouteForProvider,
   normalizeModelRouting,
   normalizeRouteEntry,
@@ -920,6 +921,11 @@ async function doAction(action, payload = {}) {
         checker: DIFFS.includes(roles.checker) ? roles.checker : 'hard',
         reviewFloor: DIFFS.includes(roles.reviewFloor) ? roles.reviewFloor : 'intermediate',
       };
+      if (!composerRouteAllowed(out.difficulties[out.roles.composer]))
+        return {
+          ok: false,
+          message: 'composer route must use Claude Fable, Claude Opus, or GPT-5.6 Sol',
+        };
       await mkdir(CONTROL, { recursive: true });
       const tmp = `${MODELS_FILE}.tmp${Date.now()}`;
       await writeFile(tmp, JSON.stringify(out, null, 2));

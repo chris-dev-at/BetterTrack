@@ -608,10 +608,24 @@ cc_gemini(){ # $1=model (agy model string, effort baked in) $2=prompt
   done
 }
 
+mf_composer_route_allowed(){ # $1=provider $2=model
+  local provider=$1 model=$2
+  case "$provider/$model" in
+    claude/claude-fable-*|claude/claude-opus-*|\
+    claudex/gpt-5.6-sol|claudex/codex-api/gpt-5.6-sol|codex/gpt-5.6-sol) return 0;;
+    *) return 1;;
+  esac
+}
+
 mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
   local role=$1 d=$2 prompt=$3 cfg provider model effort
   cfg=$(diff_cfg "$d")
   IFS='|' read -r provider model effort <<<"$cfg"
+  if [ "$role" = composer ] && ! mf_composer_route_allowed "$provider" "$model"; then
+    log "composer @ diff:$d → $provider/$model${effort:+ ($effort)}"
+    log "  ↳ composer route rejected — only Claude Fable, Claude Opus, or GPT-5.6 Sol may compose"
+    return 1
+  fi
   log "$role @ diff:$d → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
     claude)  CC_ROLE=$role CC_EFFORT=$effort cc "$model" "$prompt";;

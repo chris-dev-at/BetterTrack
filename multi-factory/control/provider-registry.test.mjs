@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   DIFFICULTIES,
   PROVIDER_IDS,
+  composerRouteAllowed,
   defaultRouteForProvider,
   expectedModelSelector,
   normalizeModelRouting,
@@ -13,6 +14,33 @@ import {
   publicProviderRegistry,
   validateRouteEntry,
 } from './provider-registry.mjs';
+
+test('composer accepts only Fable, Opus, or Sol routes', () => {
+  assert.equal(
+    composerRouteAllowed({ provider: 'claude', model: 'claude-fable-5', effort: 'max' }),
+    true,
+  );
+  assert.equal(
+    composerRouteAllowed({ provider: 'claude', model: 'claude-opus-4-8', effort: 'xhigh' }),
+    true,
+  );
+  assert.equal(
+    composerRouteAllowed({ provider: 'claudex', model: 'codex-api/gpt-5.6-sol', effort: 'xhigh' }),
+    true,
+  );
+  assert.equal(
+    composerRouteAllowed({ provider: 'codex', model: 'gpt-5.6-sol', effort: 'ultra' }),
+    true,
+  );
+  for (const route of [
+    { provider: 'claude', model: 'claude-sonnet-5', effort: 'high' },
+    { provider: 'claude', model: 'claude-haiku-4-5', effort: 'high' },
+    { provider: 'claudex', model: 'gpt-5.6-terra', effort: 'xhigh' },
+    { provider: 'codex', model: 'gpt-5.6-luna', effort: 'high' },
+    { provider: 'gemini', model: 'Gemini 3.1 Pro (High)' },
+  ])
+    assert.equal(composerRouteAllowed(route), false, `${route.provider}/${route.model}`);
+});
 
 test('registry exposes four stable providers and explicit route metadata', () => {
   assert.deepEqual(PROVIDER_IDS, ['claude', 'claudex', 'codex', 'gemini']);
