@@ -146,9 +146,12 @@ anywhere; test vectors + tamper tests are part of PD4 (§14).
   strength check locally. KEK = Argon2id(passphrase, salt); the KEK wraps the
   VK; `wrappedKeys` lives in the envelope header — **any medium's blob + the
   passphrase is a complete recovery path on a fresh device** (pull → unwrap →
-  decrypt). Passphrase change = re-wrap the VK (new header entry, no content
-  re-encryption); VK rotation (post-compromise) = full re-encrypt under a new
-  VK + `keyId`, offered in settings but never forced.
+  decrypt). **COD 2026-07-24:** the exact complete serialized header remains
+  AES-GCM AAD, so a passphrase change derives a fresh KEK/salt, re-wraps the
+  same VK, and re-encrypts the unchanged document under that VK with a fresh
+  content IV. Ciphertext identity is intentionally dropped; document identity
+  is preserved. VK rotation (post-compromise) = full re-encrypt under a new VK
+  - `keyId`, offered in settings but never forced.
 - **Recovery kit** — at enable the client generates and **forces the download**
   of `bettertrack-recovery-kit.txt`: the raw VK (base64), the `keyId`, the
   format version, and plain instructions. Kit + any blob = recovery without
