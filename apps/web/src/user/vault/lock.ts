@@ -138,11 +138,21 @@ export class VaultLockCore {
       }
       await this.options.custody.persist(deviceId, vaultKey);
     }
+
+    const nextCustodyDeviceId =
+      keepUnlocked || !(vaultKey instanceof Uint8Array) ? (deviceId ?? null) : null;
+    if (
+      this.custodyDeviceId != null &&
+      this.custodyDeviceId !== nextCustodyDeviceId &&
+      this.options.custody != null
+    ) {
+      await this.options.custody.clear(this.custodyDeviceId);
+    }
+
     if (this.vaultKey instanceof Uint8Array) disposeVaultKey(this.vaultKey);
     this.vaultKey = vaultKey;
     this.keyId = keyId;
-    this.custodyDeviceId =
-      keepUnlocked || !(vaultKey instanceof Uint8Array) ? (deviceId ?? null) : null;
+    this.custodyDeviceId = nextCustodyDeviceId;
   }
 }
 

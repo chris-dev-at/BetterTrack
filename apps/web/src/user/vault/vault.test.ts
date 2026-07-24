@@ -362,6 +362,14 @@ describe('recovery kit and custody lock core', () => {
     ).toMatchObject({
       document: vaultVectorDocument,
     });
+
+    await deviceCore.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
+    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+    await deviceCore.lock();
+    await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+
+    await custody.persist(VECTOR_DEVICE_ID, original.vaultKey);
+    await deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope);
     await deviceCore.handleIdle(true);
     await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
     await expect(
