@@ -56,6 +56,8 @@ multi-factory/
 ├─ worker.sh          per-container loop: wait for assignment → build cycle
 ├─ autorun.sh         build image + compose up (project: bettertrack-multifactory)
 ├─ compose.yml        1 master + N workers (replicas via env WORKERS, default 2)
+├─ ccr-*.mjs          isolated ClaudeX bootstrap/health helpers
+├─ provider-test.sh   sanitized end-to-end provider proof
 ├─ prompts/           composer.md, checker.md  (writer/reviewer/fixer/ci-fix
 │                     are REUSED from factory/prompts/ unchanged)
 ├─ state/             gitignored shared volume — the master↔worker protocol (§6)
@@ -281,3 +283,85 @@ single-factory proof, (2) multi-factory core, (3) prompts + docs.
 GitHub merge queue (native), >2 workers tuning, CI speedups, changes to branch
 protection, the live preview, `factory/CHIEF.md`, and any app code. If you hit
 an app bug while testing, file a normal factory issue — do not fix it inline.
+
+## 14. ClaudeX provider addendum (owner-approved 2026-07-24)
+
+`claudex` is provider four. It keeps Claude Code's agent harness while a pinned
+third-party [Claude Code Router](https://github.com/musistudio/claude-code-router)
+(CCR `3.0.7`) translates the local Anthropic-compatible request to the existing
+Codex OAuth route. This is experimental compatibility infrastructure, not an
+official OpenAI-to-Claude-Code integration. Native `claude`, native `codex`, and
+`gemini` remain separate selectable providers.
+
+The shared factory image deliberately pins Claude Code `2.1.218`, native Codex
+`0.145.0`, and CCR `3.0.7`. The single factory still calls normal `claude`
+through the unchanged `cc()` path; it does not start or configure CCR. Pinning
+removes rebuild drift but means tool upgrades must be deliberate and must rerun
+the offline protocol suite plus live smoke tests.
+
+Every master/worker gets independent writable copies of:
+
+```text
+auth/<service>/codex/  -> /home/factory/.codex
+auth/<service>/ccr/    -> /home/factory/.claude-code-router
+```
+
+`auth.json` and optional `models_cache.json` are synced from the host into each
+Codex directory. CCR state/SQLite is never copied from the host and never shared
+between services. No CCR ports are published; management and gateway listeners
+are loopback-only inside each container.
+
+Before a ClaudeX role, `ccr-ensure.mjs` verifies the pinned package, starts CCR
+when needed, discovers the authenticated management endpoint from private
+`service.json`, and runs the idempotent bootstrap. The saved route must have:
+
+- provider ID and name exactly `codex-api`;
+- protocol `openai_responses`;
+- upstream host `chatgpt.com` under `/backend-api/codex`;
+- auth marker `ccr-local-agent-login`;
+- exactly two flat `codexOauth` plugins with placeholders resolved;
+- the dynamically imported model catalog (including Sol, Terra, and Luna);
+- no `api.openai.com` provider and no provider API key profile variables;
+- request/body logging disabled and the default Claude/Codex CCR profiles off.
+
+Only a sanitized atomic `factory-status.json` marker is exposed to the control
+plane. OAuth files, service URLs/tokens, the CCR local client key, plugin bodies,
+and configuration bodies are never printed or committed.
+
+`cc_claudex` invokes the isolated CCR profile, and CCR invokes `claude`; it never
+uses `codex exec`. The selected model is always repeated explicitly as
+`--model codex-api/<model>`. Provider API/OAuth environment variables are
+removed from that subprocess before CCR injects its local gateway environment.
+A role succeeds only when the current capture has rc 0 plus a fresh result with
+`is_error:false`, `subtype:success`, `terminal_reason:completed`, no API error,
+and exact requested `modelUsage`. Capacity errors wait, router/auth errors get
+one idempotent rebootstrap, transport errors retry in place, and ambiguous
+failures probe CCR plus its Codex-backed gateway — never Anthropic.
+
+ClaudeX is a subscription route: actual ledger `cost_usd` is always zero.
+Claude Code's local pre-normalization `total_cost_usd` is retained separately
+as `api_equivalent_usd`, with source and coverage metadata and sanitized
+per-model numeric usage. ChatGPT subscription billing and OpenAI API billing
+are officially separate systems:
+https://help.openai.com/en/articles/8156019.
+
+For clean deployment/acceptance work, `MF_COMPOSE_OVERRIDE` accepts one
+additional existing Compose file across every lifecycle command, and
+`MF_MODELS_FILE` passes an alternate mounted routing file into all services.
+Neither mechanism edits owner-managed `state/control/models.json`.
+
+Offline acceptance is part of CI:
+
+- existing scheduler/provider/protocol regressions;
+- fake ClaudeX success, limit, retry, auth-rebootstrap and malformed-result
+  paths;
+- explicit model/env/permission/result contracts;
+- zero actual cost and separate estimate persistence;
+- no-secret durable logs/status/output;
+- no CCR/model call in dry-run;
+- independent CCR mounts for master plus workers 1–4;
+- overlay propagation through build/up/dry/log/login/stop/down paths.
+
+Live acceptance still requires two proofs after image rebuild: the direct
+gateway request must return `DIRECT_OK`, then `provider-test.sh` must obtain
+`CLAUDEX_OK` from Claude Code with the exact requested selector in `modelUsage`.

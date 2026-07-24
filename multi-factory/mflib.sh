@@ -11,12 +11,14 @@
 # (Models tab → state/control/models.json, read fresh before every agent run,
 # so changes apply from the next run without a restart):
 #
-#   { "difficulties": { "<diff>": {"provider":"claude|codex|gemini",
+#   { "difficulties": { "<diff>": {"provider":"claude|claudex|codex|gemini",
 #                                  "model":"...", "effort":"..."} },
 #     "roles": { "composer":"<diff>", "checker":"<diff>", "reviewFloor":"<diff>" } }
 #
 # Providers (all subscription auth, never committed — see autorun.sh auth sync):
 #   claude → claude CLI  (CLAUDE_CODE_OAUTH_TOKEN env; effort low|medium|high|xhigh|max)
+#   claudex→ claude CLI through third-party CCR + Codex OAuth
+#                         (independent ~/.codex + ~/.claude-code-router per container)
 #   codex  → codex CLI   (~/.codex/auth.json; effort is model-dependent)
 #   gemini → agy CLI     (Antigravity; ~/.gemini oauth; effort baked into model name,
 #                         e.g. "Gemini 3.1 Pro (High)")
@@ -25,7 +27,7 @@
 # tier:fable→max) so old issues keep working.
 
 MF_MODELS_FILE=${MF_MODELS_FILE:-$MFSTATE/control/models.json}
-MF_ROLE_TIMEOUT=${MF_ROLE_TIMEOUT:-7200}   # hard cap per codex/agy role run (s)
+MF_ROLE_TIMEOUT=${MF_ROLE_TIMEOUT:-7200}   # hard cap per provider role run (s)
 
 DIFF_ORDER="easy normal intermediate hard max"
 
@@ -78,12 +80,20 @@ diff_default_cfg(){
   esac
 }
 
-diff_cfg_from_json(){ # $1=file $2=difficulty — empty output when absent/invalid
+diff_cfg_from_json(){ # $1=file $2=difficulty — invalid provider is explicit
   jq -r --arg d "$2" '
     .difficulties[$d]? // empty
-    | select((.provider=="claude" or .provider=="codex" or .provider=="gemini")
-             and ((.model // "") | type=="string" and length>0))
-    | [.provider, .model, (.effort // "")] | join("|")
+    | if ((.provider=="claude" or .provider=="claudex"
+           or .provider=="codex" or .provider=="gemini")
+          and ((.model // "") | type=="string" and length>0
+               and (contains("|") | not) and (test("[\\r\\n]") | not))
+          and ((.effort // "") | type=="string"
+               and (contains("|") | not) and (test("[\\r\\n]") | not)))
+      then [.provider, .model, (.effort // "")] | join("|")
+      elif ((.provider // "") | type=="string" and length>0)
+      then ["invalid", .provider, ""] | join("|")
+      else empty
+      end
   ' "$1" 2>/dev/null || true
 }
 
@@ -119,12 +129,20 @@ mf_uses_claude(){ # 0 when ANY difficulty currently routes to the claude provide
 }
 
 # ---- provider runners --------------------------------------------------------------
-# All three keep cc()'s contract: block through capacity/limit windows (retry
+# All four keep cc()'s contract: block through capacity/limit windows (retry
 # forever with LIMIT_SLEEP naps), return 0 on a clean run, 1 only on a genuine
 # task failure. Every run lands in the usage ledger (subscription runs at $0).
 
 CODEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient|(^|[^0-9])429([^0-9]|$)'
+CLAUDEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient (credit|balance|funds)|model .*overloaded|service (at )?capacity|(^|[^0-9])(429|529)([^0-9]|$)'
+CLAUDEX_ROUTER_RE='CCR (management|gateway|runtime|bootstrap|router)|x-target-provider|router authentication|authentication (is )?(unavailable|failed)|oauth (token )?(expired|invalid|refresh failed|error)|unauthori[sz]ed|forbidden|(^|[^0-9])(401|403)([^0-9]|$)'
 AGY_LIMIT_RE='quota|rate.?limit|too many requests|RESOURCE_EXHAUSTED|model is overloaded|capacity|(^|[^0-9])(429|529)([^0-9]|$)'
+
+MF_CCR_ENSURE_SCRIPT=${MF_CCR_ENSURE_SCRIPT:-/work/mf/ccr-ensure.mjs}
+MF_CCR_PROBE_SCRIPT=${MF_CCR_PROBE_SCRIPT:-/work/mf/claudex-direct-probe.mjs}
+MF_CCR_PROFILE=${CCR_FACTORY_PROFILE:-bettertrack-factory-claudex}
+MF_NODE_BIN=${MF_NODE_BIN:-node}
+MF_CCR_BIN=${MF_CCR_BIN:-ccr}
 
 # Run a provider command, mirror its combined stream to the role log, retain the
 # full stream for classification, and return the provider command's exit code.
@@ -135,6 +153,146 @@ mf_capture_command(){ # $1=output file, remaining args=command
   local output_file=$1; shift
   "$@" 2>&1 | tee -a "$LOG" "$output_file" >/dev/null
   return "${PIPESTATUS[0]}"
+}
+
+# ClaudeX may surface a local management URL or auth header in a router error.
+# Keep the raw capture private for result parsing, but redact credentials before
+# appending the stream to the durable role log.
+claudex_sanitize_stream(){
+  sed -E \
+    -e 's/(ccr_web_token=)[^&"[:space:]]+/\1[redacted]/g' \
+    -e 's/(Bearer )[A-Za-z0-9._~+\/=-]+/\1[redacted]/g' \
+    -e 's/(x-api-key["=: ]+)[^,"[:space:]]+/\1[redacted]/Ig' \
+    -e 's/(api[_-]?key["=: ]+)[^,"[:space:]]+/\1[redacted]/Ig'
+}
+
+mf_capture_claudex_command(){ # $1=private output file, remaining args=command
+  local output_file=$1; shift
+  "$@" 2>&1 | tee "$output_file" | claudex_sanitize_stream >>"$LOG"
+  return "${PIPESTATUS[0]}"
+}
+
+claudex_model_selector(){
+  local model=$1 raw
+  case "$model" in
+    codex-api/*) raw=${model#codex-api/};;
+    */*) return 1;;
+    *) raw=$model;;
+  esac
+  [[ "$raw" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || return 1
+  printf 'codex-api/%s\n' "$raw"
+}
+
+claudex_result(){
+  jq -Rrs '
+    [split("\n")[] | fromjson?
+      | select(type=="object" and .type=="result")]
+    | last // empty
+  ' 2>/dev/null
+}
+
+claudex_failure_signal(){
+  jq -Rrs '
+    [split("\n")[] | fromjson? | select(type=="object")
+      | select(.type=="result"
+               or ((.type // "") | test("(^error$|\\.failed$|\\.cancelled$)"))
+               or (.error? != null))
+      | [
+          (.subtype // ""),
+          (.result // ""),
+          (.message // ""),
+          (.terminal_reason // ""),
+          ((.api_error_status // "") | tostring),
+          (if (.error? | type)=="string" then .error else "" end),
+          (.error.message? // "")
+        ] | join(" ")]
+    | join("\n")
+  ' 2>/dev/null
+}
+
+claudex_result_valid(){ # $1=result json $2=exact selector
+  jq -e --arg selector "$2" '
+    .type == "result"
+    and .subtype == "success"
+    and .is_error == false
+    and .terminal_reason == "completed"
+    and ((.api_error_status // null) == null)
+    and (
+      ((.modelUsage | type) == "object" and (.modelUsage | has($selector)))
+      or ((.modelUsage | type) == "array"
+          and (.modelUsage | index($selector) != null))
+      or ((.modelUsage | type) == "string" and .modelUsage == $selector)
+    )
+  ' >/dev/null 2>&1 <<<"$1"
+}
+
+claudex_ledger_result(){ # $1=validated result json
+  jq -c '
+    def safe_model_usage:
+      if type != "object" then {}
+      else with_entries(
+        select(.key | test("^codex-api/[A-Za-z0-9][A-Za-z0-9._:-]*$"))
+        | .value |= (
+            if type != "object" then {}
+            else with_entries(
+              select((.value | type) == "number"
+                     or (.value | type) == "boolean"
+                     or (.value | type) == "null")
+            )
+            end
+          )
+      )
+      end;
+    . as $result
+    | ($result.modelUsage // {} | safe_model_usage) as $models
+    | def model_sum($key):
+        ([$models[]? | .[$key] // 0 | select(type=="number")] | add // 0);
+      ($result.usage // {}) as $usage
+    | {
+        provider:"claudex",
+        provider_family:"openai",
+        harness:"claude-code",
+        billing:"subscription",
+        total_cost_usd:0,
+        claudex_usage_schema:1,
+        claudex_telemetry_complete:
+          ((($usage.input_tokens // null) | type) == "number"
+           and (($usage.output_tokens // null) | type) == "number"),
+        usage:{
+          input_tokens:
+            (if (($usage.input_tokens // null) | type) == "number"
+             then $usage.input_tokens else model_sum("inputTokens") end),
+          output_tokens:
+            (if (($usage.output_tokens // null) | type) == "number"
+             then $usage.output_tokens else model_sum("outputTokens") end),
+          cache_read_input_tokens:
+            (if (($usage.cache_read_input_tokens // null) | type) == "number"
+             then $usage.cache_read_input_tokens
+             else model_sum("cacheReadInputTokens") end),
+          cache_creation_input_tokens:
+            (if (($usage.cache_creation_input_tokens // null) | type) == "number"
+             then $usage.cache_creation_input_tokens
+             else model_sum("cacheCreationInputTokens") end)
+        },
+        model_usage:$models,
+        api_equivalent_usd:
+          (if (($result.total_cost_usd // null) | type) == "number"
+           then $result.total_cost_usd else null end),
+        api_equivalent_pricing:"claude-code-local-estimate",
+        api_equivalent_source:"claude-code-total_cost_usd",
+        api_equivalent_coverage:
+          (if (($result.total_cost_usd // null) | type) == "number"
+           then "complete" else "missing-telemetry" end)
+      }
+  ' 2>/dev/null <<<"$1"
+}
+
+claudex_ensure(){
+  "$MF_NODE_BIN" "$MF_CCR_ENSURE_SCRIPT" "$@" >/dev/null 2>&1
+}
+
+claudex_direct_probe(){ # $1=raw model; 0=healthy, 75=limit, 76=router/auth
+  "$MF_NODE_BIN" "$MF_CCR_PROBE_SCRIPT" "$1" --quiet >/dev/null 2>&1
 }
 
 codex_jsonl_state(){ # completed | error | incomplete
@@ -168,6 +326,151 @@ codex_failure_signal(){
        end]
     | join("\n")
   ' 2>/dev/null
+}
+
+cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
+  local model=$1 effort=$2 prompt=$3 selector raw_model
+  local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--}
+  local tries=0 transient_tries=0 rebootstrap_done=0
+  local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
+  local empty_res='{"provider":"claudex","provider_family":"openai","harness":"claude-code","billing":"subscription","total_cost_usd":0,"claudex_usage_schema":1,"claudex_telemetry_complete":false,"api_equivalent_usd":null,"api_equivalent_pricing":"claude-code-local-estimate","api_equivalent_source":"claude-code-total_cost_usd","api_equivalent_coverage":"missing-telemetry"}'
+
+  if [ "${MF_DRY_RUN:-0}" = 1 ]; then
+    log "DRY: ClaudeX $model skipped"
+    return 0
+  fi
+  selector=$(claudex_model_selector "$model") || {
+    log "  ↳ invalid ClaudeX model selector"
+    ledger_record "$issue" "$role" "$model" "$empty_res" 0 fail
+    return 1
+  }
+  raw_model=${selector#codex-api/}
+
+  if ! claudex_ensure; then
+    rebootstrap_done=1
+    if ! claudex_ensure --force; then
+      ledger_record "$issue" "$role" "$raw_model" "$empty_res" 0 fail
+      log "  ↳ ClaudeX runtime bootstrap failed"
+      return 1
+    fi
+  fi
+
+  while true; do
+    local out rc start dur result signal res capture probe_rc=0
+    start=$(date +%s)
+    capture=$(mktemp "${TMPDIR:-/tmp}/mf-claudex.XXXXXX") || return 1
+    chmod 600 "$capture" 2>/dev/null || true
+    local -a cmd=(
+      timeout "$MF_ROLE_TIMEOUT"
+      env
+      -u OPENAI_API_KEY
+      -u CODEX_API_KEY
+      -u ANTHROPIC_API_KEY
+      -u ANTHROPIC_AUTH_TOKEN
+      -u ANTHROPIC_BASE_URL
+      -u ANTHROPIC_API_BASE_URL
+      -u ANTHROPIC_MODEL
+      -u ANTHROPIC_SMALL_FAST_MODEL
+      -u CLAUDE_AGENT_API_BASE_URL
+      -u CLAUDE_CODE_OAUTH_TOKEN
+      -u CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+      -u CLAUDE_CODE_USE_BEDROCK
+      -u CLAUDE_CODE_USE_FOUNDRY
+      -u CLAUDE_CODE_USE_VERTEX
+      "$MF_CCR_BIN" "$MF_CCR_PROFILE" cli --
+      --model "$selector"
+    )
+    [ -n "$effort" ] && cmd+=(--effort "$effort")
+    cmd+=(
+      -p "$prompt"
+      --output-format stream-json
+      --verbose
+      --dangerously-skip-permissions
+    )
+    if mf_capture_claudex_command "$capture" "${cmd[@]}" </dev/null; then
+      rc=0
+    else
+      rc=$?
+    fi
+    out=$(<"$capture")
+    rm -f "$capture"
+    dur=$(( $(date +%s) - start ))
+    result=$(claudex_result <<<"$out")
+    signal=$(claudex_failure_signal <<<"$out")
+    res=$(claudex_ledger_result "$result") || res=$empty_res
+
+    if [ "$rc" = 0 ] && [ -n "$result" ] \
+      && claudex_result_valid "$result" "$selector"; then
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" ok
+      log "  ↳ ok (claudex $raw_model, ${dur}s)"
+      return 0
+    fi
+    if [ "$rc" = 124 ]; then
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" fail
+      log "  ↳ ClaudeX run timed out after ${MF_ROLE_TIMEOUT}s"
+      return 1
+    fi
+    if grep -qiE "$CLAUDEX_LIMIT_RE" <<<"$signal"; then
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
+      notify "ClaudeX/Codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+      sleep "$LIMIT_SLEEP"
+      continue
+    fi
+    if { grep -qiE "$CLAUDEX_ROUTER_RE" <<<"$signal" \
+         || { [ -z "$result" ] && grep -qiE "$CLAUDEX_ROUTER_RE" <<<"$out"; }; } \
+      && [ "$rebootstrap_done" -eq 0 ]; then
+      rebootstrap_done=1
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
+      log "  ↳ ClaudeX router/auth failure — one idempotent rebootstrap"
+      if claudex_ensure --force; then
+        continue
+      fi
+    fi
+    if printf '%s' "$out" | grep -qiE "$TRANSIENT_RE" \
+      && [ "$transient_tries" -lt "${CC_TRANSIENT_MAX:-3}" ]; then
+      transient_tries=$((transient_tries+1))
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
+      log "  ↳ transient transport error — retry $transient_tries/${CC_TRANSIENT_MAX:-3}"
+      sleep "${CC_TRANSIENT_SLEEP:-45}"
+      continue
+    fi
+
+    # A missing structured result is ambiguous. Probe this provider's local
+    # configuration/health and then the Codex-backed gateway itself — never the
+    # Anthropic capacity probe used by cc().
+    if [ -z "$result" ]; then
+      if claudex_ensure && claudex_direct_probe "$raw_model"; then
+        probe_rc=0
+      else
+        probe_rc=$?
+      fi
+      if [ "$probe_rc" = 75 ]; then
+        ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
+        notify "ClaudeX/Codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+        sleep "$LIMIT_SLEEP"
+        continue
+      fi
+      if [ "$probe_rc" != 0 ] && [ "$rebootstrap_done" -eq 0 ]; then
+        rebootstrap_done=1
+        ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
+        log "  ↳ ClaudeX probe failed — one idempotent rebootstrap"
+        if claudex_ensure --force; then
+          continue
+        fi
+      fi
+    fi
+
+    tries=$((tries+1))
+    if [ "$tries" -lt "$max_attempts" ]; then
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" retry
+      log "  ↳ ClaudeX failed (rc=$rc) — retry $tries/$max_attempts"
+      sleep "${MF_PROVIDER_RETRY_SLEEP:-60}"
+      continue
+    fi
+    ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" fail
+    log "  ↳ genuine ClaudeX task failure (rc=$rc)"
+    return 1
+  done
 }
 
 cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
@@ -214,7 +517,8 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
          then ((.uncached*$r.i + .c*$r.c + .w*$r.w + .o*$r.o)/1000000
                * 1000000 | round) / 1000000
          else null end) as $estimate
-      | {provider:"codex", total_cost_usd:0,
+      | {provider:"codex", provider_family:"openai", harness:"codex-cli",
+         billing:"subscription", total_cost_usd:0,
          codex_usage_schema:2,
          output_tokens_semantics:"inclusive-reasoning",
          input_tokens_semantics:"exclusive",
@@ -230,7 +534,7 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
                 cache_creation_input_tokens:.w, output_tokens:.o,
                 reasoning_output_tokens:.r}}' \
       <<<"$out" 2>/dev/null) \
-      || res='{"provider":"codex","total_cost_usd":0,"codex_usage_schema":2,"output_tokens_semantics":"inclusive-reasoning","codex_telemetry_complete":false,"api_equivalent_usd":null,"api_equivalent_coverage":"missing-telemetry"}'
+      || res='{"provider":"codex","provider_family":"openai","harness":"codex-cli","billing":"subscription","total_cost_usd":0,"codex_usage_schema":2,"output_tokens_semantics":"inclusive-reasoning","codex_telemetry_complete":false,"api_equivalent_usd":null,"api_equivalent_coverage":"missing-telemetry"}'
     if [ "$rc" = 0 ] && [ "$state" = completed ]; then
       ledger_record "$issue" "$role" "$model" "$res" "$dur" ok
       log "  ↳ ok (codex $model, ${dur}s)"
@@ -312,9 +616,14 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
   IFS='|' read -r provider model effort <<<"$cfg"
   log "$role @ diff:$d → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
-    codex)  CC_ROLE=$role cc_codex "$model" "$effort" "$prompt";;
-    gemini) CC_ROLE=$role cc_gemini "$model" "$prompt";;
-    *)      CC_ROLE=$role CC_EFFORT=$effort cc "$model" "$prompt";;
+    claude)  CC_ROLE=$role CC_EFFORT=$effort cc "$model" "$prompt";;
+    claudex) CC_ROLE=$role cc_claudex "$model" "$effort" "$prompt";;
+    codex)   CC_ROLE=$role cc_codex "$model" "$effort" "$prompt";;
+    gemini)  CC_ROLE=$role cc_gemini "$model" "$prompt";;
+    *)
+      log "  ↳ unsupported provider '$provider' — refusing implicit Claude fallback"
+      return 1
+      ;;
   esac
 }
 

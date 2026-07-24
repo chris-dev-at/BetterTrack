@@ -42,6 +42,12 @@ One compact JSON object per line (JSONL) — one record per role run:
 usage-limit or ambiguous failure that `cc()` will retry). Retries and failures are
 kept so an issue's _true_ spend — not just its final successful run — is visible.
 
+Multi-factory records also identify the route that produced the usage:
+`provider`, `provider_family`, `harness`, and `billing`. For example, native
+Codex is the `codex` provider with the `codex-cli` harness, while ClaudeX is the
+`claudex` provider with the `claude-code` harness. The extra fields are additive;
+existing Claude records and report consumers remain valid.
+
 ## Cost derivation
 
 `cost_usd` prefers the CLI's `total_cost_usd` (almost always present). Only when
@@ -49,6 +55,20 @@ that field is absent does it fall back to `tokens × pricing`, using an editable
 table near the top of `run.sh` (`PRICE_IN` / `PRICE_OUT` / `PRICE_CR` / `PRICE_CW`,
 USD per 1M tokens) for the three models the factory uses — `claude-sonnet-5`,
 `claude-opus-4-8`, `claude-fable-5`. Update that table if pricing changes.
+
+Subscription-backed Codex and ClaudeX runs deliberately record
+`cost_usd: 0`: ChatGPT subscription usage is not OpenAI API billing. When
+Claude Code reports a local API-equivalent estimate for a ClaudeX run, the
+ledger preserves it separately as `api_equivalent_usd` with
+`api_equivalent_source: "claude-code-total_cost_usd"` and an explicit coverage
+field. It is useful for per-issue comparison, but it is not an invoice or actual
+spend. See OpenAI's explanation that
+[ChatGPT and API billing are separate](https://help.openai.com/en/articles/8156019).
+
+ClaudeX records also retain aggregate token fields and a sanitized
+`model_usage` object with numeric token counts and API-equivalent cost estimates
+per model. Credentials, request bodies, and raw result streams are never written
+to the ledger.
 
 ## Per-cycle log line
 
@@ -61,6 +81,13 @@ After each issue's cycle ends (merged, self-resolved, or bailed to a human),
 
 This shows up in `docker compose -p bettertrack-factory logs` (the Chief watches
 timestamped lines).
+
+When subscription runs have an API-equivalent estimate, the line separates the
+two values, for example:
+
+```text
+2026-07-24T18:05:12+00:00 COST: issue #704 — $0.00 actual (writer $0.00); $0.12 API-equivalent (writer $0.12)
+```
 
 ## Report
 

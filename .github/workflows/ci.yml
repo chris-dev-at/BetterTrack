@@ -49,6 +49,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Factory protocol tests (offline)
+        run: ./multi-factory/test.sh
+
       - name: OpenAPI coverage gate
         run: pnpm --filter @bettertrack/api check:openapi-coverage
 

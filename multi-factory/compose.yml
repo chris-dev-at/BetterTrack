@@ -9,7 +9,7 @@
 # event log. Never run this at the same time as the single factory — autorun.sh
 # guards both directions.
 #
-# Provider auth (codex + antigravity/gemini): autorun.sh syncs the host CLI
+# Provider auth (codex/ClaudeX + antigravity/gemini): autorun.sh syncs host CLI
 # credentials into gitignored per-container copies under ./auth/<service>/ and
 # they are bind-mounted read-write over the container HOME dirs (rw so token
 # refreshes persist; per-container copies so containers never race each other
@@ -25,6 +25,8 @@ x-common: &common
     FACTORY_NAME: multi
     WORKERS: ${WORKERS:-2}
     MF_DRY_RUN: ${MF_DRY_RUN:-0}
+    MF_MODELS_FILE: ${MF_MODELS_FILE:-/work/mfstate/control/models.json}
+    CCR_HOME: /home/factory/.claude-code-router
 
 services:
   master:
@@ -37,11 +39,17 @@ services:
       - ./mflib.sh:/work/mf/mflib.sh:ro
       - ./contracts.sh:/work/mf/contracts.sh:ro
       - ./create-issue.sh:/work/mf/create-issue.sh:ro
+      - ./ccr-common.mjs:/work/mf/ccr-common.mjs:ro
+      - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
+      - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
+      - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
       - ./auth/master/codex:/home/factory/.codex
+      - ./auth/master/ccr:/home/factory/.claude-code-router
       - ./auth/master/gemini:/home/factory/.gemini
 
   worker-1:
@@ -57,11 +65,17 @@ services:
       - ./mflib.sh:/work/mf/mflib.sh:ro
       - ./contracts.sh:/work/mf/contracts.sh:ro
       - ./create-issue.sh:/work/mf/create-issue.sh:ro
+      - ./ccr-common.mjs:/work/mf/ccr-common.mjs:ro
+      - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
+      - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
+      - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
       - ./auth/worker-1/codex:/home/factory/.codex
+      - ./auth/worker-1/ccr:/home/factory/.claude-code-router
       - ./auth/worker-1/gemini:/home/factory/.gemini
 
   worker-2:
@@ -77,11 +91,17 @@ services:
       - ./mflib.sh:/work/mf/mflib.sh:ro
       - ./contracts.sh:/work/mf/contracts.sh:ro
       - ./create-issue.sh:/work/mf/create-issue.sh:ro
+      - ./ccr-common.mjs:/work/mf/ccr-common.mjs:ro
+      - ./ccr-bootstrap.mjs:/work/mf/ccr-bootstrap.mjs:ro
+      - ./ccr-ensure.mjs:/work/mf/ccr-ensure.mjs:ro
+      - ./claudex-direct-probe.mjs:/work/mf/claudex-direct-probe.mjs:ro
+      - ./provider-test.sh:/work/mf/provider-test.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
       - ./auth/worker-2/codex:/home/factory/.codex
+      - ./auth/worker-2/ccr:/home/factory/.claude-code-router
       - ./auth/worker-2/gemini:/home/factory/.gemini
 
 volumes:

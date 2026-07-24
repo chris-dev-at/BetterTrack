@@ -83,8 +83,37 @@ ledger_record(){
        input_tokens:$it, output_tokens:$ot,
        cache_read_tokens:$crt, cache_creation_tokens:$cwt,
        cost_usd:(($cost*10000|round)/10000), duration_s:$dur, outcome:$outcome}
-      + (if $provider == "codex" then
+      + (if $provider == "claudex" then
+          {provider:"claudex",
+           provider_family:($res.provider_family // "openai"),
+           harness:($res.harness // "claude-code"),
+           billing:($res.billing // "subscription"),
+           claudex_usage_schema:
+             (if ($res.claudex_usage_schema|type)=="number"
+              then $res.claudex_usage_schema else null end),
+           claudex_telemetry_complete:
+             (if ($res.claudex_telemetry_complete|type)=="boolean"
+              then $res.claudex_telemetry_complete else null end),
+           cached_input_tokens:$crt,
+           cache_write_input_tokens:$cwt,
+           model_usage:
+             (if ($res.model_usage|type)=="object"
+              then $res.model_usage else {} end),
+           api_equivalent_usd:
+             (if ($res.api_equivalent_usd|type)=="number"
+              then (($res.api_equivalent_usd*1000000|round)/1000000)
+              else null end),
+           api_equivalent_pricing:
+             ($res.api_equivalent_pricing // "claude-code-local-estimate"),
+           api_equivalent_source:
+             ($res.api_equivalent_source // "claude-code-total_cost_usd"),
+           api_equivalent_coverage:
+             ($res.api_equivalent_coverage // "missing-telemetry")}
+         elif $provider == "codex" then
           {provider:"codex",
+           provider_family:($res.provider_family // "openai"),
+           harness:($res.harness // "codex-cli"),
+           billing:($res.billing // "subscription"),
            codex_usage_schema:
              (if ($res.codex_usage_schema|type)=="number"
               then $res.codex_usage_schema
@@ -131,7 +160,17 @@ issue_cost(){
         | ( group_by(.role)
             | map({role:.[0].role, c:(map(.cost_usd)|add)})
             | sort_by(-.c) | map("\(.role) $\(.c|usd)") | join(", ") ) as $bd
-        | "COST: issue #\($n) — $\($tot|usd) total (\($bd))"
+        | ([.[].api_equivalent_usd | select(type=="number")] | add // null) as $api
+        | ( group_by(.role)
+            | map({role:.[0].role,
+                   c:([.[].api_equivalent_usd | select(type=="number")] | add // null)})
+            | map(select(.c != null))
+            | sort_by(-.c)
+            | map("\(.role) $\(.c|usd)") | join(", ") ) as $api_bd
+        | if $api == null
+          then "COST: issue #\($n) — $\($tot|usd) total (\($bd))"
+          else "COST: issue #\($n) — $\($tot|usd) actual (\($bd)); $\($api|usd) API-equivalent (\($api_bd))"
+          end
       end') || return 0
   [ -n "$line" ] && log "$line"
 }
