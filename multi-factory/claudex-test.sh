@@ -33,6 +33,13 @@ case "$1" in
     exit 0
     ;;
   *claudex-direct-probe.mjs)
+    count=0
+    [ -f "$PROBE_COUNT_FILE" ] && count=$(cat "$PROBE_COUNT_FILE")
+    count=$((count+1))
+    printf '%s\n' "$count" >"$PROBE_COUNT_FILE"
+    if [ "${DIRECT_PROBE_CASE:-ok}" = first-fails ] && [ "$count" -eq 1 ]; then
+      exit 1
+    fi
     exit "${DIRECT_PROBE_RC:-0}"
     ;;
 esac
@@ -136,6 +143,7 @@ export MF_CLAUDEX_REDACTOR_SCRIPT=$PWD/claudex-redact.mjs
 export MF_REDACTOR_NODE_BIN=$REAL_NODE
 export MF_CCR_PROFILE=bettertrack-factory-claudex
 export NODE_CALLS=$T/node.calls CCR_COUNT_FILE=$T/ccr.count
+export PROBE_COUNT_FILE=$T/probe.count
 export CCR_ARGS_FILE=$T/ccr.args CCR_ENV_LEAK_FILE=$T/env.leak
 export MF_PROVIDER_RETRY_SLEEP=0 CC_TRANSIENT_SLEEP=0 LIMIT_SLEEP=0
 export MF_ROLE_TIMEOUT=5
@@ -167,12 +175,13 @@ TRANSIENT_RE='Connection closed mid-response|ECONNRESET|ETIMEDOUT|stream disconn
 
 reset_case(){
   rm -f "$CCR_COUNT_FILE" "$CCR_ARGS_FILE" "$CCR_ENV_LEAK_FILE" \
-    "$NODE_CALLS" "$T/ledger.outcomes" "$LOG"
+    "$PROBE_COUNT_FILE" "$NODE_CALLS" "$T/ledger.outcomes" "$LOG"
   LAST_LEDGER_RES=""
   LAST_LEDGER_OUTCOME=""
   NODE_ENSURE_CASE=ok
+  DIRECT_PROBE_CASE=ok
   DIRECT_PROBE_RC=0
-  export NODE_ENSURE_CASE DIRECT_PROBE_RC
+  export NODE_ENSURE_CASE DIRECT_PROBE_CASE DIRECT_PROBE_RC
 }
 
 echo "— ClaudeX runner success, isolation and telemetry"
@@ -391,6 +400,43 @@ check "provider test reports runtime ready" true \
   "$(jq -r .runtimeReady <<<"$PROVIDER_STDOUT")"
 check "provider test output omits raw assistant text" 0 \
   "$(grep -c 'CLAUDEX_OK' <<<"$PROVIDER_STDOUT" || true)"
+
+reset_case
+CLAUDEX_CASE=ok
+DIRECT_PROBE_CASE=first-fails
+export CLAUDEX_CASE DIRECT_PROBE_CASE
+PROVIDER_RETRY_STDOUT=$(
+  CCR_STATUS_FILE=$T/factory-status.json \
+  MF_NODE_BIN=node MF_CCR_BIN=ccr \
+  MF_CCR_ENSURE_SCRIPT=$T/ccr-ensure.mjs \
+  MF_CCR_PROBE_SCRIPT=$T/claudex-direct-probe.mjs \
+  ./provider-test.sh claudex gpt-5.6-sol high
+)
+check "provider test recovers one fresh-bootstrap direct-probe race" true \
+  "$(jq -r .ok <<<"$PROVIDER_RETRY_STDOUT")"
+check "provider test retries the direct proof exactly once" 2 \
+  "$(<"$PROBE_COUNT_FILE")"
+grep -qx -- "$T/ccr-ensure.mjs --force" "$NODE_CALLS" \
+  && ok "provider test force-refreshes CCR before its one retry" \
+  || bad "provider test must force-refresh CCR before retrying"
+
+reset_case
+DIRECT_PROBE_RC=1
+export DIRECT_PROBE_RC
+if PROVIDER_DIRECT_BAD=$(
+  CCR_STATUS_FILE=$T/factory-status.json \
+  MF_NODE_BIN=node MF_CCR_BIN=ccr \
+  MF_CCR_ENSURE_SCRIPT=$T/ccr-ensure.mjs \
+  MF_CCR_PROBE_SCRIPT=$T/claudex-direct-probe.mjs \
+  ./provider-test.sh claudex gpt-5.6-sol high 2>"$T/provider-direct.err"
+); then
+  bad "provider test must fail after its one direct-proof retry"
+else
+  ok "provider test fails closed after its one direct-proof retry"
+fi
+check "persistent direct failure remains bounded to two probes" 2 \
+  "$(<"$PROBE_COUNT_FILE")"
+check "persistent direct failure emits no stdout JSON" "" "$PROVIDER_DIRECT_BAD"
 
 reset_case
 CLAUDEX_CASE=wrong-reply

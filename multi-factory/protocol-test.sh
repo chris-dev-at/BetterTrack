@@ -266,6 +266,7 @@ mf_comment_marker_valid triage abc "$TRIAGE_MULTI" \
 # Source orchestration functions without booting loops or loading live auth.
 log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
 export MF_SOURCE_ONLY=1 TICK_ISSUES=$T/issues.json TICK_DEPS=$T/deps
+export MF_COMPOSER_DISCOVERY_ATTEMPTS=4 MF_COMPOSER_DISCOVERY_SLEEP=0
 mkdir -p "$T/deps"
 . ./master.sh
 
@@ -292,6 +293,39 @@ grep -q -- 'Derive the gate title from that current' prompts/composer.md \
 grep -q -- 'OWNER-APPROVED COMPOSITION BRIEF' prompts/composer.md \
   && ok "composer prompt defines the one-shot owner brief contract" \
   || bad "composer prompt missing owner brief contract"
+
+echo "— composer post-create discovery tolerates a stale issue collection"
+printf 'ISSUE 101 autopilot\n' >"$T/stale-list-manifest"
+mf_recent_issues_json(){ printf '[]\n'; }
+mf_issue_json_by_number(){
+  [ "$1" = 101 ] && printf '%s\n' "$VALID"
+}
+DISCOVERED=$(composer_discovery_after "$T/stale-list-manifest")
+check "direct issue read fills a helper manifest ID missing from the list" 101 \
+  "$(jq -r '.[].number' <<<"$DISCOVERED")"
+mf_manifest_validate "$T/stale-list-manifest" '[]' "$DISCOVERED" "$RUN" autopilot \
+  && ok "stale-list manifest validates after direct reconciliation" \
+  || bad "stale-list manifest should validate after direct reconciliation"
+DISCOVERY_CALLS_FILE=$T/discovery.calls
+printf '0\n' >"$DISCOVERY_CALLS_FILE"
+mf_recent_issues_json(){
+  local calls
+  calls=$(<"$DISCOVERY_CALLS_FILE")
+  calls=$((calls+1))
+  printf '%s\n' "$calls" >"$DISCOVERY_CALLS_FILE"
+  if [ "$calls" -lt "$MF_COMPOSER_DISCOVERY_ATTEMPTS" ]; then
+    printf '[]\n'
+  else
+    printf '[%s]\n' "$EXTRA_BARE"
+  fi
+}
+DISCOVERED_DELAYED_EXTRA=$(composer_discovery_after "$T/stale-list-manifest")
+check "a final-snapshot artifact is retained beside the directly reconciled ID" "101 102" \
+  "$(jq -r 'sort_by(.number) | map(.number) | join(" ")' <<<"$DISCOVERED_DELAYED_EXTRA")"
+mf_manifest_validate "$T/stale-list-manifest" '[]' \
+  "$DISCOVERED_DELAYED_EXTRA" "$RUN" autopilot \
+  && bad "direct reconciliation must not hide a delayed unmanifested issue" \
+  || ok "full discovery window rejects a delayed unmanifested issue"
 
 echo "— composer protocol backoff cadence"
 MF_PROMPTS=$(pwd)/prompts

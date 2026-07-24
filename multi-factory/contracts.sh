@@ -265,8 +265,16 @@ mf_pr_comments_json(){ # $1=PR number
 mf_pr_head(){ gh pr view "$1" --json headRefOid -q .headRefOid 2>/dev/null; }
 
 mf_recent_issues_json(){
-  gh api "repos/$REPO/issues?state=all&sort=created&direction=desc&per_page=100" \
+  gh api -H 'Cache-Control: no-cache' \
+    "repos/$REPO/issues?state=all&sort=created&direction=desc&per_page=100" \
     --jq '[.[] | select(.pull_request==null) | {number,title,body,labels:[.labels[].name],created_at}]' \
+    2>/dev/null
+}
+
+mf_issue_json_by_number(){ # $1=issue number; direct reads avoid list eventual consistency
+  gh api -H 'Cache-Control: no-cache' "repos/$REPO/issues/$1" \
+    --jq 'select(.pull_request==null)
+      | {number,title,body,labels:[.labels[].name],created_at}' \
     2>/dev/null
 }
 

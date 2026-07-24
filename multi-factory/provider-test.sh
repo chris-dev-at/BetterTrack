@@ -43,7 +43,16 @@ if ! "$NODE_BIN" "$ENSURE_SCRIPT" >"$T/ensure.out" 2>"$T/ensure.err"; then
 fi
 if ! "$NODE_BIN" "$PROBE_SCRIPT" "$RAW_MODEL" \
   >"$T/direct.out" 2>"$T/direct.err"; then
-  fail "direct gateway proof unavailable"
+  # CCR's first request after a brand-new OAuth import can race the generated
+  # gateway/plugin reload even though /health is already green. One forced,
+  # idempotent re-bootstrap plus one fresh proof is bounded and still fails
+  # closed for persistent auth, capacity, routing, or response errors.
+  if ! "$NODE_BIN" "$ENSURE_SCRIPT" --force \
+    >"$T/ensure-retry.out" 2>"$T/ensure-retry.err" \
+    || ! "$NODE_BIN" "$PROBE_SCRIPT" "$RAW_MODEL" \
+      >"$T/direct-retry.out" 2>"$T/direct-retry.err"; then
+    fail "direct gateway proof unavailable"
+  fi
 fi
 
 if timeout "${MF_PROVIDER_TEST_TIMEOUT:-180}" \
