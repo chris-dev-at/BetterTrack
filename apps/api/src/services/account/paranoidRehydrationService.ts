@@ -5,7 +5,9 @@ import {
   vaultDocumentV1Schema,
 } from '@bettertrack/contracts';
 import { cashBalancesBySource, projectCashLedgerBySource } from '@bettertrack/domain/cashLedger';
+import { viennaYearOf } from '@bettertrack/domain/tax';
 
+import { expenseDedupHash } from '../../data/expenseDedup';
 import { reducePosition } from '../../domain/holdings';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
@@ -122,6 +124,60 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
   const transactionIds = ids(entities, 'transaction');
   const dividendIds = ids(entities, 'dividend');
   const categoryIds = ids(entities, 'expenseCategory');
+  const taxSettings = rows(entities, 'taxSetting');
+  if (taxSettings.length > 1) {
+    throw new ParanoidRehydrationError('INVALID_REFERENCE', 'only one tax setting may be restored');
+  }
+
+  const customAssetValueKeys = new Set<string>();
+  for (const value of rows(entities, 'customAssetValue')) {
+    const key = `${value.data.assetId}\u0000${value.data.date}`;
+    if (customAssetValueKeys.has(key)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'custom asset values must be unique per asset and date',
+      );
+    }
+    customAssetValueKeys.add(key);
+  }
+
+  const portfolioSettingKeys = new Set<string>();
+  for (const setting of rows(entities, 'portfolioSetting')) {
+    const key = `${setting.data.portfolioId}\u0000${setting.data.key}`;
+    if (portfolioSettingKeys.has(key)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'portfolio settings must be unique per portfolio and key',
+      );
+    }
+    portfolioSettingKeys.add(key);
+  }
+
+  const expenseCategoryNames = new Set<string>();
+  for (const category of rows(entities, 'expenseCategory')) {
+    const key = `${userId}\u0000${category.data.name}`;
+    if (expenseCategoryNames.has(key)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'expense category names must be unique',
+      );
+    }
+    expenseCategoryNames.add(key);
+  }
+
+  const importedExpenseHashes = new Set<string>();
+  for (const expense of rows(entities, 'expenseTransaction')) {
+    if (!expense.data.source.startsWith('import:')) continue;
+    const hash = expenseDedupHash(expense.data);
+    if (importedExpenseHashes.has(hash)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'imported expense rows must have unique deduplication facts',
+      );
+    }
+    importedExpenseHashes.add(hash);
+  }
+
   const sourcesById = new Map(rows(entities, 'cashSource').map((entity) => [entity.id, entity]));
   const transactionsById = new Map(
     rows(entities, 'transaction').map((entity) => [entity.id, entity]),
@@ -175,6 +231,24 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
     portfolioIds,
     'standing order',
   );
+  for (const order of rows(entities, 'standingOrder')) {
+    if ((order.data.lastRunAt === null) !== (order.data.lastPeriodKey === null)) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order run watermark requires both its timestamp and period key',
+      );
+    }
+    if (
+      order.data.lastPeriodKey !== null &&
+      (order.data.lastPeriodKey < order.data.startDate ||
+        (order.data.endDate !== null && order.data.lastPeriodKey > order.data.endDate))
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a standing-order run watermark must fall within its schedule window',
+      );
+    }
+  }
   requireSubset(
     rows(entities, 'expenseTransaction').flatMap((entity) =>
       entity.data.categoryId ? [entity.data.categoryId] : [],
@@ -348,6 +422,15 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
         );
       }
     }
+    if (
+      (movement.data.kind === 'buy' || movement.data.kind === 'sell_proceeds') &&
+      !movement.data.transactionId
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a buy or sell-proceeds cash movement requires its transaction',
+      );
+    }
     if (movement.data.transferId) {
       const transfer = transfersById.get(movement.data.transferId) ?? [];
       transfer.push(movement);
@@ -376,6 +459,105 @@ function validateGraph(userId: string, entities: readonly Entity[]): void {
       throw new ParanoidRehydrationError(
         'INVALID_REFERENCE',
         'transfer movements do not form a valid pair',
+      );
+    }
+  }
+
+  const movementsByTransactionId = new Map<string, EntityOf<'cashMovement'>[]>();
+  const movementsByDividendId = new Map<string, EntityOf<'cashMovement'>[]>();
+  for (const movement of movements) {
+    if (movement.data.transactionId) {
+      const linked = movementsByTransactionId.get(movement.data.transactionId) ?? [];
+      linked.push(movement);
+      movementsByTransactionId.set(movement.data.transactionId, linked);
+    }
+    if (movement.data.dividendId) {
+      const linked = movementsByDividendId.get(movement.data.dividendId) ?? [];
+      linked.push(movement);
+      movementsByDividendId.set(movement.data.dividendId, linked);
+    }
+  }
+
+  for (const transaction of rows(entities, 'transaction')) {
+    const linked = movementsByTransactionId.get(transaction.id) ?? [];
+    const grossKind = transaction.data.side === 'buy' ? 'buy' : 'sell_proceeds';
+    const gross = linked.filter((movement) => movement.data.kind === grossKind);
+    if (gross.length > 1) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a transaction may have at most one linked gross cash movement',
+      );
+    }
+    const settlement = linked.filter(
+      (movement) => movement.data.kind === 'tax_withholding' || movement.data.kind === 'tax_refund',
+    );
+    if (settlement.length > 1) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a transaction may have at most one linked tax settlement',
+      );
+    }
+    const frozenTax = transaction.data.taxAmountEur;
+    if (frozenTax !== null && frozenTax !== 0) {
+      const [movement] = settlement;
+      if (
+        !movement ||
+        movement.data.amountEur !== -frozenTax ||
+        movement.data.taxYear !== viennaYearOf(transaction.data.executedAt)
+      ) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'a nonzero transaction tax amount requires its matching tax settlement',
+        );
+      }
+    } else if (settlement.length > 0) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a transaction tax settlement requires a nonzero frozen tax amount',
+      );
+    }
+  }
+
+  for (const dividend of rows(entities, 'dividend')) {
+    const linked = movementsByDividendId.get(dividend.id) ?? [];
+    const gross = linked.filter((movement) => movement.data.kind === 'dividend');
+    if (
+      gross.length !== 1 ||
+      gross[0]!.data.amountEur !== dividend.data.grossAmountEur ||
+      gross[0]!.data.sourceId !== dividend.data.cashSourceId ||
+      Date.parse(gross[0]!.data.executedAt) !== Date.parse(dividend.data.executedAt)
+    ) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a dividend requires one matching gross cash movement',
+      );
+    }
+    const settlement = linked.filter(
+      (movement) => movement.data.kind === 'tax_withholding' || movement.data.kind === 'tax_refund',
+    );
+    if (settlement.length > 1) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a dividend may have at most one linked tax settlement',
+      );
+    }
+    const frozenTax = dividend.data.taxAmountEur;
+    if (frozenTax !== null && frozenTax !== 0) {
+      const [movement] = settlement;
+      if (
+        !movement ||
+        movement.data.amountEur !== -frozenTax ||
+        movement.data.taxYear !== viennaYearOf(dividend.data.executedAt)
+      ) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'a nonzero dividend tax amount requires its matching tax settlement',
+        );
+      }
+    } else if (settlement.length > 0) {
+      throw new ParanoidRehydrationError(
+        'INVALID_REFERENCE',
+        'a dividend tax settlement requires a nonzero frozen tax amount',
       );
     }
   }
@@ -588,7 +770,9 @@ export function createParanoidRehydrationService(
         await sourceRows.restoreCashMovements(rows(entities, 'cashMovement'));
         await stage('cashMovements');
 
-        await sourceRows.restoreStandingOrders(userId, rows(entities, 'standingOrder'));
+        const standingOrderRows = rows(entities, 'standingOrder');
+        await sourceRows.restoreStandingOrders(userId, standingOrderRows);
+        await sourceRows.restoreStandingOrderRuns(standingOrderRows);
         await stage('standingOrders');
 
         await sourceRows.restoreExpenseCategories(userId, rows(entities, 'expenseCategory'));

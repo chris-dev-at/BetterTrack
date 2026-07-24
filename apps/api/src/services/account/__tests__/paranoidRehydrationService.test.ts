@@ -4,13 +4,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assets,
+  expenseTransactions,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaults,
   portfolios,
+  standingOrderRuns,
+  standingOrders,
   transactions,
   users,
 } from '../../../data/schema';
+import { expenseDedupHash } from '../../../data/expenseDedup';
 import { createTestApp } from '../../../testing/createTestApp';
 import {
   createParanoidRehydrationService,
@@ -352,6 +356,142 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_CASH_LEDGER',
     });
     expect(await db.select().from(transactions)).toEqual([]);
+  });
+
+  it('rebuilds imported expense deduplication markers from restored facts', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'expenseTransaction', {
+        categoryId: null,
+        direction: 'expense',
+        amount: 12.5,
+        currency: 'EUR',
+        bookedOn: '2026-07-23',
+        description: 'Coffee Shop',
+        source: 'import:n26',
+        createdAt: editedAt,
+        updatedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await service.rehydrate(user.id, input);
+
+    const [expense] = await db
+      .select({ dedupHash: expenseTransactions.dedupHash })
+      .from(expenseTransactions);
+    const dedupHash = expenseDedupHash({
+      bookedOn: '2026-07-23',
+      direction: 'expense',
+      amount: 12.5,
+      currency: 'EUR',
+      description: 'Coffee Shop',
+    });
+    expect(expense?.dedupHash).toBe(dedupHash);
+    expect(
+      await db
+        .insert(expenseTransactions)
+        .values({
+          userId: user.id,
+          direction: 'expense',
+          amount: '12.50',
+          currency: 'EUR',
+          bookedOn: '2026-07-23',
+          description: 'Coffee Shop',
+          source: 'import:n26',
+          dedupHash,
+        })
+        .onConflictDoNothing({
+          target: [expenseTransactions.userId, expenseTransactions.dedupHash],
+        })
+        .returning({ id: expenseTransactions.id }),
+    ).toEqual([]);
+  });
+
+  it('rebuilds standing-order watermark and no-replay run marker', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'standingOrder', {
+        portfolioId: PORTFOLIO_ID,
+        kind: 'cash-add',
+        assetId: null,
+        amount: 100,
+        currency: 'EUR',
+        label: 'Salary',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-01',
+        endDate: null,
+        status: 'active',
+        lastRunAt: editedAt,
+        lastPeriodKey: '2026-07-24',
+        createdAt: editedAt,
+        updatedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await service.rehydrate(user.id, input);
+
+    const [order] = await db
+      .select({ lastRunAt: standingOrders.lastRunAt, lastPeriodKey: standingOrders.lastPeriodKey })
+      .from(standingOrders);
+    expect(order?.lastRunAt?.toISOString()).toBe(editedAt);
+    expect(order?.lastPeriodKey).toBe('2026-07-24');
+    expect(await db.select().from(standingOrderRuns)).toMatchObject([
+      { standingOrderId: '018f0000-0000-7000-8000-00000000000d', periodKey: '2026-07-24' },
+    ]);
+  });
+
+  it('rejects a dividend without its required gross cash movement before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000e', 'dividend', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: ASSET_ID,
+        cashSourceId: CASH_SOURCE_ID,
+        grossAmountEur: 10,
+        executedAt: editedAt,
+        note: null,
+        taxMode: 'none',
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        source: 'manual',
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects duplicate tax settings before writing any restored rows', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const taxSetting = {
+      mode: 'none' as const,
+      country: null,
+      manualDefaultAmountEur: null,
+      manualDefaultRatePct: null,
+      customParams: null,
+      updatedAt: editedAt,
+    };
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'taxSetting', taxSetting),
+      entity('018f0000-0000-7000-8000-00000000000e', 'taxSetting', taxSetting),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
   });
 
   it('rejects a cash movement linked to a transaction in another portfolio', async () => {

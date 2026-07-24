@@ -1,6 +1,8 @@
 import type { VaultDocumentV1 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { expenseDedupHash } from '../expenseDedup';
+
 import {
   assets,
   dividends,
@@ -13,6 +15,7 @@ import {
   portfolios,
   portfolioSettings,
   priceHistory,
+  standingOrderRuns,
   standingOrders,
   transactions,
   userTaxSettings,
@@ -39,6 +42,7 @@ export interface ParanoidRehydrationSourceRepository {
   restoreDividends(rows: readonly EntityOf<'dividend'>[]): Promise<void>;
   restoreCashMovements(rows: readonly EntityOf<'cashMovement'>[]): Promise<void>;
   restoreStandingOrders(userId: string, rows: readonly EntityOf<'standingOrder'>[]): Promise<void>;
+  restoreStandingOrderRuns(rows: readonly EntityOf<'standingOrder'>[]): Promise<void>;
   restoreExpenseCategories(
     userId: string,
     rows: readonly EntityOf<'expenseCategory'>[],
@@ -231,14 +235,27 @@ export function createParanoidRehydrationSourceRepository(
           startDate: entity.data.startDate,
           endDate: entity.data.endDate,
           status: entity.data.status,
-          // The standing-order run ledger is purge-only. Reset these operational
-          // displays too so old schedule effects cannot be replayed.
-          lastRunAt: null,
-          lastPeriodKey: null,
+          // Reconstructed runs below are the authoritative no-replay fence; these
+          // displays retain the highest known historical execution as a fast path.
+          lastRunAt: entity.data.lastRunAt ? new Date(entity.data.lastRunAt) : null,
+          lastPeriodKey: entity.data.lastPeriodKey,
           createdAt: new Date(entity.data.createdAt),
           updatedAt: new Date(entity.data.updatedAt),
         })),
       );
+    },
+
+    async restoreStandingOrderRuns(rows) {
+      const runs = rows
+        .filter((entity) => entity.data.lastPeriodKey !== null)
+        .map((entity) => ({
+          standingOrderId: entity.id,
+          periodKey: entity.data.lastPeriodKey!,
+          bookedAt: entity.data.lastRunAt
+            ? new Date(entity.data.lastRunAt)
+            : new Date(entity.editedAt),
+        }));
+      if (runs.length > 0) await tx.insert(standingOrderRuns).values(runs);
     },
 
     async restoreExpenseCategories(userId, rows) {
@@ -269,9 +286,9 @@ export function createParanoidRehydrationSourceRepository(
           bookedOn: entity.data.bookedOn,
           description: entity.data.description,
           source: entity.data.source,
-          // Import staging is purge-only. Rehydrating facts never recreates
-          // importer idempotency state, so historic import effects cannot replay.
-          dedupHash: null,
+          dedupHash: entity.data.source.startsWith('import:')
+            ? expenseDedupHash(entity.data)
+            : null,
           createdAt: new Date(entity.data.createdAt),
           updatedAt: new Date(entity.data.updatedAt),
         })),
