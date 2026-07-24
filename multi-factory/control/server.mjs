@@ -39,6 +39,14 @@ import {
   compactUsageHistoryFile,
   queryUsageHistory,
 } from './usage-history.mjs';
+import {
+  evaluateTimerTrigger,
+  evaluateUsageResetTrigger,
+  evaluateUsageThresholdTrigger,
+  timerTriggerDue,
+  usageResetReady,
+  usageThresholdReached,
+} from './trigger-control.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MF_DIR = resolve(__dirname, '..');
@@ -195,6 +203,7 @@ function releaseMfOperation(name, { invalidateRuntime = false, invalidateDocker 
 
 const mfBusyResult = () => ({
   ok: false,
+  busy: true,
   message: `multi-factory operation already in progress (${mfExclusive.current() || 'unknown'})`,
 });
 
@@ -613,6 +622,15 @@ async function writeTriggers(list) {
 }
 const TRIGGER_ACTIONS = new Set(['mode-close-down', 'mode-run-out', 'stop']);
 let triggerBusy = false;
+async function triggerFactoryState() {
+  const docker = await composePs(MF_PROJECT, { fresh: true });
+  return {
+    running: docker.containers.some((container) => /running|paused/i.test(container.state)),
+    // A failed Docker status read is not proof that the factory is down.
+    // Treat it like a retryable collision so persisted trigger state survives.
+    slotBusy: mfExclusive.current() !== null || !!docker.error,
+  };
+}
 async function evalTriggers() {
   if (triggerBusy) return;
   triggerBusy = true;
@@ -620,54 +638,56 @@ async function evalTriggers() {
     const list = await readTriggers();
     if (!list.length) return;
     let changed = false;
-    const { containers } = await composePs(MF_PROJECT);
-    const running = containers.some((c) => /running|paused/i.test(c.state));
     const needsUsage = list.some((t) => t.type === 'usage' && (t.armed || t.waitingReset));
     const u = needsUsage ? await usage() : null;
     for (const t of list) {
-      if (t.type === 'timer' && t.armed && Date.now() >= Date.parse(t.fireAt)) {
-        t.armed = false;
-        t.firedAt = new Date().toISOString();
-        changed = true;
-        if (running) {
-          await clog(`trigger[${t.id}] timer → ${t.action}`);
-          await doAction(t.action);
-        } else {
-          t.note = 'factory was not running at fire time';
-          await clog(`trigger[${t.id}] timer fired but factory not running`);
+      const now = Date.now();
+      if (timerTriggerDue(t, now)) {
+        const state = await triggerFactoryState();
+        const outcome = await evaluateTimerTrigger(t, {
+          now,
+          ...state,
+          performAction: doAction,
+        });
+        if (outcome.changed) {
+          changed = true;
+          if (state.running) {
+            await clog(`trigger[${t.id}] timer → ${t.action}`);
+          } else {
+            await clog(`trigger[${t.id}] timer fired but factory not running`);
+          }
         }
       }
       if (t.type === 'usage' && t.armed) {
-        const m = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
-        if (m && typeof m.pct === 'number' && m.pct >= t.threshold) {
-          t.armed = false;
-          t.firedAt = new Date().toISOString();
-          t.firedResetsAt = m.resetsAt;
-          changed = true;
-          await clog(
-            `trigger[${t.id}] ${t.metric} ${m.pct}% ≥ ${t.threshold}% → ${t.action}${running ? '' : ' (factory already down)'}`,
-          );
-          if (running) await doAction(t.action);
-          if (t.onReset === 'start') t.waitingReset = true;
+        const metric = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
+        if (usageThresholdReached(t, metric)) {
+          const state = await triggerFactoryState();
+          const outcome = await evaluateUsageThresholdTrigger(t, metric, {
+            now,
+            ...state,
+            performAction: doAction,
+          });
+          if (outcome.changed) {
+            changed = true;
+            await clog(
+              `trigger[${t.id}] ${t.metric} ${metric.pct}% ≥ ${t.threshold}% → ${t.action}${state.running ? '' : ' (factory already down)'}`,
+            );
+          }
         }
       } else if (t.type === 'usage' && t.waitingReset) {
-        const m = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
-        const newWindow =
-          m &&
-          (Date.parse(m.resetsAt) > Date.parse(t.firedResetsAt || 0) + 60000 ||
-            (typeof m.pct === 'number' && m.pct < Math.min(t.threshold / 2, 10)));
-        if (newWindow) {
-          t.waitingReset = false;
+        const metric = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
+        if (usageResetReady(t, metric)) {
+          const state = await triggerFactoryState();
+          const outcome = await evaluateUsageResetTrigger(t, metric, {
+            ...state,
+            performAction: doAction,
+          });
+          if (!outcome.changed) continue;
           changed = true;
-          const mfNow = await composePs(MF_PROJECT);
-          const upNow = mfNow.containers.some((c) => /running|paused/i.test(c.state));
-          if (!upNow) {
+          if (!state.running) {
             await clog(`trigger[${t.id}] new ${t.metric} window → start`);
-            await doAction('start');
           }
           if (t.repeat) {
-            t.armed = true;
-            t.firedAt = null;
             await clog(`trigger[${t.id}] re-armed (repeat)`);
           }
         }
