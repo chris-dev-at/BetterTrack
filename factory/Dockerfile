@@ -5,7 +5,11 @@ RUN apt-get update && apt-get install -y git curl jq \
  && echo "deb [signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update && apt-get install -y gh && rm -rf /var/lib/apt/lists/* \
- && corepack enable && npm install -g @anthropic-ai/claude-code @openai/codex
+ && corepack enable \
+ && npm install -g \
+      @anthropic-ai/claude-code@2.1.218 \
+      @openai/codex@0.145.0 \
+      @musistudio/claude-code-router@3.0.7
 # Own /work (incl. the /work/state volume mountpoint) as the unprivileged user, so
 # a fresh named volume mounted at /work/state inherits factory ownership and is writable.
 RUN useradd -m factory && mkdir -p /work/state && chown -R factory:factory /work
@@ -15,6 +19,8 @@ USER factory
 # into /home/factory/.gemini at runtime).
 ENV HOME=/home/factory
 ENV PATH="/home/factory/.local/bin:${PATH}"
+ENV CCR_EXPECTED_VERSION=3.0.7
+ENV CCR_FACTORY_PROFILE=bettertrack-factory-claudex
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 WORKDIR /work
 COPY --chown=factory run.sh lib.sh /work/

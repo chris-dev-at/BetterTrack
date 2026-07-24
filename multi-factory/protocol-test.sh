@@ -72,6 +72,12 @@ check "Codex success ledger outcome" ok "$LAST_LEDGER_OUTCOME"
 grep -q -- '--ephemeral' "$CODEX_ARGS_FILE" \
   && ok "Codex invocation is ephemeral" || bad "Codex invocation should use --ephemeral"
 check "Codex telemetry tags provider" codex "$(jq -r .provider <<<"$LAST_LEDGER_RES")"
+check "Codex telemetry tags OpenAI family" openai \
+  "$(jq -r .provider_family <<<"$LAST_LEDGER_RES")"
+check "Codex telemetry tags native harness" codex-cli \
+  "$(jq -r .harness <<<"$LAST_LEDGER_RES")"
+check "Codex telemetry tags subscription billing" subscription \
+  "$(jq -r .billing <<<"$LAST_LEDGER_RES")"
 check "Codex telemetry carries usage schema marker" 2 \
   "$(jq -r .codex_usage_schema <<<"$LAST_LEDGER_RES")"
 check "Codex telemetry marks output as reasoning-inclusive" inclusive-reasoning \
@@ -112,6 +118,9 @@ CODEX_LEDGER_RES=$LAST_LEDGER_RES LEDGER=$T/future-ledger.jsonl FACTORY_NAME=mul
 FUTURE_ROW=$(<"$T/future-ledger.jsonl")
 check "future ledger keeps subscription spend at zero" 0 "$(jq -r .cost_usd <<<"$FUTURE_ROW")"
 check "future ledger writes provider separately" codex "$(jq -r .provider <<<"$FUTURE_ROW")"
+check "future ledger persists OpenAI family" openai "$(jq -r .provider_family <<<"$FUTURE_ROW")"
+check "future ledger persists native Codex harness" codex-cli "$(jq -r .harness <<<"$FUTURE_ROW")"
+check "future ledger persists subscription billing" subscription "$(jq -r .billing <<<"$FUTURE_ROW")"
 check "future ledger persists usage schema marker" 2 \
   "$(jq -r .codex_usage_schema <<<"$FUTURE_ROW")"
 check "future ledger persists inclusive-output semantics" inclusive-reasoning \

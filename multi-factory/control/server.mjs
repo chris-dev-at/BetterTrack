@@ -15,6 +15,38 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { buildUsageAnalytics, parseUsageRange } from './usage-analytics.mjs';
+import {
+  DIFFICULTIES,
+  defaultRouteForProvider,
+  normalizeModelRouting,
+  normalizeRouteEntry,
+  publicProviderRegistry,
+  validateRouteEntry,
+} from './provider-registry.mjs';
+import {
+  buildClaudexStatus,
+  claudexProviderTestInvocation,
+  claudexRuntimeStatusInvocation,
+  createExclusiveOperation,
+  parseClaudexTestOutput,
+  parseClaudexRuntimeOutput,
+  readRuntimeProofCache,
+  runningMasterContainer,
+  sanitizeClaudexLastTest,
+} from './claudex-control.mjs';
+import {
+  appendUsageHistory,
+  compactUsageHistoryFile,
+  queryUsageHistory,
+} from './usage-history.mjs';
+import {
+  evaluateTimerTrigger,
+  evaluateUsageResetTrigger,
+  evaluateUsageThresholdTrigger,
+  timerTriggerDue,
+  usageResetReady,
+  usageThresholdReached,
+} from './trigger-control.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MF_DIR = resolve(__dirname, '..');
@@ -23,9 +55,14 @@ const STATE = join(MF_DIR, 'state');
 const CONTROL = join(STATE, 'control');
 const LEDGER = join(REPO_ROOT, 'factory', 'usage', 'ledger.jsonl');
 const CONTROL_LOG = join(STATE, 'logs', 'control.log');
+const PROVIDER_TESTS_FILE = join(CONTROL, 'provider-tests.json');
+const CLAUDEX_MARKER = join(MF_DIR, 'auth', 'master', 'ccr', 'factory-status.json');
+const USAGE_HISTORY_FILE = join(CONTROL, 'usage-history.json');
 const PORT = Number(process.env.MF_CONTROL_PORT || 8790);
 const MF_PROJECT = 'bettertrack-multifactory';
 const SF_PROJECT = 'bettertrack-factory';
+const inflight = new Map(); // operation name → started_at
+const mfExclusive = createExclusiveOperation();
 
 const run = (cmd, args, opts = {}) =>
   new Promise((res) => {
@@ -129,9 +166,65 @@ async function readProtocolState() {
 }
 
 // ---- docker ----------------------------------------------------------------------
-async function composePs(project) {
+const composeCache = new Map();
+const COMPOSE_STATUS_TTL = Number(process.env.MF_DOCKER_STATUS_TTL_MS || 2000);
+const CLAUDEX_RUNTIME_STATUS_TTL = Number(process.env.MF_CLAUDEX_STATUS_TTL_MS || 20000);
+let claudexRuntimeCache = {
+  containerId: null,
+  at: 0,
+  data: null,
+  pending: null,
+};
+
+function invalidateClaudexRuntimeCache() {
+  claudexRuntimeCache = {
+    containerId: null,
+    at: 0,
+    data: null,
+    pending: null,
+  };
+}
+
+function reserveMfOperation(name, { invalidateRuntime = false, invalidateDocker = false } = {}) {
+  if (!mfExclusive.reserve(name)) return false;
+  if (invalidateRuntime) invalidateClaudexRuntimeCache();
+  if (invalidateDocker) composeCache.delete(MF_PROJECT);
+  inflight.set(name, Date.now());
+  return true;
+}
+
+function releaseMfOperation(name, { invalidateRuntime = false, invalidateDocker = false } = {}) {
+  if (mfExclusive.current() !== name) return false;
+  if (invalidateRuntime) invalidateClaudexRuntimeCache();
+  if (invalidateDocker) composeCache.delete(MF_PROJECT);
+  inflight.delete(name);
+  return mfExclusive.release(name);
+}
+
+const mfBusyResult = () => ({
+  ok: false,
+  busy: true,
+  message: `multi-factory operation already in progress (${mfExclusive.current() || 'unknown'})`,
+});
+
+async function withMfOperation(name, task, options = {}) {
+  if (!reserveMfOperation(name, options)) return mfBusyResult();
+  try {
+    return await task();
+  } finally {
+    releaseMfOperation(name, options);
+  }
+}
+
+async function composePs(project, { fresh = false } = {}) {
+  const cached = composeCache.get(project);
+  if (!fresh && cached && Date.now() - cached.at < COMPOSE_STATUS_TTL) return cached.data;
   const r = await run('docker', ['compose', '-p', project, 'ps', '-a', '--format', 'json']);
-  if (!r.ok) return { error: r.stderr || r.err, containers: [] };
+  if (!r.ok) {
+    const data = { error: r.stderr || r.err, containers: [] };
+    composeCache.set(project, { at: Date.now(), data });
+    return data;
+  }
   const containers = r.stdout
     .split('\n')
     .filter(Boolean)
@@ -143,8 +236,73 @@ async function composePs(project) {
       }
     })
     .filter(Boolean)
-    .map((c) => ({ name: c.Name, service: c.Service, state: c.State, status: c.Status }));
-  return { containers };
+    .map((c) => ({
+      id: c.ID || null,
+      name: c.Name,
+      service: c.Service,
+      state: c.State,
+      status: c.Status,
+    }));
+  const data = { containers };
+  composeCache.set(project, { at: Date.now(), data });
+  return data;
+}
+
+async function claudexRuntimeProof(multiDocker) {
+  const master = runningMasterContainer(multiDocker);
+  if (!master) {
+    invalidateClaudexRuntimeCache();
+    return null;
+  }
+  const cached = readRuntimeProofCache(
+    claudexRuntimeCache,
+    master.id,
+    Date.now(),
+    CLAUDEX_RUNTIME_STATUS_TTL,
+  );
+  if (cached.hit) return cached.data;
+  if (claudexRuntimeCache.pending && claudexRuntimeCache.containerId === master.id)
+    return claudexRuntimeCache.pending;
+  const operation = `claudex-runtime-status:${master.id || 'uncached'}`;
+  if (!reserveMfOperation(operation)) return null;
+  const pending = (async () => {
+    try {
+      const invocation = claudexRuntimeStatusInvocation({
+        mfDir: MF_DIR,
+        project: MF_PROJECT,
+        override: process.env.MF_COMPOSE_OVERRIDE || '',
+      });
+      const result = await run(invocation.cmd, invocation.args, {
+        timeout: 60000,
+        cwd: MF_DIR,
+      });
+      const data = result.ok ? parseClaudexRuntimeOutput(result.stdout) : null;
+      claudexRuntimeCache = {
+        containerId: master.id,
+        at: Date.now(),
+        data,
+        pending: null,
+      };
+      return data;
+    } catch {
+      claudexRuntimeCache = {
+        containerId: master.id,
+        at: Date.now(),
+        data: null,
+        pending: null,
+      };
+      return null;
+    } finally {
+      releaseMfOperation(operation);
+    }
+  })();
+  claudexRuntimeCache = {
+    containerId: master.id,
+    at: 0,
+    data: null,
+    pending,
+  };
+  return pending;
 }
 
 // ---- GitHub (cached — the dashboard must never rate-limit the factory) ------------
@@ -349,27 +507,22 @@ async function usage() {
         : { error: String(e.message || e).slice(0, 80) };
     }
   }
-  if (!data.error && !data.stale) usageLastGood = data;
+  if (!data.error && !data.stale) {
+    usageLastGood = data;
+    await appendUsageHistory(USAGE_HISTORY_FILE, data).catch(() => {});
+  }
   usageCache = { at: Date.now(), ttl, data };
   return data;
 }
+compactUsageHistoryFile(USAGE_HISTORY_FILE).catch(() => {});
+const usageHistorySampler = setInterval(() => usage().catch(() => {}), Math.max(USAGE_TTL, 60_000));
+usageHistorySampler.unref();
 
 // ---- difficulty → model routing (state/control/models.json) ---------------------------
 // Read fresh by mflib.sh before every agent run, so saving here applies from the
 // NEXT role run without restarting containers. Defaults mirror mflib.sh.
 const MODELS_FILE = join(CONTROL, 'models.json');
-const DIFFS = ['easy', 'normal', 'intermediate', 'hard', 'max'];
-const PROVIDER_EFFORTS = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  gemini: [], // effort is baked into the agy model name, e.g. "Gemini 3.1 Pro (High)"
-};
-// Confirmed from the installed Codex 0.145.0 model catalog on 2026-07-24.
-const CODEX_MODEL_EFFORTS = {
-  'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-  'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
-};
+const DIFFS = DIFFICULTIES;
 const MODEL_DEFAULTS = {
   version: 1,
   difficulties: {
@@ -381,33 +534,24 @@ const MODEL_DEFAULTS = {
   },
   roles: { composer: 'hard', checker: 'hard', reviewFloor: 'intermediate' },
 };
-const validEntry = (e) =>
-  e &&
-  Object.hasOwn(PROVIDER_EFFORTS, e.provider) &&
-  typeof e.model === 'string' &&
-  e.model.trim().length > 0 &&
-  e.model.length <= 120 &&
-  (!e.effort ||
-    (e.provider === 'codex' && CODEX_MODEL_EFFORTS[e.model]
-      ? CODEX_MODEL_EFFORTS[e.model].includes(e.effort)
-      : PROVIDER_EFFORTS[e.provider].includes(e.effort)));
 async function readModels() {
   const raw = (await readJson(MODELS_FILE)) || {};
-  const out = { version: 1, difficulties: {}, roles: { ...MODEL_DEFAULTS.roles } };
-  for (const d of DIFFS) {
-    const e = raw.difficulties?.[d];
-    out.difficulties[d] = validEntry(e)
-      ? { provider: e.provider, model: e.model.trim(), ...(e.effort ? { effort: e.effort } : {}) }
-      : { ...MODEL_DEFAULTS.difficulties[d] };
-  }
-  for (const r of ['composer', 'checker', 'reviewFloor'])
-    if (DIFFS.includes(raw.roles?.[r])) out.roles[r] = raw.roles[r];
-  return out;
+  return normalizeModelRouting(raw, MODEL_DEFAULTS);
+}
+
+async function persistClaudexLastTest(value) {
+  const sanitized = sanitizeClaudexLastTest(value);
+  if (!sanitized) return;
+  await mkdir(CONTROL, { recursive: true });
+  const out = { claudex: sanitized };
+  const tmp = `${PROVIDER_TESTS_FILE}.tmp${Date.now()}`;
+  await writeFile(tmp, JSON.stringify(out, null, 2), { mode: 0o600 });
+  await rename(tmp, PROVIDER_TESTS_FILE);
 }
 
 // ---- provider connection status (host-side — this is what the auth sync copies) --------
 let provCache = { at: 0, data: null };
-async function providerStatus() {
+async function providerStatus(multiDocker) {
   const home = process.env.HOME || '';
   // Connection status is cheap (file existence) — always fresh, so logging in a
   // provider flips it to connected on the very next snapshot instead of after the
@@ -416,6 +560,7 @@ async function providerStatus() {
   // so host presence alone doesn't mean the containers can use it — they get it
   // via `autorun.sh --login-gemini`).
   const codex = existsSync(join(home, '.codex', 'auth.json'));
+  const containerCodex = existsSync(join(MF_DIR, 'auth', 'master', 'codex', 'auth.json'));
   const gemini =
     existsSync(
       join(MF_DIR, 'auth', 'master', 'gemini', 'antigravity-cli', 'antigravity-oauth-token'),
@@ -438,9 +583,23 @@ async function providerStatus() {
     }
     provCache = { at: Date.now(), data: { claudeConnected: claude, agyModels } };
   }
+  const marker = await readJson(CLAUDEX_MARKER);
+  const persistedTests = (await readJson(PROVIDER_TESTS_FILE)) || {};
+  const masterRunning = (multiDocker?.containers || []).some(
+    (container) => container.service === 'master' && /running/i.test(container.state),
+  );
+  const claudex = buildClaudexStatus({
+    codexAuthPresent: containerCodex,
+    marker,
+    lastTest: persistedTests.claudex,
+    masterRunning,
+    runtimeProof:
+      masterRunning && containerCodex ? await claudexRuntimeProof(multiDocker) : undefined,
+  });
   return {
     claude: { connected: provCache.data.claudeConnected },
     codex: { connected: codex },
+    claudex,
     gemini: { connected: gemini },
     agyModels: provCache.data.agyModels,
   };
@@ -463,6 +622,15 @@ async function writeTriggers(list) {
 }
 const TRIGGER_ACTIONS = new Set(['mode-close-down', 'mode-run-out', 'stop']);
 let triggerBusy = false;
+async function triggerFactoryState() {
+  const docker = await composePs(MF_PROJECT, { fresh: true });
+  return {
+    running: docker.containers.some((container) => /running|paused/i.test(container.state)),
+    // A failed Docker status read is not proof that the factory is down.
+    // Treat it like a retryable collision so persisted trigger state survives.
+    slotBusy: mfExclusive.current() !== null || !!docker.error,
+  };
+}
 async function evalTriggers() {
   if (triggerBusy) return;
   triggerBusy = true;
@@ -470,54 +638,56 @@ async function evalTriggers() {
     const list = await readTriggers();
     if (!list.length) return;
     let changed = false;
-    const { containers } = await composePs(MF_PROJECT);
-    const running = containers.some((c) => /running|paused/i.test(c.state));
     const needsUsage = list.some((t) => t.type === 'usage' && (t.armed || t.waitingReset));
     const u = needsUsage ? await usage() : null;
     for (const t of list) {
-      if (t.type === 'timer' && t.armed && Date.now() >= Date.parse(t.fireAt)) {
-        t.armed = false;
-        t.firedAt = new Date().toISOString();
-        changed = true;
-        if (running) {
-          await clog(`trigger[${t.id}] timer → ${t.action}`);
-          await doAction(t.action);
-        } else {
-          t.note = 'factory was not running at fire time';
-          await clog(`trigger[${t.id}] timer fired but factory not running`);
+      const now = Date.now();
+      if (timerTriggerDue(t, now)) {
+        const state = await triggerFactoryState();
+        const outcome = await evaluateTimerTrigger(t, {
+          now,
+          ...state,
+          performAction: doAction,
+        });
+        if (outcome.changed) {
+          changed = true;
+          if (state.running) {
+            await clog(`trigger[${t.id}] timer → ${t.action}`);
+          } else {
+            await clog(`trigger[${t.id}] timer fired but factory not running`);
+          }
         }
       }
       if (t.type === 'usage' && t.armed) {
-        const m = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
-        if (m && typeof m.pct === 'number' && m.pct >= t.threshold) {
-          t.armed = false;
-          t.firedAt = new Date().toISOString();
-          t.firedResetsAt = m.resetsAt;
-          changed = true;
-          await clog(
-            `trigger[${t.id}] ${t.metric} ${m.pct}% ≥ ${t.threshold}% → ${t.action}${running ? '' : ' (factory already down)'}`,
-          );
-          if (running) await doAction(t.action);
-          if (t.onReset === 'start') t.waitingReset = true;
+        const metric = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
+        if (usageThresholdReached(t, metric)) {
+          const state = await triggerFactoryState();
+          const outcome = await evaluateUsageThresholdTrigger(t, metric, {
+            now,
+            ...state,
+            performAction: doAction,
+          });
+          if (outcome.changed) {
+            changed = true;
+            await clog(
+              `trigger[${t.id}] ${t.metric} ${metric.pct}% ≥ ${t.threshold}% → ${t.action}${state.running ? '' : ' (factory already down)'}`,
+            );
+          }
         }
       } else if (t.type === 'usage' && t.waitingReset) {
-        const m = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
-        const newWindow =
-          m &&
-          (Date.parse(m.resetsAt) > Date.parse(t.firedResetsAt || 0) + 60000 ||
-            (typeof m.pct === 'number' && m.pct < Math.min(t.threshold / 2, 10)));
-        if (newWindow) {
-          t.waitingReset = false;
+        const metric = t.metric === 'seven_day' ? u?.sevenDay : u?.fiveHour;
+        if (usageResetReady(t, metric)) {
+          const state = await triggerFactoryState();
+          const outcome = await evaluateUsageResetTrigger(t, metric, {
+            ...state,
+            performAction: doAction,
+          });
+          if (!outcome.changed) continue;
           changed = true;
-          const mfNow = await composePs(MF_PROJECT);
-          const upNow = mfNow.containers.some((c) => /running|paused/i.test(c.state));
-          if (!upNow) {
+          if (!state.running) {
             await clog(`trigger[${t.id}] new ${t.metric} window → start`);
-            await doAction('start');
           }
           if (t.repeat) {
-            t.armed = true;
-            t.firedAt = null;
             await clog(`trigger[${t.id}] re-armed (repeat)`);
           }
         }
@@ -540,7 +710,13 @@ async function usageAnalytics(options = {}) {
     typeof options.codexModel === 'string' && options.codexModel.length <= 120
       ? options.codexModel
       : 'all';
-  const cacheKey = `${codexRange ?? 'all'}|${codexModel}`;
+  const filters = Object.fromEntries(
+    ['provider', 'providerFamily', 'harness', 'model', 'role', 'issue'].map((key) => [
+      key,
+      typeof options[key] === 'string' && options[key].length <= 120 ? options[key] : 'all',
+    ]),
+  );
+  const cacheKey = JSON.stringify([codexRange ?? 'all', codexModel, filters]);
   const cached = analyticsCache.get(cacheKey);
   if (cached && Date.now() - cached.at < 60000) return cached.data;
   let rows = [];
@@ -562,6 +738,8 @@ async function usageAnalytics(options = {}) {
   const data = buildUsageAnalytics(rows, {
     codexRange: codexRange ?? 'all',
     codexModel,
+    openAiRange: codexRange ?? 'all',
+    ...filters,
   });
   analyticsCache.set(cacheKey, { at: Date.now(), data });
   return data;
@@ -569,9 +747,8 @@ async function usageAnalytics(options = {}) {
 
 // ---- snapshot ------------------------------------------------------------------------
 let lastAutoAction = null;
-const inflight = new Map(); // action name → started_at
 async function snapshot() {
-  const [protocol, mf, sf, gh, led, usg, triggers, desired, masterActivity, models, providers] =
+  const [protocol, mf, sf, gh, led, usg, triggers, desired, masterActivity, models] =
     await Promise.all([
       readProtocolState(),
       composePs(MF_PROJECT),
@@ -583,8 +760,8 @@ async function snapshot() {
       desiredWorkers(),
       readJson(join(STATE, 'status', 'master.json')),
       readModels(),
-      providerStatus(),
     ]);
+  const providers = await providerStatus(mf);
   return {
     now: new Date().toISOString(),
     protocol: { ...protocol, masterActivity },
@@ -598,6 +775,7 @@ async function snapshot() {
     lastAutoAction,
     models,
     providers,
+    providerRegistry: publicProviderRegistry(),
   };
 }
 
@@ -612,16 +790,28 @@ async function setMode(mode) {
 }
 
 function spawnLogged(name, cmd, args, cwd) {
-  if (inflight.has(name)) return { ok: false, message: `${name} already in progress` };
-  inflight.set(name, Date.now());
-  const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const options = { invalidateRuntime: true, invalidateDocker: true };
+  if (!reserveMfOperation(name, options)) return mfBusyResult();
+  let child;
+  try {
+    child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    releaseMfOperation(name, options);
+    return { ok: false, message: `${name} failed to start: ${error.message}` };
+  }
   const sink = (d) => clog(`[${name}] ${String(d).trimEnd()}`);
-  child.stdout.on('data', sink);
-  child.stderr.on('data', sink);
-  child.on('close', (code) => {
-    inflight.delete(name);
-    clog(`[${name}] exited ${code}`);
-  });
+  child.stdout?.on('data', sink);
+  child.stderr?.on('data', sink);
+  let finished = false;
+  const finish = (message) => {
+    if (finished) return;
+    finished = true;
+    releaseMfOperation(name, options);
+    void clog(`[${name}] ${message}`);
+  };
+  child.on('error', (error) => finish(`failed: ${error.message}`));
+  child.on('close', (code) => finish(`exited ${code}`));
+  void clog(`[${name}] started`);
   return { ok: true, message: `${name} started (see state/logs/control.log)` };
 }
 
@@ -630,7 +820,6 @@ async function doAction(action, payload = {}) {
     case 'start':
       return spawnLogged('start', 'bash', ['autorun.sh'], MF_DIR);
     case 'restart':
-      await clog('restart (apply settings)');
       return spawnLogged('restart', 'bash', ['-c', './autorun.sh --down && ./autorun.sh'], MF_DIR);
     case 'set-workers': {
       const n = parseInt(payload.value, 10);
@@ -697,13 +886,9 @@ async function doAction(action, payload = {}) {
       const out = { version: 1, difficulties: {}, roles: {} };
       for (const d of DIFFS) {
         const e = m.difficulties?.[d];
-        if (!validEntry(e))
+        if (!validateRouteEntry(e))
           return { ok: false, message: `invalid provider/model/effort for '${d}'` };
-        out.difficulties[d] = {
-          provider: e.provider,
-          model: e.model.trim(),
-          ...(e.effort ? { effort: e.effort } : {}),
-        };
+        out.difficulties[d] = normalizeRouteEntry(e);
       }
       const roles = m.roles || {};
       out.roles = {
@@ -721,17 +906,23 @@ async function doAction(action, payload = {}) {
       return { ok: true, message: 'model routing saved — applies from the next agent run' };
     }
     case 'test-provider': {
-      // Probe the selected route, not a hard-coded cheap model. Autorun syncs
-      // these host credentials into the containers.
       const p = String(payload.provider || '');
       const routes = await readModels();
-      const selected =
+      const configured =
         DIFFS.map((d) => routes.difficulties[d]).find((e) => e.provider === p) ||
-        (p === 'claude'
-          ? { model: 'claude-sonnet-5', effort: 'high' }
-          : p === 'codex'
-            ? { model: 'gpt-5.6-terra', effort: 'medium' }
-            : { model: 'Gemini 3.5 Flash (Low)' });
+        defaultRouteForProvider(p);
+      const requested = {
+        provider: p,
+        model: typeof payload.model === 'string' ? payload.model : configured?.model,
+        ...(p === 'gemini'
+          ? {}
+          : {
+              effort:
+                typeof payload.effort === 'string' ? payload.effort : configured?.effort || 'high',
+            }),
+      };
+      const selected = normalizeRouteEntry(requested);
+      if (!selected) return { ok: false, message: 'invalid provider/model/effort' };
       let r;
       if (p === 'claude')
         r = await run(
@@ -764,7 +955,70 @@ async function doAction(action, payload = {}) {
           ],
           { timeout: 90000 },
         );
-      else if (p === 'gemini')
+      else if (p === 'claudex') {
+        return withMfOperation(
+          'test-provider-claudex',
+          async () => {
+            const mf = await composePs(MF_PROJECT, { fresh: true });
+            const master = mf.containers.find((container) => container.service === 'master');
+            if (master && /paused/i.test(master.state))
+              return { ok: false, message: 'resume the paused master before testing ClaudeX' };
+            const otherLive = mf.containers.some(
+              (container) =>
+                container.service !== 'master' && /running|paused/i.test(container.state),
+            );
+            const masterRunning = !!master && /running/i.test(master.state);
+            if (!masterRunning && otherLive)
+              return {
+                ok: false,
+                message:
+                  'factory containers are partially running; restart them before testing ClaudeX',
+              };
+            const invocation = claudexProviderTestInvocation({
+              mfDir: MF_DIR,
+              project: MF_PROJECT,
+              model: selected.model,
+              effort: selected.effort,
+              override: process.env.MF_COMPOSE_OVERRIDE || '',
+              running: masterRunning,
+            });
+            const result = await run(invocation.cmd, invocation.args, {
+              timeout: 300000,
+              cwd: MF_DIR,
+            });
+            const parsed = result.ok
+              ? parseClaudexTestOutput(result.stdout, selected.model)
+              : { ok: false, reason: 'provider-test-failed' };
+            const testedAt = new Date().toISOString();
+            if (!parsed.ok) {
+              await persistClaudexLastTest({
+                ok: false,
+                model: selected.model,
+                effort: selected.effort,
+                testedAt,
+                runtimeReady: false,
+                reason: parsed.reason,
+              });
+              await clog(`test-provider claudex ${selected.model}@${selected.effort} → FAILED`);
+              return {
+                ok: false,
+                message: `claudex test failed (${parsed.reason || 'provider-test-failed'})`,
+              };
+            }
+            await persistClaudexLastTest({
+              ...parsed.result,
+              effort: selected.effort,
+              testedAt: parsed.result.testedAt || testedAt,
+            });
+            await clog(`test-provider claudex ${selected.model}@${selected.effort} → ok`);
+            return {
+              ok: true,
+              message: `claudex works via ${parsed.result.modelUsage[0]}@${selected.effort}`,
+            };
+          },
+          { invalidateRuntime: true, invalidateDocker: true },
+        );
+      } else if (p === 'gemini')
         r = await run('agy', ['-p', 'Reply with exactly: ok', '--model', selected.model], {
           timeout: 120000,
           cwd: MF_DIR,
@@ -803,31 +1057,57 @@ async function doAction(action, payload = {}) {
     case 'start-dry':
       return spawnLogged('start-dry', 'bash', ['autorun.sh', '--dry'], MF_DIR);
     case 'stop':
-      await clog('stop');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'stop'], { timeout: 120000 })),
-        message: 'multi-factory stopped',
-      };
+      return withMfOperation(
+        'stop',
+        async () => {
+          await clog('stop');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'stop'], {
+              timeout: 120000,
+            })),
+            message: 'multi-factory stopped',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'down':
-      await clog('down');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'down', '--remove-orphans'], {
-          timeout: 120000,
-        })),
-        message: 'multi-factory removed',
-      };
+      return withMfOperation(
+        'down',
+        async () => {
+          await clog('down');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'down', '--remove-orphans'], {
+              timeout: 120000,
+            })),
+            message: 'multi-factory removed',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'pause':
-      await clog('pause');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'pause'])),
-        message: 'paused',
-      };
+      return withMfOperation(
+        'pause',
+        async () => {
+          await clog('pause');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'pause'])),
+            message: 'paused',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'unpause':
-      await clog('unpause');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'unpause'])),
-        message: 'resumed',
-      };
+      return withMfOperation(
+        'unpause',
+        async () => {
+          await clog('unpause');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'unpause'])),
+            message: 'resumed',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'mode-run':
       return setMode('run');
     case 'mode-run-out':
@@ -850,6 +1130,7 @@ let drainedSince = 0;
 let autoDownBusy = false;
 setInterval(async () => {
   if (autoDownBusy) return; // compose down takes ~10s; don't re-fire mid-teardown
+  let operationReserved = false;
   try {
     const phase = await readText(join(CONTROL, 'phase'));
     if (phase !== 'drained') {
@@ -867,6 +1148,9 @@ setInterval(async () => {
       return;
     } // debounce one interval
     if (Date.now() - drainedSince < 8000 || inflight.size) return;
+    const options = { invalidateRuntime: true, invalidateDocker: true };
+    if (!reserveMfOperation('auto-down', options)) return;
+    operationReserved = true;
     autoDownBusy = true;
     lastAutoAction = { action: 'auto-down (phase=drained)', at: new Date().toISOString() };
     await clog('auto-down: phase=drained — downing compose project');
@@ -877,6 +1161,8 @@ setInterval(async () => {
   } catch {
     /* watcher must survive transient docker/fs errors */
   } finally {
+    if (operationReserved)
+      releaseMfOperation('auto-down', { invalidateRuntime: true, invalidateDocker: true });
     autoDownBusy = false;
   }
 }, 5000);
@@ -915,6 +1201,13 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(readFileSync(join(__dirname, 'index.html')));
+    } else if (req.method === 'GET' && url.pathname === '/api/usage/history') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify(
+          await queryUsageHistory(USAGE_HISTORY_FILE, url.searchParams.get('hours') || '168'),
+        ),
+      );
     } else if (req.method === 'GET' && url.pathname === '/api/usage') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
@@ -922,6 +1215,13 @@ const server = createServer(async (req, res) => {
           await usageAnalytics({
             codexRange: url.searchParams.get('range') || '14',
             codexModel: url.searchParams.get('model') || 'all',
+            provider: url.searchParams.get('provider') || 'all',
+            providerFamily:
+              url.searchParams.get('providerFamily') || url.searchParams.get('family') || 'all',
+            harness: url.searchParams.get('harness') || 'all',
+            model: url.searchParams.get('model') || 'all',
+            role: url.searchParams.get('role') || 'all',
+            issue: url.searchParams.get('issue') || 'all',
           }),
         ),
       );
