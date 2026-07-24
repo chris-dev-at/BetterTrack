@@ -88,8 +88,13 @@ case "${CLAUDEX_CASE:-ok}" in
     printf '%s\n' \
       'X-CCR-Web-Auth: HEADER_AUTH_SENTINEL' \
       'AUTHORIZATION: Bearer BEARER_SENTINEL' \
+      'Authorization: Basic BASIC_SENTINEL' \
+      'aUtHoRiZaTiOn: Token68 ARBITRARY_AUTH_SENTINEL' \
+      'authorization-credential-echo=BASIC_SENTINEL' \
       'Access_Token: ACCESS_HEADER_SENTINEL' \
       'Refresh-Token=REFRESH_HEADER_SENTINEL' \
+      'iD-ToKeN=ID_TOKEN_PLAIN_SENTINEL' \
+      'cLiEnT-SeCrEt: CLIENT_SECRET_SENTINEL' \
       'x-api-key: X_API_SENTINEL' \
       'api_key=API_KEY_SENTINEL' \
       'http://127.0.0.1:3458/?ccr_web_token=CCR_URL_SENTINEL&safe=1' \
@@ -97,8 +102,14 @@ case "${CLAUDEX_CASE:-ok}" in
       'https://example.invalid/callback?X-CCR-WEB-AUTH=QUERY_AUTH_SENTINEL' \
       'https://example.invalid/callback?Authorization=Bearer%20QUERY_BEARER_SENTINEL' \
       '{"ACCESS_TOKEN":"JSON_ACCESS_SENTINEL","refreshToken":"JSON_REFRESH_SENTINEL","echo":"JSON_ACCESS_SENTINEL","modelUsage":{"codex-api/gpt-5.6-sol":{"inputTokens":22}}}' \
+      '{"Id_ToKeN":"ID_TOKEN_SENTINEL","echo":"ID_TOKEN_SENTINEL","result":"benign-id-token-telemetry"}' \
+      '"{\"ClIeNt_SeCrEt\":\"CLIENT_SECRET_SENTINEL\",\"echo\":\"CLIENT_SECRET_SENTINEL\",\"result\":\"benign-client-telemetry\"}"' \
+      '"{\"AuThOrIzAtIoN\":\"Basic ESCAPED_BASIC_SENTINEL\",\"echo\":\"ESCAPED_BASIC_SENTINEL\",\"result\":\"benign-auth-escaped\"}"' \
       '"{\"X-CCR-Web-Auth\":\"ESCAPED_AUTH_SENTINEL\",\"result\":\"benign-escaped-telemetry\"}"' \
-      'nested={\\\"refresh_token\\\":\\\"DOUBLE_ESCAPE_SENTINEL\\\"}'
+      'nested={\\\"refresh_token\\\":\\\"DOUBLE_ESCAPE_SENTINEL\\\"}' \
+      'Authorization: [redacted]' \
+      '{"id_token":"[redacted]","client_secret":"[redacted]","result":"benign-redacted-json"}' \
+      '"{\"Authorization\":\"[redacted]\",\"id_token\":\"[redacted]\",\"result\":\"benign-redacted-escaped\"}"'
     ok_result
     exit 0;;
   limit-then-ok)
@@ -209,8 +220,12 @@ cc_claudex gpt-5.6-sol high prompt
 check "adversarial secret fixture still yields a valid result" 0 "$?"
 check "no literal secret sentinel survives in the durable log" 0 \
   "$(grep -Ec \
-    'HEADER_AUTH_SENTINEL|BEARER_SENTINEL|ACCESS_HEADER_SENTINEL|REFRESH_HEADER_SENTINEL|X_API_SENTINEL|API_KEY_SENTINEL|CCR_URL_SENTINEL|REMOTE_URL_SENTINEL|QUERY_AUTH_SENTINEL|QUERY_BEARER_SENTINEL|JSON_ACCESS_SENTINEL|JSON_REFRESH_SENTINEL|ESCAPED_AUTH_SENTINEL|DOUBLE_ESCAPE_SENTINEL' \
+    'HEADER_AUTH_SENTINEL|BEARER_SENTINEL|BASIC_SENTINEL|ESCAPED_BASIC_SENTINEL|ARBITRARY_AUTH_SENTINEL|ACCESS_HEADER_SENTINEL|REFRESH_HEADER_SENTINEL|CLIENT_SECRET_SENTINEL|ID_TOKEN_SENTINEL|ID_TOKEN_PLAIN_SENTINEL|X_API_SENTINEL|API_KEY_SENTINEL|CCR_URL_SENTINEL|REMOTE_URL_SENTINEL|QUERY_AUTH_SENTINEL|QUERY_BEARER_SENTINEL|JSON_ACCESS_SENTINEL|JSON_REFRESH_SENTINEL|ESCAPED_AUTH_SENTINEL|DOUBLE_ESCAPE_SENTINEL' \
     "$LOG" 2>/dev/null || true)"
+check "Authorization values are entirely redacted for every scheme" 0 \
+  "$(grep -Eic 'authorization[^[:cntrl:]]*(Bearer|Basic|Token68)' "$LOG" || true)"
+check "already-redacted placeholders never grow closing brackets" 0 \
+  "$(grep -Ec '\[redacted\]\]+' "$LOG" || true)"
 grep -q '\[redacted-url\]' "$LOG" \
   && ok "token-bearing and CCR service URLs are redacted" \
   || bad "sensitive URLs survived or were not marked"
@@ -223,6 +238,21 @@ grep -q 'inputTokens' "$LOG" \
 grep -q 'benign-escaped-telemetry' "$LOG" \
   && ok "benign escaped JSON content survives redaction" \
   || bad "benign escaped JSON content was destroyed"
+grep -q 'benign-id-token-telemetry' "$LOG" \
+  && ok "benign ID-token-adjacent telemetry survives redaction" \
+  || bad "benign ID-token-adjacent telemetry was destroyed"
+grep -q 'benign-client-telemetry' "$LOG" \
+  && ok "benign client-secret-adjacent telemetry survives redaction" \
+  || bad "benign client-secret-adjacent telemetry was destroyed"
+grep -q 'benign-auth-escaped' "$LOG" \
+  && ok "benign escaped Authorization telemetry survives redaction" \
+  || bad "benign escaped Authorization telemetry was destroyed"
+"$REAL_NODE" "$MF_CLAUDEX_REDACTOR_SCRIPT" <"$LOG" >"$T/provider.redacted-again"
+if cmp -s "$LOG" "$T/provider.redacted-again"; then
+  ok "redaction is byte-idempotent across repeated passes"
+else
+  bad "redaction changed an already-redacted durable log"
+fi
 
 rm -f "$T/claudex-ledger.jsonl"
 CLAUDEX_LEDGER_RES=$LAST_LEDGER_RES LEDGER=$T/claudex-ledger.jsonl \

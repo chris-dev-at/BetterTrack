@@ -8,15 +8,23 @@ const SECRET_KEYS = new Set([
   'authorization',
   'accesstoken',
   'refreshtoken',
+  'idtoken',
+  'clientsecret',
   'xapikey',
   'apikey',
 ]);
 const SECRET_KEY_SOURCE =
-  '(?:x[-_]?ccr[-_]?web[-_]?auth|ccr[-_]?web[-_]?token|authorization|access[-_]?token|refresh[-_]?token|x[-_]?api[-_]?key|api[-_]?key)';
+  '(?:x[-_]?ccr[-_]?web[-_]?auth|ccr[-_]?web[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|x[-_]?api[-_]?key|api[-_]?key)';
+const REDACTED_VALUE_SOURCE = String.raw`\[redacted(?:-url)?\]+`;
 const ASSIGNMENT_PATTERN = new RegExp(
-  `(${SECRET_KEY_SOURCE}(?:\\\\+)?["']?\\s*[:=]\\s*(?:\\\\+)?["']?(?:Bearer(?:\\s+|%20|\\\\u0020|\\\\+)+)?)([^,\\s&}\\]"'\\\\<>]+)`,
+  `(${SECRET_KEY_SOURCE}(?:\\\\+)?["']?\\s*[:=]\\s*(?:\\\\+)?["']?)(${REDACTED_VALUE_SOURCE}|[^,\\s&}\\]"'\\\\<>]+)`,
   'gi',
 );
+const AUTHORIZATION_PATTERN = new RegExp(
+  `((?:\\\\+)?["']?authorization(?:\\\\+)?["']?\\s*[:=]\\s*(?:\\\\+)?["']?)(${REDACTED_VALUE_SOURCE}|[^,\\r\\n&}\\]"'\\\\<>]+)`,
+  'gi',
+);
+const AUTHORIZATION_HEADER_PATTERN = /^(\s*authorization\s*[:=]\s*)([^\r\n]*)$/gim;
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>\\]+/gi;
 
 function normalizedKey(key) {
@@ -29,6 +37,10 @@ function isSecretKey(key) {
   return SECRET_KEYS.has(normalizedKey(key));
 }
 
+function isRedactedValue(value) {
+  return /^\[redacted(?:-url)?\]+$/i.test(value.trim());
+}
+
 function addSecret(secrets, value) {
   if (typeof value !== 'string') return;
   const candidates = [value.trim(), value.trim().replace(/^Bearer\s+/i, '')];
@@ -38,9 +50,28 @@ function addSecret(secrets, value) {
     // A malformed percent-encoding is still covered by the original value.
   }
   for (const candidate of candidates) {
-    if (candidate && candidate !== '[redacted]' && candidate.length >= 3) {
+    if (candidate && !isRedactedValue(candidate) && candidate.length >= 3) {
       secrets.add(candidate);
     }
+  }
+}
+
+function addAuthorizationSecret(secrets, value) {
+  if (typeof value !== 'string' || isRedactedValue(value)) return;
+  const candidates = new Set([value.trim()]);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (const candidate of [...candidates]) {
+      try {
+        candidates.add(decodeURIComponent(candidate));
+      } catch {
+        // A malformed percent-encoding is still covered by the original value.
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    addSecret(secrets, candidate);
+    const credential = candidate.match(/^[A-Za-z][A-Za-z0-9._~+-]*\s+(.+)$/s)?.[1];
+    if (credential) addSecret(secrets, credential);
   }
 }
 
@@ -55,6 +86,14 @@ function nestedJson(value) {
 }
 
 function collectTextSecrets(text, secrets) {
+  AUTHORIZATION_HEADER_PATTERN.lastIndex = 0;
+  for (const match of text.matchAll(AUTHORIZATION_HEADER_PATTERN)) {
+    addAuthorizationSecret(secrets, match[2]);
+  }
+  AUTHORIZATION_PATTERN.lastIndex = 0;
+  for (const match of text.matchAll(AUTHORIZATION_PATTERN)) {
+    addAuthorizationSecret(secrets, match[2]);
+  }
   ASSIGNMENT_PATTERN.lastIndex = 0;
   for (const match of text.matchAll(ASSIGNMENT_PATTERN)) {
     addSecret(secrets, match[2]);
@@ -69,7 +108,8 @@ function collectStructuredSecrets(value, secrets, depth = 0) {
   }
   if (typeof value === 'object') {
     for (const [key, item] of Object.entries(value)) {
-      if (isSecretKey(key)) addSecret(secrets, item);
+      if (normalizedKey(key) === 'authorization') addAuthorizationSecret(secrets, item);
+      else if (isSecretKey(key)) addSecret(secrets, item);
       else collectStructuredSecrets(item, secrets, depth + 1);
     }
     return;
@@ -97,7 +137,7 @@ function decodedForInspection(value) {
 function sensitiveUrl(value) {
   const inspected = decodedForInspection(value);
   if (
-    /(?:^|[?&])(x[-_]?ccr[-_]?web[-_]?auth|ccr[-_]?web[-_]?token|access[-_]?token|refresh[-_]?token|x[-_]?api[-_]?key|api[-_]?key|authorization)=/i.test(
+    /(?:^|[?&])(x[-_]?ccr[-_]?web[-_]?auth|ccr[-_]?web[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|x[-_]?api[-_]?key|api[-_]?key|authorization)=/i.test(
       inspected,
     )
   ) {
@@ -121,6 +161,10 @@ function sensitiveUrl(value) {
 function redactText(text, secrets) {
   collectTextSecrets(text, secrets);
   let result = text.replace(URL_PATTERN, (url) => (sensitiveUrl(url) ? '[redacted-url]' : url));
+  AUTHORIZATION_HEADER_PATTERN.lastIndex = 0;
+  result = result.replace(AUTHORIZATION_HEADER_PATTERN, '$1[redacted]');
+  AUTHORIZATION_PATTERN.lastIndex = 0;
+  result = result.replace(AUTHORIZATION_PATTERN, '$1[redacted]');
   ASSIGNMENT_PATTERN.lastIndex = 0;
   result = result.replace(ASSIGNMENT_PATTERN, '$1[redacted]');
 
