@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
     <title>BetterTrack Multi-Factory — Control</title>
     <style>
       :root {
@@ -837,35 +838,1409 @@
         padding-left: 10px;
         line-height: 1.55;
       }
+
+      /* ==========================================================================
+         Operations console — visual system and responsive shell
+         ========================================================================== */
+      :root {
+        color-scheme: dark;
+        --bg: #071012;
+        --surface: #0d181c;
+        --surface2: #122126;
+        --surface3: #172a30;
+        --border: #263a40;
+        --border-strong: #385159;
+        --ink: #f0f7f4;
+        --ink2: #b8c9c4;
+        --muted: #82958f;
+        --good: #53d7aa;
+        --warn: #f2bd68;
+        --serious: #f19472;
+        --crit: #ff7180;
+        --accent: #72d5ff;
+        --accent-soft: rgba(114, 213, 255, 0.12);
+        --violet: #bd9cff;
+        --master: #66dfb1;
+        --w1: #72d5ff;
+        --w2: #c59cff;
+        --w3: #f3c574;
+        --w4: #69dbc8;
+        --sidebar: 248px;
+        --radius: 16px;
+        --shadow: 0 18px 60px rgba(0, 0, 0, 0.2);
+      }
+      html {
+        background: var(--bg);
+        scroll-behavior: smooth;
+      }
+      body {
+        min-height: 100vh;
+        padding: 0;
+        background:
+          radial-gradient(circle at 88% -8%, rgba(51, 139, 158, 0.13), transparent 32rem),
+          radial-gradient(circle at 28% 105%, rgba(69, 120, 105, 0.1), transparent 36rem), var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.5 Inter,
+          ui-sans-serif,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        letter-spacing: -0.005em;
+      }
+      body::before {
+        content: '';
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.025;
+        background-image: linear-gradient(rgba(255, 255, 255, 0.5) 1px, transparent 1px);
+        background-size: 100% 4px;
+        z-index: 99;
+      }
+      .skip-link {
+        position: fixed;
+        top: 8px;
+        left: calc(var(--sidebar) + 16px);
+        z-index: 1000;
+        transform: translateY(-150%);
+        border-radius: 9px;
+        padding: 8px 12px;
+        background: var(--ink);
+        color: var(--bg);
+        font-weight: 700;
+      }
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
+      }
+      a:hover {
+        color: #a9e6ff;
+      }
+      :where(button, input, select, summary, a):focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+      header {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 40;
+        width: var(--sidebar);
+        height: 100vh;
+        margin: 0;
+        padding: 22px 18px 18px;
+        align-items: stretch;
+        justify-content: flex-start;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        gap: 22px;
+        background: rgba(7, 16, 18, 0.95);
+        border-right: 1px solid rgba(109, 149, 153, 0.18);
+        box-shadow: 12px 0 50px rgba(0, 0, 0, 0.12);
+        backdrop-filter: blur(18px);
+      }
+      header h1 {
+        display: grid;
+        grid-template-columns: 38px 1fr;
+        grid-template-rows: auto auto;
+        align-items: center;
+        gap: 0 11px;
+        margin: 0 3px;
+        font-size: 15px;
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+      }
+      .brand-mark {
+        grid-row: 1 / 3;
+        display: grid;
+        width: 38px;
+        height: 38px;
+        place-items: center;
+        border: 1px solid rgba(114, 213, 255, 0.28);
+        border-radius: 12px;
+        background:
+          linear-gradient(145deg, rgba(114, 213, 255, 0.2), rgba(83, 215, 170, 0.06)),
+          var(--surface);
+        color: var(--accent);
+        box-shadow: inset 0 1px rgba(255, 255, 255, 0.08);
+        font-size: 18px;
+      }
+      .brand-name {
+        color: var(--ink);
+        font-weight: 760;
+      }
+      .brand-sub {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 650;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      header > div {
+        display: flex !important;
+        flex: 1;
+        min-height: 0;
+        align-items: stretch !important;
+        flex-direction: column;
+        gap: 14px !important;
+      }
+      .tabs {
+        display: flex;
+        width: 100%;
+        border: 0;
+        border-radius: 0;
+        overflow: visible;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .tabs::before {
+        content: 'Workspace';
+        margin: 0 10px 7px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+      .tabs button {
+        position: relative;
+        display: grid;
+        width: 100%;
+        min-height: 42px;
+        grid-template-columns: 26px 1fr;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        padding: 9px 11px;
+        background: transparent;
+        color: var(--ink2);
+        font-size: 13px;
+        font-weight: 600;
+        text-align: left;
+      }
+      .tabs button:hover:not(:disabled) {
+        border-color: rgba(114, 213, 255, 0.13);
+        background: rgba(255, 255, 255, 0.025);
+        color: var(--ink);
+      }
+      .tabs button.on {
+        border-color: rgba(114, 213, 255, 0.22);
+        background: linear-gradient(90deg, rgba(114, 213, 255, 0.13), rgba(114, 213, 255, 0.03));
+        color: #f5fbff;
+        font-weight: 720;
+        box-shadow: inset 3px 0 var(--accent);
+      }
+      .nav-glyph {
+        display: inline-grid;
+        width: 24px;
+        height: 24px;
+        place-items: center;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        font:
+          700 10px/1 ui-monospace,
+          monospace;
+        letter-spacing: 0.04em;
+      }
+      .tabs button.on .nav-glyph {
+        background: rgba(114, 213, 255, 0.12);
+        color: var(--accent);
+      }
+      .sidebar-status {
+        display: grid;
+        gap: 7px;
+        margin-top: auto;
+        padding: 12px;
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        background: rgba(13, 24, 28, 0.76);
+      }
+      .sidebar-status .status-line {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .sidebar-status .status-line b {
+        max-width: 126px;
+        overflow: hidden;
+        color: var(--ink2);
+        font-weight: 650;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .live-pill {
+        justify-content: flex-start;
+        margin-top: 2px;
+        border-color: var(--border);
+        background: transparent;
+      }
+      main {
+        display: contents;
+      }
+      .pagehead,
+      main > section.tab,
+      body > .bar,
+      body > .warnbox {
+        width: min(calc(100% - var(--sidebar)), 1640px);
+        margin-left: var(--sidebar);
+      }
+      .pagehead {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        display: flex;
+        min-height: 90px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 22px;
+        padding: 20px clamp(20px, 3vw, 40px) 16px;
+        border-bottom: 1px solid rgba(109, 149, 153, 0.13);
+        background: linear-gradient(180deg, rgba(7, 16, 18, 0.96) 72%, rgba(7, 16, 18, 0.82));
+        backdrop-filter: blur(18px);
+      }
+      .pagehead-copy {
+        min-width: 0;
+      }
+      .eyebrow {
+        margin-bottom: 4px;
+        color: var(--accent);
+        font-size: 10px;
+        font-weight: 760;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      .pagehead h2 {
+        margin: 0;
+        color: var(--ink);
+        font-size: clamp(20px, 2.4vw, 29px);
+        font-weight: 730;
+        letter-spacing: -0.035em;
+        line-height: 1.16;
+      }
+      .pagehead p {
+        max-width: 720px;
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+      .head-health {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: none;
+      }
+      .head-health .pill {
+        min-height: 32px;
+        border-color: var(--border);
+        background: rgba(13, 24, 28, 0.82);
+      }
+      main > section.tab {
+        padding: 8px clamp(20px, 3vw, 40px) 56px;
+      }
+      section.tab {
+        display: none;
+      }
+      section.tab.on {
+        display: block;
+        animation: view-in 180ms ease-out both;
+      }
+      @keyframes view-in {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+      }
+      .section-intro {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 18px;
+        margin: 6px 0 14px;
+      }
+      .section-intro h3 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 690;
+        letter-spacing: -0.02em;
+      }
+      .section-intro p {
+        max-width: 680px;
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .card,
+      .tile,
+      .kpi,
+      #flowwrap {
+        border-color: rgba(100, 137, 142, 0.27);
+        background:
+          linear-gradient(145deg, rgba(255, 255, 255, 0.018), transparent 48%),
+          rgba(13, 24, 28, 0.94);
+        box-shadow: 0 1px rgba(255, 255, 255, 0.025);
+      }
+      .card {
+        border-radius: var(--radius);
+        padding: 16px 17px;
+      }
+      .card:hover {
+        border-color: rgba(104, 153, 159, 0.36);
+      }
+      .card h2 {
+        min-height: 23px;
+        margin: 0 0 13px;
+        color: var(--ink2);
+        font-size: 11px;
+        font-weight: 740;
+        letter-spacing: 0.11em;
+      }
+      .card h2 .hint {
+        font-weight: 500;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .strip {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 11px;
+        margin-bottom: 14px;
+      }
+      .tile {
+        position: relative;
+        min-height: 112px;
+        justify-content: center;
+        gap: 4px;
+        overflow: hidden;
+        border-radius: 14px;
+        padding: 14px 15px;
+      }
+      .tile::after {
+        content: '';
+        position: absolute;
+        right: -24px;
+        bottom: -38px;
+        width: 90px;
+        height: 90px;
+        border-radius: 50%;
+        background: rgba(114, 213, 255, 0.03);
+      }
+      .tile .l,
+      .kpi .l {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 730;
+        letter-spacing: 0.1em;
+      }
+      .tile .v {
+        position: relative;
+        z-index: 1;
+        color: var(--ink);
+        font-size: clamp(18px, 2vw, 24px);
+        font-weight: 720;
+        letter-spacing: -0.035em;
+      }
+      .tile .s {
+        position: relative;
+        z-index: 1;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .meter {
+        position: relative;
+        z-index: 1;
+        height: 6px;
+        margin-top: 6px;
+        background: #071114;
+      }
+      .meter i {
+        background: linear-gradient(90deg, #48bce8, var(--accent));
+      }
+      .grid2,
+      .grid {
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .grid2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .grid {
+        grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr));
+      }
+      button,
+      select,
+      input[type='number'],
+      input[type='text'],
+      input[type='search'] {
+        min-height: 34px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--surface2);
+        color: var(--ink);
+        font: inherit;
+        font-size: 12px;
+      }
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 7px 11px;
+        font-weight: 650;
+        box-shadow: inset 0 1px rgba(255, 255, 255, 0.025);
+      }
+      button:hover:not(:disabled) {
+        border-color: var(--border-strong);
+        background: var(--surface3);
+        transform: translateY(-1px);
+      }
+      button:active:not(:disabled) {
+        transform: translateY(0);
+      }
+      button.primary {
+        border-color: rgba(83, 215, 170, 0.44);
+        background: rgba(83, 215, 170, 0.1);
+        color: #b6f3dc;
+      }
+      button.danger {
+        border-color: rgba(255, 113, 128, 0.32);
+        color: #ffadb6;
+      }
+      button.armed {
+        border-color: var(--crit);
+        background: rgba(255, 113, 128, 0.09);
+        color: #ffc1c8;
+      }
+      button.ghost {
+        border-color: transparent;
+        background: transparent;
+        box-shadow: none;
+      }
+      button.small {
+        min-height: 28px;
+        padding: 4px 8px;
+        font-size: 11px;
+      }
+      button:disabled {
+        opacity: 0.38;
+      }
+      select,
+      input[type='number'],
+      input[type='text'],
+      input[type='search'] {
+        padding: 6px 9px;
+      }
+      input[type='search'] {
+        width: min(260px, 100%);
+      }
+      .bar {
+        display: flex;
+        gap: 7px;
+        margin: 0 0 13px;
+        padding: 13px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: rgba(13, 24, 28, 0.82);
+      }
+      .bar .sep {
+        height: 28px;
+        background: var(--border);
+      }
+      .control-label {
+        display: inline-flex;
+        align-items: center;
+        margin-right: 2px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 740;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+      .pill,
+      .chip,
+      .badge,
+      .st {
+        border-color: var(--border);
+        background: rgba(18, 33, 38, 0.66);
+      }
+      .pill {
+        min-height: 28px;
+        padding: 3px 9px;
+      }
+      .dot {
+        box-shadow: 0 0 0 3px rgba(130, 149, 143, 0.08);
+      }
+      .dot.live,
+      .dot.ready {
+        background: var(--good);
+        box-shadow: 0 0 0 3px rgba(83, 215, 170, 0.1);
+      }
+      .dot.stale,
+      .dot.starting {
+        background: var(--warn);
+        box-shadow: 0 0 0 3px rgba(242, 189, 104, 0.1);
+      }
+      .dot.failed,
+      .dot.disconnected {
+        background: var(--crit);
+        box-shadow: 0 0 0 3px rgba(255, 113, 128, 0.1);
+      }
+      .status-word {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border-radius: 999px;
+        padding: 3px 7px;
+        font-size: 10px;
+        font-weight: 720;
+        letter-spacing: 0.02em;
+      }
+      .status-word.good {
+        background: rgba(83, 215, 170, 0.09);
+        color: #92ebca;
+      }
+      .status-word.warn {
+        background: rgba(242, 189, 104, 0.09);
+        color: #f6d293;
+      }
+      .status-word.bad {
+        background: rgba(255, 113, 128, 0.09);
+        color: #ffabb4;
+      }
+      .status-word.neutral {
+        background: rgba(130, 149, 143, 0.1);
+        color: var(--ink2);
+      }
+      .exp-tag {
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid rgba(189, 156, 255, 0.3);
+        border-radius: 999px;
+        padding: 2px 6px;
+        background: rgba(189, 156, 255, 0.08);
+        color: #d5c0ff;
+        font-size: 9px;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .attention-panel {
+        margin-bottom: 14px;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: linear-gradient(115deg, rgba(242, 189, 104, 0.06), rgba(13, 24, 28, 0.92));
+      }
+      .attention-head {
+        display: flex;
+        min-height: 47px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 11px 15px;
+        border-bottom: 1px solid var(--border);
+      }
+      .attention-head strong {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .attention-head p {
+        margin: 1px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .attention-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr));
+        gap: 1px;
+        background: var(--border);
+      }
+      .attention-item {
+        display: grid;
+        min-height: 66px;
+        grid-template-columns: 8px 1fr auto;
+        align-items: center;
+        gap: 10px;
+        padding: 11px 14px;
+        background: var(--surface);
+      }
+      .attention-item .signal {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .attention-item.warn .signal {
+        background: var(--warn);
+      }
+      .attention-item.bad .signal {
+        background: var(--crit);
+      }
+      .attention-item.good .signal {
+        background: var(--good);
+      }
+      .attention-item b {
+        display: block;
+        margin-bottom: 1px;
+        color: var(--ink);
+        font-size: 11.5px;
+      }
+      .attention-item span {
+        display: block;
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+      .attention-empty {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 14px 15px;
+        color: var(--ink2);
+        background: var(--surface);
+        font-size: 12px;
+      }
+      .warnbox {
+        border-color: rgba(242, 189, 104, 0.42);
+        border-radius: 12px;
+        background: rgba(242, 189, 104, 0.07);
+        color: #f7d9a6;
+      }
+      .irow {
+        min-height: 45px;
+        border-color: rgba(100, 137, 142, 0.23);
+        background: rgba(18, 33, 38, 0.72);
+      }
+      .irow:hover {
+        border-color: var(--border-strong);
+        background: rgba(23, 42, 48, 0.86);
+      }
+      .irow .num {
+        font-variant-numeric: tabular-nums;
+      }
+      .irow .title {
+        color: var(--ink2);
+      }
+      .ilist {
+        gap: 6px;
+      }
+      .st,
+      .chip {
+        font-weight: 600;
+      }
+      .log {
+        border-color: #24363b;
+        background: #081215;
+        color: #aebfba;
+      }
+      #log-o,
+      #log-d {
+        height: auto;
+        min-height: 160px;
+        max-height: 420px;
+      }
+      .event-line {
+        display: grid;
+        width: 100%;
+        min-height: 29px;
+        grid-template-columns: auto 1fr;
+        align-items: baseline;
+        gap: 8px;
+        border: 0;
+        border-radius: 5px;
+        padding: 3px 6px;
+        background: transparent;
+        box-shadow: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+      }
+      .event-line:hover:not(:disabled),
+      .event-line.selected {
+        border: 0;
+        background: rgba(114, 213, 255, 0.07);
+        transform: none;
+      }
+      .event-line time {
+        color: #59706b;
+      }
+      .event-line .event-text {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .event-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .event-detail {
+        min-height: 64px;
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 11px;
+        background: rgba(7, 16, 18, 0.62);
+        color: var(--ink2);
+        font:
+          11px/1.55 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      #flowwrap {
+        min-height: 390px;
+        border-radius: var(--radius);
+        padding: 28px 20px;
+        overflow: hidden;
+      }
+      #flowwrap.off::after {
+        background: rgba(7, 16, 18, 0.72);
+        color: var(--ink2);
+        backdrop-filter: blur(3px);
+      }
+      .fnode {
+        min-width: 112px;
+        border-color: var(--border);
+        border-radius: 12px;
+        background: rgba(18, 33, 38, 0.93);
+      }
+      .fnode.pulse {
+        border-color: var(--accent);
+      }
+      #flowsvg path {
+        stroke: #2b4147;
+      }
+      .kpis {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
+      .kpi {
+        border-radius: 13px;
+        padding: 12px 14px;
+      }
+      .kpi .v {
+        font-size: 22px;
+      }
+      .provider-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .provider-card {
+        display: flex;
+        min-height: 152px;
+        flex-direction: column;
+        gap: 9px;
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        padding: 13px;
+        background: rgba(18, 33, 38, 0.58);
+      }
+      .provider-card .provider-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .provider-card h3 {
+        margin: 0;
+        color: var(--ink);
+        font-size: 13px;
+        font-weight: 710;
+      }
+      .provider-card .provider-sub {
+        min-height: 32px;
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+      .provider-card .provider-meta {
+        display: flex;
+        margin-top: auto;
+        align-items: center;
+        justify-content: space-between;
+        gap: 7px;
+      }
+      .provider-card .provider-model {
+        max-width: 150px;
+        overflow: hidden;
+        color: var(--ink2);
+        font:
+          10px/1.3 ui-monospace,
+          SFMono-Regular,
+          monospace;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .route-table {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+      }
+      .route-head,
+      .mrow {
+        display: grid;
+        grid-template-columns: 126px minmax(150px, 0.7fr) minmax(210px, 1.35fr) minmax(
+            120px,
+            0.65fr
+          );
+        gap: 10px;
+        align-items: center;
+        margin: 0;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .route-head {
+        background: rgba(7, 16, 18, 0.55);
+        color: var(--muted);
+        font-size: 9.5px;
+        font-weight: 740;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .mrow:last-of-type {
+        border-bottom: 0;
+      }
+      .mrow:hover {
+        background: rgba(114, 213, 255, 0.025);
+      }
+      .mrow input[type='text'],
+      .mrow select {
+        width: 100%;
+      }
+      .dchip {
+        width: fit-content;
+        min-width: 96px;
+        border-radius: 999px;
+        padding: 4px 10px;
+      }
+      .role-routing {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .role-field {
+        display: grid;
+        gap: 5px;
+      }
+      .role-field label {
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 720;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .role-field select {
+        width: 100%;
+      }
+      .segmented {
+        display: inline-flex;
+        padding: 3px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #091316;
+      }
+      .segmented button {
+        min-height: 27px;
+        border: 0;
+        border-radius: 7px;
+        padding: 4px 9px;
+        background: transparent;
+        box-shadow: none;
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+      .segmented button:hover:not(:disabled) {
+        border: 0;
+        transform: none;
+      }
+      .segmented button.on {
+        background: var(--surface3);
+        color: var(--ink);
+      }
+      .usage-legend {
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 10px;
+      }
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .usage-empty {
+        display: grid;
+        min-height: 180px;
+        place-items: center;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+      }
+      .billing-separation {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+      .billing-card {
+        min-height: 98px;
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        padding: 13px 14px;
+        background: rgba(13, 24, 28, 0.74);
+      }
+      .billing-card .label {
+        color: var(--muted);
+        font-size: 9.5px;
+        font-weight: 750;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+      .billing-card .amount {
+        margin: 5px 0 2px;
+        color: var(--ink);
+        font-size: 23px;
+        font-weight: 730;
+        letter-spacing: -0.035em;
+      }
+      .billing-card .note {
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+      .billing-card.estimate {
+        border-color: rgba(114, 213, 255, 0.28);
+        background: linear-gradient(135deg, rgba(114, 213, 255, 0.07), rgba(13, 24, 28, 0.76));
+      }
+      .estimate-note {
+        margin-top: 10px;
+        border: 1px solid rgba(114, 213, 255, 0.22);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 10px 10px 0;
+        padding: 10px 12px;
+        background: rgba(114, 213, 255, 0.035);
+      }
+      .hb {
+        min-height: 31px;
+      }
+      .hb .track {
+        height: 8px;
+        background: #071114;
+      }
+      .hb .track i {
+        background: linear-gradient(90deg, #3b94b8, var(--accent));
+      }
+      .hb.codex-hb .n {
+        width: 148px;
+      }
+      .hb.codex-hb .v {
+        width: 152px;
+      }
+      details {
+        border-radius: 10px;
+      }
+      details[open] {
+        padding-bottom: 2px;
+      }
+      summary {
+        border-radius: 5px;
+      }
+      #toast {
+        right: 22px;
+        bottom: 22px;
+        z-index: 100;
+      }
+      .toastmsg {
+        border-color: var(--border-strong);
+        border-left-color: var(--good);
+        background: #14252a;
+        box-shadow: var(--shadow);
+      }
+      .empty-state {
+        display: flex;
+        min-height: 72px;
+        align-items: center;
+        justify-content: center;
+        border: 1px dashed var(--border);
+        border-radius: 10px;
+        padding: 14px;
+        color: var(--muted);
+        font-size: 11.5px;
+        text-align: center;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+      }
+
+      @media (max-width: 1280px) {
+        .strip {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .kpis {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .provider-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 960px) {
+        :root {
+          --sidebar: 0px;
+        }
+        body {
+          padding-top: 128px;
+        }
+        header {
+          inset: 0 0 auto 0;
+          width: 100%;
+          height: 128px;
+          padding: 12px 16px 8px;
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+          flex-direction: row;
+          gap: 14px;
+        }
+        header h1 {
+          min-width: 185px;
+          align-self: flex-start;
+        }
+        header > div {
+          flex-direction: column;
+          gap: 8px !important;
+          overflow: hidden;
+        }
+        .tabs {
+          flex-direction: row;
+          gap: 3px;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        .tabs::-webkit-scrollbar {
+          display: none;
+        }
+        .tabs::before {
+          display: none;
+        }
+        .tabs button {
+          display: flex;
+          width: auto;
+          min-width: max-content;
+          min-height: 38px;
+          padding: 7px 10px;
+        }
+        .tabs button.on {
+          box-shadow: inset 0 -3px var(--accent);
+        }
+        .nav-glyph {
+          width: 22px;
+          height: 22px;
+        }
+        .sidebar-status {
+          display: flex;
+          margin: 0;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          gap: 7px;
+        }
+        .sidebar-status .status-line {
+          min-height: 27px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          padding: 2px 8px;
+        }
+        .live-pill {
+          min-height: 27px;
+        }
+        .pagehead,
+        main > section.tab,
+        body > .bar,
+        body > .warnbox {
+          width: 100%;
+          margin-left: 0;
+        }
+        .pagehead {
+          top: 128px;
+          min-height: 82px;
+        }
+        .grid2 {
+          grid-template-columns: 1fr;
+        }
+        .route-head,
+        .mrow {
+          grid-template-columns: 106px minmax(130px, 0.8fr) minmax(180px, 1.2fr) minmax(
+              110px,
+              0.6fr
+            );
+        }
+        .bar {
+          align-items: stretch;
+        }
+      }
+      @media (max-width: 700px) {
+        body {
+          padding-top: 146px;
+        }
+        header {
+          height: 146px;
+          flex-wrap: wrap;
+        }
+        header h1 {
+          width: 100%;
+          min-width: 0;
+        }
+        header > div {
+          width: 100%;
+        }
+        .brand-mark {
+          width: 34px;
+          height: 34px;
+        }
+        .brand-sub {
+          display: none;
+        }
+        .tabs {
+          justify-content: space-between;
+          overflow-x: visible;
+        }
+        .tabs button {
+          min-width: 0;
+          padding-inline: 6px;
+        }
+        .tabs button .nav-glyph {
+          display: none;
+        }
+        .sidebar-status {
+          position: absolute;
+          top: 12px;
+          right: 14px;
+        }
+        .sidebar-status .status-line {
+          display: none;
+        }
+        .pagehead {
+          top: 146px;
+          min-height: 74px;
+          padding: 14px 16px 12px;
+        }
+        .pagehead p,
+        .head-health .pill:not(.live-head) {
+          display: none;
+        }
+        main > section.tab {
+          padding: 7px 14px 42px;
+        }
+        .strip {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .tile {
+          min-height: 102px;
+          padding: 12px;
+        }
+        .tile .v {
+          font-size: 19px;
+        }
+        .kpis {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .billing-separation,
+        .role-routing {
+          grid-template-columns: 1fr;
+        }
+        .provider-grid {
+          grid-template-columns: 1fr;
+        }
+        .bar {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .bar button {
+          width: 100%;
+        }
+        .bar .sep,
+        .bar .control-label {
+          display: none;
+        }
+        .irow {
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+        .irow .title {
+          width: calc(100% - 56px);
+          flex-basis: calc(100% - 56px);
+          white-space: normal;
+        }
+        .irow .chips {
+          width: 100%;
+          justify-content: flex-start;
+          padding-left: 49px;
+        }
+        #flowwrap {
+          min-height: auto;
+          padding: 16px;
+        }
+        #flowsvg {
+          display: none;
+        }
+        #flowcols {
+          display: grid;
+          gap: 22px;
+        }
+        .fcol {
+          position: relative;
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        }
+        .fcol:not(:last-child)::after {
+          content: '↓';
+          position: absolute;
+          right: 50%;
+          bottom: -22px;
+          color: var(--muted);
+        }
+        .route-table {
+          overflow-x: auto;
+        }
+        .route-head,
+        .mrow {
+          min-width: 690px;
+        }
+        .event-toolbar input[type='search'] {
+          width: 100%;
+        }
+        .hb .n {
+          width: 92px;
+        }
+        .hb.codex-hb {
+          flex-wrap: wrap;
+        }
+        .hb.codex-hb .n {
+          width: 110px;
+        }
+        .hb.codex-hb .v {
+          width: 126px;
+        }
+      }
+      @media (max-width: 420px) {
+        .strip,
+        .kpis {
+          grid-template-columns: 1fr;
+        }
+        .tile {
+          min-height: 92px;
+        }
+        .pagehead h2 {
+          font-size: 20px;
+        }
+        .tabs button {
+          padding-inline: 4px;
+        }
+        .tabs button .nav-label {
+          font-size: 11px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+        #flowsvg path {
+          animation: none !important;
+        }
+      }
     </style>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to workspace</a>
     <header>
       <h1>
-        🏭 Multi-Factory
-        <span class="pill">mode <b id="mode">–</b></span>
-        <span class="pill">phase <b id="phase">–</b></span>
+        <span class="brand-mark" aria-hidden="true">MF</span>
+        <span class="brand-name">Multi-Factory</span>
+        <span class="brand-sub">BetterTrack ops</span>
       </h1>
-      <div style="display: flex; gap: 10px; align-items: center">
-        <nav class="tabs" id="tabs">
-          <button data-tab="overview" class="on">Overview</button>
-          <button data-tab="flow">Flow</button>
-          <button data-tab="models">Models</button>
-          <button data-tab="usage">Usage</button>
-          <button data-tab="detail">DetailView</button>
+      <div>
+        <nav class="tabs" id="tabs" aria-label="Factory workspace" role="tablist">
+          <button
+            data-tab="overview"
+            class="on"
+            role="tab"
+            aria-controls="tab-overview"
+            aria-selected="true"
+          >
+            <span class="nav-glyph" aria-hidden="true">01</span
+            ><span class="nav-label">Dashboard</span>
+          </button>
+          <button data-tab="flow" role="tab" aria-controls="tab-flow" aria-selected="false">
+            <span class="nav-glyph" aria-hidden="true">02</span><span class="nav-label">Work</span>
+          </button>
+          <button data-tab="detail" role="tab" aria-controls="tab-detail" aria-selected="false">
+            <span class="nav-glyph" aria-hidden="true">03</span
+            ><span class="nav-label">Operations</span>
+          </button>
+          <button data-tab="models" role="tab" aria-controls="tab-models" aria-selected="false">
+            <span class="nav-glyph" aria-hidden="true">04</span
+            ><span class="nav-label">Routing</span>
+          </button>
+          <button data-tab="usage" role="tab" aria-controls="tab-usage" aria-selected="false">
+            <span class="nav-glyph" aria-hidden="true">05</span><span class="nav-label">Usage</span>
+          </button>
         </nav>
-        <span class="pill"
-          ><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span
-        >
+        <div class="sidebar-status" aria-label="Factory connection status">
+          <div class="status-line"><span>Mode</span><b id="mode">–</b></div>
+          <div class="status-line"><span>Phase</span><b id="phase">–</b></div>
+          <span class="pill live-pill" aria-live="polite"
+            ><span class="dot" id="livedot"></span><span id="livetxt">connecting…</span></span
+          >
+        </div>
       </div>
     </header>
 
+    <div class="pagehead">
+      <div class="pagehead-copy">
+        <div class="eyebrow">Operations console</div>
+        <h2 id="page-title">Factory dashboard</h2>
+        <p id="page-subtitle">
+          Runtime health, capacity windows, active work, and anything requiring attention.
+        </p>
+      </div>
+      <div class="head-health" aria-label="Current summary">
+        <span class="pill" id="head-factory"><span class="dot"></span> awaiting state</span>
+        <button class="ghost small" id="attention-jump" type="button" onclick="setTab('overview')">
+          Attention <span class="chip" id="global-attention-count">–</span>
+        </button>
+      </div>
+    </div>
+
     <div id="sfwarn" class="warnbox" style="display: none">
       ⚠️ <b>Single factory is running/paused</b> — the multi-factory refuses to start until it
-      stops. <button onclick="act('single-stop', this)">Stop single factory</button>
+      stops.
+      <button class="danger" onclick="act('single-stop', this, true)">Stop single factory</button>
     </div>
 
     <div class="bar">
+      <span class="control-label">Runtime</span>
       <button
         id="b-start"
         class="primary"
@@ -882,6 +2257,7 @@
         🧪 Dry-run
       </button>
       <div class="sep"></div>
+      <span class="control-label">Process</span>
       <button
         id="b-pause"
         title="docker compose pause — freeze all containers"
@@ -893,6 +2269,7 @@
         ⏵ Resume
       </button>
       <div class="sep"></div>
+      <span class="control-label">Intake</span>
       <button
         id="b-run"
         title="Normal operation: composer keeps the queue full"
@@ -915,8 +2292,10 @@
         🌙 Close down
       </button>
       <div class="sep"></div>
+      <span class="control-label">Danger</span>
       <button
         id="b-stop"
+        class="danger"
         title="Hard stop (containers kept, resumable)"
         onclick="act('stop', this, true)"
       >
@@ -924,320 +2303,482 @@
       </button>
       <button
         id="b-down"
+        class="danger"
         title="Stop and remove containers (state + clones persist)"
         onclick="act('down', this, true)"
       >
-        🗑 Down
+        🗑 Remove containers
       </button>
     </div>
 
     <!-- ================= OVERVIEW ================= -->
-    <section class="tab on" id="tab-overview">
-      <div class="strip" id="strip"></div>
-      <div class="grid2">
-        <div class="card">
-          <h2>Triggers <span class="hint">automation rules</span></h2>
-          <div id="triggers"></div>
-          <div class="addrow">
-            <select id="tg-type" onchange="tgTypeChanged()">
-              <option value="usage">5h usage ≥</option>
-              <option value="usage7">7d usage ≥</option>
-              <option value="timer">in … minutes</option>
-            </select>
-            <input type="number" id="tg-value" value="40" min="1" max="1440" />
-            <span id="tg-unit" class="hint">%</span>
-            <select id="tg-action">
-              <option value="mode-close-down">→ Close down</option>
-              <option value="mode-run-out">→ Run out</option>
-              <option value="stop">→ Hard stop</option>
-            </select>
-            <label class="cb" id="tg-resetwrap"
-              ><input type="checkbox" id="tg-reset" checked />start on new window</label
-            >
-            <label class="cb" id="tg-repeatwrap"
-              ><input type="checkbox" id="tg-repeat" checked />repeat</label
-            >
-            <button onclick="tgAdd(this)">＋ Add</button>
+    <main id="main-content">
+      <section
+        class="tab on"
+        id="tab-overview"
+        role="tabpanel"
+        aria-labelledby="page-title"
+        tabindex="-1"
+      >
+        <div class="attention-panel" id="attention-panel">
+          <div class="attention-head">
+            <div>
+              <strong><span aria-hidden="true">◎</span> Attention tray</strong>
+              <p>Human decisions, blockers, route failures, and approaching limits.</p>
+            </div>
+            <span class="chip" id="attention-count">checking</span>
+          </div>
+          <div id="attention-list" aria-live="polite">
+            <div class="attention-empty">Waiting for the first factory snapshot…</div>
+          </div>
+        </div>
+        <div class="strip" id="strip"></div>
+        <div class="grid2">
+          <div class="card" id="automation-card">
+            <h2>Triggers <span class="hint">automation rules</span></h2>
+            <div id="triggers"></div>
+            <div class="addrow">
+              <select id="tg-type" onchange="tgTypeChanged()">
+                <option value="usage">5h usage ≥</option>
+                <option value="usage7">7d usage ≥</option>
+                <option value="timer">in … minutes</option>
+              </select>
+              <input type="number" id="tg-value" value="40" min="1" max="1440" />
+              <span id="tg-unit" class="hint">%</span>
+              <select id="tg-action">
+                <option value="mode-close-down">→ Close down</option>
+                <option value="mode-run-out">→ Run out</option>
+                <option value="stop">→ Hard stop</option>
+              </select>
+              <label class="cb" id="tg-resetwrap"
+                ><input type="checkbox" id="tg-reset" checked />start on new window</label
+              >
+              <label class="cb" id="tg-repeatwrap"
+                ><input type="checkbox" id="tg-repeat" checked />repeat</label
+              >
+              <button onclick="tgAdd(this)">＋ Add</button>
+            </div>
+          </div>
+          <div class="card" id="capacity-card">
+            <h2>Workers <span class="hint" id="wk-running"></span></h2>
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
+              <span class="stepper"
+                ><button onclick="wkStep(-1, this)">−</button><span id="wk-n">2</span
+                ><button onclick="wkStep(1, this)">＋</button></span
+              >
+              <button id="wk-apply" style="display: none" onclick="act('restart', this, true)">
+                ↻ Apply &amp; restart
+              </button>
+              <span class="hint" id="wk-note"></span>
+            </div>
+            <details style="margin-top: 8px">
+              <summary class="hint" style="cursor: pointer">how many workers make sense?</summary>
+              <div class="hint" style="margin-top: 6px; line-height: 1.5">
+                <b>2 is the sweet spot</b> — this repo usually has two truly independent lanes (api
+                + web). Parallelism only exists when issues claim non-overlapping paths; workers
+                beyond the number of open lanes just idle or serialize.<br />
+                <b>3</b> pays off occasionally (contracts / docs / admin lane open at the same time)
+                at the cost of more conflict-serialization and BEHIND re-gates at the single
+                merger.<br />
+                <b>4</b> is the hard cap — beyond that everything fights: one merge queue, one
+                shared 5h token budget, overlapping touches, CI queueing. 10 would mostly be 8 idle
+                containers burning your window.
+              </div>
+            </details>
+          </div>
+        </div>
+        <div class="card" id="issues-card" style="margin-bottom: 10px">
+          <h2>Issues <span class="hint" id="icount"></span></h2>
+          <div class="ilist" id="ilist"></div>
+        </div>
+        <div class="grid2">
+          <div class="card" id="recent-card">
+            <h2>
+              Recently completed
+              <button
+                id="rc-more"
+                style="font-size: 11px; padding: 2px 8px"
+                onclick="
+                  rcExpanded = !rcExpanded;
+                  render(S);
+                "
+              >
+                expand
+              </button>
+            </h2>
+            <div id="recent"></div>
+          </div>
+          <div class="card" id="events-card">
+            <h2>Events</h2>
+            <div class="log" id="log-o"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= FLOW ================= -->
+      <section class="tab" id="tab-flow" role="tabpanel" aria-labelledby="page-title" tabindex="-1">
+        <div class="section-intro">
+          <div>
+            <h3>Live delivery pipeline</h3>
+            <p>Issues move left to right; path claims keep overlapping lanes serialized.</p>
+          </div>
+          <span class="pill" id="work-summary">waiting for state</span>
+        </div>
+        <div id="flowwrap">
+          <svg id="flowsvg"></svg>
+          <div id="flowcols"></div>
+        </div>
+        <div class="hint" style="margin-top: 8px">
+          Live pipeline: composer plans → scheduler assigns lane-free issues → workers
+          write/review/fix in isolation → approved PRs queue → the single merger lands them on main.
+          Animated edges = data flowing right now.
+        </div>
+      </section>
+
+      <!-- ================= MODELS ================= -->
+      <section
+        class="tab"
+        id="tab-models"
+        role="tabpanel"
+        aria-labelledby="page-title"
+        tabindex="-1"
+      >
+        <div class="section-intro">
+          <div>
+            <h3>Provider routes</h3>
+            <p>
+              Choose the agent harness, model, and reasoning effort independently for each
+              difficulty.
+            </p>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom: 10px">
+          <h2>
+            Providers
+            <span class="hint">subscription CLIs — auth synced from this Mac on every start</span>
+          </h2>
+          <div id="provs" class="provider-grid"></div>
+          <div class="hint" style="margin-top: 8px">
+            <b>Test</b> proves the selected model route end to end. ClaudeX uses the Claude Code
+            harness through the loopback-only CCR bridge and Codex OAuth; native Codex keeps its own
+            CLI harness. Auth/state are copied per container into gitignored directories and secrets
+            never appear in this page.
           </div>
         </div>
         <div class="card">
-          <h2>Workers <span class="hint" id="wk-running"></span></h2>
-          <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap">
-            <span class="stepper"
-              ><button onclick="wkStep(-1, this)">−</button><span id="wk-n">2</span
-              ><button onclick="wkStep(1, this)">＋</button></span
-            >
-            <button id="wk-apply" style="display: none" onclick="act('restart', this, true)">
-              ↻ Apply &amp; restart
-            </button>
-            <span class="hint" id="wk-note"></span>
+          <h2>
+            Difficulty → model routing
+            <span class="hint">saves apply from the NEXT agent run — no restart needed</span>
+          </h2>
+          <div class="route-table" role="table" aria-label="Difficulty routing">
+            <div class="route-head" role="row">
+              <span role="columnheader">Difficulty</span>
+              <span role="columnheader">Harness / provider</span>
+              <span role="columnheader">Model</span>
+              <span role="columnheader">Effort</span>
+            </div>
+            <div id="mrows" role="rowgroup"></div>
           </div>
-          <details style="margin-top: 8px">
-            <summary class="hint" style="cursor: pointer">how many workers make sense?</summary>
-            <div class="hint" style="margin-top: 6px; line-height: 1.5">
-              <b>2 is the sweet spot</b> — this repo usually has two truly independent lanes (api +
-              web). Parallelism only exists when issues claim non-overlapping paths; workers beyond
-              the number of open lanes just idle or serialize.<br />
-              <b>3</b> pays off occasionally (contracts / docs / admin lane open at the same time)
-              at the cost of more conflict-serialization and BEHIND re-gates at the single
-              merger.<br />
-              <b>4</b> is the hard cap — beyond that everything fights: one merge queue, one shared
-              5h token budget, overlapping touches, CI queueing. 10 would mostly be 8 idle
-              containers burning your window.
+          <div class="role-routing">
+            <div class="role-field">
+              <label for="m-composer">Composer slot</label>
+              <select id="m-composer" onchange="mMark()"></select>
+            </div>
+            <div class="role-field">
+              <label for="m-checker">Checker slot</label>
+              <select id="m-checker" onchange="mMark()"></select>
+            </div>
+            <div class="role-field">
+              <label for="m-floor">Review floor</label>
+              <select id="m-floor" onchange="mMark()"></select>
+            </div>
+          </div>
+          <div class="addrow" style="margin-top: 12px">
+            <button class="primary" onclick="mSave(this)">💾 Save routing</button>
+            <button
+              onclick="
+                mDirty = false;
+                mLast = '';
+                renderModels(S);
+              "
+            >
+              ↺ Discard edits
+            </button>
+            <span class="hint" id="mnote"></span>
+          </div>
+          <details style="margin-top: 10px">
+            <summary class="hint" style="cursor: pointer">how difficulty routing works</summary>
+            <div class="hint" style="margin-top: 6px; line-height: 1.55">
+              The composer labels every issue with exactly one of
+              <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer,
+              fixer and ci-fix run on the model you map to the issue's difficulty; reviews run at
+              the issue's difficulty but never below the <b>review floor</b>; the composer and
+              checker master-roles use the difficulty slots above. A rejected issue escalates ONE
+              difficulty higher on its triage retry (max stays max). Legacy tier labels still
+              resolve: sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude =
+              --effort (low…max) · Codex = model-supported reasoning effort (low…max/ultra) ·
+              Antigravity bakes the level into the model name, e.g. “Gemini 3.1 Pro (High)”.
             </div>
           </details>
         </div>
-      </div>
-      <div class="card" style="margin-bottom: 10px">
-        <h2>Issues <span class="hint" id="icount"></span></h2>
-        <div class="ilist" id="ilist"></div>
-      </div>
-      <div class="grid2">
-        <div class="card">
-          <h2>
-            Recently completed
-            <button
-              id="rc-more"
-              style="font-size: 11px; padding: 2px 8px"
-              onclick="
-                rcExpanded = !rcExpanded;
-                render(S);
-              "
-            >
-              expand
-            </button>
-          </h2>
-          <div id="recent"></div>
-        </div>
-        <div class="card">
-          <h2>Events</h2>
-          <div class="log" id="log-o"></div>
-        </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ================= FLOW ================= -->
-    <section class="tab" id="tab-flow">
-      <div id="flowwrap">
-        <svg id="flowsvg"></svg>
-        <div id="flowcols"></div>
-      </div>
-      <div class="hint" style="margin-top: 8px">
-        Live pipeline: composer plans → scheduler assigns lane-free issues → workers
-        write/review/fix in isolation → approved PRs queue → the single merger lands them on main.
-        Animated edges = data flowing right now.
-      </div>
-    </section>
-
-    <!-- ================= MODELS ================= -->
-    <section class="tab" id="tab-models">
-      <div class="card" style="margin-bottom: 10px">
-        <h2>
-          Providers
-          <span class="hint">subscription CLIs — auth synced from this Mac on every start</span>
-        </h2>
-        <div
-          id="provs"
-          style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center"
-        ></div>
-        <div class="hint" style="margin-top: 8px">
-          <b>Test</b> runs one tiny prompt through the host CLI — the exact credentials the
-          containers get. Claude auth = factory token (factory/.env / keychain) · Codex =
-          ~/.codex/auth.json (ChatGPT login) · Antigravity (agy) = ~/.gemini Google login. Auth
-          files are copied per-container into multi-factory/auth/ (gitignored) by autorun.sh —
-          nothing ever reaches GitHub.
-        </div>
-      </div>
-      <div class="card">
-        <h2>
-          Difficulty → model routing
-          <span class="hint">saves apply from the NEXT agent run — no restart needed</span>
-        </h2>
-        <div id="mrows"></div>
-        <div class="addrow" style="margin-top: 12px">
-          <span class="hint">composer</span>
-          <select id="m-composer" onchange="mMark()"></select>
-          <span class="hint">checker</span>
-          <select id="m-checker" onchange="mMark()"></select>
-          <span class="hint">review floor</span>
-          <select id="m-floor" onchange="mMark()"></select>
-        </div>
-        <div class="addrow" style="margin-top: 12px">
-          <button class="primary" onclick="mSave(this)">💾 Save routing</button>
-          <button
-            onclick="
-              mDirty = false;
-              mLast = '';
-              renderModels(S);
-            "
-          >
-            ↺ Discard edits
-          </button>
-          <span class="hint" id="mnote"></span>
-        </div>
-        <details style="margin-top: 10px">
-          <summary class="hint" style="cursor: pointer">how difficulty routing works</summary>
-          <div class="hint" style="margin-top: 6px; line-height: 1.55">
-            The composer labels every issue with exactly one of
-            <b>diff:easy · diff:normal · diff:intermediate · diff:hard · diff:max</b>. Writer, fixer
-            and ci-fix run on the model you map to the issue's difficulty; reviews run at the
-            issue's difficulty but never below the <b>review floor</b>; the composer and checker
-            master-roles use the difficulty slots above. A rejected issue escalates ONE difficulty
-            higher on its triage retry (max stays max). Legacy tier labels still resolve:
-            sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max)
-            · Codex = model-supported reasoning effort (low…max/ultra) · Antigravity bakes the level
-            into the model name, e.g. “Gemini 3.1 Pro (High)”.
+      <!-- ================= DETAIL (v1 view) ================= -->
+      <!-- ================= USAGE ================= -->
+      <section
+        class="tab"
+        id="tab-usage"
+        role="tabpanel"
+        aria-labelledby="page-title"
+        tabindex="-1"
+      >
+        <div class="section-intro">
+          <div>
+            <h3>Capacity and API-equivalent economics</h3>
+            <p>
+              Subscription limits, token telemetry, and estimates are deliberately separated from
+              actual metered charges.
+            </p>
           </div>
-        </details>
-      </div>
-    </section>
-
-    <!-- ================= DETAIL (v1 view) ================= -->
-    <!-- ================= USAGE ================= -->
-    <section class="tab" id="tab-usage">
-      <div class="strip" id="ua-kpis"></div>
-      <div class="grid2">
-        <div class="card" style="grid-column: 1/-1">
+        </div>
+        <div class="billing-separation" id="billing-separation">
+          <div class="billing-card">
+            <div class="label">Actual metered provider charges</div>
+            <div class="amount" id="ua-actual-cost">Not reported</div>
+            <div class="note">
+              Subscription fees and invoices are not exposed by the factory ledger.
+            </div>
+          </div>
+          <div class="billing-card estimate">
+            <div class="label">OpenAI API-equivalent estimate</div>
+            <div class="amount" id="ua-api-estimate">Unavailable</div>
+            <div class="note">What equivalent token traffic would cost at standard API rates.</div>
+          </div>
+          <div class="billing-card">
+            <div class="label">CLI-reported estimate</div>
+            <div class="amount" id="ua-cli-estimate">Loading…</div>
+            <div class="note">Historical local estimate; not proof of a provider invoice.</div>
+          </div>
+        </div>
+        <div class="card" style="margin-bottom: 12px">
           <h2>
-            Spend per day — last 14 days
+            Subscription windows
+            <span class="hint">live provider telemetry when available</span>
+          </h2>
+          <div class="strip" id="ua-subscription" style="margin-bottom: 12px"></div>
+          <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap">
+            <div class="usage-legend">
+              <span class="legend-item"
+                ><span class="sw" style="background: #55c7ee"></span>5-hour</span
+              >
+              <span class="legend-item"
+                ><span class="sw" style="background: #f2bd68"></span>7-day</span
+              >
+              <span class="legend-item"
+                ><span class="sw" style="background: #bd9cff"></span>scoped weekly</span
+              >
+              <span class="legend-item">┊ reset marker</span>
+            </div>
+            <div class="segmented" id="uh-ranges" aria-label="Subscription history range">
+              <button type="button" data-h="24">24h</button>
+              <button type="button" data-h="168" class="on">7d</button>
+              <button type="button" data-h="720">30d</button>
+            </div>
+          </div>
+          <svg
+            id="uh-svg"
+            viewBox="0 0 720 200"
+            style="width: 100%; height: auto; margin-top: 8px"
+            role="img"
+            aria-label="Subscription utilization history"
+          ></svg>
+          <div class="hint" id="uh-status" aria-live="polite"></div>
+        </div>
+        <div class="strip" id="ua-kpis"></div>
+        <div class="grid2">
+          <div class="card" style="grid-column: 1/-1">
+            <h2>
+              CLI-reported estimate per day — last 14 days
+              <span class="hint"
+                ><span class="sw" style="background: var(--accent)"></span>
+                multi-factory&nbsp;&nbsp;<span class="sw" style="background: #8a8878"></span> single
+                factory</span
+              >
+            </h2>
+            <svg id="ua-days" viewBox="0 0 720 180" style="width: 100%; height: auto"></svg>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h2>CLI estimate by model</h2>
+            <div id="ua-model"></div>
+          </div>
+          <div class="card">
+            <h2>CLI estimate by role</h2>
+            <div id="ua-role"></div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h2>Most expensive issues</h2>
+            <div id="ua-issues"></div>
+          </div>
+          <div class="card">
+            <h2>Tokens (all time)</h2>
+            <div class="strip" id="ua-tokens" style="margin: 0"></div>
+          </div>
+        </div>
+        <div class="hint" style="margin-top: 2px">
+          Source: factory/usage/ledger.jsonl — one record per agent run. CLI-reported estimates,
+          actual metered charges, and API-equivalent estimates remain separate. Refreshes every 60s
+          while this area is open.
+        </div>
+        <div class="card" style="margin-top: 14px; margin-bottom: 10px">
+          <h2>
+            OpenAI-family API-equivalent usage
+            <span class="hint">native Codex + ClaudeX · estimate, never an invoice</span>
+          </h2>
+          <div class="addrow" style="margin-bottom: 10px">
+            <span class="hint">time range</span>
+            <select id="ua-codex-range" onchange="uaCodexFiltersChanged()">
+              <option value="14">Last 14 days</option>
+              <option value="30">Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="all">All time</option>
+            </select>
+            <span class="hint">provider</span>
+            <select id="ua-openai-provider" onchange="uaCodexFiltersChanged()">
+              <option value="all">All OpenAI-family providers</option>
+            </select>
+            <span class="hint">harness</span>
+            <select id="ua-openai-harness" onchange="uaCodexFiltersChanged()">
+              <option value="all">All harnesses</option>
+            </select>
+            <span class="hint">model</span>
+            <select id="ua-codex-model" onchange="uaCodexFiltersChanged()">
+              <option value="all">All OpenAI-family models</option>
+            </select>
+            <span class="hint" id="ua-codex-range-note"></span>
+          </div>
+          <div class="strip" id="ua-codex-kpis" style="margin-bottom: 0"></div>
+        </div>
+        <div class="card" style="margin-bottom: 10px">
+          <h2>
+            OpenAI-family tokens + API-equivalent USD
             <span class="hint"
-              ><span class="sw" style="background: var(--accent)"></span>
-              multi-factory&nbsp;&nbsp;<span class="sw" style="background: #8a8878"></span> single
-              factory</span
+              ><span class="sw" style="background: var(--accent)"></span> estimate&nbsp;&nbsp;<span
+                class="sw"
+                style="height: 2px; background: var(--warn)"
+              ></span>
+              tokens</span
             >
           </h2>
-          <svg id="ua-days" viewBox="0 0 720 180" style="width: 100%; height: auto"></svg>
+          <svg id="ua-codex-days" viewBox="0 0 720 200" style="width: 100%; height: auto"></svg>
         </div>
-      </div>
-      <div class="grid2">
-        <div class="card">
-          <h2>Spend by model</h2>
-          <div id="ua-model"></div>
+        <div class="grid2">
+          <div class="card">
+            <h2>Estimate by model</h2>
+            <div id="ua-codex-models"></div>
+          </div>
+          <div class="card">
+            <h2>Estimate by harness</h2>
+            <div id="ua-openai-harnesses"></div>
+          </div>
         </div>
-        <div class="card">
-          <h2>Spend by role</h2>
-          <div id="ua-role"></div>
+        <div class="grid2">
+          <div class="card">
+            <h2>Estimate by provider</h2>
+            <div id="ua-openai-providers"></div>
+          </div>
+          <div class="card">
+            <h2>Estimate by role</h2>
+            <div id="ua-codex-roles"></div>
+          </div>
         </div>
-      </div>
-      <div class="grid2">
-        <div class="card">
-          <h2>Most expensive issues</h2>
-          <div id="ua-issues"></div>
+        <div class="card" style="margin-bottom: 10px">
+          <h2>API-equivalent usage by issue</h2>
+          <div id="ua-codex-issues"></div>
         </div>
-        <div class="card">
-          <h2>Tokens (all time)</h2>
-          <div class="strip" id="ua-tokens" style="margin: 0"></div>
+        <div class="hint estimate-note">
+          <b>API-equivalent estimate · not billed subscription spend.</b> Native Codex and ClaudeX
+          use the existing ChatGPT subscription/login route; no OpenAI API key is required, and
+          these values are not an invoice or actual billed spend. Standard/base OpenAI API rates per
+          1M tokens (effective 2026-07-24): Sol $5.00 input / $0.50 cached input / $30.00 output;
+          Terra $2.50 / $0.25 / $15.00; Luna $1.00 / $0.10 / $6.00. Unknown models or incomplete
+          historical telemetry are unavailable/partial, never presented as $0. Legacy rows whose
+          output may double-count reasoning are also left unpriced. The &gt;272K
+          <span>long-context multiplier is not applied</span> because aggregate CLI telemetry cannot
+          identify qualifying requests reliably.
+          <a target="_blank" href="https://openai.com/api/pricing/">Pricing source</a>.
         </div>
-      </div>
-      <div class="hint" style="margin-top: 2px">
-        Source: factory/usage/ledger.jsonl — one record per agent run
-        (writer/reviewer/fixer/planner/composer/checker/ci-fix). Recorded spend above remains the
-        CLI-reported cost; the Codex API-equivalent estimate below is separate. Refreshes every 60s
-        while this tab is open.
-      </div>
-      <div class="card" style="margin-top: 14px; margin-bottom: 10px">
-        <h2>
-          Codex API-equivalent usage
-          <span class="hint">API-equivalent estimate · not billed subscription spend</span>
-        </h2>
-        <div class="addrow" style="margin-bottom: 10px">
-          <span class="hint">time range</span>
-          <select id="ua-codex-range" onchange="uaCodexFiltersChanged()">
-            <option value="14">Last 14 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
-            <option value="all">All time</option>
-          </select>
-          <span class="hint">model</span>
-          <select id="ua-codex-model" onchange="uaCodexFiltersChanged()">
-            <option value="all">All Codex models</option>
-          </select>
-          <span class="hint" id="ua-codex-range-note"></span>
-        </div>
-        <div class="strip" id="ua-codex-kpis" style="margin-bottom: 0"></div>
-      </div>
-      <div class="card" style="margin-bottom: 10px">
-        <h2>
-          Codex tokens + API-equivalent USD
-          <span class="hint"
-            ><span class="sw" style="background: var(--accent)"></span> estimate&nbsp;&nbsp;<span
-              class="sw"
-              style="height: 2px; background: var(--warn)"
-            ></span>
-            tokens</span
-          >
-        </h2>
-        <svg id="ua-codex-days" viewBox="0 0 720 200" style="width: 100%; height: auto"></svg>
-      </div>
-      <div class="grid2">
-        <div class="card">
-          <h2>Codex estimate by model</h2>
-          <div id="ua-codex-models"></div>
-        </div>
-        <div class="card">
-          <h2>Codex estimate by role</h2>
-          <div id="ua-codex-roles"></div>
-        </div>
-      </div>
-      <div class="card" style="margin-bottom: 10px">
-        <h2>Codex usage by issue</h2>
-        <div id="ua-codex-issues"></div>
-      </div>
-      <div class="hint estimate-note">
-        <b>Estimate only — Codex still runs through the existing ChatGPT subscription/login CLI.</b>
-        No API key is used and this is not an invoice or actual billed spend. Standard/base OpenAI
-        API rates per 1M tokens (effective 2026-07-24): Sol $5.00 input / $0.50 cached input /
-        $30.00 output; Terra $2.50 / $0.25 / $15.00; Luna $1.00 / $0.10 / $6.00. Separately recorded
-        cache-write input is estimated at 1.25× each model’s uncached-input rate. Unknown models or
-        incomplete historical telemetry are shown as unavailable/partial, never as $0. Legacy Codex
-        rows without the new inclusive-output marker are also unpriced because their stored output
-        may double-count reasoning tokens. The &gt;272K long-context multiplier is not applied
-        because aggregate CLI telemetry does not reliably identify qualifying requests.
-        <a target="_blank" href="https://openai.com/api/pricing/">Pricing source</a>.
-      </div>
-    </section>
+      </section>
 
-    <section class="tab" id="tab-detail">
-      <div class="kpis" id="kpis"></div>
-      <div class="grid" id="workergrid"></div>
-      <div class="grid">
-        <div class="card">
-          <h2>Merge queue <span id="qcount" class="chip">0</span></h2>
-          <div class="list" id="queue"></div>
+      <section
+        class="tab"
+        id="tab-detail"
+        role="tabpanel"
+        aria-labelledby="page-title"
+        tabindex="-1"
+      >
+        <div class="section-intro">
+          <div>
+            <h3>Runtime controls</h3>
+            <p>Start, pause, drain, stop, resize, and inspect the control plane from one place.</p>
+          </div>
+        </div>
+        <div class="kpis" id="kpis"></div>
+        <div class="grid" id="workergrid"></div>
+        <div class="grid">
+          <div class="card">
+            <h2>Merge queue <span id="qcount" class="chip">0</span></h2>
+            <div class="list" id="queue"></div>
+          </div>
+          <div class="card">
+            <h2>Open PRs</h2>
+            <div class="list" id="prs"></div>
+          </div>
+          <div class="card">
+            <h2>Autopilot issues</h2>
+            <div class="list" id="issues"></div>
+          </div>
+          <div class="card">
+            <h2>Recently merged</h2>
+            <div class="list" id="merged"></div>
+          </div>
+          <div class="card">
+            <h2>Needs human <span id="nhcount" class="chip">0</span></h2>
+            <div class="list" id="needshuman"></div>
+          </div>
+          <div class="card">
+            <h2>CLI estimate (multi-factory) by issue</h2>
+            <div class="list" id="costs"></div>
+          </div>
         </div>
         <div class="card">
-          <h2>Open PRs</h2>
-          <div class="list" id="prs"></div>
+          <h2>
+            Factory events
+            <span class="event-toolbar">
+              <label class="sr-only" for="event-filter">Filter events</label>
+              <input
+                id="event-filter"
+                type="search"
+                placeholder="Filter events"
+                oninput="renderEvents()"
+              />
+              <label style="text-transform: none; letter-spacing: 0"
+                ><input type="checkbox" id="autoscroll" checked /> follow</label
+              >
+            </span>
+          </h2>
+          <div class="log" id="log-d"></div>
+          <div class="event-detail" id="event-detail" aria-live="polite">
+            Select an event to inspect its full text.
+          </div>
         </div>
-        <div class="card">
-          <h2>Autopilot issues</h2>
-          <div class="list" id="issues"></div>
-        </div>
-        <div class="card">
-          <h2>Recently merged</h2>
-          <div class="list" id="merged"></div>
-        </div>
-        <div class="card">
-          <h2>Needs human <span id="nhcount" class="chip">0</span></h2>
-          <div class="list" id="needshuman"></div>
-        </div>
-        <div class="card">
-          <h2>Cost (multi-factory) by issue</h2>
-          <div class="list" id="costs"></div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>
-          Factory events
-          <label style="text-transform: none; letter-spacing: 0"
-            ><input type="checkbox" id="autoscroll" checked /> autoscroll</label
-          >
-        </h2>
-        <div class="log" id="log-d"></div>
-      </div>
-    </section>
+      </section>
+    </main>
 
-    <div id="toast"></div>
+    <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <script>
       'use strict';
@@ -1275,21 +2816,125 @@
 
       /* ---- tabs ---- */
       $('tabs').addEventListener('click', (e) => {
-        const t = e.target.dataset?.tab;
+        const t = e.target.closest('button[data-tab]')?.dataset.tab;
         if (t) setTab(t);
       });
+      $('tabs').addEventListener('keydown', (e) => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+        const tabs = [...document.querySelectorAll('.tabs button[data-tab]')];
+        const at = tabs.indexOf(document.activeElement);
+        if (at < 0) return;
+        e.preventDefault();
+        const direction = ['ArrowRight', 'ArrowDown'].includes(e.key) ? 1 : -1;
+        const next = tabs[(at + direction + tabs.length) % tabs.length];
+        next.focus();
+        setTab(next.dataset.tab);
+      });
+      const PAGE_COPY = {
+        overview: {
+          title: 'Factory dashboard',
+          subtitle:
+            'Runtime health, capacity windows, active work, and anything requiring attention.',
+        },
+        flow: {
+          title: 'Work',
+          subtitle:
+            'Follow issues from composition through isolated workers, review, and the merge queue.',
+        },
+        detail: {
+          title: 'Operations',
+          subtitle:
+            'Control runtime state, automation, worker capacity, and inspect factory events.',
+        },
+        models: {
+          title: 'Routing',
+          subtitle: 'Map each difficulty and role to Claude, native Codex, ClaudeX, or Gemini.',
+        },
+        usage: {
+          title: 'Usage',
+          subtitle: 'Understand limits, tokens, actual telemetry, and API-equivalent estimates.',
+        },
+      };
       function setTab(t) {
+        if (!PAGE_COPY[t]) t = 'overview';
         activeTab = t;
         localStorage.setItem('mf-tab', t);
-        document
-          .querySelectorAll('.tabs button')
-          .forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-        document
-          .querySelectorAll('section.tab')
-          .forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
+        document.querySelectorAll('.tabs button').forEach((b) => {
+          const on = b.dataset.tab === t;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-selected', String(on));
+          b.tabIndex = on ? 0 : -1;
+        });
+        document.querySelectorAll('section.tab').forEach((s) => {
+          const on = s.id === 'tab-' + t;
+          s.classList.toggle('on', on);
+          s.hidden = !on;
+        });
+        $('page-title').textContent = PAGE_COPY[t].title;
+        $('page-subtitle').textContent = PAGE_COPY[t].subtitle;
         if (S) render(S);
-        if (t === 'usage') fetchUsage(true);
+        if (t === 'usage') {
+          fetchUsage(true);
+          fetchUsageHist(true);
+        }
         if (t === 'models' && S) renderModels(S);
+      }
+
+      function staticBlock(html) {
+        const box = document.createElement('div');
+        box.innerHTML = html.trim();
+        return box.firstElementChild;
+      }
+      function organizeWorkspace() {
+        const dashboard = $('tab-overview');
+        const work = $('tab-flow');
+        const operations = $('tab-detail');
+        const controls = document.querySelector('body > .bar');
+        const singleWarning = $('sfwarn');
+        const automation = $('automation-card');
+        const capacity = $('capacity-card');
+        const issueCard = $('issues-card');
+        const workerGrid = $('workergrid');
+        const detailLists = [...operations.querySelectorAll(':scope > .grid')].find(
+          (grid) => grid !== workerGrid,
+        );
+
+        if (singleWarning) operations.insertBefore(singleWarning, $('kpis'));
+        if (controls) operations.insertBefore(controls, $('kpis'));
+        if (automation && capacity) {
+          const opsGrid = document.createElement('div');
+          opsGrid.className = 'grid2';
+          opsGrid.id = 'automation-grid';
+          opsGrid.append(automation, capacity);
+          $('kpis').after(opsGrid);
+        }
+        for (const grid of dashboard.querySelectorAll(':scope > .grid2'))
+          if (!grid.children.length) grid.remove();
+
+        if (issueCard) {
+          work.append(
+            staticBlock(
+              '<div class="section-intro"><div><h3>Open work</h3><p>Runnable, blocked, in-flight, and queued issues in scheduler order.</p></div></div>',
+            ),
+            issueCard,
+          );
+        }
+        if (workerGrid) {
+          work.append(
+            staticBlock(
+              '<div class="section-intro"><div><h3>Execution lanes</h3><p>Master and worker heartbeat, phase, assignment, and path ownership.</p></div></div>',
+            ),
+            workerGrid,
+          );
+        }
+        if (detailLists) {
+          work.append(
+            staticBlock(
+              '<div class="section-intro"><div><h3>Queues and outcomes</h3><p>Merge order, pull requests, human decisions, completions, and per-issue estimates.</p></div></div>',
+            ),
+            detailLists,
+          );
+        }
       }
 
       /* ---- actions ---- */
@@ -1299,28 +2944,40 @@
           armed.set(action, true);
           const old = btn.textContent;
           btn.classList.add('armed');
-          btn.textContent = 'Sure? ' + old;
+          btn.setAttribute('aria-pressed', 'true');
+          btn.textContent = 'Confirm: ' + old;
+          toast(`Press “${old.trim()}” again within 4 seconds to confirm`, false);
           setTimeout(() => {
             armed.delete(action);
             btn.classList.remove('armed');
+            btn.removeAttribute('aria-pressed');
             btn.textContent = old;
-          }, 3500);
+          }, 4000);
           return;
         }
         armed.delete(action);
-        if (btn) btn.classList.remove('armed');
+        if (btn) {
+          btn.classList.remove('armed');
+          btn.removeAttribute('aria-pressed');
+          btn.setAttribute('aria-busy', 'true');
+        }
         try {
           const r = await fetch('/api/action', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ action, ...payload }),
           });
-          const j = await r.json();
+          const j = await r.json().catch(() => ({
+            ok: false,
+            message: `Control API returned HTTP ${r.status}`,
+          }));
           toast(j.message || action, j.ok);
           return j;
         } catch (e) {
           toast(String(e), false);
           return { ok: false };
+        } finally {
+          if (btn) btn.removeAttribute('aria-busy');
         }
       }
       function toast(msg, ok) {
@@ -1406,41 +3063,160 @@
         max: '#b60205',
       };
       const DIFF_TEXT = { normal: '#0b2e12' }; // dark text on the light-green chip
-      const PROV_LABEL = {
-        claude: 'Claude Code',
-        codex: 'Codex (OpenAI)',
-        gemini: 'Antigravity (Google)',
+      const OPENAI_MODELS = [
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+        'gpt-5.3-codex-spark',
+        'codex-auto-review',
+        'gpt-5-codex',
+      ];
+      const FALLBACK_PROVIDER_DEFS = [
+        {
+          id: 'claude',
+          label: 'Claude Code',
+          short: 'Anthropic OAuth · Claude Code harness',
+          description:
+            'Native Claude Code agent loop and tools through the Anthropic subscription.',
+          models: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultModel: 'claude-opus-4-8',
+          harness: 'Claude Code',
+        },
+        {
+          id: 'codex',
+          label: 'Native Codex',
+          short: 'Codex OAuth · Codex CLI harness',
+          description: 'OpenAI models running inside the native Codex CLI agent harness.',
+          models: OPENAI_MODELS,
+          efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          modelEfforts: {
+            'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
+          },
+          defaultModel: 'gpt-5.6-terra',
+          harness: 'Codex CLI',
+        },
+        {
+          id: 'claudex',
+          label: 'ClaudeX',
+          short: 'Codex OAuth · Claude Code harness',
+          description:
+            'Claude Code tools and role behavior, translated locally to OpenAI models by CCR.',
+          models: OPENAI_MODELS,
+          efforts: ['high'],
+          defaultModel: 'gpt-5.6-sol',
+          harness: 'Claude Code + CCR',
+          experimental: true,
+        },
+        {
+          id: 'gemini',
+          label: 'Antigravity',
+          short: 'Google OAuth · Antigravity harness',
+          description:
+            'Gemini models through the Antigravity CLI with effort encoded in model names.',
+          models: [
+            'Gemini 3.1 Pro (High)',
+            'Gemini 3.1 Pro (Low)',
+            'Gemini 3.5 Flash (High)',
+            'Gemini 3.5 Flash (Medium)',
+            'Gemini 3.5 Flash (Low)',
+          ],
+          efforts: [],
+          defaultModel: 'Gemini 3.1 Pro (High)',
+          harness: 'Antigravity',
+        },
+      ];
+      let providerDefs = FALLBACK_PROVIDER_DEFS.map((d) => ({
+        ...d,
+        models: [...d.models],
+        efforts: [...d.efforts],
+      }));
+      let registryAdvertised = false;
+      const listOfStrings = (value) =>
+        Array.isArray(value)
+          ? [
+              ...new Set(
+                value.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim()),
+              ),
+            ]
+          : [];
+      const providerMap = () => Object.fromEntries(providerDefs.map((d) => [d.id, d]));
+      const providerLabels = () =>
+        Object.fromEntries(providerDefs.map((d) => [d.id, d.label || d.id]));
+      const providerDef = (id) =>
+        providerDefs.find((d) => d.id === id) || {
+          id,
+          label: id,
+          short: 'Custom provider',
+          description: 'Provider definition supplied by the control plane.',
+          models: [],
+          efforts: [],
+          defaultModel: '',
+          harness: id,
+        };
+      const domToken = (value) => String(value).replace(/[^a-zA-Z0-9_-]/g, '-');
+      function registryEntries(s) {
+        const raw = s?.providerRegistry ?? s?.provider_registry ?? s?.providers?.registry;
+        if (Array.isArray(raw)) return raw;
+        if (Array.isArray(raw?.providers)) return raw.providers;
+        if (raw && typeof raw === 'object')
+          return Object.entries(raw).map(([id, entry]) => ({ id, ...(entry || {}) }));
+        return [];
+      }
+      function syncProviderDefs(s) {
+        const entries = registryEntries(s);
+        registryAdvertised = entries.length > 0;
+        const status = s?.providers || {};
+        const merged = new Map(
+          FALLBACK_PROVIDER_DEFS.map((d) => [
+            d.id,
+            { ...d, models: [...d.models], efforts: [...d.efforts] },
+          ]),
+        );
+        for (const raw of entries) {
+          const id = String(raw?.id || raw?.provider || raw?.key || '').trim();
+          if (!/^[a-z0-9_-]{1,48}$/i.test(id)) continue;
+          const base = merged.get(id) || providerDef(id);
+          const models = listOfStrings(
+            raw.models || raw.modelSuggestions || raw.model_suggestions || base.models,
+          );
+          const efforts = listOfStrings(raw.efforts || raw.effortValues || base.efforts);
+          merged.set(id, {
+            ...base,
+            ...raw,
+            id,
+            label: String(raw.label || raw.name || base.label || id),
+            short: String(raw.short || raw.subtitle || raw.summary || base.short || ''),
+            description: String(raw.description || base.description || ''),
+            models: models.length ? models : listOfStrings(base.models),
+            efforts: efforts.length ? efforts : listOfStrings(base.efforts),
+            defaultModel: String(
+              raw.defaultModel || raw.default_model || models[0] || base.defaultModel || '',
+            ),
+            experimental: raw.experimental ?? base.experimental ?? false,
+            harness: String(raw.harnessLabel || base.harness || raw.harness || id),
+          });
+        }
+        for (const def of merged.values()) {
+          const runtimeModels = listOfStrings(status[def.id]?.models);
+          if (runtimeModels.length) def.models = runtimeModels;
+        }
+        const agyModels = listOfStrings(status.agyModels);
+        if (agyModels.length && merged.has('gemini')) merged.get('gemini').models = agyModels;
+        const next = [...merged.values()];
+        const before = JSON.stringify(providerDefs);
+        providerDefs = next;
+        if (before !== JSON.stringify(next)) mLast = '';
+      }
+      const mEfforts = (provider, model) => {
+        const def = providerDef(provider);
+        return listOfStrings(
+          def.modelEfforts?.[model] || def.model_efforts?.[model] || def.efforts,
+        );
       };
-      const PROV_EFFORTS = {
-        claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-        codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        gemini: [],
-      };
-      const CODEX_MODEL_EFFORTS = {
-        'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-        'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
-      };
-      const PROV_MODELS = {
-        claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
-        codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-        gemini: [
-          'Gemini 3.1 Pro (High)',
-          'Gemini 3.1 Pro (Low)',
-          'Gemini 3.5 Flash (High)',
-          'Gemini 3.5 Flash (Medium)',
-          'Gemini 3.5 Flash (Low)',
-        ],
-      };
-      const PROV_DEFAULT = {
-        claude: 'claude-opus-4-8',
-        codex: 'gpt-5.6-terra',
-        gemini: 'Gemini 3.1 Pro (High)',
-      };
-      const mEfforts = (provider, model) =>
-        provider === 'codex' && CODEX_MODEL_EFFORTS[model]
-          ? CODEX_MODEL_EFFORTS[model]
-          : PROV_EFFORTS[provider];
       let mDirty = false,
         mLast = '',
         pLast = '';
@@ -1457,25 +3233,32 @@
           .join('');
       function mRenderRows(m) {
         const df = m.difficulties || {};
+        const defs = providerMap();
+        const labels = providerLabels();
         $('mrows').innerHTML =
           DIFF_LIST.map((d) => {
             const e = df[d] || {};
-            const p = PROV_LABEL[e.provider] ? e.provider : 'claude';
+            const p = defs[e.provider] ? e.provider : 'claude';
+            const def = providerDef(p);
             const efforts = mEfforts(p, e.model);
             const effortSel = efforts.length
-              ? `<select data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, e.effort || 'high')}</select>`
+              ? `<select aria-label="${d} effort" data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, efforts.includes(e.effort) ? e.effort : efforts.includes('high') ? 'high' : efforts[0])}</select>`
               : `<span class="hint">effort is part of the model name</span>`;
-            return `<div class="mrow">
-              <span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span>
-              <select data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(Object.keys(PROV_LABEL), p, PROV_LABEL)}</select>
-              <input type="text" data-d="${d}" data-k="model" list="dl-${p}" value="${esc(e.model || PROV_DEFAULT[p])}" oninput="mMark()" onchange="mModelChange('${d}')" spellcheck="false" />
-              ${effortSel}
+            return `<div class="mrow" role="row">
+              <span role="cell"><span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span></span>
+              <span role="cell"><select aria-label="${d} provider" data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(
+                providerDefs.map((x) => x.id),
+                p,
+                labels,
+              )}</select></span>
+              <span role="cell"><input aria-label="${d} model" type="text" data-d="${d}" data-k="model" list="dl-${domToken(p)}" value="${esc(e.model || def.defaultModel)}" oninput="mMark()" onchange="mModelChange('${d}')" spellcheck="false" /></span>
+              <span role="cell">${effortSel}</span>
             </div>`;
           }).join('') +
-          Object.keys(PROV_MODELS)
+          providerDefs
             .map(
-              (p) =>
-                `<datalist id="dl-${p}">${PROV_MODELS[p].map((v) => `<option value="${esc(v)}">`).join('')}</datalist>`,
+              (def) =>
+                `<datalist id="dl-${domToken(def.id)}">${def.models.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`,
             )
             .join('');
         $('m-composer').innerHTML = mOpt(DIFF_LIST, m.roles?.composer || 'hard');
@@ -1505,7 +3288,7 @@
       }
       function mProvChange(d, p) {
         const draft = mCollect();
-        const model = PROV_DEFAULT[p];
+        const model = providerDef(p).defaultModel;
         const efforts = mEfforts(p, model);
         draft.difficulties[d] = {
           provider: p,
@@ -1533,15 +3316,29 @@
       }
       function renderModels(s) {
         if (activeTab !== 'models' || !s) return;
+        syncProviderDefs(s);
         const pv = s.providers || {};
-        if (pv.agyModels?.length) PROV_MODELS.gemini = pv.agyModels;
-        const pj = JSON.stringify(pv);
+        const pj = JSON.stringify({ pv, registry: registryEntries(s), models: s.models });
         if (pj !== pLast) {
           pLast = pj;
-          $('provs').innerHTML = Object.keys(PROV_LABEL)
-            .map((p) => {
-              const ok = pv[p]?.connected;
-              return `<span class="pill"><span class="dot" style="background:${ok ? 'var(--good)' : 'var(--crit)'}"></span> ${PROV_LABEL[p]} <b>${ok ? 'connected' : 'not connected'}</b> <button style="font-size:11px;padding:1px 8px" onclick="act('test-provider',this,false,{provider:'${p}'})">test</button></span>`;
+          $('provs').innerHTML = providerDefs
+            .map((def) => {
+              const state = providerState(def, pv[def.id], s);
+              const route = Object.values(s.models?.difficulties || {}).find(
+                (entry) => entry.provider === def.id,
+              );
+              const canTest = !!pv[def.id] || registryAdvertised;
+              return `<article class="provider-card">
+                <div class="provider-top">
+                  <div><h3>${esc(def.label)} ${def.experimental ? '<span class="exp-tag">experimental</span>' : ''}</h3><div class="hint">${esc(def.harness || '')}</div></div>
+                  <span class="status-word ${state.tone}"><span class="dot ${state.dot}"></span>${esc(state.label)}</span>
+                </div>
+                <div class="provider-sub">${esc(state.detail || def.description)}</div>
+                <div class="provider-meta">
+                  <span class="provider-model" title="${esc(route?.model || def.defaultModel || 'No route selected')}">${esc(route?.model || def.defaultModel || 'No route selected')}</span>
+                  <button class="small" ${canTest ? '' : 'disabled title="Control API upgrade required"'} onclick="testProvider('${def.id}',this)">Test route</button>
+                </div>
+              </article>`;
             })
             .join('');
         }
@@ -1550,6 +3347,79 @@
         if (mj === mLast) return; // keep focus while nothing changed server-side
         mLast = mj;
         mRenderRows(s.models || {});
+      }
+
+      function testProvider(provider, button) {
+        const route = Object.values(S?.models?.difficulties || {}).find(
+          (entry) => entry.provider === provider,
+        );
+        return act('test-provider', button, false, {
+          provider,
+          ...(route?.model ? { model: route.model } : {}),
+          ...(route?.effort ? { effort: route.effort } : {}),
+        });
+      }
+
+      function providerState(def, status = {}, s = S) {
+        const running = (s?.docker?.multi?.containers || []).some((c) =>
+          /running|paused/i.test(c.state),
+        );
+        const last = status.lastTest || status.last_test;
+        const lastOk = last?.ok === true || last?.success === true;
+        const lastBad = last?.ok === false || last?.success === false;
+        const testedAt = last?.testedAt || last?.tested_at || last?.at;
+        const error = status.error || last?.error || last?.reason || last?.message;
+        if (lastBad || status.state === 'error')
+          return {
+            label: 'route failed',
+            detail: error ? String(error).slice(0, 180) : 'The last end-to-end route test failed.',
+            tone: 'bad',
+            dot: 'failed',
+          };
+        if (status.runtimeReady || status.runtime_ready || status.state === 'ready')
+          return {
+            label: lastOk ? 'tested · ready' : 'runtime ready',
+            detail: lastOk
+              ? `End-to-end route passed${last.model ? ` on ${last.model}` : ''}${testedAt ? ` · ${tago(testedAt)}` : ''}.`
+              : 'Runtime and local gateway are ready; run a model test for end-to-end proof.',
+            tone: 'good',
+            dot: 'ready',
+          };
+        if (status.connected === true && def.id !== 'claudex')
+          return {
+            label: lastOk ? 'tested' : 'connected',
+            detail: lastOk
+              ? `Route test passed${testedAt ? ` · ${tago(testedAt)}` : ''}.`
+              : 'Authentication is available to the factory.',
+            tone: 'good',
+            dot: 'ready',
+          };
+        if (status.configured || status.state === 'stopped')
+          return {
+            label: running ? 'starting' : 'configured · stopped',
+            detail: running
+              ? 'Configuration exists; the provider runtime has not reported ready yet.'
+              : 'Configuration and OAuth state are present. Runtime is intentionally stopped with the factory.',
+            tone: running ? 'warn' : 'neutral',
+            dot: running ? 'starting' : '',
+          };
+        if (!status || !Object.keys(status).length)
+          return {
+            label: 'status unavailable',
+            detail: registryAdvertised
+              ? 'No runtime status was returned for this provider.'
+              : 'This dashboard knows the route, but the current control API does not expose it yet.',
+            tone: 'neutral',
+            dot: '',
+          };
+        return {
+          label: 'not connected',
+          detail: error
+            ? String(error).slice(0, 180)
+            : 'Authentication or provider state is missing.',
+          tone: 'bad',
+          dot: 'disconnected',
+        };
       }
 
       /* ---- issue difficulty chips ---- */
@@ -1632,19 +3502,287 @@
       const PHASE_ICON = { writing: '✍️', reviewing: '🔍', fixing: '🔧', triage: '⚖️' };
 
       /* ---- renderers ---- */
+      const finiteNumber = (value) => {
+        if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+        if (
+          typeof value !== 'string' ||
+          !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())
+        )
+          return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+      const pctValue = (value) => {
+        const n = finiteNumber(value);
+        return n == null ? null : Math.max(0, Math.min(100, n));
+      };
+      const runtimeState = (containers) => {
+        const running = containers.some((c) => /running/i.test(c.state));
+        const paused = containers.some((c) => /paused/i.test(c.state));
+        return { running, paused, on: running || paused };
+      };
+      function renderHead(s, state) {
+        const p = s.protocol || {};
+        const node = $('head-factory');
+        const label = state.running
+          ? `${state.upCount} containers running`
+          : state.paused
+            ? 'factory paused'
+            : 'factory stopped';
+        node.innerHTML = `<span class="dot ${state.running ? 'ready' : state.paused ? 'starting' : ''}"></span>${esc(label)} · ${esc(p.mode || '–')}`;
+        $('work-summary').textContent =
+          `${(p.workers || []).filter((w) => !['idle', 'done', 'failed'].includes(w.status?.phase)).length} active · ${(p.queue || []).length} merge queued`;
+      }
+      function attentionAction(item) {
+        if (item.href)
+          return `<a class="small" target="_blank" rel="noreferrer" href="${esc(item.href)}">${esc(item.action || 'Open')}</a>`;
+        if (item.tab)
+          return `<button class="small" type="button" onclick="setTab('${item.tab}')">${esc(item.action || 'Inspect')}</button>`;
+        return '';
+      }
+      function renderAttention(s, state, joined, singleContainers) {
+        const p = s.protocol || {};
+        const gh = s.github || {};
+        const u = s.usage || {};
+        const items = [];
+        const needs = gh.needsHuman || [];
+        if (needs.length) {
+          const first = needs[0];
+          items.push({
+            tone: 'bad',
+            title: `${needs.length} issue${needs.length === 1 ? '' : 's'} need a human decision`,
+            detail: first ? `First: #${first.number} ${first.title || ''}` : 'Open the work queue.',
+            href: first ? `${REPO}/issues/${Number(first.number)}` : null,
+            action: 'Open issue',
+          });
+        }
+        const blocked = joined.filter((issue) => issue.deps?.length);
+        if (blocked.length) {
+          const first = blocked[0];
+          items.push({
+            tone: 'warn',
+            title: `${blocked.length} dependency-blocked issue${blocked.length === 1 ? '' : 's'}`,
+            detail: `#${first.number} waits for ${first.deps.map((n) => `#${n}`).join(', ')}.`,
+            tab: 'flow',
+            action: 'View work',
+          });
+        }
+        const failedWorkers = (p.workers || []).filter(
+          (worker) =>
+            worker.status?.phase === 'failed' ||
+            (worker.assignment && finiteNumber(worker.heartbeatAge) > 3600),
+        );
+        if (failedWorkers.length)
+          items.push({
+            tone: 'bad',
+            title: `${failedWorkers.length} worker lane${failedWorkers.length === 1 ? '' : 's'} unhealthy`,
+            detail: failedWorkers
+              .map((worker) => `w${worker.id}: ${worker.status?.phase || 'stale heartbeat'}`)
+              .join(' · '),
+            tab: 'flow',
+            action: 'Inspect lanes',
+          });
+        if (p.stopFile)
+          items.push({
+            tone: 'bad',
+            title: 'STOP file is present',
+            detail: 'The master will not continue until the stop condition is reconciled.',
+            tab: 'detail',
+            action: 'Open operations',
+          });
+        const composeRequest =
+          p.composerRequest ||
+          p.composer_request ||
+          p.ownerComposeRequest ||
+          p.owner_compose_request;
+        if (
+          composeRequest?.blocked ||
+          composeRequest?.state === 'blocked' ||
+          composeRequest?.status === 'blocked'
+        )
+          items.push({
+            tone: 'bad',
+            title: 'One-shot composer request is blocked',
+            detail: String(
+              composeRequest.reason ||
+                composeRequest.message ||
+                'Manual reconciliation is required.',
+            ),
+            tab: 'detail',
+            action: 'Open operations',
+          });
+        const u5 = pctValue(u.fiveHour?.pct);
+        const u7 = pctValue(u.sevenDay?.pct);
+        if (u5 != null && u5 >= 75)
+          items.push({
+            tone: u5 >= 90 ? 'bad' : 'warn',
+            title: `5-hour window is ${u5}% used`,
+            detail: `Resets in ${tuntil(u.fiveHour?.resetsAt)}. Automation rules remain active.`,
+            tab: 'usage',
+            action: 'View capacity',
+          });
+        if (u7 != null && u7 >= 75)
+          items.push({
+            tone: u7 >= 90 ? 'bad' : 'warn',
+            title: `7-day window is ${u7}% used`,
+            detail: `Next reset ${u.sevenDay?.resetsAt ? new Date(u.sevenDay.resetsAt).toLocaleString() : 'unknown'}.`,
+            tab: 'usage',
+            action: 'View capacity',
+          });
+        if (u.error)
+          items.push({
+            tone: 'warn',
+            title: 'Subscription telemetry unavailable',
+            detail: String(u.error).slice(0, 180),
+            tab: 'usage',
+            action: 'View usage',
+          });
+        else if (u.stale)
+          items.push({
+            tone: 'warn',
+            title: 'Subscription telemetry is cached',
+            detail: 'The latest provider poll failed; the last known good values are displayed.',
+            tab: 'usage',
+            action: 'View usage',
+          });
+        const usedProviders = new Set(
+          Object.values(s.models?.difficulties || {}).map((entry) => entry.provider),
+        );
+        for (const id of usedProviders) {
+          const def = providerDef(id);
+          const status = s.providers?.[id];
+          const health = providerState(def, status, s);
+          if (health.tone === 'bad' || (state.on && health.label === 'status unavailable'))
+            items.push({
+              tone: 'bad',
+              title: `${def.label} route is not ready`,
+              detail: health.detail,
+              tab: 'models',
+              action: 'Open routing',
+            });
+        }
+        if (singleContainers.length)
+          items.push({
+            tone: 'bad',
+            title: 'Single factory blocks multi-factory startup',
+            detail: `${singleContainers.length} single-factory container${singleContainers.length === 1 ? '' : 's'} running or paused.`,
+            tab: 'detail',
+            action: 'Resolve',
+          });
+
+        $('attention-count').textContent = items.length ? String(items.length) : 'clear';
+        $('global-attention-count').textContent = String(items.length);
+        $('attention-jump').classList.toggle(
+          'danger',
+          items.some((item) => item.tone === 'bad'),
+        );
+        $('attention-list').innerHTML = items.length
+          ? `<div class="attention-list">${items
+              .slice(0, 8)
+              .map(
+                (item) => `<div class="attention-item ${item.tone}">
+                  <span class="signal" aria-hidden="true"></span>
+                  <div><b>${esc(item.title)}</b><span>${esc(item.detail)}</span></div>
+                  ${attentionAction(item)}
+                </div>`,
+              )
+              .join('')}</div>`
+          : `<div class="attention-empty"><span class="status-word good">clear</span><span>${
+              state.on
+                ? 'No blocked work, route failures, human decisions, or urgent limit warnings.'
+                : 'Factory is intentionally stopped; configuration remains available for the next run.'
+            }</span></div>`;
+      }
+      function renderSubscriptionUsage(u = {}) {
+        const u5 = u.fiveHour;
+        const u7 = u.sevenDay;
+        const meter = (pct) => {
+          const n = pctValue(pct);
+          const cls = n >= 90 ? 'crit' : n >= 75 ? 'warn' : '';
+          return n == null
+            ? ''
+            : `<span class="meter"><i class="${cls}" style="width:${n}%"></i></span>`;
+        };
+        const rows = [];
+        if (u5)
+          rows.push(
+            `<div class="tile"><span class="l">5-hour window</span><span class="v">${esc(u5.pct)}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span>${meter(u5.pct)}</div>`,
+          );
+        if (u7)
+          rows.push(
+            `<div class="tile"><span class="l">7-day window</span><span class="v">${esc(u7.pct)}% used</span><span class="s">${u7.resetsAt ? `resets ${new Date(u7.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : 'reset time unavailable'}</span>${meter(u7.pct)}</div>`,
+          );
+        for (const scoped of u.scoped || [])
+          rows.push(
+            `<div class="tile"><span class="l">Scoped weekly</span><span class="v">${esc(scoped.pct)}% used</span><span class="s">${esc(scoped.name)}</span>${meter(scoped.pct)}</div>`,
+          );
+        if (!rows.length)
+          rows.push(
+            `<div class="empty-state" style="grid-column:1/-1">${esc(u.error || 'Subscription limit telemetry is not available.')}</div>`,
+          );
+        $('ua-subscription').innerHTML = rows.join('');
+      }
+      let eventSelected = null;
+      function eventParts(line) {
+        const match = /^(\d{4}-\d{2}-\d{2}T[^\s]+)\s+(.*)$/.exec(String(line));
+        return match ? { at: match[1], body: match[2] } : { at: '', body: String(line) };
+      }
+      function eventBodyHtml(body) {
+        return esc(body)
+          .replace(/\[master\]/g, '<span class="tag master">master</span>')
+          .replace(/\[w([1-4])\]/g, (match, id) => `<span class="tag w${id}">w${id}</span>`);
+      }
+      function showEvent(index) {
+        const lines = S?.protocol?.events || [];
+        const line = lines[index];
+        if (line == null) return;
+        eventSelected = line;
+        $('event-detail').textContent = line;
+        renderEvents();
+      }
+      function renderEvents() {
+        const lines = S?.protocol?.events || [];
+        const filter = ($('event-filter')?.value || '').trim().toLowerCase();
+        const visible = lines
+          .map((line, index) => ({ line: String(line), index }))
+          .filter(({ line }) => !filter || line.toLowerCase().includes(filter));
+        const markup = (entries) =>
+          entries
+            .map(({ line, index }) => {
+              const parts = eventParts(line);
+              const selected = eventSelected === line;
+              return `<button type="button" class="event-line${selected ? ' selected' : ''}" onclick="showEvent(${index})"${selected ? ' aria-current="true"' : ''}>
+                <time>${esc(parts.at ? new Date(parts.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—')}</time>
+                <span class="event-text">${eventBodyHtml(parts.body)}</span>
+              </button>`;
+            })
+            .join('');
+        const detailed = $('log-d');
+        const atBottom = detailed.scrollHeight - detailed.scrollTop - detailed.clientHeight < 60;
+        detailed.innerHTML =
+          markup(visible) ||
+          `<div class="empty-state">${filter ? 'No events match this filter.' : 'No factory events yet.'}</div>`;
+        $('log-o').innerHTML =
+          markup(visible.slice(-8)) || '<div class="empty-state">No factory events yet.</div>';
+        if ($('autoscroll')?.checked && atBottom) detailed.scrollTop = detailed.scrollHeight;
+        $('log-o').scrollTop = $('log-o').scrollHeight;
+      }
+
       function render(s) {
         S = s;
+        syncProviderDefs(s);
         const p = s.protocol || {},
           gh = s.github || {},
           led = s.ledger || {},
           u = s.usage || {};
+        captureLocalUsage(u);
         $('mode').textContent = p.mode || '–';
         $('phase').textContent = p.phase || '–';
 
         const multiC = s.docker?.multi?.containers || [];
-        const running = multiC.some((c) => /running/i.test(c.state));
-        const paused = multiC.some((c) => /paused/i.test(c.state));
+        const { running, paused, on } = runtimeState(multiC);
         const upCount = multiC.filter((c) => /running/i.test(c.state)).length;
+        const state = { running, paused, on, upCount };
         const sfC = (s.docker?.single?.containers || []).filter((c) =>
           /running|paused/i.test(c.state),
         );
@@ -1656,6 +3794,8 @@
         $('b-stop').disabled = !running && !paused;
         $('b-down').disabled = !multiC.length;
         for (const id of ['b-run', 'b-runout', 'b-close']) $(id).disabled = !running && !paused;
+        renderHead(s, state);
+        renderSubscriptionUsage(u);
 
         /* --- strip --- */
         const mcls = (pct) => (pct >= 90 ? 'crit' : pct >= 75 ? 'warn' : '');
@@ -1664,7 +3804,7 @@
         const scoped = (u.scoped || []).map((x) => `${esc(x.name)} ${x.pct}%`).join(' · ');
         $('strip').innerHTML =
           `<div class="tile"><span class="l">Factory</span><span class="v">${running ? upCount + ' up' : paused ? 'paused' : 'stopped'}</span><span class="s">${esc(p.mode || '–')} · ${esc(p.phase || '–')} · master hb ${ago(p.masterHeartbeatAge)}</span></div>` +
-          `<div class="tile"><span class="l">Cost (multi)</span><span class="v">$${led.multiToday ?? 0} today</span><span class="s">$${led.multiTotal ?? 0} total · queue ${(p.queue || []).length} · ✋ ${(gh.needsHuman || []).length}</span></div>` +
+          `<div class="tile"><span class="l">CLI estimate (multi)</span><span class="v">$${led.multiToday ?? 0} today</span><span class="s">$${led.multiTotal ?? 0} total · not an invoice</span></div>` +
           (u5
             ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
             : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
@@ -1692,6 +3832,7 @@
 
         /* --- unified issues --- */
         const joined = joinIssues(s);
+        renderAttention(s, state, joined, sfC);
         $('icount').textContent = `${joined.length} open`;
         $('ilist').innerHTML =
           joined
@@ -1735,24 +3876,10 @@
             })
             .join('') || '<div class="hint">nothing merged yet</div>';
 
-        /* --- events (both views) --- */
-        const evHtml = (p.events || [])
-          .map((l) =>
-            esc(l)
-              .replace(/\[master\]/, '<span class="tag master">master</span>')
-              .replace(/\[w(\d)\]/, (mm, d) => `<span class="tag w${d}">w${d}</span>`),
-          )
-          .join('\n');
-        for (const id of ['log-o', 'log-d']) {
-          const log = $(id);
-          const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-          log.innerHTML = evHtml;
-          if ((id === 'log-o' || $('autoscroll').checked) && atBottom !== false)
-            log.scrollTop = log.scrollHeight;
-        }
+        renderEvents();
 
         if (activeTab === 'flow') renderFlow(s, running || paused);
-        if (activeTab === 'detail') renderDetail(s, multiC);
+        renderDetail(s, multiC);
         if (activeTab === 'models') renderModels(s);
       }
 
@@ -1765,6 +3892,23 @@
       }
       function pulsing(key) {
         return (pulses.get(key) || 0) > Date.now();
+      }
+      function routeForDifficulty(models, difficulty) {
+        return models?.difficulties?.[difficulty] || null;
+      }
+      function issueDifficulty(issue) {
+        return (
+          (issue?.labels || []).find((label) => label.startsWith('diff:'))?.slice(5) ||
+          ({ sonnet: 'easy', opus: 'intermediate', fable: 'max' }[
+            (issue?.labels || []).find((label) => label.startsWith('tier:'))?.slice(5)
+          ] ??
+            'normal')
+        );
+      }
+      function routeCaption(route) {
+        if (!route) return 'route pending';
+        const def = providerDef(route.provider);
+        return `${def.label} · ${route.model}${route.effort ? ` @ ${route.effort}` : ''}`;
       }
       function renderFlow(s, on) {
         const p = s.protocol || {};
@@ -1789,15 +3933,21 @@
           .map((w) => {
             const ph = w.status?.phase || 'idle';
             const busy = !['idle', 'done', 'failed'].includes(ph);
+            const issue = (s.github?.issues || []).find(
+              (entry) => entry.number === w.status?.issue || entry.number === w.assignment?.issue,
+            );
+            const route = routeForDifficulty(s.models, issueDifficulty(issue));
             const steps =
               ['writing', 'reviewing', 'fixing']
                 .map((st) => `<span class="${ph === st ? 'on' : ''}">${PHASE_ICON[st]}</span>`)
                 .join('') + (ph === 'triage' ? '<span class="on">⚖️</span>' : '');
-            return `<div class="fnode${busy ? ' pulse' : ' dim'}" id="fn-w${w.id}"><b><span class="tag w${w.id}">w${w.id}</span></b>${busy ? `#${w.status.issue} · ${esc(ph)}` : esc(ph)}<div class="fsteps">${steps}</div></div>`;
+            return `<div class="fnode${busy ? ' pulse' : ' dim'}" id="fn-w${w.id}"><b><span class="tag w${w.id}">w${w.id}</span></b>${busy ? `#${esc(w.status.issue)} · ${esc(ph)}` : esc(ph)}<div class="sub" title="${esc(routeCaption(route))}">${busy ? esc(providerDef(route?.provider).label) : 'lane available'}</div><div class="fsteps">${steps}</div></div>`;
           })
           .join('');
+        const composerDifficulty = s.models?.roles?.composer || 'hard';
+        const composerRoute = routeForDifficulty(s.models, composerDifficulty);
         $('flowcols').innerHTML =
-          `<div class="fcol"><div class="fnode${activity === 'composing' ? ' pulse' : ''}" id="fn-composer"><b>🧠 Composer</b><span class="sub">${activity === 'composing' ? 'planning issues…' : 'opus · plans batches'}</span></div></div>` +
+          `<div class="fcol"><div class="fnode${activity === 'composing' ? ' pulse' : ''}" id="fn-composer"><b>🧠 Composer</b><span class="sub" title="${esc(routeCaption(composerRoute))}">${activity === 'composing' ? 'planning issues…' : esc(routeCaption(composerRoute))}</span></div></div>` +
           `<div class="fcol"><div class="fnode" id="fn-sched"><b>🗂 Scheduler</b><span class="sub">${(s.github?.issues || []).length} open · deterministic</span></div></div>` +
           `<div class="fcol" id="fn-workers">${wnodes}</div>` +
           `<div class="fcol"><div class="fnode" id="fn-queue"><b>📥 Merge queue</b><div class="fq">${queue.map((q) => `<span class="qi">PR #${q.pr} ← #${q.issue}</span>`).join('') || '<span class="sub">empty</span>'}</div></div></div>` +
@@ -1869,8 +4019,8 @@
           kpi((p.queue || []).length, 'merge queue') +
           kpi((gh.issues || []).length, 'open autopilot') +
           kpi((gh.needsHuman || []).length, 'needs human') +
-          kpi('$' + (led.multiToday ?? '0'), 'multi cost today') +
-          kpi('$' + (led.multiTotal ?? '0'), 'multi cost total');
+          kpi('$' + (led.multiToday ?? '0'), 'CLI est. today') +
+          kpi('$' + (led.multiTotal ?? '0'), 'CLI est. total');
         let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
     <div class="row"><span class="k">activity</span><span class="val">${esc(p.masterActivity?.activity || '–')}${p.masterActivity?.pr ? ' PR #' + p.masterActivity.pr : ''}</span></div>
     <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
@@ -1882,10 +4032,15 @@
           const st = w.status || {};
           const ph = st.phase || 'idle';
           const hbWarn = w.assignment && w.heartbeatAge != null && w.heartbeatAge > 900;
+          const issue = (gh.issues || []).find(
+            (entry) => entry.number === st.issue || entry.number === w.assignment?.issue,
+          );
+          const route = routeForDifficulty(s.models, issueDifficulty(issue));
           cards += `<div class="card"><h2>Worker ${w.id} <span class="tag w${w.id}">w${w.id}</span></h2>
       <div class="row"><span class="k">phase</span><span class="val"><span class="badge ${phaseClass(ph)}">${PHASE_ICON[ph] || '…'} ${esc(ph)}</span></span></div>
       <div class="row"><span class="k">issue</span><span class="val">${st.issue ? `<a target="_blank" href="${REPO}/issues/${st.issue}">#${st.issue}</a>` : '–'}</span></div>
       <div class="row"><span class="k">PR</span><span class="val">${st.pr ? `<a target="_blank" href="${REPO}/pull/${st.pr}">#${st.pr}</a>` : '–'}</span></div>
+      <div class="row"><span class="k">route</span><span class="val" title="${esc(routeCaption(route))}">${esc(route ? `${providerDef(route.provider).label} · ${route.model}` : '–')}</span></div>
       <div class="row"><span class="k">heartbeat</span><span class="val">${hbWarn ? '⚠️ ' : ''}${ago(w.heartbeatAge)}</span></div>
       <div class="row"><span class="k">assigned</span><span class="val">${w.assignment ? '#' + w.assignment.issue + ' · ' + esc((w.assignment.touches || []).join(', ').slice(0, 60) || '**') : '–'}</span></div></div>`;
         }
@@ -1949,57 +4104,220 @@
       let uaData = null,
         uaFetchedAt = 0,
         uaCodexRange = '14',
-        uaCodexModel = 'all';
+        uaCodexModel = 'all',
+        uaOpenaiProvider = 'all',
+        uaOpenaiHarness = 'all',
+        uhHours = 168,
+        uhData = null,
+        uhFetchedAt = 0,
+        uhSource = 'loading',
+        localUsageHistory = [];
       async function fetchUsage(force) {
         if (!force && Date.now() - uaFetchedAt < 60000) return;
         try {
-          const params = new URLSearchParams({ range: uaCodexRange, model: uaCodexModel });
+          const params = new URLSearchParams({
+            range: uaCodexRange,
+            model: uaCodexModel,
+            provider: uaOpenaiProvider,
+            harness: uaOpenaiHarness,
+          });
           const r = await fetch('/api/usage?' + params);
+          if (!r.ok) throw new Error(`usage API ${r.status}`);
           uaData = await r.json();
           uaFetchedAt = Date.now();
           renderUsage(uaData);
-        } catch {
-          /* keep last */
+        } catch (error) {
+          if (!uaData)
+            $('ua-kpis').innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
         }
       }
+      function captureLocalUsage(u) {
+        if (!u || (!u.fiveHour && !u.sevenDay)) return;
+        const last = localUsageHistory.at(-1);
+        if (last && Date.now() - last.at < 240000) return;
+        localUsageHistory.push({
+          at: Date.now(),
+          ...(u.fiveHour?.pct != null ? { f5: u.fiveHour.pct } : {}),
+          ...(u.sevenDay?.pct != null ? { d7: u.sevenDay.pct } : {}),
+          ...(u.fiveHour?.resetsAt ? { r5: u.fiveHour.resetsAt } : {}),
+          ...(u.sevenDay?.resetsAt ? { r7: u.sevenDay.resetsAt } : {}),
+          sc: (u.scoped || []).map((entry) => ({ n: entry.name, p: entry.pct })),
+        });
+        localUsageHistory = localUsageHistory.slice(-9000);
+      }
+      async function fetchUsageHist(force) {
+        if (!force && Date.now() - uhFetchedAt < 60000) return;
+        try {
+          const r = await fetch(`/api/usage/history?hours=${uhHours}`);
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const payload = await r.json();
+          if (!Array.isArray(payload.entries)) throw new Error('invalid history response');
+          uhData = payload;
+          uhSource = 'server';
+        } catch {
+          uhData = { now: Date.now(), hours: uhHours, entries: localUsageHistory };
+          uhSource = 'session';
+        }
+        uhFetchedAt = Date.now();
+        renderUsageHist();
+      }
       setInterval(() => {
-        if (activeTab === 'usage') fetchUsage(false);
+        if (activeTab === 'usage') {
+          fetchUsage(false);
+          fetchUsageHist(false);
+        }
       }, 60000);
       function uaCodexFiltersChanged() {
         uaCodexRange = $('ua-codex-range').value;
         uaCodexModel = $('ua-codex-model').value;
+        uaOpenaiProvider = $('ua-openai-provider').value;
+        uaOpenaiHarness = $('ua-openai-harness').value;
         uaFetchedAt = 0;
         fetchUsage(true);
       }
-      const fmtTok = (n) =>
-        n >= 1e9
+      $('uh-ranges').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-h]');
+        if (!button) return;
+        uhHours = Number(button.dataset.h);
+        $('uh-ranges')
+          .querySelectorAll('button')
+          .forEach((entry) => entry.classList.toggle('on', entry === button));
+        uhFetchedAt = 0;
+        fetchUsageHist(true);
+      });
+      function renderUsageHist() {
+        const svg = $('uh-svg');
+        if (!svg || !uhData) return;
+        const W = 720,
+          H = 200,
+          L = 34,
+          R = 66,
+          T = 12,
+          B = 23;
+        const now = finiteNumber(uhData.now) || Date.now();
+        const t0 = now - uhHours * 3600000;
+        const entries = (uhData.entries || [])
+          .filter((entry) => finiteNumber(entry.at) >= t0 && finiteNumber(entry.at) <= now)
+          .sort((a, b) => a.at - b.at);
+        const X = (time) => L + ((time - t0) / (now - t0)) * (W - L - R);
+        const Y = (pct) => T + (1 - pct / 100) * (H - T - B);
+        let graphic = '';
+        for (const pct of [0, 25, 50, 75, 100])
+          graphic +=
+            `<line x1="${L}" y1="${Y(pct)}" x2="${W - R}" y2="${Y(pct)}" stroke="var(--border)" stroke-width="1"/>` +
+            `<text x="${L - 6}" y="${Y(pct) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${pct}</text>`;
+        for (let index = 0; index <= 6; index++) {
+          const time = t0 + ((now - t0) * index) / 6;
+          const label =
+            uhHours <= 24
+              ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : new Date(time).toLocaleDateString([], { weekday: 'short', day: 'numeric' });
+          graphic += `<text x="${X(time)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${esc(label)}</text>`;
+        }
+        const resetLines = [];
+        for (const entry of entries) {
+          for (const [kind, raw, color] of [
+            ['5h', entry.r5, '#55c7ee'],
+            ['7d', entry.r7 || entry.d7r, '#f2bd68'],
+          ]) {
+            const time = typeof raw === 'number' ? raw : Date.parse(raw || '');
+            if (!Number.isFinite(time) || time < t0 || time > now) continue;
+            if (resetLines.some((line) => line.kind === kind && Math.abs(line.time - time) < 60000))
+              continue;
+            resetLines.push({ kind, time, color });
+          }
+        }
+        for (const reset of resetLines) {
+          graphic += `<line x1="${X(reset.time)}" y1="${T}" x2="${X(reset.time)}" y2="${H - B}" stroke="${reset.color}" stroke-opacity="${reset.kind === '7d' ? '.7' : '.28'}" stroke-width="${reset.kind === '7d' ? '1.4' : '1'}" stroke-dasharray="4 4"><title>${reset.kind} reset · ${esc(new Date(reset.time).toLocaleString())}</title></line>`;
+          if (reset.kind === '7d')
+            graphic += `<text x="${X(reset.time) + 3}" y="${T + 9}" font-size="8.5" fill="${reset.color}">7d reset</text>`;
+        }
+        const scopedValue = (entry) => {
+          const scoped = Array.isArray(entry.sc) ? entry.sc : [];
+          const preferred =
+            scoped.find((item) => /fable|opus|sol/i.test(item.n || '')) || scoped[0];
+          return pctValue(preferred?.p);
+        };
+        const series = [
+          { key: 'f5', label: '5h', color: '#55c7ee', value: (entry) => pctValue(entry.f5) },
+          { key: 'd7', label: '7d', color: '#f2bd68', value: (entry) => pctValue(entry.d7) },
+          { key: 'sc', label: 'scoped', color: '#bd9cff', value: scopedValue },
+        ];
+        if (entries.length < 2) {
+          svg.innerHTML =
+            graphic +
+            `<text x="${(L + W - R) / 2}" y="${H / 2}" text-anchor="middle" font-size="11" fill="var(--muted)">Collecting fresh utilization history</text>`;
+          $('uh-status').textContent =
+            uhSource === 'server'
+              ? 'History storage is ready; the chart fills as fresh provider readings arrive.'
+              : 'History endpoint unavailable on this server; showing samples collected during this page session.';
+          return;
+        }
+        for (const item of series) {
+          let path = '';
+          let command = 'M';
+          let lastAt = null;
+          for (const entry of entries) {
+            const value = item.value(entry);
+            if (value == null) {
+              command = 'M';
+              lastAt = null;
+              continue;
+            }
+            if (lastAt && entry.at - lastAt > 1800000) command = 'M';
+            path += `${command}${X(entry.at).toFixed(1)} ${Y(value).toFixed(1)} `;
+            command = 'L';
+            lastAt = entry.at;
+          }
+          if (path)
+            graphic += `<path d="${path}" fill="none" stroke="${item.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>${item.label} utilization</title></path>`;
+          const tail = [...entries].reverse().find((entry) => item.value(entry) != null);
+          if (tail) {
+            const value = item.value(tail);
+            graphic +=
+              `<circle cx="${W - R + 7}" cy="${Y(value)}" r="3" fill="${item.color}"/>` +
+              `<text x="${W - R + 14}" y="${Y(value) + 3}" font-size="9" fill="var(--ink2)">${item.label} ${value}%</text>`;
+          }
+        }
+        svg.innerHTML = graphic;
+        $('uh-status').textContent =
+          uhSource === 'server'
+            ? `${entries.length} fresh samples · ${uhHours === 24 ? '24 hours' : uhHours === 168 ? '7 days' : '30 days'} · gaps are never backfilled with zeroes.`
+            : `${entries.length} in-session samples · persistent history is unavailable on this control server.`;
+      }
+      const fmtTok = (value) => {
+        const n = finiteNumber(value) || 0;
+        return n >= 1e9
           ? (n / 1e9).toFixed(2) + 'B'
           : n >= 1e6
             ? (n / 1e6).toFixed(1) + 'M'
             : n >= 1e3
               ? (n / 1e3).toFixed(1) + 'k'
               : String(n);
+      };
       const fmtEstimate = (n) =>
-        n == null
+        finiteNumber(n) == null
           ? 'unavailable'
           : '$' + (n === 0 ? '0.000000' : n < 0.01 ? Number(n).toFixed(6) : Number(n).toFixed(2));
       const coverageText = (bucket) =>
-        bucket?.legacyOutputAmbiguousRecords
-          ? `${bucket.legacyOutputAmbiguousRecords} legacy output-ambiguous run${bucket.legacyOutputAmbiguousRecords === 1 ? '' : 's'}`
-          : bucket?.coverage === 'partial'
-            ? 'partial coverage'
-            : bucket?.coverage === 'unavailable'
-              ? 'estimate unavailable'
-              : bucket?.coverage === 'none'
-                ? 'no Codex rows'
-                : 'complete telemetry';
+        !bucket || bucket.records === 0 || (bucket.records == null && bucket.coverage == null)
+          ? 'no OpenAI-family rows'
+          : bucket?.legacyOutputAmbiguousRecords
+            ? `${bucket.legacyOutputAmbiguousRecords} legacy output-ambiguous run${bucket.legacyOutputAmbiguousRecords === 1 ? '' : 's'}`
+            : bucket?.coverage === 'partial'
+              ? 'partial coverage'
+              : bucket?.coverage === 'unavailable'
+                ? 'estimate unavailable'
+                : bucket?.coverage === 'none'
+                  ? 'no OpenAI-family rows'
+                  : 'complete telemetry';
       function hbars(el, rows, colorFor) {
-        const max = Math.max(...rows.map((r) => r.v), 0.01);
+        const max = Math.max(...rows.map((r) => finiteNumber(r.v) || 0), 0.01);
         $(el).innerHTML =
           rows
             .map(
               (r) =>
-                `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, (r.v / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${r.v}</span></div>`,
+                `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, ((finiteNumber(r.v) || 0) / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${esc(r.v ?? 0)}</span></div>`,
             )
             .join('') || '<div class="hint">no data yet</div>';
       }
@@ -2017,7 +4335,7 @@
               const tokenTitle = `input ${fmtTok(r.tokens?.input || 0)} · cached ${fmtTok(r.tokens?.cachedInput || 0)} · cache-write ${fmtTok(r.tokens?.cacheWrite || 0)} · output ${fmtTok(r.tokens?.output || 0)}`;
               return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${fmtEstimate(r.estimatedUsd)} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
             })
-            .join('') || '<div class="hint">no Codex data in this range</div>';
+            .join('') || '<div class="empty-state">No OpenAI-family data in this range.</div>';
       }
       function codexIssueRows(rows) {
         $('ua-codex-issues').innerHTML =
@@ -2027,33 +4345,71 @@
                 ? `<a target="_blank" href="${REPO}/issues/${r.k}">#${esc(r.k)}</a>`
                 : esc(r.label || r.k);
               const tk = r.tokens || {};
-              return `<div class="irow"><span class="num">${issue}</span><span class="title">input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(r.estimatedUsd)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
+              const route = [
+                ...(Array.isArray(r.providers) ? r.providers : r.provider ? [r.provider] : []),
+                ...(Array.isArray(r.harnesses) ? r.harnesses : r.harness ? [r.harness] : []),
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return `<div class="irow"><span class="num">${issue}</span><span class="title">${route ? `<b>${esc(route)}</b> · ` : ''}input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(r.estimatedUsd)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
             })
-            .join('') || '<div class="hint">no Codex issue usage in this range</div>';
+            .join('') ||
+          '<div class="empty-state">No per-issue OpenAI-family usage in this range.</div>';
       }
-      function renderCodexUsage(c) {
+      function selectOptions(id, allLabel, values, selected) {
+        const node = $(id);
+        node.innerHTML =
+          `<option value="all">${esc(allLabel)}</option>` +
+          listOfStrings(values)
+            .map((value) => `<option value="${esc(value)}">${esc(value)}</option>`)
+            .join('');
+        node.value = selected || 'all';
+        if (node.value !== (selected || 'all')) node.value = 'all';
+      }
+      function renderOpenAIUsage(c) {
         const totals = c.totals || {};
         const tk = totals.tokens || {};
         const status = coverageText(totals);
+        const todayBucket = (c.days || []).find(
+          (day) => String(day.k || day.date || '') === c.rangeEnd,
+        );
+        const todayEstimate = totals.todayEstimatedUsd ?? todayBucket?.estimatedUsd;
+        $('ua-api-estimate').textContent = fmtEstimate(totals.estimatedUsd);
         $('ua-codex-kpis').innerHTML =
           `<div class="tile"><span class="l">API-equivalent estimate</span><span class="v">${fmtEstimate(totals.estimatedUsd)}</span><span class="s">not billed subscription spend · ${status}</span></div>` +
-          `<div class="tile"><span class="l">Today’s estimate</span><span class="v">${fmtEstimate(totals.todayEstimatedUsd)}</span><span class="s">standard/base API price</span></div>` +
-          `<div class="tile"><span class="l">Codex tokens</span><span class="v">${fmtTok(tk.total || 0)}</span><span class="s">input ${fmtTok(tk.input || 0)} · output ${fmtTok(tk.output || 0)}</span></div>` +
+          `<div class="tile"><span class="l">Today’s estimate</span><span class="v">${fmtEstimate(todayEstimate)}</span><span class="s">standard/base API price</span></div>` +
+          `<div class="tile"><span class="l">OpenAI-family tokens</span><span class="v">${fmtTok(tk.total || 0)}</span><span class="s">input ${fmtTok(tk.input || 0)} · output ${fmtTok(tk.output || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cached input</span><span class="v">${fmtTok(tk.cachedInput || 0)}</span><span class="s">cache-write ${fmtTok(tk.cacheWrite || 0)}${totals.cacheWriteUnreportedRecords ? ` · ${totals.cacheWriteUnreportedRecords} run${totals.cacheWriteUnreportedRecords === 1 ? '' : 's'} unreported` : ''}</span></div>` +
           `<div class="tile"><span class="l">Coverage</span><span class="v">${totals.pricedRecords || 0}/${totals.records || 0}</span><span class="s">priced runs · ${totals.unpricedRecords || 0} unavailable</span></div>`;
 
-        const modelSelect = $('ua-codex-model');
-        modelSelect.innerHTML =
-          '<option value="all">All Codex models</option>' +
-          (c.availableModels || [])
-            .map((model) => `<option value="${esc(model)}">${esc(model)}</option>`)
-            .join('');
-        modelSelect.value = c.model || 'all';
-        if (modelSelect.value !== (c.model || 'all')) modelSelect.value = 'all';
+        const filters = c.filters || {};
+        const selectedModel = filters.model ?? c.model ?? uaCodexModel;
+        const selectedProvider = filters.provider ?? c.provider ?? uaOpenaiProvider;
+        const selectedHarness = filters.harness ?? c.harness ?? uaOpenaiHarness;
+        selectOptions(
+          'ua-codex-model',
+          'All OpenAI-family models',
+          c.availableModels,
+          selectedModel,
+        );
+        selectOptions(
+          'ua-openai-provider',
+          'All OpenAI-family providers',
+          c.availableProviders,
+          selectedProvider,
+        );
+        selectOptions('ua-openai-harness', 'All harnesses', c.availableHarnesses, selectedHarness);
         $('ua-codex-range').value = c.range || '14';
+        const activeFilters = [
+          selectedProvider !== 'all' ? selectedProvider : '',
+          selectedHarness !== 'all' ? selectedHarness : '',
+          selectedModel !== 'all' ? selectedModel : '',
+        ].filter(Boolean);
         $('ua-codex-range-note').textContent =
-          (c.range === 'all' ? 'all recorded dates' : `${c.rangeStart} → ${c.rangeEnd}`) +
-          (c.model && c.model !== 'all' ? ` · ${c.model}` : '');
+          (c.range === 'all'
+            ? 'all recorded dates'
+            : `${c.rangeStart || '–'} → ${c.rangeEnd || '–'}`) +
+          (activeFilters.length ? ` · ${activeFilters.join(' · ')}` : '');
 
         const W = 720,
           H = 200,
@@ -2078,34 +4434,48 @@
         days.forEach((day, i) => {
           const cx = padL + i * bw + bw * 0.2;
           const w = Math.max(1, bw * 0.6);
-          const cost = day.estimatedUsd || 0;
-          const h = ((H - padB - padT) * cost) / maxCost;
+          const cost = finiteNumber(day.estimatedUsd);
+          const h = ((H - padB - padT) * (cost || 0)) / maxCost;
           const y = H - padB - h;
+          const dayLabel = String(day.k || day.date || '');
           if (h > 0.3)
-            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="2" fill="var(--accent)"><title>${day.k}: ${fmtEstimate(day.estimatedUsd)}${day.coverage === 'complete' ? '' : ' (' + coverageText(day) + ')'}</title></rect>`;
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="2" fill="var(--accent)"><title>${esc(dayLabel)}: ${fmtEstimate(day.estimatedUsd)}${day.coverage === 'complete' ? '' : ' (' + esc(coverageText(day)) + ')'}</title></rect>`;
           else if (day.records > 0 && day.estimatedUsd == null)
-            svg += `<rect x="${cx}" y="${H - padB - 2}" width="${w}" height="2" fill="var(--muted)"><title>${day.k}: estimate unavailable</title></rect>`;
+            svg += `<rect x="${cx}" y="${H - padB - 2}" width="${w}" height="2" fill="var(--muted)"><title>${esc(dayLabel)}: estimate unavailable</title></rect>`;
           const tokenY = H - padB - ((H - padB - padT) * (day.tokens?.total || 0)) / maxTokens;
           points.push(`${cx + w / 2},${tokenY}`);
           if (i % labelEvery === days.length % labelEvery)
-            svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${day.k.slice(5)}</text>`;
+            svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${esc(dayLabel.slice(5))}</text>`;
         });
         if (points.length > 1)
-          svg += `<polyline points="${points.join(' ')}" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linejoin="round"><title>Codex token volume</title></polyline>`;
+          svg += `<polyline points="${points.join(' ')}" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linejoin="round"><title>OpenAI-family token volume</title></polyline>`;
         $('ua-codex-days').innerHTML =
           svg ||
-          '<text x="360" y="100" text-anchor="middle" fill="var(--muted)">no Codex data</text>';
+          '<text x="360" y="100" text-anchor="middle" fill="var(--muted)">no OpenAI-family data</text>';
         codexBars('ua-codex-models', c.byModel || [], false);
+        codexBars('ua-openai-harnesses', c.byHarness || [], false);
+        codexBars('ua-openai-providers', c.byProvider || [], false);
         codexBars('ua-codex-roles', c.byRole || [], false);
         codexIssueRows(c.byIssue || []);
       }
       function renderUsage(d) {
         if (!d) return;
         const t = d.totals || {};
+        const openai = d.openai || d.openaiFamily || d.codex || {};
+        const actualSpendRecords = finiteNumber(openai.totals?.actualSpendRecords);
+        const openaiActual =
+          actualSpendRecords != null && actualSpendRecords > 0
+            ? (finiteNumber(openai.totals?.actualSpendUsd) ??
+              finiteNumber(openai.totals?.actualUsd))
+            : null;
+        const actual =
+          finiteNumber(d.billing?.actualUsd) ?? finiteNumber(t.actualCostUsd) ?? openaiActual;
+        $('ua-actual-cost').textContent = actual == null ? 'Not reported' : fmtEstimate(actual);
+        $('ua-cli-estimate').textContent = `$${t.cost ?? 0}`;
         $('ua-kpis').innerHTML =
-          `<div class="tile"><span class="l">Total spend</span><span class="v">$${t.cost ?? 0}</span><span class="s">${t.records ?? 0} agent runs</span></div>` +
-          `<div class="tile"><span class="l">Today</span><span class="v">$${t.today ?? 0}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
-          `<div class="tile"><span class="l">Issues built</span><span class="v">${t.issues ?? 0}</span><span class="s">avg $${t.avgPerIssue ?? 0} per issue</span></div>` +
+          `<div class="tile"><span class="l">CLI estimate total</span><span class="v">$${t.cost ?? 0}</span><span class="s">${t.records ?? 0} agent runs · not an invoice</span></div>` +
+          `<div class="tile"><span class="l">CLI estimate today</span><span class="v">$${t.today ?? 0}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
+          `<div class="tile"><span class="l">Issues represented</span><span class="v">${t.issues ?? 0}</span><span class="s">avg estimate $${t.avgPerIssue ?? 0} per issue</span></div>` +
           `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;
         // daily stacked bars
@@ -2116,7 +4486,7 @@
           padT = 8;
         const days = d.days || [];
         const max = Math.max(...days.map((x) => x.multi + x.single), 1) * 1.14;
-        const bw = (W - padL - 8) / days.length;
+        const bw = days.length ? (W - padL - 8) / days.length : W - padL - 8;
         let svg = '';
         for (const frac of [0.5, 1]) {
           const y = padT + (H - padB - padT) * (1 - frac);
@@ -2145,7 +4515,9 @@
           if (i % 2 === (days.length - 1) % 2)
             svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${x.date.slice(5)}</text>`;
         });
-        $('ua-days').innerHTML = svg;
+        $('ua-days').innerHTML =
+          svg ||
+          '<text x="360" y="90" text-anchor="middle" fill="var(--muted)">No ledger history yet</text>';
         hbars(
           'ua-model',
           (d.byModel || []).map((r) => ({ ...r, label: r.k })),
@@ -2166,7 +4538,7 @@
               `<div class="tile"><span class="l">${k.replace('cache', 'cache ')}</span><span class="v">${fmtTok(tk[k] || 0)}</span></div>`,
           )
           .join('');
-        renderCodexUsage(d.codex || {});
+        renderOpenAIUsage(openai);
       }
 
       /* ---- live ---- */
@@ -2192,8 +4564,10 @@
         $('livetxt').textContent = fresh ? 'live' : 'reconnecting…';
       }, 1000);
       window.addEventListener('resize', () => {
-        if (S && activeTab === 'flow') renderFlow(S, true);
+        if (S && activeTab === 'flow')
+          renderFlow(S, runtimeState(S.docker?.multi?.containers || []).on);
       });
+      organizeWorkspace();
       setTab(activeTab);
       tgTypeChanged();
       connect();
