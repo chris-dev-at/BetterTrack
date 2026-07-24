@@ -224,6 +224,16 @@ claudex_result_valid(){ # $1=result json $2=exact selector
   ' >/dev/null 2>&1 <<<"$1"
 }
 
+claudex_turn_limit_reached(){ # $1=result json
+  jq -e '
+    .type == "result"
+    and (
+      .subtype == "error_max_turns"
+      or .terminal_reason == "max_turns_reached"
+    )
+  ' >/dev/null 2>&1 <<<"$1"
+}
+
 claudex_ledger_result(){ # $1=validated result json
   jq -c '
     def safe_model_usage:
@@ -411,6 +421,11 @@ cc_claudex(){ # $1=model $2=Claude Code effort(optional) $3=prompt
     if [ "$rc" = 124 ]; then
       ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" fail
       log "  ↳ ClaudeX run timed out after ${MF_ROLE_TIMEOUT}s"
+      return 1
+    fi
+    if [ -n "$result" ] && claudex_turn_limit_reached "$result"; then
+      ledger_record "$issue" "$role" "$raw_model" "$res" "$dur" fail
+      log "  ↳ ClaudeX reached its ${max_turns:-configured} turn cap"
       return 1
     fi
     if grep -qiE "$CLAUDEX_LIMIT_RE" <<<"$signal"; then
