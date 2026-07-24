@@ -292,8 +292,9 @@ composer_record_outcome(){ # $1=created|idle $2=snapshot $3=current backoff
   fi
   atomic_write "$CONTROL/.composer-backoff" "$next" || return 1
   atomic_write "$CONTROL/.composer-snapshot" "$snap" || return 1
-  touch "$CONTROL/.composer-last"
-  rm -f "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff"
+  touch "$CONTROL/.composer-last" || return 1
+  rm -f "$CONTROL/.composer-protocol-last" "$CONTROL/.composer-protocol-backoff" \
+    || return 1
 }
 
 composer_protocol_ready(){
@@ -364,13 +365,32 @@ composer_request_alert_once(){ # $1=reason key $2=message
 
 composer_request_mark_blocked(){ # $1=terminal reason after bounded attempts
   local reason=$1 claim="$CONTROL/.composer-request-claim"
-  if ! atomic_write "$claim/blocked" "$reason"; then
-    # Poison the session owner as a second fail-closed guard. The current master
-    # then looks foreign on its next tick rather than replaying the request.
-    atomic_write "$claim/session" "blocked-$MF_MASTER_SESSION" 2>/dev/null || true
+  local blocked="$claim/blocked" session="$claim/session"
+  local poison="blocked-$MF_MASTER_SESSION" owner=""
+
+  # The return value is a safety contract: success means prepare() will observe
+  # at least one durable replay guard. A failed write must never be laundered by
+  # the best-effort alert below.
+  atomic_write "$blocked" "$reason" 2>/dev/null || true
+  if [ -f "$blocked" ]; then
+    composer_request_alert_once "blocked:$reason" \
+      "composer request retained for owner review after $reason — automatic replay disabled"
+    return 0
   fi
-  composer_request_alert_once "blocked:$reason" \
-    "composer request retained for owner review after $reason — automatic replay disabled"
+
+  # Poison the session owner as a second fail-closed guard. The current master
+  # then looks foreign on its next tick rather than replaying the request.
+  atomic_write "$session" "$poison" 2>/dev/null || true
+  [ -f "$session" ] && owner=$(<"$session")
+  if [ -f "$session" ] && [ "$owner" != "$MF_MASTER_SESSION" ]; then
+    composer_request_alert_once "blocked:$reason" \
+      "composer request retained for owner review after $reason — automatic replay disabled"
+    return 0
+  fi
+
+  composer_request_alert_once "block-write-failed:$reason" \
+    "composer request block persistence failed after $reason — scheduler remains fenced for owner reconciliation"
+  return 1
 }
 
 composer_request_prepare(){ # $1=allow ready→active claim (default 1); 0=none/loaded, 2=unsafe
@@ -443,7 +463,7 @@ composer_request_prepare(){ # $1=allow ready→active claim (default 1); 0=none/
   fi
 
   if ! composer_request_validate "$active"; then
-    composer_request_mark_blocked invalid-request
+    composer_request_mark_blocked invalid-request || return 2
     return 2
   fi
 
@@ -476,6 +496,265 @@ composer_request_archive(){ # $1=validated composer run id
   return 0
 }
 
+# A composer invocation can create GitHub issues before its post-run collection
+# snapshot is readable. Persist the pre-run snapshot and run identity BEFORE the
+# model starts so an interrupted/failed discovery can never expose those issues
+# to the scheduler. The next tick reconciles this fence without replaying the
+# model; valid artifacts are accepted, invalid ones are quarantined.
+composer_discovery_fence_begin(){ # $1=before JSON $2=manifest $3=run $4=snapshot $5=backoff $6=invalid-seen $7=attempt
+  local before=$1 manifest=$2 run_id=$3 snapshot=$4 backoff=$5
+  local invalid_seen=$6 attempt=$7 fence stage request_id="" exact_count=0
+  fence="$CONTROL/composer-discovery-fence"
+  [ ! -e "$fence" ] || return 1
+  [ "$manifest" = "$CONTROL/composer-manifests/$run_id" ] || return 1
+  jq -e 'type == "array"' <<<"$before" >/dev/null 2>&1 || return 1
+  case "$backoff:$invalid_seen:$attempt" in
+    *[!0-9:]*|:*|*::*|*:) return 1;;
+  esac
+  if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+    request_id=$COMPOSER_REQUEST_ID
+    exact_count=$COMPOSER_REQUEST_EXACT_COUNT
+  fi
+  stage=$(mktemp -d "$CONTROL/.composer-discovery-fence.XXXXXX") || return 1
+  if ! printf '%s\n' "$before" >"$stage/before.json" \
+    || ! printf '%s\n' "$snapshot" >"$stage/snapshot" \
+    || ! jq -cn \
+      --arg run_id "$run_id" \
+      --arg request_id "$request_id" \
+      --argjson exact_count "$exact_count" \
+      --argjson backoff "$backoff" \
+      --argjson invalid_new_seen "$invalid_seen" \
+      --argjson attempt "$attempt" \
+      '{
+        version: 1,
+        run_id: $run_id,
+        request_id: $request_id,
+        exact_count: $exact_count,
+        backoff: $backoff,
+        invalid_new_seen: $invalid_new_seen,
+        attempt: $attempt,
+        transport: -1
+      }' >"$stage/meta.json" \
+    || ! mv -- "$stage" "$fence"; then
+    rm -f -- "$stage/before.json" "$stage/snapshot" "$stage/meta.json"
+    rmdir "$stage" 2>/dev/null || true
+    return 1
+  fi
+}
+
+composer_discovery_fence_set_transport(){ # $1=provider rc
+  local transport=$1 fence="$CONTROL/composer-discovery-fence" tmp
+  case "$transport" in ''|*[!0-9]*) return 1;; esac
+  [ -f "$fence/meta.json" ] || return 1
+  tmp=$(mktemp "$fence/.meta.XXXXXX") || return 1
+  jq --argjson transport "$transport" '.transport = $transport' \
+    "$fence/meta.json" >"$tmp" 2>/dev/null \
+    && mv -f -- "$tmp" "$fence/meta.json" \
+    || { rm -f -- "$tmp"; return 1; }
+}
+
+composer_discovery_fence_clear(){
+  local fence="$CONTROL/composer-discovery-fence"
+  [ -d "$fence" ] || return 0
+  rm -f -- "$fence/before.json" "$fence/snapshot" "$fence/meta.json" \
+    "$fence/alerted" "$fence"/.meta.* "$fence"/.tmp.*
+  rmdir "$fence"
+}
+
+composer_discovery_fence_alert_once(){ # $1=key $2=truthful operator message
+  local key=$1 message=$2 fence="$CONTROL/composer-discovery-fence"
+  local marker="$fence/alerted" previous=""
+  [ -f "$marker" ] && previous=$(<"$marker")
+  [ "$previous" = "$key" ] && return 0
+  atomic_write "$marker" "$key" 2>/dev/null || true
+  log "$message"
+  notify "$message"
+}
+
+composer_discovery_fence_load(){
+  local fence="$CONTROL/composer-discovery-fence" meta="$CONTROL/composer-discovery-fence/meta.json"
+  local active="$CONTROL/.composer-request-active.json"
+  local claim="$CONTROL/.composer-request-claim" archive
+  [ -d "$fence" ] && [ -f "$meta" ] && [ -f "$fence/before.json" ] \
+    && [ -f "$fence/snapshot" ] || return 1
+  jq -e --argjson max "$COMPOSER_BATCH" '
+    type == "object"
+    and ((keys_unsorted - [
+      "attempt","backoff","exact_count","invalid_new_seen","request_id",
+      "run_id","transport","version"
+    ]) | length == 0)
+    and .version == 1
+    and (.run_id | type == "string" and test("^composer-[A-Za-z0-9._-]+$"))
+    and (
+      (.request_id == "" and .exact_count == 0)
+      or (
+        (.request_id | type == "string"
+          and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"))
+        and (.exact_count | type == "number" and . == floor and . >= 1)
+        and .exact_count <= $max
+      )
+    )
+    and (.backoff | type == "number" and . == floor and . >= 0)
+    and (.invalid_new_seen == 0 or .invalid_new_seen == 1)
+    and (.attempt | type == "number" and . == floor and . >= 1)
+    and (.transport | type == "number" and . == floor and . >= -1 and . <= 255)
+  ' "$meta" >/dev/null 2>&1 || return 1
+  jq -e 'type == "array"' "$fence/before.json" >/dev/null 2>&1 || return 1
+  COMPOSER_FENCE_RUN_ID=$(jq -r .run_id "$meta")
+  COMPOSER_FENCE_REQUEST_ID=$(jq -r .request_id "$meta")
+  COMPOSER_FENCE_EXACT_COUNT=$(jq -r .exact_count "$meta")
+  COMPOSER_FENCE_BACKOFF=$(jq -r .backoff "$meta")
+  COMPOSER_FENCE_INVALID_NEW_SEEN=$(jq -r .invalid_new_seen "$meta")
+  COMPOSER_FENCE_ATTEMPT=$(jq -r .attempt "$meta")
+  COMPOSER_FENCE_TRANSPORT=$(jq -r .transport "$meta")
+  COMPOSER_FENCE_MANIFEST="$CONTROL/composer-manifests/$COMPOSER_FENCE_RUN_ID"
+  [ -f "$COMPOSER_FENCE_MANIFEST" ] || return 1
+
+  # Request identity is a two-source invariant, not a nullable hint. An owner
+  # fence must still match either its active request or its already-moved
+  # archive; an ordinary fence must not coexist with owner-active state. This
+  # prevents a torn/corrupt request_id from downgrading owner work to ordinary.
+  if [ -z "$COMPOSER_FENCE_REQUEST_ID" ]; then
+    [ ! -f "$active" ] && [ ! -d "$claim" ] || return 1
+    return 0
+  fi
+  archive="$CONTROL/composer-request-archive/${COMPOSER_FENCE_REQUEST_ID}-${COMPOSER_FENCE_RUN_ID}.json"
+  if [ -f "$active" ]; then
+    [ -d "$claim" ] && [ ! -f "$archive" ] \
+      && composer_request_validate "$active" \
+      && [ "$(jq -r .id "$active")" = "$COMPOSER_FENCE_REQUEST_ID" ] \
+      && [ "$(jq -r .exact_count "$active")" = "$COMPOSER_FENCE_EXACT_COUNT" ]
+    return
+  fi
+  [ -f "$archive" ] && composer_request_validate "$archive" \
+    && [ "$(jq -r .id "$archive")" = "$COMPOSER_FENCE_REQUEST_ID" ] \
+    && [ "$(jq -r .exact_count "$archive")" = "$COMPOSER_FENCE_EXACT_COUNT" ]
+}
+
+# Reconciliation validates, archives and consumes an already-created owner
+# request result; it never replays the model, so adopting a fence after a master
+# restart is safe even when the original request claim has a foreign session id.
+composer_request_restore_from_fence(){
+  local active="$CONTROL/.composer-request-active.json"
+  [ -n "$COMPOSER_FENCE_REQUEST_ID" ] || return 0
+  [ -f "$active" ] && composer_request_validate "$active" || return 1
+  [ "$(jq -r .id "$active")" = "$COMPOSER_FENCE_REQUEST_ID" ] || return 1
+  [ "$(jq -r .exact_count "$active")" = "$COMPOSER_FENCE_EXACT_COUNT" ] || return 1
+  COMPOSER_REQUEST_ID=$COMPOSER_FENCE_REQUEST_ID
+  COMPOSER_REQUEST_EXACT_COUNT=$COMPOSER_FENCE_EXACT_COUNT
+  COMPOSER_REQUEST_BRIEF=$(jq -jr '.brief, "__MF_BRIEF_SENTINEL__"' "$active")
+  COMPOSER_REQUEST_BRIEF=${COMPOSER_REQUEST_BRIEF%__MF_BRIEF_SENTINEL__}
+  COMPOSER_REQUEST_LOADED=1
+}
+
+composer_discovery_fence_reconcile(){
+  local fence="$CONTROL/composer-discovery-fence" before after newnums snapshot
+  local manifest_count valid=0 outcome=protocol archive
+  if ! composer_discovery_fence_load; then
+    composer_discovery_fence_alert_once invalid-fence \
+      "composer discovery fence is corrupt — scheduler remains fenced; owner reconciliation required"
+    return 2
+  fi
+  before=$(<"$fence/before.json")
+  if ! after=$(composer_discovery_after "$COMPOSER_FENCE_MANIFEST"); then
+    composer_discovery_fence_alert_once discovery-failed \
+      "composer issue discovery still unavailable — scheduler remains fenced; automatic reconciliation will retry"
+    return 2
+  fi
+  if ! newnums=$(mf_new_issue_numbers "$before" "$after"); then
+    composer_discovery_fence_alert_once comparison-failed \
+      "composer issue comparison failed — scheduler remains fenced; automatic reconciliation will retry"
+    return 2
+  fi
+  newnums=$(xargs <<<"$newnums")
+  log "composer fence discovery ($COMPOSER_FENCE_RUN_ID): new repository issues [${newnums:-none}]"
+
+  if mf_manifest_validate "$COMPOSER_FENCE_MANIFEST" "$before" "$after" \
+    "$COMPOSER_FENCE_RUN_ID" ""; then
+    case "$MF_MANIFEST_KIND" in
+      issues)
+        outcome=created
+        if [ -n "$COMPOSER_FENCE_REQUEST_ID" ]; then
+          manifest_count=$(grep -cE '^ISSUE [0-9]+ (autopilot|awaiting-owner|relocated)$' \
+            "$COMPOSER_FENCE_MANIFEST" || true)
+          archive="$CONTROL/composer-request-archive/${COMPOSER_FENCE_REQUEST_ID}-${COMPOSER_FENCE_RUN_ID}.json"
+          if [ "$manifest_count" -eq "$COMPOSER_FENCE_EXACT_COUNT" ] \
+            && [ "$COMPOSER_FENCE_INVALID_NEW_SEEN" -eq 0 ]; then
+            if [ -f "$archive" ] && composer_request_validate "$archive" \
+              && [ "$(jq -r .id "$archive")" = "$COMPOSER_FENCE_REQUEST_ID" ] \
+              && [ "$(jq -r .exact_count "$archive")" = "$COMPOSER_FENCE_EXACT_COUNT" ]; then
+              valid=1
+            elif composer_request_restore_from_fence; then
+              valid=1
+            fi
+          fi
+        else
+          valid=1
+        fi
+        ;;
+      none)
+        outcome=idle
+        [ -z "$COMPOSER_FENCE_REQUEST_ID" ] \
+          && [ "$COMPOSER_FENCE_TRANSPORT" -eq 0 ] \
+          && [ "$COMPOSER_FENCE_INVALID_NEW_SEEN" -eq 0 ] \
+          && valid=1
+        ;;
+    esac
+  fi
+
+  if [ "$valid" -eq 1 ]; then
+    snapshot=$(<"$fence/snapshot")
+    composer_record_outcome "$outcome" "$snapshot" "$COMPOSER_FENCE_BACKOFF" || {
+      composer_discovery_fence_alert_once outcome-write-failed \
+        "composer discovery validated but outcome persistence failed — scheduler remains fenced"
+      return 2
+    }
+    if [ -n "$COMPOSER_FENCE_REQUEST_ID" ]; then
+      archive="$CONTROL/composer-request-archive/${COMPOSER_FENCE_REQUEST_ID}-${COMPOSER_FENCE_RUN_ID}.json"
+      if [ ! -f "$archive" ] && ! composer_request_archive "$COMPOSER_FENCE_RUN_ID"; then
+        composer_discovery_fence_alert_once archive-failed \
+          "composer discovery validated but request archive failed — scheduler remains fenced"
+        return 2
+      fi
+    fi
+    composer_discovery_fence_clear || {
+      composer_discovery_fence_alert_once clear-failed \
+        "composer discovery validated but its safety fence could not be cleared — scheduler remains fenced"
+      return 2
+    }
+    [ "$outcome" = created ] && fetch_issues
+    notify "composer discovery reconciled and validated — scheduler safety fence cleared"
+    return 0
+  fi
+
+  if [ -n "$newnums" ] && ! composer_quarantine "$newnums"; then
+    composer_discovery_fence_alert_once quarantine-failed \
+      "composer discovery was invalid and quarantine persistence failed — scheduler remains fenced"
+    return 2
+  fi
+  composer_record_protocol_failure || {
+    composer_discovery_fence_alert_once protocol-write-failed \
+      "composer discovery was invalid and protocol state could not be persisted — scheduler remains fenced"
+    return 2
+  }
+  if [ -n "$COMPOSER_FENCE_REQUEST_ID" ]; then
+    composer_request_restore_from_fence || {
+      composer_discovery_fence_alert_once request-restore-failed \
+        "composer request discovery was invalid — scheduler remains fenced for owner reconciliation"
+      return 2
+    }
+    composer_request_mark_blocked discovery-reconciliation-invalid || {
+      composer_discovery_fence_alert_once request-block-write-failed \
+        "composer request discovery was invalid but its replay block could not be persisted — scheduler remains fenced"
+      return 2
+    }
+  fi
+  composer_discovery_fence_clear || return 2
+  notify "composer discovery reconciled but its artifact contract was invalid — discovered issues quarantined when present"
+  [ -n "$COMPOSER_FENCE_REQUEST_ID" ] && return 2
+  return 1
+}
+
 # GitHub's collection endpoint can briefly lag a successful `gh issue create`.
 # The helper-written manifest is authoritative enough to identify the expected
 # issue numbers, but it is not sufficient by itself: we still accumulate
@@ -483,46 +762,60 @@ composer_request_archive(){ # $1=validated composer run id
 # before/after contract. Direct reads fill only manifest IDs that the list has
 # not exposed yet. Every outcome consumes the full bounded grace period so a
 # delayed unmanifested artifact can never arrive after an early acceptance.
-composer_discovery_after(){ # $1=manifest
+composer_discovery_after(){ ( # $1=manifest; subshell contains cleanup traps
   local manifest=$1 attempts=$MF_COMPOSER_DISCOVERY_ATTEMPTS
-  local pause=$MF_COMPOSER_DISCOVERY_SLEEP attempt after issue merged n
-  local ids="" accumulated='[]'
+  local pause=$MF_COMPOSER_DISCOVERY_SLEEP attempt n ids=""
+  local accumulated latest merged issue cleanup_trap
   case "$attempts" in ''|*[!0-9]*|0) attempts=6;; esac
   case "$pause" in ''|*[!0-9]*) pause=2;; esac
   if [ -s "$manifest" ]; then
     ids=$(awk '/^ISSUE [0-9]+ (autopilot|awaiting-owner|relocated)$/{print $2}' \
       "$manifest" | sort -un)
   fi
+  accumulated=$(mktemp "$CONTROL/.composer-discovery.XXXXXX") || exit 1
+  latest="${accumulated}.latest"
+  merged="${accumulated}.merged"
+  issue="${accumulated}.issue"
+  # EXIT runs after this function's local scope has unwound on an explicit
+  # `exit`, so bake the already-resolved temp paths into the cleanup command.
+  printf -v cleanup_trap 'rm -f -- %q %q %q %q' \
+    "$accumulated" "$latest" "$merged" "$issue"
+  trap "$cleanup_trap" EXIT HUP INT TERM
+  printf '[]\n' >"$accumulated" || exit 1
 
   for attempt in $(seq 1 "$attempts"); do
-    after=$(mf_recent_issues_json) || return 1
-    jq -e 'type=="array"' <<<"$after" >/dev/null 2>&1 || return 1
-    merged=$(jq -cn --argjson seen "$accumulated" --argjson latest "$after" \
-      '$seen + $latest | unique_by(.number)') || return 1
-    accumulated=$merged
+    mf_recent_issues_json >"$latest" || exit 1
+    jq -e 'type=="array"' "$latest" >/dev/null 2>&1 || exit 1
+    jq -s '.[0] + .[1] | unique_by(.number)' \
+      "$accumulated" "$latest" >"$merged" 2>/dev/null || exit 1
+    mv -f -- "$merged" "$accumulated" || exit 1
 
     # A just-created issue is immediately addressable by number even when the
     # collection response is still stale. Never synthesize data from the
     # manifest: the direct API object must satisfy the normal validator.
     for n in $ids; do
       if ! jq -e --argjson n "$n" 'map(.number) | index($n) != null' \
-        <<<"$accumulated" >/dev/null 2>&1; then
-        issue=$(mf_issue_json_by_number "$n") || continue
+        "$accumulated" >/dev/null 2>&1; then
+        mf_issue_json_by_number "$n" >"$issue" || continue
         jq -e 'type=="object" and (.number|type=="number")' \
-          <<<"$issue" >/dev/null 2>&1 || continue
-        merged=$(jq -cn --argjson seen "$accumulated" --argjson issue "$issue" \
-          '$seen + [$issue] | unique_by(.number)') || return 1
-        accumulated=$merged
+          "$issue" >/dev/null 2>&1 || continue
+        jq -s '.[0] + [.[1]] | unique_by(.number)' \
+          "$accumulated" "$issue" >"$merged" 2>/dev/null || exit 1
+        mv -f -- "$merged" "$accumulated" || exit 1
       fi
     done
 
     [ "$attempt" -eq "$attempts" ] || [ "$pause" -eq 0 ] || sleep "$pause"
   done
-  printf '%s\n' "$accumulated"
-}
+  cat "$accumulated"
+) }
 
 composer_step(){ # $1=mode
   local mode=$1 allow_ready_claim=0
+  if [ -e "$CONTROL/composer-discovery-fence" ]; then
+    composer_discovery_fence_reconcile
+    return $?
+  fi
   [ "$mode" = run ] && allow_ready_claim=1
   # Reconcile an already-active request before the mode gate. run-out still
   # assigns queued issues, so it must not expose crash-window artifacts from an
@@ -553,7 +846,13 @@ composer_step(){ # $1=mode
   fi
   local count; count=$(runnable_issues | grep -c . || true)
   [ "$count" -lt $((WORKERS + 1)) ] || return 0
-  composer_protocol_ready || return 0
+  if ! composer_protocol_ready; then
+    # A claimed owner request remains a scheduler fence while its protocol
+    # cooldown is active. Returning ordinary success here could expose artifacts
+    # after a crash between bounded correction attempts.
+    [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
+    return 0
+  fi
   # Claim a new ready request only once the normal composer capacity gate says
   # this tick can run it and its protocol cooldown has elapsed. This avoids
   # holding a request across an unrelated backlog drain/backoff (and turning an
@@ -588,7 +887,7 @@ composer_step(){ # $1=mode
     && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "composer pre-sync failed (non-fatal)"
   local attempt before after manifest run_id transport outcome=protocol newnums prompt
   local prompt_batch=$COMPOSER_BATCH manifest_issue_count
-  local outcome_recorded=0
+  local outcome_recorded=0 protocol_recorded=0 owner_blocked=0
   [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
     && prompt_batch=$COMPOSER_REQUEST_EXACT_COUNT
   local invalid_new_seen=0
@@ -619,16 +918,32 @@ PROTOCOL CORRECTION RETRY: the previous invocation did not produce a valid
 manifest/artifact set. Do not claim or edit unmarked issues from that attempt;
 targeted duplicate searches will find them. Use only the required helper and
 finish the manifest contract this time."
+    if ! composer_discovery_fence_begin "$before" "$manifest" "$run_id" \
+      "$snap" "$backoff" "$invalid_new_seen" "$attempt"; then
+      notify "composer safety fence could not be persisted — model was not run; scheduler paused for this tick"
+      return 2
+    fi
     if CC_ISSUE=- mf_cc composer "$(role_diff composer)" "$(with_pack "$prompt")"; then
       transport=0
     else
       transport=$?
     fi
+    if ! composer_discovery_fence_set_transport "$transport"; then
+      composer_discovery_fence_alert_once transport-write-failed \
+        "composer transport finished but its discovery fence could not be updated — scheduler remains fenced"
+      return 2
+    fi
     after=$(composer_discovery_after "$manifest") || {
-      log "composer protocol: post-run issue discovery failed; suppressing corrective model retry"
-      break
+      composer_discovery_fence_alert_once discovery-failed \
+        "composer issue discovery failed — scheduler fenced; automatic reconciliation will retry without replaying the model"
+      return 2
     }
-    newnums=$(mf_new_issue_numbers "$before" "$after" | xargs)
+    if ! newnums=$(mf_new_issue_numbers "$before" "$after"); then
+      composer_discovery_fence_alert_once comparison-failed \
+        "composer issue comparison failed — scheduler fenced; automatic reconciliation will retry without replaying the model"
+      return 2
+    fi
+    newnums=$(xargs <<<"$newnums")
     log "composer discovery ($run_id): new repository issues [${newnums:-none}]"
     if mf_manifest_validate "$manifest" "$before" "$after" "$run_id" ""; then
       case "$MF_MANIFEST_KIND" in
@@ -642,23 +957,40 @@ finish the manifest contract this time."
             elif [ "$invalid_new_seen" -ne 0 ]; then
               log "composer request $COMPOSER_REQUEST_ID: earlier attempt created invalid artifacts"
               notify "composer request had prior artifacts — current issues quarantined; brief retained"
-            elif composer_record_outcome created "$snap" "$backoff"; then
+            elif ! composer_record_outcome created "$snap" "$backoff"; then
+              composer_discovery_fence_alert_once outcome-write-failed \
+                "composer request result validated but cooldown persistence failed — scheduler remains fenced"
+              return 2
+            else
               # Persist the cooldown BEFORE consuming the request. If the master
               # dies immediately after the archive move, the next process sees
               # the new issues but cannot compose an accidental extra batch.
               outcome_recorded=1
               if composer_request_archive "$run_id"; then
+                composer_discovery_fence_clear || {
+                  notify "composer request was archived but its discovery fence could not be cleared — scheduler remains fenced"
+                  return 2
+                }
                 outcome=created
                 log "composer contract accepted issues: $MF_MANIFEST_ISSUES"
                 break
               fi
               log "composer request $COMPOSER_REQUEST_ID: exact result valid but archive failed"
-              notify "composer request archive failed — artifacts quarantined; brief retained"
-            else
-              log "composer request $COMPOSER_REQUEST_ID: cannot persist exact result"
-              notify "composer request outcome persistence failed — artifacts quarantined; brief retained"
+              composer_discovery_fence_alert_once archive-failed \
+                "composer request result validated but archive persistence failed — scheduler remains fenced"
+              return 2
             fi
           else
+            if ! composer_record_outcome created "$snap" "$backoff"; then
+              composer_discovery_fence_alert_once outcome-write-failed \
+                "composer result validated but cooldown persistence failed — scheduler remains fenced"
+              return 2
+            fi
+            outcome_recorded=1
+            composer_discovery_fence_clear || {
+              notify "composer contract validated but its discovery fence could not be cleared — scheduler remains fenced"
+              return 2
+            }
             outcome=created
             log "composer contract accepted issues: $MF_MANIFEST_ISSUES"
             break
@@ -669,6 +1001,16 @@ finish the manifest contract this time."
             log "composer request $COMPOSER_REQUEST_ID: NONE rejected for exact-count request"
             notify "composer request returned NONE — brief retained for bounded retry"
           elif [ "$transport" -eq 0 ] && [ "$invalid_new_seen" -eq 0 ]; then
+            if ! composer_record_outcome idle "$snap" "$backoff"; then
+              composer_discovery_fence_alert_once outcome-write-failed \
+                "composer empty result validated but cooldown persistence failed — scheduler remains fenced"
+              return 2
+            fi
+            outcome_recorded=1
+            composer_discovery_fence_clear || {
+              notify "composer empty result validated but its discovery fence could not be cleared — scheduler remains fenced"
+              return 2
+            }
             outcome=idle
             break
           fi
@@ -677,20 +1019,52 @@ finish the manifest contract this time."
     fi
     if [ -n "$newnums" ]; then
       invalid_new_seen=1
-      composer_quarantine "$newnums" || true
+      composer_quarantine "$newnums" || {
+        composer_discovery_fence_alert_once quarantine-failed \
+          "composer artifact quarantine failed — scheduler remains fenced"
+        return 2
+      }
     fi
+    if [ "$protocol_recorded" -ne 1 ]; then
+      composer_record_protocol_failure || {
+        composer_discovery_fence_alert_once protocol-write-failed \
+          "composer artifact contract failed and protocol persistence failed — scheduler remains fenced"
+        return 2
+      }
+      protocol_recorded=1
+    fi
+    if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] \
+      && [ "$attempt" -eq "$MF_COMPOSER_PROTOCOL_ATTEMPTS" ]; then
+      composer_request_mark_blocked protocol-failure || {
+        composer_discovery_fence_alert_once request-block-write-failed \
+          "composer request exhausted its attempts but its replay block could not be persisted — scheduler remains fenced"
+        return 2
+      }
+      owner_blocked=1
+    fi
+    composer_discovery_fence_clear || {
+      notify "composer discovery completed but its safety fence could not be cleared — scheduler remains fenced"
+      return 2
+    }
     log "composer protocol failure (attempt $attempt/$MF_COMPOSER_PROTOCOL_ATTEMPTS, transport=$transport)"
   done
 
   if [ "$outcome" = protocol ]; then
     # A malformed run does not advance the valid-empty cooldown, but it has its
     # own bounded backoff so a bad provider cannot fire twice every 15-second tick.
-    composer_record_protocol_failure || true
+    if [ "$protocol_recorded" -ne 1 ] && ! composer_record_protocol_failure; then
+      notify "composer protocol failed and its retry cooldown could not be persisted"
+      [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
+      return 1
+    fi
     if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
-      composer_request_mark_blocked protocol-failure
+      if [ "$owner_blocked" -ne 1 ] \
+        && ! composer_request_mark_blocked protocol-failure; then
+        return 2
+      fi
       return 2
     fi
-    notify "composer protocol failed — artifacts quarantined; bounded retry remains armed"
+    notify "composer protocol failed — discovered artifacts quarantined when present; bounded retry remains armed"
     return 1
   fi
   if [ "$outcome_recorded" -ne 1 ]; then
@@ -1025,8 +1399,10 @@ tick(){
   # the scheduler hands out new work (caught live: stale 'run' assigned an issue
   # 6 minutes into close-down).
   mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
-  if [ "$composer_rc" -eq 2 ]; then
-    log "scheduler paused: unresolved one-shot composer request"
+  if [ -e "$CONTROL/composer-discovery-fence" ]; then
+    log "scheduler paused: unresolved composer discovery fence"
+  elif [ "$composer_rc" -eq 2 ]; then
+    log "scheduler paused: composer returned a fail-closed safety signal"
   else
     scheduler "$mode"
   fi
