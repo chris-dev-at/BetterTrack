@@ -1570,7 +1570,7 @@
         transform: none;
       }
       .event-line time {
-        color: #59706b;
+        color: #91a7a1;
       }
       .event-line .event-text {
         min-width: 0;
@@ -2246,6 +2246,7 @@
         class="primary"
         title="Build + start master and workers"
         onclick="act('start', this)"
+        disabled
       >
         ▶ Start
       </button>
@@ -2253,6 +2254,7 @@
         id="b-dry"
         title="Start with MF_DRY_RUN=1 — full protocol, no LLM calls"
         onclick="act('start-dry', this)"
+        disabled
       >
         🧪 Dry-run
       </button>
@@ -2580,9 +2582,9 @@
               <span class="legend-item">┊ reset marker</span>
             </div>
             <div class="segmented" id="uh-ranges" aria-label="Subscription history range">
-              <button type="button" data-h="24">24h</button>
-              <button type="button" data-h="168" class="on">7d</button>
-              <button type="button" data-h="720">30d</button>
+              <button type="button" data-h="24" aria-pressed="false">24h</button>
+              <button type="button" data-h="168" class="on" aria-pressed="true">7d</button>
+              <button type="button" data-h="720" aria-pressed="false">30d</button>
             </div>
           </div>
           <svg
@@ -2639,22 +2641,22 @@
             <span class="hint">native Codex + ClaudeX · estimate, never an invoice</span>
           </h2>
           <div class="addrow" style="margin-bottom: 10px">
-            <span class="hint">time range</span>
+            <label class="hint" for="ua-codex-range">time range</label>
             <select id="ua-codex-range" onchange="uaCodexFiltersChanged()">
               <option value="14">Last 14 days</option>
               <option value="30">Last 30 days</option>
               <option value="90">Last 90 days</option>
               <option value="all">All time</option>
             </select>
-            <span class="hint">provider</span>
+            <label class="hint" for="ua-openai-provider">provider</label>
             <select id="ua-openai-provider" onchange="uaCodexFiltersChanged()">
               <option value="all">All OpenAI-family providers</option>
             </select>
-            <span class="hint">harness</span>
+            <label class="hint" for="ua-openai-harness">harness</label>
             <select id="ua-openai-harness" onchange="uaCodexFiltersChanged()">
               <option value="all">All harnesses</option>
             </select>
-            <span class="hint">model</span>
+            <label class="hint" for="ua-codex-model">model</label>
             <select id="ua-codex-model" onchange="uaCodexFiltersChanged()">
               <option value="all">All OpenAI-family models</option>
             </select>
@@ -2812,7 +2814,9 @@
       };
       let S = null,
         rcExpanded = false,
-        activeTab = localStorage.getItem('mf-tab') || 'overview';
+        activeTab = localStorage.getItem('mf-tab') || 'overview',
+        lastEvent = 0,
+        controlFresh = false;
 
       /* ---- tabs ---- */
       $('tabs').addEventListener('click', (e) => {
@@ -3134,7 +3138,9 @@
         models: [...d.models],
         efforts: [...d.efforts],
       }));
-      let registryAdvertised = false;
+      let registryAdvertised = false,
+        providerRevision = 0,
+        renderedProviderRevision = -1;
       const listOfStrings = (value) =>
         Array.isArray(value)
           ? [
@@ -3170,16 +3176,62 @@
         const entries = registryEntries(s);
         registryAdvertised = entries.length > 0;
         const status = s?.providers || {};
+        const fallback = new Map(
+          FALLBACK_PROVIDER_DEFS.map((definition) => [definition.id, definition]),
+        );
+        const referenced = new Set(
+          Object.values(s?.models?.difficulties || {})
+            .map((entry) => entry?.provider)
+            .filter((id) => typeof id === 'string' && /^[a-z0-9_-]{1,48}$/i.test(id)),
+        );
+        const advertised = new Set(
+          entries
+            .map((entry) => String(entry?.id || entry?.provider || entry?.key || '').trim())
+            .filter((id) => /^[a-z0-9_-]{1,48}$/i.test(id)),
+        );
+        const seedIds = registryAdvertised
+          ? new Set([...advertised, ...referenced])
+          : new Set(['claude', 'codex', 'gemini', ...referenced]);
         const merged = new Map(
-          FALLBACK_PROVIDER_DEFS.map((d) => [
-            d.id,
-            { ...d, models: [...d.models], efforts: [...d.efforts] },
-          ]),
+          [...seedIds].map((id) => {
+            const base = fallback.get(id) || {
+              id,
+              label: id,
+              short: 'Existing route from the control plane',
+              description:
+                'This route is preserved for display, but the current control API does not advertise it as selectable.',
+              models: [],
+              efforts: [],
+              defaultModel: '',
+              harness: id,
+            };
+            return [
+              id,
+              {
+                ...base,
+                models: [...(base.models || [])],
+                efforts: [...(base.efforts || [])],
+                selectable: registryAdvertised
+                  ? advertised.has(id)
+                  : ['claude', 'codex', 'gemini'].includes(id),
+              },
+            ];
+          }),
         );
         for (const raw of entries) {
           const id = String(raw?.id || raw?.provider || raw?.key || '').trim();
           if (!/^[a-z0-9_-]{1,48}$/i.test(id)) continue;
-          const base = merged.get(id) || providerDef(id);
+          const base = merged.get(id) ||
+            fallback.get(id) || {
+              id,
+              label: id,
+              short: 'Control-plane provider',
+              description: 'Provider definition supplied by the control plane.',
+              models: [],
+              efforts: [],
+              defaultModel: '',
+              harness: id,
+            };
           const models = listOfStrings(
             raw.models || raw.modelSuggestions || raw.model_suggestions || base.models,
           );
@@ -3198,6 +3250,7 @@
             ),
             experimental: raw.experimental ?? base.experimental ?? false,
             harness: String(raw.harnessLabel || base.harness || raw.harness || id),
+            selectable: true,
           });
         }
         for (const def of merged.values()) {
@@ -3209,7 +3262,10 @@
         const next = [...merged.values()];
         const before = JSON.stringify(providerDefs);
         providerDefs = next;
-        if (before !== JSON.stringify(next)) mLast = '';
+        if (before !== JSON.stringify(next)) {
+          providerRevision += 1;
+          mLast = '';
+        }
       }
       const mEfforts = (provider, model) => {
         const def = providerDef(provider);
@@ -3240,6 +3296,9 @@
             const e = df[d] || {};
             const p = defs[e.provider] ? e.provider : 'claude';
             const def = providerDef(p);
+            const providerChoices = providerDefs.filter(
+              (entry) => entry.selectable !== false || entry.id === p,
+            );
             const efforts = mEfforts(p, e.model);
             const effortSel = efforts.length
               ? `<select aria-label="${d} effort" data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, efforts.includes(e.effort) ? e.effort : efforts.includes('high') ? 'high' : efforts[0])}</select>`
@@ -3247,7 +3306,7 @@
             return `<div class="mrow" role="row">
               <span role="cell"><span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span></span>
               <span role="cell"><select aria-label="${d} provider" data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(
-                providerDefs.map((x) => x.id),
+                providerChoices.map((x) => x.id),
                 p,
                 labels,
               )}</select></span>
@@ -3327,7 +3386,7 @@
               const route = Object.values(s.models?.difficulties || {}).find(
                 (entry) => entry.provider === def.id,
               );
-              const canTest = !!pv[def.id] || registryAdvertised;
+              const canTest = def.selectable !== false && (!!pv[def.id] || registryAdvertised);
               return `<article class="provider-card">
                 <div class="provider-top">
                   <div><h3>${esc(def.label)} ${def.experimental ? '<span class="exp-tag">experimental</span>' : ''}</h3><div class="hint">${esc(def.harness || '')}</div></div>
@@ -3342,10 +3401,18 @@
             })
             .join('');
         }
-        if (mDirty) return; // never clobber unsaved edits
+        const providerCapabilitiesChanged = renderedProviderRevision !== providerRevision;
+        if (mDirty && !providerCapabilitiesChanged) return; // never clobber unsaved edits
+        if (mDirty && providerCapabilitiesChanged) {
+          const draft = mCollect();
+          renderedProviderRevision = providerRevision;
+          mRenderRows(draft);
+          return;
+        }
         const mj = JSON.stringify(s.models || {});
         if (mj === mLast) return; // keep focus while nothing changed server-side
         mLast = mj;
+        renderedProviderRevision = providerRevision;
         mRenderRows(s.models || {});
       }
 
@@ -3516,20 +3583,128 @@
         const n = finiteNumber(value);
         return n == null ? null : Math.max(0, Math.min(100, n));
       };
-      const runtimeState = (containers) => {
+      const reportedAmount = (value, { records, pricedRecords } = {}) => {
+        const amount = finiteNumber(value);
+        if (amount == null) return null;
+        if (finiteNumber(records) === 0 || finiteNumber(pricedRecords) === 0) return null;
+        return amount;
+      };
+      const fmtCliUsd = (value) => {
+        const amount = finiteNumber(value);
+        return amount == null ? 'Not reported' : `$${amount.toFixed(2)}`;
+      };
+      const ledgerAmount = (ledger, key) =>
+        ledger && typeof ledger === 'object'
+          ? reportedAmount(ledger[key], { records: ledger.records })
+          : null;
+      const sourceError = (source) => {
+        const value =
+          source?.error ||
+          source?.message ||
+          (source?.ok === false ? 'The control plane reported an error.' : '');
+        return value ? String(value).slice(0, 200) : '';
+      };
+      const runtimeState = (source) => {
+        const containers = Array.isArray(source)
+          ? source
+          : Array.isArray(source?.containers)
+            ? source.containers
+            : [];
+        const error = Array.isArray(source) ? '' : sourceError(source);
+        const explicitlyUnavailable =
+          !Array.isArray(source) &&
+          (source?.available === false ||
+            source?.unavailable === true ||
+            ['error', 'unavailable', 'offline'].includes(
+              String(source?.state || '').toLowerCase(),
+            ));
+        const available =
+          !error &&
+          !explicitlyUnavailable &&
+          (Array.isArray(source) || (source && Array.isArray(source.containers)));
         const running = containers.some((c) => /running/i.test(c.state));
         const paused = containers.some((c) => /paused/i.test(c.state));
-        return { running, paused, on: running || paused };
+        return {
+          available,
+          error,
+          detail:
+            error ||
+            (explicitlyUnavailable
+              ? 'The control plane reported this Docker source as unavailable.'
+              : available
+                ? ''
+                : 'The snapshot did not include Docker container status.'),
+          containers,
+          running,
+          paused,
+          on: running || paused,
+        };
       };
-      function renderHead(s, state) {
+      const githubState = (s) => {
+        const github = s?.github;
+        const error = sourceError(github);
+        const explicitlyUnavailable =
+          github?.available === false ||
+          github?.unavailable === true ||
+          ['error', 'unavailable', 'offline'].includes(String(github?.state || '').toLowerCase());
+        const complete =
+          github &&
+          ['issues', 'prs', 'merged', 'needsHuman'].every((key) => Array.isArray(github[key]));
+        return {
+          available: !error && !explicitlyUnavailable && !!complete,
+          error,
+          detail:
+            error ||
+            (explicitlyUnavailable
+              ? 'The control plane reported that GitHub data is unavailable.'
+              : complete
+                ? ''
+                : 'The snapshot did not include complete GitHub data.'),
+        };
+      };
+      const controlPlaneState = (s) => {
+        const control = s?.control;
+        const error = sourceError(control) || (s?.error ? String(s.error).slice(0, 200) : '');
+        const explicitlyUnavailable =
+          control?.available === false ||
+          control?.connected === false ||
+          ['error', 'unavailable', 'offline'].includes(String(control?.state || '').toLowerCase());
+        return {
+          available: controlFresh && !error && !explicitlyUnavailable,
+          error,
+          detail:
+            error ||
+            (explicitlyUnavailable
+              ? 'The control plane reported that it is unavailable.'
+              : controlFresh
+                ? ''
+                : 'No fresh control snapshot is available. Reconnecting…'),
+        };
+      };
+      function renderHead(s, state, health) {
         const p = s.protocol || {};
         const node = $('head-factory');
-        const label = state.running
+        const runtimeLabel = state.running
           ? `${state.upCount} containers running`
           : state.paused
             ? 'factory paused'
             : 'factory stopped';
-        node.innerHTML = `<span class="dot ${state.running ? 'ready' : state.paused ? 'starting' : ''}"></span>${esc(label)} · ${esc(p.mode || '–')}`;
+        const label = !health.control.available
+          ? 'control unavailable'
+          : !state.available
+            ? 'Docker status unavailable'
+            : !health.github.available
+              ? `${runtimeLabel} · GitHub unavailable`
+              : runtimeLabel;
+        const dot =
+          !health.control.available || !state.available || !health.github.available
+            ? 'failed'
+            : state.running
+              ? 'ready'
+              : state.paused
+                ? 'starting'
+                : '';
+        node.innerHTML = `<span class="dot ${dot}"></span>${esc(label)} · ${esc(p.mode || '–')}`;
         $('work-summary').textContent =
           `${(p.workers || []).filter((w) => !['idle', 'done', 'failed'].includes(w.status?.phase)).length} active · ${(p.queue || []).length} merge queued`;
       }
@@ -3540,13 +3715,46 @@
           return `<button class="small" type="button" onclick="setTab('${item.tab}')">${esc(item.action || 'Inspect')}</button>`;
         return '';
       }
-      function renderAttention(s, state, joined, singleContainers) {
+      function renderAttention(s, state, joined, singleState) {
         const p = s.protocol || {};
         const gh = s.github || {};
         const u = s.usage || {};
         const items = [];
+        const control = controlPlaneState(s);
+        const github = githubState(s);
+        const activeSingle = singleState.containers.filter((container) =>
+          /running|paused/i.test(container.state),
+        );
+        if (!control.available)
+          items.push({
+            tone: 'bad',
+            title: 'Control plane unavailable',
+            detail: control.detail,
+            tab: 'detail',
+            action: 'Open operations',
+          });
+        const dockerProblems = [
+          !state.available ? `multi-factory: ${state.detail}` : '',
+          !singleState.available ? `single-factory guard: ${singleState.detail}` : '',
+        ].filter(Boolean);
+        if (dockerProblems.length)
+          items.push({
+            tone: 'bad',
+            title: 'Docker runtime status unavailable',
+            detail: dockerProblems.join(' · '),
+            tab: 'detail',
+            action: 'Open operations',
+          });
+        if (!github.available)
+          items.push({
+            tone: 'bad',
+            title: 'GitHub status unavailable',
+            detail: github.detail,
+            tab: 'flow',
+            action: 'Open work',
+          });
         const needs = gh.needsHuman || [];
-        if (needs.length) {
+        if (github.available && needs.length) {
           const first = needs[0];
           items.push({
             tone: 'bad',
@@ -3661,11 +3869,11 @@
               action: 'Open routing',
             });
         }
-        if (singleContainers.length)
+        if (singleState.available && activeSingle.length)
           items.push({
             tone: 'bad',
             title: 'Single factory blocks multi-factory startup',
-            detail: `${singleContainers.length} single-factory container${singleContainers.length === 1 ? '' : 's'} running or paused.`,
+            detail: `${activeSingle.length} single-factory container${activeSingle.length === 1 ? '' : 's'} running or paused.`,
             tab: 'detail',
             action: 'Resolve',
           });
@@ -3779,22 +3987,41 @@
         $('mode').textContent = p.mode || '–';
         $('phase').textContent = p.phase || '–';
 
-        const multiC = s.docker?.multi?.containers || [];
-        const { running, paused, on } = runtimeState(multiC);
+        const multiState = runtimeState(s.docker?.multi);
+        const multiC = multiState.containers;
+        const { running, paused, on } = multiState;
         const upCount = multiC.filter((c) => /running/i.test(c.state)).length;
-        const state = { running, paused, on, upCount };
-        const sfC = (s.docker?.single?.containers || []).filter((c) =>
-          /running|paused/i.test(c.state),
-        );
+        const state = { ...multiState, upCount };
+        const singleState = runtimeState(s.docker?.single);
+        const sfC = singleState.containers.filter((c) => /running|paused/i.test(c.state));
+        const control = controlPlaneState(s);
+        const github = githubState(s);
+        const startupProblems = [
+          !control.available ? 'control plane unavailable' : '',
+          !state.available ? 'Docker multi-factory status unavailable' : '',
+          !singleState.available ? 'Docker single-factory guard unavailable' : '',
+          !github.available ? 'GitHub status unavailable' : '',
+          sfC.length ? 'single factory is running or paused' : '',
+        ].filter(Boolean);
         $('sfwarn').style.display = sfC.length ? 'flex' : 'none';
-        $('b-start').disabled = running || paused;
-        $('b-dry').disabled = running || paused;
-        $('b-pause').disabled = !running;
-        $('b-unpause').disabled = !paused;
-        $('b-stop').disabled = !running && !paused;
-        $('b-down').disabled = !multiC.length;
-        for (const id of ['b-run', 'b-runout', 'b-close']) $(id).disabled = !running && !paused;
-        renderHead(s, state);
+        const sfStop = $('sfwarn').querySelector('button');
+        if (sfStop) sfStop.disabled = !control.available || !singleState.available;
+        $('b-start').disabled = on || startupProblems.length > 0;
+        $('b-dry').disabled = on || startupProblems.length > 0;
+        const startTitle = startupProblems.length
+          ? `Start disabled: ${startupProblems.join('; ')}`
+          : 'Build + start master and workers';
+        $('b-start').title = startTitle;
+        $('b-dry').title = startupProblems.length
+          ? `Dry-run disabled: ${startupProblems.join('; ')}`
+          : 'Start with MF_DRY_RUN=1 — full protocol, no LLM calls';
+        $('b-pause').disabled = !control.available || !state.available || !running;
+        $('b-unpause').disabled = !control.available || !state.available || !paused;
+        $('b-stop').disabled = !control.available || !state.available || !on;
+        $('b-down').disabled = !control.available || !state.available || !multiC.length;
+        for (const id of ['b-run', 'b-runout', 'b-close'])
+          $(id).disabled = !control.available || !state.available || !on;
+        renderHead(s, state, { control, github });
         renderSubscriptionUsage(u);
 
         /* --- strip --- */
@@ -3802,16 +4029,29 @@
         const u5 = u.fiveHour,
           u7 = u.sevenDay;
         const scoped = (u.scoped || []).map((x) => `${esc(x.name)} ${x.pct}%`).join(' · ');
+        const factoryLabel = !control.available
+          ? 'control unavailable'
+          : !state.available
+            ? 'runtime unavailable'
+            : running
+              ? upCount + ' up'
+              : paused
+                ? 'paused'
+                : 'stopped';
+        const factoryDetail =
+          control.detail ||
+          state.detail ||
+          `${p.mode || '–'} · ${p.phase || '–'} · master hb ${ago(p.masterHeartbeatAge)}`;
         $('strip').innerHTML =
-          `<div class="tile"><span class="l">Factory</span><span class="v">${running ? upCount + ' up' : paused ? 'paused' : 'stopped'}</span><span class="s">${esc(p.mode || '–')} · ${esc(p.phase || '–')} · master hb ${ago(p.masterHeartbeatAge)}</span></div>` +
-          `<div class="tile"><span class="l">CLI estimate (multi)</span><span class="v">$${led.multiToday ?? 0} today</span><span class="s">$${led.multiTotal ?? 0} total · not an invoice</span></div>` +
+          `<div class="tile"><span class="l">Factory</span><span class="v">${esc(factoryLabel)}</span><span class="s">${esc(factoryDetail)}</span></div>` +
+          `<div class="tile"><span class="l">CLI estimate (multi)</span><span class="v">${fmtCliUsd(ledgerAmount(s.ledger, 'multiToday'))} today</span><span class="s">${fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal'))} total · not an invoice</span></div>` +
           (u5
             ? `<div class="tile"><span class="l">5h window</span><span class="v">${u5.pct}% used</span><span class="s">resets in ${tuntil(u5.resetsAt)}${u.stale ? ' · cached' : ''}</span><span class="meter"><i class="${mcls(u5.pct)}" style="width:${Math.min(100, u5.pct)}%"></i></span></div>`
             : `<div class="tile"><span class="l">5h window</span><span class="v">–</span><span class="s">${esc(u.error || 'loading…')}</span></div>`) +
           (u7
             ? `<div class="tile"><span class="l">7-day window</span><span class="v">${u7.pct}% used</span><span class="s">resets ${new Date(u7.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}${scoped ? ' · ' + scoped : ''}</span><span class="meter"><i class="${mcls(u7.pct)}" style="width:${Math.min(100, u7.pct)}%"></i></span></div>`
             : '') +
-          `<div class="tile"><span class="l">Open issues</span><span class="v">${(gh.issues || []).length}</span><span class="s">${(gh.prs || []).length} open PRs · ${s.inflight?.length ? 'action: ' + esc(s.inflight.join(',')) : s.lastAutoAction ? esc(s.lastAutoAction.action) + ' ' + tago(s.lastAutoAction.at) : 'no pending action'}</span></div>`;
+          `<div class="tile"><span class="l">Open issues</span><span class="v">${github.available ? (gh.issues || []).length : 'Unavailable'}</span><span class="s">${github.available ? `${(gh.prs || []).length} open PRs · ${s.inflight?.length ? 'action: ' + esc(s.inflight.join(',')) : s.lastAutoAction ? esc(s.lastAutoAction.action) + ' ' + tago(s.lastAutoAction.at) : 'no pending action'}` : esc(github.detail)}</span></div>`;
 
         /* --- triggers + workers --- */
         renderTriggers(s.triggers);
@@ -3831,8 +4071,8 @@
             : 'applies on next start';
 
         /* --- unified issues --- */
-        const joined = joinIssues(s);
-        renderAttention(s, state, joined, sfC);
+        const joined = github.available ? joinIssues(s) : [];
+        renderAttention(s, state, joined, singleState);
         $('icount').textContent = `${joined.length} open`;
         $('ilist').innerHTML =
           joined
@@ -3861,10 +4101,12 @@
               return `<div class="irow${dim ? ' dim' : ''}"><span class="num"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a></span><span class="title" title="${esc(i.title)}">${esc(i.title)}</span><span class="chips">${chips.join('')}</span></div>`;
             })
             .join('') ||
-          '<div class="hint">no open autopilot issues — the composer will plan when the factory runs</div>';
+          `<div class="hint">${github.available ? 'no open autopilot issues — the composer will plan when the factory runs' : 'GitHub issue data unavailable — no empty-queue inference was made.'}</div>`;
 
         /* --- recently completed --- */
-        const doneAll = (gh.merged || []).filter((m) => /^task\//.test(m.headRefName || ''));
+        const doneAll = github.available
+          ? (gh.merged || []).filter((m) => /^task\//.test(m.headRefName || ''))
+          : [];
         const shown = rcExpanded ? doneAll : doneAll.slice(0, 3);
         $('rc-more').textContent = rcExpanded ? 'collapse' : `expand (${doneAll.length})`;
         $('recent').innerHTML =
@@ -3874,12 +4116,13 @@
               const cost = led.multiByIssue?.[n];
               return `<div class="done-item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${esc(n)}</a> ${esc(m.title)}</span><span class="m">${cost != null ? '$' + cost : '—'} · ${tago(m.mergedAt)}</span></div>`;
             })
-            .join('') || '<div class="hint">nothing merged yet</div>';
+            .join('') ||
+          `<div class="hint">${github.available ? 'nothing merged yet' : 'GitHub merge history unavailable.'}</div>`;
 
         renderEvents();
 
         if (activeTab === 'flow') renderFlow(s, running || paused);
-        renderDetail(s, multiC);
+        renderDetail(s, multiC, state, github);
         if (activeTab === 'models') renderModels(s);
       }
 
@@ -4007,25 +4250,32 @@
           done: 'done',
           failed: 'failed',
         })[p] || 'idle';
-      function renderDetail(s, multiC) {
+      function renderDetail(
+        s,
+        multiC,
+        state = runtimeState(s?.docker?.multi),
+        github = githubState(s),
+      ) {
         const p = s.protocol || {},
           gh = s.github || {},
           led = s.ledger || {};
         $('kpis').innerHTML =
           kpi(
-            multiC.filter((c) => /running/i.test(c.state)).length + '/' + (multiC.length || '–'),
+            state.available
+              ? multiC.filter((c) => /running/i.test(c.state)).length + '/' + (multiC.length || '–')
+              : 'Unavailable',
             'containers up',
           ) +
           kpi((p.queue || []).length, 'merge queue') +
-          kpi((gh.issues || []).length, 'open autopilot') +
-          kpi((gh.needsHuman || []).length, 'needs human') +
-          kpi('$' + (led.multiToday ?? '0'), 'CLI est. today') +
-          kpi('$' + (led.multiTotal ?? '0'), 'CLI est. total');
+          kpi(github.available ? (gh.issues || []).length : 'Unavailable', 'open autopilot') +
+          kpi(github.available ? (gh.needsHuman || []).length : 'Unavailable', 'needs human') +
+          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiToday')), 'CLI est. today') +
+          kpi(fmtCliUsd(ledgerAmount(s.ledger, 'multiTotal')), 'CLI est. total');
         let cards = `<div class="card"><h2>Master <span class="tag master">master</span></h2>
     <div class="row"><span class="k">activity</span><span class="val">${esc(p.masterActivity?.activity || '–')}${p.masterActivity?.pr ? ' PR #' + p.masterActivity.pr : ''}</span></div>
     <div class="row"><span class="k">phase</span><span class="val">${esc(p.phase || '–')} (${esc(p.mode || '')})</span></div>
     <div class="row"><span class="k">heartbeat</span><span class="val">${ago(p.masterHeartbeatAge)}</span></div>
-    <div class="row"><span class="k">containers</span><span class="val">${esc(multiC.map((c) => `${c.service}:${c.state}`).join(' · ') || 'none')}</span></div>
+    <div class="row"><span class="k">containers</span><span class="val">${esc(state.available ? multiC.map((c) => `${c.service}:${c.state}`).join(' · ') || 'none' : state.detail)}</span></div>
     ${s.lastAutoAction ? `<div class="row"><span class="k">auto</span><span class="val">${esc(s.lastAutoAction.action)} ${tago(s.lastAutoAction.at)}</span></div>` : ''}
     ${p.stopFile ? '<div class="row"><span class="k">STOP</span><span class="val">⚠️ STOP file present</span></div>' : ''}</div>`;
         for (const w of p.workers || []) {
@@ -4053,42 +4303,46 @@
                 `<div class="item"><span class="m">${i + 1}.</span><span class="t"><a target="_blank" href="${REPO}/pull/${q.pr}">PR #${q.pr}</a> ← issue <a target="_blank" href="${REPO}/issues/${q.issue}">#${q.issue}</a></span><span class="m">${tago(q.enqueued_at)}</span></div>`,
             )
             .join('') || '<div class="item"><span class="m">empty</span></div>';
-        $('prs').innerHTML =
-          (gh.prs || [])
-            .map(
-              (pr) =>
-                `<div class="item"><span class="ck ${pr.checks}">${pr.checks === 'passing' ? '✓' : pr.checks === 'failing' ? '✗' : '●'}</span><span class="t"><a target="_blank" href="${REPO}/pull/${pr.number}">#${pr.number}</a> ${esc(pr.title)}</span><span class="m">${esc(pr.checks)}</span></div>`,
-            )
-            .join('') || '<div class="item"><span class="m">none</span></div>';
-        $('issues').innerHTML =
-          (gh.issues || [])
-            .map((i) => {
-              const inprog = (i.labels || []).includes('in-progress');
-              const touches = i.meta?.touches?.length
-                ? i.meta.touches.join(' ')
-                : 'no mf-meta (runs alone)';
-              const deps = i.meta?.dependsOn?.length
-                ? ' · deps: ' + i.meta.dependsOn.map((d) => '#' + d).join(',')
-                : '';
-              return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span>${diffChip(i.labels, inprog ? ' · wip' : '', touches + deps)}</div>`;
-            })
-            .join('') || '<div class="item"><span class="m">none</span></div>';
-        $('merged').innerHTML =
-          (gh.merged || [])
-            .slice(0, 10)
-            .map(
-              (m) =>
-                `<div class="item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${m.number}</a> ${esc(m.title)}</span><span class="m">${tago(m.mergedAt)}</span></div>`,
-            )
-            .join('') || '<div class="item"><span class="m">none yet</span></div>';
-        $('nhcount').textContent = (gh.needsHuman || []).length;
-        $('needshuman').innerHTML =
-          (gh.needsHuman || [])
-            .map(
-              (i) =>
-                `<div class="item"><span class="ck failing">✋</span><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span></div>`,
-            )
-            .join('') || '<div class="item"><span class="m">none 🎉</span></div>';
+        $('prs').innerHTML = github.available
+          ? (gh.prs || [])
+              .map(
+                (pr) =>
+                  `<div class="item"><span class="ck ${pr.checks}">${pr.checks === 'passing' ? '✓' : pr.checks === 'failing' ? '✗' : '●'}</span><span class="t"><a target="_blank" href="${REPO}/pull/${pr.number}">#${pr.number}</a> ${esc(pr.title)}</span><span class="m">${esc(pr.checks)}</span></div>`,
+              )
+              .join('') || '<div class="item"><span class="m">none</span></div>'
+          : '<div class="item"><span class="m">GitHub PR data unavailable</span></div>';
+        $('issues').innerHTML = github.available
+          ? (gh.issues || [])
+              .map((i) => {
+                const inprog = (i.labels || []).includes('in-progress');
+                const touches = i.meta?.touches?.length
+                  ? i.meta.touches.join(' ')
+                  : 'no mf-meta (runs alone)';
+                const deps = i.meta?.dependsOn?.length
+                  ? ' · deps: ' + i.meta.dependsOn.map((d) => '#' + d).join(',')
+                  : '';
+                return `<div class="item"><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span>${diffChip(i.labels, inprog ? ' · wip' : '', touches + deps)}</div>`;
+              })
+              .join('') || '<div class="item"><span class="m">none</span></div>'
+          : '<div class="item"><span class="m">GitHub issue data unavailable</span></div>';
+        $('merged').innerHTML = github.available
+          ? (gh.merged || [])
+              .slice(0, 10)
+              .map(
+                (m) =>
+                  `<div class="item"><span class="ck passing">✓</span><span class="t"><a target="_blank" href="${REPO}/pull/${m.number}">#${m.number}</a> ${esc(m.title)}</span><span class="m">${tago(m.mergedAt)}</span></div>`,
+              )
+              .join('') || '<div class="item"><span class="m">none yet</span></div>'
+          : '<div class="item"><span class="m">GitHub merge history unavailable</span></div>';
+        $('nhcount').textContent = github.available ? (gh.needsHuman || []).length : '–';
+        $('needshuman').innerHTML = github.available
+          ? (gh.needsHuman || [])
+              .map(
+                (i) =>
+                  `<div class="item"><span class="ck failing">✋</span><span class="t"><a target="_blank" href="${REPO}/issues/${i.number}">#${i.number}</a> ${esc(i.title)}</span></div>`,
+              )
+              .join('') || '<div class="item"><span class="m">none 🎉</span></div>'
+          : '<div class="item"><span class="m">GitHub needs-human data unavailable</span></div>';
         const costs = Object.entries(led.multiByIssue || {}).sort((a, b) => b[1] - a[1]);
         $('costs').innerHTML =
           costs
@@ -4127,8 +4381,11 @@
           uaFetchedAt = Date.now();
           renderUsage(uaData);
         } catch (error) {
-          if (!uaData)
+          if (!uaData) {
+            $('ua-cli-estimate').textContent = 'Not reported';
+            $('ua-api-estimate').textContent = 'unavailable';
             $('ua-kpis').innerHTML = `<div class="empty-state">${esc(error.message)}</div>`;
+          }
         }
       }
       function captureLocalUsage(u) {
@@ -4181,7 +4438,11 @@
         uhHours = Number(button.dataset.h);
         $('uh-ranges')
           .querySelectorAll('button')
-          .forEach((entry) => entry.classList.toggle('on', entry === button));
+          .forEach((entry) => {
+            const selected = entry === button;
+            entry.classList.toggle('on', selected);
+            entry.setAttribute('aria-pressed', String(selected));
+          });
         uhFetchedAt = 0;
         fetchUsageHist(true);
       });
@@ -4243,7 +4504,7 @@
           { key: 'd7', label: '7d', color: '#f2bd68', value: (entry) => pctValue(entry.d7) },
           { key: 'sc', label: 'scoped', color: '#bd9cff', value: scopedValue },
         ];
-        if (entries.length < 2) {
+        if (!entries.length) {
           svg.innerHTML =
             graphic +
             `<text x="${(L + W - R) / 2}" y="${H / 2}" text-anchor="middle" font-size="11" fill="var(--muted)">Collecting fresh utilization history</text>`;
@@ -4255,6 +4516,7 @@
         }
         for (const item of series) {
           let path = '';
+          let markers = '';
           let command = 'M';
           let lastAt = null;
           for (const entry of entries) {
@@ -4265,12 +4527,16 @@
               continue;
             }
             if (lastAt && entry.at - lastAt > 1800000) command = 'M';
-            path += `${command}${X(entry.at).toFixed(1)} ${Y(value).toFixed(1)} `;
+            const x = X(entry.at).toFixed(1);
+            const y = Y(value).toFixed(1);
+            path += `${command}${x} ${y} `;
+            markers += `<circle cx="${x}" cy="${y}" r="${entries.length > 80 ? '1.5' : '2.4'}" fill="${item.color}" stroke="var(--surface)" stroke-width="1"><title>${item.label} ${value}% · ${esc(new Date(entry.at).toLocaleString())}</title></circle>`;
             command = 'L';
             lastAt = entry.at;
           }
           if (path)
             graphic += `<path d="${path}" fill="none" stroke="${item.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><title>${item.label} utilization</title></path>`;
+          graphic += markers;
           const tail = [...entries].reverse().find((entry) => item.value(entry) != null);
           if (tail) {
             const value = item.value(tail);
@@ -4317,7 +4583,7 @@
           rows
             .map(
               (r) =>
-                `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, ((finiteNumber(r.v) || 0) / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">$${esc(r.v ?? 0)}</span></div>`,
+                `<div class="hb"><span class="n" title="${esc(r.k)}">${esc(r.label || r.k)}</span><span class="track"><i style="width:${Math.max(1, ((finiteNumber(r.v) || 0) / max) * 100)}%${colorFor ? ';background:' + colorFor(r.k) : ''}"></i></span><span class="v">${fmtCliUsd(r.v)}</span></div>`,
             )
             .join('') || '<div class="hint">no data yet</div>';
       }
@@ -4333,10 +4599,25 @@
                   : esc(r.label || r.k);
               const status = r.coverage === 'complete' ? '' : ` · ${coverageText(r)}`;
               const tokenTitle = `input ${fmtTok(r.tokens?.input || 0)} · cached ${fmtTok(r.tokens?.cachedInput || 0)} · cache-write ${fmtTok(r.tokens?.cacheWrite || 0)} · output ${fmtTok(r.tokens?.output || 0)}`;
-              return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${fmtEstimate(r.estimatedUsd)} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
+              const estimate = reportedAmount(r.estimatedUsd, {
+                records: r.records,
+                pricedRecords: r.pricedRecords,
+              });
+              return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${fmtEstimate(estimate)} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
             })
             .join('') || '<div class="empty-state">No OpenAI-family data in this range.</div>';
       }
+      const openAIModelLabel = (model) => {
+        const raw = String(model);
+        const family = /(?:^|[-/])sol$/i.test(raw)
+          ? 'Sol'
+          : /(?:^|[-/])terra$/i.test(raw)
+            ? 'Terra'
+            : /(?:^|[-/])luna$/i.test(raw)
+              ? 'Luna'
+              : '';
+        return family ? `${family} (${raw})` : raw;
+      };
       function codexIssueRows(rows) {
         $('ua-codex-issues').innerHTML =
           rows
@@ -4345,13 +4626,21 @@
                 ? `<a target="_blank" href="${REPO}/issues/${r.k}">#${esc(r.k)}</a>`
                 : esc(r.label || r.k);
               const tk = r.tokens || {};
+              const models = listOfStrings(
+                Array.isArray(r.models) ? r.models : r.model ? [r.model] : [],
+              );
               const route = [
                 ...(Array.isArray(r.providers) ? r.providers : r.provider ? [r.provider] : []),
                 ...(Array.isArray(r.harnesses) ? r.harnesses : r.harness ? [r.harness] : []),
+                ...models.map(openAIModelLabel),
               ]
                 .filter(Boolean)
                 .join(' · ');
-              return `<div class="irow"><span class="num">${issue}</span><span class="title">${route ? `<b>${esc(route)}</b> · ` : ''}input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(r.estimatedUsd)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
+              const estimate = reportedAmount(r.estimatedUsd, {
+                records: r.records,
+                pricedRecords: r.pricedRecords,
+              });
+              return `<div class="irow"><span class="num">${issue}</span><span class="title" title="${esc(route)}">${route ? `<b>${esc(route)}</b> · ` : ''}input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(estimate)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
             })
             .join('') ||
           '<div class="empty-state">No per-issue OpenAI-family usage in this range.</div>';
@@ -4373,10 +4662,22 @@
         const todayBucket = (c.days || []).find(
           (day) => String(day.k || day.date || '') === c.rangeEnd,
         );
-        const todayEstimate = totals.todayEstimatedUsd ?? todayBucket?.estimatedUsd;
-        $('ua-api-estimate').textContent = fmtEstimate(totals.estimatedUsd);
+        const totalEstimate = reportedAmount(totals.estimatedUsd, {
+          records: totals.records,
+          pricedRecords: totals.pricedRecords,
+        });
+        const todayEstimate = todayBucket
+          ? reportedAmount(totals.todayEstimatedUsd ?? todayBucket.estimatedUsd, {
+              records: todayBucket.records,
+              pricedRecords: todayBucket.pricedRecords,
+            })
+          : reportedAmount(totals.todayEstimatedUsd, {
+              records: totals.todayRecords,
+              pricedRecords: totals.todayPricedRecords,
+            });
+        $('ua-api-estimate').textContent = fmtEstimate(totalEstimate);
         $('ua-codex-kpis').innerHTML =
-          `<div class="tile"><span class="l">API-equivalent estimate</span><span class="v">${fmtEstimate(totals.estimatedUsd)}</span><span class="s">not billed subscription spend · ${status}</span></div>` +
+          `<div class="tile"><span class="l">API-equivalent estimate</span><span class="v">${fmtEstimate(totalEstimate)}</span><span class="s">not billed subscription spend · ${status}</span></div>` +
           `<div class="tile"><span class="l">Today’s estimate</span><span class="v">${fmtEstimate(todayEstimate)}</span><span class="s">standard/base API price</span></div>` +
           `<div class="tile"><span class="l">OpenAI-family tokens</span><span class="v">${fmtTok(tk.total || 0)}</span><span class="s">input ${fmtTok(tk.input || 0)} · output ${fmtTok(tk.output || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cached input</span><span class="v">${fmtTok(tk.cachedInput || 0)}</span><span class="s">cache-write ${fmtTok(tk.cacheWrite || 0)}${totals.cacheWriteUnreportedRecords ? ` · ${totals.cacheWriteUnreportedRecords} run${totals.cacheWriteUnreportedRecords === 1 ? '' : 's'} unreported` : ''}</span></div>` +
@@ -4470,12 +4771,17 @@
             : null;
         const actual =
           finiteNumber(d.billing?.actualUsd) ?? finiteNumber(t.actualCostUsd) ?? openaiActual;
+        const cliTotal = reportedAmount(t.cost, { records: t.records });
+        const cliToday = reportedAmount(t.today, { records: t.records });
+        const cliIssues = finiteNumber(t.records) === 0 ? null : finiteNumber(t.issues);
+        const cliAverage = reportedAmount(t.avgPerIssue, { records: t.issues });
+        const cliRecords = finiteNumber(t.records);
         $('ua-actual-cost').textContent = actual == null ? 'Not reported' : fmtEstimate(actual);
-        $('ua-cli-estimate').textContent = `$${t.cost ?? 0}`;
+        $('ua-cli-estimate').textContent = fmtCliUsd(cliTotal);
         $('ua-kpis').innerHTML =
-          `<div class="tile"><span class="l">CLI estimate total</span><span class="v">$${t.cost ?? 0}</span><span class="s">${t.records ?? 0} agent runs · not an invoice</span></div>` +
-          `<div class="tile"><span class="l">CLI estimate today</span><span class="v">$${t.today ?? 0}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
-          `<div class="tile"><span class="l">Issues represented</span><span class="v">${t.issues ?? 0}</span><span class="s">avg estimate $${t.avgPerIssue ?? 0} per issue</span></div>` +
+          `<div class="tile"><span class="l">CLI estimate total</span><span class="v">${fmtCliUsd(cliTotal)}</span><span class="s">${cliRecords == null ? 'run count not reported' : `${cliRecords} agent runs`} · not an invoice</span></div>` +
+          `<div class="tile"><span class="l">CLI estimate today</span><span class="v">${fmtCliUsd(cliToday)}</span><span class="s">${new Date().toISOString().slice(0, 10)}</span></div>` +
+          `<div class="tile"><span class="l">Issues represented</span><span class="v">${cliIssues == null ? 'Not reported' : cliIssues}</span><span class="s">avg estimate ${fmtCliUsd(cliAverage)} per issue</span></div>` +
           `<div class="tile"><span class="l">Output tokens</span><span class="v">${fmtTok(d.tokens?.output || 0)}</span><span class="s">input ${fmtTok(d.tokens?.input || 0)}</span></div>` +
           `<div class="tile"><span class="l">Cache traffic</span><span class="v">${fmtTok(d.tokens?.cacheRead || 0)}</span><span class="s">read · write ${fmtTok(d.tokens?.cacheWrite || 0)}</span></div>`;
         // daily stacked bars
@@ -4542,11 +4848,11 @@
       }
 
       /* ---- live ---- */
-      let lastEvent = 0;
       function connect() {
         const es = new EventSource('/api/events');
         es.onmessage = (e) => {
           lastEvent = Date.now();
+          controlFresh = true;
           try {
             render(JSON.parse(e.data));
           } catch {
@@ -4555,17 +4861,24 @@
         };
         es.onerror = () => {
           es.close();
+          if (controlFresh) {
+            controlFresh = false;
+            if (S) render(S);
+          }
           setTimeout(connect, 3000);
         };
       }
       setInterval(() => {
         const fresh = Date.now() - lastEvent < 6000;
+        if (fresh !== controlFresh) {
+          controlFresh = fresh;
+          if (S) render(S);
+        }
         $('livedot').className = 'dot ' + (fresh ? 'live' : 'stale');
         $('livetxt').textContent = fresh ? 'live' : 'reconnecting…';
       }, 1000);
       window.addEventListener('resize', () => {
-        if (S && activeTab === 'flow')
-          renderFlow(S, runtimeState(S.docker?.multi?.containers || []).on);
+        if (S && activeTab === 'flow') renderFlow(S, runtimeState(S.docker?.multi).on);
       });
       organizeWorkspace();
       setTab(activeTab);
