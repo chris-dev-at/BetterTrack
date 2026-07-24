@@ -867,6 +867,22 @@ check "relocation publication retried idempotently" 2 "$RELOC_PUBLISH_CALLS"
 echo "— queue write acknowledgement + CI-fix approval invalidation"
 # Restore production worker helpers after the stage-resume stubs above.
 . ./worker.sh
+check "mixed success and empty-conclusion in-progress checks stay pending" pending \
+  "$(ci_rollup_state <<<'[{"conclusion":"SUCCESS","status":"COMPLETED"},{"conclusion":"","status":"IN_PROGRESS"}]')"
+check "only explicit terminal success states are green" green \
+  "$(ci_rollup_state <<<'[{"conclusion":"SUCCESS","status":"COMPLETED"},{"conclusion":"NEUTRAL","status":"COMPLETED"},{"conclusion":"SKIPPED","status":"COMPLETED"}]')"
+check "legacy error status is red" red \
+  "$(ci_rollup_state <<<'[{"state":"ERROR"}]')"
+check "requested check stays pending" pending \
+  "$(ci_rollup_state <<<'[{"status":"REQUESTED"}]')"
+check "unknown check state fails closed as pending" pending \
+  "$(ci_rollup_state <<<'[{"status":"BANANA"}]')"
+check "stale conclusion is red" red \
+  "$(ci_rollup_state <<<'[{"conclusion":"STALE","status":"COMPLETED"}]')"
+check "completed without a conclusion stays pending" pending \
+  "$(ci_rollup_state <<<'[{"conclusion":"","status":"COMPLETED"}]')"
+malformed_rollup(){ ci_rollup_state <<<'not-an-array' >/dev/null 2>&1; }
+expect_fail "malformed check rollup fails closed" malformed_rollup
 AF=$MFSTATE/assignments/worker-9.json
 printf '%s\n' '{"issue":9,"touches":[]}' >"$AF"
 rm -f "$MFSTATE/merge-queue"/*
@@ -874,19 +890,47 @@ atomic_write(){ return 1; }
 enqueue_merge 10 9 abc reviewer 2
 check "failed atomic queue write is reported" 1 "$?"
 
-# Restore a queue and drive the merger with deterministic stubs. A CI-fix push
-# must dequeue/requeue for review and must never call merge on the stale approval.
+# Reproduce the live PR #715 shape: one successful check plus one in-progress
+# check whose conclusion is the empty string. The queue must remain untouched,
+# and merger_step must not call GitHub's merge endpoint.
 atomic_write(){
   local tmp
   tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX") || return 1
   printf '%s\n' "$2" >"$tmp" && mv -f "$tmp" "$1"
 }
+printf '%s\n' '{"pr":14,"issue":14,"touches":[],"approved_head":"abc","approval_kind":"reviewer","approval_comment_id":"14"}' >"$MFSTATE/merge-queue/1-pr14.json"
+MERGES=0
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) echo OPEN;;
+      statusCheckRollup)
+        echo '[{"conclusion":"SUCCESS","status":"COMPLETED"},{"conclusion":"","status":"IN_PROGRESS"}]'
+        ;;
+    esac
+    return 0
+  fi
+  [ "$1 $2" = "pr merge" ] && { MERGES=$((MERGES+1)); return 0; }
+  return 0
+}
+queue_approval_check(){ QUEUE_APPROVAL_STATE=valid; return 0; }
+merger_step
+check "mixed pending rollup retains its merge-queue record" 1 \
+  "$(find "$MFSTATE/merge-queue" -name '*-pr14.json' | wc -l | tr -d ' ')"
+check "mixed pending rollup never invokes merge" 0 "$MERGES"
+rm -f "$MFSTATE/merge-queue/1-pr14.json"
+
+# Restore a queue and drive the merger with deterministic stubs. A CI-fix push
+# must dequeue/requeue for review and must never call merge on the stale approval.
 rm -f "$MFSTATE/merge-queue"/* "$MFSTATE/ci-fix"/*
 printf '%s\n' '{"pr":10,"issue":9,"touches":[],"approved_head":"abc","approval_kind":"reviewer","approval_comment_id":"2"}' >"$MFSTATE/merge-queue/2-pr10.json"
 MERGES=0; CIFIX_CALLS=0; HUMANS=0; PR10_HEAD=abc; PR13_HEAD=abc
 gh(){
   if [ "$1 $2" = "pr view" ]; then
-    case "$5" in state) echo OPEN;; statusCheckRollup) echo FAILURE;; esac
+    case "$5" in
+      state) echo OPEN;;
+      statusCheckRollup) echo '[{"conclusion":"FAILURE","status":"COMPLETED"}]';;
+    esac
     return 0
   fi
   [ "$1 $2" = "pr merge" ] && { MERGES=$((MERGES+1)); return 0; }

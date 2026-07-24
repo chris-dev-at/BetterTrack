@@ -864,6 +864,38 @@ queue_approval_check(){ # $1=queue JSON; sets QUEUE_APPROVAL_STATE
   return 0
 }
 
+ci_rollup_state(){ # stdin=statusCheckRollup JSON; stdout=green|red|pending
+  jq -er '
+    def effective_state:
+      if type != "object" then error("check entry must be an object")
+      elif ((.conclusion // "") | type) != "string" then error("check conclusion must be a string")
+      elif ((.status // "") | type) != "string" then error("check status must be a string")
+      elif ((.state // "") | type) != "string" then error("check state must be a string")
+      else
+        (.conclusion // "") as $conclusion |
+        (.status // .state // "") as $status |
+        if ($conclusion | length) > 0 then ($conclusion | ascii_upcase)
+        elif ($status | length) > 0 then ($status | ascii_upcase)
+        else "PENDING"
+        end
+      end;
+    if type != "array" then error("statusCheckRollup must be an array")
+    else
+      ([
+        .[] |
+        effective_state
+      ]) as $states |
+      if any($states[]; . == "FAILURE" or . == "ERROR" or . == "TIMED_OUT"
+          or . == "CANCELLED" or . == "ACTION_REQUIRED"
+          or . == "STARTUP_FAILURE" or . == "STALE") then "red"
+      elif ($states | length) > 0
+          and all($states[]; . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "green"
+      else "pending"
+      end
+    end
+  '
+}
+
 merger_step(){
   local head; head=$(ls "$QUEUE" 2>/dev/null | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -1)
   [ -n "$head" ] || return 0
@@ -894,17 +926,22 @@ merger_step(){
   esac
 
   # CI rollup, non-blocking (empty rollup = checks not reported yet = pending).
-  local rollup
-  rollup=$(gh pr view "$pr" --json statusCheckRollup \
-    -q '[.statusCheckRollup[]| .conclusion // .status // "PENDING"]|join(",")' 2>/dev/null || echo QUERY_FAILED)
-  [ "$rollup" = QUERY_FAILED ] && { log "merger: rollup read failed for PR #$pr — retrying next tick"; return 0; }
-  if grep -qE 'FAILURE|TIMED_OUT|CANCELLED|ACTION_REQUIRED' <<<"$rollup"; then
-    ci_fix_red_step "$f" "$n" "$pr" "$approved_head"
+  local rollup_state rollup_json
+  rollup_json=$(gh pr view "$pr" --json statusCheckRollup \
+    -q '.statusCheckRollup' 2>/dev/null) || {
+    log "merger: rollup read failed for PR #$pr — retrying next tick"
     return 0
-  fi
-  if [ -z "$rollup" ] || grep -qE 'PENDING|IN_PROGRESS|QUEUED|EXPECTED|WAITING' <<<"$rollup"; then
-    return 0   # still running — check again next tick
-  fi
+  }
+  rollup_state=$(ci_rollup_state <<<"$rollup_json" 2>/dev/null) || {
+    log "merger: malformed rollup for PR #$pr — retrying next tick"
+    return 0
+  }
+  case "$rollup_state" in
+    red) ci_fix_red_step "$f" "$n" "$pr" "$approved_head"; return 0;;
+    pending) return 0;;
+    green) ;;
+    *) log "merger: unknown rollup classification for PR #$pr — retrying next tick"; return 0;;
+  esac
 
   # Green. A strict-BEHIND update changes code and therefore invalidates review;
   # update now, then let the normal head check requeue it for a fresh review.
