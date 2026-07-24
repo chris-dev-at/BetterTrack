@@ -310,10 +310,10 @@ async function aesGcmKey(keyMaterial: VaultKeyMaterial, usages: KeyUsage[]): Pro
   if (keyMaterial instanceof Uint8Array) {
     return requireSubtle().importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, usages);
   }
-  if (keyMaterial.type !== 'secret' || keyMaterial.algorithm.name !== 'AES-GCM') {
+  if (!isAes256GcmSecretKey(keyMaterial)) {
     throw new VaultCryptoError(
       'authentication-failed',
-      'Vault device key is not an AES-GCM secret key.',
+      'Vault device key must be a 256-bit AES-GCM secret key.',
     );
   }
   return keyMaterial;
@@ -337,9 +337,20 @@ function requireKeyMaterial(key: VaultKeyMaterial, name: string): void {
     requireKeyLength(key, name);
     return;
   }
-  if (key.type !== 'secret' || key.algorithm.name !== 'AES-GCM') {
-    throw new VaultCryptoError('authentication-failed', `${name} must be an AES-GCM secret key.`);
+  if (!isAes256GcmSecretKey(key)) {
+    throw new VaultCryptoError(
+      'authentication-failed',
+      `${name} must be a 256-bit AES-GCM secret key.`,
+    );
   }
+}
+
+function isAes256GcmSecretKey(key: CryptoKey): boolean {
+  return (
+    key.type === 'secret' &&
+    key.algorithm.name === 'AES-GCM' &&
+    (key.algorithm as AesKeyAlgorithm).length === VAULT_KEY_BYTES * 8
+  );
 }
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {

@@ -325,6 +325,38 @@ describe('BTVAULT1 envelope and content crypto', () => {
     });
   });
 
+  it('rejects 128-bit and 192-bit AES-GCM CryptoKeys for encryption and decryption', async () => {
+    const { envelope, header } = await fixture();
+    const encryptionHeader = {
+      keyId: header.keyId,
+      wrappedKeys: header.wrappedKeys,
+      vaultVersion: header.vaultVersion,
+      deviceId: header.deviceId,
+      writeId: header.writeId,
+      writtenAt: header.writtenAt,
+    };
+
+    for (const length of [16, 24]) {
+      const shortKey = await globalThis.crypto.subtle.importKey(
+        'raw',
+        new Uint8Array(length),
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt', 'decrypt'],
+      );
+      await expect(
+        encryptVaultDocument({
+          document: vaultVectorDocument,
+          vaultKey: shortKey,
+          header: encryptionHeader,
+        }),
+      ).rejects.toMatchObject({ code: 'authentication-failed' });
+      await expect(decryptVaultDocument(envelope, shortKey)).rejects.toMatchObject({
+        code: 'authentication-failed',
+      });
+    }
+  });
+
   it('rejects wrong passphrases and modified wrapped vault keys', async () => {
     const { wrapped, kdf } = await fixture();
     const wrongKek = await deriveVaultKek('wrong passphrase', kdf);
