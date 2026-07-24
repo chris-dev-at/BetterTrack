@@ -39,6 +39,9 @@ function harness() {
       model(snapshot, health = { available: true, detail: '' }) {
         return openWorkModel(snapshot, health);
       },
+      prStatus(item) {
+        return openWorkPrStatus(item);
+      },
       render(snapshot, health = { available: true, detail: '' }) {
         renderOpenWork(snapshot, health);
         return {
@@ -144,8 +147,8 @@ test('Open Work classifies active, runnable, queued, PR and decision states', ()
     lanes.prs.map((row) => [row.number, row.checks, row.mergeState, row.queuePos]),
     [
       [108, 'failing', 'blocked', null],
-      [102, 'passing', 'clean', 1],
       [109, 'passing', 'behind', null],
+      [102, 'passing', 'clean', 1],
     ],
   );
   assert.ok(
@@ -223,11 +226,173 @@ test('Open Work has explicit empty, partial-source, loading, and error states', 
   assert.match(errored.html, /GitHub CLI unavailable/);
 });
 
+test('Open Work fails closed from core labels when decision queries are unavailable', () => {
+  const partial = {
+    protocol: { workers: [], queue: [] },
+    github: {
+      issues: [
+        {
+          number: 30,
+          title: 'Core needs-human issue',
+          labels: ['autopilot', 'needs-human'],
+          meta: { touches: ['src/human.js'] },
+        },
+        {
+          number: 31,
+          title: 'Core owner issue',
+          labels: ['autopilot', 'awaiting-owner'],
+          meta: { touches: ['src/owner.js'] },
+        },
+        {
+          number: 32,
+          title: 'Core blocked issue',
+          labels: ['autopilot', 'blocked-by:#29'],
+          meta: { touches: ['src/blocked.js'] },
+        },
+        {
+          number: 33,
+          title: 'Actually runnable',
+          labels: ['autopilot'],
+          meta: { touches: ['src/ready.js'] },
+        },
+      ],
+      prs: [],
+      merged: [],
+      sources: {
+        needsHuman: { available: false, error: 'needs-human query failed' },
+        awaitingOwner: { available: false, error: 'awaiting-owner query failed' },
+      },
+    },
+  };
+  const model = harness().model(partial);
+  const lanes = Object.fromEntries(model.lanes.map((lane) => [lane.id, lane.rows]));
+  assert.deepEqual(
+    lanes.ready.map((row) => row.number),
+    [33],
+  );
+  assert.ok(
+    lanes.decisions.some(
+      (row) => row.number === 30 && row.signals.some((signal) => signal.kind === 'needs human'),
+    ),
+  );
+  assert.ok(
+    lanes.decisions.some(
+      (row) => row.number === 31 && row.signals.some((signal) => signal.kind === 'awaiting owner'),
+    ),
+  );
+  assert.ok(
+    lanes.decisions.some(
+      (row) => row.number === 32 && row.signals.some((signal) => signal.kind === 'blocked'),
+    ),
+  );
+  const rendered = harness().render(partial);
+  assert.doesNotMatch(rendered.html, /Core needs-human issue[\s\S]*scheduler can assign/);
+  assert.match(rendered.html, /needs-human unavailable/);
+  assert.match(rendered.html, /awaiting-owner unavailable/);
+});
+
+test('PR safety and CI states outrank merge-queue activity', () => {
+  const queued = {
+    protocol: {
+      workers: [],
+      queue: [
+        { issue: 20, pr: 120, touches: ['src/clean.js'] },
+        { issue: 21, pr: 121, touches: ['src/dirty.js'] },
+        { issue: 22, pr: 122, touches: ['src/pending.js'] },
+        { issue: 23, pr: 123, touches: ['src/blocked.js'] },
+        { issue: 24, pr: 124, touches: ['src/fixing.js'] },
+      ],
+      masterActivity: { activity: 'ci-fix', pr: 124 },
+    },
+    github: {
+      issues: [20, 21, 22, 23, 24].map((number) => ({
+        number,
+        title: `Issue ${number}`,
+        labels: ['autopilot'],
+        meta: { touches: [`src/${number}.js`] },
+      })),
+      prs: [
+        {
+          number: 120,
+          title: 'Queued clean',
+          branch: 'task/20',
+          checks: 'passing',
+          mergeState: 'clean',
+        },
+        {
+          number: 121,
+          title: 'Queued dirty',
+          branch: 'task/21',
+          checks: 'passing',
+          mergeState: 'dirty',
+        },
+        {
+          number: 122,
+          title: 'Queued pending',
+          branch: 'task/22',
+          checks: 'pending',
+          mergeState: 'clean',
+        },
+        {
+          number: 123,
+          title: 'Queued blocked',
+          branch: 'task/23',
+          checks: 'passing',
+          mergeState: 'blocked',
+        },
+        {
+          number: 124,
+          title: 'CI fixer active',
+          branch: 'task/24',
+          checks: 'passing',
+          mergeState: 'clean',
+        },
+      ],
+      merged: [],
+      needsHuman: [],
+      awaitingOwner: [],
+      sources: {
+        needsHuman: { available: true },
+        awaitingOwner: { available: true },
+      },
+    },
+  };
+  const dashboard = harness();
+  const model = dashboard.model(queued);
+  const prs = Object.fromEntries(
+    model.lanes.find((lane) => lane.id === 'prs').rows.map((row) => [row.number, row]),
+  );
+  assert.deepEqual(dashboard.prStatus(prs[121]), ['merge dirty', 'bad']);
+  assert.deepEqual(dashboard.prStatus(prs[123]), ['merge blocked', 'bad']);
+  assert.deepEqual(dashboard.prStatus(prs[122]), ['CI pending', 'warn']);
+  assert.equal(prs[124].merging, false);
+  assert.equal(prs[124].ciFixing, true);
+  assert.deepEqual(dashboard.prStatus(prs[124]), ['CI fixing', 'warn']);
+  assert.deepEqual(dashboard.prStatus(prs[120]), ['queue 1', 'warn']);
+  assert.deepEqual(
+    dashboard.prStatus({
+      checks: 'passing',
+      mergeState: 'clean',
+      merging: true,
+      queuePos: 1,
+    }),
+    ['merging', 'good'],
+  );
+});
+
+test('Open Work limits live announcements and transfers focus when navigating away', () => {
+  assert.doesNotMatch(html, /id="open-work"[^>]*aria-live/);
+  assert.match(html, /id="open-work-count"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
+  assert.match(html, /onclick="setTab\('flow', true\)">View full work/);
+  assert.match(script, /function setTab\(t, moveFocus = false\)/);
+  assert.match(script, /if \(moveFocus\) \$\('tab-' \+ t\)\?\.focus\(\)/);
+});
+
 test('Open Work remains read-only and server exposes awaiting-owner source truthfully', () => {
   const openWorkScript = between(script, 'const openWorkSource', 'const PHASE_ICON');
   assert.doesNotMatch(openWorkScript, /\bfetch\s*\(/);
   assert.doesNotMatch(openWorkScript, /\bact\s*\(/);
-  assert.match(html, /type="button" onclick="setTab\('flow'\)">View full work/);
+  assert.match(html, /type="button" onclick="setTab\('flow', true\)">View full work/);
   assert.match(server, /'--label',\s*'awaiting-owner'/);
   assert.match(server, /statusCheckRollup,mergeStateStatus,isDraft/);
   assert.match(server, /awaitingOwner:\s*parse\(awaitingOwner, \[\]\)/);

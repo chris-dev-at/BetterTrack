@@ -223,9 +223,13 @@ export function normalizeOpenAiLedgerRow(row) {
   usage.total = usage.input + usage.cachedInput + usage.cacheWrite + usage.output;
 
   const apiEquivalent = ownNumber(row, ['api_equivalent_usd']);
-  const cliEstimateRecorded =
-    row.api_equivalent_source === 'claude-code-total_cost_usd' ||
+  const cliEstimateSource = row.api_equivalent_source === 'claude-code-total_cost_usd';
+  const cliEstimatePricing =
+    row.api_equivalent_pricing == null ||
     row.api_equivalent_pricing === 'claude-code-local-estimate';
+  const conflictingLedgerProvenance =
+    (row.api_equivalent_source != null && !cliEstimateSource) || !cliEstimatePricing;
+  const cliEstimateRecorded = cliEstimateSource && cliEstimatePricing;
   const explicitlyIncomplete = [
     'missing-telemetry',
     'partial-telemetry',
@@ -254,9 +258,11 @@ export function normalizeOpenAiLedgerRow(row) {
     pricingStatus:
       estimateUsd != null
         ? 'complete'
-        : apiEquivalent.known && !cliEstimateRecorded
-          ? 'unattributed-ledger-estimate'
-          : 'missing-ledger-estimate',
+        : conflictingLedgerProvenance
+          ? 'conflicting-ledger-provenance'
+          : apiEquivalent.known && !cliEstimateRecorded
+            ? 'unattributed-ledger-estimate'
+            : 'missing-ledger-estimate',
     telemetryComplete: estimateUsd != null,
     cacheWriteRecorded:
       estimateUsd != null ||
@@ -283,6 +289,7 @@ const emptyBucket = (key) => ({
   legacyOutputAmbiguousRecords: 0,
   missingLedgerEstimateRecords: 0,
   unattributedLedgerEstimateRecords: 0,
+  conflictingLedgerProvenanceRecords: 0,
   cacheWriteUnreportedRecords: 0,
   estimatedUsdKnown: 0,
   cliEstimateUsdKnown: 0,
@@ -301,6 +308,8 @@ const addInfo = (bucket, info) => {
       bucket.missingLedgerEstimateRecords += 1;
     else if (info.pricingStatus === 'unattributed-ledger-estimate')
       bucket.unattributedLedgerEstimateRecords += 1;
+    else if (info.pricingStatus === 'conflicting-ledger-provenance')
+      bucket.conflictingLedgerProvenanceRecords += 1;
     else bucket.partialTelemetryRecords += 1;
   } else {
     bucket.pricedRecords += 1;

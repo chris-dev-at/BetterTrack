@@ -2523,11 +2523,13 @@
               <span class="hint">active, ready, merging, and waiting for a decision</span>
             </div>
             <div class="open-work-actions">
-              <span class="chip" id="open-work-count">checking</span>
-              <button type="button" onclick="setTab('flow')">View full work</button>
+              <span class="chip" id="open-work-count" aria-live="polite" aria-atomic="true"
+                >checking</span
+              >
+              <button type="button" onclick="setTab('flow', true)">View full work</button>
             </div>
           </div>
-          <div id="open-work" aria-live="polite" aria-busy="true">
+          <div id="open-work" aria-busy="true">
             <div class="open-work-message">
               <b>Loading open work</b>
               <span>Waiting for the first GitHub and worker snapshot.</span>
@@ -3091,7 +3093,7 @@
           subtitle: 'Understand limits, tokens, actual telemetry, and API-equivalent estimates.',
         },
       };
-      function setTab(t) {
+      function setTab(t, moveFocus = false) {
         if (!PAGE_COPY[t]) t = 'overview';
         activeTab = t;
         localStorage.setItem('mf-tab', t);
@@ -3114,6 +3116,7 @@
           fetchUsageHist(true);
         }
         if (t === 'models' && S) renderModels(S);
+        if (moveFocus) $('tab-' + t)?.focus();
       }
 
       function staticBlock(html) {
@@ -3786,6 +3789,12 @@
           y = claimPrefix(b);
         return x.startsWith(y) || y.startsWith(x);
       }
+      function openWorkNonRunnableLabel(issue) {
+        return (issue?.labels || []).find(
+          (label) =>
+            ['needs-human', 'awaiting-owner'].includes(label) || label.startsWith('blocked-by:'),
+        );
+      }
       function joinIssues(s) {
         const p = s.protocol || {},
           gh = s.github || {};
@@ -3812,11 +3821,10 @@
             );
             const pr = prs.find((pr) => pr.branch === 'task/' + i.number);
             const qi = queue.findIndex((q) => q.issue === i.number);
-            const merging =
-              p.masterActivity &&
-              ['merging', 'ci-fix'].includes(p.masterActivity.activity) &&
-              qi >= 0 &&
-              p.masterActivity.pr === queue[qi].pr;
+            const masterActivity =
+              p.masterActivity && qi >= 0 && p.masterActivity.pr === queue[qi].pr
+                ? p.masterActivity.activity
+                : null;
             const deps = (i.meta?.dependsOn || []).filter((d) => openSet.has(d));
             let conflict = null;
             if (!w && qi < 0 && !deps.length) {
@@ -3836,7 +3844,8 @@
               w,
               pr,
               queuePos: qi >= 0 ? qi + 1 : null,
-              merging,
+              merging: masterActivity === 'merging',
+              ciFixing: masterActivity === 'ci-fix',
               deps,
               conflict,
               rank: w ? 0 : qi >= 0 ? 1 : conflict || deps.length ? 3 : 2,
@@ -3903,7 +3912,7 @@
             (issue) =>
               !issue.w &&
               !decisionBoundNumbers.has(issue.number) &&
-              !(issue.labels || []).includes('awaiting-owner') &&
+              !openWorkNonRunnableLabel(issue) &&
               (issue.queuePos || (!issue.deps.length && !issue.conflict && !issue.queuePos)),
           )
           .map((issue) => ({
@@ -3911,6 +3920,7 @@
             title: issue.title,
             queuePos: issue.queuePos,
             merging: issue.merging,
+            ciFixing: issue.ciFixing,
           }))
           .sort(
             (a, b) =>
@@ -3942,23 +3952,26 @@
                 : 'unknown',
               queuePos: issue?.queuePos || null,
               merging: Boolean(issue?.merging),
+              ciFixing: Boolean(issue?.ciFixing),
             };
           })
           .sort((a, b) => {
             const rank = (pr) =>
-              pr.merging
+              pr.checks === 'failing'
                 ? 0
-                : pr.checks === 'failing'
+                : ['blocked', 'dirty'].includes(pr.mergeState)
                   ? 1
-                  : ['blocked', 'dirty'].includes(pr.mergeState)
+                  : pr.ciFixing
                     ? 2
-                    : pr.queuePos
+                    : pr.checks === 'pending'
                       ? 3
                       : ['behind', 'draft', 'unstable'].includes(pr.mergeState)
                         ? 4
-                        : pr.checks === 'pending'
+                        : pr.merging
                           ? 5
-                          : 6;
+                          : pr.queuePos
+                            ? 6
+                            : 7;
             return rank(a) - rank(b) || (a.queuePos ?? 9999) - (b.queuePos ?? 9999);
           });
 
@@ -3987,6 +4000,13 @@
             );
           else if (issue.conflict)
             addDecision(issue, 'blocked', 'warn', `path conflict with #${issue.conflict}`);
+          const nonRunnableLabel = openWorkNonRunnableLabel(issue);
+          if (nonRunnableLabel === 'needs-human')
+            addDecision(issue, 'needs human', 'bad', 'manual review or intervention');
+          else if (nonRunnableLabel === 'awaiting-owner')
+            addDecision(issue, 'awaiting owner', 'warn', 'owner decision required');
+          else if (nonRunnableLabel?.startsWith('blocked-by:'))
+            addDecision(issue, 'blocked', 'warn', `blocked by ${nonRunnableLabel.slice(11)}`);
         }
         const needsHumanSource = openWorkSource(github, 'needsHuman');
         if (needsHumanSource.available)
@@ -4026,6 +4046,18 @@
       }
       const openWorkStatus = (label, tone = '') =>
         `<span class="open-work-status ${tone}">${esc(label)}</span>`;
+      function openWorkPrStatus(item) {
+        if (item.checks === 'failing') return ['CI failing', 'bad'];
+        if (['blocked', 'dirty'].includes(item.mergeState))
+          return [`merge ${item.mergeState}`, 'bad'];
+        if (item.ciFixing) return ['CI fixing', 'warn'];
+        if (item.checks === 'pending') return ['CI pending', 'warn'];
+        if (['behind', 'draft', 'unstable'].includes(item.mergeState))
+          return [`merge ${item.mergeState}`, 'warn'];
+        if (item.merging) return ['merging', 'good'];
+        if (item.queuePos) return [`queue ${item.queuePos}`, 'warn'];
+        return ['CI passing', 'good'];
+      }
       function openWorkRows(lane) {
         const visible = lane.rows.slice(0, 3);
         const row = (item) => {
@@ -4034,25 +4066,15 @@
           if (lane.id === 'ready') {
             const status = item.merging
               ? ['merging', 'good']
-              : item.queuePos
-                ? [`queue ${item.queuePos}`, 'warn']
-                : ['ready', 'good'];
+              : item.ciFixing
+                ? ['CI fixing', 'warn']
+                : item.queuePos
+                  ? [`queue ${item.queuePos}`, 'warn']
+                  : ['ready', 'good'];
             return `<div class="open-work-item"><div class="open-work-primary"><a target="_blank" rel="noreferrer" href="${REPO}/issues/${esc(item.number)}">#${esc(item.number)} ${esc(item.title)}</a><small>${item.queuePos ? 'approved for merge' : 'scheduler can assign'}</small></div>${openWorkStatus(status[0], status[1])}</div>`;
           }
           if (lane.id === 'prs') {
-            const status = item.merging
-              ? ['merging', 'good']
-              : item.checks === 'failing'
-                ? ['CI failing', 'bad']
-                : item.queuePos
-                  ? [`queue ${item.queuePos}`, 'warn']
-                  : ['blocked', 'dirty'].includes(item.mergeState)
-                    ? [`merge ${item.mergeState}`, 'bad']
-                    : ['behind', 'draft', 'unstable'].includes(item.mergeState)
-                      ? [`merge ${item.mergeState}`, 'warn']
-                      : item.checks === 'passing'
-                        ? ['CI passing', 'good']
-                        : ['CI pending', 'warn'];
+            const status = openWorkPrStatus(item);
             const mergeDetail =
               item.mergeState === 'unknown' ? '' : ` · merge ${item.mergeState.replace('_', ' ')}`;
             return `<div class="open-work-item"><div class="open-work-primary"><a target="_blank" rel="noreferrer" href="${REPO}/pull/${esc(item.number)}">PR #${esc(item.number)} ${esc(item.title)}</a><small>${item.issue ? `issue #${esc(item.issue)}` : 'open pull request'}${item.queuePos ? ` · merge queue ${esc(item.queuePos)}` : mergeDetail}</small></div>${openWorkStatus(status[0], status[1])}</div>`;
@@ -4085,14 +4107,17 @@
       function renderOpenWork(s, health = githubState(s)) {
         const node = $('open-work');
         const count = $('open-work-count');
+        const announceCount = (value) => {
+          if (count.textContent !== value) count.textContent = value;
+        };
         const model = openWorkModel(s, health);
         node.setAttribute('aria-busy', 'false');
         if (model.state === 'error') {
-          count.textContent = 'unavailable';
+          announceCount('unavailable');
           node.innerHTML = `<div class="open-work-message"><b>Open work unavailable</b><span>${esc(model.detail)}</span></div>`;
           return;
         }
-        count.textContent = `${model.trackedCount} tracked`;
+        announceCount(`${model.trackedCount} tracked`);
         if (!model.trackedCount && !model.partialSources.length) {
           node.innerHTML =
             '<div class="open-work-message"><b>No open work</b><span>No active workers, runnable issues, open pull requests, blockers, or owner decisions.</span></div>';
@@ -5266,15 +5291,17 @@
       const coverageText = (bucket) =>
         !bucket || bucket.records === 0 || (bucket.records == null && bucket.coverage == null)
           ? 'no OpenAI-family rows'
-          : bucket?.legacyOutputAmbiguousRecords
-            ? `${bucket.legacyOutputAmbiguousRecords} legacy output-ambiguous run${bucket.legacyOutputAmbiguousRecords === 1 ? '' : 's'}`
-            : bucket?.coverage === 'partial'
-              ? 'partial coverage'
-              : bucket?.coverage === 'unavailable'
-                ? 'estimate unavailable'
-                : bucket?.coverage === 'none'
-                  ? 'no OpenAI-family rows'
-                  : 'complete telemetry';
+          : bucket?.conflictingLedgerProvenanceRecords
+            ? `${bucket.conflictingLedgerProvenanceRecords} provenance-conflicting run${bucket.conflictingLedgerProvenanceRecords === 1 ? '' : 's'}`
+            : bucket?.legacyOutputAmbiguousRecords
+              ? `${bucket.legacyOutputAmbiguousRecords} legacy output-ambiguous run${bucket.legacyOutputAmbiguousRecords === 1 ? '' : 's'}`
+              : bucket?.coverage === 'partial'
+                ? 'partial coverage'
+                : bucket?.coverage === 'unavailable'
+                  ? 'estimate unavailable'
+                  : bucket?.coverage === 'none'
+                    ? 'no OpenAI-family rows'
+                    : 'complete telemetry';
       function hbars(el, rows, colorFor) {
         const max = Math.max(...rows.map((r) => finiteNumber(r.v) || 0), 0.01);
         $(el).innerHTML =

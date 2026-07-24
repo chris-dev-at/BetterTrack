@@ -585,6 +585,36 @@ test('unattributed ClaudeX ledger values are unavailable rather than mislabeled 
   assert.equal(data.totals.unattributedLedgerEstimateRecords, 1);
 });
 
+test('ClaudeX CLI estimates require unambiguous total_cost_usd provenance', () => {
+  const pricingOnly = claudexBase({
+    api_equivalent_source: undefined,
+  });
+  const contradictoryPricing = claudexBase({
+    api_equivalent_pricing: 'openai-standard-base-2026-07-24',
+  });
+  const contradictorySource = claudexBase({
+    api_equivalent_source: 'openai-standard-derived',
+  });
+
+  const pricingOnlyInfo = normalizeOpenAiLedgerRow(pricingOnly);
+  assert.equal(pricingOnlyInfo.estimateUsd, null);
+  assert.equal(pricingOnlyInfo.pricingStatus, 'unattributed-ledger-estimate');
+  for (const row of [contradictoryPricing, contradictorySource]) {
+    const info = normalizeOpenAiLedgerRow(row);
+    assert.equal(info.estimateUsd, null);
+    assert.equal(info.pricingStatus, 'conflicting-ledger-provenance');
+  }
+
+  const data = aggregateOpenAiUsage([pricingOnly, contradictoryPricing, contradictorySource], {
+    now: '2026-07-24T12:00:00Z',
+    range: 14,
+  });
+  assert.equal(data.totals.estimatedUsd, null);
+  assert.equal(data.totals.cliEstimateUsd, null);
+  assert.equal(data.totals.unattributedLedgerEstimateRecords, 1);
+  assert.equal(data.totals.conflictingLedgerProvenanceRecords, 2);
+});
+
 test('null, empty-string and boolean estimate fields are never coerced into false zero prices', () => {
   for (const api_equivalent_usd of [null, '', false, true]) {
     const row = {
