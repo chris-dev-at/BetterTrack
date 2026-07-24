@@ -30,3 +30,4 @@ export * from './standingOrders';
 export * from './mirrorchain';
 export * from './expenses';
 export * from './webhooks';
+export * from './vault';

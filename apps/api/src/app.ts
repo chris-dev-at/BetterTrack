@@ -45,6 +45,7 @@ import { createPortfolioRouter } from './http/routes/portfolioRoutes';
 import { createSearchRouter } from './http/routes/searchRoutes';
 import { createStandingOrdersRouter } from './http/routes/standingOrdersRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
+import { createVaultRouter } from './http/routes/vaultRoutes';
 import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
@@ -191,6 +192,10 @@ export function createApp(ctx: AppContext) {
   // subtree. Session-only (the bearer scope guard bars key/token access).
   app.use('/api/v1/settings/webhooks', createWebhooksRouter(ctx));
   app.use('/api/v1/settings', createSettingsRouter(ctx));
+  // Paranoid vault — the blind server blob store for a paranoid account's
+  // client-encrypted vault (§13.5 V5-P13 arc b). Opaque GET/PUT with ETag CAS,
+  // a size cap and a dedicated per-user write limiter.
+  app.use('/api/v1/vault', createVaultRouter(ctx, limiters));
   // Session-authenticated OAuth consent endpoints (authorize + authorization-
   // details). The public /oauth/token router above already handled its path.
   app.use('/api/v1/oauth', createOAuthRouter(ctx));

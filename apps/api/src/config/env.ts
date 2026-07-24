@@ -233,6 +233,21 @@ const envSchema = z.object({
   // MIRRORCHAIN active-member cap per chain (§13.5 V5-P7, design §4 — bounded
   // fan-out). Env-tunable; defaults to the contract's MIRROR_MAX_MEMBERS (16).
   MIRROR_MAX_MEMBERS: z.coerce.number().int().min(2).max(256).default(16),
+  // Paranoid vault (§13.5 V5-P13 arc b, design §2/§4) — ops knobs, not product
+  // surface. Ciphertext (envelope) size cap: 16 MiB default (personal-finance
+  // scale keeps real vaults far below it). Bounded ciphertext history window:
+  // last N versions / M days.
+  BT_VAULT_MAX_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(16 * 1024 * 1024),
+  BT_VAULT_HISTORY_MAX_VERSIONS: z.coerce.number().int().min(1).max(1000).default(10),
+  BT_VAULT_HISTORY_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  // Dedicated modest write limiter for vault PUTs (like every other write
+  // family). Per user; a generous steady-state so multi-device sync never trips.
+  BT_VAULT_RATE_WINDOW_SEC: z.coerce.number().int().positive().default(60),
+  BT_VAULT_RATE_LIMIT: z.coerce.number().int().positive().default(60),
 });
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -510,6 +525,19 @@ export interface AppConfig {
     maxMembers: number;
   };
   /**
+   * Paranoid vault (§13.5 V5-P13 arc b, design §2/§4) — the blind-store ops
+   * knobs. `maxBytes` is the server-enforced ciphertext (envelope) size cap;
+   * `history` bounds the ciphertext safety-net (keep at most `maxVersions`
+   * archived versions and drop anything older than `maxAgeMs`).
+   */
+  vault: {
+    maxBytes: number;
+    history: {
+      maxVersions: number;
+      maxAgeMs: number;
+    };
+  };
+  /**
    * Local AI provider (§13.5 V5-P12, §16 2026-07-22 — LOCAL OLLAMA ONLY). These
    * are env DEFAULTS only; the admin's stored app_settings override them at
    * request time. When neither the env nor a stored override yields an endpoint
@@ -636,6 +664,8 @@ export interface AppConfig {
     search: ProgressiveSchedule;
     /** Friend-request creation, per user — blunts bulk email→username probing (§6.9). */
     social: ProgressiveSchedule;
+    /** Paranoid vault writes, per user — a modest dedicated write budget (§13.5 V5-P13, design §4). */
+    vault: ProgressiveSchedule;
     /** Personal API key request rate, per key id (bearer requests, §6.13). */
     apiKey: ProgressiveSchedule;
     /** Login/PIN request rate, per IP. */
@@ -746,6 +776,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     mirror: {
       maxMembers: e.MIRROR_MAX_MEMBERS,
     },
+    vault: {
+      maxBytes: e.BT_VAULT_MAX_BYTES,
+      history: {
+        maxVersions: e.BT_VAULT_HISTORY_MAX_VERSIONS,
+        maxAgeMs: e.BT_VAULT_HISTORY_MAX_AGE_DAYS * 24 * 60 * 60 * 1000,
+      },
+    },
     // V5-P12 local-AI defaults (LOCAL Ollama ONLY). Blank env ⇒ undefined so the
     // AI layer stays cleanly disabled until an endpoint + model resolve. The
     // endpoint tolerates a compose-materialized empty string (optionalUrl).
@@ -846,6 +883,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         limit: 30,
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
+      },
+      // Paranoid vault writes, per user (§13.5 V5-P13, design §4): a modest
+      // dedicated write budget like every other write family. Generous enough
+      // that legitimate multi-device sync never trips (default 60/min); the
+      // window/limit are env-tunable ops knobs. Shares the general escalation
+      // ladder + decay.
+      vault: {
+        windowSec: e.BT_VAULT_RATE_WINDOW_SEC,
+        limit: e.BT_VAULT_RATE_LIMIT,
+        cooldownsSec: general.cooldownsSec,
+        decaySec: general.decaySec,
       },
       // Personal API keys, per key id (§6.13): a generous automation budget —
       // 120/min sustained (2 req/s) so scripted polling stays clear — with the
