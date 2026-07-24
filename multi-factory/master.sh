@@ -32,6 +32,8 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${MF_COMPOSER_PROTOCOL_ATTEMPTS:=2}" # one corrective retry for a missing/malformed manifest
 : "${MF_COMPOSER_PROTOCOL_COOLDOWN:=120}" # malformed runs retry separately from valid empty runs
 : "${MF_COMPOSER_PROTOCOL_BACKOFF_MAX:=900}"
+: "${MF_COMPOSER_DISCOVERY_ATTEMPTS:=6}" # no-cache post-create snapshots (GitHub lists can lag)
+: "${MF_COMPOSER_DISCOVERY_SLEEP:=2}" # seconds between post-create snapshots
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
 : "${MF_DRY_RUN:=0}"
 if [ -z "${MF_MASTER_SESSION:-}" ]; then
@@ -474,6 +476,51 @@ composer_request_archive(){ # $1=validated composer run id
   return 0
 }
 
+# GitHub's collection endpoint can briefly lag a successful `gh issue create`.
+# The helper-written manifest is authoritative enough to identify the expected
+# issue numbers, but it is not sufficient by itself: we still accumulate
+# no-cache collection snapshots so an extra, unmanifested issue fails the
+# before/after contract. Direct reads fill only manifest IDs that the list has
+# not exposed yet. Every outcome consumes the full bounded grace period so a
+# delayed unmanifested artifact can never arrive after an early acceptance.
+composer_discovery_after(){ # $1=manifest
+  local manifest=$1 attempts=$MF_COMPOSER_DISCOVERY_ATTEMPTS
+  local pause=$MF_COMPOSER_DISCOVERY_SLEEP attempt after issue merged n
+  local ids="" accumulated='[]'
+  case "$attempts" in ''|*[!0-9]*|0) attempts=6;; esac
+  case "$pause" in ''|*[!0-9]*) pause=2;; esac
+  if [ -s "$manifest" ]; then
+    ids=$(awk '/^ISSUE [0-9]+ (autopilot|awaiting-owner|relocated)$/{print $2}' \
+      "$manifest" | sort -un)
+  fi
+
+  for attempt in $(seq 1 "$attempts"); do
+    after=$(mf_recent_issues_json) || return 1
+    jq -e 'type=="array"' <<<"$after" >/dev/null 2>&1 || return 1
+    merged=$(jq -cn --argjson seen "$accumulated" --argjson latest "$after" \
+      '$seen + $latest | unique_by(.number)') || return 1
+    accumulated=$merged
+
+    # A just-created issue is immediately addressable by number even when the
+    # collection response is still stale. Never synthesize data from the
+    # manifest: the direct API object must satisfy the normal validator.
+    for n in $ids; do
+      if ! jq -e --argjson n "$n" 'map(.number) | index($n) != null' \
+        <<<"$accumulated" >/dev/null 2>&1; then
+        issue=$(mf_issue_json_by_number "$n") || continue
+        jq -e 'type=="object" and (.number|type=="number")' \
+          <<<"$issue" >/dev/null 2>&1 || continue
+        merged=$(jq -cn --argjson seen "$accumulated" --argjson issue "$issue" \
+          '$seen + [$issue] | unique_by(.number)') || return 1
+        accumulated=$merged
+      fi
+    done
+
+    [ "$attempt" -eq "$attempts" ] || [ "$pause" -eq 0 ] || sleep "$pause"
+  done
+  printf '%s\n' "$accumulated"
+}
+
 composer_step(){ # $1=mode
   local mode=$1 allow_ready_claim=0
   [ "$mode" = run ] && allow_ready_claim=1
@@ -577,7 +624,7 @@ finish the manifest contract this time."
     else
       transport=$?
     fi
-    after=$(mf_recent_issues_json) || {
+    after=$(composer_discovery_after "$manifest") || {
       log "composer protocol: post-run issue discovery failed; suppressing corrective model retry"
       break
     }
