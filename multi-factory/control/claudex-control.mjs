@@ -10,6 +10,52 @@ const MAX_MODELS = 64;
 const SAFE_TEXT = /^[\x20-\x7e]+$/;
 const CLAUDEX_RUNTIME_VERSION = '3.0.7';
 
+export function createExclusiveOperation() {
+  let active = null;
+  return Object.freeze({
+    reserve(name) {
+      if (active !== null) return false;
+      active = name;
+      return true;
+    },
+    release(name) {
+      if (active !== name) return false;
+      active = null;
+      return true;
+    },
+    current() {
+      return active;
+    },
+  });
+}
+
+export function runningMasterContainer(dockerState) {
+  const master = (dockerState?.containers || []).find(
+    (container) => container?.service === 'master' && /running/i.test(container?.state || ''),
+  );
+  if (!master) return null;
+  return {
+    id: typeof master.id === 'string' && master.id ? master.id : null,
+    name: typeof master.name === 'string' ? master.name : null,
+  };
+}
+
+export function readRuntimeProofCache(cache, containerId, now, ttl) {
+  if (
+    !containerId ||
+    !cache ||
+    cache.containerId !== containerId ||
+    !Number.isFinite(cache.at) ||
+    !Number.isFinite(now) ||
+    !Number.isFinite(ttl) ||
+    cache.at <= 0 ||
+    now - cache.at < 0 ||
+    now - cache.at >= ttl
+  )
+    return { hit: false, data: null };
+  return { hit: true, data: cache.data ?? null };
+}
+
 const safeText = (value, max = 120) =>
   typeof value === 'string' && value.length > 0 && value.length <= max && SAFE_TEXT.test(value)
     ? value

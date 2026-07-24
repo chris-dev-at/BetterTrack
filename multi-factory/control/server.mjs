@@ -18,6 +18,7 @@ import { buildUsageAnalytics, parseUsageRange } from './usage-analytics.mjs';
 import {
   DIFFICULTIES,
   defaultRouteForProvider,
+  normalizeModelRouting,
   normalizeRouteEntry,
   publicProviderRegistry,
   validateRouteEntry,
@@ -26,8 +27,11 @@ import {
   buildClaudexStatus,
   claudexProviderTestInvocation,
   claudexRuntimeStatusInvocation,
+  createExclusiveOperation,
   parseClaudexTestOutput,
   parseClaudexRuntimeOutput,
+  readRuntimeProofCache,
+  runningMasterContainer,
   sanitizeClaudexLastTest,
 } from './claudex-control.mjs';
 import {
@@ -49,6 +53,8 @@ const USAGE_HISTORY_FILE = join(CONTROL, 'usage-history.json');
 const PORT = Number(process.env.MF_CONTROL_PORT || 8790);
 const MF_PROJECT = 'bettertrack-multifactory';
 const SF_PROJECT = 'bettertrack-factory';
+const inflight = new Map(); // operation name → started_at
+const mfExclusive = createExclusiveOperation();
 
 const run = (cmd, args, opts = {}) =>
   new Promise((res) => {
@@ -155,7 +161,52 @@ async function readProtocolState() {
 const composeCache = new Map();
 const COMPOSE_STATUS_TTL = Number(process.env.MF_DOCKER_STATUS_TTL_MS || 2000);
 const CLAUDEX_RUNTIME_STATUS_TTL = Number(process.env.MF_CLAUDEX_STATUS_TTL_MS || 20000);
-let claudexRuntimeCache = { at: 0, data: null, pending: null };
+let claudexRuntimeCache = {
+  containerId: null,
+  at: 0,
+  data: null,
+  pending: null,
+};
+
+function invalidateClaudexRuntimeCache() {
+  claudexRuntimeCache = {
+    containerId: null,
+    at: 0,
+    data: null,
+    pending: null,
+  };
+}
+
+function reserveMfOperation(name, { invalidateRuntime = false, invalidateDocker = false } = {}) {
+  if (!mfExclusive.reserve(name)) return false;
+  if (invalidateRuntime) invalidateClaudexRuntimeCache();
+  if (invalidateDocker) composeCache.delete(MF_PROJECT);
+  inflight.set(name, Date.now());
+  return true;
+}
+
+function releaseMfOperation(name, { invalidateRuntime = false, invalidateDocker = false } = {}) {
+  if (mfExclusive.current() !== name) return false;
+  if (invalidateRuntime) invalidateClaudexRuntimeCache();
+  if (invalidateDocker) composeCache.delete(MF_PROJECT);
+  inflight.delete(name);
+  return mfExclusive.release(name);
+}
+
+const mfBusyResult = () => ({
+  ok: false,
+  message: `multi-factory operation already in progress (${mfExclusive.current() || 'unknown'})`,
+});
+
+async function withMfOperation(name, task, options = {}) {
+  if (!reserveMfOperation(name, options)) return mfBusyResult();
+  try {
+    return await task();
+  } finally {
+    releaseMfOperation(name, options);
+  }
+}
+
 async function composePs(project, { fresh = false } = {}) {
   const cached = composeCache.get(project);
   if (!fresh && cached && Date.now() - cached.at < COMPOSE_STATUS_TTL) return cached.data;
@@ -176,44 +227,73 @@ async function composePs(project, { fresh = false } = {}) {
       }
     })
     .filter(Boolean)
-    .map((c) => ({ name: c.Name, service: c.Service, state: c.State, status: c.Status }));
+    .map((c) => ({
+      id: c.ID || null,
+      name: c.Name,
+      service: c.Service,
+      state: c.State,
+      status: c.Status,
+    }));
   const data = { containers };
   composeCache.set(project, { at: Date.now(), data });
   return data;
 }
 
 async function claudexRuntimeProof(multiDocker) {
-  const masterRunning = (multiDocker?.containers || []).some(
-    (container) => container.service === 'master' && /running/i.test(container.state),
-  );
-  if (!masterRunning) {
-    claudexRuntimeCache = { at: 0, data: null, pending: null };
+  const master = runningMasterContainer(multiDocker);
+  if (!master) {
+    invalidateClaudexRuntimeCache();
     return null;
   }
-  if (
-    claudexRuntimeCache.at > 0 &&
-    Date.now() - claudexRuntimeCache.at < CLAUDEX_RUNTIME_STATUS_TTL
-  )
-    return claudexRuntimeCache.data;
-  if (claudexRuntimeCache.pending) return claudexRuntimeCache.pending;
-  claudexRuntimeCache.pending = (async () => {
-    const invocation = claudexRuntimeStatusInvocation({
-      mfDir: MF_DIR,
-      project: MF_PROJECT,
-      override: process.env.MF_COMPOSE_OVERRIDE || '',
-    });
-    const result = await run(invocation.cmd, invocation.args, {
-      timeout: 60000,
-      cwd: MF_DIR,
-    });
-    const data = result.ok ? parseClaudexRuntimeOutput(result.stdout) : null;
-    claudexRuntimeCache = { at: Date.now(), data, pending: null };
-    return data;
-  })().catch(() => {
-    claudexRuntimeCache = { at: Date.now(), data: null, pending: null };
-    return null;
-  });
-  return claudexRuntimeCache.pending;
+  const cached = readRuntimeProofCache(
+    claudexRuntimeCache,
+    master.id,
+    Date.now(),
+    CLAUDEX_RUNTIME_STATUS_TTL,
+  );
+  if (cached.hit) return cached.data;
+  if (claudexRuntimeCache.pending && claudexRuntimeCache.containerId === master.id)
+    return claudexRuntimeCache.pending;
+  const operation = `claudex-runtime-status:${master.id || 'uncached'}`;
+  if (!reserveMfOperation(operation)) return null;
+  const pending = (async () => {
+    try {
+      const invocation = claudexRuntimeStatusInvocation({
+        mfDir: MF_DIR,
+        project: MF_PROJECT,
+        override: process.env.MF_COMPOSE_OVERRIDE || '',
+      });
+      const result = await run(invocation.cmd, invocation.args, {
+        timeout: 60000,
+        cwd: MF_DIR,
+      });
+      const data = result.ok ? parseClaudexRuntimeOutput(result.stdout) : null;
+      claudexRuntimeCache = {
+        containerId: master.id,
+        at: Date.now(),
+        data,
+        pending: null,
+      };
+      return data;
+    } catch {
+      claudexRuntimeCache = {
+        containerId: master.id,
+        at: Date.now(),
+        data: null,
+        pending: null,
+      };
+      return null;
+    } finally {
+      releaseMfOperation(operation);
+    }
+  })();
+  claudexRuntimeCache = {
+    containerId: master.id,
+    at: 0,
+    data: null,
+    pending,
+  };
+  return pending;
 }
 
 // ---- GitHub (cached — the dashboard must never rate-limit the factory) ------------
@@ -447,14 +527,7 @@ const MODEL_DEFAULTS = {
 };
 async function readModels() {
   const raw = (await readJson(MODELS_FILE)) || {};
-  const out = { version: 1, difficulties: {}, roles: { ...MODEL_DEFAULTS.roles } };
-  for (const d of DIFFS) {
-    const e = raw.difficulties?.[d];
-    out.difficulties[d] = normalizeRouteEntry(e) || { ...MODEL_DEFAULTS.difficulties[d] };
-  }
-  for (const r of ['composer', 'checker', 'reviewFloor'])
-    if (DIFFS.includes(raw.roles?.[r])) out.roles[r] = raw.roles[r];
-  return out;
+  return normalizeModelRouting(raw, MODEL_DEFAULTS);
 }
 
 async function persistClaudexLastTest(value) {
@@ -654,7 +727,6 @@ async function usageAnalytics(options = {}) {
 
 // ---- snapshot ------------------------------------------------------------------------
 let lastAutoAction = null;
-const inflight = new Map(); // action name → started_at
 async function snapshot() {
   const [protocol, mf, sf, gh, led, usg, triggers, desired, masterActivity, models] =
     await Promise.all([
@@ -698,29 +770,36 @@ async function setMode(mode) {
 }
 
 function spawnLogged(name, cmd, args, cwd) {
-  if (inflight.has(name)) return { ok: false, message: `${name} already in progress` };
-  inflight.set(name, Date.now());
-  const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const options = { invalidateRuntime: true, invalidateDocker: true };
+  if (!reserveMfOperation(name, options)) return mfBusyResult();
+  let child;
+  try {
+    child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    releaseMfOperation(name, options);
+    return { ok: false, message: `${name} failed to start: ${error.message}` };
+  }
   const sink = (d) => clog(`[${name}] ${String(d).trimEnd()}`);
-  child.stdout.on('data', sink);
-  child.stderr.on('data', sink);
-  child.on('close', (code) => {
-    inflight.delete(name);
-    clog(`[${name}] exited ${code}`);
-  });
+  child.stdout?.on('data', sink);
+  child.stderr?.on('data', sink);
+  let finished = false;
+  const finish = (message) => {
+    if (finished) return;
+    finished = true;
+    releaseMfOperation(name, options);
+    void clog(`[${name}] ${message}`);
+  };
+  child.on('error', (error) => finish(`failed: ${error.message}`));
+  child.on('close', (code) => finish(`exited ${code}`));
+  void clog(`[${name}] started`);
   return { ok: true, message: `${name} started (see state/logs/control.log)` };
 }
 
 async function doAction(action, payload = {}) {
   switch (action) {
     case 'start':
-      if (inflight.has('test-provider-claudex'))
-        return { ok: false, message: 'wait for the ClaudeX provider test to finish' };
       return spawnLogged('start', 'bash', ['autorun.sh'], MF_DIR);
     case 'restart':
-      if (inflight.has('test-provider-claudex'))
-        return { ok: false, message: 'wait for the ClaudeX provider test to finish' };
-      await clog('restart (apply settings)');
       return spawnLogged('restart', 'bash', ['-c', './autorun.sh --down && ./autorun.sh'], MF_DIR);
     case 'set-workers': {
       const n = parseInt(payload.value, 10);
@@ -857,76 +936,68 @@ async function doAction(action, payload = {}) {
           { timeout: 90000 },
         );
       else if (p === 'claudex') {
-        if (
-          inflight.has('start') ||
-          inflight.has('restart') ||
-          inflight.has('test-provider-claudex')
-        )
-          return {
-            ok: false,
-            message: 'factory start/restart or ClaudeX test already in progress',
-          };
-        inflight.set('test-provider-claudex', Date.now());
-        try {
-          const mf = await composePs(MF_PROJECT, { fresh: true });
-          const master = mf.containers.find((container) => container.service === 'master');
-          if (master && /paused/i.test(master.state))
-            return { ok: false, message: 'resume the paused master before testing ClaudeX' };
-          const otherLive = mf.containers.some(
-            (container) =>
-              container.service !== 'master' && /running|paused/i.test(container.state),
-          );
-          const masterRunning = !!master && /running/i.test(master.state);
-          if (!masterRunning && otherLive)
-            return {
-              ok: false,
-              message:
-                'factory containers are partially running; restart them before testing ClaudeX',
-            };
-          const invocation = claudexProviderTestInvocation({
-            mfDir: MF_DIR,
-            project: MF_PROJECT,
-            model: selected.model,
-            effort: selected.effort,
-            override: process.env.MF_COMPOSE_OVERRIDE || '',
-            running: masterRunning,
-          });
-          r = await run(invocation.cmd, invocation.args, {
-            timeout: 300000,
-            cwd: MF_DIR,
-          });
-          const parsed = r.ok
-            ? parseClaudexTestOutput(r.stdout, selected.model)
-            : { ok: false, reason: 'provider-test-failed' };
-          const testedAt = new Date().toISOString();
-          if (!parsed.ok) {
-            await persistClaudexLastTest({
-              ok: false,
+        return withMfOperation(
+          'test-provider-claudex',
+          async () => {
+            const mf = await composePs(MF_PROJECT, { fresh: true });
+            const master = mf.containers.find((container) => container.service === 'master');
+            if (master && /paused/i.test(master.state))
+              return { ok: false, message: 'resume the paused master before testing ClaudeX' };
+            const otherLive = mf.containers.some(
+              (container) =>
+                container.service !== 'master' && /running|paused/i.test(container.state),
+            );
+            const masterRunning = !!master && /running/i.test(master.state);
+            if (!masterRunning && otherLive)
+              return {
+                ok: false,
+                message:
+                  'factory containers are partially running; restart them before testing ClaudeX',
+              };
+            const invocation = claudexProviderTestInvocation({
+              mfDir: MF_DIR,
+              project: MF_PROJECT,
               model: selected.model,
               effort: selected.effort,
-              testedAt,
-              runtimeReady: false,
-              reason: parsed.reason,
+              override: process.env.MF_COMPOSE_OVERRIDE || '',
+              running: masterRunning,
             });
-            await clog(`test-provider claudex ${selected.model}@${selected.effort} → FAILED`);
+            const result = await run(invocation.cmd, invocation.args, {
+              timeout: 300000,
+              cwd: MF_DIR,
+            });
+            const parsed = result.ok
+              ? parseClaudexTestOutput(result.stdout, selected.model)
+              : { ok: false, reason: 'provider-test-failed' };
+            const testedAt = new Date().toISOString();
+            if (!parsed.ok) {
+              await persistClaudexLastTest({
+                ok: false,
+                model: selected.model,
+                effort: selected.effort,
+                testedAt,
+                runtimeReady: false,
+                reason: parsed.reason,
+              });
+              await clog(`test-provider claudex ${selected.model}@${selected.effort} → FAILED`);
+              return {
+                ok: false,
+                message: `claudex test failed (${parsed.reason || 'provider-test-failed'})`,
+              };
+            }
+            await persistClaudexLastTest({
+              ...parsed.result,
+              effort: selected.effort,
+              testedAt: parsed.result.testedAt || testedAt,
+            });
+            await clog(`test-provider claudex ${selected.model}@${selected.effort} → ok`);
             return {
-              ok: false,
-              message: `claudex test failed (${parsed.reason || 'provider-test-failed'})`,
+              ok: true,
+              message: `claudex works via ${parsed.result.modelUsage[0]}@${selected.effort}`,
             };
-          }
-          await persistClaudexLastTest({
-            ...parsed.result,
-            effort: selected.effort,
-            testedAt: parsed.result.testedAt || testedAt,
-          });
-          await clog(`test-provider claudex ${selected.model}@${selected.effort} → ok`);
-          return {
-            ok: true,
-            message: `claudex works via ${parsed.result.modelUsage[0]}@${selected.effort}`,
-          };
-        } finally {
-          inflight.delete('test-provider-claudex');
-        }
+          },
+          { invalidateRuntime: true, invalidateDocker: true },
+        );
       } else if (p === 'gemini')
         r = await run('agy', ['-p', 'Reply with exactly: ok', '--model', selected.model], {
           timeout: 120000,
@@ -966,31 +1037,57 @@ async function doAction(action, payload = {}) {
     case 'start-dry':
       return spawnLogged('start-dry', 'bash', ['autorun.sh', '--dry'], MF_DIR);
     case 'stop':
-      await clog('stop');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'stop'], { timeout: 120000 })),
-        message: 'multi-factory stopped',
-      };
+      return withMfOperation(
+        'stop',
+        async () => {
+          await clog('stop');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'stop'], {
+              timeout: 120000,
+            })),
+            message: 'multi-factory stopped',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'down':
-      await clog('down');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'down', '--remove-orphans'], {
-          timeout: 120000,
-        })),
-        message: 'multi-factory removed',
-      };
+      return withMfOperation(
+        'down',
+        async () => {
+          await clog('down');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'down', '--remove-orphans'], {
+              timeout: 120000,
+            })),
+            message: 'multi-factory removed',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'pause':
-      await clog('pause');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'pause'])),
-        message: 'paused',
-      };
+      return withMfOperation(
+        'pause',
+        async () => {
+          await clog('pause');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'pause'])),
+            message: 'paused',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'unpause':
-      await clog('unpause');
-      return {
-        ...(await run('docker', ['compose', '-p', MF_PROJECT, 'unpause'])),
-        message: 'resumed',
-      };
+      return withMfOperation(
+        'unpause',
+        async () => {
+          await clog('unpause');
+          return {
+            ...(await run('docker', ['compose', '-p', MF_PROJECT, 'unpause'])),
+            message: 'resumed',
+          };
+        },
+        { invalidateRuntime: true, invalidateDocker: true },
+      );
     case 'mode-run':
       return setMode('run');
     case 'mode-run-out':
@@ -1013,6 +1110,7 @@ let drainedSince = 0;
 let autoDownBusy = false;
 setInterval(async () => {
   if (autoDownBusy) return; // compose down takes ~10s; don't re-fire mid-teardown
+  let operationReserved = false;
   try {
     const phase = await readText(join(CONTROL, 'phase'));
     if (phase !== 'drained') {
@@ -1030,6 +1128,9 @@ setInterval(async () => {
       return;
     } // debounce one interval
     if (Date.now() - drainedSince < 8000 || inflight.size) return;
+    const options = { invalidateRuntime: true, invalidateDocker: true };
+    if (!reserveMfOperation('auto-down', options)) return;
+    operationReserved = true;
     autoDownBusy = true;
     lastAutoAction = { action: 'auto-down (phase=drained)', at: new Date().toISOString() };
     await clog('auto-down: phase=drained — downing compose project');
@@ -1040,6 +1141,8 @@ setInterval(async () => {
   } catch {
     /* watcher must survive transient docker/fs errors */
   } finally {
+    if (operationReserved)
+      releaseMfOperation('auto-down', { invalidateRuntime: true, invalidateDocker: true });
     autoDownBusy = false;
   }
 }, 5000);

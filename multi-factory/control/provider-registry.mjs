@@ -129,7 +129,7 @@ export const PROVIDER_REGISTRY = Object.freeze(registry);
 export const PROVIDER_IDS = Object.freeze(Object.keys(PROVIDER_REGISTRY));
 
 export function providerDefinition(id) {
-  return PROVIDER_REGISTRY[id] || null;
+  return Object.hasOwn(PROVIDER_REGISTRY, id) ? PROVIDER_REGISTRY[id] : null;
 }
 
 export function providerEfforts(provider, model = '') {
@@ -160,17 +160,18 @@ export function validateRouteEntry(entry) {
   });
   if (!model || model.length > 120 || hasControlCharacter) return false;
   if (entry.provider === 'claudex' && !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(model)) return false;
-  if (entry.effort == null || entry.effort === '') return !definition.capabilities.effort;
+  if (entry.effort == null || entry.effort === '') return true;
   return providerEfforts(entry.provider, model).includes(entry.effort);
 }
 
 export function normalizeRouteEntry(entry) {
   if (!validateRouteEntry(entry)) return null;
   const model = normalizeProviderModel(entry.provider, entry.model);
+  const explicitEmptyEffort = Object.hasOwn(entry, 'effort') && entry.effort === '';
   return {
     provider: entry.provider,
     model,
-    ...(entry.effort ? { effort: entry.effort } : {}),
+    ...(entry.effort ? { effort: entry.effort } : explicitEmptyEffort ? { effort: '' } : {}),
   };
 }
 
@@ -182,6 +183,26 @@ export function defaultRouteForProvider(provider) {
     model: definition.defaultModel,
     ...(definition.defaultEffort ? { effort: definition.defaultEffort } : {}),
   };
+}
+
+export function normalizeModelRouting(raw, defaults) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const fallback =
+    defaults && typeof defaults === 'object' && !Array.isArray(defaults) ? defaults : {};
+  const out = {
+    version: 1,
+    difficulties: {},
+    roles: { ...(fallback.roles || {}) },
+  };
+  for (const difficulty of DIFFICULTIES) {
+    const entry = source.difficulties?.[difficulty];
+    out.difficulties[difficulty] = normalizeRouteEntry(entry) || {
+      ...(fallback.difficulties?.[difficulty] || {}),
+    };
+  }
+  for (const role of ['composer', 'checker', 'reviewFloor'])
+    if (DIFFICULTIES.includes(source.roles?.[role])) out.roles[role] = source.roles[role];
+  return out;
 }
 
 // Return fresh JSON-compatible objects so API consumers cannot mutate the

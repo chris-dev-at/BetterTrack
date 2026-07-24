@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  DIFFICULTIES,
   PROVIDER_IDS,
   defaultRouteForProvider,
   expectedModelSelector,
+  normalizeModelRouting,
   normalizeProviderModel,
   normalizeRouteEntry,
+  providerDefinition,
   providerEfforts,
   publicProviderRegistry,
   validateRouteEntry,
@@ -94,4 +97,58 @@ test('route validation rejects unknown providers, blank/control-character models
   );
   assert.equal(validateRouteEntry({ provider: 'claudex', model: 'gpt', effort: 'extreme' }), false);
   assert.equal(defaultRouteForProvider('claudex').effort, 'high');
+});
+
+test('provider lookup accepts only registry own keys', () => {
+  for (const inheritedKey of ['toString', 'constructor', '__proto__']) {
+    assert.equal(providerDefinition(inheritedKey), null);
+    assert.equal(
+      validateRouteEntry({ provider: inheritedKey, model: 'gpt-5.6-sol', effort: 'high' }),
+      false,
+    );
+  }
+});
+
+test('routing normalization preserves explicit empty effort and contains malformed persisted data', () => {
+  const fallback = {
+    version: 1,
+    difficulties: Object.fromEntries(
+      DIFFICULTIES.map((difficulty) => [
+        difficulty,
+        { provider: 'claude', model: `fallback-${difficulty}`, effort: 'high' },
+      ]),
+    ),
+    roles: { composer: 'hard', checker: 'hard', reviewFloor: 'intermediate' },
+  };
+  const normalized = normalizeModelRouting(
+    {
+      difficulties: {
+        easy: { provider: 'claudex', model: 'codex-api/gpt-5.6-luna', effort: '' },
+        normal: { provider: 'constructor', model: 'gpt-5.6-sol', effort: 'high' },
+        intermediate: null,
+        hard: { provider: 'claudex', model: 'other/gpt-5.6-sol', effort: 'high' },
+        max: { provider: 'gemini', model: 'Gemini custom', effort: '' },
+      },
+      roles: { composer: 'toString', checker: 'max', reviewFloor: '__proto__' },
+    },
+    fallback,
+  );
+  assert.deepEqual(normalized.difficulties.easy, {
+    provider: 'claudex',
+    model: 'gpt-5.6-luna',
+    effort: '',
+  });
+  assert.deepEqual(normalized.difficulties.normal, fallback.difficulties.normal);
+  assert.deepEqual(normalized.difficulties.intermediate, fallback.difficulties.intermediate);
+  assert.deepEqual(normalized.difficulties.hard, fallback.difficulties.hard);
+  assert.deepEqual(normalized.difficulties.max, {
+    provider: 'gemini',
+    model: 'Gemini custom',
+    effort: '',
+  });
+  assert.deepEqual(normalized.roles, {
+    composer: 'hard',
+    checker: 'max',
+    reviewFloor: 'intermediate',
+  });
 });

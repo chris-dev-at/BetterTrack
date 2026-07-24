@@ -6,8 +6,11 @@ import {
   claudexProviderTestInvocation,
   claudexRuntimeStatusInvocation,
   composeFileArgs,
+  createExclusiveOperation,
   parseClaudexRuntimeOutput,
   parseClaudexTestOutput,
+  readRuntimeProofCache,
+  runningMasterContainer,
   sanitizeClaudexLastTest,
   sanitizeClaudexMarker,
 } from './claudex-control.mjs';
@@ -281,6 +284,56 @@ test('compose override is passed as data and rejects control-character paths', (
   assert.throws(() => composeFileArgs('/repo/multi-factory', 'bad\nfile.yml'));
 });
 
+test('exclusive operation reservation is atomic across lifecycle and provider-test names', () => {
+  const operation = createExclusiveOperation();
+  assert.equal(operation.reserve('test-provider-claudex'), true);
+  assert.equal(operation.current(), 'test-provider-claudex');
+  assert.equal(operation.reserve('restart'), false);
+  assert.equal(operation.release('restart'), false);
+  assert.equal(operation.current(), 'test-provider-claudex');
+  assert.equal(operation.release('test-provider-claudex'), true);
+  assert.equal(operation.reserve('down'), true);
+  assert.equal(operation.release('down'), true);
+  assert.equal(operation.current(), null);
+});
+
+test('runtime proof cache follows the exact running master container identity', () => {
+  const dockerState = {
+    containers: [
+      { id: 'worker-id', name: 'worker-1', service: 'worker-1', state: 'running' },
+      { id: 'master-v2', name: 'master', service: 'master', state: 'running' },
+    ],
+  };
+  assert.deepEqual(runningMasterContainer(dockerState), {
+    id: 'master-v2',
+    name: 'master',
+  });
+  assert.equal(
+    runningMasterContainer({
+      containers: [{ id: 'master-v2', service: 'master', state: 'paused' }],
+    }),
+    null,
+  );
+
+  const cache = { containerId: 'master-v1', at: 1000, data: { runtimeReady: true } };
+  assert.deepEqual(readRuntimeProofCache(cache, 'master-v1', 1500, 1000), {
+    hit: true,
+    data: { runtimeReady: true },
+  });
+  assert.deepEqual(readRuntimeProofCache(cache, 'master-v2', 1500, 1000), {
+    hit: false,
+    data: null,
+  });
+  assert.deepEqual(readRuntimeProofCache(cache, null, 1500, 1000), {
+    hit: false,
+    data: null,
+  });
+  assert.deepEqual(readRuntimeProofCache(cache, 'master-v1', 2000, 1000), {
+    hit: false,
+    data: null,
+  });
+});
+
 test('server source binds ClaudeX tests to the container contract, not the host launcher', async () => {
   const source = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
   assert.match(source, /claudexProviderTestInvocation/);
@@ -288,4 +341,7 @@ test('server source binds ClaudeX tests to the container contract, not the host 
   assert.match(source, /MF_CLAUDEX_STATUS_TTL_MS/);
   assert.equal(source.includes("run('claudex'"), false);
   assert.match(source, /providerRegistry: publicProviderRegistry\(\)/);
+  assert.match(source, /id: c\.ID \|\| null/);
+  for (const action of ['stop', 'down', 'pause', 'unpause'])
+    assert.match(source, new RegExp(`case '${action}':[\\s\\S]{0,80}return withMfOperation`));
 });
