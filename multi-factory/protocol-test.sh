@@ -1184,6 +1184,38 @@ check "approval head read failure is transient" 1 "$?"
 echo "— fix loop always reviews the second fixer"
 export WORKER_ID=9
 . ./worker.sh
+
+echo "— reviewer comment discovery converges before rerunning the model"
+MF_COMMENT_DISCOVERY_ATTEMPTS=3
+MF_COMMENT_DISCOVERY_SLEEP=0
+DISCOVERY_READS=0
+pr_snapshot(){
+  DISCOVERY_READS=$((DISCOVERY_READS+1))
+  PR_SNAPSHOT_HEAD=abc
+  if [ "$DISCOVERY_READS" -lt 3 ]; then
+    PR_SNAPSHOT_COMMENTS='[]'
+  else
+    PR_SNAPSHOT_COMMENTS=$after_ok
+  fi
+}
+review_comment_discover '[]' 10 abc \
+  && ok "review discovery accepts a canonical comment after list convergence" \
+  || bad "review discovery rejected a converged canonical comment"
+check "review discovery polls without rerunning the reviewer" 3 "$DISCOVERY_READS"
+check "review discovery records acceptance" accepted "$REVIEW_DISCOVERY_STATE"
+
+DISCOVERY_READS=0
+pr_snapshot(){
+  DISCOVERY_READS=$((DISCOVERY_READS+1))
+  PR_SNAPSHOT_HEAD=def
+  PR_SNAPSHOT_COMMENTS=$after_ok
+}
+review_comment_discover '[]' 10 abc \
+  && bad "review discovery must reject a changed PR head" \
+  || ok "review discovery rejects a changed PR head"
+check "changed head aborts discovery immediately" 1 "$DISCOVERY_READS"
+check "changed head has an explicit discovery state" head-changed "$REVIEW_DISCOVERY_STATE"
+
 review_floor(){ echo intermediate; }
 CYCLE_DIFF=easy
 wstatus(){ :; }
