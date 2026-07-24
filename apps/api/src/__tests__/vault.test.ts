@@ -1,0 +1,209 @@
+import { encodeVaultEnvelope, VAULT_CONTENT_CIPHER } from '@bettertrack/contracts';
+import type { Application } from 'express';
+import request from 'supertest';
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import { createTestApp, type TestHarness } from '../testing/createTestApp';
+
+const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const OCTET = ['Content-Type', 'application/octet-stream'] as const;
+
+const UUID_A = '018f0000-0000-7000-8000-00000000000a';
+const UUID_B = '018f0000-0000-7000-8000-00000000000b';
+const UUID_C = '018f0000-0000-7000-8000-00000000000c';
+
+let harness: TestHarness;
+
+beforeEach(async () => {
+  harness = await createTestApp();
+});
+
+type Agent = ReturnType<typeof request.agent>;
+
+async function loginAgent(app: Application, identifier: string, password: string): Promise<Agent> {
+  const agent = request.agent(app);
+  const res = await agent
+    .post('/api/v1/auth/login')
+    .set(...XRW)
+    .send({ identifier, password });
+  expect(res.status).toBe(200);
+  return agent;
+}
+
+/** Build a valid opaque vault envelope carrying the given version + ciphertext. */
+function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
+  const header = {
+    formatVersion: 1,
+    cipher: VAULT_CONTENT_CIPHER,
+    iv: 'aXYtOTZiaXQ=',
+    keyId: UUID_A,
+    wrappedKeys: [
+      {
+        keyId: UUID_A,
+        kdf: { alg: 'argon2id', m: 65536, t: 3, p: 1, salt: 'c2FsdA==' },
+        wrappedVk: 'd3JhcHBlZA==',
+      },
+    ],
+    vaultVersion,
+    schemaVersion: 1,
+    deviceId: UUID_B,
+    writeId: UUID_C,
+    writtenAt: '2026-07-24T10:00:00.000Z',
+  };
+  return Buffer.from(encodeVaultEnvelope(header, ciphertext));
+}
+
+async function seedAndLogin(email: string, username: string): Promise<Agent> {
+  const user = await harness.seedUser({ email, username, password: 'user-strong-password-1' });
+  return loginAgent(harness.app, user.email, 'user-strong-password-1');
+}
+
+describe('vault blob store', () => {
+  it('requires an authenticated session', async () => {
+    const res = await request(harness.app).get('/api/v1/vault');
+    expect(res.status).toBe(401);
+  });
+
+  it('404s before any blob exists', async () => {
+    const agent = await seedAndLogin('alice@bt.test', 'alice');
+    const res = await agent.get('/api/v1/vault');
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('VAULT_NOT_FOUND');
+  });
+
+  it('creates, reads back byte-identical, and conditionally 304s', async () => {
+    const agent = await seedAndLogin('alice@bt.test', 'alice');
+    const ciphertext = new Uint8Array([0, 255, 16, 42, 200, 7]);
+    const blob = envelope(1, ciphertext);
+
+    const created = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(blob);
+    expect(created.status).toBe(204);
+    expect(created.headers.etag).toBe('"1"');
+
+    const read = await agent.get('/api/v1/vault').responseType('blob');
+    expect(read.status).toBe(200);
+    expect(read.headers['content-type']).toContain('application/octet-stream');
+    expect(read.headers.etag).toBe('"1"');
+    // The server stored and returned the exact opaque bytes — never parsed the
+    // ciphertext.
+    expect((read.body as Buffer).equals(blob)).toBe(true);
+
+    const notModified = await agent.get('/api/v1/vault').set('If-None-Match', '"1"');
+    expect(notModified.status).toBe(304);
+  });
+
+  it('replaces on a matching If-Match and rejects a stale one without overwriting', async () => {
+    const agent = await seedAndLogin('alice@bt.test', 'alice');
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+
+    const v2 = envelope(2, new Uint8Array([2, 2]));
+    const replaced = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(v2);
+    expect(replaced.status).toBe(204);
+    expect(replaced.headers.etag).toBe('"2"');
+
+    // A writer still on version 1 tries to overwrite — 412, and the current
+    // ciphertext is untouched.
+    const stale = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(envelope(2, new Uint8Array([9, 9, 9])));
+    expect(stale.status).toBe(412);
+    expect(stale.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+    expect(stale.headers.etag).toBe('"2"');
+
+    const read = await agent.get('/api/v1/vault').responseType('blob');
+    expect(read.headers.etag).toBe('"2"');
+    expect((read.body as Buffer).equals(v2)).toBe(true);
+  });
+
+  it('rejects a write with no precondition', async () => {
+    const agent = await seedAndLogin('alice@bt.test', 'alice');
+    const res = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .send(envelope(1, new Uint8Array([1])));
+    expect(res.status).toBe(428);
+    expect(res.body.error.code).toBe('VAULT_PRECONDITION_REQUIRED');
+  });
+
+  it('rejects a malformed envelope', async () => {
+    const agent = await seedAndLogin('alice@bt.test', 'alice');
+    const res = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(Buffer.from('not-an-envelope'));
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VAULT_MALFORMED');
+  });
+
+  it('scopes the vault strictly to its owner', async () => {
+    const alice = await seedAndLogin('alice@bt.test', 'alice');
+    await alice
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([1])));
+
+    const bob = await seedAndLogin('bob@bt.test', 'bob');
+    const res = await bob.get('/api/v1/vault');
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects an oversized payload before persistence', async () => {
+    const smallHarness = await createTestApp({ env: { BT_VAULT_MAX_BYTES: '2048' } });
+    const user = await smallHarness.seedUser({ email: 'big@bt.test', username: 'big' });
+    const agent = await loginAgent(smallHarness.app, user.email, 'user-strong-password-1');
+    const res = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(Buffer.alloc(4096, 7));
+    expect(res.status).toBe(413);
+    // Nothing was persisted.
+    expect((await agent.get('/api/v1/vault')).status).toBe(404);
+  });
+
+  it('applies the dedicated vault write rate limit', async () => {
+    const limited = await createTestApp({
+      rateLimitsEnabled: true,
+      env: { BT_VAULT_RATE_LIMIT: '2' },
+    });
+    const user = await limited.seedUser({ email: 'rl@bt.test', username: 'rl' });
+    const agent = await loginAgent(limited.app, user.email, 'user-strong-password-1');
+    const hit = () =>
+      agent
+        .put('/api/v1/vault')
+        .set(...XRW)
+        .set(...OCTET)
+        .set('If-None-Match', '*')
+        .send(envelope(1, new Uint8Array([1])));
+    // The first two requests fit the allowance; the third trips the vault limiter.
+    await hit();
+    await hit();
+    const over = await hit();
+    expect(over.status).toBe(429);
+    expect(over.headers['retry-after']).toBeDefined();
+  });
+});

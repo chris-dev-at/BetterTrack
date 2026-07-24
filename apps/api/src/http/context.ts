@@ -175,6 +175,11 @@ import {
   type WebhookTransport,
   type WebhookDeliveryJob,
 } from '../services/webhooks';
+import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import {
+  createParanoidVaultService,
+  type ParanoidVaultService,
+} from '../services/account/paranoidVaultService';
 import { newId } from '../data/ids';
 import { ALL_BANK_MAPPERS } from '../services/imports/expenseBank';
 import { createImportService, type ImportService } from '../services/imports/importService';
@@ -331,6 +336,12 @@ export interface AppContext {
   expenseImports: ExpenseImportService;
   /** Expense dashboards + per-category budgets with matrix-routed alerts (§13.5 V5-P9, issue 3/3). */
   expenseBudgets: ExpenseBudgetService;
+  /**
+   * Paranoid vault — the blind server blob store for a paranoid account's
+   * client-encrypted vault (§13.5 V5-P13 arc b): opaque GET/PUT with ETag CAS,
+   * a size cap and bounded ciphertext history. Never reads the payload.
+   */
+  paranoidVault: ParanoidVaultService;
   /** Outbound webhook subscriptions — CRUD + one-time signing secret + delivery log (§13.5 V5-P10). */
   webhooks: WebhookService;
   /**
@@ -836,6 +847,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // the WORKER runs the authoritative delivery job; this API-side twin backs
   // synchronous test delivery and the CRUD routes. The signing secret is stored
   // only as a secretBox envelope, encrypted with the shared 2FA key.
+  // Paranoid vault (§13.5 V5-P13 arc b): the blind server blob store. The
+  // service reads only the safe envelope header for CAS, enforces the size cap
+  // and drives the repository's atomic compare-and-swap + bounded history.
+  const paranoidVault = createParanoidVaultService({
+    vaults: createParanoidVaultRepository(db),
+    maxBytes: config.vault.maxBytes,
+    retention: config.vault.history,
+  });
+
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
   const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
   const webhooks = createWebhookService({
@@ -1615,6 +1635,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     expenses,
     expenseImports,
     expenseBudgets,
+    paranoidVault,
     webhooks,
     webhookBridge,
     analytics,

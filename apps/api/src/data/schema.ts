@@ -42,6 +42,17 @@ export const userStatusEnum = pgEnum('user_status', ['active', 'disabled']);
 export const portfolioVisibilityEnum = pgEnum('portfolio_visibility', ['private', 'friends']);
 
 /**
+ * Account privacy mode (§13.5 V5-P13 arc b, `docs/paranoid-design.md` §1). A
+ * `paranoid` account keeps its portfolio data as one client-encrypted vault blob
+ * (the server is a blind store); `normal` is the default, byte-identical to every
+ * existing account. It is account metadata — present even in Drive-only mode —
+ * because knowing THAT an account is paranoid is required to enforce the §8 kill
+ * list, and is never portfolio data. Flipping the value (enable/disable) is
+ * PD3's job; PD2 only lands the column.
+ */
+export const privacyModeEnum = pgEnum('privacy_mode', ['normal', 'paranoid']);
+
+/**
  * Admin "Problems" capture (§13.5 V5-P2 arc (d), the Sentry replacement).
  * `kind` records what produced the problem; `status` drives the resolve flow.
  */
@@ -181,6 +192,11 @@ export const users = pgTable(
     // OFF by default so every existing surface renders unchanged; the SPA reads
     // this on `/auth/me` and every setting-fetch to drive the shared format seam.
     discreetMode: boolean('discreet_mode').notNull().default(false),
+    // Account privacy mode (§13.5 V5-P13 arc b). `normal` (default) keeps every
+    // existing account byte-identical; `paranoid` means the portfolio lives only
+    // in the client-encrypted vault blob (§1). Present even for Drive-only
+    // accounts — it is account metadata, never portfolio data.
+    privacyMode: privacyModeEnum('privacy_mode').notNull().default('normal'),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -602,6 +618,24 @@ export const usageDaily = pgTable(
 const tsvector = customType<{ data: string }>({
   dataType() {
     return 'tsvector';
+  },
+});
+
+/**
+ * Opaque binary column (Postgres `bytea`). Used ONLY for the paranoid vault
+ * ciphertext (§13.5 V5-P13), which the server stores and returns verbatim and
+ * never interprets. Normalises the driver's read value (postgres-js / PGlite
+ * hand back a `Uint8Array`) to a Node `Buffer` so callers get one stable type.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
+  dataType() {
+    return 'bytea';
+  },
+  toDriver(value: Buffer): Buffer {
+    return value;
+  },
+  fromDriver(value: Buffer | Uint8Array): Buffer {
+    return Buffer.isBuffer(value) ? value : Buffer.from(value);
   },
 });
 
@@ -3111,6 +3145,66 @@ export type NewWebhookSubscriptionRow = typeof webhookSubscriptions.$inferInsert
 export type WebhookDeliveryRow = typeof webhookDeliveries.$inferSelect;
 export type NewWebhookDeliveryRow = typeof webhookDeliveries.$inferInsert;
 
+// ── Paranoid vault (§13.5 V5-P13 arc b, `docs/paranoid-design.md` §2, §4) ─────
+// The BetterTrack `server` medium of a paranoid account's client-encrypted
+// vault: a BLIND blob store with compare-and-swap. `blob` is the full opaque
+// envelope (magic + cleartext-but-portfolio-free header + AES-256-GCM
+// ciphertext) — the server stores/returns it verbatim and never decrypts,
+// parses (beyond the header's `version` for CAS) or indexes it. `version` is the
+// monotonic CAS token surfaced as the `ETag`; a `PUT` succeeds only when its
+// `If-Match` equals the current `version`. One row per user (the vault is one
+// logical document). Rows carry ciphertext + CAS/version metadata ONLY — never
+// cleartext portfolio data.
+
+export const paranoidVaults = pgTable('paranoid_vaults', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  // Monotonic compare-and-swap token; the current stored version. Starts at 1.
+  version: integer('version').notNull(),
+  // Envelope layout version read from the header (the ONLY payload metadata the
+  // server persists besides the size).
+  formatVersion: integer('format_version').notNull(),
+  // Ciphertext envelope byte length — the size-cap guard reads it; no content.
+  sizeBytes: integer('size_bytes').notNull(),
+  // The opaque envelope bytes. Never interpreted server-side.
+  blob: bytea('blob').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Bounded ciphertext history — the corruption/bad-write safety net (§4): each
+// superseded blob is archived here and pruned to the configured window (last N
+// versions / M days, env-tunable). Ciphertext + version metadata only, exactly
+// like the live row.
+export const paranoidVaultHistory = pgTable(
+  'paranoid_vault_history',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    // When this version was archived (superseded by a newer write) — the age
+    // bound and the restore-picker ordering both read it.
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One archived row per (user, version); the pruner and restore picker sort by
+    // version desc within a user.
+    uniqueIndex('paranoid_vault_history_user_version_unique').on(t.userId, t.version),
+    index('paranoid_vault_history_user_created_idx').on(t.userId, t.createdAt),
+  ],
+);
+
+export type ParanoidVaultRow = typeof paranoidVaults.$inferSelect;
+export type NewParanoidVaultRow = typeof paranoidVaults.$inferInsert;
+export type ParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferSelect;
+export type NewParanoidVaultHistoryRow = typeof paranoidVaultHistory.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -3189,6 +3283,8 @@ export const schema = {
   expenseBudgetFires,
   webhookSubscriptions,
   webhookDeliveries,
+  paranoidVaults,
+  paranoidVaultHistory,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
@@ -3204,6 +3300,7 @@ export const schema = {
   portfolioVisibilityEnum,
   cashMovementKindEnum,
   cashSourceTypeEnum,
+  privacyModeEnum,
   problemKindEnum,
   problemStatusEnum,
   friendRequestStatusEnum,

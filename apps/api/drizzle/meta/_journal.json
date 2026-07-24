@@ -484,6 +484,13 @@
       "when": 1784490120290,
       "tag": "0068_discreet_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1784490180290,
+      "tag": "0069_paranoid_vaults",
+      "breakpoints": true
     }
   ]
 }
