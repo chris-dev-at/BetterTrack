@@ -915,6 +915,12 @@ export function TransactionDialog(props: TransactionDialogProps) {
           patch.executedAt = input.executedAt;
         }
         if ((input.note ?? null) !== (transaction.note ?? null)) patch.note = input.note ?? null;
+        // MIRRORCHAIN §3 stale-edit guard (V5-P7 M5): on a chain row, send the
+        // row's `mirror.version` as `baseSeq` so the server refuses with
+        // `409 MIRROR_CONFLICT` if another member changed it in the meantime.
+        // Non-chain rows omit the field (transaction.mirror is undefined), and
+        // the mirror seam skips the guard.
+        if (transaction.mirror) patch.baseSeq = transaction.mirror.version;
         if (Object.keys(patch).length > 0) {
           await updateTransaction(portfolioId, transaction.id, patch);
         }
@@ -939,6 +945,19 @@ export function TransactionDialog(props: TransactionDialogProps) {
           err.code === 'TRANSACTION_CASH_LINKED')
       ) {
         setError(err.message);
+      } else if (
+        err instanceof ApiError &&
+        (err.code === 'MIRROR_CONFLICT' || err.code === 'MIRROR_ROW_DELETED')
+      ) {
+        // MIRRORCHAIN §3 stale edit — the caller MUST refetch and retry against
+        // fresh data (design §3). Surface the message and invite the user to
+        // reopen the row; the page's own list refetch (`onSubmitted` in the
+        // parent) is scoped to success, so we don't auto-close.
+        setError(
+          err.code === 'MIRROR_ROW_DELETED'
+            ? t('portfolio.transaction.mirrorRowDeleted')
+            : t('portfolio.transaction.mirrorConflict'),
+        );
       } else {
         setError(t('portfolio.transaction.saveError'));
       }

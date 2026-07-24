@@ -251,6 +251,88 @@ function cellLocked(type: NotificationType, channel: NotificationSettingChannel)
   return type === 'account.temp_password' && channel === 'email';
 }
 
+/**
+ * The MIRRORCHAIN group-portfolio anti-bloat row (V5-P7 M5, design §11): the
+ * eight `mirror.*` notification types collapse to ONE compact row in the
+ * matrix. Per-channel switches govern EVERY mirror.* type at once — invites,
+ * membership changes, ownership transfers, dissolution, sync-stalled — one
+ * decision, one row. The channel cell reads as "on" when EVERY chain type is
+ * on for that channel (a mixed state renders as off + a subdued indicator).
+ */
+function MirrorGroupRow({
+  types,
+  channels,
+  rowRouting,
+  gridDisabled,
+  onToggleAll,
+  t,
+  chLabels,
+}: {
+  types: readonly NotificationType[];
+  channels: NotificationSettingChannel[];
+  rowRouting: (type: NotificationType) => NotificationTypeRouting;
+  gridDisabled: boolean;
+  onToggleAll: (channel: NotificationSettingChannel, next: boolean) => void;
+  t: TranslateFn;
+  chLabels: Record<NotificationSettingChannel, string>;
+}) {
+  const summary = (channel: NotificationSettingChannel): 'on' | 'off' | 'mixed' => {
+    const flags = types.map((type) => rowRouting(type)[channel]);
+    if (flags.every(Boolean)) return 'on';
+    if (flags.every((v) => !v)) return 'off';
+    return 'mixed';
+  };
+  return (
+    <tr className="border-t border-neutral-800/60">
+      <td className="px-4 py-2.5">
+        <div className="flex flex-col gap-0.5">
+          <span className="font-medium text-neutral-100">
+            {t('settings.notifications.mirrorchain.groupLabel')}
+          </span>
+          <span className="text-xs text-neutral-500">
+            {t('settings.notifications.mirrorchain.groupHint')}
+          </span>
+        </div>
+      </td>
+      {channels.map((channel) => {
+        const state = summary(channel);
+        return (
+          <td key={channel} className="px-3 py-2.5 text-center align-middle">
+            <label
+              className={cx(
+                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors',
+                state === 'on' ? 'bg-sky-600' : 'bg-neutral-700',
+                gridDisabled && 'cursor-not-allowed opacity-50',
+              )}
+            >
+              <input
+                type="checkbox"
+                role="switch"
+                checked={state === 'on'}
+                aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
+                aria-label={t('settings.notifications.mirrorchain.cellAria', {
+                  channel: chLabels[channel],
+                })}
+                disabled={gridDisabled}
+                onChange={(event) => onToggleAll(channel, event.target.checked)}
+                className="sr-only"
+              />
+              <span
+                aria-hidden="true"
+                className={cx(
+                  'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                  state === 'on' ? 'translate-x-4' : 'translate-x-1',
+                  state === 'mixed' && 'bg-sky-300',
+                )}
+              />
+            </label>
+          </td>
+        );
+      })}
+    </tr>
+  );
+}
+
 /** The toggle in one (type × channel) grid cell. */
 function MatrixCell({
   type,
@@ -352,62 +434,87 @@ function NotificationMatrixGrid({
             ))}
           </tr>
         </thead>
-        {NOTIFICATION_CATEGORIES.map((category) => (
-          <tbody key={category.key} className="border-b border-neutral-800 last:border-b-0">
-            <tr className="bg-neutral-950/40">
-              <th scope="rowgroup" colSpan={channels.length + 1} className="px-4 py-2 text-left">
-                <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    aria-label={t('settings.notifications.grid.categoryToggleAria', {
-                      category: catLabels[category.key],
-                    })}
-                    checked={categoryEnabled(category.types)}
-                    disabled={gridDisabled}
-                    onChange={(event) => toggleCategory(category.types, event.target.checked)}
-                    className={cx(
-                      'h-4 w-4 accent-sky-500',
-                      gridDisabled && 'cursor-not-allowed opacity-50',
-                    )}
-                  />
-                  {catLabels[category.key]}
-                </label>
-              </th>
-            </tr>
-            {category.types.map((type) => (
-              <tr key={type} className="border-t border-neutral-800/60">
-                <td className="px-4 py-2.5">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="font-medium text-neutral-100">{typeMeta[type].label}</span>
-                    <span className="text-xs text-neutral-500">
-                      {type === 'account.invite'
-                        ? t('settings.notifications.grid.inviteHint')
-                        : type === 'account.temp_password'
-                          ? t('settings.notifications.grid.tempPasswordEmailHint')
-                          : typeMeta[type].description}
-                    </span>
-                  </div>
-                </td>
-                {channels.map((channel) => (
-                  <td key={channel} className="px-3 py-2.5 text-center align-middle">
-                    <MatrixCell
-                      type={type}
-                      channel={channel}
-                      checked={rowRouting(type)[channel]}
-                      disabled={gridDisabled}
-                      ariaLabel={t('settings.notifications.grid.cellAria', {
-                        type: typeMeta[type].label,
-                        channel: chLabels[channel],
+        {NOTIFICATION_CATEGORIES.map((category) => {
+          // MIRRORCHAIN group portfolios (V5-P7 M5, design §11): the eight
+          // chain notices join the matrix as ONE compact group row
+          // (anti-bloat) — the visible row governs every mirror.* type as
+          // one, all-or-nothing per channel.
+          const isMirrorchain = category.key === 'mirrorchain';
+          return (
+            <tbody key={category.key} className="border-b border-neutral-800 last:border-b-0">
+              <tr className="bg-neutral-950/40">
+                <th scope="rowgroup" colSpan={channels.length + 1} className="px-4 py-2 text-left">
+                  <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={t('settings.notifications.grid.categoryToggleAria', {
+                        category: catLabels[category.key],
                       })}
-                      onToggle={(next) => toggleCell(type, channel, next)}
+                      checked={categoryEnabled(category.types)}
+                      disabled={gridDisabled}
+                      onChange={(event) => toggleCategory(category.types, event.target.checked)}
+                      className={cx(
+                        'h-4 w-4 accent-sky-500',
+                        gridDisabled && 'cursor-not-allowed opacity-50',
+                      )}
                     />
-                  </td>
-                ))}
+                    {catLabels[category.key]}
+                  </label>
+                </th>
               </tr>
-            ))}
-          </tbody>
-        ))}
+              {isMirrorchain ? (
+                <MirrorGroupRow
+                  types={category.types}
+                  channels={channels}
+                  rowRouting={rowRouting}
+                  gridDisabled={gridDisabled}
+                  onToggleAll={(channel, next) => {
+                    const matrix: Partial<Record<NotificationType, NotificationTypeRouting>> = {};
+                    for (const type of category.types) {
+                      matrix[type] = { ...rowRouting(type), [channel]: next };
+                    }
+                    onUpdate({ matrix });
+                  }}
+                  t={t}
+                  chLabels={chLabels}
+                />
+              ) : (
+                category.types.map((type) => (
+                  <tr key={type} className="border-t border-neutral-800/60">
+                    <td className="px-4 py-2.5">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="font-medium text-neutral-100">{typeMeta[type].label}</span>
+                        <span className="text-xs text-neutral-500">
+                          {type === 'account.invite'
+                            ? t('settings.notifications.grid.inviteHint')
+                            : type === 'account.temp_password'
+                              ? t('settings.notifications.grid.tempPasswordEmailHint')
+                              : typeMeta[type].description}
+                        </span>
+                      </div>
+                    </td>
+                    {channels.map((channel) => (
+                      <td key={channel} className="px-3 py-2.5 text-center align-middle">
+                        <MatrixCell
+                          type={type}
+                          channel={channel}
+                          checked={rowRouting(type)[channel]}
+                          disabled={gridDisabled}
+                          ariaLabel={t('settings.notifications.grid.cellAria', {
+                            type: typeMeta[type].label,
+                            channel: chLabels[channel],
+                          })}
+                          onToggle={(next) => toggleCell(type, channel, next)}
+                        />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          );
+        })}
       </table>
     </div>
   );

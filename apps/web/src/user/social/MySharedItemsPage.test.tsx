@@ -19,8 +19,13 @@ vi.mock('../../lib/alertsApi', () => ({
   updateAlertSharing: vi.fn(),
 }));
 
+vi.mock('../../lib/portfolioApi', () => ({
+  listPortfolios: vi.fn(),
+}));
+
 import { getAudience, listFriends, listMyShared } from '../../lib/socialApi';
 import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
+import { listPortfolios } from '../../lib/portfolioApi';
 import { MySharedItemsPage } from './MySharedItemsPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
@@ -52,6 +57,10 @@ beforeEach(() => {
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
   vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: false });
+  // MIRRORCHAIN §10 (V5-P7 M5): the page cross-references the portfolios list
+  // to know which shared portfolios are synced copies of an active chain — the
+  // default is an empty list so the notice stays off for these tests.
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
 });
 
 describe('MySharedItemsPage', () => {

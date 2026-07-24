@@ -215,12 +215,22 @@ export async function updateTransaction(
   return transactionSchema.parse(data.transaction);
 }
 
-/** `DELETE /portfolios/:id/transactions/:txId` — remove a transaction; re-validates oversell. */
-export async function deleteTransaction(portfolioId: string, id: string): Promise<void> {
+/**
+ * `DELETE /portfolios/:id/transactions/:txId` — remove a transaction; re-validates
+ * oversell. `baseSeq` (V5-P7 M5, design §3): on a chain row send the row's
+ * `mirror.version` so the server refuses with `409 MIRROR_CONFLICT` if another
+ * member changed it in the meantime; omit on non-chain rows.
+ */
+export async function deleteTransaction(
+  portfolioId: string,
+  id: string,
+  opts?: { baseSeq?: number },
+): Promise<void> {
   await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/transactions/${encodeURIComponent(id)}`,
     {
       method: 'DELETE',
+      body: opts?.baseSeq !== undefined ? { baseSeq: opts.baseSeq } : undefined,
     },
   );
 }
@@ -414,30 +424,41 @@ export async function updateCashSource(
   return cashSourceResponseSchema.parse(data).source;
 }
 
-/** `POST /portfolios/:id/cash/sources/:sourceId/archive` — soft-archive a €0.00 source (V3-P3). */
+/**
+ * `POST /portfolios/:id/cash/sources/:sourceId/archive` — soft-archive a €0.00 source (V3-P3).
+ * On a chain source, pass `opts.baseSeq = source.mirror?.version` so the server
+ * runs the MIRRORCHAIN §3 stale-edit guard (V5-P7 M5): a `409 MIRROR_CONFLICT`
+ * fires if another member changed the source in the meantime. Non-chain sources
+ * simply omit the field.
+ */
 export async function archiveCashSource(
   portfolioId: string,
   sourceId: string,
+  opts?: { baseSeq?: number },
 ): Promise<CashSource> {
   const data = await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources/${encodeURIComponent(
       sourceId,
     )}/archive`,
-    { method: 'POST' },
+    { method: 'POST', body: opts?.baseSeq !== undefined ? { baseSeq: opts.baseSeq } : undefined },
   );
   return cashSourceResponseSchema.parse(data).source;
 }
 
-/** `POST /portfolios/:id/cash/sources/:sourceId/restore` — undo an archive (V3-P3). */
+/**
+ * `POST /portfolios/:id/cash/sources/:sourceId/restore` — undo an archive (V3-P3).
+ * `opts.baseSeq` mirrors the archive guard above (V5-P7 M5, MIRRORCHAIN §3).
+ */
 export async function restoreCashSource(
   portfolioId: string,
   sourceId: string,
+  opts?: { baseSeq?: number },
 ): Promise<CashSource> {
   const data = await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/cash/sources/${encodeURIComponent(
       sourceId,
     )}/restore`,
-    { method: 'POST' },
+    { method: 'POST', body: opts?.baseSeq !== undefined ? { baseSeq: opts.baseSeq } : undefined },
   );
   return cashSourceResponseSchema.parse(data).source;
 }

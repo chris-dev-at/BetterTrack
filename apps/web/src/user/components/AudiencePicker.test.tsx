@@ -155,6 +155,49 @@ describe('AudiencePicker — friend groups (V5-P8)', () => {
   });
 });
 
+describe('AudiencePicker — MIRRORCHAIN §10 share notice (V5-P7 M5)', () => {
+  test('carries the synced-copy notice when sharing a chain-attached portfolio', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AudiencePicker
+          kind="portfolio"
+          subjectId={SUBJECT}
+          subjectLabel="Family"
+          mirrorSyncedCopy
+          onClose={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    // The one-line notice is rendered (from `mirrorchain.share.syncedNotice`).
+    await waitFor(() =>
+      expect(
+        screen.getByText(/others in this group portfolio will remain visible to you/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  test('a non-chain portfolio does not render the synced-copy notice', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AudiencePicker
+          kind="portfolio"
+          subjectId={SUBJECT}
+          subjectLabel="Main"
+          onClose={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: /private/i })).toBeEnabled());
+    expect(
+      screen.queryByText(/others in this group portfolio will remain visible to you/i),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe('AudiencePicker — specific-friends searchable multi-select (V3-P6)', () => {
   const ALICE = '00000000-0000-0000-0000-0000000000a1';
   const BOB = '00000000-0000-0000-0000-0000000000b2';

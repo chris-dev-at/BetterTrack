@@ -214,6 +214,9 @@
     "search": "Search",
     "yes": "Yes",
     "no": "No",
+    "processing": "Working…",
+    "creating": "Creating…",
+    "unknown": "unknown",
     "private": "Private",
     "friends": "Friends",
     "soon": "Soon",
@@ -697,6 +700,11 @@
         "saveError": "Couldn't save that change. Please try again.",
         "inviteHint": "Invite emails go to people without an account yet, so there is nothing to route here.",
         "tempPasswordEmailHint": "The email with the temporary password is always sent — it carries your credentials."
+      },
+      "mirrorchain": {
+        "groupLabel": "Group portfolio activity",
+        "groupHint": "Invites, membership changes, ownership, dissolution and sync-stalled notices — all in one setting.",
+        "cellAria": "Group portfolio activity via {{channel}}"
       },
       "mute": {
         "label": "Mute all notifications",
@@ -1381,6 +1389,8 @@
       "saving": "Saving…",
       "cancel": "Cancel",
       "saveError": "Could not save. Please try again.",
+      "mirrorConflict": "Another member changed this entry in the meantime. Close the dialog, reopen the row and re-apply your edit.",
+      "mirrorRowDeleted": "Another member deleted this entry. Close the dialog and refresh the list.",
       "uncoveredWarning": "You only hold {{held}} {{symbol}} — selling {{quantity}} means {{uncovered}} you don't own.",
       "uncoveredNoShorts": "The position closes at 0 — no short is created. The proceeds are added to cash as usual.",
       "uncoveredAck": "Continue anyway — sell more than I hold",
@@ -1734,6 +1744,7 @@
       "defaultBadge": "Default",
       "menuAriaLabel": "Portfolios",
       "newPortfolio": "+ New portfolio",
+      "newGroupPortfolio": "+ New group portfolio",
       "renameCurrent": "Rename current",
       "archiveCurrent": "Archive current",
       "archiveDisabledHint": "You cannot archive your only portfolio",
@@ -1821,6 +1832,8 @@
       "restoreAction": "Restore",
       "archiveConfirm": "Archive?",
       "actionError": "Could not update the source. Please try again.",
+      "mirrorConflict": "Another member changed this source in the meantime. Refresh the list and try again.",
+      "mirrorRowDeleted": "Another member removed this source. Refresh the list to see the current state.",
       "type": {
         "bank": "Bank",
         "retirement": "Retirement",
@@ -1857,7 +1870,9 @@
         "createSubmit": "Create source",
         "saveSubmit": "Save changes",
         "nameRequired": "Enter a name.",
-        "saveError": "Could not save. Please try again."
+        "saveError": "Could not save. Please try again.",
+        "mirrorConflict": "Another member changed this source in the meantime. Close the dialog, reopen the source and re-apply your edit.",
+        "mirrorRowDeleted": "Another member removed this source. Close the dialog and refresh the list."
       },
       "transfer": {
         "title": "Transfer between sources",
@@ -3152,6 +3167,136 @@
         "compass": "Compass",
         "anchor": "Anchor"
       }
+    }
+  },
+  "mirrorchain": {
+    "avatarStack": {
+      "openAria": "{{name}} — {{count}} members. Open member sheet.",
+      "membersCount": "{{count}} members",
+      "syncing": "Syncing… {{percent}} %"
+    },
+    "fork": {
+      "provenance": "Forked from {{chain}} · {{date}}"
+    },
+    "attribution": {
+      "by": "Added by {{username}}",
+      "groupMember": "Group member"
+    },
+    "role": {
+      "owner": "Owner",
+      "manager": "Manager",
+      "member": "Member"
+    },
+    "actions": {
+      "makeGroup": "Make this a group portfolio",
+      "invite": "Invite",
+      "rename": "Rename",
+      "kick": "Remove",
+      "grantManage": "Grant manage",
+      "revokeManage": "Revoke manage",
+      "transfer": "Make owner",
+      "leave": "Leave",
+      "dissolve": "Dissolve group",
+      "sendInvite": "Invite",
+      "revokeInvite": "Cancel invite"
+    },
+    "create": {
+      "title": "New group portfolio",
+      "body": "One portfolio shared with the friends you invite — every member sees every entry, and any of you can add or edit them.",
+      "namePlaceholder": "Group portfolio name",
+      "confirm": "Create",
+      "error": "Could not create the group portfolio. Please try again."
+    },
+    "convert": {
+      "title": "Make this a group portfolio",
+      "body": "Turn this portfolio into a shared one. Its history stays exactly as it is; from now on any invited member can add or edit entries and everyone sees them.",
+      "confirm": "Continue",
+      "errorAlreadySynced": "This portfolio is already a group portfolio.",
+      "errorCustomAsset": "This portfolio holds custom assets, which other members cannot see. Remove them (or use another portfolio) before making it a group portfolio.",
+      "errorGeneric": "Could not convert this portfolio. Please try again."
+    },
+    "invite": {
+      "title": "Invite a friend",
+      "body": "Only friends can be invited. The invitee sees a one-screen confirmation and joins with a fresh copy that syncs automatically.",
+      "searchPlaceholder": "Search friends by username",
+      "empty": "No friends to invite. Add friends in Social first.",
+      "sending": "Inviting…",
+      "errorNotFriends": "You can only invite friends to a group portfolio.",
+      "errorCapReached": "This group is full (max {{max}} members).",
+      "errorAlreadyInvited": "That friend already has a pending invite to this group.",
+      "errorAlreadyMember": "That friend is already a member of this group.",
+      "errorGeneric": "Could not send the invite. Please try again."
+    },
+    "accept": {
+      "title": "Join {{chain}}?",
+      "acknowledgment": "Members of {{chain}} will see everything in this portfolio and can add or edit entries that appear in your account. Your other portfolios stay private. You can leave anytime and keep your copy.",
+      "accept": "Join",
+      "decline": "Decline"
+    },
+    "rename": {
+      "title": "Rename group portfolio",
+      "error": "Could not rename the group. Please try again."
+    },
+    "memberSheet": {
+      "title": "Group portfolio members",
+      "subtitle": "Members, roles and activity. Owner or manager? You'll see the invite and management actions.",
+      "roster": "{{count}} of {{max}} members",
+      "loadError": "Could not load the member list. Please try again."
+    },
+    "memberRow": {
+      "you": "You",
+      "joined": "Joined {{date}}"
+    },
+    "confirm": {
+      "leave": {
+        "title": "Leave this group portfolio?",
+        "body": "You keep your copy; it just stops syncing. Any new entries you or the others make from now on will not cross over.",
+        "confirm": "Leave"
+      },
+      "dissolve": {
+        "title": "Dissolve this group portfolio?",
+        "body": "Every member — including you — keeps their own copy as a normal portfolio. Syncing stops for everyone. This cannot be undone.",
+        "confirm": "Dissolve"
+      },
+      "kick": {
+        "title": "Remove {{username}}?",
+        "body": "{{username}} keeps their copy; it just stops syncing. Any new entries they make from now on stay in their book only.",
+        "confirm": "Remove"
+      },
+      "grantManage": {
+        "title": "Grant manage rights to {{username}}?",
+        "body": "Managers can invite friends, kick plain members and rename the group. Only the owner can transfer ownership or dissolve the group.",
+        "confirm": "Grant"
+      },
+      "revokeManage": {
+        "title": "Revoke {{username}}'s manage rights?",
+        "body": "{{username}} stays a member but can no longer invite friends, kick anyone or rename the group.",
+        "confirm": "Revoke"
+      },
+      "transfer": {
+        "title": "Make {{username}} the owner?",
+        "body": "{{username}} becomes the owner and you become a plain member. You can still leave anytime and keep your copy.",
+        "confirm": "Transfer"
+      }
+    },
+    "activity": {
+      "title": "Activity",
+      "empty": "Nothing has happened here yet.",
+      "loadError": "Could not load the activity feed. Please try again."
+    },
+    "invites": {
+      "incomingTitle": "Group portfolio invites",
+      "outgoingTitle": "Invites you've sent",
+      "incomingLabel": "{{inviter}} invited you to",
+      "outgoingLabel": "{{invitee}} — invited to",
+      "openAccept": "Review"
+    },
+    "share": {
+      "syncedNotice": "Others in this group portfolio will remain visible to you, but their names are hidden from anyone you share with who is not also a member."
+    },
+    "errors": {
+      "forbidden": "Your role does not permit this action on the group portfolio.",
+      "generic": "Something went wrong. Please try again."
     }
   },
   "deleteAccount": {

@@ -35,6 +35,14 @@ export interface AudiencePickerProps {
   onClose: () => void;
   /** Called after a successful save with the new audience value. */
   onChanged?: (audience: ShareAudience) => void;
+  /**
+   * MIRRORCHAIN §10 share notice (V5-P7 M5): true when this subject is a
+   * synced copy of an active chain (i.e. `portfolio.mirror` is present). The
+   * dialog then carries a one-line notice that co-members remain visible to
+   * the caller but their names are hidden from anyone the portfolio is shared
+   * with who is not also a chain member. Absent → normal share dialog.
+   */
+  mirrorSyncedCopy?: boolean;
 }
 
 // ── Tier iconography (inline SVG, dependency-free — matches the app house style) ─
@@ -116,6 +124,7 @@ export function AudiencePicker({
   subjectLabel,
   onClose,
   onChanged,
+  mirrorSyncedCopy = false,
 }: AudiencePickerProps) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -251,6 +260,7 @@ export function AudiencePicker({
       onClose={onClose}
     >
       <div className="flex flex-col gap-4">
+        {mirrorSyncedCopy ? <Alert tone="info">{t('mirrorchain.share.syncedNotice')}</Alert> : null}
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
             {t('sharing.audienceLabel')}

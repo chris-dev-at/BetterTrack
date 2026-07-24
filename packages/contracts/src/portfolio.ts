@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { assetTypeSchema, currencyCodeSchema } from './market';
+import { mirrorMemberRoleSchema, mirrorRowInfoSchema, mirrorSyncStateSchema } from './mirrorchain';
 
 /**
  * Portfolio + custom-asset contracts (PROJECTPLAN.md §6.9, §8).
@@ -52,6 +53,39 @@ export const portfolioVisibilitySchema = z.enum(['private', 'friends']);
 export type PortfolioVisibility = z.infer<typeof portfolioVisibilitySchema>;
 
 /**
+ * MIRRORCHAIN badge on a portfolio summary (V5-P7 M5, design §11): present
+ * exactly when this portfolio is a **synced copy of an active chain**. The
+ * portfolio header renders the avatar stack + syncing state off this field;
+ * absent → normal portfolio, byte-identical to today (design §1 routing).
+ */
+export const portfolioMirrorBadgeSchema = z
+  .object({
+    chainId: z.string().uuid(),
+    chainName: z.string(),
+    role: mirrorMemberRoleSchema,
+    memberCount: z.number().int().nonnegative(),
+    sync: mirrorSyncStateSchema,
+  })
+  .strict();
+export type PortfolioMirrorBadge = z.infer<typeof portfolioMirrorBadgeSchema>;
+
+/**
+ * MIRRORCHAIN fork provenance on a portfolio summary (V5-P7 M5, design §6):
+ * present exactly when this portfolio is a **fork** (a formerly-synced copy
+ * whose membership has ended — kicked, left, chain dissolved, etc.). The fork
+ * keeps every row and remains a normal editable portfolio; the header renders
+ * "Forked from ⟨chain⟩ · ⟨date⟩" off this field.
+ */
+export const portfolioForkProvenanceSchema = z
+  .object({
+    chainId: z.string().uuid(),
+    chainName: z.string(),
+    endedAt: z.string().datetime(),
+  })
+  .strict();
+export type PortfolioForkProvenance = z.infer<typeof portfolioForkProvenanceSchema>;
+
+/**
  * One portfolio in the list (§6.8, §7.2). V1 auto-creates exactly one "Main"
  * per user — `isDefault` marks it — but the shape is already multi-portfolio so
  * additional rows are purely additive.
@@ -79,6 +113,18 @@ export const portfolioSummarySchema = z
      * usable portfolios.
      */
     archivedAt: z.string().datetime().nullable(),
+    /**
+     * MIRRORCHAIN synced-copy badge (V5-P7 M5, design §11): present exactly
+     * when this portfolio is a synced copy of an active chain. Absent on every
+     * normal portfolio, so pre-M5 clients are unaffected.
+     */
+    mirror: portfolioMirrorBadgeSchema.optional(),
+    /**
+     * MIRRORCHAIN fork provenance (V5-P7 M5, design §6): present exactly when
+     * this portfolio is a fork (a formerly-synced copy whose membership ended).
+     * Absent on every non-fork portfolio.
+     */
+    mirrorFork: portfolioForkProvenanceSchema.optional(),
   })
   .strict();
 export type PortfolioSummary = z.infer<typeof portfolioSummarySchema>;
@@ -474,7 +520,13 @@ export const createTransactionsRequestSchema = z.union([
 ]);
 export type CreateTransactionsRequest = z.infer<typeof createTransactionsRequestSchema>;
 
-/** `PATCH /portfolios/:id/transactions/:txId` body — every field optional. */
+/**
+ * `PATCH /portfolios/:id/transactions/:txId` body — every field optional.
+ * `baseSeq` is the §3 stale-edit guard on a synced-copy edit (V5-P7 M5, design
+ * §3): the entity's `mirror.version` the client edited against — the append
+ * transaction refuses with `409 MIRROR_CONFLICT` if it no longer matches. Non-
+ * chain portfolios simply omit it.
+ */
 export const updateTransactionRequestSchema = z
   .object({
     side: transactionSideSchema.optional(),
@@ -483,6 +535,7 @@ export const updateTransactionRequestSchema = z
     fee: z.number().nonnegative().optional(),
     executedAt: z.string().datetime().optional(),
     note: z.string().max(1000).nullish(),
+    baseSeq: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type UpdateTransactionRequest = z.infer<typeof updateTransactionRequestSchema>;
@@ -554,6 +607,15 @@ export const transactionSchema = z
     /** How this row entered the ledger (V5-P0c); `manual` for hand entry. */
     source: sourceTagSchema,
     asset: portfolioAssetSchema,
+    /**
+     * Chain-row overlay (V5-P7 M5, design §3/§10/§11): present only on rows in
+     * a synced copy; `mirrorId` + `version` power the §3 stale-edit guard's
+     * `baseSeq` and `addedBy` renders the attribution chip. Absent on rows in
+     * non-chain portfolios (and on shared-view reads whose viewer is not a
+     * chain member sees `addedBy` stripped to a generic "group member" —
+     * design §10, enforced by the service).
+     */
+    mirror: mirrorRowInfoSchema.optional(),
   })
   .strict();
 export type Transaction = z.infer<typeof transactionSchema>;
@@ -803,6 +865,12 @@ export const cashSourceSchema = z
     archivedAt: z.string().datetime().nullable(),
     createdAt: z.string().datetime(),
     balanceEur: z.number(),
+    /**
+     * Chain-row overlay (V5-P7 M5, design §3/§11): present only on cash sources
+     * in a synced copy. Powers the §3 stale-edit guard on rename/archive/restore
+     * and the attribution chip in the sources list.
+     */
+    mirror: mirrorRowInfoSchema.optional(),
   })
   .strict();
 export type CashSource = z.infer<typeof cashSourceSchema>;
@@ -833,11 +901,18 @@ export const createCashSourceRequestSchema = z
   .strict();
 export type CreateCashSourceRequest = z.infer<typeof createCashSourceRequestSchema>;
 
-/** `PATCH /portfolios/:id/cash/sources/:sourceId` body — rename / relabel. */
+/**
+ * `PATCH /portfolios/:id/cash/sources/:sourceId` body — rename / relabel.
+ * `baseSeq` is the §3 stale-edit guard on a synced-copy edit (V5-P7 M5, design
+ * §3): the source's `mirror.version` the client edited against — the append
+ * transaction refuses with `409 MIRROR_CONFLICT` if it no longer matches. Non-
+ * chain portfolios simply omit it.
+ */
 export const updateCashSourceRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     type: cashSourceTypeSchema.optional(),
+    baseSeq: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type UpdateCashSourceRequest = z.infer<typeof updateCashSourceRequestSchema>;
@@ -878,6 +953,14 @@ export const cashMovementSchema = z
     /** How this movement entered the ledger (V5-P0c); `manual` for hand entry. */
     source: sourceTagSchema,
     createdAt: z.string().datetime(),
+    /**
+     * Chain-row overlay (V5-P7 M5, design §10/§11): present only on external
+     * cash movements in a synced copy (deposit / withdrawal / transfer legs /
+     * setBalance delta — the replicated shapes). Absent on copy-derived
+     * movements (buy/sell legs / dividend inflows / tax settlements), which
+     * are re-derived per copy and never replicated (design §1).
+     */
+    mirror: mirrorRowInfoSchema.optional(),
   })
   .strict();
 export type CashMovement = z.infer<typeof cashMovementSchema>;
@@ -1100,6 +1183,12 @@ export const dividendSchema = z
     source: sourceTagSchema,
     createdAt: z.string().datetime(),
     asset: portfolioAssetSchema,
+    /**
+     * Chain-row overlay (V5-P7 M5, design §3/§10/§11): present only on
+     * dividends in a synced copy. Powers the §3 stale-edit guard on delete and
+     * the attribution chip in the dividend list.
+     */
+    mirror: mirrorRowInfoSchema.optional(),
   })
   .strict();
 export type Dividend = z.infer<typeof dividendSchema>;

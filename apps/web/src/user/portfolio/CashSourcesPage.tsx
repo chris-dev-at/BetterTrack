@@ -6,6 +6,7 @@ import type { CashMovement, CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import { EM_DASH, formatDate, formatPercent } from '../../lib/format';
 import {
   archiveCashSource,
@@ -20,6 +21,7 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitc
 import { activeSources, sortSourcesMainFirst } from './cashSourceUtils';
 import { CashDialog } from './CashDialog';
 import { CashSourceDialog } from './CashSourceDialog';
+import { MirrorAttributionChip } from './MirrorchainPanel';
 import { SetBalanceDialog } from './SetBalanceDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { TransferDialog } from './TransferDialog';
@@ -146,6 +148,7 @@ function SourceRow({
               {t('portfolio.cashSources.archivedBadge')}
             </span>
           ) : null}
+          {source.mirror ? <MirrorAttributionChip attribution={source.mirror.addedBy} /> : null}
         </div>
       </td>
       <td className="px-3 py-3 text-neutral-400">{typeLabel(t, source)}</td>
@@ -328,6 +331,7 @@ function HistorySection({
                     <span className="inline-flex flex-wrap items-center gap-1.5">
                       <span>{kindLabel(t, m.kind)}</span>
                       <SourceBadge source={m.source} />
+                      {m.mirror ? <MirrorAttributionChip attribution={m.mirror.addedBy} /> : null}
                     </span>
                     {m.counterpartSourceId ? (
                       <span className="ml-1 text-neutral-500">
@@ -415,8 +419,23 @@ export function CashSourcesPage() {
     try {
       await fn();
       refetchAll();
-    } catch {
-      setActionError(t('portfolio.cashSources.actionError'));
+    } catch (err) {
+      // MIRRORCHAIN §3 stale-edit surface (V5-P7 M5): archive/restore on a chain
+      // source send `baseSeq` and the server refuses with `409 MIRROR_CONFLICT`
+      // (or `MIRROR_ROW_DELETED`) if another member changed the source first —
+      // tell the user to refresh instead of a generic "please try again".
+      if (
+        err instanceof ApiError &&
+        (err.code === 'MIRROR_CONFLICT' || err.code === 'MIRROR_ROW_DELETED')
+      ) {
+        setActionError(
+          err.code === 'MIRROR_ROW_DELETED'
+            ? t('portfolio.cashSources.mirrorRowDeleted')
+            : t('portfolio.cashSources.mirrorConflict'),
+        );
+      } else {
+        setActionError(t('portfolio.cashSources.actionError'));
+      }
     } finally {
       setBusy(false);
     }
@@ -527,8 +546,16 @@ export function CashSourcesPage() {
                     onRename={() => setDialog({ kind: 'rename', source: s })}
                     onDeposit={() => setDialog({ kind: 'deposit', sourceId: s.id })}
                     onWithdraw={() => setDialog({ kind: 'withdraw', sourceId: s.id })}
-                    onArchive={() => void runAction(() => archiveCashSource(portfolioId, s.id))}
-                    onRestore={() => void runAction(() => restoreCashSource(portfolioId, s.id))}
+                    onArchive={() =>
+                      void runAction(() =>
+                        archiveCashSource(portfolioId, s.id, { baseSeq: s.mirror?.version }),
+                      )
+                    }
+                    onRestore={() =>
+                      void runAction(() =>
+                        restoreCashSource(portfolioId, s.id, { baseSeq: s.mirror?.version }),
+                      )
+                    }
                   />
                 ))}
               </tbody>

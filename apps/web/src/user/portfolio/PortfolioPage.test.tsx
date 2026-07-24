@@ -628,7 +628,11 @@ describe('PortfolioPage — expandable rows', () => {
     await user.click(screen.getByRole('button', { name: 'Yes' }));
 
     await waitFor(() =>
-      expect(vi.mocked(deleteTransaction)).toHaveBeenCalledWith(DEFAULT_PORTFOLIO_ID, 't2'),
+      // MIRRORCHAIN M5 (V5-P7 #685): the client now forwards `baseSeq` for
+      // chain rows; a non-chain row simply passes `undefined`.
+      expect(vi.mocked(deleteTransaction)).toHaveBeenCalledWith(DEFAULT_PORTFOLIO_ID, 't2', {
+        baseSeq: undefined,
+      }),
     );
   });
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -6,6 +6,7 @@ import type { ShareAudience, ShareKind, UpdateAlertSharingRequest } from '@bette
 
 import { listMyShared } from '../../lib/socialApi';
 import { ALERT_SHARING_QUERY_KEY, getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
+import { listPortfolios } from '../../lib/portfolioApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { AudiencePicker } from '../components/AudiencePicker';
@@ -19,6 +20,11 @@ interface PickerTarget {
   kind: ShareKind;
   subjectId: string;
   label: string;
+  /**
+   * V5-P7 M5 MIRRORCHAIN §10: true when the target is a synced-copy portfolio
+   * of an active chain — the picker renders the co-member-visibility notice.
+   */
+  mirrorSyncedCopy?: boolean;
 }
 
 function SectionHeading({ children }: { children: string }) {
@@ -184,6 +190,21 @@ export function MySharedItemsPage() {
     queryFn: ({ signal }) => listMyShared(signal),
     staleTime: MY_SHARED_STALE_MS,
   });
+  // MIRRORCHAIN §10 (V5-P7 M5): the shared-portfolios shape doesn't carry the
+  // synced-copy flag, so we cross-reference the portfolios list to know which
+  // portfolios are chain-attached — that flips the share notice on for those.
+  const portfoliosQuery = useQuery({
+    queryKey: ['portfolios'],
+    queryFn: ({ signal }) => listPortfolios(signal),
+    staleTime: 60_000,
+  });
+  const mirrorSyncedPortfolios = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of portfoliosQuery.data?.portfolios ?? []) {
+      if (p.mirror) set.add(p.id);
+    }
+    return set;
+  }, [portfoliosQuery.data]);
 
   const onChanged = () => {
     void queryClient.invalidateQueries({ queryKey: MY_SHARED_KEY });
@@ -233,7 +254,12 @@ export function MySharedItemsPage() {
                 audience={p.audience}
                 friendCount={p.friendCount}
                 onShare={() =>
-                  setPicker({ kind: 'portfolio', subjectId: p.portfolioId, label: p.name })
+                  setPicker({
+                    kind: 'portfolio',
+                    subjectId: p.portfolioId,
+                    label: p.name,
+                    mirrorSyncedCopy: mirrorSyncedPortfolios.has(p.portfolioId),
+                  })
                 }
                 shareLabel={shareLabel}
               />
@@ -320,6 +346,7 @@ export function MySharedItemsPage() {
           kind={picker.kind}
           subjectId={picker.subjectId}
           subjectLabel={picker.label}
+          mirrorSyncedCopy={picker.mirrorSyncedCopy}
           onClose={() => setPicker(null)}
           onChanged={onChanged}
         />
