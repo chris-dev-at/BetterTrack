@@ -2462,11 +2462,11 @@
   },
   "forecast": {
     "title": "Prognose",
-    "subtitle": "Projizieren Sie Ihr Portfolio in die Zukunft und rechnen Sie schnell nach.",
+    "subtitle": "Projiziere dein Portfolio in die Zukunft und rechne schnell nach.",
     "prefillFromPortfolio": "Aus meinem Portfolio übernehmen",
     "projection": {
       "title": "Vermögensprognose",
-      "description": "Projizieren Sie Ihr Vermögen aus dem Portfoliowert, seiner historischen Rendite und Ihren Daueraufträgen — und legen Sie Was-wäre-wenn-Pläne darüber.",
+      "description": "Projiziere dein Vermögen aus dem Portfoliowert, seiner historischen Rendite und deinen Daueraufträgen — und lege Was-wäre-wenn-Pläne darüber.",
       "noPortfolioTitle": "Noch kein Portfolio für die Prognose",
       "noPortfolioDescription": "Portfolio anlegen oder öffnen, um sein Vermögen fortzuschreiben.",
       "horizonLabel": "Zeithorizont (Jahre)",
@@ -2479,7 +2479,7 @@
       },
       "returnWindowLabel": "Stichprobenzeitraum",
       "returnPctLabel": "Renditesatz (%)",
-      "returnPctHint": "Aus Ihrer Historie ermittelt; zum Ausprobieren anpassbar.",
+      "returnPctHint": "Aus deiner Historie ermittelt; zum Ausprobieren anpassbar.",
       "window": {
         "1Y": "1 J",
         "3Y": "3 J",
@@ -2492,9 +2492,9 @@
       "projectedLabel": "Prognose in {{years}} Jahren",
       "whatIf": {
         "title": "Was-wäre-wenn-Pläne",
-        "description": "Legen Sie eine hypothetische monatliche Investition darüber. Nur lokal — wird nie gespeichert.",
+        "description": "Lege eine hypothetische monatliche Investition darüber. Nur lokal — wird nie gespeichert.",
         "add": "Was-wäre-wenn-Plan hinzufügen",
-        "empty": "Noch keine Was-wäre-wenn-Pläne. Fügen Sie einen hinzu, um ihn über die Prognose zu legen.",
+        "empty": "Noch keine Was-wäre-wenn-Pläne. Füge einen hinzu, um ihn über die Prognose zu legen.",
         "labelLabel": "Bezeichnung",
         "defaultLabel": "Was-wäre-wenn {{n}}",
         "monthlyLabel": "Monatlich (€)",
@@ -2523,7 +2523,7 @@
     },
     "savings": {
       "title": "Sparplan",
-      "summary": "Welcher Monatsbetrag erreicht Ihr Ziel?",
+      "summary": "Welcher Monatsbetrag erreicht dein Ziel?",
       "target": "Ziel (€)",
       "principal": "Startkapital (€)",
       "ratePct": "Jährliche Rendite (%)",
