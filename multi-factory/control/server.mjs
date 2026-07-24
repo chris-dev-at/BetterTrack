@@ -765,11 +765,10 @@ async function doAction(action, payload = {}) {
           { timeout: 90000 },
         );
       else if (p === 'gemini')
-        r = await run(
-          'agy',
-          ['-p', 'Reply with exactly: ok', '--model', selected.model],
-          { timeout: 120000, cwd: MF_DIR },
-        );
+        r = await run('agy', ['-p', 'Reply with exactly: ok', '--model', selected.model], {
+          timeout: 120000,
+          cwd: MF_DIR,
+        });
       else return { ok: false, message: 'unknown provider' };
       if (p === 'codex' && r.ok) {
         const events = r.stdout

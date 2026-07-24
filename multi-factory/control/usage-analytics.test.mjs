@@ -106,17 +106,14 @@ test('Terra and Luna use their own standard rates', () => {
     17.5,
   );
   assert.equal(
-    normalizeCodexLedgerRow(
-      base({ model: 'gpt-5.6-luna', cached_input_tokens: 1_000_000 }),
-    ).estimateUsd,
+    normalizeCodexLedgerRow(base({ model: 'gpt-5.6-luna', cached_input_tokens: 1_000_000 }))
+      .estimateUsd,
     0.1,
   );
 });
 
 test('inclusive Codex output is billed once when reasoning is reported as a diagnostic subset', () => {
-  const priced = normalizeCodexLedgerRow(
-    base({ output_tokens: 5, reasoning_output_tokens: 2 }),
-  );
+  const priced = normalizeCodexLedgerRow(base({ output_tokens: 5, reasoning_output_tokens: 2 }));
   assert.equal(priced.usage.output, 5);
   assert.equal(priced.usage.total, 5);
   assert.equal(priced.estimateUsd, 0.00015);
@@ -213,10 +210,7 @@ test('issue, role and model breakdowns retain token categories and estimates', (
   assert.equal(data.byIssue[0].estimatedUsd, 35);
   assert.equal(data.byIssue[0].tokens.input, 1_000_000);
   assert.equal(data.byIssue[0].tokens.output, 1_000_000);
-  assert.deepEqual(
-    data.byRole.map((r) => r.k).sort(),
-    ['reviewer', 'writer'],
-  );
+  assert.deepEqual(data.byRole.map((r) => r.k).sort(), ['reviewer', 'writer']);
   assert.equal(data.byModel[0].k, 'gpt-5.6-sol');
 });
 

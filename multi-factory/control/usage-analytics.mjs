@@ -136,8 +136,7 @@ const addInfo = (bucket, info) => {
   bucket.records += 1;
   for (const key of Object.keys(bucket.tokens)) bucket.tokens[key] += info.usage[key];
   if (info.estimateUsd == null) {
-    if (info.pricingStatus === 'legacy-output-ambiguous')
-      bucket.legacyOutputAmbiguousRecords += 1;
+    if (info.pricingStatus === 'legacy-output-ambiguous') bucket.legacyOutputAmbiguousRecords += 1;
     else if (info.pricingStatus === 'unknown-model') bucket.unknownModelRecords += 1;
     else bucket.partialTelemetryRecords += 1;
   } else {
