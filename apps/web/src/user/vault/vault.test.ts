@@ -365,6 +365,9 @@ describe('recovery kit and custody lock core', () => {
 
     await deviceCore.unlockWithPassphrase(original.envelope, 'correct horse battery staple');
     await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
+    await expect(
+      deviceCore.unlockFromDevice(VECTOR_DEVICE_ID, original.envelope),
+    ).rejects.toMatchObject({ code: 'locked' });
     await deviceCore.lock();
     await expect(custody.read(VECTOR_DEVICE_ID)).resolves.toBeNull();
 
