@@ -314,11 +314,94 @@ describe('paranoid rehydration service', () => {
         entry.kind !== 'transaction' &&
         entry.kind !== 'cashMovement',
     );
+    input.document.entities.push(
+      entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        name: 'Live',
+        visibility: 'private',
+        sortOrder: 1,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      }),
+    );
     const service = createParanoidRehydrationService({ db });
 
     await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
-    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toMatchObject([
+      { id: SECOND_PORTFOLIO_ID },
+    ]);
     expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toHaveLength(1);
+  });
+
+  it('rejects an otherwise valid document with only archived portfolios before writing', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const portfolio = input.document.entities.find((entry) => entry.kind === 'portfolio')!;
+    if (portfolio.kind !== 'portfolio') throw new Error('expected portfolio');
+    portfolio.data.archivedAt = editedAt;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects country-tax history before the restore transaction', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transaction = input.document.entities.find((entry) => entry.kind === 'transaction')!;
+    if (transaction.kind !== 'transaction') throw new Error('expected transaction');
+    transaction.data.side = 'sell';
+    transaction.data.allowUncovered = true;
+    transaction.data.uncoveredEntryPrice = null;
+    transaction.data.taxMode = 'country_specific';
+    transaction.data.taxCountry = 'AT';
+    transaction.data.taxAmountEur = 0;
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('rejects a tax override before the restore transaction', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity('018f0000-0000-7000-8000-00000000000d', 'portfolioSetting', {
+        portfolioId: PORTFOLIO_ID,
+        key: 'tax',
+        value: { mode: 'country_specific', country: 'AT' },
+        updatedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+    });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('allows a document with an active portfolio alongside archived portfolios', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    input.document.entities.push(
+      entity(SECOND_PORTFOLIO_ID, 'portfolio', {
+        name: 'Archived',
+        visibility: 'private',
+        sortOrder: 1,
+        defaultPayFromCash: false,
+        archivedAt: editedAt,
+      }),
+    );
+    const service = createParanoidRehydrationService({ db });
+
+    await expect(service.rehydrate(user.id, input)).resolves.toMatchObject({ idempotent: false });
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toHaveLength(
+      2,
+    );
   });
 
   it('rejects a manual asset whose provider reference is not its entity id', async () => {

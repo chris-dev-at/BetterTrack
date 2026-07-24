@@ -169,6 +169,14 @@ export interface PortfolioServiceDeps {
   now?: () => number;
 }
 
+/**
+ * The account-level archive invariant: normal portfolio writes never leave an
+ * account without at least one usable (non-archived) portfolio.
+ */
+export function hasActivePortfolio(rows: readonly { archivedAt: string | null }[]): boolean {
+  return rows.some((portfolio) => portfolio.archivedAt === null);
+}
+
 export interface PortfolioService {
   /**
    * The user's portfolios (§6.8/§7.2), auto-materialising the single default so

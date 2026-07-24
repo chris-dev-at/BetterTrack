@@ -13,6 +13,7 @@ import { viennaYearOf } from '@bettertrack/domain/tax';
 
 import { expenseDedupHash } from '../../data/expenseDedup';
 import { reducePosition } from '../../domain/holdings';
+import { hasActivePortfolio } from '../portfolio/portfolioService';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
 import type { Database } from '../../data/db';
@@ -120,12 +121,46 @@ function requireSubset(
 }
 
 /**
+ * V1 rehydration has no transaction-bound tax planner yet. Country/custom
+ * histories cannot be replayed faithfully as frozen rows: normal writes derive
+ * their tax facts and append both per-row settlements and historical corrections
+ * from the complete pre-write state. Reject those documents before the outer
+ * transaction rather than silently restoring a tax report and cash ledger that
+ * the normal write path could never produce. Tax overrides are likewise rejected
+ * because normal override writes reconcile affected open years.
+ */
+function validateSupportedTaxRehydration(entities: readonly Entity[]): void {
+  const engineTaxRow = [...rows(entities, 'transaction'), ...rows(entities, 'dividend')].find(
+    (entity) => entity.data.taxMode === 'country_specific' || entity.data.taxMode === 'custom',
+  );
+  if (engineTaxRow) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      'country and custom tax histories require transaction-bound rehydration planning',
+    );
+  }
+  if (rows(entities, 'portfolioSetting').some((entity) => entity.data.key === 'tax')) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      'portfolio tax overrides require transaction-bound rehydration reconciliation',
+    );
+  }
+}
+
+/**
  * Validate every foreign-key and unique-source graph before the first insert.
  * Database checks remain defense in depth; this reports malformed decrypted vaults
  * as one clean failure and makes the no-write guarantee directly testable.
  */
 function validateGraph(userId: string, entities: readonly Entity[]): void {
-  const portfolioIds = ids(entities, 'portfolio');
+  const portfolioRows = rows(entities, 'portfolio');
+  if (!hasActivePortfolio(portfolioRows.map((portfolio) => portfolio.data))) {
+    throw new ParanoidRehydrationError(
+      'INVALID_REFERENCE',
+      'at least one active portfolio must be restored',
+    );
+  }
+  const portfolioIds = new Set(portfolioRows.map((entity) => entity.id));
   const customAssetIds = ids(entities, 'customAsset');
   const sourceIds = ids(entities, 'cashSource');
   const transactionIds = ids(entities, 'transaction');
@@ -794,6 +829,7 @@ export function createParanoidRehydrationService(
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
       validateGraph(userId, entities);
+      validateSupportedTaxRehydration(entities);
 
       return withParanoidRehydrationTransaction(deps.db, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
