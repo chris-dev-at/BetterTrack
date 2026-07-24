@@ -7,7 +7,8 @@
 # order, acks and stall recovery (BRIEF acceptance test 1, offline half).
 # Run on the host: ./multi-factory/test.sh   (no Docker, no network, no tokens)
 set -uo pipefail
-cd "$(dirname "$0")"
+TEST_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$TEST_SCRIPT_DIR"
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 PASS=0; FAIL=0
@@ -90,8 +91,8 @@ echo "— scheduler: missing mf-meta serializes (runs alone)"
 rm -f "$MFSTATE"/assignments/*.json
 cat >"$TICK_ISSUES" <<'JSON'
 [
- {"number":210,"title":"no meta","body":"no machine block here","labels":["autopilot"]},
- {"number":211,"title":"disjoint","body":"x\n<!-- mf-meta\ntouches: apps/web/**\n-->","labels":["autopilot"]}
+ {"number":210,"title":"no meta","body":"no machine block here","labels":["autopilot","tier:sonnet"]},
+ {"number":211,"title":"disjoint","body":"x\n<!-- mf-meta\ntouches: apps/web/**\n-->","labels":["autopilot","tier:sonnet"]}
 ]
 JSON
 scheduler run
@@ -104,8 +105,8 @@ echo "— dependency gating (direct REST reads)"
 rm -f "$MFSTATE"/assignments/*.json; rm -rf "$TICK_DEPS"; mkdir -p "$TICK_DEPS"
 cat >"$TICK_ISSUES" <<'JSON'
 [
- {"number":220,"title":"dep open","body":"x\n<!-- mf-meta\ndepends-on: 900\ntouches: apps/api/**\n-->","labels":["autopilot"]},
- {"number":221,"title":"dep closed","body":"x\n<!-- mf-meta\ndepends-on: 901\ntouches: apps/web/**\n-->","labels":["autopilot"]}
+ {"number":220,"title":"dep open","body":"x\n<!-- mf-meta\ndepends-on: 900\ntouches: apps/api/**\n-->","labels":["autopilot","tier:sonnet"]},
+ {"number":221,"title":"dep closed","body":"x\n<!-- mf-meta\ndepends-on: 901\ntouches: apps/web/**\n-->","labels":["autopilot","tier:sonnet"]}
 ]
 JSON
 echo open   >"$T/ghdeps/900"
@@ -119,7 +120,7 @@ echo "— merge queue blocks conflicting claims (in-flight includes unmerged PRs
 rm -f "$MFSTATE"/assignments/*.json
 printf '%s\n' '{"pr":90,"issue":230,"touches":["apps/api/**"],"enqueued_at":"x"}' >"$MFSTATE/merge-queue/100-pr90.json"
 cat >"$TICK_ISSUES" <<'JSON'
-[{"number":231,"title":"overlaps queued PR","body":"x\n<!-- mf-meta\ntouches: apps/api/src/z.ts\n-->","labels":["autopilot"]}]
+[{"number":231,"title":"overlaps queued PR","body":"x\n<!-- mf-meta\ntouches: apps/api/src/z.ts\n-->","labels":["autopilot","tier:sonnet"]}]
 JSON
 rm -rf "$TICK_DEPS"; mkdir -p "$TICK_DEPS"
 scheduler run
@@ -129,10 +130,10 @@ rm -f "$MFSTATE"/merge-queue/*.json
 echo "— FIFO merge-queue head selection"
 printf '{}' >"$MFSTATE/merge-queue/1700000200-pr7.json"
 printf '{}' >"$MFSTATE/merge-queue/1700000100-pr9.json"
-printf '{}' >"$MFSTATE/merge-queue/.cifix-pr9"
+printf '{}' >"$MFSTATE/merge-queue/.nonqueue-state"
 HEAD=$(ls "$MFSTATE/merge-queue" | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -1)
 check "oldest epoch first, dotfiles ignored" "1700000100-pr9.json" "$HEAD"
-rm -f "$MFSTATE"/merge-queue/* "$MFSTATE"/merge-queue/.cifix-pr9 2>/dev/null || true
+rm -f "$MFSTATE"/merge-queue/* "$MFSTATE"/merge-queue/.nonqueue-state 2>/dev/null || true
 
 echo "— process_acks removes finished assignments"
 printf '%s\n' '{"issue":240,"assigned_at":"x","touches":["a/**"],"relocated":false}' >"$MFSTATE/assignments/worker-1.json"
@@ -192,7 +193,7 @@ composer_step run
 check "still-unchanged snapshot doubles again (1800→3600)" "3600" "$(cat "$MFSTATE/control/.composer-backoff")"
 
 backdate "$MFSTATE/control/.composer-last" 3601
-echo '[{"number":260,"title":"new issue appeared","body":"x","labels":["autopilot"]}]' >"$TICK_ISSUES"
+echo '[{"number":260,"title":"new issue appeared","body":"x","labels":["autopilot","tier:sonnet"]}]' >"$TICK_ISSUES"
 composer_step run
 check "open-issue set change resets backoff to base (900)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
 
@@ -312,3 +313,5 @@ check "salvage: event line logged" "1" "$(grep -c 'salvaged branch task/503' "$M
 echo
 echo "passed: $PASS, failed: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
+
+"$TEST_SCRIPT_DIR/protocol-test.sh"

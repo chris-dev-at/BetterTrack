@@ -17,7 +17,7 @@
 #
 # Providers (all subscription auth, never committed — see autorun.sh auth sync):
 #   claude → claude CLI  (CLAUDE_CODE_OAUTH_TOKEN env; effort low|medium|high|xhigh|max)
-#   codex  → codex CLI   (~/.codex/auth.json; model_reasoning_effort low|medium|high|xhigh)
+#   codex  → codex CLI   (~/.codex/auth.json; effort is model-dependent)
 #   gemini → agy CLI     (Antigravity; ~/.gemini oauth; effort baked into model name,
 #                         e.g. "Gemini 3.1 Pro (High)")
 #
@@ -28,6 +28,9 @@ MF_MODELS_FILE=${MF_MODELS_FILE:-$MFSTATE/control/models.json}
 MF_ROLE_TIMEOUT=${MF_ROLE_TIMEOUT:-7200}   # hard cap per codex/agy role run (s)
 
 DIFF_ORDER="easy normal intermediate hard max"
+
+_MF_LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$_MF_LIB_DIR/contracts.sh"
 
 diff_valid(){ case " $DIFF_ORDER " in *" $1 "*) return 0;; *) return 1;; esac; }
 
@@ -123,57 +126,142 @@ mf_uses_claude(){ # 0 when ANY difficulty currently routes to the claude provide
 CODEX_LIMIT_RE='usage limit|rate.?limit|too many requests|quota|insufficient|(^|[^0-9])429([^0-9]|$)'
 AGY_LIMIT_RE='quota|rate.?limit|too many requests|RESOURCE_EXHAUSTED|model is overloaded|capacity|(^|[^0-9])(429|529)([^0-9]|$)'
 
+# Run a provider command, mirror its combined stream to the role log, retain the
+# full stream for classification, and return the provider command's exit code.
+# PIPESTATUS is intentionally consumed in this function, in the same shell as
+# the pipeline. Reading it after `out=$(... | tee)` loses it to the command-
+# substitution subshell and was the cause of nonzero Codex/Agy runs looking OK.
+mf_capture_command(){ # $1=output file, remaining args=command
+  local output_file=$1; shift
+  "$@" 2>&1 | tee -a "$LOG" "$output_file" >/dev/null
+  return "${PIPESTATUS[0]}"
+}
+
+codex_jsonl_state(){ # completed | error | incomplete
+  jq -Rrs '
+    [split("\n")[] | fromjson? | select(type=="object")] as $events
+    | if any($events[];
+          ((.type // "") | test("(^error$|\\.failed$|\\.cancelled$)"))
+          or (.error? != null))
+      then "error"
+      elif any($events[]; .type=="turn.completed")
+      then "completed"
+      else "incomplete"
+      end
+  ' 2>/dev/null
+}
+
+codex_failure_signal(){
+  jq -Rrs '
+    [split("\n")[] | . as $line
+     | (try fromjson catch null) as $event
+     | if $event == null then $line
+       elif ($event | type) != "object" then $line
+       elif ((($event.type // "") | test("(^error$|\\.failed$|\\.cancelled$)"))
+             or ($event.error? != null))
+       then [
+         ($event.message // ""),
+         (if ($event.error? | type) == "string" then $event.error else "" end),
+         ($event.error.message? // "")
+       ] | join(" ")
+       else empty
+       end]
+    | join("\n")
+  ' 2>/dev/null
+}
+
 cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
   local model=$1 effort=$2 prompt=$3
   local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0 transient_tries=0
+  local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
   while true; do
-    local out rc start dur res
+    local out rc start dur res state signal capture
     start=$(date +%s)
-    out=$(timeout "$MF_ROLE_TIMEOUT" codex exec --cd "$REPO_DIR" --json \
-          -m "$model" ${effort:+-c model_reasoning_effort="$effort"} \
-          --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
-          "$prompt" </dev/null 2>&1 | tee -a "$LOG"); rc=${PIPESTATUS[0]}
+    capture=$(mktemp "${TMPDIR:-/tmp}/mf-codex.XXXXXX") || return 1
+    local -a cmd=(timeout "$MF_ROLE_TIMEOUT" codex exec --cd "$REPO_DIR" --json
+      --ephemeral -m "$model")
+    [ -n "$effort" ] && cmd+=(-c "model_reasoning_effort=$effort")
+    cmd+=(--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "$prompt")
+    if mf_capture_command "$capture" "${cmd[@]}" </dev/null; then rc=0; else rc=$?; fi
+    out=$(<"$capture"); rm -f "$capture"
     dur=$(( $(date +%s) - start ))
-    res=$(jq -Rrs '
-      [split("\n")[] | fromjson? | select(.type=="turn.completed") | .usage // {}]
-      | { i: (map(.input_tokens // 0) | add // 0),
-          c: (map(.cached_input_tokens // 0) | add // 0),
-          o: (map((.output_tokens // 0) + (.reasoning_output_tokens // 0)) | add // 0) }
-      | {total_cost_usd: 0,
-         usage: {input_tokens: (if .i - .c < 0 then 0 else .i - .c end),
-                 cache_read_input_tokens: .c, output_tokens: .o}}' <<<"$out" 2>/dev/null) \
-      || res='{"total_cost_usd":0}'
-    if [ "$rc" = 0 ]; then
+    state=$(codex_jsonl_state <<<"$out")
+    signal=$(codex_failure_signal <<<"$out")
+    res=$(jq -Rrs --arg model "$model" '
+      def rates:
+        if $model=="gpt-5.6-sol" then {i:5,c:0.5,w:6.25,o:30}
+        elif $model=="gpt-5.6-terra" then {i:2.5,c:0.25,w:3.125,o:15}
+        elif $model=="gpt-5.6-luna" then {i:1,c:0.1,w:1.25,o:6}
+        else null end;
+      [split("\n")[] | fromjson? | select(.type=="turn.completed") | .usage // {}] as $u
+      | {i: ($u | map(.input_tokens // 0) | add // 0),
+         c: ($u | map(.cached_input_tokens // 0) | add // 0),
+         w: ($u | map(.cache_write_input_tokens // .cache_creation_input_tokens // 0) | add // 0),
+         # Codex reports output_tokens inclusive of reasoning. Keep the
+         # reasoning subset separately for diagnostics; never add it again for
+         # billing or aggregate token totals.
+         o: ($u | map(.output_tokens // 0) | add // 0),
+         r: ($u | map(.reasoning_output_tokens // 0) | add // 0),
+         complete: (($u|length)>0
+                    and all($u[]; ((.input_tokens|type)=="number")
+                                   and ((.cached_input_tokens|type)=="number")
+                                   and ((.output_tokens|type)=="number"))),
+         write_seen: any($u[]; has("cache_write_input_tokens")
+                                 or has("cache_creation_input_tokens"))}
+      | .uncached = ([.i - .c - .w, 0] | max)
+      | rates as $r
+      | (if .complete and $r != null
+         then ((.uncached*$r.i + .c*$r.c + .w*$r.w + .o*$r.o)/1000000
+               * 1000000 | round) / 1000000
+         else null end) as $estimate
+      | {provider:"codex", total_cost_usd:0,
+         codex_usage_schema:2,
+         output_tokens_semantics:"inclusive-reasoning",
+         input_tokens_semantics:"exclusive",
+         cache_write_telemetry:.write_seen,
+         codex_telemetry_complete:.complete,
+         api_equivalent_usd:$estimate,
+         api_equivalent_pricing:"openai-standard-base-2026-07-24",
+         api_equivalent_coverage:
+           (if $r==null then "unknown-model"
+            elif .complete then "complete"
+            else "missing-telemetry" end),
+         usage:{input_tokens:.uncached, cache_read_input_tokens:.c,
+                cache_creation_input_tokens:.w, output_tokens:.o,
+                reasoning_output_tokens:.r}}' \
+      <<<"$out" 2>/dev/null) \
+      || res='{"provider":"codex","total_cost_usd":0,"codex_usage_schema":2,"output_tokens_semantics":"inclusive-reasoning","codex_telemetry_complete":false,"api_equivalent_usd":null,"api_equivalent_coverage":"missing-telemetry"}'
+    if [ "$rc" = 0 ] && [ "$state" = completed ]; then
       ledger_record "$issue" "$role" "$model" "$res" "$dur" ok
       log "  ↳ ok (codex $model, ${dur}s)"
       return 0
-    fi
-    if grep -qiE "$CODEX_LIMIT_RE" <<<"$out"; then
-      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
-      notify "codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
-      sleep "$LIMIT_SLEEP"; continue
     fi
     if [ "$rc" = 124 ]; then
       ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
       log "  ↳ codex run timed out after ${MF_ROLE_TIMEOUT}s"
       return 1
     fi
+    if grep -qiE "$CODEX_LIMIT_RE" <<<"$signal"; then
+      ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
+      notify "codex usage limit hit — sleeping $((LIMIT_SLEEP/60))m, auto-resume"
+      sleep "$LIMIT_SLEEP"; continue
+    fi
     # Transient transport/stream drop: bounded in-place retry with short spacing,
     # same class + wording as cc() — does not count against the single generic retry.
-    if [ "$(cc_classify "$out")" = transient ] && [ "$transient_tries" -lt "${CC_TRANSIENT_MAX:-3}" ]; then
+    if [ "$(cc_classify "$signal")" = transient ] && [ "$transient_tries" -lt "${CC_TRANSIENT_MAX:-3}" ]; then
       transient_tries=$((transient_tries+1))
       ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
       log "  ↳ transient transport error — retry $transient_tries/${CC_TRANSIENT_MAX:-3}"
       sleep "${CC_TRANSIENT_SLEEP:-45}"; continue
     fi
     tries=$((tries+1))
-    if [ "$tries" -lt 2 ]; then
+    if [ "$tries" -lt "$max_attempts" ]; then
       ledger_record "$issue" "$role" "$model" "$res" "$dur" retry
-      log "  ↳ codex failed (rc=$rc) — one retry in 60s"
-      sleep 60; continue
+      log "  ↳ codex failed (rc=$rc, jsonl=$state) — retry $tries/$max_attempts"
+      sleep "${MF_PROVIDER_RETRY_SLEEP:-60}"; continue
     fi
     ledger_record "$issue" "$role" "$model" "$res" "$dur" fail
-    log "  ↳ genuine codex task failure (rc=$rc)"
+    log "  ↳ genuine codex task failure (rc=$rc, jsonl=$state)"
     return 1
   done
 }
@@ -181,13 +269,15 @@ cc_codex(){ # $1=model $2=reasoning-effort(optional) $3=prompt
 cc_gemini(){ # $1=model (agy model string, effort baked in) $2=prompt
   local model=$1 prompt=$2
   local role=${CC_ROLE:-cc} issue=${CC_ISSUE:--} tries=0
+  local max_attempts=${MF_PROVIDER_ATTEMPTS:-2}
   while true; do
-    local out rc start dur
+    local out rc start dur capture
     start=$(date +%s)
-    out=$(cd "$REPO_DIR" && timeout "$MF_ROLE_TIMEOUT" \
-          agy -p "$prompt" --model "$model" --dangerously-skip-permissions \
-          --print-timeout "${MF_ROLE_TIMEOUT}s" </dev/null 2>&1 | tee -a "$LOG")
-    rc=${PIPESTATUS[0]}
+    capture=$(mktemp "${TMPDIR:-/tmp}/mf-agy.XXXXXX") || return 1
+    if ( cd "$REPO_DIR" && mf_capture_command "$capture" timeout "$MF_ROLE_TIMEOUT" \
+      agy -p "$prompt" --model "$model" --dangerously-skip-permissions \
+      --print-timeout "${MF_ROLE_TIMEOUT}s" </dev/null ); then rc=0; else rc=$?; fi
+    out=$(<"$capture"); rm -f "$capture"
     dur=$(( $(date +%s) - start ))
     if [ "$rc" = 0 ] && ! grep -qiE 'not logged into antigravity' <<<"$out"; then
       ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" ok
@@ -205,10 +295,10 @@ cc_gemini(){ # $1=model (agy model string, effort baked in) $2=prompt
       return 1
     fi
     tries=$((tries+1))
-    if [ "$tries" -lt 2 ]; then
+    if [ "$tries" -lt "$max_attempts" ]; then
       ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" retry
-      log "  ↳ agy failed (rc=$rc) — one retry in 60s"
-      sleep 60; continue
+      log "  ↳ agy failed (rc=$rc) — retry $tries/$max_attempts"
+      sleep "${MF_PROVIDER_RETRY_SLEEP:-60}"; continue
     fi
     ledger_record "$issue" "$role" "$model" '{"total_cost_usd":0}' "$dur" fail
     log "  ↳ genuine agy task failure (rc=$rc)"
@@ -230,6 +320,7 @@ mf_cc(){ # $1=role $2=difficulty $3=prompt — resolve config and dispatch
 
 # ---- difficulty labels (master boot) ------------------------------------------------
 mf_labels_boot(){
+  gh label create awaiting-owner   --color FBCA04 --description "planned work awaiting owner approval (not runnable)" --force >/dev/null 2>&1 || true
   gh label create diff:easy         --color 1D76DB --description "difficulty: easy — trivial/mechanical work"        --force >/dev/null 2>&1 || true
   gh label create diff:normal       --color 7CE38B --description "difficulty: normal — standard feature work"        --force >/dev/null 2>&1 || true
   gh label create diff:intermediate --color 0E8A16 --description "difficulty: intermediate — cross-cutting/stateful" --force >/dev/null 2>&1 || true

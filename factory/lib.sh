@@ -34,8 +34,9 @@ notify(){ log "NOTIFY: $*"; [ -n "${FACTORY_WEBHOOK_URL:-}" ] && \
 # Guarded behind eval: macOS ships bash 3.2 (no associative arrays), and the
 # multi-factory test harness sources this file on the host — under `set -u` a
 # bare assoc literal would arithmetic-evaluate the keys ("claude: unbound
-# variable"). Containers run bash ≥4; on bash 3 the tables simply stay unset and
-# ledger_record's ${PRICE_IN[...]:-0} fallback yields 0 (host never records).
+# variable"). Containers run bash ≥4; ledger_record also carries a bash-3 case
+# fallback so host-side deterministic ledger tests never arithmetic-evaluate a
+# dotted/hyphenated model name as an indexed-array subscript.
 if [ "${BASH_VERSINFO[0]:-3}" -ge 4 ]; then
   eval 'declare -A PRICE_IN=(  [claude-sonnet-5]=3    [claude-opus-4-8]=5     [claude-fable-5]=10    )
         declare -A PRICE_OUT=( [claude-sonnet-5]=15   [claude-opus-4-8]=25    [claude-fable-5]=50    )
@@ -51,8 +52,17 @@ fi
 ledger_record(){
   local issue=$1 role=$2 model=$3 res=$4 dur=$5 outcome=$6
   [ -n "$res" ] || res='{}'
-  local in_r=${PRICE_IN[$model]:-5} out_r=${PRICE_OUT[$model]:-25}
-  local cr_r=${PRICE_CR[$model]:-0.50} cw_r=${PRICE_CW[$model]:-6.25}
+  local in_r=5 out_r=25 cr_r=0.50 cw_r=6.25
+  if [ "${BASH_VERSINFO[0]:-3}" -ge 4 ]; then
+    in_r=${PRICE_IN[$model]:-5}; out_r=${PRICE_OUT[$model]:-25}
+    cr_r=${PRICE_CR[$model]:-0.50}; cw_r=${PRICE_CW[$model]:-6.25}
+  else
+    case "$model" in
+      claude-sonnet-5) in_r=3; out_r=15; cr_r=0.30; cw_r=3.75;;
+      claude-opus-4-8) in_r=5; out_r=25; cr_r=0.50; cw_r=6.25;;
+      claude-fable-5) in_r=10; out_r=50; cr_r=2.50; cw_r=12.50;;
+    esac
+  fi
   mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || true
   jq -cn \
     --arg ts "$(date -Is)" --arg issue "$issue" --arg role "$role" --arg model "$model" \
@@ -63,14 +73,45 @@ ledger_record(){
       ($res.usage // {}) as $u
     | ($u.input_tokens // 0) as $it
     | ($u.output_tokens // 0) as $ot
+    | ($u.reasoning_output_tokens // 0) as $rot
     | ($u.cache_read_input_tokens // 0) as $crt
     | ($u.cache_creation_input_tokens // 0) as $cwt
+    | ($res.provider // "") as $provider
     | (if ($res.total_cost_usd|type)=="number" then $res.total_cost_usd
        else ($it*$in_r + $ot*$out_r + $crt*$cr_r + $cwt*$cw_r)/1000000 end) as $cost
     | {ts:$ts, issue:$issue, role:$role, model:$model,
        input_tokens:$it, output_tokens:$ot,
        cache_read_tokens:$crt, cache_creation_tokens:$cwt,
        cost_usd:(($cost*10000|round)/10000), duration_s:$dur, outcome:$outcome}
+      + (if $provider == "codex" then
+          {provider:"codex",
+           codex_usage_schema:
+             (if ($res.codex_usage_schema|type)=="number"
+              then $res.codex_usage_schema
+              else null end),
+           output_tokens_semantics:
+             (if ($res.output_tokens_semantics|type)=="string"
+              then $res.output_tokens_semantics
+              else null end),
+           cached_input_tokens:$crt,
+           cache_write_input_tokens:$cwt,
+           reasoning_output_tokens:$rot,
+           codex_telemetry_complete:
+             (if ($res.codex_telemetry_complete|type)=="boolean"
+              then $res.codex_telemetry_complete
+              else null end),
+           input_tokens_semantics:($res.input_tokens_semantics // "exclusive"),
+           cache_write_telemetry:($res.cache_write_telemetry // false),
+           api_equivalent_usd:
+             (if ($res.api_equivalent_usd|type)=="number"
+              then (($res.api_equivalent_usd*1000000|round)/1000000)
+              else null end),
+           api_equivalent_pricing:
+             ($res.api_equivalent_pricing // "openai-standard-base"),
+           api_equivalent_coverage:
+             ($res.api_equivalent_coverage // "missing-telemetry")}
+         elif $provider != "" then {provider:$provider}
+         else {} end)
       + (if $factory != "" then {factory:$factory} else {} end)
       + (if $worker  != "" then {worker:$worker}   else {} end)
     ' >>"$LEDGER" 2>/dev/null || true

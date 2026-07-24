@@ -826,6 +826,17 @@
         font-size: 12px;
         flex: none;
       }
+      .hb.codex-hb .v {
+        width: 128px;
+      }
+      .hb.codex-hb .n {
+        width: 132px;
+      }
+      .estimate-note {
+        border-left: 3px solid var(--accent);
+        padding-left: 10px;
+        line-height: 1.55;
+      }
     </style>
   </head>
   <body>
@@ -1074,8 +1085,8 @@
             master-roles use the difficulty slots above. A rejected issue escalates ONE difficulty
             higher on its triage retry (max stays max). Legacy tier labels still resolve:
             sonnet→easy, opus→intermediate, fable→max. Effort semantics: Claude = --effort (low…max)
-            · Codex = reasoning effort (low…xhigh) · Antigravity bakes the level into the model
-            name, e.g. “Gemini 3.1 Pro (High)”.
+            · Codex = model-supported reasoning effort (low…max/ultra) · Antigravity bakes the level
+            into the model name, e.g. “Gemini 3.1 Pro (High)”.
           </div>
         </details>
       </div>
@@ -1120,8 +1131,69 @@
       </div>
       <div class="hint" style="margin-top: 2px">
         Source: factory/usage/ledger.jsonl — one record per agent run
-        (writer/reviewer/fixer/planner/composer/checker/ci-fix), cost as reported by the Claude CLI.
-        Refreshes every 60s while this tab is open.
+        (writer/reviewer/fixer/planner/composer/checker/ci-fix). Recorded spend above remains the
+        CLI-reported cost; the Codex API-equivalent estimate below is separate. Refreshes every 60s
+        while this tab is open.
+      </div>
+      <div class="card" style="margin-top: 14px; margin-bottom: 10px">
+        <h2>
+          Codex API-equivalent usage
+          <span class="hint">API-equivalent estimate · not billed subscription spend</span>
+        </h2>
+        <div class="addrow" style="margin-bottom: 10px">
+          <span class="hint">time range</span>
+          <select id="ua-codex-range" onchange="uaCodexFiltersChanged()">
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="all">All time</option>
+          </select>
+          <span class="hint">model</span>
+          <select id="ua-codex-model" onchange="uaCodexFiltersChanged()">
+            <option value="all">All Codex models</option>
+          </select>
+          <span class="hint" id="ua-codex-range-note"></span>
+        </div>
+        <div class="strip" id="ua-codex-kpis" style="margin-bottom: 0"></div>
+      </div>
+      <div class="card" style="margin-bottom: 10px">
+        <h2>
+          Codex tokens + API-equivalent USD
+          <span class="hint"
+            ><span class="sw" style="background: var(--accent)"></span> estimate&nbsp;&nbsp;<span
+              class="sw"
+              style="height: 2px; background: var(--warn)"
+            ></span>
+            tokens</span
+          >
+        </h2>
+        <svg id="ua-codex-days" viewBox="0 0 720 200" style="width: 100%; height: auto"></svg>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h2>Codex estimate by model</h2>
+          <div id="ua-codex-models"></div>
+        </div>
+        <div class="card">
+          <h2>Codex estimate by role</h2>
+          <div id="ua-codex-roles"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom: 10px">
+        <h2>Codex usage by issue</h2>
+        <div id="ua-codex-issues"></div>
+      </div>
+      <div class="hint estimate-note">
+        <b>Estimate only — Codex still runs through the existing ChatGPT subscription/login CLI.</b>
+        No API key is used and this is not an invoice or actual billed spend. Standard/base OpenAI
+        API rates per 1M tokens (effective 2026-07-24): Sol $5.00 input / $0.50 cached input /
+        $30.00 output; Terra $2.50 / $0.25 / $15.00; Luna $1.00 / $0.10 / $6.00. Separately recorded
+        cache-write input is estimated at 1.25× each model’s uncached-input rate. Unknown models or
+        incomplete historical telemetry are shown as unavailable/partial, never as $0. Legacy Codex
+        rows without the new inclusive-output marker are also unpriced because their stored output
+        may double-count reasoning tokens. The &gt;272K long-context multiplier is not applied
+        because aggregate CLI telemetry does not reliably identify qualifying requests.
+        <a target="_blank" href="https://openai.com/api/pricing/">Pricing source</a>.
       </div>
     </section>
 
@@ -1341,12 +1413,17 @@
       };
       const PROV_EFFORTS = {
         claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-        codex: ['low', 'medium', 'high', 'xhigh'],
+        codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
         gemini: [],
+      };
+      const CODEX_MODEL_EFFORTS = {
+        'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        'gpt-5.6-terra': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        'gpt-5.6-luna': ['low', 'medium', 'high', 'xhigh', 'max'],
       };
       const PROV_MODELS = {
         claude: ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5'],
-        codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+        codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
         gemini: [
           'Gemini 3.1 Pro (High)',
           'Gemini 3.1 Pro (Low)',
@@ -1357,9 +1434,13 @@
       };
       const PROV_DEFAULT = {
         claude: 'claude-opus-4-8',
-        codex: 'gpt-5.5',
+        codex: 'gpt-5.6-terra',
         gemini: 'Gemini 3.1 Pro (High)',
       };
+      const mEfforts = (provider, model) =>
+        provider === 'codex' && CODEX_MODEL_EFFORTS[model]
+          ? CODEX_MODEL_EFFORTS[model]
+          : PROV_EFFORTS[provider];
       let mDirty = false,
         mLast = '',
         pLast = '';
@@ -1380,14 +1461,14 @@
           DIFF_LIST.map((d) => {
             const e = df[d] || {};
             const p = PROV_LABEL[e.provider] ? e.provider : 'claude';
-            const efforts = PROV_EFFORTS[p];
+            const efforts = mEfforts(p, e.model);
             const effortSel = efforts.length
               ? `<select data-d="${d}" data-k="effort" onchange="mMark()">${mOpt(efforts, e.effort || 'high')}</select>`
               : `<span class="hint">effort is part of the model name</span>`;
             return `<div class="mrow">
               <span class="dchip" style="background:${DIFF_COLOR[d]};color:${DIFF_TEXT[d] || '#fff'}">${d}</span>
               <select data-d="${d}" data-k="provider" onchange="mProvChange('${d}', this.value)">${mOpt(Object.keys(PROV_LABEL), p, PROV_LABEL)}</select>
-              <input type="text" data-d="${d}" data-k="model" list="dl-${p}" value="${esc(e.model || PROV_DEFAULT[p])}" oninput="mMark()" spellcheck="false" />
+              <input type="text" data-d="${d}" data-k="model" list="dl-${p}" value="${esc(e.model || PROV_DEFAULT[p])}" oninput="mMark()" onchange="mModelChange('${d}')" spellcheck="false" />
               ${effortSel}
             </div>`;
           }).join('') +
@@ -1424,12 +1505,22 @@
       }
       function mProvChange(d, p) {
         const draft = mCollect();
+        const model = PROV_DEFAULT[p];
+        const efforts = mEfforts(p, model);
         draft.difficulties[d] = {
           provider: p,
-          model: PROV_DEFAULT[p],
-          ...(PROV_EFFORTS[p].length ? { effort: 'high' } : {}),
+          model,
+          ...(efforts.length ? { effort: efforts.includes('high') ? 'high' : efforts[0] } : {}),
         };
         mMark();
+        mRenderRows(draft);
+      }
+      function mModelChange(d) {
+        const draft = mCollect();
+        const entry = draft.difficulties[d];
+        const efforts = mEfforts(entry.provider, entry.model);
+        if (efforts.length && !efforts.includes(entry.effort))
+          entry.effort = efforts.includes('high') ? 'high' : efforts[0];
         mRenderRows(draft);
       }
       async function mSave(btn) {
@@ -1856,11 +1947,14 @@
 
       /* ---- USAGE analytics tab ---- */
       let uaData = null,
-        uaFetchedAt = 0;
+        uaFetchedAt = 0,
+        uaCodexRange = '14',
+        uaCodexModel = 'all';
       async function fetchUsage(force) {
         if (!force && Date.now() - uaFetchedAt < 60000) return;
         try {
-          const r = await fetch('/api/usage');
+          const params = new URLSearchParams({ range: uaCodexRange, model: uaCodexModel });
+          const r = await fetch('/api/usage?' + params);
           uaData = await r.json();
           uaFetchedAt = Date.now();
           renderUsage(uaData);
@@ -1871,6 +1965,12 @@
       setInterval(() => {
         if (activeTab === 'usage') fetchUsage(false);
       }, 60000);
+      function uaCodexFiltersChanged() {
+        uaCodexRange = $('ua-codex-range').value;
+        uaCodexModel = $('ua-codex-model').value;
+        uaFetchedAt = 0;
+        fetchUsage(true);
+      }
       const fmtTok = (n) =>
         n >= 1e9
           ? (n / 1e9).toFixed(2) + 'B'
@@ -1879,6 +1979,20 @@
             : n >= 1e3
               ? (n / 1e3).toFixed(1) + 'k'
               : String(n);
+      const fmtEstimate = (n) =>
+        n == null
+          ? 'unavailable'
+          : '$' + (n === 0 ? '0.000000' : n < 0.01 ? Number(n).toFixed(6) : Number(n).toFixed(2));
+      const coverageText = (bucket) =>
+        bucket?.legacyOutputAmbiguousRecords
+          ? `${bucket.legacyOutputAmbiguousRecords} legacy output-ambiguous run${bucket.legacyOutputAmbiguousRecords === 1 ? '' : 's'}`
+          : bucket?.coverage === 'partial'
+            ? 'partial coverage'
+            : bucket?.coverage === 'unavailable'
+              ? 'estimate unavailable'
+              : bucket?.coverage === 'none'
+                ? 'no Codex rows'
+                : 'complete telemetry';
       function hbars(el, rows, colorFor) {
         const max = Math.max(...rows.map((r) => r.v), 0.01);
         $(el).innerHTML =
@@ -1890,6 +2004,101 @@
             .join('') || '<div class="hint">no data yet</div>';
       }
       const MODEL_COLOR = { sonnet: 'var(--w1)', opus: 'var(--w2)', fable: 'var(--w3)' };
+      function codexBars(el, rows, issueLinks) {
+        const max = Math.max(...rows.map((r) => r.tokens?.total || 0), 1);
+        $(el).innerHTML =
+          rows
+            .map((r) => {
+              const label =
+                issueLinks && /^\d+$/.test(r.k)
+                  ? `<a target="_blank" href="${REPO}/issues/${r.k}">#${esc(r.k)}</a>`
+                  : esc(r.label || r.k);
+              const status = r.coverage === 'complete' ? '' : ` · ${coverageText(r)}`;
+              const tokenTitle = `input ${fmtTok(r.tokens?.input || 0)} · cached ${fmtTok(r.tokens?.cachedInput || 0)} · cache-write ${fmtTok(r.tokens?.cacheWrite || 0)} · output ${fmtTok(r.tokens?.output || 0)}`;
+              return `<div class="hb codex-hb" title="${esc(tokenTitle + status)}"><span class="n">${label}</span><span class="track"><i style="width:${Math.max(1, ((r.tokens?.total || 0) / max) * 100)}%"></i></span><span class="v">${fmtEstimate(r.estimatedUsd)} · ${fmtTok(r.tokens?.total || 0)}</span></div>`;
+            })
+            .join('') || '<div class="hint">no Codex data in this range</div>';
+      }
+      function codexIssueRows(rows) {
+        $('ua-codex-issues').innerHTML =
+          rows
+            .map((r) => {
+              const issue = /^\d+$/.test(r.k)
+                ? `<a target="_blank" href="${REPO}/issues/${r.k}">#${esc(r.k)}</a>`
+                : esc(r.label || r.k);
+              const tk = r.tokens || {};
+              return `<div class="irow"><span class="num">${issue}</span><span class="title">input ${fmtTok(tk.input || 0)} · cached ${fmtTok(tk.cachedInput || 0)} · cache-write ${fmtTok(tk.cacheWrite || 0)} · output ${fmtTok(tk.output || 0)}</span><span class="hint">${fmtEstimate(r.estimatedUsd)}${r.coverage === 'complete' ? '' : ' · ' + coverageText(r)}</span></div>`;
+            })
+            .join('') || '<div class="hint">no Codex issue usage in this range</div>';
+      }
+      function renderCodexUsage(c) {
+        const totals = c.totals || {};
+        const tk = totals.tokens || {};
+        const status = coverageText(totals);
+        $('ua-codex-kpis').innerHTML =
+          `<div class="tile"><span class="l">API-equivalent estimate</span><span class="v">${fmtEstimate(totals.estimatedUsd)}</span><span class="s">not billed subscription spend · ${status}</span></div>` +
+          `<div class="tile"><span class="l">Today’s estimate</span><span class="v">${fmtEstimate(totals.todayEstimatedUsd)}</span><span class="s">standard/base API price</span></div>` +
+          `<div class="tile"><span class="l">Codex tokens</span><span class="v">${fmtTok(tk.total || 0)}</span><span class="s">input ${fmtTok(tk.input || 0)} · output ${fmtTok(tk.output || 0)}</span></div>` +
+          `<div class="tile"><span class="l">Cached input</span><span class="v">${fmtTok(tk.cachedInput || 0)}</span><span class="s">cache-write ${fmtTok(tk.cacheWrite || 0)}${totals.cacheWriteUnreportedRecords ? ` · ${totals.cacheWriteUnreportedRecords} run${totals.cacheWriteUnreportedRecords === 1 ? '' : 's'} unreported` : ''}</span></div>` +
+          `<div class="tile"><span class="l">Coverage</span><span class="v">${totals.pricedRecords || 0}/${totals.records || 0}</span><span class="s">priced runs · ${totals.unpricedRecords || 0} unavailable</span></div>`;
+
+        const modelSelect = $('ua-codex-model');
+        modelSelect.innerHTML =
+          '<option value="all">All Codex models</option>' +
+          (c.availableModels || [])
+            .map((model) => `<option value="${esc(model)}">${esc(model)}</option>`)
+            .join('');
+        modelSelect.value = c.model || 'all';
+        if (modelSelect.value !== (c.model || 'all')) modelSelect.value = 'all';
+        $('ua-codex-range').value = c.range || '14';
+        $('ua-codex-range-note').textContent =
+          (c.range === 'all' ? 'all recorded dates' : `${c.rangeStart} → ${c.rangeEnd}`) +
+          (c.model && c.model !== 'all' ? ` · ${c.model}` : '');
+
+        const W = 720,
+          H = 200,
+          padL = 42,
+          padR = 48,
+          padB = 22,
+          padT = 10;
+        const days = c.days || [];
+        const maxCost = Math.max(...days.map((d) => d.estimatedUsd || 0), 0.000001) * 1.14;
+        const maxTokens = Math.max(...days.map((d) => d.tokens?.total || 0), 1) * 1.08;
+        const bw = days.length ? (W - padL - padR) / days.length : W - padL - padR;
+        let svg = '';
+        for (const frac of [0.5, 1]) {
+          const y = padT + (H - padB - padT) * (1 - frac);
+          svg +=
+            `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>` +
+            `<text x="${padL - 5}" y="${y + 4}" text-anchor="end" font-size="9.5" fill="var(--muted)">${fmtEstimate(maxCost * frac)}</text>` +
+            `<text x="${W - padR + 5}" y="${y + 4}" font-size="9.5" fill="var(--muted)">${fmtTok(maxTokens * frac)}</text>`;
+        }
+        const points = [];
+        const labelEvery = Math.max(1, Math.ceil(days.length / 14));
+        days.forEach((day, i) => {
+          const cx = padL + i * bw + bw * 0.2;
+          const w = Math.max(1, bw * 0.6);
+          const cost = day.estimatedUsd || 0;
+          const h = ((H - padB - padT) * cost) / maxCost;
+          const y = H - padB - h;
+          if (h > 0.3)
+            svg += `<rect x="${cx}" y="${y}" width="${w}" height="${h}" rx="2" fill="var(--accent)"><title>${day.k}: ${fmtEstimate(day.estimatedUsd)}${day.coverage === 'complete' ? '' : ' (' + coverageText(day) + ')'}</title></rect>`;
+          else if (day.records > 0 && day.estimatedUsd == null)
+            svg += `<rect x="${cx}" y="${H - padB - 2}" width="${w}" height="2" fill="var(--muted)"><title>${day.k}: estimate unavailable</title></rect>`;
+          const tokenY = H - padB - ((H - padB - padT) * (day.tokens?.total || 0)) / maxTokens;
+          points.push(`${cx + w / 2},${tokenY}`);
+          if (i % labelEvery === days.length % labelEvery)
+            svg += `<text x="${cx + w / 2}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${day.k.slice(5)}</text>`;
+        });
+        if (points.length > 1)
+          svg += `<polyline points="${points.join(' ')}" fill="none" stroke="var(--warn)" stroke-width="2" stroke-linejoin="round"><title>Codex token volume</title></polyline>`;
+        $('ua-codex-days').innerHTML =
+          svg ||
+          '<text x="360" y="100" text-anchor="middle" fill="var(--muted)">no Codex data</text>';
+        codexBars('ua-codex-models', c.byModel || [], false);
+        codexBars('ua-codex-roles', c.byRole || [], false);
+        codexIssueRows(c.byIssue || []);
+      }
       function renderUsage(d) {
         if (!d) return;
         const t = d.totals || {};
@@ -1957,6 +2166,7 @@
               `<div class="tile"><span class="l">${k.replace('cache', 'cache ')}</span><span class="v">${fmtTok(tk[k] || 0)}</span></div>`,
           )
           .join('');
+        renderCodexUsage(d.codex || {});
       }
 
       /* ---- live ---- */

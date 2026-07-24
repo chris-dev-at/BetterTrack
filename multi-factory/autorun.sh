@@ -45,6 +45,8 @@ if [ "$WORKERS" -gt 2 ]; then
       - ./state:/work/mfstate
       - ./worker.sh:/work/mf/worker.sh:ro
       - ./mflib.sh:/work/mf/mflib.sh:ro
+      - ./contracts.sh:/work/mf/contracts.sh:ro
+      - ./create-issue.sh:/work/mf/create-issue.sh:ro
       - ../factory/lib.sh:/work/mf/lib.sh:ro
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
