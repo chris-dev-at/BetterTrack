@@ -196,7 +196,11 @@ export function createVaultPortfolioStore(
             source: 'manual',
           });
         });
-        return appendEntities(document, 'transaction', entities);
+        const next = appendEntities(document, 'transaction', entities);
+        for (const assetId of new Set(parsedInputs.map((input) => input.assetId))) {
+          assertValidAssetTimeline(next, portfolioId, assetId);
+        }
+        return next;
       });
 
       const committed = requireDocument(engine);
@@ -215,17 +219,38 @@ export function createVaultPortfolioStore(
     async updateTransaction(portfolioId, transactionId, patch) {
       const parsedPatch = updateTransactionRequestSchema.parse(patch);
       const { baseSeq: _baseSeq, ...dataPatch } = parsedPatch;
+      const financialEdit = hasFinancialTransactionPatch(dataPatch);
       const current = requireDocument(engine);
       requirePortfolio(current, portfolioId);
-      transactionFromEntity(
-        current,
-        requireOwnedEntity(current, 'transaction', transactionId, portfolioId),
-      );
-      const entity = await updateEntity(context, 'transaction', transactionId, (data) => ({
-        ...data,
-        ...dataPatch,
-      }));
-      return transactionFromEntity(requireDocument(engine), entity);
+      const currentEntity = requireOwnedEntity(current, 'transaction', transactionId, portfolioId);
+      transactionFromEntity(current, currentEntity);
+      assertFinancialEditSupported(current, transactionId, financialEdit);
+
+      await engine.mutate(({ document }) => {
+        requirePortfolio(document, portfolioId);
+        const existing = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
+        transactionFromEntity(document, existing);
+        assertFinancialEditSupported(document, transactionId, financialEdit);
+        const updated: VaultEntity = {
+          ...existing,
+          rev: existing.rev + 1,
+          editedAt: context.now(),
+          editedBy: engine.deviceId,
+          data: {
+            ...existing.data,
+            ...dataPatch,
+          },
+        };
+        const next = replaceEntity(document, 'transaction', updated);
+        assertValidAssetTimeline(next, portfolioId, stringField(updated.data, 'assetId'));
+        return next;
+      });
+
+      const committed = findLiveEntity(requireDocument(engine), 'transaction', transactionId);
+      if (committed == null) {
+        throw storeError('VAULT_DATA_UNAVAILABLE', 'The updated vault entity is not readable.');
+      }
+      return transactionFromEntity(requireDocument(engine), committed);
     },
 
     async deleteTransaction(portfolioId, transactionId) {
@@ -416,6 +441,8 @@ async function deleteTransactionTree(
         tombstoneEntity(movement, context.engine.deviceId, timestamp),
       );
     }
+    assertValidAssetTimeline(next, portfolioId, stringField(transaction.data, 'assetId'));
+    projectCashLedgerBySource(domainCashMovements(next, portfolioId));
     return next;
   });
   const committed = findEntity(requireDocument(context.engine), 'transaction', transactionId);
@@ -440,8 +467,15 @@ async function createCashMovement(
 
   await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
-    const sourceId = resolveCashSourceId(document, portfolioId, parsedBody.sourceId);
     const timestamp = context.now();
+    const resolved = resolveOrCreateCashSource(
+      context,
+      document,
+      portfolioId,
+      parsedBody.sourceId,
+      timestamp,
+    );
+    const sourceId = resolved.sourceId;
     const id = safeNewId(context);
     const entity = entityRecord(id, context.engine.deviceId, timestamp, {
       ...parsedBody,
@@ -460,11 +494,11 @@ async function createCashMovement(
       taxYear: null,
     });
     projectCashLedgerBySource([
-      ...domainCashMovements(document, portfolioId),
+      ...domainCashMovements(resolved.document, portfolioId),
       domainCashMovement(entity),
     ]);
     createdId = id;
-    return appendEntities(document, 'cashMovement', [entity]);
+    return appendEntities(resolved.document, 'cashMovement', [entity]);
   });
 
   const committedDocument = requireDocument(context.engine);
@@ -592,6 +626,45 @@ function resolveCashSourceId(
     );
   }
   return source.id;
+}
+
+function resolveOrCreateCashSource(
+  context: StoreContext,
+  document: VaultDocumentV1,
+  portfolioId: string,
+  requestedSourceId: string | undefined,
+  timestamp: string,
+): { document: VaultDocumentV1; sourceId: string } {
+  if (requestedSourceId !== undefined) {
+    return {
+      document,
+      sourceId: resolveCashSourceId(document, portfolioId, requestedSourceId),
+    };
+  }
+
+  const main = liveEntities(document, 'cashSource').find(
+    (entity) =>
+      stringField(entity.data, 'portfolioId') === portfolioId &&
+      nullableStringField(entity.data, 'archivedAt') === null &&
+      booleanField(entity.data, 'isMain', false),
+  );
+  if (main != null) {
+    return { document, sourceId: main.id };
+  }
+
+  const sourceId = safeNewId(context);
+  const source = entityRecord(sourceId, context.engine.deviceId, timestamp, {
+    portfolioId,
+    name: 'Main',
+    type: 'cash',
+    isMain: true,
+    archivedAt: null,
+    createdAt: timestamp,
+  });
+  return {
+    document: appendEntities(document, 'cashSource', [source]),
+    sourceId,
+  };
 }
 
 function portfolioSummaryFromEntity(entity: VaultEntity): PortfolioSummary {
@@ -794,6 +867,51 @@ function domainCashMovement(entity: VaultEntity): SourcedCashMovement {
     occurredAt: movement.executedAt,
     sourceId: movement.sourceId,
   };
+}
+
+function assertValidAssetTimeline(
+  document: VaultDocumentV1,
+  portfolioId: string,
+  assetId: string,
+): void {
+  const transactions = liveEntities(document, 'transaction')
+    .filter(
+      (entity) =>
+        stringField(entity.data, 'portfolioId') === portfolioId &&
+        stringField(entity.data, 'assetId') === assetId,
+    )
+    .map((entity) => transactionFromEntity(document, entity));
+  reducePosition(transactions);
+}
+
+function hasFinancialTransactionPatch(
+  patch: Omit<ReturnType<typeof updateTransactionRequestSchema.parse>, 'baseSeq'>,
+): boolean {
+  return (
+    patch.side !== undefined ||
+    patch.quantity !== undefined ||
+    patch.price !== undefined ||
+    patch.fee !== undefined ||
+    patch.executedAt !== undefined
+  );
+}
+
+function assertFinancialEditSupported(
+  document: VaultDocumentV1,
+  transactionId: string,
+  financialEdit: boolean,
+): void {
+  if (
+    financialEdit &&
+    liveEntities(document, 'cashMovement').some(
+      (entity) => nullableStringField(entity.data, 'transactionId') === transactionId,
+    )
+  ) {
+    throw storeError(
+      'VAULT_OPERATION_UNAVAILABLE',
+      'A cash-linked transaction must be deleted and re-added to change its financial fields.',
+    );
+  }
 }
 
 function assertLocallySupportedTransactions(
