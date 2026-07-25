@@ -102,6 +102,8 @@ export type ParanoidRehydrationStage =
   | 'expenseTransactions'
   | 'expenseRules'
   | 'expenseBudgets'
+  | 'normalMode'
+  | 'ciphertextDeleted'
   | 'finish';
 
 export interface ParanoidRehydrationService {
@@ -999,7 +1001,9 @@ export function createParanoidRehydrationService(
 
         const completedAt = now();
         await transition.setNormalAndClearMedia(userId);
+        await stage('normalMode');
         await transition.deleteServerCiphertext(userId);
+        await stage('ciphertextDeleted');
         await transition.insertReceipt(userId, normalizedRequest.rehydrationId, completedAt);
         await stage('finish');
 

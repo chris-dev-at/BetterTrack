@@ -424,9 +424,11 @@ describe('paranoid rehydration service', () => {
     'taxReplay',
     'standingOrders',
     'expenseCategories',
-    'expenseTransactions',
     'expenseRules',
     'expenseBudgets',
+    'expenseTransactions',
+    'normalMode',
+    'ciphertextDeleted',
     'finish',
   ] as const)(
     'rolls every injected stage failure back without touching ciphertext (%s)',
@@ -512,10 +514,18 @@ describe('paranoid rehydration service', () => {
           .where(eq(paranoidVaultHistory.userId, user.id)),
       ).toHaveLength(1);
       const [account] = await db
-        .select({ mode: users.privacyMode })
+        .select({
+          mode: users.privacyMode,
+          media: users.paranoidMediaSet,
+          drive: users.paranoidDriveAttestedVersion,
+        })
         .from(users)
         .where(eq(users.id, user.id));
-      expect(account?.mode).toBe('paranoid');
+      expect(account).toEqual({
+        mode: 'paranoid',
+        media: ['server', 'drive'],
+        drive: 4,
+      });
       expect(
         await db
           .select()
