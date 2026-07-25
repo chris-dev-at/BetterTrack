@@ -21,6 +21,8 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 /** A fixed past trade day so no market-history assist perturbs the entered price. */
 export const TRADE_DATE = '2024-01-15';
 const TRADE_DATE_ISO = `${TRADE_DATE}T00:00:00.000Z`;
+const DAILY_CLOSES_ROUTE = /\/api\/v1\/assets\/[^/]+\/daily-closes(?:\?.*)?$/;
+const EMPTY_DAILY_CLOSES = { points: [], stale: false, asOf: null };
 
 // ─── Minimal response shapes (kept structural so the specs stay self-contained,
 //     matching the existing e2e style — no cross-package contract import). ─────
@@ -284,27 +286,36 @@ export async function waitForTransaction(
  * Drive the real transaction dialog on the `?portfolio=<id>` copy (mirrors
  * `flows.recordSapTrade`, buy-only, portfolio-targeted). Used by the flagship
  * "member buy propagates, attributed" spec so the write is a genuine member UI
- * action, not an API poke.
+ * action, not an API poke. Daily closes are deliberately fixture-backed here:
+ * this lifecycle gate owns its manually entered trade values and must not depend
+ * on a configured market-data provider merely to render the dialog assist.
  */
 export async function recordSapBuyOnCopyUi(
   page: Page,
   portfolioId: string,
   opts: { quantity: string; price: string },
 ): Promise<void> {
-  await page.goto(`/portfolio?portfolio=${portfolioId}`);
-  await page.getByRole('button', { name: '+ Transaction' }).click();
-  const dialog = page.getByRole('dialog');
-  await dialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
-  await dialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
-  // Unlink the date↔price assist so the entered price is taken verbatim; the
-  // toggle only exists once a series is available, so its absence is fine.
-  await dialog
-    .getByRole('button', { name: 'Unlink date and price' })
-    .click({ timeout: 20_000 })
-    .catch(() => {});
-  await dialog.getByLabel('Date for SAP.DE').fill(TRADE_DATE);
-  await dialog.getByLabel('Quantity for SAP.DE').fill(opts.quantity);
-  await dialog.getByLabel('Price for SAP.DE').fill(opts.price);
-  await dialog.getByRole('button', { name: 'Record buy' }).click();
-  await expect(dialog).toBeHidden();
+  await page.route(DAILY_CLOSES_ROUTE, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      json: EMPTY_DAILY_CLOSES,
+    }),
+  );
+  try {
+    await page.goto(`/portfolio?portfolio=${portfolioId}`);
+    await page.getByRole('button', { name: '+ Transaction' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
+    await dialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
+    // The local empty series intentionally disables the date↔price assist, so
+    // these values remain exactly the deterministic trade the gate submits.
+    await dialog.getByLabel('Date for SAP.DE').fill(TRADE_DATE);
+    await dialog.getByLabel('Quantity for SAP.DE').fill(opts.quantity);
+    await dialog.getByLabel('Price for SAP.DE').fill(opts.price);
+    await dialog.getByRole('button', { name: 'Record buy' }).click();
+    await expect(dialog).toBeHidden();
+  } finally {
+    await page.unroute(DAILY_CLOSES_ROUTE);
+  }
 }

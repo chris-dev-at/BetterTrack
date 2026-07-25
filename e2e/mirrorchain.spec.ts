@@ -221,30 +221,10 @@ test.describe('mirrorchain lifecycle UI gate', () => {
         (tx) => tx.quantity === 3,
       );
       expect(forkWrite.mirror, 'a fork write is a normal local row').toBeUndefined();
-      await recordSapBuyOnCopyUi(owner.page, ownerChain.portfolioId, {
-        quantity: '7',
-        price: '100',
-      });
-      await waitForTransaction(owner, ownerChain.portfolioId, (tx) => tx.quantity === 7);
-      const [liveTransactions, forkTransactions] = await Promise.all([
-        listTransactions(owner, ownerChain.portfolioId),
-        listTransactions(member, memberChain.portfolioId),
-      ]);
-      expect(
-        liveTransactions.some((tx) => tx.quantity === 3),
-        'a post-kick fork write never reaches the live chain',
-      ).toBe(false);
-      expect(
-        forkTransactions.some((tx) => tx.quantity === 7),
-        'a post-kick live-chain write never reaches the fork',
-      ).toBe(false);
-      expect(
-        forkTransactions.some((tx) => tx.quantity === 3),
-        'the fork stays usable',
-      ).toBe(true);
 
-      // Bring in a successor through the same user-facing invite/join flow,
-      // then transfer ownership from the current owner's member sheet.
+      // Bring in a remaining live copy before the post-kick write. Its observed
+      // receipt of that write is the worker/watermark barrier before we inspect
+      // the severed fork: a local origin write alone is not a replication edge.
       await inviteFriendFromMemberSheet(
         owner,
         ownerChain.portfolioId,
@@ -258,7 +238,50 @@ test.describe('mirrorchain lifecycle UI gate', () => {
         waitChainSynced(owner, ownerChain.chainId),
         waitChainSynced(successor, ownerChain.chainId),
       ]);
+
+      await recordSapBuyOnCopyUi(owner.page, ownerChain.portfolioId, {
+        quantity: '7',
+        price: '100',
+      });
+      await waitForTransaction(owner, ownerChain.portfolioId, (tx) => tx.quantity === 7);
       await waitForTransaction(successor, successorChain.portfolioId, (tx) => tx.quantity === 7);
+      await Promise.all([
+        waitChainSynced(owner, ownerChain.chainId),
+        waitChainSynced(successor, ownerChain.chainId),
+      ]);
+
+      const [ownerTransactions, successorTransactions, forkTransactions] = await Promise.all([
+        listTransactions(owner, ownerChain.portfolioId),
+        listTransactions(successor, successorChain.portfolioId),
+        listTransactions(member, memberChain.portfolioId),
+      ]);
+      expect(
+        ownerTransactions.some((tx) => tx.quantity === 3),
+        'a post-kick fork write never reaches the live chain',
+      ).toBe(false);
+      expect(
+        successorTransactions.some((tx) => tx.quantity === 3),
+        'a post-kick fork write never reaches another live copy',
+      ).toBe(false);
+      expect(
+        ownerTransactions.some((tx) => tx.quantity === 7),
+        'the live origin keeps its post-kick write',
+      ).toBe(true);
+      expect(
+        successorTransactions.some((tx) => tx.quantity === 7),
+        'the remaining live copy receives the post-kick write before fork inspection',
+      ).toBe(true);
+      expect(
+        forkTransactions.some((tx) => tx.quantity === 7),
+        'a post-kick live-chain write never reaches the fork',
+      ).toBe(false);
+      expect(
+        forkTransactions.some((tx) => tx.quantity === 3),
+        'the fork stays usable',
+      ).toBe(true);
+
+      // The successor was already the live watermark witness above, so transfer
+      // ownership through the current owner's member sheet.
       const successorTransactions = await listTransactions(successor, successorChain.portfolioId);
       expect(
         successorTransactions.some((tx) => tx.quantity === 3),
