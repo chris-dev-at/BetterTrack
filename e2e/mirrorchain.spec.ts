@@ -4,6 +4,7 @@ import { loginAsAdmin } from './support/adminApi';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import {
   activity,
+  apiGet,
   apiSend,
   assetIdFor,
   chainRole,
@@ -20,7 +21,11 @@ import {
   waitForTransaction,
   type LedgerTx,
 } from './support/mirror';
-import { befriend, provisionUser } from './support/users';
+import { befriend, provisionUser, type E2EUser } from './support/users';
+
+// This spec drives passwords and deliberate test trade values through the
+// browser; never retain a trace, screenshot, or video containing them.
+test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 /**
  * MIRRORCHAIN M6 (V5-P7, `docs/mirrorchain-design.md` §12 item 6): the six §13.5
@@ -32,6 +37,319 @@ import { befriend, provisionUser } from './support/users';
  * criteria name (the attribution chip, the fork provenance line) are asserted in
  * the browser. No product code is touched (M6 is test-only).
  */
+
+interface MirrorChainCopy {
+  chainId: string;
+  name: string;
+  portfolioId: string | null;
+  role: string;
+}
+
+/**
+ * Wait for the browser-driven create/join flows to materialize a local copy.
+ * The API read is intentionally only a deterministic cross-account observation;
+ * every lifecycle mutation in the V5-P14 gate below is made through the user UI.
+ */
+async function waitForNamedChainCopy(
+  user: E2EUser,
+  name: string,
+  timeout = 30_000,
+): Promise<MirrorChainCopy & { portfolioId: string }> {
+  let copy: MirrorChainCopy | undefined;
+  await expect
+    .poll(
+      async () => {
+        const { chains } = await apiGet<{ chains: MirrorChainCopy[] }>(user, '/mirrorchain/chains');
+        copy = chains.find((chain) => chain.name === name && chain.portfolioId !== null);
+        return copy?.portfolioId ?? '';
+      },
+      { timeout, intervals: [500, 1000, 2000] },
+    )
+    .not.toBe('');
+  return copy as MirrorChainCopy & { portfolioId: string };
+}
+
+async function inviteFriendFromMemberSheet(
+  owner: E2EUser,
+  portfolioId: string,
+  chainName: string,
+  friendUsername: string,
+): Promise<void> {
+  await owner.page.goto(`/portfolio?portfolio=${portfolioId}`);
+  const memberSheetTrigger = owner.page.getByRole('button', { name: /Open member sheet/ });
+  await expect(memberSheetTrigger).toBeVisible({ timeout: 20_000 });
+  await memberSheetTrigger.click();
+
+  const memberSheet = owner.page.getByRole('dialog', { name: chainName });
+  await expect(memberSheet).toBeVisible({ timeout: 20_000 });
+  await memberSheet.getByRole('button', { name: 'Invite', exact: true }).click();
+
+  const inviteDialog = owner.page.getByRole('dialog', { name: 'Invite a friend' });
+  const friendRow = inviteDialog.getByRole('listitem').filter({ hasText: friendUsername });
+  await expect(friendRow).toBeVisible({ timeout: 20_000 });
+  await friendRow.getByRole('button', { name: 'Invite', exact: true }).click();
+  await expect(inviteDialog).toBeHidden({ timeout: 20_000 });
+}
+
+async function acceptMirrorInviteThroughUi(user: E2EUser, chainName: string): Promise<void> {
+  await user.page.goto('/social/friends');
+  const invitation = user.page.getByRole('listitem').filter({ hasText: chainName });
+  await expect(invitation).toBeVisible({ timeout: 20_000 });
+  await invitation.getByRole('button', { name: 'Review', exact: true }).click();
+
+  const acceptDialog = user.page.getByRole('dialog', { name: `Join ${chainName}?` });
+  await expect(acceptDialog).toBeVisible({ timeout: 20_000 });
+  await acceptDialog.getByRole('button', { name: 'Join', exact: true }).click();
+  await expect(acceptDialog).toBeHidden({ timeout: 20_000 });
+}
+
+test.describe('mirrorchain lifecycle UI gate', () => {
+  test('mirrorchain: invite, join, fork severance, and transfer work through the UI', async ({
+    browser,
+  }) => {
+    test.setTimeout(300_000);
+
+    const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+    let owner: E2EUser | undefined;
+    let member: E2EUser | undefined;
+    let successor: E2EUser | undefined;
+
+    try {
+      await loginAsAdmin(apiRequest);
+      owner = await provisionUser(browser, apiRequest, 'mclifecycleowner');
+      member = await provisionUser(browser, apiRequest, 'mclifecyclemember');
+      successor = await provisionUser(browser, apiRequest, 'mclifecyclesuccessor');
+
+      // Friendship is established through the real Social surface. Reloading
+      // the owner's page drops the pre-accept React Query cache before the
+      // friend-picker UI is opened below.
+      await befriend(owner, member);
+      await befriend(owner, successor);
+      await owner.page.reload();
+      await expect(owner.page.getByRole('button', { name: member.username })).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(owner.page.getByRole('button', { name: successor.username })).toBeVisible({
+        timeout: 20_000,
+      });
+
+      const chainName = `E2E lifecycle ${Date.now().toString(36)}`;
+
+      // Owner creates the group portfolio and sends the FIRST friend invite
+      // through the post-create picker — no direct lifecycle endpoint calls.
+      await owner.page.goto('/portfolio');
+      await owner.page.getByRole('button', { name: 'Switch portfolio' }).click();
+      await owner.page
+        .getByRole('menuitem', { name: '+ New group portfolio', exact: true })
+        .click();
+      const createDialog = owner.page.getByRole('dialog', { name: 'New group portfolio' });
+      await createDialog.getByPlaceholder('Group portfolio name').fill(chainName);
+      await createDialog.getByRole('button', { name: 'Create', exact: true }).click();
+
+      const firstInviteDialog = owner.page.getByRole('dialog', { name: 'Invite a friend' });
+      const firstFriendRow = firstInviteDialog
+        .getByRole('listitem')
+        .filter({ hasText: member.username });
+      await expect(firstFriendRow).toBeVisible({ timeout: 20_000 });
+      await firstFriendRow.getByRole('button', { name: 'Invite', exact: true }).click();
+      await expect(firstInviteDialog).toBeHidden({ timeout: 20_000 });
+
+      // The invited friend sees the Social request and makes the one-screen
+      // acknowledgement. Materialization/sync are then observed with bounded
+      // polling from both authenticated accounts.
+      await acceptMirrorInviteThroughUi(member, chainName);
+      const ownerChain = await waitForNamedChainCopy(owner, chainName);
+      const memberChain = await waitForNamedChainCopy(member, chainName);
+      expect(memberChain.chainId).toBe(ownerChain.chainId);
+      await Promise.all([
+        waitChainSynced(owner, ownerChain.chainId),
+        waitChainSynced(member, ownerChain.chainId),
+      ]);
+
+      // A member writes through the portfolio UI. The owner sees the replicated
+      // row, including the originating member's visible attribution chip.
+      await recordSapBuyOnCopyUi(member.page, memberChain.portfolioId, {
+        quantity: '5',
+        price: '100',
+      });
+      const replicated = await waitForTransaction(
+        owner,
+        ownerChain.portfolioId,
+        (tx) => tx.quantity === 5 && tx.mirror?.addedBy.username === member!.username,
+      );
+      expect(replicated.mirror?.addedBy.username).toBe(member.username);
+      await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
+      await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(member.page.getByRole('button', { name: /Open member sheet/ })).toBeVisible({
+        timeout: 20_000,
+      });
+
+      // Removal is owner-only and happens in the member sheet. The removed
+      // account keeps its copy, visibly marked as a fork and locally writable.
+      const ownerMemberSheet = owner.page.getByRole('button', { name: /Open member sheet/ });
+      await ownerMemberSheet.click();
+      const memberSheet = owner.page.getByRole('dialog', { name: chainName });
+      const memberRow = memberSheet.getByRole('listitem').filter({ hasText: member.username });
+      await expect(memberRow).toBeVisible({ timeout: 20_000 });
+      await memberRow.getByRole('button', { name: 'Remove', exact: true }).click();
+      const removeDialog = owner.page.getByRole('dialog', { name: `Remove ${member.username}?` });
+      await removeDialog.getByRole('button', { name: 'Remove', exact: true }).click();
+      await expect(removeDialog).toBeHidden({ timeout: 20_000 });
+      await expect
+        .poll(async () => isChainMember(member!, ownerChain.chainId), {
+          timeout: 20_000,
+          intervals: [500, 1000, 2000],
+        })
+        .toBe(false);
+
+      await member.page.goto(`/portfolio?portfolio=${memberChain.portfolioId}`);
+      await expect(member.page.getByText(/Forked from/)).toBeVisible({ timeout: 20_000 });
+      expect(
+        (await listTransactions(member, memberChain.portfolioId)).some((tx) => tx.quantity === 5),
+        'the fork retains replicated history',
+      ).toBe(true);
+
+      await recordSapBuyOnCopyUi(member.page, memberChain.portfolioId, {
+        quantity: '3',
+        price: '100',
+      });
+      const forkWrite = await waitForTransaction(
+        member,
+        memberChain.portfolioId,
+        (tx) => tx.quantity === 3,
+      );
+      expect(forkWrite.mirror, 'a fork write is a normal local row').toBeUndefined();
+
+      // Bring in a remaining live copy before the post-kick write. Its observed
+      // receipt of that write is the worker/watermark barrier before we inspect
+      // the severed fork: a local origin write alone is not a replication edge.
+      await inviteFriendFromMemberSheet(
+        owner,
+        ownerChain.portfolioId,
+        chainName,
+        successor.username,
+      );
+      await acceptMirrorInviteThroughUi(successor, chainName);
+      const successorChain = await waitForNamedChainCopy(successor, chainName);
+      expect(successorChain.chainId).toBe(ownerChain.chainId);
+      await Promise.all([
+        waitChainSynced(owner, ownerChain.chainId),
+        waitChainSynced(successor, ownerChain.chainId),
+      ]);
+
+      await recordSapBuyOnCopyUi(owner.page, ownerChain.portfolioId, {
+        quantity: '7',
+        price: '100',
+      });
+      await waitForTransaction(owner, ownerChain.portfolioId, (tx) => tx.quantity === 7);
+      await waitForTransaction(successor, successorChain.portfolioId, (tx) => tx.quantity === 7);
+      await Promise.all([
+        waitChainSynced(owner, ownerChain.chainId),
+        waitChainSynced(successor, ownerChain.chainId),
+      ]);
+
+      const [ownerTransactions, successorTransactions, forkTransactions] = await Promise.all([
+        listTransactions(owner, ownerChain.portfolioId),
+        listTransactions(successor, successorChain.portfolioId),
+        listTransactions(member, memberChain.portfolioId),
+      ]);
+      expect(
+        ownerTransactions.some((tx) => tx.quantity === 3),
+        'a post-kick fork write never reaches the live chain',
+      ).toBe(false);
+      expect(
+        successorTransactions.some((tx) => tx.quantity === 3),
+        'a post-kick fork write never reaches another live copy',
+      ).toBe(false);
+      expect(
+        ownerTransactions.some((tx) => tx.quantity === 7),
+        'the live origin keeps its post-kick write',
+      ).toBe(true);
+      expect(
+        successorTransactions.some((tx) => tx.quantity === 7),
+        'the remaining live copy receives the post-kick write before fork inspection',
+      ).toBe(true);
+      expect(
+        forkTransactions.some((tx) => tx.quantity === 7),
+        'a post-kick live-chain write never reaches the fork',
+      ).toBe(false);
+      expect(
+        forkTransactions.some((tx) => tx.quantity === 3),
+        'the fork stays usable',
+      ).toBe(true);
+
+      // The successor was already the live watermark witness above, so transfer
+      // ownership through the current owner's member sheet.
+      expect(
+        successorTransactions.some((tx) => tx.quantity === 3),
+        'the later chain join replays live history but never the fork-only write',
+      ).toBe(false);
+
+      await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
+      await owner.page.getByRole('button', { name: /Open member sheet/ }).click();
+      const transferSheet = owner.page.getByRole('dialog', { name: chainName });
+      const successorRow = transferSheet
+        .getByRole('listitem')
+        .filter({ hasText: successor.username });
+      await expect(successorRow).toBeVisible({ timeout: 20_000 });
+      await successorRow.getByRole('button', { name: 'Make owner', exact: true }).click();
+      const transferDialog = owner.page.getByRole('dialog', {
+        name: `Make ${successor.username} the owner?`,
+      });
+      await transferDialog.getByRole('button', { name: 'Transfer', exact: true }).click();
+      await expect(transferDialog).toBeHidden({ timeout: 20_000 });
+      await expect
+        .poll(async () => chainRole(successor!, ownerChain.chainId), {
+          timeout: 20_000,
+          intervals: [500, 1000, 2000],
+        })
+        .toBe('owner');
+      await expect
+        .poll(async () => chainRole(owner!, ownerChain.chainId), {
+          timeout: 20_000,
+          intervals: [500, 1000, 2000],
+        })
+        .toBe('member');
+
+      // The successor now sees final owner controls; the former owner sees
+      // their normal-member surface without invite, transfer, or dissolve.
+      await successor.page.goto(`/portfolio?portfolio=${successorChain.portfolioId}`);
+      await successor.page.getByRole('button', { name: /Open member sheet/ }).click();
+      const successorSheet = successor.page.getByRole('dialog', { name: chainName });
+      await expect(
+        successorSheet.getByRole('button', { name: 'Dissolve group', exact: true }),
+      ).toBeVisible({ timeout: 20_000 });
+      const oldOwnerRow = successorSheet.getByRole('listitem').filter({ hasText: owner.username });
+      await expect(
+        oldOwnerRow.getByRole('button', { name: 'Make owner', exact: true }),
+      ).toBeVisible({
+        timeout: 20_000,
+      });
+
+      await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
+      await owner.page.getByRole('button', { name: /Open member sheet/ }).click();
+      const formerOwnerSheet = owner.page.getByRole('dialog', { name: chainName });
+      await expect(
+        formerOwnerSheet.getByRole('button', { name: 'Dissolve group', exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        formerOwnerSheet.getByRole('button', { name: 'Invite', exact: true }),
+      ).toHaveCount(0);
+      await expect(
+        formerOwnerSheet.getByRole('button', { name: 'Make owner', exact: true }),
+      ).toHaveCount(0);
+    } finally {
+      await Promise.all([
+        apiRequest.dispose(),
+        owner?.context.close(),
+        member?.context.close(),
+        successor?.context.close(),
+      ]);
+    }
+  });
+});
 
 // ─── 1. A member's buy appears in every copy, attributed (§2 + §11) — (e2e) ───
 
