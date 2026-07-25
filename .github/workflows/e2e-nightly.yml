@@ -17,10 +17,11 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     # Run 30146369738 reached 49 project tests in 45 minutes, or about 55 seconds
-    # per test. Three shards cap the normal load at roughly 22 tests (~20 minutes)
-    # each; 35 minutes retains 15 minutes for service boot, retries, and artifact
-    # collection without letting a single shard consume the old 45-minute wall.
-    timeout-minutes: 35
+    # per test. The current three-way split is 34, 35, and 31 test instances, so
+    # the largest shard needs about 32 minutes before service boot and retries;
+    # 45 minutes leaves a realistic 13-minute setup/diagnostic margin while the
+    # suite's wall-clock budget is now one parallel shard, not all 100 instances.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:17
